@@ -4,6 +4,7 @@
 import type { BufferGeometry } from "three";
 import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
 import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
@@ -18,7 +19,7 @@ import type { PlacedSink, ScanPattern, Side, SideCorrections, TextMarking } from
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
-import { forefootFeatureBoxes, offsetPlanLoopForefootWidthMm } from "./modifiers";
+import { FOREFOOT_SHIFT_U_HOLD, forefootFeatureBoxes, offsetPlanLoopForefootWidthMm } from "./modifiers";
 import { composePrintSolidTop, fieldWithoutSinks, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
@@ -227,12 +228,16 @@ export async function reconstructProceduralPreview(
     if (options.sourceField) {
         const fore = options.sourceField.corrections?.forefootWidthMm ?? 0;
         // Pair and loft the zero-forefoot sheet. The wall applies one lateral
-        // normal offset after main's stations exist.
+        // normal offset after main's stations exist. A full-length wedge samples
+        // the same held u as that offset, so the toe rim does not keep tilting.
         const widthFree =
             fore !== 0
                 ? {
                       ...options.sourceField,
                       corrections: { ...options.sourceField.corrections, forefootWidthMm: 0 },
+                      ...(fullLengthWedgeActive(options.sourceField.corrections)
+                          ? { fullLengthToeHoldU: FOREFOOT_SHIFT_U_HOLD }
+                          : {}),
                   }
                 : options.sourceField;
         // The loft pairs the unsunk sheet. T and S are applied to the wall after.

@@ -4,6 +4,7 @@
 import {
     buildWedgeStations,
     fallbackRimXY,
+    fullLengthToeSampleU,
     fullLengthWedgeActive,
     fullLengthWedgeDeltaAt,
 } from "@/lib/geometry/full-length-wedge";
@@ -37,10 +38,14 @@ export interface ForefootRigidBox {
  * collapsed tip the shift used to freeze at u = 0.985, which chopped a
  * nonzero slope, then the slope cap tracked the outline and folded the wall.
  * Past this station the envelope eases to 0 with a matched tangent.
+ * A full-length wedge eases the plan onto {@link FOREFOOT_SHIFT_U_HOLD}
+ * so the ruled stations share that station.
  */
 const TOE_FAIR_U0 = 0.955;
 /** Half-width of the outline sample used for the gain plateau, in u. */
 const FOREFOOT_ROOM_WINDOW_U = 0.004;
+/** Station a full-length wedge freezes when a forefoot width shift is also on. */
+export const FOREFOOT_SHIFT_U_HOLD = 0.985;
 /** |dY/dy| cap. A ±10 mm step steeper than this crosses vertices on narrowing. */
 const FOREFOOT_SHIFT_SLOPE_CAP = 0.75;
 /** Plateau starts just inboard of the bottom outline so the outline is at full shift. */
@@ -142,13 +147,17 @@ export function forefootPlanShiftMm(
     bounds: PlanBounds,
     forefootWidthMm: number,
     roomAt: (u: number, positive: boolean) => number,
+    fairToeHold = false,
 ): number {
     if (!forefootWidthMm) return 0;
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
     const cy = (bounds.minY + bounds.maxY) * 0.5;
     if (y === cy) return 0;
-    const u = Math.max(0, Math.min(1, (x - bounds.minX) / length));
-    const toe = u > TOE_FAIR_U0;
+    const uRaw = Math.max(0, Math.min(1, (x - bounds.minX) / length));
+    // Width alone fairs the envelope to 0 at the tip. A full-length wedge
+    // eases onto the hold so the ruled tilt and the plan share one toe station.
+    const u = fairToeHold ? fullLengthToeSampleU(uRaw, FOREFOOT_SHIFT_U_HOLD) : uRaw;
+    const toe = !fairToeHold && u > TOE_FAIR_U0;
     const env = toe ? fairedToeEnvelope(u) : forefootWidthLongitudinalEnvelope(u);
     if (env <= 0) return 0;
     const positive = y >= cy;
@@ -175,11 +184,12 @@ export function forefootWidthPlanDy(
     bounds: PlanBounds,
     forefootWidthMm: number,
     roomAt?: (u: number, positive: boolean) => number,
+    fairToeHold = false,
 ): number {
     if (!forefootWidthMm) return 0;
     const half = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
     const fallback = roomAt ?? (() => half);
-    return forefootPlanShiftMm(x, y, bounds, forefootWidthMm, fallback);
+    return forefootPlanShiftMm(x, y, bounds, forefootWidthMm, fallback, fairToeHold);
 }
 
 /** Met pads and text move rigidly; every other vertex uses the envelope. */
@@ -189,6 +199,7 @@ export function applyForefootPlanShift(
     forefootWidthMm: number,
     boxes?: readonly ForefootRigidBox[],
     outline?: ReadonlyArray<{ x: number; y: number }>,
+    fairToeHold = false,
 ): void {
     if (!forefootWidthMm) return;
     const roomAt = outline && outline.length >= 8 ? forefootOutlineRoomMm(outline, bounds) : undefined;
@@ -201,6 +212,7 @@ export function applyForefootPlanShift(
             bounds,
             forefootWidthMm,
             roomAt,
+            fairToeHold,
         );
     }
     if (boxes) {
@@ -218,7 +230,7 @@ export function applyForefootPlanShift(
             const cyBox = (box.minY + box.maxY) * 0.5;
             const hx = Math.max(1e-3, (box.maxX - box.minX) * 0.5);
             const hy = Math.max(1e-3, (box.maxY - box.minY) * 0.5);
-            const rigid = forefootWidthPlanDy(cx, cyBox, bounds, forefootWidthMm, roomAt);
+            const rigid = forefootWidthPlanDy(cx, cyBox, bounds, forefootWidthMm, roomAt, fairToeHold);
             for (const i of ids) {
                 const x = positions[i * 3]!;
                 const y = positions[i * 3 + 1]!;
@@ -408,6 +420,11 @@ export interface ProceduralModifierInput {
     fullLengthRimXY?: ReadonlyArray<{ x: number; y: number }>;
     fullLengthRimOrdered?: boolean;
     /**
+     * When set, the ruled tilt eases onto this u ahead of the toe corner.
+     * Used only with a forefoot plan shift, which holds the same station.
+     */
+    fullLengthToeHoldU?: number;
+    /**
      * Whole-insole width scale (1 = unchanged). Same factor and medial-lateral
      * centre as the top. Heel widen uses heelCupWidthMm + follow=1 instead.
      */
@@ -581,7 +598,7 @@ export function postingZDelta(
             medialPositiveY,
             ordered,
         });
-        d += fullLengthWedgeDeltaAt(x, y, stations);
+        d += fullLengthWedgeDeltaAt(x, y, stations, input.fullLengthToeHoldU);
     }
     return d;
 }

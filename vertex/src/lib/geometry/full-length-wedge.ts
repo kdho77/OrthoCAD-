@@ -346,10 +346,43 @@ export function highEdgeRiseAt(stations: WedgeStations | null, u: number): numbe
     return sampleSeries(stations.W, u) * Math.tan(stations.theta);
 }
 
-export function fullLengthWedgeDeltaAt(x: number, y: number, stations: WedgeStations | null): number {
+/** Longitudinal window that eases onto the forefoot plan-shift hold. */
+export const FULL_LENGTH_TOE_FAIR_SPAN = 0.08;
+/**
+ * Finish the ease this far before the hold. The toe corner sits just upstream
+ * of the hold; it has to already be frozen or the short wall pleats there.
+ */
+export const FULL_LENGTH_TOE_FAIR_LEAD = 0.04;
+
+/**
+ * Ease u onto a held station. Identity before the window, the hold value from
+ * the lead point onward, C1 at both ends.
+ */
+export function fullLengthToeSampleU(u: number, holdU: number): number {
+    const span = FULL_LENGTH_TOE_FAIR_SPAN;
+    const u1 = holdU - FULL_LENGTH_TOE_FAIR_LEAD;
+    const u0 = u1 - span;
+    if (!(span > 0) || u <= u0) return u;
+    if (u >= u1) return holdU;
+    const t = (u - u0) / (u1 - u0);
+    const h00 = (2 * t - 3) * t * t + 1;
+    const h10 = (t - 2) * t * t + t;
+    const h01 = (-2 * t + 3) * t * t;
+    return h00 * u0 + h10 * (u1 - u0) + h01 * holdU;
+}
+
+export function fullLengthWedgeDeltaAt(
+    x: number,
+    y: number,
+    stations: WedgeStations | null,
+    toeHoldU?: number,
+): number {
     if (!stations || !(stations.lengthMm > 1e-9)) return 0;
-    const u = (x - stations.originX) / stations.lengthMm;
+    let u = (x - stations.originX) / stations.lengthMm;
     if (u < -1e-4 || u > 1 + 1e-4) return 0;
+    // Ease the ruled station onto the hold ahead of the toe corner. A live
+    // yLow through that corner tilts the rim against the held plan shift.
+    if (toeHoldU != null) u = fullLengthToeSampleU(u, toeHoldU);
     const n = stations.n;
     const fx = Math.max(0, Math.min(1, u)) * (n - 1);
     const i0 = Math.floor(fx);
@@ -366,6 +399,12 @@ export interface FullLengthFieldQuery {
     widthMm: number;
     corrections: SideCorrections;
     fullLengthRim?: FullLengthRimFrame | null;
+    /**
+     * Ease the ruled stations onto this u ahead of the toe corner.
+     * Set only with a forefoot plan shift that holds the same station.
+     * Absent → the toe follows the live rim, and width-free exports stay put.
+     */
+    fullLengthToeHoldU?: number;
 }
 
 /** Additive full-length dz (mm). 0 when the wedge is off — callers must skip it for byte identity. */
@@ -425,5 +464,5 @@ export function fullLengthDeltaFromField(
     if (!stations) return 0;
     const y = rim?.yScale != null ? vSigned * rim.yScale : vSigned * (halfWidthMmAt ? halfWidthMmAt(u) : 0);
     const x = originX + u * lengthMm;
-    return fullLengthWedgeDeltaAt(x, y, stations);
+    return fullLengthWedgeDeltaAt(x, y, stations, field.fullLengthToeHoldU);
 }

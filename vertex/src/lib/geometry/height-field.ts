@@ -58,6 +58,11 @@ export interface HeightFieldParams {
      * (y = vSigned * yScale). Absent → outline fallback inside the wedge module.
      */
     fullLengthRim?: FullLengthRimFrame | null;
+    /**
+     * Ruled-tilt sample hold. Set only when a forefoot width shift will freeze
+     * the same u after this height is baked. Absent leaves the toe stations live.
+     */
+    fullLengthToeHoldU?: number;
 }
 
 const DEG = Math.PI / 180;

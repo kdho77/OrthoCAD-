@@ -18,10 +18,13 @@ import {
     buildWedgeStations,
     cupHeightAboveHeelMm,
     FULL_LENGTH_HEEL_U,
+    FULL_LENGTH_TOE_FAIR_LEAD,
+    FULL_LENGTH_TOE_FAIR_SPAN,
     fallbackRimXY,
     fullLengthDegFromMm,
     fullLengthDeltaFromField,
     fullLengthMmFromDeg,
+    fullLengthToeSampleU,
     fullLengthWedgeDeltaAt,
     highEdgeRiseAt,
     type RimXY,
@@ -375,6 +378,49 @@ describe("full-length wedge", () => {
         expect(hasShoeCounterHeightWarning(steep, 7)).toBe(false);
         expect(hasShoeCounterHeightWarning(blank({ heelCupHeightMm: 0 }), 0)).toBe(false);
     });
+
+    test("a forefoot width hold freezes the toe tilt on the held station", () => {
+        const layout = insoleLayoutForUsMenSize(9);
+        const corrections = blank({ fullLengthWedge: { side: "lateral", value: 5, unit: "deg" } });
+        const half = (u: number) => outlineHalfWidth(u) * (layout.widthMm / 2);
+        const stations = stationsFor("right", corrections, layout.lengthMm, layout.widthMm);
+        const open = fieldFor("right", corrections, layout.lengthMm, layout.widthMm);
+        const held = fieldFor("right", corrections, layout.lengthMm, layout.widthMm, {
+            fullLengthToeHoldU: 0.985,
+        });
+        const xOf = (u: number) => u * layout.lengthMm;
+        const hold = 0.985;
+        const u1 = hold - FULL_LENGTH_TOE_FAIR_LEAD;
+        const u0 = u1 - FULL_LENGTH_TOE_FAIR_SPAN;
+        expect(fullLengthToeSampleU(0.5, hold)).toBeCloseTo(0.5, 12);
+        expect(fullLengthToeSampleU(u0, hold)).toBeCloseTo(u0, 12);
+        expect(fullLengthToeSampleU(u1, hold)).toBeCloseTo(hold, 12);
+        expect(fullLengthToeSampleU(1, hold)).toBeCloseTo(hold, 12);
+        expect(fullLengthWedgeDeltaAt(xOf(0.5), half(0.5), stations, hold)).toBeCloseTo(
+            fullLengthWedgeDeltaAt(xOf(0.5), half(0.5), stations),
+            9,
+        );
+        // Past the lead, the point keeps its own y and the station at the hold.
+        expect(fullLengthWedgeDeltaAt(xOf(1), half(1), stations, hold)).toBeCloseTo(
+            fullLengthWedgeDeltaAt(xOf(hold), half(1), stations),
+            9,
+        );
+        // The fallback toe is already flat by the hold. An earlier hold still moves the tip.
+        expect(
+            Math.abs(
+                fullLengthWedgeDeltaAt(xOf(1), half(1), stations) -
+                    fullLengthWedgeDeltaAt(xOf(1), half(1), stations, 0.9),
+            ),
+        ).toBeGreaterThan(1e-3);
+        expect(fullLengthDeltaFromField(1, 1, held, half)).toBeCloseTo(
+            fullLengthWedgeDeltaAt(xOf(0.985), half(1), stations),
+            9,
+        );
+        expect(fullLengthDeltaFromField(0.5, 1, held, half)).toBeCloseTo(
+            fullLengthDeltaFromField(0.5, 1, open, half),
+            9,
+        );
+    });
 });
 
 function stlMd5(geo: BufferGeometry): string {
@@ -485,7 +531,7 @@ function wallCreases(
         const len = Math.hypot((pa[0]! - pb[0]!) / q, (pa[1]! - pb[1]!) / q, (pa[2]! - pb[2]!) / q);
         if (len < 0.25) continue;
         count++;
-        const x = pa[0]! / q;
+        const x = (pa[0]! + pb[0]!) / (2 * q);
         minX = Math.min(minX, x);
         maxX = Math.max(maxX, x);
     }
@@ -833,71 +879,110 @@ describe("full-length wedge export", () => {
         }
     }, 1_200_000);
 
-    test("forefoot width +5 mm with a full-length wedge stays watertight and rises at the heel", async () => {
-        const meshCase: MeshCase = { deg: 5, size: 9, side: "right", style: "straight", edge: "lateral" };
-        const neutral = await preview(blank({ forefootWidthMm: 5 }), meshCase);
-        const corrections = blank({
-            forefootWidthMm: 5,
-            fullLengthWedge: { side: "lateral", value: 5, unit: "deg" },
-        });
-        const posted = await preview(corrections, meshCase);
-        try {
-            const report = analyzeManifold(posted);
-            expect(report.isWatertight).toBe(true);
-            expect(report.nonManifoldEdges).toBe(0);
-            assertBottomFacesDown(posted);
-
-            const frame = getBaseFootprintFrame(neutral, meshCase.side);
-            const posN = neutral.getAttribute("position");
-            const posP = posted.getAttribute("position");
-            const topN = (neutral.userData as { topVertexCount?: number }).topVertexCount ?? 0;
-            const points: RimXY[] = [];
-            for (let i = 0; i < topN; i++) {
-                const x = (posN.array as ArrayLike<number>)[i * 3 + frame.lengthAxis]!;
-                const wid = (posN.array as ArrayLike<number>)[i * 3 + frame.widthAxis]!;
-                points.push({ x, y: frame.widthSign * (wid - frame.widCenter) });
-            }
-            const stations = buildWedgeStations(points, meshCase.side, corrections.fullLengthWedge, {
-                originX: frame.lenMin,
-                lengthMm: frame.lenSize,
-                medialPositiveY: meshCase.side === "left",
-                ordered: false,
-            });
-            expect(stations).not.toBeNull();
-            const u = FULL_LENGTH_HEEL_U;
-            const xTarget = frame.lenMin + u * frame.lenSize;
-            let bestHigh = -1;
-            let bestLow = -1;
-            let yHigh = Number.NEGATIVE_INFINITY;
-            let yLow = Number.POSITIVE_INFINITY;
-            for (let i = 0; i < topN; i++) {
-                const x = (posN.array as ArrayLike<number>)[i * 3 + frame.lengthAxis]!;
-                if (Math.abs(x - xTarget) > frame.lenSize * 0.02) continue;
-                const wid = (posN.array as ArrayLike<number>)[i * 3 + frame.widthAxis]!;
-                const y = frame.widthSign * (wid - frame.widCenter);
-                if (y > yHigh) {
-                    yHigh = y;
-                    bestHigh = i;
-                }
-                if (y < yLow) {
-                    yLow = y;
-                    bestLow = i;
-                }
-            }
-            expect(bestHigh).toBeGreaterThanOrEqual(0);
-            expect(bestLow).toBeGreaterThanOrEqual(0);
-            const zAt = (i: number, pos: typeof posN) =>
-                (pos.array as ArrayLike<number>)[i * 3 + frame.thickAxis]!;
-            const highIdx = stations!.highPositiveY ? bestHigh : bestLow;
-            const lowIdx = stations!.highPositiveY ? bestLow : bestHigh;
-            const dHigh = zAt(highIdx, posP) - zAt(highIdx, posN);
-            const dLow = zAt(lowIdx, posP) - zAt(lowIdx, posN);
-            const rise = Math.abs(yHigh - yLow) * Math.tan(stations!.theta);
-            expect(dLow).toBeLessThanOrEqual(0.05);
-            expect(Math.abs(dHigh - dLow - rise)).toBeLessThanOrEqual(0.1);
-        } finally {
-            neutral.dispose();
-            posted.dispose();
+    test("forefoot width +5 mm with a full-length wedge holds the toe and the heel rise", async () => {
+        // 72.19 mm widened heel rim: 72.19·tan(5°) = 6.32, 72.19·tan(10°) = 12.73.
+        const heelRiseMm: Record<number, number> = { 5: 6.32, 10: 12.73 };
+        const combos: Array<{ style: ProceduralWallStyle; edge: "lateral" | "medial"; deg: number }> = [];
+        for (const style of STYLES) {
+            combos.push({ style, edge: "lateral", deg: 5 }, { style, edge: "medial", deg: 10 });
         }
-    }, 300_000);
+        const baseline = new Map<ProceduralWallStyle, BufferGeometry>();
+        try {
+            for (const style of STYLES) {
+                baseline.set(
+                    style,
+                    await preview(blank({ forefootWidthMm: 5 }), {
+                        deg: 0,
+                        size: 9,
+                        side: "right",
+                        style,
+                    }),
+                );
+            }
+            for (const combo of combos) {
+                const meshCase: MeshCase = {
+                    deg: combo.deg,
+                    size: 9,
+                    side: "right",
+                    style: combo.style,
+                    edge: combo.edge,
+                };
+                const neutral = baseline.get(combo.style)!;
+                const corrections = blank({
+                    forefootWidthMm: 5,
+                    fullLengthWedge: { side: combo.edge, value: combo.deg, unit: "deg" },
+                });
+                const posted = await preview(corrections, meshCase);
+                try {
+                    const report = analyzeManifold(posted);
+                    expect(report.isWatertight).toBe(true);
+                    expect(report.nonManifoldEdges).toBe(0);
+                    assertBottomFacesDown(posted);
+
+                    const frame = getBaseFootprintFrame(neutral, meshCase.side);
+                    const posN = neutral.getAttribute("position");
+                    const posP = posted.getAttribute("position");
+                    const topN = (neutral.userData as { topVertexCount?: number }).topVertexCount ?? 0;
+                    const points: RimXY[] = [];
+                    for (let i = 0; i < topN; i++) {
+                        const x = (posN.array as ArrayLike<number>)[i * 3 + frame.lengthAxis]!;
+                        const wid = (posN.array as ArrayLike<number>)[i * 3 + frame.widthAxis]!;
+                        points.push({ x, y: frame.widthSign * (wid - frame.widCenter) });
+                    }
+                    const stations = buildWedgeStations(points, meshCase.side, corrections.fullLengthWedge, {
+                        originX: frame.lenMin,
+                        lengthMm: frame.lenSize,
+                        medialPositiveY: meshCase.side === "left",
+                        ordered: false,
+                    });
+                    expect(stations).not.toBeNull();
+                    const u = FULL_LENGTH_HEEL_U;
+                    const xTarget = frame.lenMin + u * frame.lenSize;
+                    let bestHigh = -1;
+                    let bestLow = -1;
+                    let yHigh = Number.NEGATIVE_INFINITY;
+                    let yLow = Number.POSITIVE_INFINITY;
+                    for (let i = 0; i < topN; i++) {
+                        const x = (posN.array as ArrayLike<number>)[i * 3 + frame.lengthAxis]!;
+                        if (Math.abs(x - xTarget) > frame.lenSize * 0.02) continue;
+                        const wid = (posN.array as ArrayLike<number>)[i * 3 + frame.widthAxis]!;
+                        const y = frame.widthSign * (wid - frame.widCenter);
+                        if (y > yHigh) {
+                            yHigh = y;
+                            bestHigh = i;
+                        }
+                        if (y < yLow) {
+                            yLow = y;
+                            bestLow = i;
+                        }
+                    }
+                    expect(bestHigh).toBeGreaterThanOrEqual(0);
+                    expect(bestLow).toBeGreaterThanOrEqual(0);
+                    const zAt = (i: number, pos: typeof posN) =>
+                        (pos.array as ArrayLike<number>)[i * 3 + frame.thickAxis]!;
+                    const highIdx = stations!.highPositiveY ? bestHigh : bestLow;
+                    const lowIdx = stations!.highPositiveY ? bestLow : bestHigh;
+                    const dHigh = zAt(highIdx, posP) - zAt(highIdx, posN);
+                    const dLow = zAt(lowIdx, posP) - zAt(lowIdx, posN);
+                    expect(dLow).toBeLessThanOrEqual(0.05);
+                    const expected = heelRiseMm[combo.deg]!;
+                    expect(Math.abs(dHigh - dLow - expected)).toBeLessThanOrEqual(0.1);
+
+                    const baseCreases = wallCreases(neutral);
+                    const creases = wallCreases(posted);
+                    if (baseCreases.count === 0) {
+                        expect(creases.count).toBe(0);
+                    } else {
+                        expect(creases.minX).toBeGreaterThanOrEqual(baseCreases.minX - 0.5);
+                        expect(creases.maxX).toBeLessThanOrEqual(baseCreases.maxX + 0.5);
+                        expect(creases.count).toBeLessThanOrEqual(baseCreases.count + 10);
+                    }
+                } finally {
+                    posted.dispose();
+                }
+            }
+        } finally {
+            for (const geo of baseline.values()) geo.dispose();
+        }
+    }, 1_200_000);
 });

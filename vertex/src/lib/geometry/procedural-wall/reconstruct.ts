@@ -49,6 +49,7 @@ import { countJunctionBandSlivers, windingReport } from "./metrics";
 import {
     applyForefootPlanShift,
     clampPostingOnTopSheet,
+    FOREFOOT_SHIFT_U_HOLD,
     footprintVSignedFromMeshY,
     forefootOutlineRoomMm,
     forefootWidthPlanDy,
@@ -263,6 +264,8 @@ function applyAnalyticTopDeltas(
         trimline: field.trimline,
         fullLengthRimXY,
         fullLengthRimOrdered: false,
+        fullLengthToeHoldU:
+            (c.forefootWidthMm ?? 0) !== 0 && fullLengthWedgeActive(c) ? FOREFOOT_SHIFT_U_HOLD : undefined,
     };
     const minX = bounds.minX;
     const widCenter = (bounds.minY + bounds.maxY) * 0.5;
@@ -1191,6 +1194,10 @@ export function reconstructProceduralWalls(
         trimline: options.sourceField?.trimline ?? options.trimline ?? null,
         fullLengthRimXY: postingRim,
         fullLengthRimOrdered: false as const,
+        fullLengthToeHoldU:
+            (options.corrections?.forefootWidthMm ?? 0) !== 0 && fullLengthWedgeActive(options.corrections)
+                ? FOREFOOT_SHIFT_U_HOLD
+                : undefined,
     };
     const postingAt = (x: number, y: number) => postingZDelta(x, y, model.bounds, postingInput);
     const postingClamps = clampPostingOnTopSheet(
@@ -1927,15 +1934,17 @@ export function reconstructProceduralWalls(
     }
     if (forefootMm !== 0) {
         const roomAt = forefootOutlineRoomMm(grid.outlineRing, model.bounds);
+        const fairToe = fullLengthWedgeActive(options.corrections);
         applyForefootPlanShift(
             positions,
             model.bounds,
             forefootMm,
             options.forefootRigidBoxes,
             grid.outlineRing,
+            fairToe,
         );
         for (const p of grid.outlineRing) {
-            p.y += forefootWidthPlanDy(p.x, p.y, model.bounds, forefootMm, roomAt);
+            p.y += forefootWidthPlanDy(p.x, p.y, model.bounds, forefootMm, roomAt, fairToe);
         }
         // Non-uniform Y can flip a z=0 triangle. A bottom that is already
         // down is left byte-for-byte alone. Width 0 never reaches this block.
