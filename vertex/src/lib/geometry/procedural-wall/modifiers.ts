@@ -27,18 +27,25 @@ export interface ForefootRigidBox {
 }
 
 /**
- * Hold the last 1.5% of length. Past this the toe has collapsed onto the
- * centreline and a live envelope slope folds the cap.
+ * Toe fairing starts just past the u = 0.95 gate sample. Through the
+ * collapsed tip the shift used to freeze at u = 0.985, which chopped a
+ * nonzero slope, then the slope cap tracked the outline and folded the wall.
+ * Past this station the envelope eases to 0 with a matched tangent.
  */
-const FOREFOOT_SHIFT_U_HOLD = 0.985;
+const TOE_FAIR_U0 = 0.955;
+/** Half-width of the outline sample used for the gain plateau, in u. */
+const FOREFOOT_ROOM_WINDOW_U = 0.004;
 /** |dY/dy| cap. A ±10 mm step steeper than this crosses vertices on narrowing. */
 const FOREFOOT_SHIFT_SLOPE_CAP = 0.75;
 /** Plateau starts just inboard of the bottom outline so the outline is at full shift. */
 const FOREFOOT_OUTLINE_ROOM_SCALE = 0.92;
 
 /**
- * Outer |y − centre| of the bottom outline on one side, sampled along u.
- * The rim and the outline then share one shift; only the inboard sheet tapers.
+ * Outer |y − centre| of one side of the bottom outline. The gain plateau
+ * is 0.92× the widest sample within ±{@link FOREFOOT_ROOM_WINDOW_U}.
+ * The window is taken on the linearly interpolated outline, so the half-width
+ * is continuous. A discrete window steps where the toe narrows and that step
+ * flips the wall/bottom slivers.
  */
 export function forefootOutlineRoomMm(
     outline: ReadonlyArray<{ x: number; y: number }>,
@@ -46,30 +53,80 @@ export function forefootOutlineRoomMm(
 ): (u: number, positive: boolean) => number {
     const cy = (bounds.minY + bounds.maxY) * 0.5;
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
-    const pts = outline.map((p) => {
-        const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
-        return { u, y: p.y, d: Math.abs(p.y - cy) };
-    });
-    return (u, positive) => {
-        const clamped = Math.max(0, Math.min(1, u));
-        let best = 0;
-        let has = false;
-        let nearest = Infinity;
-        let nearestD = 0;
-        for (const p of pts) {
+    const side = (positive: boolean) => {
+        const env: Array<{ u: number; d: number }> = [];
+        for (const p of outline) {
             if (positive ? p.y < cy : p.y >= cy) continue;
-            const du = Math.abs(p.u - clamped);
-            if (du < nearest) {
-                nearest = du;
-                nearestD = p.d;
-            }
-            if (du <= 0.004) {
-                best = Math.max(best, p.d);
-                has = true;
-            }
+            const u = Math.max(0, Math.min(1, (p.x - bounds.minX) / length));
+            env.push({ u, d: Math.abs(p.y - cy) });
         }
-        return has ? best : nearestD;
+        env.sort((a, b) => a.u - b.u);
+        // A closed loop visits the same u twice. Keep the outer sample.
+        const outer: Array<{ u: number; d: number }> = [];
+        for (const s of env) {
+            const prev = outer[outer.length - 1];
+            if (prev && s.u <= prev.u + 1e-6) {
+                if (s.d > prev.d) prev.d = s.d;
+                continue;
+            }
+            outer.push(s);
+        }
+        const at = (u: number) => {
+            if (outer.length === 0) return 0;
+            if (u <= outer[0]!.u) return outer[0]!.d;
+            const tail = outer[outer.length - 1]!;
+            if (u >= tail.u) return tail.d;
+            let lo = 0;
+            let hi = outer.length - 1;
+            while (hi - lo > 1) {
+                const mid = (lo + hi) >> 1;
+                if (outer[mid]!.u <= u) lo = mid;
+                else hi = mid;
+            }
+            const a = outer[lo]!;
+            const b = outer[hi]!;
+            const t = (u - a.u) / Math.max(1e-9, b.u - a.u);
+            return a.d + t * (b.d - a.d);
+        };
+        return (u: number) => {
+            const loU = u - FOREFOOT_ROOM_WINDOW_U;
+            const hiU = u + FOREFOOT_ROOM_WINDOW_U;
+            let best = Math.max(at(loU), at(hiU));
+            let lo = 0;
+            let hi = outer.length;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (outer[mid]!.u < loU) lo = mid + 1;
+                else hi = mid;
+            }
+            for (let i = lo; i < outer.length && outer[i]!.u <= hiU; i++) {
+                if (outer[i]!.d > best) best = outer[i]!.d;
+            }
+            return best;
+        };
     };
+    const pos = side(true);
+    const neg = side(false);
+    return (u, positive) => (positive ? pos(u) : neg(u));
+}
+
+/**
+ * C1 ease from the live envelope at {@link TOE_FAIR_U0} down to 0 at the
+ * tip. Zero slope at u = 1, same value and slope as the live envelope at
+ * the join, so the rim offset does not hook where the toe collapses.
+ */
+function fairedToeEnvelope(u: number): number {
+    const live = forefootWidthLongitudinalEnvelope(u);
+    if (u <= TOE_FAIR_U0) return live;
+    const e0 = forefootWidthLongitudinalEnvelope(TOE_FAIR_U0);
+    const h = 1e-4;
+    const de0 = (e0 - forefootWidthLongitudinalEnvelope(TOE_FAIR_U0 - h)) / h;
+    const span = 1 - TOE_FAIR_U0;
+    const t = Math.min(1, (u - TOE_FAIR_U0) / span);
+    const h00 = (2 * t - 3) * t * t + 1;
+    const h10 = t * t * t - 2 * t * t + t;
+    const h01 = (3 - 2 * t) * t * t;
+    return Math.max(0, h00 * e0 + h10 * de0 * span + h01 * 0);
 }
 
 /** Lateral shift (mm) at a plan point. X and Z stay put. 0 below the ramp. */
@@ -84,15 +141,20 @@ export function forefootPlanShiftMm(
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
     const cy = (bounds.minY + bounds.maxY) * 0.5;
     if (y === cy) return 0;
-    const uRaw = Math.max(0, Math.min(1, (x - bounds.minX) / length));
-    const u = Math.min(uRaw, FOREFOOT_SHIFT_U_HOLD);
-    const env = forefootWidthLongitudinalEnvelope(u);
+    const u = Math.max(0, Math.min(1, (x - bounds.minX) / length));
+    const toe = u > TOE_FAIR_U0;
+    const env = toe ? fairedToeEnvelope(u) : forefootWidthLongitudinalEnvelope(u);
     if (env <= 0) return 0;
     const positive = y >= cy;
-    const room = Math.max(1, roomAt(u, positive) * FOREFOOT_OUTLINE_ROOM_SCALE);
-    const applied = Math.min(Math.abs(forefootWidthMm) * env, FOREFOOT_SHIFT_SLOPE_CAP * room);
+    const outlineHalf = roomAt(u, positive);
+    const capRoom = Math.max(1, outlineHalf * FOREFOOT_OUTLINE_ROOM_SCALE);
+    const envShift = Math.abs(forefootWidthMm) * env;
+    const roomCap = FOREFOOT_SHIFT_SLOPE_CAP * capRoom;
+    // In the toe the faired envelope already falls to 0. Tracking the
+    // collapsing outline with the slope cap hooks the rim and folds the wall.
+    const applied = toe ? envShift : Math.min(envShift, roomCap);
     const dist = Math.abs(y - cy);
-    const gain = dist >= room ? 1 : dist / room;
+    const gain = dist >= capRoom ? 1 : dist / capRoom;
     return Math.sign(y - cy) * Math.sign(forefootWidthMm) * applied * gain;
 }
 
