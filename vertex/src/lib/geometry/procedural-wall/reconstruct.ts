@@ -1894,7 +1894,11 @@ export function reconstructProceduralWalls(
     const bandVerts = new Set<number>();
     for (let i = 0; i < (indexGrid ? nS : refinedB.length); i++) bandVerts.add(refinedVert(i));
     const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ, bandVerts, indexGrid);
-    repairInvertedBottomFaces(positions, indices);
+    // The upward ear is a full-length straight-wall artifact. Regional posting
+    // and wedge-off stay on main's triangulation.
+    if (fullLengthWedgeActive(options.corrections)) {
+        repairInvertedBottomFaces(positions, indices);
+    }
     assertGeneratedEdgesUsedTwice(indices, generatedStart, positions);
     if (indexGrid) {
         const seam = measureSeamBFromPlantar(positions, indices, bRingStart, nS, (i) => gridVert(nJ - 2, i));
