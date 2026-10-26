@@ -327,6 +327,16 @@ describe("sink scalar field", () => {
         expect(sinkCutMm(styFrame.dx, styFrame.dy, styCtx, 0.95).mm).toBeGreaterThan(1.9);
     });
 
+    test("1st MPJ fades out before the medial rim and stays full at the deep point", () => {
+        const first = placed("mpj1", 4);
+        const ctx = surface(9, "left", [first]);
+        const frame = sinkFrame(first, ctx)!;
+        expect(sinkCutMm(frame.dx, frame.dy, ctx).mm).toBeGreaterThan(3.9);
+        expect(sinkCutMm(frame.cx, frame.cy, ctx, 0.05).mm).toBe(0);
+        expect(sinkCutMm(frame.cx, frame.cy, ctx, 0.02).mm).toBe(0);
+        expect(sinkCutMm(frame.cx, frame.cy, ctx, 0.12).mm).toBeGreaterThan(3.9);
+    });
+
     test("heightAt adds T and leaves the wedge term unchanged", () => {
         const sinks = [placed("mpj1", 2)];
         const ctx = surface(9, "right", sinks);

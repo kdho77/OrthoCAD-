@@ -37,6 +37,16 @@ export const LATERAL_WALL_MIN_MM = 3.0;
 /** 5th MPJ cut fades out before the lateral rim. */
 export const MPJ5_V_FADE_START = 0.88;
 export const MPJ5_V_FADE_END = 0.95;
+/** 1st MPJ cut fades out before the medial rim. Mirror of the 5th-MPJ band. */
+export const MPJ1_V_FADE_START = 0.12;
+export const MPJ1_V_FADE_END = 0.05;
+/**
+ * Where the wall guard holds the crest above the cut, the inboard top
+ * cannot fall steeper than this. A vertex is never lifted above the
+ * nearest guarded crest, so a tall neighbour cannot build a new ridge.
+ */
+export const RIM_LIP_MAX_DEG = 30;
+const RIM_LIP_REACH_MM = 15;
 export const MPJ1_PROXIMAL_SHIFT_MM = 3;
 export const MPJ5_LATERAL_SHIFT_MM = 2;
 export const ELLIPSE_NEWTON_ITERS = 4;
@@ -63,6 +73,8 @@ export interface SinkProfile {
     alongLateralRim: boolean;
     /** Keep the cut off the lateral wall. */
     lateralWallFade: boolean;
+    /** Keep the cut off the medial wall. */
+    medialWallFade: boolean;
     forefoot: boolean;
 }
 
@@ -83,6 +95,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         deepestLateralMm: 0,
         alongLateralRim: false,
         lateralWallFade: false,
+        medialWallFade: true,
         forefoot: true,
     },
     mpj2: {
@@ -99,6 +112,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         deepestLateralMm: 0,
         alongLateralRim: false,
         lateralWallFade: false,
+        medialWallFade: false,
         forefoot: true,
     },
     mpj3: {
@@ -115,6 +129,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         deepestLateralMm: 0,
         alongLateralRim: false,
         lateralWallFade: false,
+        medialWallFade: false,
         forefoot: true,
     },
     mpj4: {
@@ -131,6 +146,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         deepestLateralMm: 0,
         alongLateralRim: false,
         lateralWallFade: false,
+        medialWallFade: false,
         forefoot: true,
     },
     mpj5: {
@@ -147,6 +163,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         deepestLateralMm: MPJ5_LATERAL_SHIFT_MM,
         alongLateralRim: false,
         lateralWallFade: true,
+        medialWallFade: false,
         forefoot: true,
     },
     styloid: {
@@ -163,6 +180,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         deepestLateralMm: 0,
         alongLateralRim: true,
         lateralWallFade: false,
+        medialWallFade: false,
         forefoot: false,
     },
 };
@@ -197,7 +215,7 @@ export interface SinkCutSample {
     /** Clamped cut depth, mm. Overlap is the max, not the sum. */
     mm: number;
     sinkId?: string;
-    /** Profile weight of the winning sink, after the 5th-MPJ wall fade. */
+    /** Profile weight of the winning sink, after the medial and lateral rim fades. */
     weight: number;
 }
 
@@ -303,6 +321,7 @@ export interface SinkOvalFrame {
     aboveMax: boolean;
     forefoot: boolean;
     lateralWallFade: boolean;
+    medialWallFade: boolean;
     /** Half-axes of the egg measured from the shifted deepest point. */
     aProx: number;
     aDist: number;
@@ -385,6 +404,7 @@ export function sinkFrame(sink: PlacedSink, ctx: SinkSurfaceContext): SinkOvalFr
         aboveMax: clamped.aboveMax,
         forefoot: profile.forefoot,
         lateralWallFade: profile.lateralWallFade,
+        medialWallFade: profile.medialWallFade,
         aProx,
         aDist,
         bMed,
@@ -543,6 +563,8 @@ export function sinkCutMm(
         let w = eggWeight(p.frame, x, yLateral, p.frame.blendMm);
         if (p.frame.lateralWallFade)
             w *= 1 - smoothstep01((v - MPJ5_V_FADE_START) / (MPJ5_V_FADE_END - MPJ5_V_FADE_START));
+        if (p.frame.medialWallFade)
+            w *= 1 - smoothstep01((MPJ1_V_FADE_START - v) / (MPJ1_V_FADE_START - MPJ1_V_FADE_END));
         const d = p.frame.depthMm * w;
         if (d > best) {
             best = d;
@@ -999,6 +1021,56 @@ export interface AnalyticSinkLoftInput {
 }
 
 /**
+ * A guarded crest stays above the cut. Raise the inboard top, not the crest,
+ * so that step is a ramp instead of a lip. Rim stations are left alone.
+ */
+function raiseInboardOfGuardedRim(
+    input: AnalyticSinkLoftInput,
+    rimStation: Map<number, number>,
+    rimCut: Float64Array,
+    rimR: Float64Array,
+): void {
+    const slope = Math.tan((RIM_LIP_MAX_DEG * Math.PI) / 180);
+    const reach2 = RIM_LIP_REACH_MM * RIM_LIP_REACH_MM;
+    const lips: Array<{ x: number; y: number; z: number }> = [];
+    for (let s = 0; s < input.nS; s++) {
+        if (rimR[s]! + 0.05 >= rimCut[s]!) continue;
+        const vi = input.vertAt(0, s);
+        lips.push({
+            x: input.positions[vi * 3]!,
+            y: input.positions[vi * 3 + 1]!,
+            z: input.positions[vi * 3 + 2]!,
+        });
+    }
+    if (!lips.length) return;
+    const topCount = Math.min(input.topCount, input.positions.length / 3);
+    for (let i = 0; i < topCount; i++) {
+        if (rimStation.has(i)) continue;
+        const x = input.positions[i * 3]!;
+        const y = input.positions[i * 3 + 1]!;
+        const z = input.positions[i * 3 + 2]!;
+        let floor = z;
+        let nearest = Number.POSITIVE_INFINITY;
+        let nearestZ = z;
+        for (const lip of lips) {
+            const dx = x - lip.x;
+            const dy = y - lip.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 > reach2) continue;
+            const dist = Math.sqrt(d2);
+            if (dist < nearest) {
+                nearest = dist;
+                nearestZ = lip.z;
+            }
+            const allowed = lip.z - dist * slope;
+            if (allowed > floor) floor = allowed;
+        }
+        if (floor > nearestZ) floor = nearestZ;
+        if (floor > z) input.positions[i * 3 + 2] = floor;
+    }
+}
+
+/**
  * T, then S, then a vertical wall stretch and styloid notch.
  * The loft has already been built from the unsunk rim, so only z is written.
  */
@@ -1026,6 +1098,7 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
     const rimH = new Float64Array(input.nS);
     const rimT = new Float64Array(input.nS);
     const rimR = new Float64Array(input.nS);
+    const rimCut = new Float64Array(input.nS);
     const topCount = Math.min(input.topCount, input.positions.length / 3);
     for (let s = 0; s < input.nS; s++) {
         const vi = input.vertAt(0, s);
@@ -1051,6 +1124,7 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
         );
         const lowering = guardedRimLowering(rimH[s]! + rimT[s]!, floor.cutMm, localTop).lowering;
         rimR[s] = lowering;
+        rimCut[s] = floor.cutMm;
     }
     const warnings: SinkWarning[] = [];
     const seen = new Set<string>();
@@ -1073,6 +1147,7 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
         }
         if (t !== 0 || guarded.cutMm !== 0) input.positions[i * 3 + 2] = Math.max(0, z - guarded.cutMm);
     }
+    raiseInboardOfGuardedRim(input, rimStation, rimCut, rimR);
     const styloid = input.sinks!.find((s) => s.kind === "styloid");
     const depth = styloid ? clampSinkDepth("styloid", styloid.depthMm).depthMm : 0;
     const touched = new Set<number>();
