@@ -19,6 +19,7 @@ import {
     quinticSmoothstep,
     resolveOutlineHalfWidth,
 } from "@/lib/geometry/height-field";
+import { applySinkCutToGeometry, sinksActive } from "@/lib/geometry/sink";
 import type { PlacedElement } from "@/types";
 import { loadTransformedAssetPositions, resolvePlacedAssetContexts } from "./element-asset";
 import { gridEdgeRingMax, sampleGridBilinear } from "./height-grid";
@@ -340,7 +341,13 @@ export async function applyElementsToTopMeshLast(
     geometry.deleteAttribute(ELEMENT_LIFT_ATTRIBUTE);
     geometry.deleteAttribute(ELEMENT_OWNER_ATTRIBUTE);
     geometry.userData[ELEMENT_IDS_KEY] = [];
-    if (elements.length === 0) return;
+    const hasSinks = sinksActive(field.sinks);
+    // No elements and no sinks: same early return as before (byte-identical).
+    if (elements.length === 0 && !hasSinks) return;
+    if (elements.length === 0) {
+        applySinkCutLast(geometry, referenceBase, field);
+        return;
+    }
     ensureTopEdgeAvProfile(field, referenceBase);
     const hooks = options?.noFlowHooks ?? defaultNoFlowHeightHooks;
     const contexts = await resolvePlacedAssetContexts(
@@ -427,8 +434,30 @@ export async function applyElementsToTopMeshLast(
     const pos = geometry.getAttribute("position");
     if (pos) pos.needsUpdate = true;
     geometry.computeVertexNormals();
+    if (hasSinks) applySinkCutLast(geometry, referenceBase, field);
+}
+
+function applySinkCutLast(
+    geometry: BufferGeometry,
+    referenceBase: BufferGeometry,
+    field: HeightFieldParams,
+): void {
+    if (!sinksActive(field.sinks)) return;
+    const frame = getBaseFootprintFrame(referenceBase, field.side);
+    const factors = classifyBaseTopFactors(referenceBase);
+    // z-only. Subdivision re-lofts the wall and moves the heel outline.
+    applySinkCutToGeometry(geometry, referenceBase, field, frame, factors);
+    geometry.computeVertexNormals();
 }
 
 export function fieldWithoutElementsForModifiers(field: HeightFieldParams): HeightFieldParams {
-    return { ...field, includeElements: false, elements: [] };
+    return {
+        ...field,
+        includeElements: false,
+        elements: [],
+        // T and S are applied beside this pass, not inside the wedge/element delta.
+        sinks: undefined,
+        sinkStyloidThicken: undefined,
+        sinkMarkers: undefined,
+    };
 }

@@ -30,6 +30,7 @@ import {
     applyTrimmableForefootExtension,
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
+import { sinksActive, sinkThicknessAt } from "@/lib/geometry/sink";
 import { wedgeCorrectionActive, wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
@@ -91,6 +92,10 @@ export function neutralField(field: HeightFieldParams): HeightFieldParams {
         },
         elements: [],
         includeElements: false,
+        // T is a separate top-only term. Neutral must not carry it.
+        sinks: undefined,
+        sinkStyloidThicken: undefined,
+        sinkMarkers: undefined,
         // Skives are applied post-sync on the top mesh only (R11) — never in F.
         includeSkives: false,
         trimline: null,
@@ -2643,6 +2648,10 @@ export function applyBaseModifiers(
         ...field,
         thicknessMm: thicknessMmForDelta,
         includeSkives: false,
+        // T is added beside the wedge, top-only. Keep it out of correctionDeltaAt.
+        sinks: undefined,
+        sinkStyloidThicken: undefined,
+        sinkMarkers: undefined,
         corrections: {
             ...field.corrections,
             heelCupDepthMm: 0,
@@ -2704,6 +2713,8 @@ export function applyBaseModifiers(
     //    either way (same u/vSigned → correctionDeltaAt).
     const delta = new Float32Array(count);
     const wedgeAt = wedgeActive ? new Float32Array(count) : null;
+    const sinkTActive = sinksActive(field.sinks);
+    const sinkTAt = sinkTActive ? new Float32Array(count) : null;
     const sampleEnd = useShellFieldSync && topVertexCount > 0 ? topVertexCount : count;
     for (let i = 0; i < sampleEnd; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
@@ -2717,6 +2728,9 @@ export function applyBaseModifiers(
             if (isMultiMesh && topVertexCount > 0 && i >= topVertexCount) {
                 d -= wD;
             }
+        }
+        if (sinkTAt && !(isMultiMesh && topVertexCount > 0 && i >= topVertexCount)) {
+            sinkTAt[i] = sinkThicknessAt(u, vSigned, field);
         }
         delta[i] = d;
     }
@@ -2844,7 +2858,24 @@ export function applyBaseModifiers(
                 dz = w * depthVec[g * 3 + 2]!;
             }
         }
-        array[i * 3 + thickAxis] = t + vertD;
+        // No sinks: the original assignment. With sinks, T is top-only (rim included).
+        if (sinkTAt) {
+            const sinkW =
+                isMultiMesh && topVertexCount > 0
+                    ? i < topVertexCount
+                        ? 1
+                        : 0
+                    : topFactors
+                      ? topFactors[i]! > 0.5
+                          ? 1
+                          : 0
+                      : w > 0.5
+                        ? 1
+                        : 0;
+            array[i * 3 + thickAxis] = t + vertD + sinkTAt[i]! * sinkW;
+        } else {
+            array[i * 3 + thickAxis] = t + vertD;
+        }
         array[i * 3 + widthAxis] += latD;
         array[i * 3] += dx;
         array[i * 3 + 1] += dy;

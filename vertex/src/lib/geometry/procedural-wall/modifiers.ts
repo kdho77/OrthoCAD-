@@ -8,9 +8,10 @@ import {
     heelCupDepthBowlDelta,
     heelCupWidthScaleFactor,
 } from "@/lib/geometry/height-field";
+import { sinksActive, sinkThicknessAt, styloidWallReliefAt } from "@/lib/geometry/sink";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
-import type { Side, SideCorrections } from "@/types";
+import type { PlacedSink, Side, SideCorrections } from "@/types";
 import type { PolyPoint } from "./curves";
 import type { HermiteStation } from "./loft";
 import type { DeviceTypePreset, LateralFlangeParams, StockWallModel } from "./types";
@@ -329,6 +330,9 @@ export interface ProceduralModifierInput {
     /** Foot side for wedge math (independent of mesh Y flip). */
     side?: Side;
     trimline?: TrimlineCurve | null;
+    /** MPJ / styloid sinks. Absent ⇒ curve T is not evaluated. */
+    sinks?: PlacedSink[];
+    sinkStyloidThicken?: boolean;
     /**
      * Whole-insole width scale (1 = unchanged). Same factor and medial-lateral
      * centre as the top. Heel widen uses heelCupWidthMm + follow=1 instead.
@@ -397,6 +401,20 @@ export function applyCurveModifiers(
         if (c && (c.rearfootWedge || c.forefootWedge)) {
             t.z += postingZDelta(o.x, o.y, model.bounds, input);
         }
+        if (sinksActive(input.sinks)) {
+            const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+            const widthMm = Math.max(1e-3, model.bounds.maxY - model.bounds.minY);
+            const side = input.side ?? ((input.medialYSign ?? 1) < 0 ? "right" : "left");
+            const vSigned = footprintVSignedFromMeshY(o.y, model.bounds, side, input.medialYSign ?? 1);
+            t.z += sinkThicknessAt(u, vSigned, {
+                side,
+                lengthMm: length,
+                widthMm,
+                sinks: input.sinks,
+                sinkStyloidThicken: input.sinkStyloidThicken,
+                trimline: input.trimline,
+            });
+        }
         if (dThick) t.z += dThick;
     }
     return { trim, outline };
@@ -446,6 +464,20 @@ export function postingZDelta(
  * Plantar stays at z = 0. Grind and arch fill used to raise the sole; they
  * now select wall style instead of offsetting the bottom.
  */
+/**
+ * Styloid lateral-wall z term. Pre-relief vertex height `z` on a wall whose rim
+ * height is `rimHeight`. Returns 0 when the rim is not lowered.
+ * XY is never modified by the caller — this is a pure dz.
+ */
+export function styloidWallZDelta(
+    z: number,
+    rimHeight: number,
+    styloidDepthMm: number,
+    rimLoweringMm: number,
+): number {
+    return styloidWallReliefAt(z, rimHeight, styloidDepthMm, rimLoweringMm);
+}
+
 export function plantarZDelta(
     _x: number,
     _y: number,

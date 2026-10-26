@@ -5,6 +5,7 @@ import type { BufferGeometry } from "three";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
+import { sinkStyloidThickenForSide, sinksForSide } from "@/lib/geometry/migrate-corrections";
 import {
     SAMPLE_TOP_ASSET_ID,
     SAMPLE_TOP_GLB_PATH,
@@ -901,6 +902,7 @@ export async function loadBaseGeometry(
 /** Height field (with live correction/element previews) for modifier application. */
 export function baseModifierField(design: DesignState, side: Side, thicknessMm: number): HeightFieldParams {
     const params = insoleParamsFromDesign(design, side, "full");
+    const sinks = sinksForSide(design, side);
     return {
         side,
         lengthMm: params.lengthMm,
@@ -917,6 +919,8 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         includeElements: true,
         trimline: null,
         shapeFinish: getSideShapeFinish(design, side),
+        // Omit the keys when this foot has no sink so the field shape matches main.
+        ...(sinks ? { sinks, sinkStyloidThicken: sinkStyloidThickenForSide(design, side) } : {}),
     };
 }
 

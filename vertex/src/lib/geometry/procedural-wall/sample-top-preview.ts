@@ -14,12 +14,12 @@ import {
     mirrorGeometry,
     reorientToFootprintFrame,
 } from "@/lib/library/loaders";
-import type { ScanPattern, Side, SideCorrections, TextMarking } from "@/types";
+import type { PlacedSink, ScanPattern, Side, SideCorrections, TextMarking } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
 import { forefootFeatureBoxes, offsetPlanLoopForefootWidthMm } from "./modifiers";
-import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
+import { composePrintSolidTop, fieldWithoutSinks, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
 import { shiftPatternByRimFollow } from "./station-gates";
@@ -200,6 +200,12 @@ export interface ProceduralPreviewOptions {
     textMarking?: TextMarking | null;
     /** Foot side for left/right placement (wall text is never glyph-mirrored). */
     side?: Side;
+    /**
+     * Analytic-top sinks. Passed through without sourceField so a sink-free
+     * export stays on the same loft path as main.
+     */
+    sinks?: PlacedSink[];
+    sinkStyloidThicken?: boolean;
 }
 
 /**
@@ -222,13 +228,15 @@ export async function reconstructProceduralPreview(
         const fore = options.sourceField.corrections?.forefootWidthMm ?? 0;
         // Pair and loft the zero-forefoot sheet. The wall applies one lateral
         // normal offset after main's stations exist.
-        const sourceField =
+        const widthFree =
             fore !== 0
                 ? {
                       ...options.sourceField,
                       corrections: { ...options.sourceField.corrections, forefootWidthMm: 0 },
                   }
                 : options.sourceField;
+        // The loft pairs the unsunk sheet. T and S are applied to the wall after.
+        const sourceField = fieldWithoutSinks(widthFree);
         source = await composePrintSolidTop(topGeo, {
             sourceField,
             shoeWidth: options.shoeWidth,
@@ -265,6 +273,10 @@ export async function reconstructProceduralPreview(
                 elements: options.sourceField?.elements,
                 text: options.textMarking,
             }),
+            // Do not set sourceField just to carry sinks — that flips composedTop.
+            ...(options.sinks && options.sinks.length > 0
+                ? { sinks: options.sinks, sinkStyloidThicken: options.sinkStyloidThicken }
+                : {}),
         });
         return { model, pattern, geometry };
     };

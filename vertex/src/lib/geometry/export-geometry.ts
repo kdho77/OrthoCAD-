@@ -9,9 +9,14 @@ import {
     isKernelInitFailed,
 } from "@/lib/chili3d/kernel";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
-import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import {
+    BASE_REFERENCE_THICKNESS_MM,
+    classifyBaseTopFactors,
+    getBaseFootprintFrame,
+} from "@/lib/geometry/base-modifier";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
+import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
 import {
     assertClosedSolidAcceptable,
@@ -22,6 +27,7 @@ import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/previ
 import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { assertShapeFinishExportAllowed } from "@/lib/geometry/shape-finish-gates";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
+import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
 import { curveToPolyPoints, useBottomPatternStore } from "@/stores/bottom-pattern-store";
@@ -45,6 +51,15 @@ export interface BuildExportStlOptions {
  * the design has no base or the base mesh cannot be loaded, so callers fall
  * back to parametric generation.
  */
+/** S after the kernel solid. No-op without sinks, so the no-sink STL bytes stay put. */
+function cutExportSinks(geometry: BufferGeometry, field: HeightFieldParams): BufferGeometry {
+    if (!field.sinks || field.sinks.length === 0) return geometry;
+    const frame = getBaseFootprintFrame(geometry, field.side);
+    const factors = classifyBaseTopFactors(geometry);
+    applySinkCutToGeometry(geometry, geometry, field, frame, factors);
+    return geometry;
+}
+
 async function buildModifiedBaseGeometry(
     design: DesignState,
     side: Side,
@@ -70,6 +85,9 @@ async function buildModifiedBaseGeometry(
             scanPattern: design.pattern,
             textMarking: design.textMarking,
             side,
+            ...(field.sinks && field.sinks.length > 0
+                ? { sinks: field.sinks, sinkStyloidThicken: field.sinkStyloidThicken }
+                : {}),
             ...(stored ? { bottomPattern: curveToPolyPoints(stored) } : {}),
         });
         return preview.geometry;
@@ -87,7 +105,7 @@ async function buildModifiedBaseGeometry(
             : design.thicknessMm;
         const field = baseModifierFieldAuthoritative(design, side, effThickness);
         const result = getKernel().buildFromBase(sized, field, smoothingIterations);
-        return result.geometry;
+        return cutExportSinks(result.geometry, field);
     } finally {
         raw.dispose();
         sized?.dispose();
@@ -145,6 +163,11 @@ async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise
                 console.error("[EXPORT] OCCT kernel not ready — falling back");
             }
             return null;
+        }
+        if (field.sinks && field.sinks.length > 0 && typeof kernel.buildFromBase === "function") {
+            const built = kernel.buildFromBase(sized, field, 2);
+            cutExportSinks(built.geometry, field);
+            return geometryToBinarySTL(built.geometry);
         }
         const stl = kernel.exportManufacturingStlFromBase(sized, field) ?? null;
         if (stl) {
@@ -311,7 +334,7 @@ export async function buildExportSolid(
                 const field = baseModifierFieldAuthoritative(design, side, effThickness);
                 const result = getKernel().buildFromBase(raw, field, 2);
                 if (result.manifold.occtClosed || result.manifold.isWatertight) {
-                    return result.geometry;
+                    return cutExportSinks(result.geometry, field);
                 }
                 result.geometry.dispose();
             } finally {

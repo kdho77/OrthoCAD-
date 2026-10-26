@@ -15,6 +15,7 @@ import {
 } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
+import { applyAnalyticSinkToLoftedSolid, sinksActive } from "@/lib/geometry/sink";
 import type { SideCorrections } from "@/types";
 import {
     columnHeading,
@@ -227,6 +228,8 @@ function applyAnalyticTopDeltas(
         rearfootWedge: undefined,
         forefootWedge: undefined,
     };
+    // Corrections-no-sink. T and S are a pure z pass after the loft so station
+    // pairing stays the same as a sink-free wall.
     const field: HeightFieldParams = {
         side,
         lengthMm: length,
@@ -234,6 +237,8 @@ function applyAnalyticTopDeltas(
         thicknessMm: requested ?? stock,
         corrections: correctionsNoWedge,
         elements: [],
+        sinks: undefined,
+        sinkStyloidThicken: undefined,
         includeSkives: false,
         includeElements: false,
         trimline: input.sourceField?.trimline ?? input.trimline ?? null,
@@ -992,7 +997,15 @@ export function reconstructProceduralWalls(
         topIdx = model.top.meshIndices;
         rimLocal = model.top.rimLocal.slice();
     } else if (options.sourceGeometry && hasCurveOrTopModifiers(options) && options.sourceField) {
-        const modified = applyBaseModifiers(options.sourceGeometry, options.sourceField, 0);
+        const sinkFreeField = options.sourceField.sinks
+            ? {
+                  ...options.sourceField,
+                  sinks: undefined,
+                  sinkStyloidThicken: undefined,
+                  sinkMarkers: undefined,
+              }
+            : options.sourceField;
+        const modified = applyBaseModifiers(options.sourceGeometry, sinkFreeField, 0);
         const sheet = extractTopSheet(modified);
         modified.dispose();
         if (!sheet.meshPositions || !sheet.meshIndices || !sheet.rimLocal) {
@@ -1757,6 +1770,25 @@ export function reconstructProceduralWalls(
         for (const p of grid.outlineRing) {
             p.y += forefootWidthPlanDy(p.x, p.y, model.bounds, forefootMm, roomAt);
         }
+    }
+    // z-only on the sink-free loft. Composed and analytic tops share this pass
+    // so T and S cannot change station pairing, outline XY, or vertex count.
+    const reliefSinks = options.sourceField?.sinks ?? options.sinks;
+    if (sinksActive(reliefSinks)) {
+        const sinkSide = options.sourceField?.side ?? options.side ?? (medialYSign < 0 ? "right" : "left");
+        const vertAt = (row: number, station: number) => gridVert(row, station);
+        applyAnalyticSinkToLoftedSolid({
+            positions,
+            topCount: topPos.length / 3,
+            nS,
+            nJ,
+            vertAt,
+            bounds: model.bounds,
+            medialYSign,
+            side: sinkSide,
+            sinks: reliefSinks,
+            sinkStyloidThicken: options.sourceField?.sinkStyloidThicken ?? options.sinkStyloidThicken,
+        });
     }
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));

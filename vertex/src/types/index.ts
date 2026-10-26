@@ -255,6 +255,30 @@ export interface PlacedElement {
     zOffsetMm?: number;
 }
 
+/**
+ * Forefoot / styloid sinks. Not an ElementKind — overlap is max depth, not a sum,
+ * and an empty list leaves every existing element output byte-identical.
+ * u, v are outline fractions (heel→toe, medial→lateral). A scan marker overrides them.
+ */
+export type SinkKind = "mpj1" | "mpj2" | "mpj3" | "mpj4" | "mpj5" | "styloid";
+
+export interface PlacedSink {
+    id: string;
+    kind: SinkKind;
+    /** Requested depth. Values above the clinical max warn and clamp at the cut. */
+    depthMm: number;
+    u?: number;
+    v?: number;
+    markerId?: string;
+}
+
+/** Scan marker that overrides a sink's u, v. */
+export interface SinkMarkerRef {
+    id: string;
+    u: number;
+    v: number;
+}
+
 /** Serializable trimline control points stored in design state. */
 export interface TrimlinePoint {
     x: number;
@@ -335,6 +359,17 @@ export interface DesignState {
     };
     corrections: Corrections;
     elements: PlacedElement[];
+    /**
+     * MPJ and styloid sinks, per foot. Absent or empty on a side ⇒ no thickness
+     * and no cut (exports stay byte-identical). Not summed like elements.
+     * `corrections.linked` mirrors edits the same way as the other corrections.
+     */
+    sinks?: { left?: PlacedSink[]; right?: PlacedSink[] };
+    /**
+     * Midfoot thickness under the styloid sink, per foot. Default off
+     * (forefoot only) until Kendon confirms otherwise.
+     */
+    sinkStyloidThicken?: { left?: boolean; right?: boolean };
     /** Print-step Split mode: elements are selectable hardness regions. */
     splitElements?: boolean;
     /**
