@@ -205,6 +205,82 @@ function angleDeg(a: [number, number, number], b: [number, number, number]): num
     return (Math.acos(d) * 180) / Math.PI;
 }
 
+const FOLD_MAX_DEG = 60;
+const BOTTOM_Z_EPS = 1e-4;
+/**
+ * Main's hybrid crease dihedral continues to x = 77.10, just past the
+ * crease-detector band. Toe folds sit near x = 265, so this does not hide them.
+ */
+const HYBRID_FOLD_X1 = 77.2;
+
+/**
+ * Welded two-face dihedral outside the hybrid band, plus upward z=0 faces.
+ * Main's worst fair edge is 58.4°, so 60° still fails the toe folds.
+ */
+function foldReport(
+    geo: BufferGeometry,
+    style: WallStyle,
+): { maxFold: number; upwardBottom: number; minZ: number } {
+    const pos = geo.getAttribute("position")!.array as Float32Array;
+    const idx = geo.index!.array as ArrayLike<number>;
+    const n = pos.length / 3;
+    const q = 1e-4;
+    const weldId = new Map<string, number>();
+    const groupOf = new Int32Array(n);
+    let groups = 0;
+    let minZ = Infinity;
+    for (let i = 0; i < n; i++) {
+        minZ = Math.min(minZ, pos[i * 3 + 2]!);
+        const key = [
+            Math.round(pos[i * 3]! / q),
+            Math.round(pos[i * 3 + 1]! / q),
+            Math.round(pos[i * 3 + 2]! / q),
+        ].join(",");
+        let g = weldId.get(key);
+        if (g === undefined) {
+            g = groups++;
+            weldId.set(key, g);
+        }
+        groupOf[i] = g;
+    }
+    const faceCount = idx.length / 3;
+    const normals: Array<[number, number, number]> = new Array(faceCount);
+    let upwardBottom = 0;
+    for (let f = 0; f < faceCount; f++) {
+        const a = idx[f * 3]!;
+        const b = idx[f * 3 + 1]!;
+        const c = idx[f * 3 + 2]!;
+        const nrm = faceNormalOf(pos, idx, f);
+        normals[f] = nrm;
+        const flat =
+            Math.abs(pos[a * 3 + 2]!) <= BOTTOM_Z_EPS &&
+            Math.abs(pos[b * 3 + 2]!) <= BOTTOM_Z_EPS &&
+            Math.abs(pos[c * 3 + 2]!) <= BOTTOM_Z_EPS;
+        if (flat && nrm[2] >= -1e-8) upwardBottom++;
+    }
+    const edgeToFace = new Map<string, number>();
+    let maxFold = 0;
+    for (let f = 0; f < faceCount; f++) {
+        for (let e = 0; e < 3; e++) {
+            const v0 = idx[f * 3 + e]!;
+            const v1 = idx[f * 3 + ((e + 1) % 3)]!;
+            const g0 = groupOf[v0]!;
+            const g1 = groupOf[v1]!;
+            if (g0 === g1) continue;
+            const key = g0 < g1 ? `${g0},${g1}` : `${g1},${g0}`;
+            const other = edgeToFace.get(key);
+            if (other === undefined) {
+                edgeToFace.set(key, f);
+                continue;
+            }
+            const x = 0.5 * (pos[v0 * 3]! + pos[v1 * 3]!);
+            if (style === "hybrid" && x >= HYBRID_CREASE_X0 && x <= HYBRID_FOLD_X1) continue;
+            maxFold = Math.max(maxFold, angleDeg(normals[f]!, normals[other]!));
+        }
+    }
+    return { maxFold, upwardBottom, minZ };
+}
+
 type CreaseHit = { x: number };
 
 /** Mesh X of each new top-sheet crease (base dihedral < 8°, jump > 12°). */
@@ -422,6 +498,37 @@ describe("forefoot width — SAMPLE_Top M9 procedural export", () => {
             expect(rows).toHaveLength(magnitudes.length);
         });
     }
+
+    test("±5 and ±2.5 stay under 60° with the bottom facing down", async () => {
+        const magnitudes = [5, -5, 2.5, -2.5] as const;
+        const rows: Array<Record<string, number | string>> = [];
+        for (const style of styles) {
+            for (const mm of magnitudes) {
+                const geo = await buildM9ExportSolid(mm, style);
+                const fold = foldReport(geo, style);
+                expect(fold.minZ).toBeGreaterThanOrEqual(-BOTTOM_Z_EPS);
+                expect(fold.upwardBottom).toBe(0);
+                expect(fold.maxFold).toBeLessThanOrEqual(FOLD_MAX_DEG);
+                const man = reconstructionManifold(geo);
+                expect(man.watertight).toBe(true);
+                expect(countSelfIntersections(geo).real).toBe(0);
+                const dir = mkdtempSync(join(tmpdir(), "forefoot-fold-"));
+                const stlPath = join(dir, `${style}-${mm}.stl`);
+                writeFileSync(stlPath, Buffer.from(geometryToBinarySTL(geo)));
+                expect(stlGates(stlPath).watertight).toBe(true);
+                rows.push({
+                    style,
+                    mm,
+                    maxFold: Number(fold.maxFold.toFixed(2)),
+                    upwardBottom: fold.upwardBottom,
+                    md5: stlMd5(geo).slice(0, 12),
+                });
+                geo.dispose();
+            }
+        }
+        console.log("[FOREFOOT-FOLD]", JSON.stringify(rows));
+        expect(rows).toHaveLength(styles.length * magnitudes.length);
+    }, 600_000);
 
     test("met pad and text crossing the midline stay rigid at ±10", async () => {
         const probe = await loadSampleTopGlb();

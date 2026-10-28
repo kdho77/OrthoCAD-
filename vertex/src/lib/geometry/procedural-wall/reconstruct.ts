@@ -691,6 +691,147 @@ function assertGeneratedEdgesUsedTwice(
     }
 }
 
+/**
+ * A non-uniform forefoot Y shift can hand the z=0 disk an ear wound upward
+ * while the rest of the disk points down. An undirected watertight check
+ * still sees two uses of each edge. Two retiles, both judged in the float32
+ * coordinates the mesh is exported with:
+ *
+ * - Folded diagonal: swap the ear with the flat neighbor across one edge
+ *   when both replacement triangles point down. Outer edges keep their
+ *   direction.
+ * - Inverted cap: the ear vertex lies on the wrong side of its three-face
+ *   star, so every diagonal leaves one triangle pointing up. Drop that
+ *   vertex and replace the star with the base triangle when the base
+ *   points down and its signed area matches the star.
+ *
+ * Meshes with no upward or degenerate bottom face are left byte-for-byte alone.
+ * Callers must skip this on the zero-width path.
+ */
+export function repairInvertedBottomFaces(positions: number[], indices: number[]): number {
+    const zEps = 1e-4;
+    const areaEps = 1e-10;
+    const fx = (i: number) => Math.fround(positions[i * 3] ?? 0);
+    const fy = (i: number) => Math.fround(positions[i * 3 + 1] ?? 0);
+    const fz = (i: number) => Math.fround(positions[i * 3 + 2] ?? 0);
+    const flat = (i: number) => Math.abs(fz(i)) <= zEps;
+    const faceFlat = (f: [number, number, number]) => flat(f[0]) && flat(f[1]) && flat(f[2]);
+    const area2 = (a: number, b: number, c: number): number =>
+        (fx(b) - fx(a)) * (fy(c) - fy(a)) - (fy(b) - fy(a)) * (fx(c) - fx(a));
+    const hasDirected = (face: [number, number, number], p: number, q: number) =>
+        (face[0] === p && face[1] === q) ||
+        (face[1] === p && face[2] === q) ||
+        (face[2] === p && face[0] === q);
+    const upward = (f: [number, number, number]) => faceFlat(f) && area2(f[0], f[1], f[2]) >= -areaEps;
+    let repairs = 0;
+    for (let pass = 0; pass < 32; pass++) {
+        const faces: Array<[number, number, number]> = [];
+        for (let t = 0; t < indices.length; t += 3) {
+            faces.push([indices[t]!, indices[t + 1]!, indices[t + 2]!]);
+        }
+        const edgeKey = (p: number, q: number) => (p < q ? `${p},${q}` : `${q},${p}`);
+        const edgeFaces = new Map<string, number[]>();
+        for (let i = 0; i < faces.length; i++) {
+            const f = faces[i]!;
+            for (let e = 0; e < 3; e++) {
+                const k = edgeKey(f[e]!, f[(e + 1) % 3]!);
+                const list = edgeFaces.get(k);
+                if (list) list.push(i);
+                else edgeFaces.set(k, [i]);
+            }
+        }
+        let changed = false;
+        for (let i = 0; i < faces.length && !changed; i++) {
+            const f = faces[i]!;
+            if (!upward(f)) continue;
+            for (let e = 0; e < 3; e++) {
+                const p = f[e]!;
+                const q = f[(e + 1) % 3]!;
+                const r = f[(e + 2) % 3]!;
+                const share = edgeFaces.get(edgeKey(p, q));
+                if (!share || share.length !== 2) continue;
+                const j = share[0] === i ? share[1]! : share[0]!;
+                const g = faces[j]!;
+                if (!faceFlat(g) || !hasDirected(g, q, p)) continue;
+                const s = g[0] !== p && g[0] !== q ? g[0]! : g[1] !== p && g[1] !== q ? g[1]! : g[2]!;
+                if (s === r) continue;
+                const t1: [number, number, number] = [p, s, r];
+                const t2: [number, number, number] = [q, r, s];
+                if (area2(...t1) >= -areaEps || area2(...t2) >= -areaEps) continue;
+                faces[i] = t1;
+                faces[j] = t2;
+                changed = true;
+                repairs++;
+                break;
+            }
+        }
+        if (!changed) {
+            const vertFaces = new Map<number, number[]>();
+            for (let i = 0; i < faces.length; i++) {
+                for (const v of faces[i]!) {
+                    const list = vertFaces.get(v);
+                    if (list) list.push(i);
+                    else vertFaces.set(v, [i]);
+                }
+            }
+            for (let i = 0; i < faces.length && !changed; i++) {
+                const f = faces[i]!;
+                if (!upward(f)) continue;
+                for (const v of f) {
+                    const inc = vertFaces.get(v);
+                    if (!inc || inc.length !== 3) continue;
+                    if (!inc.every((k) => faceFlat(faces[k]!))) continue;
+                    const boundary: Array<[number, number]> = [];
+                    for (const k of inc) {
+                        const t = faces[k]!;
+                        for (let e = 0; e < 3; e++) {
+                            const p = t[e]!;
+                            const q = t[(e + 1) % 3]!;
+                            if (p !== v && q !== v) boundary.push([p, q]);
+                        }
+                    }
+                    if (boundary.length !== 3) continue;
+                    const next = new Map<number, number>();
+                    let cycle = true;
+                    for (const [p, q] of boundary) {
+                        if (next.has(p)) cycle = false;
+                        next.set(p, q);
+                    }
+                    const p0 = boundary[0]![0];
+                    const p1 = next.get(p0);
+                    const p2 = p1 == null ? undefined : next.get(p1);
+                    const back = p2 == null ? undefined : next.get(p2);
+                    if (!cycle || p1 == null || p2 == null || back !== p0) continue;
+                    const neu = area2(p0, p1, p2);
+                    if (neu >= -areaEps) continue;
+                    let sum = 0;
+                    for (const k of inc) {
+                        const t = faces[k]!;
+                        sum += area2(t[0], t[1], t[2]);
+                    }
+                    if (Math.abs(sum - neu) > 1e-5) continue;
+                    const drop = new Set(inc);
+                    const keepAt = Math.min(...inc);
+                    const rebuilt: Array<[number, number, number]> = [];
+                    for (let k = 0; k < faces.length; k++) {
+                        if (k === keepAt) rebuilt.push([p0, p1, p2]);
+                        else if (!drop.has(k)) rebuilt.push(faces[k]!);
+                    }
+                    faces.length = 0;
+                    for (const face of rebuilt) faces.push(face);
+                    changed = true;
+                    repairs++;
+                    break;
+                }
+            }
+        }
+        if (!changed) break;
+        indices.length = 0;
+        for (const face of faces) indices.push(face[0], face[1], face[2]);
+    }
+    return repairs;
+}
+
 function sanitizeMesh(
     positions: number[],
     indices: number[],
@@ -1769,6 +1910,11 @@ export function reconstructProceduralWalls(
         );
         for (const p of grid.outlineRing) {
             p.y += forefootWidthPlanDy(p.x, p.y, model.bounds, forefootMm, roomAt);
+        }
+        // Non-uniform Y can flip a z=0 triangle. A bottom that is already
+        // down is left byte-for-byte alone. Width 0 never reaches this block.
+        if (repairInvertedBottomFaces(positions, indices) > 0) {
+            assertGeneratedEdgesUsedTwice(indices, generatedStart, positions);
         }
     }
     // z-only on the sink-free loft. Composed and analytic tops share this pass
