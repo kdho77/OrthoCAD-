@@ -44,6 +44,11 @@ export function insoleParamsFromDesign(
         corrections: mergeCorrections(side, design.corrections[side]),
         elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
         method: method,
+        shellThicknessMode: design.shellThicknessMode,
+        shellThicknessRfMm: design.shellThicknessRfMm,
+        shellThicknessMfMm: design.shellThicknessMfMm,
+        shellThicknessFfMm: design.shellThicknessFfMm,
+        shellThicknessBlendMm: design.shellThicknessBlendMm,
         shapeFinish,
         ...segmentsForQuality(quality),
     };
