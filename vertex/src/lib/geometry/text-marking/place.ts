@@ -14,14 +14,16 @@ import {
     TEXT_FILLET_DIHEDRAL_DEG,
     TEXT_NORMAL_SMOOTH_MM,
     TEXT_REMAINING_MIN_MM,
-    TEXT_TRIMLINE_RIM_BAND_MM,
     TEXT_U,
     TEXT_WALL_EDGE_CLEARANCE_MM,
     TEXT_WALL_MIN_THICK_MM,
 } from "./constants";
-import { TextMarkingError, textDoesNotFit, textForbiddenZone, textTooThinRemaining } from "./errors";
+import { textDoesNotFit, textForbiddenZone, textTooThinRemaining } from "./errors";
 import { type MapTextPoint, planarBottomMap } from "./solid";
 import type { FlattenedText, TextApplyMeta, TextMarking, TextSurface, TextXy } from "./types";
+import { buildWallUsableBand, type WallBand } from "./wall-band";
+
+const wallBandCache = new WeakMap<BufferGeometry, Map<string, WallBand>>();
 
 export interface WallStation {
     u: number;
@@ -854,6 +856,31 @@ function windowStats(run: WallStation[], sMid: number, half: number): { minH: nu
     return { minH, minT };
 }
 
+function glyphBBox(flat: FlattenedText): { xMin: number; xMax: number; yMin: number; yMax: number } {
+    let xMin = Infinity;
+    let xMax = -Infinity;
+    let yMin = Infinity;
+    let yMax = -Infinity;
+    for (const g of flat.groups) {
+        for (const p of g.outer) {
+            if (p.x < xMin) xMin = p.x;
+            if (p.x > xMax) xMax = p.x;
+            if (p.y < yMin) yMin = p.y;
+            if (p.y > yMax) yMax = p.y;
+        }
+    }
+    if (!Number.isFinite(xMin)) return { xMin: 0, xMax: 0, yMin: 0, yMax: 0 };
+    return { xMin, xMax, yMin, yMax };
+}
+
+/** Smallest uniform scale that still counts as fitting (the block may shrink to this). */
+const WALL_TEXT_MIN_SCALE = 0.8;
+
+export interface PlaceWallOptions {
+    /** Extra drop down the wall after the band fit, in 0.5 mm steps. */
+    vDropMm?: number;
+}
+
 /** Shift each glyph so the string runs toward higher u, without mirroring strokes. */
 function glyphsTowardHigherU(flat: FlattenedText, run: WallStation[]): FlattenedText {
     if (run.length < 2 || run[0]!.u + 1e-6 >= run[run.length - 1]!.u) return flat;
@@ -884,28 +911,22 @@ export function placeWallText(
     ctx: HostTextContext,
     marking: TextMarking,
     flatIn: FlattenedText,
+    opts?: PlaceWallOptions,
 ): {
     flat: FlattenedText;
     rebind: (geo: BufferGeometry) => MapTextPoint;
     map: MapTextPoint;
+    /** Room still available to step the block down v (mm). */
+    vRoomDownMm: number;
     meta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm" | "wallUMin" | "wallUMax">;
 } {
     const run = stationsForSurface(ctx, marking.surface);
     if (run.length < 2) throw textForbiddenZone("no lateral wall stations");
-    const flat = glyphsTowardHigherU(flatIn, run);
+    let flat = glyphsTowardHigherU(flatIn, run);
+    const box0 = glyphBBox(flat);
     const u = Math.max(TEXT_U.wall.min, Math.min(TEXT_U.wall.max, marking.placementU));
     const sStart = run[0]!.s;
     const sEnd = run[run.length - 1]!.s;
-    const avail = sEnd - sStart;
-    const half = flat.advanceMm / 2;
-    if (avail + 1e-3 < flat.advanceMm) {
-        throw new TextMarkingError(
-            "too-long",
-            `text does not fit the placement zone (${flat.advanceMm.toFixed(1)} mm in ${avail.toFixed(1)} mm)`,
-        );
-    }
-    const lo = sStart + half;
-    const hi = sEnd - half;
     const filletCache = new Map<number, number>();
     const filletOf = (st: WallStation): number => {
         const key = Math.round(st.s * 20);
@@ -916,90 +937,142 @@ export function placeWallText(
         }
         return v;
     };
-    const windowUsable = (sMid: number): number => {
-        let minUsable = Infinity;
-        const a = sMid - half;
-        const b = sMid + half;
-        for (let i = 0; i <= 8; i++) {
-            const st = sampleAlong(run, a + ((b - a) * i) / 8);
-            const room = st.heightMm - filletOf(st) - TEXT_WALL_EDGE_CLEARANCE_MM - TEXT_TRIMLINE_RIM_BAND_MM;
-            if (room < minUsable) minUsable = room;
+    const filletSamples: Array<{ s: number; floor: number }> = [];
+    const stride = Math.max(1, Math.floor(run.length / 24));
+    for (let i = 0; i < run.length; i += stride) {
+        const st = run[i]!;
+        filletSamples.push({
+            s: st.s,
+            floor: filletOf(st) + TEXT_WALL_EDGE_CLEARANCE_MM,
+        });
+    }
+    const tail = run[run.length - 1]!;
+    if (filletSamples[filletSamples.length - 1]!.s !== tail.s) {
+        filletSamples.push({ s: tail.s, floor: filletOf(tail) + TEXT_WALL_EDGE_CLEARANCE_MM });
+    }
+    const floorOf = (s: number): number => {
+        if (s <= filletSamples[0]!.s) return filletSamples[0]!.floor;
+        const last = filletSamples[filletSamples.length - 1]!;
+        if (s >= last.s) return last.floor;
+        for (let i = 1; i < filletSamples.length; i++) {
+            const b = filletSamples[i]!;
+            if (s <= b.s) {
+                const a = filletSamples[i - 1]!;
+                const t = (s - a.s) / Math.max(1e-9, b.s - a.s);
+                return a.floor + (b.floor - a.floor) * t;
+            }
         }
-        return minUsable;
+        return last.floor;
     };
+    const glyphDepth = marking.mode === "engrave" ? marking.depthMm : marking.heightMm;
+    const bandKey = `${marking.surface}|${glyphDepth.toFixed(3)}|${run.length}|${run[0]!.u.toFixed(3)}|${run[run.length - 1]!.u.toFixed(3)}`;
+    let bandBucket = wallBandCache.get(geo);
+    if (!bandBucket) {
+        bandBucket = new Map();
+        wallBandCache.set(geo, bandBucket);
+    }
+    let band = bandBucket.get(bandKey);
+    if (!band) {
+        band = buildWallUsableBand(geo, run, glyphDepth, floorOf);
+        bandBucket.set(bandKey, band);
+    }
     const atU = run.reduce((best, st) => (Math.abs(st.u - u) < Math.abs(best.u - u) ? st : best));
-    const requested = Math.max(lo, Math.min(hi, atU.s + (marking.nudgeAlongMm ?? 0)));
-    let bestS = requested;
-    let best = windowStats(run, requested, half);
-    let bestUsable = windowUsable(requested);
-    const scan = 48;
-    for (let i = 0; i <= scan; i++) {
-        const sMid = lo + ((hi - lo) * i) / Math.max(1, scan);
-        const sc = windowStats(run, sMid, half);
-        const usable = windowUsable(sMid);
-        const thickOk = sc.minT + 1e-6 >= TEXT_WALL_MIN_THICK_MM;
-        const bestThickOk = best.minT + 1e-6 >= TEXT_WALL_MIN_THICK_MM;
-        const fits = thickOk && usable + 1e-6 >= flat.capHeightMm;
-        const bestFits = bestThickOk && bestUsable + 1e-6 >= flat.capHeightMm;
-        const closer = Math.abs(sMid - requested) < Math.abs(bestS - requested);
-        const take =
-            (fits && !bestFits) ||
-            (fits && bestFits && closer) ||
-            (!fits &&
-                !bestFits &&
-                thickOk &&
-                (usable > bestUsable + 0.25 || (Math.abs(usable - bestUsable) <= 0.25 && closer)));
-        if (take) {
-            bestS = sMid;
-            best = sc;
-            bestUsable = usable;
+    const vDrop = Math.max(0, opts?.vDropMm ?? 0);
+    const scales: number[] = [];
+    for (let s = 1; s > WALL_TEXT_MIN_SCALE + 1e-6; s = Number((s - 0.05).toFixed(4))) scales.push(s);
+    scales.push(WALL_TEXT_MIN_SCALE);
+
+    let chosen: {
+        scale: number;
+        sLeft: number;
+        hBase: number;
+        width: number;
+        height: number;
+        room: number;
+    } | null = null;
+    let sawThin = false;
+    let sawRemain = false;
+    for (const scale of scales) {
+        const width = Math.max(1e-3, (box0.xMax - box0.xMin) * scale);
+        const height = Math.max(1e-3, (box0.yMax - box0.yMin) * scale);
+        if (sEnd - sStart + 1e-3 < width) continue;
+        const sLo = sStart;
+        const sHi = sEnd - width;
+        const requested = Math.max(sLo, Math.min(sHi, atU.s - width / 2 + (marking.nudgeAlongMm ?? 0)));
+        const sCandidates: number[] = [];
+        const seenS = new Set<number>();
+        const pushS = (s: number) => {
+            const clamped = Math.max(sLo, Math.min(sHi, s));
+            const key = Math.round(clamped * 10);
+            if (seenS.has(key)) return;
+            seenS.add(key);
+            sCandidates.push(clamped);
+        };
+        pushS(requested);
+        const steps = 32;
+        for (let i = 0; i <= steps; i++) pushS(sLo + ((sHi - sLo) * i) / Math.max(1, steps));
+        sCandidates.sort((a, b) => Math.abs(a - requested) - Math.abs(b - requested));
+        for (const sLeft of sCandidates) {
+            const pockets = band.hBaseSpans(sLeft, width, height);
+            if (!pockets.length) continue;
+            pockets.sort((a, b) => b[1] - b[0] - (a[1] - a[0]));
+            const pocket = pockets[0]!;
+            let hBase = pocket[1];
+            const nudge = marking.nudgeAcrossMm ?? 0;
+            if (nudge !== 0) hBase = Math.max(pocket[0], Math.min(pocket[1], hBase + nudge));
+            const thick = windowStats(run, sLeft + width / 2, width / 2);
+            if (thick.minT + 1e-6 < TEXT_WALL_MIN_THICK_MM) {
+                sawThin = true;
+                continue;
+            }
+            if (marking.mode === "engrave" && thick.minT - marking.depthMm + 1e-6 < TEXT_REMAINING_MIN_MM) {
+                sawRemain = true;
+                continue;
+            }
+            chosen = {
+                scale,
+                sLeft,
+                hBase,
+                width,
+                height,
+                room: band.roomDown(sLeft, width, hBase, height),
+            };
+            break;
         }
+        if (chosen) break;
     }
-    if (best.minT + 1e-6 < TEXT_WALL_MIN_THICK_MM) {
-        throw textForbiddenZone("wall thinner than 2 mm");
+    if (!chosen) {
+        if (sawRemain) throw textTooThinRemaining();
+        if (sawThin) throw textForbiddenZone("wall thinner than 2 mm");
+        throw textDoesNotFit();
     }
-    if (marking.mode === "engrave" && best.minT - marking.depthMm + 1e-6 < TEXT_REMAINING_MIN_MM) {
-        throw textTooThinRemaining();
+    if (vDrop > 0) {
+        const dropped = chosen.hBase - vDrop;
+        if (!band.contains(chosen.sLeft, chosen.width, dropped, chosen.height)) throw textDoesNotFit();
+        chosen = {
+            ...chosen,
+            hBase: dropped,
+            room: band.roomDown(chosen.sLeft, chosen.width, dropped, chosen.height),
+        };
     }
-    let yMin = Infinity;
-    let yMax = -Infinity;
-    for (const g of flat.groups) {
-        for (const p of g.outer) {
-            if (p.y < yMin) yMin = p.y;
-            if (p.y > yMax) yMax = p.y;
-        }
+    const fit = chosen;
+    if (fit.scale < 1 - 1e-6) {
+        flat = transformGroups(flat, (p) => ({
+            x: box0.xMin + (p.x - box0.xMin) * fit.scale,
+            y: box0.yMin + (p.y - box0.yMin) * fit.scale,
+        }));
     }
-    const ySpan = Math.max(1e-3, yMax - yMin);
-    const sMid = bestS;
-    const s0 = sMid - half;
-    const s1 = sMid + half;
-    let minUsableH = Infinity;
-    for (let i = 0; i <= 16; i++) {
-        const st = sampleAlong(run, s0 + ((s1 - s0) * i) / 16);
-        const usable = st.heightMm - filletOf(st) - TEXT_WALL_EDGE_CLEARANCE_MM - TEXT_TRIMLINE_RIM_BAND_MM;
-        if (usable < minUsableH) minUsableH = usable;
-    }
-    if (minUsableH + 1e-6 < flat.capHeightMm) {
-        throw textForbiddenZone("wall height too short above the plantar fillet plus 1.0 mm edge clearance");
-    }
+    const xMin = box0.xMin;
+    const yMin = box0.yMin;
+    const sAt = (x: number) => fit.sLeft + (x - xMin);
     const offset0 = marking.mode === "engrave" ? -marking.depthMm : -TEXT_BOOLEAN_OUTSET_MM;
     const offset1 = marking.mode === "engrave" ? TEXT_BOOLEAN_OUTSET_MM : marking.heightMm;
-    const heightOf = (p: TextXy, st: WallStation): number => {
-        const h = Math.max(1e-6, st.R.z - st.B.z);
-        const usableBot = filletOf(st) + TEXT_WALL_EDGE_CLEARANCE_MM;
-        const usableTop = Math.max(usableBot + 0.5, h - TEXT_TRIMLINE_RIM_BAND_MM);
-        const usable = Math.max(1e-3, usableTop - usableBot);
-        const yScale = Math.min(1, usable / ySpan);
-        const slack = Math.max(0, usable - ySpan * yScale);
-        const nudge = Math.max(-slack / 2, Math.min(slack / 2, marking.nudgeAcrossMm ?? 0));
-        const letter0 = usableBot + slack / 2 + nudge;
-        return letter0 + (p.y - yMin) * yScale;
-    };
+    const heightOf = (p: TextXy, _st: WallStation): number => fit.hBase + (p.y - yMin);
     const makeMap = (mesh: BufferGeometry): MapTextPoint => {
         const wall = createOuterWallSampler(mesh, run);
         const surfCache = new Map<string, OuterWallHit>();
         return (p, t) => {
-            const st = sampleAlong(run, s0 + p.x);
+            const st = sampleAlong(run, sAt(p.x));
             if (st.u < TEXT_U.wall.min - 1e-6 || st.u > TEXT_U.wall.max + 1e-6) {
                 throw textForbiddenZone("glyph extent left the wall u band");
             }
@@ -1009,7 +1082,7 @@ export function placeWallText(
             const key = `${p.x.toFixed(5)},${p.y.toFixed(5)}`;
             let hit = surfCache.get(key);
             if (!hit) {
-                hit = wall.at(s0 + p.x, heightOf(p, st));
+                hit = wall.at(sAt(p.x), heightOf(p, st));
                 surfCache.set(key, hit);
             }
             const off = offset0 + (offset1 - offset0) * t;
@@ -1024,9 +1097,9 @@ export function placeWallText(
         };
     };
     const map = makeMap(geo);
-    const uOf = (x: number) => sampleAlong(run, s0 + x).u;
-    let wallUMin = Math.min(uOf(0), uOf(flat.advanceMm));
-    let wallUMax = Math.max(uOf(0), uOf(flat.advanceMm));
+    const uOf = (x: number) => sampleAlong(run, sAt(x)).u;
+    let wallUMin = Math.min(uOf(xMin), uOf(xMin + fit.width));
+    let wallUMax = Math.max(uOf(xMin), uOf(xMin + fit.width));
     for (const g of flat.groups) {
         for (const p of g.outer) {
             const uu = uOf(p.x);
@@ -1039,8 +1112,8 @@ export function placeWallText(
     }
     const wallN = createOuterWallSampler(geo, run);
     const centroids = flat.centroids.map((p) => {
-        const st = sampleAlong(run, s0 + p.x);
-        const hit = wallN.at(s0 + p.x, heightOf(p, st));
+        const st = sampleAlong(run, sAt(p.x));
+        const hit = wallN.at(sAt(p.x), heightOf(p, st));
         let nx = hit.n.x;
         let ny = hit.n.y;
         let nz = hit.n.z;
@@ -1065,7 +1138,8 @@ export function placeWallText(
         flat,
         map,
         rebind: makeMap,
-        meta: { centroids, mappedWidthMm: s1 - s0, wallUMin, wallUMax },
+        vRoomDownMm: fit.room,
+        meta: { centroids, mappedWidthMm: fit.width, wallUMin, wallUMax },
     };
 }
 

@@ -1,0 +1,55 @@
+name: Wall text full matrix
+
+on:
+    schedule:
+        - cron: "0 6 * * *"
+    pull_request:
+        types: [labeled]
+    workflow_dispatch:
+
+concurrency:
+    group: wall-text-matrix-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    full-text-matrix:
+        if: >-
+            github.event_name == 'schedule' ||
+            github.event_name == 'workflow_dispatch' ||
+            (github.event_name == 'pull_request' && github.event.label.name == 'full-text-matrix')
+        runs-on: ubuntu-latest
+        timeout-minutes: 180
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 24
+
+            - name: Install dependencies
+              run: npm install
+
+            - name: Install vertex app dependencies
+              run: npm install --prefix vertex
+
+            - name: Generate Prisma client (vertex)
+              run: npm run prisma:generate --prefix vertex
+
+            - name: Setup Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
+
+            - name: Install STL-gate Python deps
+              run: python3 -m pip install "trimesh>=4.0" "scipy>=1.11"
+
+            - name: Materialize incoming element binaries
+              run: python3 scripts/materialize-incoming-elements.py
+
+            - name: Run wall text full boolean matrix
+              env:
+                  FULL_TEXT_MATRIX: "1"
+              run: npx rstest tests/text-marking-wall-cases.test.ts
