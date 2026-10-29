@@ -38,8 +38,8 @@ import {
     STANDARD_REARFOOT_WEDGE,
 } from "./migrate-corrections";
 import { countSelfIntersections } from "./procedural-wall/intersect";
+import type { ProceduralWallStyle } from "./procedural-wall/modifiers";
 import { reconstructProceduralPreview, sampleTopFromArrayBuffer } from "./procedural-wall/sample-top-preview";
-import type { ProceduralWallStyle } from "./procedural-wall/wall-style";
 import { insoleLayoutForUsMenSize } from "./shoe-size";
 import { geometryToBinarySTL } from "./stl";
 
