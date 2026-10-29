@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
-import { BASE_REFERENCE_THICKNESS_MM, correctionDeltaAt } from "@/lib/geometry/base-modifier";
+import { correctionDeltaAt } from "@/lib/geometry/base-modifier";
 import {
     HEEL_LIFT_TAPER_END_DEFAULT_U,
     heelLiftDeltaAt,
@@ -19,6 +19,7 @@ function neutralCorrections(): SideCorrections {
         lateralSkiveMm: 0,
         archFillMm: 0,
         archHeightMm: 0,
+        archEaseMm: 0,
         heelCupDepthMm: 0,
         heelCupHeightMm: 0,
         heelCupWidthMm: 0,

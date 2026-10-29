@@ -31,8 +31,8 @@ import {
     applyTrimmableForefootExtension,
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
-import { sinksActive, sinkThicknessAt } from "@/lib/geometry/sink";
 import { neutralShellThicknessContext } from "@/lib/geometry/shell-thickness-zonal";
+import { sinksActive, sinkThicknessAt } from "@/lib/geometry/sink";
 import { wedgeCorrectionActive, wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { DesignState, Side, SideCorrections } from "@/types";
 

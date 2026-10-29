@@ -6,7 +6,6 @@ import { BASE_REFERENCE_THICKNESS_MM, correctionDeltaAt } from "@/lib/geometry/b
 import { type HeightFieldParams, heightAt } from "@/lib/geometry/height-field";
 import {
     DEFAULT_SHELL_THICKNESS_BLEND_MM,
-    SHELL_ZONE_MF_END_U,
     SHELL_ZONE_RF_END_U,
     shellThicknessContextFromDesign,
     shellThicknessMmAtU,
@@ -24,6 +23,7 @@ function neutralCorrections(): SideCorrections {
         lateralSkiveMm: 0,
         archFillMm: 0,
         archHeightMm: 0,
+        archEaseMm: 0,
         heelCupDepthMm: 0,
         heelCupHeightMm: 0,
         heelCupWidthMm: 0,
