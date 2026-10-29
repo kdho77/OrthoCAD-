@@ -8,7 +8,6 @@ import type { TrimLine } from "@/lib/geometry/mesh-edit";
 import type { GeometryQuality } from "@/lib/geometry/quality";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
-import { useKernelStore } from "@/stores/kernel-store";
 import { mergeCorrections, mergeElementPreviews, usePerformanceStore } from "@/stores/performance-store";
 import type { DesignState, Side } from "@/types";
 
@@ -28,7 +27,7 @@ export interface InsoleGeometryState {
 }
 
 /**
- * Async insole geometry — worker preview while interacting, OCCT kernel when idle.
+ * Async insole geometry — worker preview while interacting, full mesh when idle.
  */
 export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeometryState {
     const { side, design, trimLines, trimline, vertexOverrides, applyEdits } = options;
@@ -38,8 +37,6 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
     const correctionPreview = usePerformanceStore((s) => s.correctionPreview);
     const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
     const elementPreviews = usePerformanceStore((s) => s.elementPreviews);
-    const kernelVersion = useKernelStore((s) => s.version);
-    const kernelLoadState = useKernelStore((s) => s.loadState);
 
     const quality: GeometryQuality = interacting ? "preview" : "full";
     const [geometry, setGeometry] = useState<BufferGeometry | null>(null);
@@ -54,8 +51,8 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         };
     }, []);
 
-    // Preview patches and kernel readiness are intentional effect triggers (not captured as direct reads).
-    // biome-ignore lint/correctness/useExhaustiveDependencies: rebuild when OCCT loads or live previews change
+    // Preview patches are intentional effect triggers (not captured as direct reads).
+    // biome-ignore lint/correctness/useExhaustiveDependencies: rebuild when live previews change
     useEffect(() => {
         let cancelled = false;
         setBuilding(true);
@@ -84,7 +81,6 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
                 quality,
                 trimLines: applyEdits ? trimLines : [],
                 vertexOverrides: applyEdits ? vertexOverrides : new Map(),
-                preferKernel: !interacting && kernelLoadState === "ready",
             })
             .then((geo) => {
                 if (cancelled || !mountedRef.current) {
@@ -123,8 +119,6 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         correctionPreview,
         thicknessPreview,
         elementPreviews,
-        kernelVersion,
-        kernelLoadState,
     ]);
 
     useEffect(

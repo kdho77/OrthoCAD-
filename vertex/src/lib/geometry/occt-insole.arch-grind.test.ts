@@ -2,8 +2,8 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
+import { sectionProfilePoints } from "@/lib/geometry/arch-section";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
-import { sectionProfilePoints } from "@/lib/geometry/occt-insole";
 import { archGrindApexRaiseMm, archGrindPlantarRaiseAt } from "@/lib/geometry/shape-finish-modifiers";
 import type { SideCorrections } from "@/types";
 
@@ -77,7 +77,7 @@ function bottomZAtAcross(
     return best.z;
 }
 
-describe("OCCT loft arch grind", () => {
+describe("arch section profile", () => {
     test("plantar chord samples real av — apex raise ≈ setpoint at u=0.42", () => {
         const depth = 3;
         const params = field(depth);

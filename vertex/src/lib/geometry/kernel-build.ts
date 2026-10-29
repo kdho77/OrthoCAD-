@@ -12,10 +12,6 @@ import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import type { DesignState, Side } from "@/types";
 
-export function isOcctKernelActive(): boolean {
-    return getKernel().name === "opencascade-wasm";
-}
-
 /** Build canonical insole params from the live design store + optional preview merges.
  * Supports paired workspace: uses per-side thickness/method/base from design.paired if present.
  */
@@ -54,7 +50,7 @@ export function insoleParamsFromDesign(
     };
 }
 
-/** Yield to the browser before heavy synchronous OCCT work. */
+/** Yield to the browser before a synchronous kernel build. */
 export function scheduleMainThread<T>(fn: () => T): Promise<T> {
     return new Promise((resolve) => {
         requestAnimationFrame(() => resolve(fn()));
@@ -81,7 +77,7 @@ function applyMeshEdits(geometry: BufferGeometry, options: MeshEditOptions): Buf
     return g;
 }
 
-/** Production-grade build via the active kernel (OCCT when loaded). */
+/** Build via the active geometry kernel. */
 export async function buildViaKernel(
     params: InsoleParams,
     meshEdits: MeshEditOptions = {},
@@ -92,7 +88,7 @@ export async function buildViaKernel(
     });
 }
 
-/** Production-grade solid + watertight validation via the active kernel. */
+/** Solid plus watertight validation via the active kernel. */
 export async function buildSolidViaKernel(params: InsoleParams): Promise<SolidResult> {
     return scheduleMainThread(() => getKernel().buildInsoleSolid(params));
 }
