@@ -22,7 +22,7 @@ import type {
 } from "@/types";
 
 // Shared parametric height field for insole surfaces. Used by both the procedural
-// Three.js mesher and the OpenCascade solid builder so corrections stay aligned.
+// Three.js mesher and export mesh builders so corrections stay aligned.
 
 export interface HeightFieldParams {
     side: Side;
@@ -37,9 +37,9 @@ export interface HeightFieldParams {
     sinkStyloidThicken?: boolean;
     /** Scan markers that override PlacedSink u, v. */
     sinkMarkers?: SinkMarkerRef[];
-    /** When false, skives are omitted (applied later as OCCT boolean cuts). */
+    /** When false, skives are omitted (applied later on the export mesh path). */
     includeSkives?: boolean;
-    /** When false, elements are omitted (applied later as OCCT booleans). */
+    /** When false, elements are omitted (applied later on the export mesh path). */
     includeElements?: boolean;
     /** Optional user-edited insole perimeter override. */
     trimline?: TrimlineCurve | null;
@@ -493,7 +493,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
         h += graphDelta;
     }
 
-    // Kirby heel skive — plane half-space maximum (raise). Parametric / OCCT
+    // Kirby heel skive — plane half-space maximum (raise). Parametric / export
     // loft path only when includeSkives is true. Must NOT run inside the field
     // that drives correctionDeltaAt / #119 bottom sync on loaded bases.
     const includeSkives = params.includeSkives ?? true;
@@ -537,7 +537,7 @@ export interface InsoleGrid {
     bottom: GridPoint[][];
 }
 
-/** Samples the correction surface on the footprint grid (no skives/elements when building OCCT base). */
+/** Samples the correction surface on the footprint grid (no skives/elements when building export base mesh). */
 export function sampleInsoleGrid(params: HeightFieldParams, nx = 48, ny = 24): InsoleGrid {
     const { lengthMm, widthMm } = params;
     const halfW = widthMm / 2;

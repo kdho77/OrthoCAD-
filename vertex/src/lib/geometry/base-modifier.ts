@@ -2,9 +2,9 @@
 // See LICENSE file in the project root for full license information.
 
 import type { BufferGeometry } from "three";
-import type { SolidResult } from "@/lib/chili3d/kernel";
 import { applyArchSkiveToTopMesh } from "@/lib/geometry/arch-skive";
 import { getDesignBase } from "@/lib/geometry/base-asset";
+import type { SolidResult } from "@/lib/geometry/geometry-kernel";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
     forefootWidthPerSideDeltaMm,
@@ -3321,7 +3321,7 @@ export function modifiedBaseResult(
     }
     return {
         geometry,
-        manifold: { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight },
+        manifold: { ...mesh, solidClosed: false, isWatertight: mesh.isWatertight },
     };
 }
 

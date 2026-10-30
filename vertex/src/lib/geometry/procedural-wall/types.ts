@@ -210,7 +210,7 @@ export interface S1GateRow {
     foldWorstDeg: number;
     foldGe10: number;
     seamWorstDeg: number;
-    occtSolid: "ok" | "unavailable" | "fail";
+    exportSolid: "ok" | "unavailable" | "fail";
     soleUvIdentical: boolean;
     clinical?: ClinicalWallReport;
     misses: string[];

@@ -2,7 +2,7 @@
 
 **Status:** Architecture specification (v2.2)  
 **Audience:** Engineering, clinical product, manufacturing  
-**Platform:** Vertex (web orthotic CAD) on Chili3D (browser OCCT B-rep kernel)  
+**Platform:** Vertex (web orthotic CAD) on Vertex (browser export mesh B-rep kernel)  
 **Changelog:** v2.2 strengthens trimline drag UX contracts, operator composition rules, biomechanical grounding (STA, sagittal facilitation, tissue stress), loaded-GLB edge cases, and implementation-ready interfaces (`TrimlinePreviewContract`, `OperatorStack`, `BaseBounds`).
 
 This document defines the target architecture for a modern web-based orthotic insole CAD system that replaces legacy Rhino workflows. It unifies **direct / freeform editing** and **automated clinical corrections** on the same geometry, producing watertight output suitable for 3D printing and CNC milling.
@@ -23,7 +23,7 @@ Two geometry tiers serve two UX needs:
 | Tier | Engine | When | Output |
 |------|--------|------|--------|
 | **Preview** | Procedural mesh + displacement + clip | Every interaction frame | Fast, visually faithful, approximate topology |
-| **Authoritative** | OpenCascade (OCCT) WASM B-rep | Idle debounce, Confirm, Export | Watertight solid, exact booleans, manufacturing validation |
+| **Authoritative** | procedural (export mesh) WASM B-rep | Idle debounce, Confirm, Export | Watertight solid, exact booleans, manufacturing validation |
 
 Direct editing (trimline drag, element move) and automated corrections (arch raise, posting wedge) both mutate the same design state. The shared **height field** (`heightAt`) ensures preview and authoritative geometry stay clinically aligned.
 
@@ -71,10 +71,10 @@ Direct editing (trimline drag, element move) and automated corrections (arch rai
                 ▼                                             ▼
 ┌───────────────────────────────┐           ┌───────────────────────────────────┐
 │   PREVIEW GEOMETRY LAYER       │           │   AUTHORITATIVE GEOMETRY LAYER     │
-│   ThreeKernel (tier=preview)   │           │   OcctKernel (tier=authoritative)  │
-│   · buildInsoleGeometry()      │           │   · buildOcctInsoleSolid()         │
+│   ThreeKernel (tier=preview)   │           │   procedural kernel (tier=authoritative)  │
+│   · buildInsoleGeometry()      │           │   · buildExportSolid()         │
 │   · applyBaseModifiers()       │           │   · base-modifier-booleans.ts      │
-│   · clipGeometryToOutline()    │           │   · occt.worker.ts                 │
+│   · clipGeometryToOutline()    │           │   · procedural-wall.worker.ts                 │
 │   · geometry.worker.ts         │           │                                    │
 │   Target: < 16 ms / rebuild    │           │   Target: watertight BRep solid    │
 └───────────────┬───────────────┘           └─────────────────┬─────────────────┘
@@ -105,10 +105,10 @@ The only internal distinction is **how each modification type is evaluated onto 
 
 | Primitive | Representation | Connected to 3D mesh via |
 |-----------|----------------|--------------------------|
-| **Base template** | GLB asset reference (`DesignBase`) or absent (full parametric) | Displacement field on base vertices; long-term: sewn OCCT solid |
+| **Base template** | GLB asset reference (`DesignBase`) or absent (full parametric) | Displacement field on base vertices; long-term: sewn export mesh solid |
 | **Trimline / outline** | Closed polyline `TrimlinePoint[]` per side, footprint mm coords | Width envelope + clip (preview) + boolean prism (authoritative) |
 | **Corrections** | Typed scalars in `SideCorrections` | Evaluated inside `heightAt(u, v)` |
-| **Elements** | `PlacedElement[]` with kind, pose, scale, height | `elementHeightAt()` in height field; OCCT fuse/cut on export |
+| **Elements** | `PlacedElement[]` with kind, pose, scale, height | `elementHeightAt()` in height field; export mesh fuse/cut on export |
 | **Thickness / method** | `thicknessMm`, `ProductionMethod` | Shell offset, bottom plane, printing_shell hollow |
 
 Nothing in the mesh is authoritative. The mesh is always **recomputable** from design state.
@@ -121,14 +121,14 @@ Nothing in the mesh is authoritative. The mesh is always **recomputable** from d
 | **Displacement field** `Δz = f(u,v) − f_neutral(u,v)` | Base + Modifier path | Preserves base intrinsic detail; bottom-stable | Requires orientation classification |
 | **Outline clip** | Base-mode trimline preview | Immediate visual feedback; O(triangles) | Open boundary; not manufacturing-grade |
 | **Width envelope** | Parametric-mode trimline preview | Rebuilds clean grid boundary | Approximates complex trimline curves |
-| **OCCT B-rep solid** | Confirm / export | Exact topology; booleans; `isClosed()` | Heavy; async |
+| **export mesh B-rep solid** | Confirm / export | Exact topology; booleans; `isClosed()` | Heavy; async |
 
 ### 3.3 Base vs parametric modes
 
 | Mode | Trigger | Geometry path |
 |------|---------|---------------|
-| **Parametric** | No `design.base` | Full generation: height field → grid mesh / OCCT loft |
-| **Base + Modifier** | `design.base` references GLB | `delta(u,v)` displacement on base; trimline clip; OCCT booleans on confirm |
+| **Parametric** | No `design.base` | Full generation: height field → grid mesh / export mesh loft |
+| **Base + Modifier** | `design.base` references GLB | `delta(u,v)` displacement on base; trimline clip; export mesh booleans on confirm |
 
 Both modes share identical correction / trimline / element parameters. Only the **application strategy** differs.
 
@@ -170,7 +170,7 @@ Trimline editing uses a **three-tier hybrid model** that trades speed during int
 |------|------|-----------|---------|
 | **1 — Drag preview** | Active trimline drag frames | Lightweight **width-envelope clipping** + **visual boundary offset** | < 16 ms feedback; mesh boundary follows draft curve |
 | **2 — Confirm clip** | `confirmTrimlineEdit()` | Full **`clipGeometryToOutline`** on displaced base mesh | Accurate preview mesh; committed to design state |
-| **3 — Authoritative cut** | Idle debounce, Confirm, Export | OCCT **`applyTrimlineCut`** boolean prism | Watertight perimeter; manufacturing-grade |
+| **3 — Authoritative cut** | Idle debounce, Confirm, Export | export mesh **`applyTrimlineCut`** boolean prism | Watertight perimeter; manufacturing-grade |
 
 ```
                     TRIMLINE EDIT LIFECYCLE (loaded GLB base)
@@ -187,10 +187,10 @@ Trimline editing uses a **three-tier hybrid model** that trades speed during int
                                                                          │
                                                                          ▼
                                                               Tier 3: applyTrimlineCut
-                                                              (OCCT boolean on export)
+                                                              (export mesh boolean on export)
 ```
 
-**Why not boolean during drag?** OCCT booleans are too slow for 60 fps interaction (see R5, §5.1).  
+**Why not boolean during drag?** export mesh booleans are too slow for 60 fps interaction (see R5, §5.1).  
 **Why not sculpt?** See §4.1.  
 **Why three tiers?** Width-envelope gives instant visual feedback; centroid clip gives an accurate committed preview; boolean gives watertight export.
 
@@ -200,7 +200,7 @@ Trimline editing uses a **three-tier hybrid model** that trades speed during int
 |--------|---------------------|-----------------|
 | **Tier 1 (drag)** | Grid rebuild via `effectiveOutlineHalfWidth(u)` from draft | `applyBaseModifiers` → width-envelope clip from draft + visual boundary offset |
 | **Tier 2 (confirm)** | Trimline committed to design state; grid rebuild at full quality | `clipGeometryToOutline(modified, committed)` |
-| **Tier 3 (export)** | OCCT loft + `applyTrimlineCut` boolean prism | Sew base → B-rep → `applyTrimlineCut` boolean prism (Phase 3B) |
+| **Tier 3 (export)** | export mesh loft + `applyTrimlineCut` boolean prism | Sew base → B-rep → `applyTrimlineCut` boolean prism (Phase 3B) |
 | **Corrections during edit** | Evaluated in `heightAt`; boundary via width envelope | Evaluated as vertical δ on top; XY unchanged until clip |
 | **Bottom surface** | Flat bottom plane in grid | Bottom vertices fixed (`topFactor ≈ 0`) — never clipped or moved |
 
@@ -252,7 +252,7 @@ For each grid row, `v_signed ∈ [-1, 1]` maps to `y = v_signed × halfWidth(u) 
 
 **On Confirm / Export (authoritative):**
 
-1. OCCT loft uses the same `effectiveOutlineHalfWidth` for station extents.
+1. export mesh loft uses the same `effectiveOutlineHalfWidth` for station extents.
 2. Optional `useBooleanTrimline`: vertical prism from closed curve → `solid ∩ prism` for exact perimeter cut.
 3. Any preview/export gap at complex curves (e.g. sharp medial notch) is closed by the boolean pass.
 
@@ -397,7 +397,7 @@ flowchart TD
     I -->|Cancel| K[Restore session snapshot]
     J --> L[Push undo frame]
     J --> M[Schedule Tier 3 authoritative rebuild]
-    M --> N{OCCT available?}
+    M --> N{export mesh available?}
     N -->|Yes| O[applyTrimlineCut boolean prism]
     N -->|No| P[Keep Tier 2 clip mesh for export fallback]
 ```
@@ -583,7 +583,7 @@ interface OperatorGeometryPolicy {
     field: boolean;
     /** Preview-only mesh clip (trimline on base). */
     clip?: boolean;
-    /** OCCT boolean on authoritative path. */
+    /** export mesh boolean on authoritative path. */
     boolean?: boolean;
     /** Reason code for logging and UI tooltips. */
     reason: "continuous_surface" | "topology_change" | "exact_volume" | "sharp_edge";
@@ -598,7 +598,7 @@ interface OperatorGeometryPolicy {
 | **R2** | If the modification **changes topology** (genus, boundary loop, footprint area), use **clip in preview** and **boolean in authoritative**. |
 | **R3** | If the modification requires **exact volume** for milling accountability, use field in preview and **boolean fuse/cut** in authoritative. |
 | **R4** | If the modification requires a **sharp clinical edge** (skive, deep cut), use field approximation in preview and **boolean** in authoritative. |
-| **R5** | **Never** run OCCT booleans during active drag **or slider scrubbing**. Booleans are scheduled only on idle debounce (≥ 300 ms after last interaction), Confirm, or Export. |
+| **R5** | **Never** run export mesh booleans during active drag **or slider scrubbing**. Booleans are scheduled only on idle debounce (≥ 300 ms after last interaction), Confirm, or Export. |
 | **R6** | Booleans **fail soft** — on error, keep the last valid solid (deformation-only result). |
 | **R7** | Preview must be **monotonic** with authoritative: preview should never show a correction that authoritative would remove, and vice versa for enabled operators. |
 
@@ -650,7 +650,7 @@ interface OperatorGeometryPolicy {
 **Mitigations:**
 
 1. **Shared height field** — pad location, size, and amplitude are identical; only the geometric realization differs.
-2. **Idle authoritative overlay** — after debounce, show a subtle "validated" indicator when OCCT build completes; optional ghost mesh diff if boolean changed volume > 2%.
+2. **Idle authoritative overlay** — after debounce, show a subtle "validated" indicator when export mesh build completes; optional ghost mesh diff if boolean changed volume > 2%.
 3. **Element bump profiles** — use the same `ELEMENT_PROFILES` radii for field and boolean primitive sizing.
 4. **Trimline** — show the trimline curve overlay in both tiers; boolean cut should match the curve within 0.1 mm (tessellation tolerance).
 
@@ -713,7 +713,7 @@ export const OPERATOR_EVAL_ORDER = [
 | **C3 — Posting last among surfaces** | Posting is applied after edge feather so tilt reaches full strength at the perimeter. |
 | **C4 — Trimline is a mask, not an operator** | Trimline does not change correction scalars; it restricts the domain via envelope / clip / boolean. |
 | **C5 — Elements are independent instances** | Each `PlacedElement` sums; overlapping elements add (warn if net > 12 mm local height). |
-| **C6 — Boolean is post-stack** | OCCT booleans run on the lofted/displaced solid after the full field stack is evaluated. |
+| **C6 — Boolean is post-stack** | export mesh booleans run on the lofted/displaced solid after the full field stack is evaluated. |
 
 **Overlap resolution table:**
 
@@ -1113,10 +1113,10 @@ GLB
 ```
 Stage 0 (current)     Stage 1 (Phase 3A)      Stage 2 (Phase 3B)       Stage 3 (Phase 4)
 ─────────────────     ──────────────────      ──────────────────       ─────────────────
-Single merged mesh    Top/bottom tagged       Sewn OCCT solid          Parametric regions
+Single merged mesh    Top/bottom tagged       Sewn export mesh solid          Parametric regions
 Displacement Δz       Clip + displacement     Boolean modifiers        Blend weights
 Preview clip          Draft trimline live     Exact trimline cut       Arch-only on base
-No OCCT on base       Validation gates        Shell offset on base     Scan registration
+No export mesh on base       Validation gates        Shell offset on base     Scan registration
 ```
 
 ### 8.3 Stage 0 — Current (displacement + clip)
@@ -1127,7 +1127,7 @@ No OCCT on base       Validation gates        Shell offset on base     Scan regi
 2. `classifyBaseTopFactors` identifies top vs bottom vertices by normal direction.
 3. Corrections applied as vertical displacement weighted by top factor.
 4. Committed trimline clips mesh by centroid test.
-5. Export: `buildFromBase` with deformation + smoothing; OCCT booleans on parametric loft path only.
+5. Export: `buildFromBase` with deformation + smoothing; export mesh booleans on parametric loft path only.
 
 **Detail preservation formula:**
 
@@ -1160,17 +1160,17 @@ interface ParsedBaseAsset {
 - Displacement applied to **top mesh only**; bottom mesh passed through unchanged.
 - Side walls: stretch vertically with top displacement at boundary (blend topFactor on wall vertices).
 
-### 8.5 Stage 2 — Sewn OCCT solid (Phase 3B)
+### 8.5 Stage 2 — Sewn export mesh solid (Phase 3B)
 
 ```
 buildFromBase(base, field):
   1. Tessellate top + bottom → faces
-  2. Sew into shell (OCCT BRepBuilderAPI_Sewing)
+  2. Sew into shell (export mesh BRepBuilderAPI_Sewing)
   3. Apply displacement as surface deformation field on top faces
      OR rebuild top from height field sampling (higher quality, loses micro-detail)
   4. applyTrimlineCut → applyElements → applySkives
   5. Shell offset if printing_shell
-  6. repairOcctSolid → validate
+  6. repairExportSolid → validate
 ```
 
 **Detail vs accuracy trade-off:**
@@ -1317,7 +1317,7 @@ No operator — including parametric extension of `heightAt` — may invent `z_b
 When Tier 2 clip cuts through side-wall triangles, expose a vertical cut surface. Until Phase 3B boolean:
 
 - Preview shows open boundary (acceptable).
-- Export uses OCCT boolean for watertight vertical wall.
+- Export uses export mesh boolean for watertight vertical wall.
 
 ---
 
@@ -1435,7 +1435,7 @@ export function elementTrimlineStatus(el: PlacedElement, curve: TrimlineCurve): 
 
 ## 10. Correction Operator Model (Summary)
 
-All operators contribute to `heightAt(u, vSigned, params)` and/or OCCT boolean passes. See §5 for the complete displacement/boolean policy table.
+All operators contribute to `heightAt(u, vSigned, params)` and/or export mesh boolean passes. See §5 for the complete displacement/boolean policy table.
 
 **Key formulations** (in `height-field.ts`):
 
@@ -1510,15 +1510,15 @@ interface CorrectionOperator {
 | Trimline drag | preview, reduced | Three / clip | < 16 ms |
 | Slider scrub | preview + patch | Three | < 16 ms |
 | Slider release | preview full | Three | < 50 ms |
-| Idle 300–500 ms | authoritative start | OCCT worker | < 3 s |
-| Confirm / Export | authoritative + booleans | OCCT worker | < 10 s |
+| Idle 300–500 ms | authoritative start | export mesh worker | < 3 s |
+| Confirm / Export | authoritative + booleans | export mesh worker | < 10 s |
 
 ### 12.2 UX contracts
 
-- Viewport **never blocks** on OCCT during drag.
+- Viewport **never blocks** on export mesh during drag.
 - Base trimline drag shows **draft clip** (after Phase 3A fix).
 - Idle authoritative build shows validation status.
-- Export prefers OCCT; procedural fallback with warning.
+- Export prefers export mesh; procedural fallback with warning.
 
 ---
 
@@ -1527,11 +1527,11 @@ interface CorrectionOperator {
 ### 13.1 Watertight solid pipeline
 
 ```
-buildOcctInsoleSolid() / buildFromBase():
+buildExportSolid() / buildFromBase():
   1. Build base solid (loft or sewn GLB)
   2. applySkives → applyElements → applyTrimlineCut (soft-fail each)
   3. Shell offset if printing_shell
-  4. repairOcctSolid → isClosed()
+  4. repairExportSolid → isClosed()
   5. Tessellate → STL
 ```
 
@@ -1539,7 +1539,7 @@ buildOcctInsoleSolid() / buildFromBase():
 
 | Check | Threshold | Action |
 |-------|-----------|--------|
-| OCCT `isClosed()` | pass | Block if fail |
+| export mesh `isClosed()` | pass | Block if fail |
 | `maxBottomDeltaMm` (base) | < 0.05 mm | Warn |
 | Min wall thickness | ≥ 0.8 mm | Block |
 | Orphan elements | none | Block |
@@ -1554,7 +1554,7 @@ buildOcctInsoleSolid() / buildFromBase():
 |----------|--------|-----------|
 | Trimline on base (Tier 1 drag) | Width-envelope + visual offset | Fast; approximate boundary |
 | Trimline on base (Tier 2 confirm) | `clipGeometryToOutline` | Accurate; open boundary |
-| Trimline (Tier 3 export) | Boolean prism | Watertight; requires OCCT |
+| Trimline (Tier 3 export) | Boolean prism | Watertight; requires export mesh |
 | Trimline on parametric | Width envelope → loft + boolean | Clean grid; exact on export |
 | Corrections | Height field displacement | Cannot express all shapes without booleans |
 | Base detail | δ field on top factor | Preserves template; needs orientation detection |
@@ -1573,7 +1573,7 @@ buildOcctInsoleSolid() / buildFromBase():
 
 ### Phase 2 — Clinical quality (done)
 
-- Smooth blending, top-on-stable-bottom, OCCT booleans on parametric path, visual mode clarity
+- Smooth blending, top-on-stable-bottom, export mesh booleans on parametric path, visual mode clarity
 
 ### Phase 3A — Production editing (next priority)
 
@@ -1588,7 +1588,7 @@ buildOcctInsoleSolid() / buildFromBase():
 ### Phase 3B — Base path parity
 
 - [ ] Multi-mesh GLB parsing (top / bottom / walls)
-- [ ] Sew base GLBs into OCCT B-rep solids
+- [ ] Sew base GLBs into export mesh B-rep solids
 - [ ] `applyTrimlineCut` / `applyElements` / `applySkives` on `buildFromBase`
 - [ ] Explicit mm posting wedge operators + boolean trigger rules
 - [ ] Rim blend zone at clip boundary
@@ -1622,7 +1622,7 @@ buildOcctInsoleSolid() / buildFromBase():
 |------|--------|------------|
 | Base trimline drag not live (current gap) | User distrust during edit | Phase 3A fix — draft clip |
 | Preview clip ≠ boolean cut | Export surprise | Idle authoritative preview; overlay diff |
-| Clip leaves open mesh | Non-watertight preview | Acceptable for preview; OCCT on export |
+| Clip leaves open mesh | Non-watertight preview | Acceptable for preview; export mesh on export |
 | Trimline outward beyond base | Cannot add material | UI warn; suggest parametric |
 | WASM failure | No authoritative solids | Procedural fallback + clear warning |
 | Undo + rebuild latency | Sluggish undo on large bases | Cancel stale builds; preview only on undo |
@@ -1634,7 +1634,7 @@ buildOcctInsoleSolid() / buildFromBase():
 1. **Trimline L/R linking** — When `corrections.linked`, should trimline edits mirror? Recommendation: **opt-in** (default off) — feet are rarely symmetric in outline.
 2. **Base outward trimline** — Auto-switch to parametric extension or require new base asset? Recommendation: **warn + offer parametric forefoot extension** (Phase 4).
 3. **Custom GLB elements** — Field proxy vs direct mesh boolean? Recommendation: **field in preview, mesh boolean on export** (R3).
-4. **Chili3D convergence** — Adopt `IDocument`/`History`? Recommendation: **remain domain-specific**; borrow patterns, not full document tree.
+4. **Vertex convergence** — Adopt `IDocument`/`History`? Recommendation: **remain domain-specific**; borrow patterns, not full document tree.
 5. **Scan workflow** — Scan as overlay vs scan-to-displacement-base? Recommendation: **overlay in Phase 5**; displacement base requires registration confidence score.
 6. **Coalesced undo for sliders** — 300 ms window? Recommendation: **yes**, configurable.
 7. **Posting units** — Degrees vs mm wedge as primary UI? Recommendation: **both linked** — `wedge_mm ≈ tan(deg) × halfWidth` in heel zone; mm is manufacturing truth, degrees is clinical convention.

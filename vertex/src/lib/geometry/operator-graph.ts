@@ -145,7 +145,7 @@ export function evaluateOperator(
             // STA-aware rotation approximation (Phase 4):
             // If STA inclination is known, the effective frontal tilt is modulated.
             // Here we apply a simple scalar; a true 3D rotation around STJ would
-            // be done in the OCCT solid or a 3D displacement field.
+            // be done in the export solid or a 3D displacement field.
             const sta = ctx.biomech?.staInclinationDeg ?? 0;
             const staFactor = 1.0 + (sta / 45) * 0.15; // small coupling
             const tiltMm = deg * 0.18 * staFactor; // approx mm per deg at edge
@@ -221,7 +221,7 @@ export function evaluateGraph(graph: OperatorGraph, u: number, vSigned: number):
  * Hybrid top rebuild hook (Phase 4 sketch).
  * When a base + graph are both present, the final top at a point can be:
  *   baseTop(u,v) + evaluateGraph(...) * regionalTopFactor(u,v)
- * The caller (height field or OCCT loft) decides the blending weight.
+ * The caller (height field or procedural loft) decides the blending weight.
  */
 export function hybridTopHeight(
     baseHeight: number,

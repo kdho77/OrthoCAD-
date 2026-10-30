@@ -56,7 +56,7 @@ const previewKernel = {
         const mesh = analyzeManifold(geometry);
         return {
             geometry,
-            manifold: { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight },
+            manifold: { ...mesh, solidClosed: false, isWatertight: mesh.isWatertight },
         };
     },
     buildFromBase(base: BufferGeometry) {
@@ -64,7 +64,7 @@ const previewKernel = {
         const mesh = analyzeManifold(geometry);
         return {
             geometry,
-            manifold: { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight },
+            manifold: { ...mesh, solidClosed: false, isWatertight: mesh.isWatertight },
         };
     },
     exportSTL(geometry: BufferGeometry) {
@@ -72,7 +72,7 @@ const previewKernel = {
     },
 };
 
-rs.mock("@/lib/chili3d/kernel", () => ({
+rs.mock("@/lib/geometry/geometry-kernel", () => ({
     getKernel: () => previewKernel,
     isAuthoritativeKernel: () => false,
     isKernelInitFailed: () => false,
