@@ -2,22 +2,26 @@ import type { BufferGeometry } from "three";
 import { modifiedBaseResult } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { buildInsoleGeometry, type InsoleParams } from "@/lib/geometry/insole";
-import { analyzeManifold } from "@/lib/geometry/manifold";
-import type { SolidValidation } from "@/lib/geometry/repair";
+import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
+
+/**
+ * Mesh manifold report plus a closed-solid slot for a future kernel.
+ * The procedural kernel always leaves `occtClosed` false.
+ */
+export interface SolidValidation extends ManifoldReport {
+    occtClosed: boolean;
+}
 
 export interface SolidResult {
     geometry: BufferGeometry;
     manifold: SolidValidation;
 }
 
-// Geometry kernel abstraction — procedural Three.js fallback or OpenCascade WASM.
+// Neutral geometry kernel boundary.
 //
-// Two tiers coexist behind one interface (see docs/hybrid-geometry-architecture.md):
-//   - "preview"        fast procedural mesh, used for real-time editing.
-//   - "authoritative"  watertight OCCT BRep solid, used on Confirm / Export.
-// Callers branch on `tier` (not on `name`) when they need to know whether the
-// kernel can produce a true manufacturing-grade solid.
+// The shipping kernel is procedural Three.js ("preview"). `tier` is the hook a
+// later authoritative kernel would use. This module does not load one.
 
 export type GeometryTier = "preview" | "authoritative";
 
@@ -38,14 +42,6 @@ export interface IGeometryKernel {
      */
     buildFromBase(base: BufferGeometry, field: HeightFieldParams, smoothingIterations?: number): SolidResult;
     exportSTL(geometry: BufferGeometry): ArrayBuffer;
-    /**
-     * Manufacturing export: sew imported GLB mesh into a BRep solid and emit STL
-     * bytes directly. Returns null when OCCT sewing is unavailable or fails.
-     */
-    exportManufacturingStlFromBase?(
-        base: BufferGeometry,
-        field: HeightFieldParams,
-    ): ArrayBuffer | null;
 }
 
 class ThreeKernel implements IGeometryKernel {
@@ -75,64 +71,13 @@ class ThreeKernel implements IGeometryKernel {
     }
 }
 
-let kernel: IGeometryKernel = new ThreeKernel();
-let kernelInitPromise: Promise<boolean> | null = null;
-let kernelInitFailed = false;
+const kernel: IGeometryKernel = new ThreeKernel();
 
 export function getKernel(): IGeometryKernel {
     return kernel;
 }
 
-/** True when the active kernel can produce authoritative (watertight OCCT) solids. */
+/** True when the active kernel's tier is authoritative. The procedural kernel is not. */
 export function isAuthoritativeKernel(): boolean {
     return kernel.tier === "authoritative";
-}
-
-/** True after a deferred OCCT init attempt failed (export falls back to mesh-close). */
-export function isKernelInitFailed(): boolean {
-    return kernelInitFailed;
-}
-
-async function initOcctKernelInternal(): Promise<boolean> {
-    const { useKernelStore } = await import("@/stores/kernel-store");
-    const { setLoadState, notifyKernelChanged } = useKernelStore.getState();
-    setLoadState("loading");
-
-    try {
-        const { initVertexOcct } = await import("@/lib/chili3d/occt-loader");
-        const { OcctKernel } = await import("@/lib/chili3d/occt-kernel");
-        await initVertexOcct();
-        kernel = new OcctKernel();
-        notifyKernelChanged("opencascade-wasm");
-        setLoadState("ready");
-        return true;
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[OCCT] kernel init failed: ${message}`);
-        kernelInitFailed = true;
-        kernel = new ThreeKernel();
-        notifyKernelChanged("three-procedural");
-        setLoadState("failed", message);
-        return false;
-    }
-}
-
-/**
- * Lazily loads the OpenCascade WASM kernel on first manufacturing export.
- * Idempotent: concurrent callers share one init promise.
- */
-export function ensureKernelReady(): Promise<boolean> {
-    if (kernel.name === "opencascade-wasm") return Promise.resolve(true);
-    if (kernelInitFailed) return Promise.resolve(false);
-    if (!kernelInitPromise) {
-        kernelInitPromise = initOcctKernelInternal();
-    }
-    return kernelInitPromise;
-}
-
-/**
- * @deprecated Use `ensureKernelReady()` — OCCT init is deferred until export.
- */
-export async function loadOcctKernel(): Promise<boolean> {
-    return ensureKernelReady();
 }

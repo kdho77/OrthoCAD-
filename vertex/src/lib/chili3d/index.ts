@@ -1,8 +1,8 @@
 export {
-    ensureKernelReady,
+    type GeometryTier,
     getKernel,
-    isKernelInitFailed,
-    loadOcctKernel,
     type IGeometryKernel,
+    isAuthoritativeKernel,
     type SolidResult,
+    type SolidValidation,
 } from "./kernel";

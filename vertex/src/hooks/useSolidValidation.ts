@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
+import type { SolidValidation } from "@/lib/chili3d/kernel";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
-import type { SolidValidation } from "@/lib/geometry/repair";
 import { useKernelStore } from "@/stores/kernel-store";
 import type { DesignState, Side } from "@/types";
 
@@ -14,14 +14,14 @@ const EMPTY: SolidValidation = {
     occtClosed: false,
 };
 
-/** Debounced production solid validation — OCCT topology when WASM is loaded. */
+/** Debounced production solid validation from the procedural mesh. */
 export function useSolidValidation(design: DesignState, side: Side, debounceMs = 400): SolidValidation {
     const [report, setReport] = useState<SolidValidation>(EMPTY);
     const kernelVersion = useKernelStore((s) => s.version);
     const kernelLoadState = useKernelStore((s) => s.loadState);
 
-    // Re-validate when the WASM kernel finishes loading (design object alone does not change).
-    // biome-ignore lint/correctness/useExhaustiveDependencies: kernelVersion/kernelLoadState trigger OCCT validation
+    // kernelVersion/kernelLoadState stay in the dependency list so a future kernel swap re-validates.
+    // biome-ignore lint/correctness/useExhaustiveDependencies: kernel store identity is an explicit trigger
     useEffect(() => {
         let cancelled = false;
         const timer = setTimeout(() => {
