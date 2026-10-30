@@ -1,12 +1,14 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 import { describe, expect, test } from "@rstest/core";
 import * as THREE from "three";
 import { countMeshes, extractMergedGeometry, extractPrimaryGeometry, mirrorGeometry } from "./loaders";
 
 /** Build a GLB-like group with separately-named meshes (mirrors Top/Bottom bases). */
-function makeGroup(meshes: { name: string; geo: THREE.BufferGeometry; position?: [number, number, number] }[]) {
+function makeGroup(
+    meshes: { name: string; geo: THREE.BufferGeometry; position?: [number, number, number] }[],
+) {
     const group = new THREE.Group();
     for (const m of meshes) {
         const mesh = new THREE.Mesh(m.geo, new THREE.MeshStandardMaterial());

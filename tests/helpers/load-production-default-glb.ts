@@ -1,5 +1,5 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 /**
  * Production Default.glb loader for mesh-close / export-solid tests.
@@ -57,9 +57,7 @@ function flipTriangleWindingInPlace(geometry: LoadedGeo): void {
 /** Raw merged geometry from the committed Default.glb fixture (no reorient). */
 export async function loadRawDefaultGlb(): Promise<LoadedGeo> {
     const buf = readFileSync(DEFAULT_GLB_FIXTURE_PATH);
-    const group = await loadGlbFromBuffer(
-        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
-    );
+    const group = await loadGlbFromBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
     const merged = extractMergedGeometry(group);
     if (!merged) throw new Error("Default.glb fixture produced no merged geometry");
     return merged.geometry;

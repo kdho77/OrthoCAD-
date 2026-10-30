@@ -1,5 +1,5 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 // Derived plantar-clearance thickness datum: labelled thicknessMm must equal the
 // measured minimum top-sheet clearance above plantarPlaneZ. Also regresses the

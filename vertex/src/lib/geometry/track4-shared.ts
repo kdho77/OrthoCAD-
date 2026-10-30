@@ -1,5 +1,5 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 /** Shared posting / shell-edge fillet (mm). */
 export const DEFAULT_POST_FILLET_MM = 2.0;

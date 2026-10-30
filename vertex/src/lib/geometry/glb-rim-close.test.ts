@@ -1,5 +1,5 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 import { describe, expect, test } from "@rstest/core";
 import { BufferAttribute, BufferGeometry } from "three";
@@ -18,7 +18,9 @@ function mergeTopBottomShells(top: BufferGeometry, bottom: BufferGeometry): Buff
     positions.set(topPos.array as Float32Array, 0);
     positions.set(botPos.array as Float32Array, topPos.count * 3);
 
-    const topIdx = top.index ? Array.from(top.index.array) : Array.from({ length: topPos.count }, (_, i) => i);
+    const topIdx = top.index
+        ? Array.from(top.index.array)
+        : Array.from({ length: topPos.count }, (_, i) => i);
     const botIdx = bottom.index
         ? Array.from(bottom.index.array).map((i) => i + topPos.count)
         : Array.from({ length: botPos.count }, (_, i) => i + topPos.count);
@@ -26,7 +28,11 @@ function mergeTopBottomShells(top: BufferGeometry, bottom: BufferGeometry): Buff
     const out = new BufferGeometry();
     out.setAttribute("position", new BufferAttribute(positions, 3));
     out.setIndex([...topIdx, ...botIdx]);
-    out.userData = { isMultiMeshBase: true, sourceMeshNames: ["Top", "Bottom"], topVertexCount: topPos.count };
+    out.userData = {
+        isMultiMeshBase: true,
+        sourceMeshNames: ["Top", "Bottom"],
+        topVertexCount: topPos.count,
+    };
     return out;
 }
 
@@ -35,30 +41,14 @@ function buildDomePair(): BufferGeometry {
     const top = new BufferGeometry();
     top.setAttribute(
         "position",
-        new BufferAttribute(
-            new Float32Array([
-                0, 0, 5,
-                10, 0, 3,
-                5, 10, 3,
-                5, -10, 3,
-            ]),
-            3,
-        ),
+        new BufferAttribute(new Float32Array([0, 0, 5, 10, 0, 3, 5, 10, 3, 5, -10, 3]), 3),
     );
     top.setIndex([0, 1, 2, 0, 3, 1]);
 
     const bottom = new BufferGeometry();
     bottom.setAttribute(
         "position",
-        new BufferAttribute(
-            new Float32Array([
-                0, 0, 0,
-                10, 0, 0,
-                5, 10, 0,
-                5, -10, 0,
-            ]),
-            3,
-        ),
+        new BufferAttribute(new Float32Array([0, 0, 0, 10, 0, 0, 5, 10, 0, 5, -10, 0]), 3),
     );
     bottom.setIndex([0, 2, 1, 0, 1, 3]);
 

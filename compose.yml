@@ -1,12 +1,5 @@
 services:
-  chili3d:
-    build:
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    ports:
-      - "8080:80"
-
-  # Phase 1+ hybrid manufacturing Python service (solid + belt + slicing)
+  # Hybrid manufacturing Python service (solid + belt + slicing)
   python-manufacturing:
     build:
       context: ./python-service

@@ -1,5 +1,5 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 /** Browser-safe SHA-256 (hex). Same digest as node:crypto for ASCII. */
 export function sha256Hex(message: string): string {

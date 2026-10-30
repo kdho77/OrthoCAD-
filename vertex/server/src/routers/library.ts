@@ -1,16 +1,13 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSupabaseAdmin } from "../context.js";
 import { validateGlbBase64 } from "../lib/glb-validation.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
-import {
-    assertActiveLicense,
-    requireSupabaseAdmin,
-} from "../lib/supabase-db.js";
 import { buildGlbKey, deleteAsset, signedDownloadUrl, uploadAsset } from "../lib/storage.js";
+import { assertActiveLicense, requireSupabaseAdmin } from "../lib/supabase-db.js";
 import { protectedProcedure, rateLimitedProcedure, router } from "../trpc.js";
 
 // Token cost for saving a custom GLB to the personal library.

@@ -7,7 +7,6 @@ export default defineConfig({
     exclude: ["**/cpp/**", "**/*.wasm.test.ts", "**/*.optional.test.ts", "**/dump-*.test.ts"],
     globals: true,
     testEnvironment: "happy-dom",
-    setupFiles: ["./rstest-setup.ts"],
     tools: {
         rspack: {
             resolve: {
@@ -26,7 +25,6 @@ export default defineConfig({
     },
     resolve: {
         alias: {
-            "./viewGizmo": "./packages/three/test/viewGizmo.ts",
             // Vertex app uses the "@/" path alias (see vertex/tsconfig.json) so
             // its unit tests resolve internal imports under the monorepo runner.
             "@": resolve("vertex/src"),

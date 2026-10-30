@@ -1,5 +1,5 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 import { describe, expect, test } from "@rstest/core";
 import {
@@ -132,12 +132,11 @@ describe("resolveDirectUrl", () => {
             POSTGRES_PASSWORD: process.env.POSTGRES_PASSWORD,
         };
         process.env.DIRECT_URL = "postgresql://postgres:secret@db.example.supabase.co:5432/postgres";
-        process.env.POSTGRES_URL_NON_POOLING = "postgresql://postgres:secret@pool.example.supabase.co:5432/postgres";
+        process.env.POSTGRES_URL_NON_POOLING =
+            "postgresql://postgres:secret@pool.example.supabase.co:5432/postgres";
         process.env.SUPABASE_URL = undefined;
         process.env.POSTGRES_PASSWORD = undefined;
-        expect(resolveDirectUrl()).toBe(
-            "postgresql://postgres:secret@db.example.supabase.co:5432/postgres",
-        );
+        expect(resolveDirectUrl()).toBe("postgresql://postgres:secret@db.example.supabase.co:5432/postgres");
         process.env.DIRECT_URL = prev.DIRECT_URL;
         process.env.POSTGRES_URL_NON_POOLING = prev.POSTGRES_URL_NON_POOLING;
         process.env.SUPABASE_URL = prev.SUPABASE_URL;

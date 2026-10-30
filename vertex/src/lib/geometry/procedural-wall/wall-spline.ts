@@ -1,5 +1,5 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 import { PATTERN_ARCH_U0, PATTERN_ARCH_U1, patternCurvatureReport } from "./bottom-pattern";
 import { smoothstep01, WALL_H_SMOOTH_HI_MM, WALL_H_SMOOTH_LO_MM } from "./wall-style";

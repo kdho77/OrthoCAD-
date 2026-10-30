@@ -1,5 +1,5 @@
-# Part of the Chili3d Project, under the AGPL-3.0 License.
-# See LICENSE file in the project root for full license information.
+# Copyright Vertex Orthopedic. All rights reserved.
+# Wording pending counsel review.
 
 """
 Phase 4: End-to-End test with realistic (non-toy) base GLB.
