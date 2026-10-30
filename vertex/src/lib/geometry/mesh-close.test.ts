@@ -1,9 +1,8 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 import { describe, expect, test } from "@rstest/core";
 import * as THREE from "three";
-import { extractMergedGeometry } from "@/lib/library/loaders";
 import {
     alignLoopWindingXZ,
     buildBridgeStrip,
@@ -12,6 +11,7 @@ import {
     resampleLoopToCount,
     validateManifold,
 } from "@/lib/geometry/mesh-close";
+import { extractMergedGeometry } from "@/lib/library/loaders";
 
 function makeTopBottomGroup(): THREE.Group {
     const group = new THREE.Group();
@@ -105,7 +105,15 @@ describe("mesh-close — perimeter stitching", () => {
             const t = (i / 10) * Math.PI * 2;
             return new THREE.Vector3(Math.cos(t) * 20, 0, Math.sin(t) * 10);
         });
-        const bridge = buildBridgeStrip(loop10, loop10.map((p) => p.clone().setY(0).setZ(p.z - 3)));
+        const bridge = buildBridgeStrip(
+            loop10,
+            loop10.map((p) =>
+                p
+                    .clone()
+                    .setY(0)
+                    .setZ(p.z - 3),
+            ),
+        );
         expect(bridge.triangleCount).toBe(20);
         for (let t = 0; t < bridge.indices.length; t += 3) {
             const a = bridge.indices[t]!;
@@ -126,11 +134,7 @@ describe("mesh-close — perimeter stitching", () => {
             const acx = cx - ax;
             const acy = cy - ay;
             const acz = cz - az;
-            const crossLen = Math.hypot(
-                aby * acz - abz * acy,
-                abz * acx - abx * acz,
-                abx * acy - aby * acx,
-            );
+            const crossLen = Math.hypot(aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx);
             expect(crossLen).toBeGreaterThan(1e-9);
         }
     });

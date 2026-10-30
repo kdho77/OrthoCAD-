@@ -1,5 +1,5 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 import { forefootWidthLongitudinalEnvelope } from "@/lib/geometry/height-field";
 import { type ColumnQuality, columnHeading, FILLET_R_CAP_MM, MIN_ROUND_R_MM } from "./bezier-column";

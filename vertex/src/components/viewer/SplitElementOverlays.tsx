@@ -1,8 +1,8 @@
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
+
 import { isLibraryHeightFieldKind } from "@/lib/geometry/element-assets/types";
 import { ElementHardnessPopup } from "./ElementHardnessPopup";
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
-
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { sideOffsetX } from "@/lib/geometry/layout";

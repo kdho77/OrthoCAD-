@@ -1,5 +1,5 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 import { type BallBandGeometry, ballBandGeometry, UNCUT_CORNER_TOL_MM } from "./band";
 import { densifyArc, resampleToSpacing, signedArea, TOOLPATH_SPACING_MM, tangentAt, unit } from "./polygon";

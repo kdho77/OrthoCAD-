@@ -1,5 +1,5 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 /** Gateway / platform 413 bodies are plain text, not tRPC JSON. */
 export const PAYLOAD_TOO_LARGE_MESSAGE =

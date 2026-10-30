@@ -1,5 +1,5 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 /**
  * Kirby heel skive — Default.glb integration.
@@ -404,7 +404,7 @@ describe("Kirby heel skive — Default.glb", () => {
     });
 
     test("G4: applySkives boolean is a no-op (export cannot cut the raise)", () => {
-        const solid = { marker: "solid" } as unknown as import("@chili3d/core").ISolid;
+        const solid = { marker: "solid" } as never;
         const out = applySkives(
             {} as never,
             solid,

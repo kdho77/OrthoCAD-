@@ -1,12 +1,10 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright Vertex Orthopedic. All rights reserved.
+// Wording pending counsel review.
 
 /** Maximum decoded GLB size (15 MB). */
 export const MAX_GLB_BYTES = 15 * 1024 * 1024;
 
-export type GlbValidationResult =
-    | { ok: true; bytes: Buffer }
-    | { ok: false; reason: string };
+export type GlbValidationResult = { ok: true; bytes: Buffer } | { ok: false; reason: string };
 
 /** Validates base64 GLB payload: size cap + glTF binary magic header. */
 export function validateGlbBase64(glbBase64: string): GlbValidationResult {
