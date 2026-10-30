@@ -1,5 +1,4 @@
-# Copyright Vertex Orthopedic. All rights reserved.
-# Wording pending counsel review.
+# Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 """
 belt_transformer.py — Phase 1 3D belt-printer pre-transform for the hybrid pipeline.

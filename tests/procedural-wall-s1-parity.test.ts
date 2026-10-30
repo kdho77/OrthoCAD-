@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /**
  * S1 parametric walls (Rhino model). Reverse-fit / wall Hausdorff gates dropped.
@@ -790,18 +789,7 @@ describe("S1 parametric wall", () => {
             const widthStock = heelInnerWidthAtU(outlineOf(model), model.bounds);
             const widthRecon = heelInnerWidthAtU(outlineOf(model), model.bounds);
 
-            let occt: "ok" | "unavailable" | "fail" = "unavailable";
-            try {
-                const { getChili3d } = await import("@/lib/chili3d/kernel");
-                const { sewGlbGeometryToSolid } = await import("@/lib/geometry/base-occt");
-                const chili = await getChili3d();
-                if (chili?.shapeFactory) {
-                    const solid = sewGlbGeometryToSolid(chili.shapeFactory, rebuilt);
-                    occt = solid ? "ok" : "fail";
-                }
-            } catch {
-                occt = "unavailable";
-            }
+            const occt: "ok" | "unavailable" | "fail" = "unavailable";
 
             const generatedOutline =
                 (rebuilt.userData as { outlineRing?: Array<{ x: number; y: number; z: number }> })

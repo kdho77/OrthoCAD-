@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 // Derived plantar-clearance thickness datum: labelled thicknessMm must equal the
 // measured minimum top-sheet clearance above plantarPlaneZ. Also regresses the

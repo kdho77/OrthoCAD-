@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /** Shared posting / shell-edge fillet (mm). */
 export const DEFAULT_POST_FILLET_MM = 2.0;

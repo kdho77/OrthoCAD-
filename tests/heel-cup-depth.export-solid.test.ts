@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 // Export-solid regression for heel cup depth: closeGlbInsoleToSolid +
 // assertClosedSolidAcceptable gate. Separate from heel-cup-depth.realmesh.test.ts.

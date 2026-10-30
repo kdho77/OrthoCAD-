@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 // Load vertex/.env the same way as dev:server, then delegate to the Prisma CLI.
 import "./load-env.js";

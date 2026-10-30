@@ -1,27 +1,7 @@
-Copyright Vertex Orthopedic. All rights reserved.
+Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-The copyright notice in this file and in source banners is pending counsel
-review. It is not a final legal instrument and it does not, by itself, define
-every right in every file.
+OrthoCAD is proprietary software owned by Vertex Orthopedic. All rights to its source code, object code, documentation, and related intellectual property are reserved.
 
-Application source that this repository identifies as Vertex Orthopedic's own
-is proprietary. No rights are granted to copy, modify, or distribute that
-source except under a separate written agreement with Vertex Orthopedic.
+No part of this software may be copied, modified, distributed, redistributed, sublicensed, sold, or otherwise used, in whole or in part, except under a written license agreement signed by Vertex Orthopedic.
 
-This file does not grant the GNU Affero General Public License or the GNU
-Lesser General Public License. Chili3D-derived trees that previously carried
-those licenses have been removed from this branch. See
-docs/license-classification.md.
-
-Third-party components that remain are used under their own licenses, including:
-
-- MIT: React, Three.js, Zustand, Zod, Radix UI, opentype.js, tRPC,
-  `@supabase/supabase-js`, FastAPI, Pydantic, trimesh
-- Apache-2.0: Prisma client, manifold-3d, class-variance-authority
-- ISC: lucide-react, delaunator, `@kninnug/constrainautor`
-- BSL-1.0: clipper2-ts
-- MIT OR GPL-3.0-or-later: jszip (this project uses the MIT option)
-- BSD: NumPy, SciPy, Shapely
-- SIL Open Font License 1.1: the Inter font (vertex/public/fonts/OFL.txt)
-
-Those upstream licenses are not changed by this file.
+Third-party components included with this software remain subject to their own licenses. See THIRD_PARTY_NOTICES.md.

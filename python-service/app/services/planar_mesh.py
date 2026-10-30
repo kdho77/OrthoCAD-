@@ -1,5 +1,4 @@
-# Copyright Vertex Orthopedic. All rights reserved.
-# Wording pending counsel review.
+# Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 """Planar mesh intersection helpers (port of vertex/src/lib/kiri/slicer.ts)."""
 

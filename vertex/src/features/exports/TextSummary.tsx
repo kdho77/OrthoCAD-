@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";

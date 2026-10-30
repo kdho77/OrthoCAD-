@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { differenceD, EndType, FillRule, inflatePathsD, intersectD, JoinType, unionD } from "clipper2-ts";
 import { CLIPPER_CLOSE_MM, GRID_MM, SNAP_XY_MM } from "./mesh";

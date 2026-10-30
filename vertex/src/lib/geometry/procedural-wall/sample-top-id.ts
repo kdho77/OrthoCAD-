@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /** Bundled top-only input that produced the approved procedural STLs. */
 export const SAMPLE_TOP_PUBLIC_PATH = "/Templates/SAMPLE_Top.glb";

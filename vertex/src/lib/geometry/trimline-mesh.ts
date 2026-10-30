@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { BufferAttribute, BufferGeometry, type CatmullRomCurve3, Vector3 } from "three";
 import { type HeightFieldParams, heightAt } from "@/lib/geometry/height-field";

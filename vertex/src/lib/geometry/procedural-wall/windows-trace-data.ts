@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /** Kendon Windows GREEN_PATTERN LWPOLYLINE, pixel units (X=width, Y=length heel→toe). Junk tail removed. */
 export const WINDOWS_TRACE_PX: ReadonlyArray<readonly [number, number]> = [

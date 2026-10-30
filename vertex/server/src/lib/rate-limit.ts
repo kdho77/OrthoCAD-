@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /** In-memory sliding-window rate limiter for tRPC mutations (per user + route). */
 export interface RateLimitConfig {

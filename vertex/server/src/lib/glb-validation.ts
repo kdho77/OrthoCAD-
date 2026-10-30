@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /** Maximum decoded GLB size (15 MB). */
 export const MAX_GLB_BYTES = 15 * 1024 * 1024;

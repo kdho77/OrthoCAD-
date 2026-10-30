@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { booleanOpD, ClipType, EndType, FillRule, inflatePathsD, isPositiveD, JoinType } from "clipper2-ts";
 import type { Font } from "opentype.js";

@@ -1,5 +1,4 @@
-# Copyright Vertex Orthopedic. All rights reserved.
-# Wording pending counsel review.
+# Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 """
 phaseA-gyroid-hardness-v1 — A1 coupon fill-fraction gate (in-repo).

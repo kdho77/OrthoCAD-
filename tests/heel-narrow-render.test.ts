@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /** Render narrowed shells to PNG for visual CAD review (writes /tmp/renders). */
 import { mkdirSync, writeFileSync } from "node:fs";

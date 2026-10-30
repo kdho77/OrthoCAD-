@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { compareRegionResolveOrder, type HardnessRegion } from "../../../shared/print-recipe/hardness-region";
 import { pointInPoly, type Xy } from "./clip2";

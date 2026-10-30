@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /** Default super_admin test account — mirrors vertex/src/lib/dev-auth.ts */
 export const DEV_SUPER_ADMIN = {

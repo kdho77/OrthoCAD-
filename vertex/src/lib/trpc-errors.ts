@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /** Gateway / platform 413 bodies are plain text, not tRPC JSON. */
 export const PAYLOAD_TOO_LARGE_MESSAGE =

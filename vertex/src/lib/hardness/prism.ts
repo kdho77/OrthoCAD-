@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { ELEMENT_PROFILES, elementHeightAt } from "@/lib/geometry/elements";
 import { type HeightFieldParams, heightAt, outlineHalfWidth } from "@/lib/geometry/height-field";
