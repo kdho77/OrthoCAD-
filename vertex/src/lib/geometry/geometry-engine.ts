@@ -1,6 +1,6 @@
 import { type BufferGeometry, Vector3 } from "three";
-import type { SolidValidation } from "@/lib/chili3d/kernel";
 import { geometryToPayload, payloadToGeometry } from "@/lib/geometry/geometry-buffer";
+import type { SolidValidation } from "@/lib/geometry/geometry-kernel";
 import type { InsoleParams } from "@/lib/geometry/insole";
 import { buildInsoleGeometry } from "@/lib/geometry/insole";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
@@ -178,7 +178,7 @@ class GeometryEngine {
     async validateProductionSolid(params: InsoleParams): Promise<SolidValidation> {
         const geometry = await this.buildInsole({ params, quality: "full" });
         const mesh = await this.analyzeManifold(geometry);
-        return { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight };
+        return { ...mesh, solidClosed: false, isWatertight: mesh.isWatertight };
     }
 
     async analyzeManifold(geometry: BufferGeometry): Promise<ManifoldReport> {

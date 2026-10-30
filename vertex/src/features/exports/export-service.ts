@@ -68,7 +68,7 @@ async function uploadManufacturingStlDirect(side: Side, stlBuffer: ArrayBuffer):
     return prep.storageKey;
 }
 
-/** Export the finalized viewer solid as binary STL (OCCT sew primary, mesh-close fallback). */
+/** Export the finalized viewer solid as binary STL (mesh-close primary export path). */
 async function buildManufacturingStl(side: Side): Promise<ArrayBuffer> {
     const { design } = useDesignStore.getState();
     return buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });

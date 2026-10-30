@@ -30,7 +30,7 @@ rs.mock("@/stores/design-store", () => ({
     },
 }));
 
-rs.mock("@/lib/chili3d/kernel", () => ({
+rs.mock("@/lib/geometry/geometry-kernel", () => ({
     getKernel: () => ({
         name: "three-procedural",
         tier: "preview",
@@ -125,7 +125,7 @@ describe("export-geometry routing", () => {
         });
         mockBuildFromBase.mockImplementation(() => ({
             geometry: makeTestGeometry(),
-            manifold: { isWatertight: false, occtClosed: false },
+            manifold: { isWatertight: false, solidClosed: false },
         }));
         mockCloseGlbInsoleToSolid.mockImplementation((geometry) => geometry);
         mockGeometryToBinarySTL.mockImplementation(() => new ArrayBuffer(84));
@@ -138,7 +138,7 @@ describe("export-geometry routing", () => {
         expect(exportModeFromMethod("printing_shell")).toBe("preview");
     });
 
-    test("manufacturing STL uses GLB rim-close and does not call an OCCT sew export", async () => {
+    test("manufacturing STL uses GLB rim-close and does not call a B-rep sew export", async () => {
         const closedGeo = makeTestGeometry();
         mockCloseGlbInsoleToSolid.mockReturnValue(closedGeo);
         const stlBytes = new ArrayBuffer(96);

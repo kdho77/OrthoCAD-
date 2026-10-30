@@ -930,7 +930,7 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
     };
 }
 
-/** Authoritative field for the sewn OCCT base path (Phase 3B). */
+/** Authoritative field for the sewn base mesh path (Phase 3B). */
 export function baseModifierFieldAuthoritative(
     design: DesignState,
     side: Side,

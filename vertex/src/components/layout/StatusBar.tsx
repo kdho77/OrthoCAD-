@@ -82,7 +82,7 @@ export function StatusBar() {
                 </span>
                 <span className="flex items-center gap-1 text-cyan-400/90">
                     <Cpu className="h-3 w-3" />
-                    {kernelLoadState === "loading" ? "OCCT loading…" : kernelName.replace(/-/g, " ")}
+                    {kernelLoadState === "loading" ? "geometry loading…" : kernelName.replace(/-/g, " ")}
                 </span>
                 <span className="flex items-center gap-1">
                     <Coins className="h-3 w-3 text-primary" /> {user?.tokenBalance ?? 0} tokens

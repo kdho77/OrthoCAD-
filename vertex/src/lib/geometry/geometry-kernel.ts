@@ -1,3 +1,6 @@
+// Part of the Chili3d Project, under the AGPL-3.0 License.
+// See LICENSE file in the project root for full license information.
+
 import type { BufferGeometry } from "three";
 import { modifiedBaseResult } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
@@ -6,11 +9,11 @@ import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 
 /**
- * Mesh manifold report plus a closed-solid slot for a future kernel.
- * The procedural kernel always leaves `occtClosed` false.
+ * Mesh manifold report plus a reserved closed-solid flag for future kernels.
+ * The procedural kernel always leaves `solidClosed` false.
  */
 export interface SolidValidation extends ManifoldReport {
-    occtClosed: boolean;
+    solidClosed: boolean;
 }
 
 export interface SolidResult {
@@ -58,7 +61,7 @@ class ThreeKernel implements IGeometryKernel {
         const mesh = analyzeManifold(geometry);
         return {
             geometry,
-            manifold: { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight },
+            manifold: { ...mesh, solidClosed: false, isWatertight: mesh.isWatertight },
         };
     }
 

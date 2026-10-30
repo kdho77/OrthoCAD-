@@ -8,7 +8,7 @@ import type { ElementKind, PlacedElement, Side } from "@/types";
  *
  * Stock shapes are procedural clinical footprints (not imported meshes):
  * they stay parametric under scale/rotation and share one definition between
- * the interactive height field and the OCCT boolean tool outline.
+ * the interactive height field and the export boolean tool outline.
  *
  * Local frame (+x distal / toe, −x proximal / heel, +y = left-foot medial
  * when rotation = 0). Medial-biased shapes (reverse Morton's notch, Cluffy,
@@ -376,7 +376,7 @@ export function elementFootprintT(
 
 /**
  * Sample the clinical outline in element-local mm (closed ring, CCW).
- * Used to extrude the OCCT boolean tool so preview and export share topology.
+ * Used to extrude the export boolean tool so preview and export share topology.
  */
 export function elementOutlineLocalMm(
     kind: ElementKind,

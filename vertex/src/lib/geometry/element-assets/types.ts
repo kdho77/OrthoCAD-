@@ -107,7 +107,7 @@ export const ELEMENT_SUBDIVIDE_EDGE_MM = 1;
 export const ELEMENT_SCALE_CLAMP_MIN = 0.75;
 export const ELEMENT_SCALE_CLAMP_MAX = 1.25;
 
-/** GLB library kinds applied as a height-field lift (not OCCT boolean). */
+/** GLB library kinds applied as a height-field lift (height-field lift, not mesh boolean). */
 export const LIBRARY_HEIGHT_FIELD_KINDS = [
     "met_pad",
     "met_bar",

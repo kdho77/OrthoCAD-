@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import type { SolidValidation } from "@/lib/chili3d/kernel";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
+import type { SolidValidation } from "@/lib/geometry/geometry-kernel";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { useKernelStore } from "@/stores/kernel-store";
 import type { DesignState, Side } from "@/types";
@@ -11,7 +11,7 @@ const EMPTY: SolidValidation = {
     openEdges: 0,
     nonManifoldEdges: 0,
     isWatertight: false,
-    occtClosed: false,
+    solidClosed: false,
 };
 
 /** Debounced production solid validation from the procedural mesh. */
