@@ -8,8 +8,8 @@ element addition, solid/shell generation, TPU printing (incl. belt printers) and
 ## Tech stack
 
 - **Frontend:** React 18 + Vite + TypeScript + TailwindCSS + shadcn-style UI + React Three Fiber
-- **3D kernel:** Forked Chili3D (OpenCascade WASM) via `IGeometryKernel` — auto-loads OCCT at boot with procedural + worker fallback
-- **Workers:** Procedural preview mesh (`geometry.worker.ts`); OCCT tessellation (`occt.worker.ts`)
+- **3D kernel:** Procedural Three.js mesh via `IGeometryKernel` (`geometry-kernel.ts`) with worker offload for preview
+- **Workers:** Procedural preview mesh (`geometry.worker.ts`, `procedural-wall.worker.ts`)
 - **Slicing / CAM:** Kiri:Moto-compatible in-house engine (`lib/kiri`)
 - **State:** Zustand
 - **Backend:** Node.js + tRPC (type-safe)
@@ -26,11 +26,11 @@ element addition, solid/shell generation, TPU printing (incl. belt printers) and
 ├─────────────────────────────────────────────────────────────┤
 │  Zustand stores → useInsoleGeometry / geometryEngine        │
 │    interacting  → geometry.worker (procedural preview)      │
-│    idle + OCCT  → occt.worker (WASM tessellation)           │
+│    idle/export  → procedural-wall + mesh-close export      │
 │    export/save  → getKernel().buildInsole() (main thread)   │
 ├─────────────────────────────────────────────────────────────┤
-│  IGeometryKernel: OcctKernel │ ThreeKernel (fallback)        │
-│  occt-insole: loft → skives → booleans → shell → repair     │
+│  IGeometryKernel: ThreeKernel (preview tier)                │
+│  height-field → insole mesh → mesh-close → STL              │
 ├─────────────────────────────────────────────────────────────┤
 │  tRPC API: auth, export.authorize, ai, library, design      │
 │  Prisma + Supabase Postgres + Storage                       │
@@ -43,7 +43,6 @@ element addition, solid/shell generation, TPU printing (incl. belt printers) and
 cd vertex
 npm install
 cp .env.example .env   # optional — runs offline without it
-npm run prepare:wasm     # copy OCCT WASM to public/chili-wasm/
 npm run dev              # frontend  → http://localhost:5180
 npm run dev:server       # tRPC API  → http://localhost:5181 (optional)
 ```
@@ -59,13 +58,6 @@ To use the real database locally (instead of offline dev mode):
 `prisma db push` applies `prisma/schema.prisma` directly to Postgres — the recommended way to initialize a fresh or empty database. Do **not** paste manual SQL; the repo migrations are incremental only and do not create the base tables (`users`, `custom_elements`, etc.) on their own.
 
 `db:push` loads `vertex/.env` via the same `load-env.ts` helper used by `dev:server`, so `DATABASE_URL` is available before Prisma runs. For production deploys, use `prisma migrate deploy` (see Render blueprint).
-
-Build OCCT WASM from repo root (first time or after C++ changes):
-
-```bash
-cd .. && npm run setup:wasm && npm run build:wasm
-cd vertex && npm run prepare:wasm
-```
 
 Without Supabase credentials the app runs in **offline dev mode** with the default
 `super_admin` test account (`kdho@vertexorthopedic.com`, 100 export tokens, active
@@ -103,8 +95,8 @@ npm run prisma:migrate    # create/apply tracked migrations (requires DATABASE_U
 vertex/src/
   components/   UI panels, layout, viewer, admin, ErrorBoundary
   features/     clients, corrections, elements, library, exports, ai-prescription
-  lib/          chili3d kernel, geometry engine, kiri CAM, trpc, supabase
-  workers/      geometry.worker.ts, occt.worker.ts
+  lib/          geometry kernel, geometry engine, kiri CAM, trpc, supabase
+  workers/      geometry.worker.ts, procedural-wall.worker.ts
   stores/       zustand (design, auth, kernel, performance, custom-library)
   hooks/        useInsoleGeometry, useSolidValidation, useKeyboardShortcuts
 vertex/server/  tRPC routers + rate limiting + GLB validation
@@ -116,10 +108,10 @@ prisma/         Postgres schema
 | Phase | Summary |
 | --- | --- |
 | 0–5 | Foundation, AI Rx, CAM, clients, auth, Render blueprint |
-| 6 | Custom GLB library + OCCT WASM kernel |
+| 6 | Custom GLB library + procedural export pipeline |
 | 7 | Web Worker preview, 60fps optimizations, FPS monitor |
-| 8 | Full OCCT integration via `IGeometryKernel`, shelling, validation |
-| 9 | Production polish: OCCT worker, custom GLB booleans, rate limits, Vercel deploy, docs |
+| 8 | Mesh-close manufacturing export, shelling, validation |
+| 9 | Production polish: custom GLB handling, rate limits, Vercel deploy, docs |
 
 See `VALIDATION.md` for the full clinical workflow checklist.
 
@@ -128,7 +120,7 @@ See `VALIDATION.md` for the full clinical workflow checklist.
 ### Vercel (recommended for SPA + optional self-contained tRPC)
 
 The Vertex project is deployed with Root Directory set to `vertex` (see `.vercel/project.json` and Vercel dashboard Project Settings).
-All Vercel-specific configuration lives in `vertex/vercel.json` (build commands, rewrites for `/trpc` → `/api/trpc`, WASM cache headers, and the serverless function registration for the tRPC handler).
+All Vercel-specific configuration lives in `vertex/vercel.json` (build commands, rewrites for `/trpc` → `/api/trpc`, and the serverless function registration for the tRPC handler).
 
 - For a fully self-contained deploy (SPA + tRPC on Vercel, no separate API): omit `VITE_API_URL` (or set it to a same-origin value). The client defaults to `/trpc`; `vertex/vercel.json` rewrites it to the `api/trpc/[[...trpc]].ts` Serverless Function (which shares the same router as the standalone server).
 - For a split deploy (Vercel SPA only, tRPC on Render/other): set `VITE_API_URL` to the external tRPC origin (it will be normalized to end in `/trpc`).
@@ -153,8 +145,7 @@ Set secrets: `DATABASE_URL`, `DIRECT_URL`, `SUPABASE_*`, `AI_API_KEY`, `VITE_API
 
 ```bash
 # From repo root
-npm run test:wasm -- packages/wasm/test/vertex-insole.wasm.test.ts
-npx rstest vertex/server/src/lib/*.test.ts
+npx rstest vertex/
 
 # From vertex/
 npm run typecheck && npm run build

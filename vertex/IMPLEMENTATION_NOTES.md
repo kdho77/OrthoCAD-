@@ -12,7 +12,6 @@ Ad-hoc engineering tracking items that are not tied to a single PR.
 
 - `src/stores/design-store.ts`
 - `src/stores/issues-store.ts`
-- `src/lib/geometry/base-occt.ts`
 - `src/lib/geometry/base-bounds.ts`
 - `src/lib/geometry/kernel-build.ts`
 - `src/lib/geometry/export-geometry.ts` (unused import)

@@ -20,7 +20,7 @@ modifications on top.
          ▼                                     ▼
    ┌────────────────────────────────────────────────────────────────────┐
    │                       Resolved insole geometry                       │
-   │   preview (fast deform)  ·  authoritative (OCCT booleans on Confirm) │
+   │   preview (fast deform)  ·  authoritative (export mesh booleans on Confirm) │
    └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -29,7 +29,7 @@ Two workflows are supported by the **same** design state:
 1. **Start from base** — `design.base` references a library GLB (stock template
    or a previously saved custom insole). Modifiers deform / cut / add onto it.
 2. **Full parametric** — `design.base` is absent. The existing procedural +
-   OCCT generation path runs exactly as before (the fallback / default).
+   export mesh generation path runs exactly as before (the fallback / default).
 
 The modifiers (corrections, trimline, elements, thickness, method) are the
 *same fields* that already drive parametric generation. There is no second set
@@ -106,18 +106,18 @@ and `2` on export.
 | Arch height / fill, heel cup, posting tilt | **Deformation**  | Smooth, continuous surface change; preserves base detail; fast enough for live preview. |
 | Thickness                                  | Deformation      | Uniform/graded offset of the surface.                    |
 | Trimline                                   | **Boolean cut**  | Changes the footprint outline — a topology change.       |
-| Elements (pads = add, sinks = cut)         | Deformation (preview) → **Boolean** (authoritative) | Pads/sinks read as smooth bumps live; baked as exact OCCT fuse/cut on Confirm/Export. |
+| Elements (pads = add, sinks = cut)         | Deformation (preview) → **Boolean** (authoritative) | Pads/sinks read as smooth bumps live; baked as exact export mesh fuse/cut on Confirm/Export. |
 | Skives (Kirby)                             | **Top-only deformation** (plane half-space max) | Intrinsic raise of the skived heel edge; must NOT couple to the bottom shell (R11). |
 
 **Recommendation:** use vertex **deformation** for everything that is a smooth
 surface change (it is cheap, keeps the mesh watertight, and never fails), and
 reserve **boolean** operations for topology-changing features (trim, discrete
-add/subtract), running them only on Confirm/Export through the OCCT kernel.
+add/subtract), running them only on Confirm/Export through the export mesh kernel.
 
-### OCCT boolean modifiers (`base-modifier-booleans.ts`)
+### export mesh boolean modifiers (`base-modifier-booleans.ts`)
 
 The topology-changing booleans are implemented in `base-modifier-booleans.ts`
-and run inside the authoritative OCCT loft (`buildOcctInsoleSolid`), reserved
+and run inside the authoritative export mesh loft (`buildExportSolid`), reserved
 for Confirm / Export / idle:
 
 - **Trimline cutting** — `applyTrimlineCut` builds a vertical prism from the
@@ -134,7 +134,7 @@ for Confirm / Export / idle:
 
 Every pass **fails soft**: on any boolean error the previous valid solid is
 kept, so the result never regresses below the deformation-only output, and the
-whole pass is skipped when the OCCT WASM kernel is not loaded. Wiring these
+whole pass is skipped when the export mesh WASM kernel is not loaded. Wiring these
 booleans into the *base* path (`buildFromBase`) — so a loaded base GLB is sewn
 into a BRep solid and trimmed/cut exactly — is the remaining Phase 3 seam.
 
@@ -212,7 +212,7 @@ trimline/correction edits are bottom-safe deformations.
   change, never blocks. Drives the live viewport (`BaseInsoleMesh`).
 - **Authoritative (Confirm / Export):** `IGeometryKernel.buildFromBase(base,
   field)` returns a validated `SolidResult`. Phase 1 reuses the deformation and
-  reports manifold/topology stats; later phases sew the base into an OCCT solid
+  reports manifold/topology stats; later phases sew the base into an export mesh solid
   and apply trimline/element/skive booleans for an exact watertight result.
 
 ## Kernel interface change
@@ -225,9 +225,9 @@ export interface IGeometryKernel {
 }
 ```
 
-Implemented in both `ThreeKernel` (preview tier) and `OcctKernel`
+Implemented in both `ThreeKernel` (preview tier) and `procedural kernel`
 (authoritative tier). Both currently share the deformation implementation; the
-OCCT kernel is the seam where boolean refinement of the base lands in later
+export mesh kernel is the seam where boolean refinement of the base lands in later
 phases. `smoothingIterations` lets callers trade smoothness for speed
 (interactive `0` vs export `2`).
 
@@ -254,11 +254,11 @@ viewer uses these to make the mode obvious:
 - **Phase 2 (done):** clinical surface-quality pass on the shared height field +
   optional Laplacian smoothing of the displacement; **top-modification on a
   stable bottom** (orientation-robust axes, normal-based top/bottom
-  classification, directional thickness, height-weight fallback); OCCT boolean
+  classification, directional thickness, height-weight fallback); export mesh boolean
   modifiers (`base-modifier-booleans.ts`: trimline cut, element fuse/cut, skive
   wedges) in the authoritative loft with soft fallback; visual base-vs-parametric
   mode clarity (badge + base outline).
-- **Phase 3:** sew arbitrary base GLBs into OCCT BRep solids and apply the
+- **Phase 3:** sew arbitrary base GLBs into export mesh BRep solids and apply the
   trimline/element/skive booleans directly to the *base* path (`buildFromBase`);
   graded thickness and shell offset on the base; posting wedges as first-class
   boolean tools.

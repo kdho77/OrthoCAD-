@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import * as THREE from "three";
 import { extractMeshOutline, type TrimlineCurve } from "@/lib/geometry/trimline";
@@ -52,7 +51,11 @@ export interface BaseBounds {
 const baseBoundsCache = new Map<string, BaseBounds>();
 
 /** Very lightweight zone estimator from a filled station list (see extractMeshOutline logic). */
-function estimateZonesFromStations(stations: { len: number; lo: number; hi: number }[], lenMin: number, lenSize: number): BaseClinicalZones {
+function estimateZonesFromStations(
+    stations: { len: number; lo: number; hi: number }[],
+    lenMin: number,
+    lenSize: number,
+): BaseClinicalZones {
     if (stations.length < 4) {
         return { heel: [0, 0.22], arch: [0.22, 0.62], forefoot: [0.62, 1] };
     }

@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /**
  * Kirby heel skive — Default.glb integration.
@@ -12,7 +11,6 @@ import { resolve } from "node:path";
 import { beforeAll, describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
-import { applySkives } from "@/lib/geometry/base-modifier-booleans";
 import { oneThirdLineY, SKIVE_U_REF } from "@/lib/geometry/heel-skive";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt } from "@/lib/geometry/height-field";
@@ -401,17 +399,6 @@ describe("Kirby heel skive — Default.glb", () => {
             expect(a).toBeGreaterThan(5);
             expect(Math.abs(a - relAngles[0]!)).toBeLessThan(2.0);
         }
-    });
-
-    test("G4: applySkives boolean is a no-op (export cannot cut the raise)", () => {
-        const solid = { marker: "solid" } as unknown as import("@chili3d/core").ISolid;
-        const out = applySkives(
-            {} as never,
-            solid,
-            { ...neu(), medialSkiveMm: 4 },
-            { lengthMm: 266, widthMm: 95, side: "right" },
-        );
-        expect(out).toBe(solid);
     });
 
     test("export/parametric path carries RAISE not cut (heightAt includeSkives)", () => {

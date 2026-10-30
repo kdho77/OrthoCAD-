@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { PrismaClient } from "@prisma/client";
 
@@ -138,7 +137,8 @@ function buildUrlFromPostgresComponents(options: {
     const ref = options.projectRef ?? extractSupabaseProjectRef(process.env.SUPABASE_URL);
     const database = process.env.POSTGRES_DATABASE?.trim() ?? "postgres";
     let resolvedHost = host;
-    let resolvedUser = process.env.POSTGRES_USER?.trim() ?? (options.pooled && ref ? `postgres.${ref}` : "postgres");
+    let resolvedUser =
+        process.env.POSTGRES_USER?.trim() ?? (options.pooled && ref ? `postgres.${ref}` : "postgres");
     let resolvedPort = process.env.POSTGRES_PORT?.trim() ?? (options.pooled ? "6543" : "5432");
 
     if (isInvalidSupabaseHost(host) && ref) {

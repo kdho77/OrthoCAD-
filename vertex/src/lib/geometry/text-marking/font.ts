@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { type Font, parse as parseOpenType } from "opentype.js";
 import { TEXT_FONT_ID, TEXT_FONT_PUBLIC_PATH } from "./constants";

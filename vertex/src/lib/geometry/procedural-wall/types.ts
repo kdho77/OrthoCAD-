@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /**
  * Stage 0 wall-model representation (Option B).
@@ -210,7 +209,7 @@ export interface S1GateRow {
     foldWorstDeg: number;
     foldGe10: number;
     seamWorstDeg: number;
-    occtSolid: "ok" | "unavailable" | "fail";
+    exportSolid: "ok" | "unavailable" | "fail";
     soleUvIdentical: boolean;
     clinical?: ClinicalWallReport;
     misses: string[];

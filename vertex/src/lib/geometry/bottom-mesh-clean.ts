@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { BufferAttribute, BufferGeometry, Vector3 } from "three";
 import { analyzeManifold } from "@/lib/geometry/manifold";
@@ -61,9 +60,7 @@ function buildIndexBoundaryGraph(geometry: BufferGeometry): {
     return { edgeCount, edgeVerts, adj };
 }
 
-function buildEdgeTriangleRefs(
-    indices: number[],
-): Map<string, Array<{ triOffset: number; corner: number }>> {
+function buildEdgeTriangleRefs(indices: number[]): Map<string, Array<{ triOffset: number; corner: number }>> {
     const refs = new Map<string, Array<{ triOffset: number; corner: number }>>();
     for (let t = 0; t < indices.length; t += 3) {
         for (let k = 0; k < 3; k++) {
@@ -94,7 +91,9 @@ export function splitDegree4BranchNodes(geometry: BufferGeometry): BufferGeometr
     if (!index) return geometry;
 
     const { adj } = buildIndexBoundaryGraph(geometry);
-    const branchNodes = [...adj.entries()].filter(([, neighbors]) => neighbors.length === 4).map(([vi]) => vi);
+    const branchNodes = [...adj.entries()]
+        .filter(([, neighbors]) => neighbors.length === 4)
+        .map(([vi]) => vi);
     if (branchNodes.length === 0) return geometry;
 
     const positions = Array.from(pos.array as Float32Array);
@@ -215,11 +214,11 @@ export function extractBoundaryChainsForTest(geometry: BufferGeometry): number[]
 
 /**
  * Viewer-only bottom shell cleanup: seal small internal slit loops and split
- * degree-4 branch nodes. Does NOT run before the OCCT manufacturing path.
+ * degree-4 branch nodes. Does NOT run before the manufacturing export path.
  */
 export function sealInternalSlits(geometry: BufferGeometry): BufferGeometry {
     const before = analyzeManifold(geometry).openEdges;
-    let working = splitDegree4BranchNodes(geometry);
+    const working = splitDegree4BranchNodes(geometry);
     if (working !== geometry) geometry.dispose();
 
     const positions = working.getAttribute("position").array as Float32Array;

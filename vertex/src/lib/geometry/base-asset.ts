@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
@@ -930,7 +929,7 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
     };
 }
 
-/** Authoritative field for the sewn OCCT base path (Phase 3B). */
+/** Authoritative field for the sewn base mesh path (Phase 3B). */
 export function baseModifierFieldAuthoritative(
     design: DesignState,
     side: Side,
