@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /**
  * Bottom-wall rim-conformity delta transfer — HC-1/3/4 + Amendment checks

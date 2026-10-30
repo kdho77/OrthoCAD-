@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { EndType, FillRule, inflatePathsD, isPositiveD, JoinType, unionD } from "clipper2-ts";
 import { minDistToLoopXY, pointInPoly } from "./cdt-band";

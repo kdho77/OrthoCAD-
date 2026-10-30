@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /**
  * Production Default.glb loader for mesh-close / export-solid tests.

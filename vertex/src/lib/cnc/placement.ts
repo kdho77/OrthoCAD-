@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { Side } from "@/types";
 import { ENVELOPE_CLEARANCE_MM, footprintOverhangMm, polygonsOverlap, toolFootprintLocal } from "./envelope";

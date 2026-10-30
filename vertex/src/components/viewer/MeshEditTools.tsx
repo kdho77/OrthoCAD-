@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { Html } from "@react-three/drei";
 import type { ThreeEvent } from "@react-three/fiber";

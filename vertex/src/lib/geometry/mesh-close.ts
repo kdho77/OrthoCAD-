@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 // EXPORT PIPELINE MAP (discovered 2026-06-13)
 // Step 1: [client trigger] exportDesign / generateHybridGcode → vertex/src/features/exports/export-service.ts

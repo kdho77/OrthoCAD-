@@ -1,5 +1,4 @@
-# Copyright Vertex Orthopedic. All rights reserved.
-# Wording pending counsel review.
+# Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 """
 FastAPI orchestration layer for the OrthoCAD hybrid manufacturing service.

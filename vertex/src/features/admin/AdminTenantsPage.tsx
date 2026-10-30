@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { MoreHorizontal, Plus, Search } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";

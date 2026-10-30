@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /** SHA-256 hex of bytes (browser-safe). */
 export function sha256Bytes(bytes: Uint8Array): string {

@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { bboxOf, distToPoly, ensureCcw, offsetClosed } from "./polygon";
 import { skinZ, toolRadiusMm } from "./profile";

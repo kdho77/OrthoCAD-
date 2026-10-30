@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { expect, test } from "@rstest/core";
 import { canonicalizeJson, sha256Utf8 } from "./hash";

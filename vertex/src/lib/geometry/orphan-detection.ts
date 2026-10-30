@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type * as THREE from "three";
 import { getCustomElementBounds } from "@/lib/geometry/custom-element-bounds";

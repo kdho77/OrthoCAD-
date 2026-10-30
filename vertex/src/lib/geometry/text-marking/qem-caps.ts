@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { BufferAttribute, type BufferGeometry } from "three";
 import { TEXT_FEATURE_CORNER_DEG, TEXT_QEM_COPLANAR_MM, TEXT_TRI_CAP_WALL, TEXT_WELD_MM } from "./constants";

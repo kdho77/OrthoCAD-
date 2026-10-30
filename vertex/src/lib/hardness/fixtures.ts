@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { defaultDesign } from "@/stores/design-store";
 import type { DesignState, PlacedElement } from "@/types";

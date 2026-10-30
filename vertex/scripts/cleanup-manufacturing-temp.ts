@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /**
  * TTL cleanup for orphaned manufacturing STL uploads in `manufacturing-temp/`.

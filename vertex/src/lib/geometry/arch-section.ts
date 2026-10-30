@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { GridPoint, HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt, resolveOutlineHalfWidth } from "@/lib/geometry/height-field";

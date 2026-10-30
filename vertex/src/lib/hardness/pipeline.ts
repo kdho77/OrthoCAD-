@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";

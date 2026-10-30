@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { sha256Hex } from "@/lib/geometry/procedural-wall/sha256";
 import { hasActiveTextMarking, TEXT_FONT_ID } from "./constants";

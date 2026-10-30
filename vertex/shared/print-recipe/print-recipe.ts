@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { z } from "zod";
 import { hardnessRegionSchema, migrateHardnessZones } from "./hardness-region.js";

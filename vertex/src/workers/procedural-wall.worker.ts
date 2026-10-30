@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { BufferAttribute, BufferGeometry } from "three";
 import { geometryToPayload } from "@/lib/geometry/geometry-buffer";

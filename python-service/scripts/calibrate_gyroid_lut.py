@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# Copyright Vertex Orthopedic. All rights reserved.
-# Wording pending counsel review.
+# Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 """
 Offline gyroid period LUT calibration (writes gyroid_period_lut.json).

@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { archSkiveDepthAtThirdWidth } from "@/lib/geometry/arch-skive";
 import { topCoverAccommodateDeltaAt } from "@/lib/geometry/height-field";

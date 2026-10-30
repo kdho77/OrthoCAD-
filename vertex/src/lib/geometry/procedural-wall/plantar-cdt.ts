@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { countOpenNonBoundaryEdges, minDistToLoopXY, pointInPoly } from "./cdt-band";
 import { assertIEdges, assertLibraryDisk, libraryCdtInterior } from "./cdt-lib";

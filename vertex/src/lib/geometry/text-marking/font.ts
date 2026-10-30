@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { type Font, parse as parseOpenType } from "opentype.js";
 import { TEXT_FONT_ID, TEXT_FONT_PUBLIC_PATH } from "./constants";

@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /**
  * NON-REQUIRED SAMPLE_Top L/R × wall/bottom text CSG + expert print-quality gates.

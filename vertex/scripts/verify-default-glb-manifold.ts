@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";

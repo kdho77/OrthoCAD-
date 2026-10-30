@@ -1,5 +1,4 @@
-// Copyright Vertex Orthopedic. All rights reserved.
-// Wording pending counsel review.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { afterEach, describe, expect, rs, test } from "@rstest/core";
 import { loadManifoldApi, meshToManifold } from "./manifold-runtime";

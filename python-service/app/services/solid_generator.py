@@ -1,5 +1,4 @@
-# Copyright Vertex Orthopedic. All rights reserved.
-# Wording pending counsel review.
+# Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 """
 solid_generator.py — Phase 1 core geometry for hybrid manufacturing pipeline.
