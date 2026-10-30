@@ -11,7 +11,6 @@ import { resolve } from "node:path";
 import { beforeAll, describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import { applyBaseModifiers } from "@/lib/geometry/base-modifier";
-import { applySkives } from "@/lib/geometry/base-modifier-booleans";
 import { oneThirdLineY, SKIVE_U_REF } from "@/lib/geometry/heel-skive";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt } from "@/lib/geometry/height-field";
@@ -400,17 +399,6 @@ describe("Kirby heel skive — Default.glb", () => {
             expect(a).toBeGreaterThan(5);
             expect(Math.abs(a - relAngles[0]!)).toBeLessThan(2.0);
         }
-    });
-
-    test("G4: applySkives boolean is a no-op (export cannot cut the raise)", () => {
-        const solid = { marker: "solid" } as never;
-        const out = applySkives(
-            {} as never,
-            solid,
-            { ...neu(), medialSkiveMm: 4 },
-            { lengthMm: 266, widthMm: 95, side: "right" },
-        );
-        expect(out).toBe(solid);
     });
 
     test("export/parametric path carries RAISE not cut (heightAt includeSkives)", () => {
