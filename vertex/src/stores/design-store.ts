@@ -533,7 +533,7 @@ export interface DesignStore {
     addSink: (kind: SinkKind, side: Side) => void;
     updateSink: (
         id: string,
-        patch: Partial<Pick<PlacedSink, "depthMm" | "u" | "v" | "markerId">>,
+        patch: Partial<Pick<PlacedSink, "depthMm" | "u" | "v" | "markerId" | "rimOverride">>,
         side: Side,
     ) => void;
     removeSink: (id: string, side: Side) => void;
