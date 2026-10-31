@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import type { BufferGeometry } from "three";
+import { BufferAttribute, BufferGeometry } from "three";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { classifyBaseTopFactors, getBaseFootprintFrame } from "@/lib/geometry/base-modifier";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
@@ -123,8 +123,65 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
     );
 }
 
+/** Feet in an order download. One foot when that side has no paired base. */
+export function orderDownloadSides(design: DesignState): Side[] {
+    const sides: Side[] = [];
+    if (design.paired?.leftBase ?? design.base) sides.push("left");
+    if (design.paired?.rightBase) sides.push("right");
+    if (sides.length === 0) sides.push("left");
+    return sides;
+}
+
+/** Shift a foot in Y so a pair file does not stack both solids on the same origin. */
+export function offsetGeometryY(geometry: BufferGeometry, dy: number): BufferGeometry {
+    const g = geometry.clone();
+    const pos = g.getAttribute("position");
+    if (!pos || dy === 0) return g;
+    for (let i = 0; i < pos.count; i++) pos.setY(i, pos.getY(i) + dy);
+    pos.needsUpdate = true;
+    g.computeBoundingBox();
+    g.computeBoundingSphere();
+    return g;
+}
+
+/** One indexed mesh. Each input keeps its vertex order. */
+export function mergeGeometries(parts: BufferGeometry[]): BufferGeometry {
+    let vCount = 0;
+    let iCount = 0;
+    for (const p of parts) {
+        const pos = p.getAttribute("position");
+        if (!pos) continue;
+        vCount += pos.count;
+        iCount += p.getIndex()?.count ?? pos.count;
+    }
+    const positions = new Float32Array(vCount * 3);
+    const indices = new Uint32Array(iCount);
+    let vOff = 0;
+    let iOff = 0;
+    for (const p of parts) {
+        const pos = p.getAttribute("position");
+        if (!pos) continue;
+        for (let i = 0; i < pos.count; i++) {
+            positions[(vOff + i) * 3] = pos.getX(i);
+            positions[(vOff + i) * 3 + 1] = pos.getY(i);
+            positions[(vOff + i) * 3 + 2] = pos.getZ(i);
+        }
+        const idx = p.getIndex();
+        const n = idx?.count ?? pos.count;
+        for (let i = 0; i < n; i++) indices[iOff + i] = (idx ? idx.getX(i) : i) + vOff;
+        vOff += pos.count;
+        iOff += n;
+    }
+    const g = new BufferGeometry();
+    g.setAttribute("position", new BufferAttribute(positions, 3));
+    g.setIndex(new BufferAttribute(indices, 1));
+    g.computeVertexNormals();
+    g.computeBoundingBox();
+    return g;
+}
+
 /** Build and validate the actual manufacturing mesh. Caller owns the geometry. */
-export async function buildValidatedExportGeometry(side: Side): Promise<BufferGeometry> {
+async function buildClosedExportGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
     assertShapeFinishExportAllowed(design, side);
     const geometry = await buildModifiedBaseGeometry(design, side, 0);
@@ -162,9 +219,52 @@ export async function buildValidatedExportGeometry(side: Side): Promise<BufferGe
     }
 }
 
-/** STL and 3MF serialize the same validated manufacturing shell. */
+/** Same closed solid as manufacturing STL; exported for validation UI. */
+export async function buildValidatedExportGeometry(side: Side): Promise<BufferGeometry> {
+    return buildClosedExportGeometry(side);
+}
+
+/**
+ * Closed solids for every foot on the order, in one mesh.
+ * The right foot is shifted in +Y by the shoe width plus the viewer gap so the
+ * shells do not occupy the same origin. Each foot is still the order solid.
+ */
+export async function buildOrderPairGeometry(): Promise<BufferGeometry> {
+    const { design } = useDesignStore.getState();
+    const sides = orderDownloadSides(design);
+    const layout = insoleLayoutFromDesign(design);
+    const gap = layout.widthMm + 30;
+    const parts: BufferGeometry[] = [];
+    try {
+        for (const side of sides) {
+            const solid = await buildClosedExportGeometry(side);
+            const dy = side === "right" && sides.length > 1 ? gap : 0;
+            const placed = dy === 0 ? solid : offsetGeometryY(solid, dy);
+            if (placed !== solid) solid.dispose();
+            parts.push(placed);
+        }
+        if (parts.length === 1) return parts[0]!;
+        const merged = mergeGeometries(parts);
+        return merged;
+    } finally {
+        // mergeGeometries copies vertices. A single part is returned as-is.
+        if (parts.length > 1) for (const p of parts) p.dispose();
+    }
+}
+
+/** Export STL bytes for one foot. Pair downloads use {@link buildOrderPairGeometry}. */
 export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
-    const solid = await buildValidatedExportGeometry(side);
+    const solid = await buildClosedExportGeometry(side);
+    try {
+        return geometryToBinarySTL(solid);
+    } finally {
+        solid.dispose();
+    }
+}
+
+/** STL bytes for every foot on the order, one file. */
+export async function buildOrderPairStl(): Promise<ArrayBuffer> {
+    const solid = await buildOrderPairGeometry();
     try {
         return geometryToBinarySTL(solid);
     } finally {
