@@ -3,15 +3,20 @@ import { workpiecesFromDesign } from "@/lib/cnc/compose";
 import { generateCncJob } from "@/lib/cnc/export";
 import type { MillingProfile } from "@/lib/cnc/types";
 import {
-    buildExportGeometry,
     buildExportGlb,
     buildExportStl,
+    buildOrderPairGeometry,
+    buildOrderPairStl,
     exportModeFromMethod,
+    orderDownloadSides,
 } from "@/lib/geometry/export-geometry";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { collectHardnessRegions } from "@/lib/hardness/collect";
-import { parseBinaryStl } from "@/lib/hardness/mesh";
-import { exportHardness3mf, STL_SHELL_ONLY_WARNING } from "@/lib/hardness/pipeline";
-import type { HardnessExportReport } from "@/lib/hardness/report";
+import { packHardness3mf } from "@/lib/hardness/export-3mf";
+import { parseBinaryStl, type TriangleMesh } from "@/lib/hardness/mesh";
+import { buildRawModifiers, exportHardness3mf, STL_SHELL_ONLY_WARNING } from "@/lib/hardness/pipeline";
+import { buildExportReport, type HardnessExportReport } from "@/lib/hardness/report";
+import { type ResolvedModifier, resolveModifiers } from "@/lib/hardness/resolve";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { mapClientRpcError } from "@/lib/trpc-errors";
@@ -20,7 +25,8 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
-import type { ExportFormat, GrindingStyle, Side } from "@/types";
+import type { DesignState, ExportFormat, GrindingStyle, Side } from "@/types";
+import { classDensityPct } from "../../../shared/print-recipe/hardness-class-table";
 import { bindPrintRecipeProfile } from "../../../shared/print-recipe/print-recipe";
 
 // Re-export for convenience in UI components
@@ -35,10 +41,6 @@ export interface ExportOutcome {
     productionId?: string;
     warning?: string;
     report?: HardnessExportReport;
-}
-
-function buildSideGeometry(side: Side) {
-    return buildExportGeometry(side);
 }
 
 function applyServerBalance(balance: number | undefined): void {
@@ -116,10 +118,14 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
     if (format === "3mf") {
         return export3mf(side);
     }
-    const filename = `insole-${side}-${Date.now()}.stl`;
+    const { design } = useDesignStore.getState();
+    const sides = orderDownloadSides(design);
+    const filename = `insole-${sides.join("-")}-${Date.now()}.stl`;
     try {
-        const { design } = useDesignStore.getState();
-        const stl = await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
+        const stl =
+            sides.length > 1
+                ? await buildOrderPairStl()
+                : await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
         if (!stl?.byteLength) {
             return { ok: false, reason: "Export failed" };
         }
@@ -136,17 +142,99 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
     }
 }
 
+function translateMesh(mesh: TriangleMesh, dy: number): TriangleMesh {
+    if (dy === 0) return mesh;
+    const positions = new Float32Array(mesh.positions);
+    for (let i = 1; i < positions.length; i += 3) positions[i] += dy;
+    return { positions, indices: mesh.indices };
+}
+
+function assertHardnessMapped(design: DesignState, side: Side): void {
+    const unmapped: string[] = [];
+    for (const region of collectHardnessRegions(design, side)) {
+        try {
+            classDensityPct(region.hardnessClass, region.overrides);
+        } catch (err) {
+            unmapped.push(
+                `unmapped region ${region.regionId}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+        }
+    }
+    if (unmapped.length > 0) {
+        throw new Error(`Hardness 3MF export failed: ${unmapped.join("; ")}`);
+    }
+}
+
+/** One foot, local frame. Same closed solid as the STL download. */
+export async function packOne3mf(
+    design: DesignState,
+    side: Side,
+): Promise<{ bytes: Uint8Array; report: HardnessExportReport }> {
+    const stl = await buildExportStl(side);
+    return exportHardness3mf({ design, side, shell: parseBinaryStl(stl) });
+}
+
+/**
+ * Every foot on the order in one 3MF. The right foot (and its modifier meshes)
+ * shifts +Y by the shoe width plus the viewer gap, matching the pair STL.
+ */
+export async function packOrder3mf(
+    design: DesignState,
+    sides: Side[],
+): Promise<{ bytes: Uint8Array; report: HardnessExportReport }> {
+    const layout = insoleLayoutFromDesign(design);
+    const gap = layout.widthMm + 30;
+    const built: Array<{
+        side: Side;
+        shell: TriangleMesh;
+        modifiers: ResolvedModifier[];
+        requested: ReturnType<typeof buildRawModifiers>["requested"];
+    }> = [];
+    const t0 = Date.now();
+    for (const foot of sides) {
+        assertHardnessMapped(design, foot);
+        const stl = await buildExportStl(foot);
+        let shell = parseBinaryStl(stl);
+        const { requested, raw } = buildRawModifiers(design, foot);
+        let modifiers = await resolveModifiers(raw);
+        const dy = foot === "right" && sides.length > 1 ? gap : 0;
+        if (dy) {
+            shell = translateMesh(shell, dy);
+            modifiers = modifiers.map((m) => ({ ...m, mesh: translateMesh(m.mesh, dy) }));
+        }
+        built.push({ side: foot, shell, modifiers, requested });
+    }
+    const first = built[0];
+    if (!first) throw new Error("3MF export failed: no feet on the order");
+    const rest = built.slice(1);
+    const packed = await packHardness3mf({
+        design,
+        side: first.side,
+        shell: first.shell,
+        modifiers: first.modifiers,
+        extraShells: rest.map((r) => ({ name: r.side, shell: r.shell, modifiers: r.modifiers })),
+    });
+    const exportMs = Date.now() - t0;
+    const report = buildExportReport(
+        built.flatMap((b) => b.requested),
+        built.flatMap((b) => b.modifiers),
+        { resolveMs: exportMs, exportMs },
+    );
+    if (!report.ok) {
+        throw new Error(`Hardness 3MF export failed: ${report.errors.join("; ")}`);
+    }
+    return { bytes: packed.bytes, report };
+}
+
 export async function export3mf(side: Side): Promise<ExportOutcome> {
     const { user, license, deductTokens } = useAuthStore.getState();
     const check = canExport(user, license, "3mf");
     if (!check.ok) return { ok: false, reason: check.reason };
-    const filename = `insole-${side}-${Date.now()}.3mf`;
+    const { design } = useDesignStore.getState();
+    const sides = orderDownloadSides(design);
+    const filename = `insole-${sides.join("-")}-${Date.now()}.3mf`;
     try {
-        const { design } = useDesignStore.getState();
-        const stl = await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
-        if (!stl?.byteLength) return { ok: false, reason: "Export failed" };
-        const shell = parseBinaryStl(stl);
-        const packed = await exportHardness3mf({ design, side, shell });
+        const packed = sides.length > 1 ? await packOrder3mf(design, sides) : await packOne3mf(design, side);
         const blob = new Blob([packed.bytes], { type: "model/3mf" });
         downloadBlob(blob, filename);
         deductTokens(TOKEN_COST["3mf"]);
@@ -217,10 +305,12 @@ export async function exportGcode(
     preset: PrinterPreset,
     overrides: CamOverrides = {},
 ): Promise<ExportOutcome> {
-    const filename = `insole-${side}-${preset.id}-${Date.now()}.gcode`;
+    const { design } = useDesignStore.getState();
+    const sides = orderDownloadSides(design);
+    const filename = `insole-${sides.join("-")}-${preset.id}-${Date.now()}.gcode`;
     const auth = await authorize("gcode", side, filename);
     if (!auth.ok) return { ok: false, reason: auth.reason };
-    const geometry = await buildSideGeometry(side);
+    const geometry = await buildOrderPairGeometry();
     const { gcode, stats } = generateGcode(geometry, preset, overrides);
     geometry.dispose();
     const blob = new Blob([gcode], { type: "text/plain" });
@@ -248,7 +338,10 @@ export async function generateHybridGcode(
 
     if (isApiConfigured()) {
         try {
-            const stlBuffer = await buildManufacturingStl(side);
+            const designForStl = useDesignStore.getState().design;
+            const stlSides = orderDownloadSides(designForStl);
+            const stlBuffer =
+                stlSides.length > 1 ? await buildOrderPairStl() : await buildManufacturingStl(side);
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 
             const design = useDesignStore.getState().design;

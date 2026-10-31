@@ -40,6 +40,7 @@ function emitFdm(moves: Move[], preset: PrinterPreset, o: CamOverrides): CamResu
 
     g.comment(`Vertex Web CAD — FDM (${preset.name})`);
     g.comment(`material ${preset.material ?? "TPU"} · layer ${layerHeight}mm · nozzle ${nozzle}mm`);
+    g.comment("slow_down_layer_time = 0");
     if (belt) g.comment(`belt printer · gantry ${belt}°`);
     g.raw("G21");
     g.raw("G90");
@@ -87,7 +88,11 @@ function emitCnc(moves: Move[], preset: PrinterPreset): CamResult {
     return { gcode: g.toString(), stats: g.stats(), moveCount: moves.length };
 }
 
-export function generateGcode(geometry: BufferGeometry, preset: PrinterPreset, o: CamOverrides = {}): CamResult {
+export function generateGcode(
+    geometry: BufferGeometry,
+    preset: PrinterPreset,
+    o: CamOverrides = {},
+): CamResult {
     if (preset.method === "milling_3axis") {
         const moves = cncToolpath(geometry, {
             toolDiameterMm: o.toolDiameterMm ?? 6,

@@ -5,6 +5,7 @@ import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
+import { scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -132,6 +133,17 @@ export async function buildProceduralExportSolid(
         raw.dispose();
         raw = mirrored;
     }
+    // Shoe size before compose, so elements, width, and the loft share the order frame.
+    // The viewport omits footprintMm and keeps the native SAMPLE_Top sheet.
+    if (options.footprintMm) {
+        const sized = scaleGeometryToInsoleSize(
+            raw,
+            options.footprintMm.lengthMm,
+            options.footprintMm.widthMm,
+        );
+        raw.dispose();
+        raw = sized;
+    }
     try {
         const preview = await reconstructProceduralPreview(raw, options);
         if (!hasActiveTextMarking(options.textMarking)) return preview;
@@ -199,6 +211,11 @@ export interface ProceduralPreviewOptions {
     textMarking?: TextMarking | null;
     /** Foot side for left/right placement (wall text is never glyph-mirrored). */
     side?: Side;
+    /**
+     * Scale the top sheet to this shoe footprint before compose. Export and CNC
+     * set it. The viewer leaves it unset so the on-screen SAMPLE_Top stays native.
+     */
+    footprintMm?: { lengthMm: number; widthMm: number } | null;
     /**
      * Analytic-top sinks. Passed through without sourceField so a sink-free
      * export stays on the same loft path as main.
