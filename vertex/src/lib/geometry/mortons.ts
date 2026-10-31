@@ -6,7 +6,10 @@ import type { MortonsMode, MortonsSide, Side } from "@/types";
  * Morton's extension / reverse Morton's — top surface only.
  *
  * u is the fraction of insole length from the heel. v is the fraction of the
- * local outline width at that u, measured from the medial edge (left mirrored).
+ * local outline width at that u, measured from the medial edge. On the stock
+ * pair the left foot is the authored mesh (medial = local Y−) and the right
+ * foot is that mesh mirrored (medial = local Y+). {@link medialSign} is that
+ * mesh-Y sign.
  *
  * The full-height region is the first ray: lateral border at v = 0.40 from the
  * toe back to u = 0.63, proximal border a shallow arc through (0.62, 0.20)
@@ -109,16 +112,43 @@ export function mortonsLocalBaseThicknessMm(depthMm: number, surroundingMm: numb
     return surroundingMm + (target - surroundingMm) * m;
 }
 
+/**
+ * Mesh-Y sign of the medial (first-ray) edge on the stock pair.
+ * Left medial is local Y−; mirrored right medial is local Y+.
+ * Same factor the height field uses to turn vSigned into a medial-positive
+ * coordinate (`m = -(vSigned * medialSign)`). Name matches the helper
+ * docs/HANDEDNESS.md will export so the two can be unified.
+ */
+export function medialSign(foot: Side): 1 | -1 {
+    return foot === "left" ? -1 : 1;
+}
+
 /** spec v (0 medial → 1 lateral) from a height-field vSigned. Matches sink.ts. */
 export function mortonsSpecV(vSigned: number, side: Side): number {
-    const medialSign = side === "left" ? -1 : 1;
-    const m = -(vSigned * medialSign);
+    const sign = medialSign(side);
+    const m = -(vSigned * sign);
     return (1 - m) / 2;
 }
 
 export function mortonsVSigned(specV: number, side: Side): number {
-    const medialSign = side === "left" ? -1 : 1;
-    return medialSign * (2 * specV - 1);
+    return medialSign(side) * (2 * specV - 1);
+}
+
+/**
+ * Insole-mesh point for a spec sample. x is mm from the heel; y is centered
+ * width, with {@link medialSign} pointing at the first ray.
+ */
+export function mortonsMeshPoint(
+    u: number,
+    specV: number,
+    ctx: MortonsSampleContext,
+): { x: number; y: number } {
+    const uu = Math.max(0, Math.min(1, u));
+    const vv = Math.max(0, Math.min(1, specV));
+    const width = Math.max(1, ctx.widthMm);
+    // spec v 0 is the medial bbox edge. vSigned on the mesh is normalized to
+    // that bbox, so the overlay uses the same edge the height field raises.
+    return { x: uu * ctx.lengthMm, y: medialSign(ctx.side) * (0.5 - vv) * width };
 }
 
 function smoothstep01(t: number): number {
@@ -406,6 +436,67 @@ export function mortonsQuery(u: number, vSigned: number, ctx: MortonsSampleConte
 /** Distance from the fillet center to a tangent point. 8 mm when the fillet is built. */
 export function mortonsFilletRadiusMm(ctx: MortonsSampleContext): number {
     return buildBoundary(ctx).filletRadiusMm;
+}
+
+/**
+ * Closed outline of the full raised/lowered region, including the fillet and
+ * the 3 mm taper, in insole mesh millimetres (same frame as {@link mortonsMeshPoint}).
+ * The ring runs the outer taper, crosses the toe, and returns along the medial edge.
+ */
+export function mortonsRegionOutlineMm(ctx: MortonsSampleContext): { x: number; y: number }[] {
+    const boundary = buildBoundary(ctx);
+    const outer: { u: number; specV: number }[] = [];
+    const push = (u: number, specV: number) => {
+        const prev = outer[outer.length - 1];
+        if (prev && Math.abs(prev.u - u) < 1e-4 && Math.abs(prev.specV - specV) < 1e-4) return;
+        outer.push({ u, specV });
+    };
+    for (const s of boundary.segs) {
+        const steps = s.kind === "fillet" ? 4 : 3;
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const x = s.ax + (s.bx - s.ax) * t;
+            const y = s.ay + (s.by - s.ay) * t;
+            const reach = outerEdgeMm(s.kind, s.t0 + (s.t1 - s.t0) * t);
+            const ox = x - s.nx * reach;
+            const oy = y - s.ny * reach;
+            const u = ox / Math.max(1, ctx.lengthMm);
+            const w = Math.max(1, ctx.widthMmAt(Math.min(1, Math.max(0, u))));
+            push(u, oy / w);
+        }
+    }
+    if (outer.length < 3) return [];
+    const start = outer[0]!;
+    const end = outer[outer.length - 1]!;
+    const medialSpec = (_u: number) => 0;
+    for (let i = 1; i <= 8; i++) {
+        const specV = end.specV + (medialSpec(end.u) - end.specV) * (i / 8);
+        push(end.u, specV);
+    }
+    const back = 18;
+    for (let i = 1; i <= back; i++) {
+        const u = end.u + (start.u - end.u) * (i / back);
+        push(u, medialSpec(u));
+    }
+    return outer.map((p) => mortonsMeshPoint(p.u, p.specV, ctx));
+}
+
+/**
+ * Pull an outline ring inside the foot. `spanAt(u)` is the local width range
+ * (mesh Y) at that station. Points outside the silhouette clamp onto it.
+ */
+export function clipMortonsOutline(
+    pts: { x: number; y: number }[],
+    lengthMm: number,
+    spanAt: (u: number) => { lo: number; hi: number } | null,
+): { x: number; y: number }[] {
+    const length = Math.max(1, lengthMm);
+    return pts.map((p) => {
+        const span = spanAt(Math.max(0, Math.min(1, p.x / length)));
+        if (!span || !(span.hi > span.lo)) return p;
+        const y = p.y < span.lo ? span.lo : p.y > span.hi ? span.hi : p.y;
+        return { x: p.x, y };
+    });
 }
 
 /**
