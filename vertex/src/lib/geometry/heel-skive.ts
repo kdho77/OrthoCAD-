@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { fullLengthDeltaFromField, fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { getRearfootFactor, wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { Side, SideCorrections, WedgeCorrection } from "@/types";
@@ -156,7 +157,17 @@ function sampleSeatDelta(
     const post = vSigned * medialSign * (params.widthMm / 2);
     const heel = bump(u, 0.1, 0.18);
     const posting = Math.tan((corrections.rearfootPostingDeg || 0) * DEG) * post * heel;
-    return wedge + posting;
+    const fullLength = fullLengthWedgeActive(corrections)
+        ? fullLengthDeltaFromField(
+              u,
+              vSigned,
+              { side, lengthMm: params.lengthMm, widthMm: params.widthMm, corrections },
+              (uu) =>
+                  effectiveOutlineHalfWidth(uu, params.lengthMm, params.widthMm, params.trimline ?? null) *
+                  (params.widthMm / 2),
+          )
+        : 0;
+    return wedge + posting + fullLength;
 }
 
 /** Width-coordinate of the one-third line from the skived edge toward the opposite edge. */

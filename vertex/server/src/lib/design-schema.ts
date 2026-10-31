@@ -43,6 +43,13 @@ const sideCorrection = z.object({
     lateralFlangeMm: z.number(),
     rearfootWedge: wedgeCorrection.optional(),
     forefootWedge: wedgeCorrection.optional(),
+    fullLengthWedge: z
+        .object({
+            side: z.enum(["medial", "lateral"]),
+            value: z.number().optional(),
+            unit: z.enum(["mm", "deg"]).optional(),
+        })
+        .optional(),
 });
 
 const placedElement = z.object({

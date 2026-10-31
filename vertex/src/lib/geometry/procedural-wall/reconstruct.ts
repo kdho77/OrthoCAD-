@@ -6,6 +6,7 @@ import {
     BASE_REFERENCE_THICKNESS_MM,
     correctionDeltaAt,
 } from "@/lib/geometry/base-modifier";
+import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import {
     forefootWidthLongitudinalEnvelope,
     type HeightFieldParams,
@@ -47,6 +48,7 @@ import { countJunctionBandSlivers, windingReport } from "./metrics";
 import {
     applyForefootPlanShift,
     clampPostingOnTopSheet,
+    FOREFOOT_SHIFT_U_HOLD,
     footprintVSignedFromMeshY,
     forefootOutlineRoomMm,
     forefootWidthPlanDy,
@@ -191,6 +193,7 @@ export function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
         c.lateralFlangeMm !== 0 ||
         hasWedge(c.rearfootWedge) ||
         hasWedge(c.forefootWedge) ||
+        fullLengthWedgeActive(c) ||
         thicknessChanged
     );
 }
@@ -226,6 +229,7 @@ function applyAnalyticTopDeltas(
         ...c,
         rearfootWedge: undefined,
         forefootWedge: undefined,
+        fullLengthWedge: undefined,
     };
     // Corrections-no-sink. T and S are a pure z pass after the loft so station
     // pairing stays the same as a sink-free wall.
@@ -247,10 +251,20 @@ function applyAnalyticTopDeltas(
         thicknessMm: stock,
         corrections: zeroCorrections(),
     };
+    const fullLengthRimXY = fullLengthWedgeActive(c)
+        ? Array.from({ length: pos.length / 3 }, (_, i) => ({
+              x: pos[i * 3]!,
+              y: pos[i * 3 + 1]!,
+          }))
+        : undefined;
     const postingInput = {
         ...input,
         side,
         trimline: field.trimline,
+        fullLengthRimXY,
+        fullLengthRimOrdered: false,
+        fullLengthToeHoldU:
+            (c.forefootWidthMm ?? 0) !== 0 && fullLengthWedgeActive(c) ? FOREFOOT_SHIFT_U_HOLD : undefined,
     };
     const minX = bounds.minX;
     const widCenter = (bounds.minY + bounds.maxY) * 0.5;
@@ -691,10 +705,10 @@ function assertGeneratedEdgesUsedTwice(
 }
 
 /**
- * A non-uniform forefoot Y shift can hand the z=0 disk an ear wound upward
- * while the rest of the disk points down. An undirected watertight check
- * still sees two uses of each edge. Two retiles, both judged in the float32
- * coordinates the mesh is exported with:
+ * A z=0 ear can wind upward while the rest of the disk points down, from a
+ * refined straight plantar row or a non-uniform forefoot Y shift. An
+ * undirected watertight check still sees two uses of each edge. Two retiles,
+ * both judged in the float32 coordinates the mesh is exported with:
  *
  * - Folded diagonal: swap the ear with the flat neighbor across one edge
  *   when both replacement triangles point down. Outer edges keep their
@@ -705,7 +719,7 @@ function assertGeneratedEdgesUsedTwice(
  *   points down and its signed area matches the star.
  *
  * Meshes with no upward or degenerate bottom face are left byte-for-byte alone.
- * Callers must skip this on the zero-width path.
+ * The forefoot-shift caller skips this when the width is 0.
  */
 export function repairInvertedBottomFaces(positions: number[], indices: number[]): number {
     const zEps = 1e-4;
@@ -1167,10 +1181,22 @@ export function reconstructProceduralWalls(
 
     rimLocal = orderRimLocal(topPos, rimLocal);
     const { r1, r2 } = filletRadiiFromDefaults(defaults);
+    const postingRim = fullLengthWedgeActive(options.corrections)
+        ? Array.from({ length: (topPos.length / 3) | 0 }, (_, i) => ({
+              x: topPos[i * 3]!,
+              y: topPos[i * 3 + 1]!,
+          }))
+        : undefined;
     const postingInput = {
         ...options,
         side: options.sourceField?.side ?? ((options.medialYSign ?? 1) < 0 ? "right" : "left"),
         trimline: options.sourceField?.trimline ?? options.trimline ?? null,
+        fullLengthRimXY: postingRim,
+        fullLengthRimOrdered: false as const,
+        fullLengthToeHoldU:
+            (options.corrections?.forefootWidthMm ?? 0) !== 0 && fullLengthWedgeActive(options.corrections)
+                ? FOREFOOT_SHIFT_U_HOLD
+                : undefined,
     };
     const postingAt = (x: number, y: number) => postingZDelta(x, y, model.bounds, postingInput);
     const postingClamps = clampPostingOnTopSheet(
@@ -1587,6 +1613,8 @@ export function reconstructProceduralWalls(
         footLengthMm,
         flatPlantar,
         movedAt: patternMovedAt,
+        fairRoundTangent:
+            (options.wallStyle ?? "straight") === "round" && fullLengthWedgeActive(options.corrections),
         wallStyle,
     });
     const indexGridStyle = (options.wallStyle ?? "straight") !== "straight";
@@ -1872,6 +1900,11 @@ export function reconstructProceduralWalls(
     const bandVerts = new Set<number>();
     for (let i = 0; i < (indexGrid ? nS : refinedB.length); i++) bandVerts.add(refinedVert(i));
     const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ, bandVerts, indexGrid);
+    // The upward ear is a full-length straight-wall artifact. Regional posting
+    // and wedge-off stay on main's triangulation.
+    if (fullLengthWedgeActive(options.corrections)) {
+        repairInvertedBottomFaces(positions, indices);
+    }
     assertGeneratedEdgesUsedTwice(indices, generatedStart, positions);
     if (indexGrid) {
         const seam = measureSeamBFromPlantar(positions, indices, bRingStart, nS, (i) => gridVert(nJ - 2, i));
@@ -1900,15 +1933,17 @@ export function reconstructProceduralWalls(
     }
     if (forefootMm !== 0) {
         const roomAt = forefootOutlineRoomMm(grid.outlineRing, model.bounds);
+        const fairToe = fullLengthWedgeActive(options.corrections);
         applyForefootPlanShift(
             positions,
             model.bounds,
             forefootMm,
             options.forefootRigidBoxes,
             grid.outlineRing,
+            fairToe,
         );
         for (const p of grid.outlineRing) {
-            p.y += forefootWidthPlanDy(p.x, p.y, model.bounds, forefootMm, roomAt);
+            p.y += forefootWidthPlanDy(p.x, p.y, model.bounds, forefootMm, roomAt, fairToe);
         }
         // Non-uniform Y can flip a z=0 triangle. A bottom that is already
         // down is left byte-for-byte alone. Width 0 never reaches this block.
@@ -2225,7 +2260,9 @@ export function reconstructProceduralWalls(
     };
     const liftMm = options.corrections?.heelLiftMm ?? 0;
     const hasPost =
-        hasWedge(options.corrections?.rearfootWedge) || hasWedge(options.corrections?.forefootWedge);
+        hasWedge(options.corrections?.rearfootWedge) ||
+        hasWedge(options.corrections?.forefootWedge) ||
+        fullLengthWedgeActive(options.corrections);
     if (liftMm > 0 || hasPost) {
         let heelWall = 0;
         let maxBz = Number.NEGATIVE_INFINITY;

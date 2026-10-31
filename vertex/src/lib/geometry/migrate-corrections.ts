@@ -1,6 +1,16 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import type { Corrections, DesignState, PlacedSink, Side, SideCorrections, WedgeCorrection } from "@/types";
+
+/** Order defaults a full-length wedge replaces. Explicit other regional wedges stay. */
+export const STANDARD_REARFOOT_WEDGE: WedgeCorrection = { side: "medial", value: 3, unit: "mm" };
+export const STANDARD_FOREFOOT_WEDGE: WedgeCorrection = { side: "lateral", value: 1.5, unit: "mm" };
+
+function isStandardWedge(w: WedgeCorrection | undefined, standard: WedgeCorrection): boolean {
+    if (!w) return false;
+    return w.side === standard.side && w.unit === standard.unit && Math.abs(w.value - standard.value) < 1e-6;
+}
 
 function postingDegToWedge(deg: number): WedgeCorrection | undefined {
     if (!Number.isFinite(deg) || Math.abs(deg) < 1e-9) return undefined;
@@ -45,6 +55,13 @@ export function migrateSideCorrections(c: SideCorrections): SideCorrections {
 
     if (next.forefootWidthMm == null || !Number.isFinite(next.forefootWidthMm)) {
         next.forefootWidthMm = 0;
+    }
+
+    // A full-length wedge note replaces the standard 3 mm medial / 1.5 mm lateral
+    // defaults. Any other regional wedge was written on purpose and stays.
+    if (fullLengthWedgeActive(next)) {
+        if (isStandardWedge(next.rearfootWedge, STANDARD_REARFOOT_WEDGE)) next.rearfootWedge = undefined;
+        if (isStandardWedge(next.forefootWedge, STANDARD_FOREFOOT_WEDGE)) next.forefootWedge = undefined;
     }
 
     return next;

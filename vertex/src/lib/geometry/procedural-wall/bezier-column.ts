@@ -360,6 +360,11 @@ export interface ColumnFrame {
     chordFloorReason?: "rows" | "chord";
     /** Incident-face start tangent at R (column plane). */
     tInc?: XYZ | null;
+    /**
+     * Full-length wedge only. Smooth the incident rim tangent along the loop
+     * so a ruled tilt does not zigzag the Round heel wall.
+     */
+    fairRoundTangent?: boolean;
     /** Normal of the top face sharing rim edge (R_i, R_{i+1}). */
     rimEdgeN?: XYZ;
     /** Global locked steal (mm) so Fpiece stays a parallel of F. */
@@ -5137,10 +5142,68 @@ function rowEErr(col: XYZ[] | undefined, E: XYZ, NL: number): number {
     return hypot3({ x: p.x - E.x, y: p.y - E.y, z: p.z - E.z });
 }
 
+/** Kill triangle-scale normal zigzag. The heel-cup trend lives on a longer arc. */
+const ROUND_RIM_TANGENT_SIGMA_MM = 8;
+
+/** Full weight on the posterior heel; raw tangent again by the midfoot. */
+function heelTangentFairWeight(u: number): number {
+    const u0 = 0.12;
+    const u1 = 0.3;
+    if (u <= u0) return 1;
+    if (u >= u1) return 0;
+    const t = (u - u0) / (u1 - u0);
+    return 1 - t * t * (3 - 2 * t);
+}
+
+/**
+ * The Round lip follows each rim face. On a tilted sheet those faces alternate,
+ * so neighboring heel columns leave the rim in different directions and the
+ * loft folds. Replace the incident normal with its arc-smoothed slope.
+ */
+function fairRoundRimTangents(frames: ColumnFrame[]): void {
+    const nS = frames.length;
+    if (nS < 3 || !frames.some((fr) => fr.fairRoundTangent)) return;
+    const slope: number[] = [];
+    const arc: number[] = [0];
+    for (let i = 0; i < nS; i++) {
+        const fr = frames[i]!;
+        const plane = fr.rimEdgeN ?? fr.sheetPlaneN;
+        const face = plane ? sheetSlopeFromNormal(plane, fr.h) : null;
+        slope.push(face ?? (fr.sheetSlopeValid ? fr.roundSlopeRad : 0));
+        if (i > 0) {
+            const a = frames[i - 1]!.R;
+            const b = fr.R;
+            arc.push(arc[i - 1]! + Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+        }
+    }
+    let period = arc[nS - 1] ?? 0;
+    const a0 = frames[0]!.R;
+    const aN = frames[nS - 1]!.R;
+    period += Math.hypot(a0.x - aN.x, a0.y - aN.y, a0.z - aN.z);
+    const smoothed = periodicGaussian1d(slope, arc, ROUND_RIM_TANGENT_SIGMA_MM, period);
+    for (let i = 0; i < nS; i++) {
+        const fr = frames[i]!;
+        if (!fr.fairRoundTangent) continue;
+        const w = heelTangentFairWeight(fr.u);
+        if (w <= 1e-6) continue;
+        const mixed = w * smoothed[i]! + (1 - w) * slope[i]!;
+        const nTop = nTopFromSheetSlope(mixed, fr.h);
+        fr.roundSlopeRad = mixed;
+        fr.sheetSlopeRad = -mixed;
+        fr.sheetSlopeValid = true;
+        fr.nTop = nTop;
+        fr.nTopSmoothed = nTop;
+        fr.sheetPlaneN = nTop;
+        fr.rimEdgeN = nTop;
+        fr.tInc = incidentFaceTangent(nTop, fr.h);
+    }
+}
+
 /** Shared lip/body block rows. HYBRID/short-Ls blend per row after both pieces share NL/NB. */
 function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     const style = frames[0]?.wallStyle?.style ?? "straight";
     if (style === "straight" || !frames.length) return;
+    fairRoundRimTangents(frames);
     const nLipOrig = Math.max(1, frames[0]!.nRoundFix || frames[0]!.roundRows || 0);
     const inputs: SplineStationInput[] = frames.map((fr) => {
         const tR = refreshIncidentTR(fr);
@@ -6093,6 +6156,7 @@ export function buildBezierColumns(
     movedAt?: (u: number) => boolean,
     wallStyle?: WallStyleParams,
     footLengthMm?: number,
+    fairRoundTangent = false,
 ): BezierColumns {
     const regionDefault = stations.map((st) =>
         blendedFlareDeg(st.u, st.outline.y, defaults.flareDeg, defaults.medialYSign ?? 1),
@@ -6118,6 +6182,7 @@ export function buildBezierColumns(
         fr.wallStyle = style;
         fr.sideSign = fr.R.y * medial >= 0 ? 1 : -1;
         fr.footLengthMm = lengthMm;
+        fr.fairRoundTangent = fairRoundTangent && style.style === "round";
     }
     const spacing = medianStationSpacing(stations);
     const minWallClamps = clampFramesMinWall(frames, topZ, minWallMm);

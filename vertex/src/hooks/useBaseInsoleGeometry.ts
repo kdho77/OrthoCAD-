@@ -20,6 +20,7 @@ import {
 } from "@/lib/geometry/base-modifier";
 import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
 import { elementGeometryKey } from "@/lib/geometry/element-geometry-key";
+import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import { type HeightFieldParams, heightAt } from "@/lib/geometry/height-field";
 import {
     hashLiveBottomPattern,
@@ -27,6 +28,7 @@ import {
 } from "@/lib/geometry/procedural-wall/live-bottom-pattern";
 import {
     applyForefootPlanShift,
+    FOREFOOT_SHIFT_U_HOLD,
     forefootFeatureBoxes,
     forefootPlanBoundsOfPositions,
 } from "@/lib/geometry/procedural-wall/modifiers";
@@ -91,12 +93,23 @@ function forefootViewerCacheKey(input: {
     lengthMm: number;
     widthMm: number;
 }): string {
-    return JSON.stringify({ ...input, corrections: { ...input.corrections, forefootWidthMm: 0 } });
+    const fore = input.corrections.forefootWidthMm ?? 0;
+    const fullLengthToeHoldU =
+        fore !== 0 && fullLengthWedgeActive(input.corrections) ? FOREFOOT_SHIFT_U_HOLD : 0;
+    return JSON.stringify({
+        ...input,
+        corrections: { ...input.corrections, forefootWidthMm: 0 },
+        fullLengthToeHoldU,
+    });
 }
 
 function fieldWithoutForefoot(field: HeightFieldParams, foreW: number): HeightFieldParams {
     if (foreW === 0) return field;
-    return { ...field, corrections: { ...field.corrections, forefootWidthMm: 0 } };
+    return {
+        ...field,
+        corrections: { ...field.corrections, forefootWidthMm: 0 },
+        ...(fullLengthWedgeActive(field.corrections) ? { fullLengthToeHoldU: FOREFOOT_SHIFT_U_HOLD } : {}),
+    };
 }
 
 export interface BaseInsoleGeometryState {
@@ -429,7 +442,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 };
                 const neutral = {
                     ...wedgeOnly,
-                    corrections: { ...wedgeOnly.corrections!, rearfootWedge: undefined },
+                    corrections: {
+                        ...wedgeOnly.corrections!,
+                        rearfootWedge: undefined,
+                        fullLengthWedge: undefined,
+                    },
                 };
                 stockDebug("STEP0 design viewer top-sheet z delta (mm)", {
                     side,
@@ -455,7 +472,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 };
                 const neutral = {
                     ...wedgeOnly,
-                    corrections: { ...wedgeOnly.corrections!, forefootWedge: undefined },
+                    corrections: {
+                        ...wedgeOnly.corrections!,
+                        forefootWedge: undefined,
+                        fullLengthWedge: undefined,
+                    },
                 };
                 stockDebug("STEP corrections forefoot lateral mm top z delta (heightAt + mesh)", {
                     side,
@@ -516,7 +537,14 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             elements: field.elements,
                             text: design.textMarking,
                         });
-                        applyForefootPlanShift(pos.array as Float32Array, bounds, foreW, boxes, outline);
+                        applyForefootPlanShift(
+                            pos.array as Float32Array,
+                            bounds,
+                            foreW,
+                            boxes,
+                            outline,
+                            fullLengthWedgeActive(field.corrections),
+                        );
                         pos.needsUpdate = true;
                         display.computeBoundingBox();
                         display.computeBoundingSphere();
@@ -654,7 +682,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             };
                             const neutralField = {
                                 ...wedgeField,
-                                corrections: { ...(wedgeField.corrections ?? {}), forefootWedge: undefined },
+                                corrections: {
+                                    ...(wedgeField.corrections ?? {}),
+                                    forefootWedge: undefined,
+                                    fullLengthWedge: undefined,
+                                },
                             };
                             const wedgeGeo = await composeViewerPrintSolidTop({
                                 raw,

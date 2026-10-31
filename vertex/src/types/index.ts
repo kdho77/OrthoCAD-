@@ -205,6 +205,16 @@ export interface SideCorrections {
      */
     rearfootWedge?: WedgeCorrection;
     forefootWedge?: WedgeCorrection;
+    /**
+     * Full-length ruled posting on the top rim. Undefined or value 0 is off.
+     * An omitted / non-finite value means 3.0 mm at the heel high edge (u 0.15),
+     * tapering to 0 on the opposite edge. See full-length-wedge.ts.
+     */
+    fullLengthWedge?: {
+        side: "medial" | "lateral";
+        value?: number;
+        unit?: "mm" | "deg";
+    };
 }
 
 export interface Corrections {
