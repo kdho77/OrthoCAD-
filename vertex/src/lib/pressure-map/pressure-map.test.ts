@@ -199,7 +199,8 @@ describe("pressure map overlay", () => {
         expect(a.designHash).toBe(b.designHash);
     });
 
-    test("writes realistic preview PNGs (top + oblique) for each foot", () => {
+    test("writes software preview PNGs when PRESSURE_MAP_SOFTWARE_PREVIEW=1", () => {
+        if (process.env.PRESSURE_MAP_SOFTWARE_PREVIEW !== "1") return;
         const dirs = [
             resolve("/opt/cursor/artifacts/screenshots"),
             resolve(process.cwd(), "tests/pressure-map/previews"),

@@ -185,6 +185,14 @@ export function Viewer3D() {
         setViewer({ view: name });
     };
 
+    useEffect(() => {
+        if (!import.meta.env.DEV) return;
+        if (!new URLSearchParams(window.location.search).has("pressureMapE2E")) return;
+        (
+            window as unknown as { __orthocadApplyCameraView?: (name: CameraView) => void }
+        ).__orthocadApplyCameraView = (name) => setView(name);
+    }, [setViewer]);
+
     return (
         <div className="relative h-full w-full bg-[hsl(222_28%_7%)]">
             <Canvas

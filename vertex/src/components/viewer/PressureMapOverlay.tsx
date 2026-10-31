@@ -13,6 +13,7 @@ interface PressureMapOverlayProps {
 function PressureMapPlane({ side }: PressureMapOverlayProps) {
     const foot = useDesignStore((s) => s.design.pressureMaps?.[side]);
     const design = useDesignStore((s) => s.design);
+    const viewerTransparent = useDesignStore((s) => s.viewer.transparent);
 
     const texture = useMemo(() => {
         if (!foot?.visible) return null;
@@ -45,20 +46,25 @@ function PressureMapPlane({ side }: PressureMapOverlayProps) {
 
     if (!foot?.visible || !texture || !pose) return null;
 
+    /** Above bottom-pattern fill (8); skip depth test when transparent so ink is not occluded. */
+    const renderOrder = viewerTransparent ? 10 : -2;
+    const depthTest = !viewerTransparent;
+
     return (
         <mesh
             position={pose.position}
             rotation={pose.rotation}
             scale={[pose.scale.x, pose.scale.y, 1]}
-            renderOrder={-2}
+            renderOrder={renderOrder}
             raycast={() => {}}
         >
             <planeGeometry args={[1, 1]} />
             <meshBasicMaterial
                 map={texture}
                 transparent={false}
+                side={THREE.DoubleSide}
                 depthWrite={false}
-                depthTest
+                depthTest={depthTest}
                 toneMapped={false}
             />
         </mesh>

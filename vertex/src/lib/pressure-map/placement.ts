@@ -33,7 +33,8 @@ export interface PressureMapPlanePlacement {
     mirrorImageU: boolean;
 }
 
-const PLANE_Z_GAP_MM = 0.35;
+/** Slightly above the bottom-pattern fill plane (z≈0) so depth does not hide the map. */
+export const PRESSURE_MAP_PLANE_Z_MM = 0.12;
 
 export function footprintRectForDesign(design: DesignState, side: Side): FootprintRect {
     const layout = insoleLayoutFromDesign(design);
@@ -78,6 +79,19 @@ function contentSizePx(
     return { w, h, cu, cv };
 }
 
+/** Map image ink span to footprint length/width after auto rotation (portrait ⇒ −90° swaps axes). */
+function contentSpanFootprintMm(
+    contentWidthPx: number,
+    contentHeightPx: number,
+    autoRotationDeg: number,
+): { alongLengthPx: number; alongWidthPx: number } {
+    const rot = ((autoRotationDeg % 360) + 360) % 360;
+    const swap = rot === 90 || rot === 270;
+    return swap
+        ? { alongLengthPx: contentHeightPx, alongWidthPx: contentWidthPx }
+        : { alongLengthPx: contentWidthPx, alongWidthPx: contentHeightPx };
+}
+
 function orientationOf(foot: PressureMapFoot): PressureImageOrientation {
     if (foot.orientation) return foot.orientation;
     return {
@@ -99,12 +113,19 @@ export function autoPressureMapPlacement(
 ): PressureMapPlanePlacement {
     const orient = orientationOf(foot as PressureMapFoot);
     const { w: cw, h: ch, cu, cv } = contentSizePx(foot.contentBounds, foot.imageWidth, foot.imageHeight);
-    const contentAspect = cw / ch;
+    const { alongLengthPx, alongWidthPx } = contentSpanFootprintMm(cw, ch, orient.autoRotationDeg);
+    const contentAspect = alongLengthPx / Math.max(alongWidthPx, 1e-6);
     const footAspect = footprint.lengthMm / Math.max(footprint.widthMm, 1e-6);
+    const fracU = Math.max(0.04, foot.contentBounds.maxU - foot.contentBounds.minU);
+    const fracV = Math.max(0.04, foot.contentBounds.maxV - foot.contentBounds.minV);
+    const rotNorm = ((orient.autoRotationDeg % 360) + 360) % 360;
+    const rot90 = rotNorm === 90 || rotNorm === 270;
+    const fracAlongLength = rot90 ? fracV : fracU;
+    const fracAlongWidth = rot90 ? fracU : fracV;
 
     let mapContentWidthToFootprintX = contentAspect >= footAspect;
     if (Math.abs(contentAspect - footAspect) < 0.08) {
-        mapContentWidthToFootprintX = cw >= ch;
+        mapContentWidthToFootprintX = alongLengthPx >= alongWidthPx;
     }
 
     let planeLen = footprint.lengthMm;
@@ -126,6 +147,10 @@ export function autoPressureMapPlacement(
     const scale = Math.max(0.05, alignment.scale);
     planeLen *= scale;
     planeWid *= scale;
+
+    // Plane UV is the full image; ink occupies a subset — expand so content spans the footprint.
+    planeLen /= fracAlongLength;
+    planeWid /= fracAlongWidth;
 
     const rot = THREE.MathUtils.degToRad(orient.autoRotationDeg + alignment.rotationDeg);
     const center = new THREE.Vector2(
@@ -197,7 +222,7 @@ export function pressureMapMeshPose(
     const localX = placement.centerFootprint.x - layout.lengthMm / 2;
     const localY = offsetX + placement.centerFootprint.y;
     return {
-        position: new THREE.Vector3(localX, localY, -PLANE_Z_GAP_MM),
+        position: new THREE.Vector3(localX, localY, PRESSURE_MAP_PLANE_Z_MM),
         rotation: new THREE.Euler(0, 0, placement.rotationRad),
         scale: placement.sizeFootprint,
         mirrorImageU: placement.mirrorImageU,
