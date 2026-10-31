@@ -7,7 +7,7 @@ import type { PlacedElement, PlacedSink, Side, SinkKind, SinkMarkerRef, TextMark
 
 /**
  * Elements > Sink. Two top-sheet terms, never a boolean and never the bottom:
- * forefoot thickness T (additive) then sink cut S (subtractive, applied last).
+ * local forefoot thickness T (additive) then sink cut S (subtractive, applied last).
  * Empty / undefined sinks return before any work so exports stay byte-identical.
  *
  * Picked constants (Kendon brief v1) — change them here.
@@ -21,18 +21,28 @@ export const SINK_REFERENCE_WIDTH_MM = INSOLE_WIDTH_MM;
 export const SINK_DEFAULT_DEPTH_MM = 2;
 /** Added on top of the deepest forefoot sink. Floor under that sink = current + this. */
 export const FOREFOOT_THICKNESS_CLEARANCE_MM = 0.5;
-/** Smootherstep length of the forefoot thickness ramp. */
+/** Local blend length of a forefoot sink's thickness addition. */
 export const BLEND_LEN_MM = 25;
-/** Proximal margin between the oval+blend tip and full forefoot thickness. */
-export const THICKNESS_PROXIMAL_MARGIN_MM = 5;
-/** Styloid thickness blend, wider than the cut so the floor rises smoothly. */
-export const STYLOID_EXT_BLEND_MM = 15;
 /** Wall notch fades this far below the styloid floor. */
 export const STYLOID_WALL_FADE_BELOW_FLOOR_MM = 4;
 /** Minimum remaining top thickness after T − S. */
 export const FLOOR_MIN_MM = 2.0;
-/** Lateral wall crest must stay at least this far above the local top. */
-export const LATERAL_WALL_MIN_MM = 3.0;
+/** Lateral wall keeps at least this much thickness at a styloid relief. */
+export const LATERAL_WALL_MIN_MM = 2.0;
+/** 5th IPJ / styloid long-axis angle. Positive tips toward lateral on a right foot. */
+export const STYLOID_ROTATION_DEG = 15;
+/**
+ * Sub-0.05 mm thickness within this 3D distance of the loft outline is
+ * dropped. The first wall triangle shares that edge. Thicker additions stay,
+ * so the shell wall is not sheared.
+ */
+export const LOFT_RIM_HOLD_MM = 2;
+/** Full-thickness material required between the styloid taper and the insole edge. */
+export const STYLOID_RIM_CLEAR_MM = 4;
+/** Below this clearance the styloid is not cut, unless a per-case override is set. */
+export const STYLOID_RIM_HARD_MM = 3;
+/** Override floor. A per-case override may sit closer than the hard-stop, but not under this. */
+export const STYLOID_RIM_OVERRIDE_FLOOR_MM = 2;
 /** 5th MPJ cut fades out before the lateral rim. */
 export const MPJ5_V_FADE_START = 0.88;
 export const MPJ5_V_FADE_END = 0.95;
@@ -46,8 +56,6 @@ export const MPJ1_V_FADE_END = 0.05;
  */
 export const RIM_LIP_MAX_DEG = 30;
 const RIM_LIP_REACH_MM = 15;
-export const MPJ1_PROXIMAL_SHIFT_MM = 3;
-export const MPJ5_LATERAL_SHIFT_MM = 2;
 export const ELLIPSE_NEWTON_ITERS = 4;
 
 export interface SinkProfile {
@@ -64,12 +72,15 @@ export interface SinkProfile {
     blendMm: number;
     defaultDepthMm: number;
     maxDepthMm: number;
-    /** Deepest point shift toward the heel, mm. Not scaled. */
+    /** Deepest point shift toward the heel, mm. Not scaled. Zero keeps a true oval. */
     deepestProximalMm: number;
-    /** Deepest point shift toward lateral, mm. Not scaled. */
+    /** Deepest point shift toward lateral, mm. Not scaled. Zero keeps a true oval. */
     deepestLateralMm: number;
-    /** Long axis follows the lateral rim (5th met). */
-    alongLateralRim: boolean;
+    /**
+     * Long-axis angle on a right foot, degrees from distal toward lateral.
+     * Left feet use the opposite sign. Zero is a foot-axis oval (a circle when the axes match).
+     */
+    rotationDeg: number;
     /** Keep the cut off the lateral wall. */
     lateralWallFade: boolean;
     /** Keep the cut off the medial wall. */
@@ -90,9 +101,9 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         blendMm: 8,
         defaultDepthMm: SINK_DEFAULT_DEPTH_MM,
         maxDepthMm: 4,
-        deepestProximalMm: MPJ1_PROXIMAL_SHIFT_MM,
+        deepestProximalMm: 0,
         deepestLateralMm: 0,
-        alongLateralRim: false,
+        rotationDeg: 0,
         lateralWallFade: false,
         medialWallFade: true,
         forefoot: true,
@@ -109,7 +120,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         maxDepthMm: 3,
         deepestProximalMm: 0,
         deepestLateralMm: 0,
-        alongLateralRim: false,
+        rotationDeg: 0,
         lateralWallFade: false,
         medialWallFade: false,
         forefoot: true,
@@ -126,7 +137,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         maxDepthMm: 3,
         deepestProximalMm: 0,
         deepestLateralMm: 0,
-        alongLateralRim: false,
+        rotationDeg: 0,
         lateralWallFade: false,
         medialWallFade: false,
         forefoot: true,
@@ -143,7 +154,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         maxDepthMm: 3,
         deepestProximalMm: 0,
         deepestLateralMm: 0,
-        alongLateralRim: false,
+        rotationDeg: 0,
         lateralWallFade: false,
         medialWallFade: false,
         forefoot: true,
@@ -159,15 +170,15 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         defaultDepthMm: SINK_DEFAULT_DEPTH_MM,
         maxDepthMm: 4,
         deepestProximalMm: 0,
-        deepestLateralMm: MPJ5_LATERAL_SHIFT_MM,
-        alongLateralRim: false,
+        deepestLateralMm: 0,
+        rotationDeg: 0,
         lateralWallFade: true,
         medialWallFade: false,
         forefoot: true,
     },
     styloid: {
         kind: "styloid",
-        label: "5th Met Base (Styloid)",
+        label: "5th IPJ (Styloid)",
         u: 0.42,
         v: 0.95,
         lengthMm: 20,
@@ -177,7 +188,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         maxDepthMm: 3,
         deepestProximalMm: 0,
         deepestLateralMm: 0,
-        alongLateralRim: true,
+        rotationDeg: STYLOID_ROTATION_DEG,
         lateralWallFade: false,
         medialWallFade: false,
         forefoot: false,
@@ -206,7 +217,14 @@ export interface SinkSurfaceContext {
 
 export interface SinkWarning {
     sinkId: string;
-    code: "depth-max" | "floor" | "lateral-wall" | "element-overlap" | "text-overlap";
+    code:
+        | "depth-max"
+        | "floor"
+        | "lateral-wall"
+        | "element-overlap"
+        | "text-overlap"
+        | "rim"
+        | "rim-hard-stop";
     message: string;
 }
 
@@ -329,34 +347,68 @@ export interface SinkOvalFrame {
     /** Deepest point, mm, anatomical. */
     dx: number;
     dy: number;
+    /** Signed long-axis angle, degrees. Left is the mirror of right. */
+    rotationDeg: number;
+    /** Full-thickness gap from the outer taper to the lateral edge. Infinity off the styloid. */
+    rimMarginMm: number;
+    /** Medial shift applied so the taper is not clipped by the edge. */
+    rimShiftMm: number;
+    /** Hard-stop: the oval would break the rim floor, so the cut is not applied. */
+    rimBlocked: boolean;
+    rimWarning?: SinkWarning;
 }
 
-function outlineTangent(u: number, lateral: boolean, ctx: SinkSurfaceContext): { tx: number; ty: number } {
-    const du = 1 / Math.max(ctx.lengthMm, 1);
-    const u0 = Math.max(0, u - du);
-    const u1 = Math.min(1, u + du);
-    const y0 = (lateral ? 1 : -1) * localHalfWidthMm(u0, ctx);
-    const y1 = (lateral ? 1 : -1) * localHalfWidthMm(u1, ctx);
-    let tx = (u1 - u0) * ctx.lengthMm;
-    let ty = y1 - y0;
-    if (tx < 0) {
-        tx = -tx;
-        ty = -ty;
-    }
-    const len = Math.hypot(tx, ty) || 1;
-    return { tx: tx / len, ty: ty / len };
+/** Right-foot angle, mirrored on the left so the oval is the mirror image. */
+export function signedSinkRotationDeg(rotationDeg: number, side: Side): number {
+    return side === "left" ? -rotationDeg : rotationDeg;
 }
 
-function acrossFromTangent(tx: number, ty: number): { nx: number; ny: number } {
-    // Rotate +distal 90° so the across axis points +lateral (roughly +y).
-    let nx = -ty;
-    let ny = tx;
-    if (ny < 0) {
-        nx = -nx;
-        ny = -ny;
+function frameAxes(theta: number): { tx: number; ty: number; nx: number; ny: number } {
+    return {
+        tx: Math.cos(theta),
+        ty: Math.sin(theta),
+        nx: -Math.sin(theta),
+        ny: Math.cos(theta),
+    };
+}
+
+/** How far the oval reaches toward lateral, measured from its centre. Blend is separate. */
+export function ovalLateralSupportMm(halfLengthMm: number, halfWidthMm: number, theta: number): number {
+    return Math.hypot(halfLengthMm * Math.sin(theta), halfWidthMm * Math.cos(theta));
+}
+
+function placeStyloidRim(
+    sink: PlacedSink,
+    cy: number,
+    half: number,
+    supportMm: number,
+    blendMm: number,
+): { cy: number; marginMm: number; shiftMm: number; blocked: boolean; warning?: SinkWarning } {
+    const outer = supportMm + blendMm;
+    const marginAt = (y: number) => half - y - outer;
+    const targetCy = half - STYLOID_RIM_CLEAR_MM - outer;
+    const minCy = -half + outer;
+    let next = cy;
+    if (cy > targetCy) next = Math.max(minCy, targetCy);
+    if (next > cy) next = cy;
+    const marginMm = marginAt(next);
+    const hard = sink.rimOverride ? STYLOID_RIM_OVERRIDE_FLOOR_MM : STYLOID_RIM_HARD_MM;
+    const blocked = marginMm < hard - 1e-6;
+    let warning: SinkWarning | undefined;
+    if (blocked) {
+        warning = {
+            sinkId: sink.id,
+            code: "rim-hard-stop",
+            message: `${SINK_LABELS.styloid} rim clearance ${marginMm.toFixed(1)} mm is below ${hard.toFixed(1)} mm; sink not cut`,
+        };
+    } else if (marginMm < STYLOID_RIM_CLEAR_MM - 1e-6) {
+        warning = {
+            sinkId: sink.id,
+            code: "rim",
+            message: `${SINK_LABELS.styloid} rim clearance ${marginMm.toFixed(1)} mm is below ${STYLOID_RIM_CLEAR_MM.toFixed(1)} mm`,
+        };
     }
-    const len = Math.hypot(nx, ny) || 1;
-    return { nx: nx / len, ny: ny / len };
+    return { cy: next, marginMm, shiftMm: cy - next, blocked, warning };
 }
 
 export function sinkFrame(sink: PlacedSink, ctx: SinkSurfaceContext): SinkOvalFrame | null {
@@ -370,32 +422,46 @@ export function sinkFrame(sink: PlacedSink, ctx: SinkSurfaceContext): SinkOvalFr
     const widthScale = localW / refW;
     const halfLengthMm = (profile.lengthMm / 2) * lengthScale;
     const halfWidthMm = (profile.widthMm / 2) * widthScale;
-    const lateralRim = profile.alongLateralRim || uv.v >= 0.5;
-    const tangent = outlineTangent(uv.u, lateralRim, ctx);
-    const across = acrossFromTangent(tangent.tx, tangent.ty);
+    const rotationDeg = signedSinkRotationDeg(profile.rotationDeg, ctx.side);
+    const theta = (rotationDeg * Math.PI) / 180;
+    const axes = frameAxes(theta);
     const half = localHalfWidthMm(uv.u, ctx);
     const cx = uv.u * ctx.lengthMm;
-    const cy = (2 * uv.v - 1) * half;
+    let cy = (2 * uv.v - 1) * half;
+    let v = uv.v;
+    const support = ovalLateralSupportMm(halfLengthMm, halfWidthMm, theta);
+    let rimMarginMm = Number.POSITIVE_INFINITY;
+    let rimShiftMm = 0;
+    let rimBlocked = false;
+    let rimWarning: SinkWarning | undefined;
+    if (sink.kind === "styloid" && half > 1e-6) {
+        const placed = placeStyloidRim(sink, cy, half, support, profile.blendMm);
+        cy = placed.cy;
+        v = (cy / half + 1) / 2;
+        rimMarginMm = placed.marginMm;
+        rimShiftMm = placed.shiftMm;
+        rimBlocked = placed.blocked;
+        rimWarning = placed.warning;
+    }
     const prox = Math.min(profile.deepestProximalMm, halfLengthMm * 0.49);
     const lat = Math.min(profile.deepestLateralMm, halfWidthMm * 0.49);
-    // Outer boundary stays put: the deep point slides, the far half-axis grows.
     const aProx = Math.max(0.5, halfLengthMm - prox);
     const aDist = halfLengthMm + prox;
     const bLat = Math.max(0.5, halfWidthMm - lat);
     const bMed = halfWidthMm + lat;
-    const dx = cx - tangent.tx * prox + across.nx * lat;
-    const dy = cy - tangent.ty * prox + across.ny * lat;
+    const dx = cx - axes.tx * prox + axes.nx * lat;
+    const dy = cy - axes.ty * prox + axes.ny * lat;
     return {
         kind: sink.kind,
         sinkId: sink.id,
         u: uv.u,
-        v: uv.v,
+        v,
         cx,
         cy,
-        tx: tangent.tx,
-        ty: tangent.ty,
-        nx: across.nx,
-        ny: across.ny,
+        tx: axes.tx,
+        ty: axes.ty,
+        nx: axes.nx,
+        ny: axes.ny,
         halfLengthMm,
         halfWidthMm,
         blendMm: profile.blendMm,
@@ -410,6 +476,11 @@ export function sinkFrame(sink: PlacedSink, ctx: SinkSurfaceContext): SinkOvalFr
         bLat,
         dx,
         dy,
+        rotationDeg,
+        rimMarginMm,
+        rimShiftMm,
+        rimBlocked,
+        rimWarning,
     };
 }
 
@@ -460,7 +531,7 @@ function eggWeight(frame: SinkOvalFrame, x: number, y: number, blendMm: number):
     if (r <= 1) return 1;
     const dist = ellipseOffsetDistance(lx, ly, a, b);
     if (blendMm <= 1e-9) return 0;
-    return 1 - smoothstep01(dist / blendMm);
+    return 1 - smootherstep01(dist / blendMm);
 }
 
 function pointMm(u: number, vSigned: number, ctx: SinkSurfaceContext): { x: number; y: number; v: number } {
@@ -471,8 +542,6 @@ function pointMm(u: number, vSigned: number, ctx: SinkSurfaceContext): { x: numb
 
 interface PreparedSink {
     frame: SinkOvalFrame;
-    /** Forefoot thickness uses the oval extended by this blend (styloid switch). */
-    extBlendMm: number;
 }
 
 function prepare(ctx: SinkSurfaceContext): PreparedSink[] {
@@ -480,23 +549,18 @@ function prepare(ctx: SinkSurfaceContext): PreparedSink[] {
     const out: PreparedSink[] = [];
     for (const sink of ctx.sinks!) {
         const frame = sinkFrame(sink, ctx);
-        if (!frame || frame.depthMm <= 0) continue;
-        out.push({ frame, extBlendMm: frame.kind === "styloid" ? STYLOID_EXT_BLEND_MM : frame.blendMm });
+        if (!frame || frame.depthMm <= 0 || frame.rimBlocked) continue;
+        out.push({ frame });
     }
     return out;
 }
 
-function proximalTipX(frame: SinkOvalFrame): number {
-    const reach = frame.halfLengthMm + frame.blendMm;
-    return frame.cx - frame.tx * reach;
-}
-
 export interface ForefootThicknessPlan {
-    /** max(forefoot depth) + 0.5 mm. 0 when there is no forefoot sink. */
+    /** Deepest forefoot sink + 0.5 mm. Each sink thickens only around itself. */
     A: number;
-    /** Full thickness from this heel-origin x (mm). */
+    /** Heel-origin x (mm) where the most proximal local blend reaches full addition. */
     xFull: number;
-    /** Ramp starts here. T = 0 for x <= x0. */
+    /** Heel-origin x (mm) where that blend starts. T = 0 for x well below x0. */
     x0: number;
 }
 
@@ -507,31 +571,40 @@ export function forefootThicknessPlan(ctx: SinkSurfaceContext): ForefootThicknes
     let tip = Number.POSITIVE_INFINITY;
     for (const p of prepared) {
         A = Math.max(A, p.frame.depthMm + FOREFOOT_THICKNESS_CLEARANCE_MM);
-        tip = Math.min(tip, proximalTipX(p.frame));
+        tip = Math.min(tip, p.frame.cx - p.frame.halfLengthMm - BLEND_LEN_MM);
     }
-    const xFull = tip - THICKNESS_PROXIMAL_MARGIN_MM;
-    return { A, xFull, x0: xFull - BLEND_LEN_MM };
+    return { A, xFull: tip + BLEND_LEN_MM, x0: tip };
 }
 
-/** Forefoot (and optional styloid) thickness addition at a height-field sample. 0 when no sinks. */
+/**
+ * Local thickness at a height-field sample. Each forefoot sink adds its own
+ * depth + 0.5 mm inside the oval and blends that to 0 over 25 mm. Overlap is
+ * the max, not the sum. 0 when no sinks.
+ */
 export function sinkThicknessAt(u: number, vSigned: number, ctx: SinkSurfaceContext): number {
     if (!sinksActive(ctx.sinks)) return 0;
-    const plan = forefootThicknessPlan(ctx);
     const pt = pointMm(u, vSigned, ctx);
     let t = 0;
-    if (plan && plan.A > 0) {
-        const span = BLEND_LEN_MM;
-        t = plan.A * smootherstep01((pt.x - plan.x0) / span);
-    }
-    if (ctx.sinkStyloidThicken) {
-        for (const p of prepare(ctx)) {
-            if (p.frame.kind !== "styloid") continue;
-            const w = eggWeight(p.frame, pt.x, pt.y, STYLOID_EXT_BLEND_MM);
-            const local = (p.frame.depthMm + FOREFOOT_THICKNESS_CLEARANCE_MM) * w;
-            if (local > t) t = local;
-        }
+    for (const p of prepare(ctx)) {
+        const localOk = p.frame.forefoot || (ctx.sinkStyloidThicken && p.frame.kind === "styloid");
+        if (!localOk) continue;
+        const w = eggWeight(p.frame, pt.x, pt.y, BLEND_LEN_MM);
+        const local = (p.frame.depthMm + FOREFOOT_THICKNESS_CLEARANCE_MM) * w;
+        if (local > t) t = local;
     }
     return t;
+}
+
+/** Styloid rim warnings, including a hard-stop that refuses the cut. */
+export function sinkRimWarnings(ctx: SinkSurfaceContext): SinkWarning[] {
+    if (!sinksActive(ctx.sinks)) return [];
+    const out: SinkWarning[] = [];
+    for (const sink of ctx.sinks!) {
+        if (sink.kind !== "styloid") continue;
+        const frame = sinkFrame(sink, ctx);
+        if (frame?.rimWarning) out.push(frame.rimWarning);
+    }
+    return out;
 }
 
 /** Subtractive cut at a height-field sample. Overlap = max. 0 when no sinks. */
@@ -748,7 +821,7 @@ export function applySinkCutToGeometry(
         arr[i * 3 + thickAxis] = z - guarded.cutMm;
     }
     pos.needsUpdate = true;
-    const merged = mergeSinkWarnings(sinkDepthWarnings(ctx.sinks), warnings);
+    const merged = mergeSinkWarnings(sinkDepthWarnings(ctx.sinks), sinkRimWarnings(ctx), warnings);
     (geometry.userData as { sinkWarnings?: SinkWarning[] }).sinkWarnings = merged;
     return { warnings: merged };
 }
@@ -835,7 +908,7 @@ export function applySinkCutToProceduralPositions(
         }
         pos[i * 3 + 2] = z - guarded.cutMm;
     }
-    return mergeSinkWarnings(sinkDepthWarnings(ctx.sinks), warnings);
+    return mergeSinkWarnings(sinkDepthWarnings(ctx.sinks), sinkRimWarnings(ctx), warnings);
 }
 
 export interface StyloidWallReliefInput {
@@ -1099,13 +1172,40 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
     const rimR = new Float64Array(input.nS);
     const rimCut = new Float64Array(input.nS);
     const topCount = Math.min(input.topCount, input.positions.length / 3);
+    const rimXY: Array<{ x: number; y: number; z: number }> = [];
+    for (let s = 0; s < input.nS; s++) {
+        const vi = input.vertAt(0, s);
+        rimXY.push({
+            x: input.positions[vi * 3]!,
+            y: input.positions[vi * 3 + 1]!,
+            z: input.positions[vi * 3 + 2]!,
+        });
+    }
+    const hold2 = LOFT_RIM_HOLD_MM * LOFT_RIM_HOLD_MM;
+    const nearRim = (x: number, y: number, z: number): boolean => {
+        for (const p of rimXY) {
+            const dx = x - p.x;
+            const dy = y - p.y;
+            const dz = z - p.z;
+            if (dx * dx + dy * dy + dz * dz <= hold2) return true;
+        }
+        return false;
+    };
+    // A sub-0.05 mm tail on the shared top/wall edge self-intersects. Real
+    // thickness is kept so the shell wall is not sheared off the outline.
+    const loftThickness = (x: number, y: number, z: number, u: number, vSigned: number): number => {
+        const raw = sinkThicknessAt(u, vSigned, ctx);
+        if (raw >= 0.05) return raw;
+        if (raw <= 0 || nearRim(x, y, z)) return 0;
+        return raw;
+    };
     for (let s = 0; s < input.nS; s++) {
         const vi = input.vertAt(0, s);
         const x = input.positions[vi * 3]!;
         const y = input.positions[vi * 3 + 1]!;
         rimH[s] = input.positions[vi * 3 + 2]!;
         const at = sampleAt(x, y);
-        rimT[s] = sinkThicknessAt(at.u, at.vSigned, ctx);
+        rimT[s] = loftThickness(x, y, rimH[s]!, at.u, at.vSigned);
         const cut = sinkCutAt(at.u, at.vSigned, ctx);
         const floor = applyFloorGuard(rimH[s]! + rimT[s]!, cut.mm, cut.sinkId);
         const localTop = localTopSurfaceZ(
@@ -1130,8 +1230,11 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
     const rimStation = new Map<number, number>();
     for (let s = 0; s < input.nS; s++) rimStation.set(input.vertAt(0, s), s);
     for (let i = 0; i < topCount; i++) {
-        const at = sampleAt(input.positions[i * 3]!, input.positions[i * 3 + 1]!);
-        const t = sinkThicknessAt(at.u, at.vSigned, ctx);
+        const x = input.positions[i * 3]!;
+        const y = input.positions[i * 3 + 1]!;
+        const z0 = input.positions[i * 3 + 2]!;
+        const at = sampleAt(x, y);
+        const t = loftThickness(x, y, z0, at.u, at.vSigned);
         const cut = sinkCutAt(at.u, at.vSigned, ctx);
         const z = input.positions[i * 3 + 2]! + t;
         const guarded = applyFloorGuard(z, cut.mm, cut.sinkId);
@@ -1167,5 +1270,5 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
             input.positions[vi * 3 + 2] = Math.max(0, zS + dz);
         }
     }
-    return mergeSinkWarnings(sinkDepthWarnings(input.sinks), warnings);
+    return mergeSinkWarnings(sinkDepthWarnings(input.sinks), sinkRimWarnings(ctx), warnings);
 }
