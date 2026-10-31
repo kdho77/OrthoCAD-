@@ -280,6 +280,11 @@ export interface PlacedSink {
     u?: number;
     v?: number;
     markerId?: string;
+    /**
+     * Styloid only. Allows the rim clearance under the 3 mm hard-stop, down to a 2 mm floor.
+     * The sink still shifts medially instead of being clipped.
+     */
+    rimOverride?: boolean;
 }
 
 /** Scan marker that overrides a sink's u, v. */
