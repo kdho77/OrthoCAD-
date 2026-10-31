@@ -18,6 +18,7 @@ import {
     type ArchFitReference,
     type ArchFitResult,
     archFitReferenceFromBase,
+    archFitToCorrectionPatch,
     fitArchParamsFromScan,
     sampleArchFitReferenceAt,
 } from "@/lib/geometry/fit-arch-from-scan";
@@ -353,6 +354,102 @@ export function matchClinicalParamsFromRegisteredScan(args: {
         correction,
         message: `${archMsg}${heelMsg}`,
         archSource,
+        heel,
+    };
+}
+
+function measureHeelCupFromScan(args: {
+    scanPositions: ArrayLike<number>;
+    scanVertexCount: number;
+    scanToBase: Matrix4;
+    reference: ArchFitReference;
+    heelMarkerLocal?: THREE.Vector3 | null;
+}): HeelCupWidthFitResult | null {
+    let heelSeatBase: THREE.Vector3 | null = null;
+    if (args.heelMarkerLocal) {
+        heelSeatBase = args.heelMarkerLocal.clone().applyMatrix4(args.scanToBase);
+    }
+    const heelSeatX = heelSeatBase?.x ?? null;
+    const scanHeel = measureHeelWidthMm(
+        args.scanPositions,
+        args.scanVertexCount,
+        args.scanToBase,
+        args.reference.lengthMin,
+        args.reference.lengthSize,
+        heelSeatX,
+    );
+    const baseHeel = measureHeelWidthFromTopPositions(
+        args.reference.topPositions,
+        args.reference.topVertexCount,
+        args.reference.lengthMin,
+        args.reference.lengthSize,
+        heelSeatX,
+    );
+    if (scanHeel != null && baseHeel != null) {
+        return heelCupWidthParamForTarget({
+            scanHeelWidthMm: scanHeel,
+            baseHeelWidthMm: baseHeel,
+        });
+    }
+    return null;
+}
+
+/**
+ * Marker-first arch fit; optional medial gap-fit when ARCH is missing or marker fit fails.
+ */
+export function matchClinicalParamsFromRegisteredScanAuto(args: {
+    scanPositions: ArrayLike<number>;
+    scanVertexCount: number;
+    scanToBase: Matrix4;
+    rawBase: BufferGeometry;
+    side: Side;
+    layout: InsoleLayout;
+    archMarkerLocal?: THREE.Vector3 | null;
+    heelMarkerLocal?: THREE.Vector3 | null;
+    clearanceMm?: number;
+    allowGapFit?: boolean;
+}): ClinicalMatchResult {
+    if (args.archMarkerLocal) {
+        try {
+            return matchClinicalParamsFromRegisteredScan(args);
+        } catch (e) {
+            if (!args.allowGapFit || !(e instanceof ArchFitError)) throw e;
+        }
+    } else if (!args.allowGapFit) {
+        throw new ArchFitError(
+            "no_registration",
+            "Place the ARCH apex marker on the medial arch, then match again",
+        );
+    }
+
+    const reference = archFitReferenceFromBaseSized(args.rawBase, args.layout.lengthMm, args.layout.widthMm);
+    const gapFit = matchArchParamsFromRegisteredScan({
+        scanPositions: args.scanPositions,
+        scanVertexCount: args.scanVertexCount,
+        scanToBase: args.scanToBase,
+        rawBase: args.rawBase,
+        side: args.side,
+        layout: args.layout,
+        clearanceMm: args.clearanceMm,
+    });
+    const heel = measureHeelCupFromScan({
+        scanPositions: args.scanPositions,
+        scanVertexCount: args.scanVertexCount,
+        scanToBase: args.scanToBase,
+        reference,
+        heelMarkerLocal: args.heelMarkerLocal,
+    });
+    const correction: Partial<SideCorrections> = {
+        ...archFitToCorrectionPatch(gapFit),
+        ...(heel ? { heelCupWidthMm: heel.heelCupWidthMm } : {}),
+    };
+    const heelMsg = heel
+        ? ` · ${formatHeelCupFitMessage(heel)}`
+        : " · Heel width unavailable — check heel registration / cleanup";
+    return {
+        correction,
+        message: `${formatArchFitMessage(gapFit)} (gap-fit)${heelMsg}`,
+        archSource: "gap",
         heel,
     };
 }
