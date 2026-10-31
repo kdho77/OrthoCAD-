@@ -1266,7 +1266,8 @@ export function reconstructProceduralWalls(
                   z: 0,
               }))
             : liveRimPlan;
-    const patternRim = stockRimPlan.length >= 3 ? stockRimPlan : liveRimPlan;
+    const denseRim = stockRimPlan.length >= 3 ? stockRimPlan : liveRimPlan;
+    const patternRim = denseRim;
     const legacyFaired = !patternPts?.length;
     const rawOutline = patternPts?.length
         ? startAtLowCurvature(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))), model.bounds)
@@ -1516,6 +1517,12 @@ export function reconstructProceduralWalls(
         smoothMovedStationOutline(stations, hygiened.loop);
         limitStationSkew(stations, hygiened.loop, r1, r2, stationSkewOpts);
         reparameterizeBArcLength(stations, hygiened.loop);
+    }
+    if (model.mortonsPatternRim && model.mortonsPatternRim.length >= 8) {
+        // Rim-arc B keeps headings on a dense medial blend. The pattern inset
+        // is not the same arc fraction as the rim, so pull skew back after
+        // that parameterization. Uniform rims never set this outline.
+        limitStationSkew(stations, hygiened.loop, r1, r2, stationSkewOpts);
     }
     assertClosedStationRing(stations, rimLocal);
     {
