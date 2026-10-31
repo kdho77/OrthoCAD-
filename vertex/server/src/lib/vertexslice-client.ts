@@ -42,8 +42,10 @@ export interface VertexSliceDeps {
 
 /**
  * POST the finished STL to VertexSlice `POST /v1/slice` (multipart).
- * The published server runs the belt prep + slice + material postprocess chain
- * and returns G-code as text. The API key is sent only as `X-API-Key`.
+ * The belt leader is already part of this STL when the Print/Export toggle is
+ * on (OrthoCAD adds it before upload). This client does not run a postprocess
+ * chain: it uploads the mesh and reads G-code text back. The API key is sent
+ * only as `X-API-Key`.
  */
 export async function sliceWithVertexSlice(
     input: VertexSliceRequest,

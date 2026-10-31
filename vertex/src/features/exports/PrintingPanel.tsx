@@ -59,6 +59,7 @@ export function PrintingPanel({
     const [result, setResult] = useState<CamResult | null>(null);
     const [status, setStatus] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [addLeaderBlock, setAddLeaderBlock] = useState(true);
 
     // Hybrid manufacturing (server-side solid + G-code) controls
     const [grindingStyle, setGrindingStyle] = useState<GrindingStyleInput>({
@@ -131,7 +132,9 @@ export function PrintingPanel({
             // baseAssetId will be included (when a base is active) so the server can do
             // authoritative CustomPrefab lookup + signed URL (see export-service.ts).
             // designId is also passed when an active persisted design exists.
-            const res = await generateHybridGcode(exportSide, preset, grindingStyle, overrides);
+            const res = await generateHybridGcode(exportSide, preset, grindingStyle, overrides, {
+                addLeaderBlock,
+            });
             if (res.ok) {
                 const idPart = res.productionId ? ` [production ${res.productionId}]` : "";
                 setStatus(
@@ -358,12 +361,23 @@ export function PrintingPanel({
             ) : null}
 
             {cncSelected ? null : isBeltPreset ? (
+                <label className="flex items-center justify-between gap-2 text-xs">
+                    <span>Add leader block</span>
+                    <input
+                        type="checkbox"
+                        checked={addLeaderBlock}
+                        onChange={(e) => setAddLeaderBlock(e.target.checked)}
+                    />
+                </label>
+            ) : null}
+
+            {cncSelected ? null : isBeltPreset ? (
                 <Button
                     variant="default"
                     className="w-full"
                     disabled={busy || !preset || !hybridGate.ok}
                     onClick={onHybridGenerate}
-                    title="Exports the finished viewer solid as STL, uploads to server, then slices with belt transform"
+                    title="Uploads the viewer STL, with the leader block when that toggle is on, then slices on the server"
                 >
                     {hybridGate.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                     {clinicalMode ? "Prepare for print" : `Generate G-code (Server) — ${grindingStyle.type}`}

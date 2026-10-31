@@ -9,6 +9,7 @@ import {
     buildExportStl,
     exportModeFromMethod,
 } from "@/lib/geometry/export-geometry";
+import { stlForBeltGcodeExport } from "@/lib/geometry/leader-block";
 import { collectHardnessRegions } from "@/lib/hardness/collect";
 import { parseBinaryStl } from "@/lib/hardness/mesh";
 import { exportHardness3mf, STL_SHELL_ONLY_WARNING } from "@/lib/hardness/pipeline";
@@ -237,11 +238,17 @@ export async function exportGcode(
  * Server-side hybrid manufacturing: upload the finished viewer STL, then slice (belt) or
  * return validated STL (external printers).
  */
+export interface HybridExportOptions {
+    /** Belt G-code only. Default on. STL passthrough and CNC ignore this. */
+    addLeaderBlock?: boolean;
+}
+
 export async function generateHybridGcode(
     side: Side,
     preset: PrinterPreset,
     grindingStyle: GrindingStyleInput,
     overrides: CamOverrides = {},
+    options: HybridExportOptions = {},
 ): Promise<ExportOutcome> {
     const { design } = useDesignStore.getState();
     if (design.method === "milling_3axis") {
@@ -254,7 +261,11 @@ export async function generateHybridGcode(
 
     if (isApiConfigured()) {
         try {
-            const stlBuffer = await buildManufacturingStl(side);
+            const viewerStl = await buildManufacturingStl(side);
+            const stlBuffer =
+                outputType === "gcode"
+                    ? stlForBeltGcodeExport(viewerStl, { addLeaderBlock: options.addLeaderBlock })
+                    : viewerStl;
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 
             const printRecipe = bindPrintRecipeProfile(design.printRecipe, preset.id);
