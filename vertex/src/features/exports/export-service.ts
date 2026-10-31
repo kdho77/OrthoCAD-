@@ -1,3 +1,4 @@
+import { mintIdempotencyKey, pollSliceJob, retrySameKey } from "@/features/exports/slice-poll";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { workpiecesFromDesign } from "@/lib/cnc/compose";
 import { generateCncJob } from "@/lib/cnc/export";
@@ -22,6 +23,7 @@ import { useDesignStore } from "@/stores/design-store";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
 import type { ExportFormat, GrindingStyle, Side } from "@/types";
 import { bindPrintRecipeProfile } from "../../../shared/print-recipe/print-recipe";
+import { SLICE_TOKEN_COST } from "../../../shared/slice-job";
 
 // Re-export for convenience in UI components
 export type GrindingStyleInput = GrindingStyle;
@@ -241,6 +243,10 @@ export async function generateHybridGcode(
     grindingStyle: GrindingStyleInput,
     overrides: CamOverrides = {},
 ): Promise<ExportOutcome> {
+    const { design } = useDesignStore.getState();
+    if (design.method === "milling_3axis") {
+        return { ok: false, reason: "CNC/milled orders are not sliced" };
+    }
     const activeDesignId = useClientStore.getState().activeDesignId;
     const outputType = preset.beltAngleDeg ? "gcode" : "stl";
     const ext = outputType === "gcode" ? "gcode" : "stl";
@@ -251,8 +257,47 @@ export async function generateHybridGcode(
             const stlBuffer = await buildManufacturingStl(side);
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 
-            const design = useDesignStore.getState().design;
             const printRecipe = bindPrintRecipeProfile(design.printRecipe, preset.id);
+
+            if (outputType === "gcode") {
+                const idempotencyKey = mintIdempotencyKey();
+                const started = await retrySameKey(idempotencyKey, (key) =>
+                    trpc.manufacturing.startSlice.mutate({
+                        designId: activeDesignId || undefined,
+                        stlStorageKey,
+                        profileId: preset.id,
+                        material: preset.material,
+                        side,
+                        idempotencyKey: key,
+                        fileName: filename,
+                        printRecipe,
+                        beltAngleDeg: preset.beltAngleDeg ?? 45,
+                        layerHeightMm: overrides.layerHeightMm,
+                        perimeters: overrides.perimeters,
+                        grindingStyle,
+                    }),
+                );
+                const status = await pollSliceJob({
+                    jobId: started.jobId,
+                    read: (jobId) => trpc.manufacturing.sliceStatus.query({ jobId }),
+                });
+                if (status.status !== "succeeded" || !status.downloadUrl) {
+                    return { ok: false, reason: status.error || "Server slice failed" };
+                }
+                applyServerBalance(status.balance);
+                const resp = await fetch(status.downloadUrl);
+                if (!resp.ok) throw new Error(`Download failed with status ${resp.status}`);
+                const data = await resp.arrayBuffer();
+                const blob = new Blob([data], { type: "text/plain" });
+                downloadBlob(blob, filename);
+                useAuditStore
+                    .getState()
+                    .record(
+                        "export_generated",
+                        `Hybrid GCODE ${side} · ${preset.name} (${grindingStyle.type}) (-${SLICE_TOKEN_COST}) (productionId=${status.productionId || "n/a"})`,
+                    );
+                return { ok: true, filename, blob, productionId: status.productionId };
+            }
 
             const res = await trpc.manufacturing.generateSolid.mutate({
                 designId: activeDesignId || undefined,
@@ -274,19 +319,13 @@ export async function generateHybridGcode(
             applyServerBalance(res.balance);
 
             let blob: Blob | undefined;
-            const downloadUrl = res.downloadUrl ?? res.gcodeDownloadUrl;
-
-            if (downloadUrl) {
-                const resp = await fetch(downloadUrl);
+            if (res.downloadUrl) {
+                const resp = await fetch(res.downloadUrl);
                 if (!resp.ok) throw new Error(`Download failed with status ${resp.status}`);
                 const data = await resp.arrayBuffer();
-                const mime = outputType === "gcode" ? "text/plain" : "model/stl";
-                blob = new Blob([data], { type: mime });
+                blob = new Blob([data], { type: "model/stl" });
                 downloadBlob(blob, filename);
-            } else if (outputType === "gcode" && res.gcode) {
-                blob = new Blob([res.gcode], { type: "text/plain" });
-                downloadBlob(blob, filename);
-            } else if (outputType === "stl" && res.stlBase64) {
+            } else if ("stlBase64" in res && res.stlBase64) {
                 const bytes = Uint8Array.from(atob(res.stlBase64), (c) => c.charCodeAt(0));
                 blob = new Blob([bytes], { type: "model/stl" });
                 downloadBlob(blob, filename);

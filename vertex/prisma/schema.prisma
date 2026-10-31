@@ -101,6 +101,13 @@ enum TokenLedgerType {
     expiry
 }
 
+enum SliceJobStatus {
+    queued
+    running
+    succeeded
+    failed
+}
+
 enum AuditAction {
     user_signin
     user_signout
@@ -148,6 +155,7 @@ model User {
     customPrefabs   CustomPrefab[]
     tenantLedger    TenantTokenLedger[] @relation("LedgerActor")
     adminAudits     AdminAuditLog[]     @relation("AuditActor")
+    sliceJobs       SliceJob[]
 
     @@index([role])
     @@index([tenantId])
@@ -403,6 +411,39 @@ model Production {
 
     @@index([designId])
     @@map("productions")
+}
+
+// Async G-code slice. UNIQUE (userId, idempotencyKey) so a retried client key
+// returns the same job. tokenCost stays 0 until vertex_settle_slice_success.
+model SliceJob {
+    id              String         @id @default(uuid()) @db.Uuid
+    userId          String         @db.Uuid
+    idempotencyKey  String
+    status          SliceJobStatus @default(queued)
+    designId        String?        @db.Uuid
+    stlUrl          String?
+    stlStorageKey   String?
+    profileId       String
+    material        String?
+    side            String?
+    process         String?
+    error           String?
+    gcodeStorageKey String?
+    productionId    String?        @db.Uuid
+    exportId        String?        @db.Uuid
+    tokenCost       Int            @default(0)
+    charged         Boolean        @default(false)
+    balanceAfter    Int?
+    fileName        String?
+    request         Json           @default("{}")
+    createdAt       DateTime       @default(now())
+    updatedAt       DateTime       @updatedAt
+
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@unique([userId, idempotencyKey])
+    @@index([userId, createdAt])
+    @@map("slice_jobs")
 }
 
 // A token-consuming export of an STL or G-code artifact.

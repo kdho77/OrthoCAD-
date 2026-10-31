@@ -11,7 +11,7 @@ import {
     ProceduralWallPreviewControls,
     type ProceduralWallStyleChoice,
 } from "@/features/exports/procedural-wall-preview-controls";
-import { canExport, TOKEN_COST } from "@/features/licensing/license";
+import { canExport, isLicenseValid, TOKEN_COST } from "@/features/licensing/license";
 import { getKernel } from "@/lib/geometry/geometry-kernel";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { type CamOverrides, type CamResult, generateGcode, presetsForMethod } from "@/lib/kiri";
@@ -21,6 +21,7 @@ import { useDesignStore } from "@/stores/design-store";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
 import { SIDE_LABELS, type Side } from "@/types";
 import { infillFractionFromRecipe, migratePrintRecipe } from "../../../shared/print-recipe/print-recipe";
+import { SLICE_TOKEN_COST } from "../../../shared/slice-job";
 
 function fmtTime(sec: number): string {
     const h = Math.floor(sec / 3600);
@@ -74,6 +75,14 @@ export function PrintingPanel({
 
     const isCnc = design.method === "milling_3axis";
     const gcodeCheck = canExport(user, license, "gcode");
+    const licenseOk = isLicenseValid(license);
+    const hybridGate = !licenseOk.ok
+        ? licenseOk
+        : !user
+          ? { ok: false as const, reason: "Not signed in" }
+          : user.tokenBalance < SLICE_TOKEN_COST
+            ? { ok: false as const, reason: "Insufficient export tokens" }
+            : { ok: true as const };
 
     const overrides: CamOverrides = isCnc
         ? { toolDiameterMm: toolDia }
@@ -352,11 +361,11 @@ export function PrintingPanel({
                 <Button
                     variant="default"
                     className="w-full"
-                    disabled={busy || !preset || !gcodeCheck.ok}
+                    disabled={busy || !preset || !hybridGate.ok}
                     onClick={onHybridGenerate}
                     title="Exports the finished viewer solid as STL, uploads to server, then slices with belt transform"
                 >
-                    {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                    {hybridGate.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                     {clinicalMode ? "Prepare for print" : `Generate G-code (Server) — ${grindingStyle.type}`}
                 </Button>
             ) : clinicalMode ? (
@@ -366,7 +375,9 @@ export function PrintingPanel({
                 </Button>
             ) : null}
 
-            {cncSelected ? null : !gcodeCheck.ok ? (
+            {cncSelected ? null : isBeltPreset && !hybridGate.ok ? (
+                <p className="text-xs text-amber-400">{hybridGate.reason}</p>
+            ) : !clinicalMode && !gcodeCheck.ok ? (
                 <p className="text-xs text-amber-400">{gcodeCheck.reason}</p>
             ) : null}
             {cncSelected ? null : status ? (
