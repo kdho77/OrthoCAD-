@@ -13,7 +13,6 @@ import {
     forefootWidthPerSideDeltaMm,
     heelCupDepthBowlDelta,
     heelCupWidthScaleFactor,
-    quinticSmoothstep,
 } from "@/lib/geometry/height-field";
 import { sinksActive, sinkThicknessAt, styloidWallReliefAt } from "@/lib/geometry/sink";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
@@ -34,14 +33,12 @@ export interface ForefootRigidBox {
 }
 
 /**
- * Width alone eases the rim offset, C2, from the side shift onto a scale of
- * each side's arc. The tip is not pinned. A full-length wedge instead eases
+ * Width alone carries the forefoot rim offset through the toe so the tip
+ * moves with the side. A full-length wedge instead eases
  * the plan onto {@link FOREFOOT_SHIFT_U_HOLD} so the ruled stations share
  * that station. X never moves, and a 0 mm width never reaches it.
  */
 const TOE_FAIR_U0 = 0.955;
-/** Pure scale of the toe arc is in force at the tip. */
-const TOE_SCALE_U1 = 1;
 /** Half-width of the outline sample used for the gain plateau, in u. */
 const FOREFOOT_ROOM_WINDOW_U = 0.004;
 /** Station a full-length wedge freezes when a forefoot width shift is also on. */
@@ -167,79 +164,24 @@ function forefootBodyShiftMm(
 type HalfFn = (u: number, positive: boolean) => number;
 
 /**
- * Rim shift (mm) where the toe scale starts, measured with the body law.
- * The toe keeps that ratio and caps the slope so the wall stays unfolded.
- */
-type ToeLaw = { m0: number; h0: number };
-
-const toeLawCache = new WeakMap<HalfFn, Map<number, { pos: ToeLaw; neg: ToeLaw }>>();
-
-function toeLaw(positive: boolean, widthMm: number, roomAt: HalfFn, halfAt: HalfFn): ToeLaw {
-    let byWidth = toeLawCache.get(halfAt);
-    if (!byWidth) {
-        byWidth = new Map();
-        toeLawCache.set(halfAt, byWidth);
-    }
-    let pair = byWidth.get(widthMm);
-    if (!pair) {
-        const build = (side: boolean): ToeLaw => {
-            const h0 = Math.max(1e-3, halfAt(TOE_FAIR_U0, side));
-            const m0 = forefootBodyShiftMm(TOE_FAIR_U0, h0, side, Math.abs(widthMm), roomAt);
-            return { m0, h0 };
-        };
-        pair = { pos: build(true), neg: build(false) };
-        byWidth.set(widthMm, pair);
-    }
-    return positive ? pair.pos : pair.neg;
-}
-
-/**
- * Rim offset (mm) on one side. Eases, C2, from the forefoot's constant shift
- * onto a scale of that side's arc. The windowed room is the scale length:
- * the raw half steps where the toe corner and the tip share an x.
- */
-function toeRimExtraMm(
-    u: number,
-    positive: boolean,
-    widthMm: number,
-    roomAt: HalfFn,
-    halfAt: HalfFn,
-): number {
-    const { m0, h0 } = toeLaw(positive, widthMm, roomAt, halfAt);
-    const alpha0 = m0 / h0;
-    const span = TOE_SCALE_U1 - TOE_FAIR_U0;
-    const t = Math.max(0, Math.min(1, (u - TOE_FAIR_U0) / span));
-    const q = quinticSmoothstep(t);
-    const h = Math.max(1e-3, roomAt(u, positive));
-    let m = (1 - q) * m0 + q * alpha0 * h;
-    if (m < 0) m = 0;
-    // The taper reaches this offset at 0.92× the arc. Stay under the slope cap.
-    const capRoom = Math.max(1e-3, h * FOREFOOT_OUTLINE_ROOM_SCALE);
-    const slopeCap = FOREFOOT_SHIFT_SLOPE_CAP * capRoom;
-    if (m > slopeCap) m = slopeCap;
-    return m;
-}
-
-/**
- * Toe shift. Each side is a scale of its own arc about the centreline, so a
- * point and the outline move together. Blending the two sides' millimetre
- * offsets folded the wall where the toe crosses the centre.
+ * Toe shift. The rim amount is frozen at {@link TOE_FAIR_U0} and carried
+ * through the toe, so the tip moves with the side and the offset does not
+ * change along the foot (that shear folds the wall and pinches the sole).
+ * Inboard it is the same linear gain as the body, so the top sheet does not
+ * step at the join. Narrowing cannot cross the centre.
  */
 function toeArcShiftMm(
-    u: number,
+    _u: number,
     y: number,
     cy: number,
     widthMm: number,
     roomAt: HalfFn,
-    halfAt: HalfFn,
+    _halfAt: HalfFn,
 ): number {
     const dist = Math.abs(y - cy);
     if (dist <= 0) return 0;
     const positive = y >= cy;
-    const capRoom = Math.max(1e-3, roomAt(u, positive) * FOREFOOT_OUTLINE_ROOM_SCALE);
-    const m = toeRimExtraMm(u, positive, widthMm, roomAt, halfAt);
-    // Full offset on the arc, linear to the centre. Narrowing cannot cross it.
-    let shift = dist >= capRoom ? m : (m * dist) / capRoom;
+    let shift = forefootBodyShiftMm(TOE_FAIR_U0, dist, positive, Math.abs(widthMm), roomAt);
     if (widthMm < 0 && shift > 0.95 * dist) shift = 0.95 * dist;
     return shift;
 }
