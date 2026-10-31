@@ -39,6 +39,7 @@ import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
 import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
+import { PressureMapOverlayPair } from "./PressureMapOverlay";
 import { PrintLoftSplash } from "./PrintLoftSplash";
 import { ScanMarkerPlacement } from "./ScanMarkerPlacement";
 import { ScanMeshes } from "./ScanMeshes";
@@ -210,6 +211,7 @@ export function Viewer3D() {
                 <directionalLight position={[-150, 100, -100]} intensity={0.4} />
 
                 <Suspense fallback={null}>
+                    <PressureMapOverlayPair showLeft={showLeftInsole} showRight={showRightInsole} />
                     {showLeftInsole ? (
                         <>
                             {!showBase ? (

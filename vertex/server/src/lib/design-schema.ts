@@ -121,6 +121,12 @@ export const designStateSchema = z.object({
             placementU: z.number(),
         })
         .optional(),
+    pressureMaps: z
+        .object({
+            left: z.any().optional(),
+            right: z.any().optional(),
+        })
+        .optional(),
 });
 
 export type DesignStatePayload = z.infer<typeof designStateSchema>;
