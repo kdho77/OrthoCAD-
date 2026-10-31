@@ -5,6 +5,7 @@ import type { BufferGeometry } from "three";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { fullLengthToeSampleU } from "@/lib/geometry/full-length-wedge";
 import { forefootWidthLongitudinalEnvelope, type HeightFieldParams } from "@/lib/geometry/height-field";
+import { extractTopOnlyModel } from "@/lib/geometry/procedural-wall/extract";
 import {
     applyForefootPlanShift,
     FOREFOOT_SHIFT_U_HOLD,
@@ -14,7 +15,11 @@ import {
     shiftClosedLoopForefoot,
 } from "@/lib/geometry/procedural-wall/modifiers";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
-import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-id";
+import {
+    buildProceduralViewerPattern,
+    reconstructProceduralPreview,
+} from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { extractMeshOutline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
@@ -591,5 +596,99 @@ describe("forefoot viewport display", () => {
         expect(Math.abs(scaled - held)).toBeGreaterThan(0.2);
         const moved = shiftClosedLoopForefoot(base, 10, bounds);
         expect(Math.max(...moved.map((p) => p.x))).toBeCloseTo(260, 6);
+    });
+
+    test("top outline turning angle stays continuous at +7, +8 and +10 on both feet", async () => {
+        const raw = await loadSampleTopGlb();
+        const turnAt = (chain: Array<{ x: number; y: number }>, i: number) => {
+            const ax = chain[i]!.x - chain[i - 1]!.x;
+            const ay = chain[i]!.y - chain[i - 1]!.y;
+            const bx = chain[i + 1]!.x - chain[i]!.x;
+            const by = chain[i + 1]!.y - chain[i]!.y;
+            return (Math.atan2(ax * by - ay * bx, ax * bx + ay * by) * 180) / Math.PI;
+        };
+        for (const foot of ["right", "left"] as const) {
+            const geo = foot === "left" ? mirrorGeometry(raw.clone()) : raw.clone();
+            const model = extractTopOnlyModel(geo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
+            const pos = model.top.meshPositions!;
+            const rim = (model.top.rimLocal ?? []).map((i) => ({ x: pos[i * 3]!, y: pos[i * 3 + 1]! }));
+            const pattern = buildProceduralViewerPattern(geo);
+            const bounds = model.bounds;
+            const length = Math.max(1e-6, bounds.maxX - bounds.minX);
+            const cy = (bounds.minY + bounds.maxY) * 0.5;
+            const metrics = forefootOutlineMetrics(pattern, bounds);
+            let maxX = -Infinity;
+            for (const p of rim) maxX = Math.max(maxX, p.x);
+            for (const mm of [7, 8, 10]) {
+                const moved = rim.map((p) => ({
+                    x: p.x,
+                    y: p.y + forefootWidthPlanDy(p.x, p.y, bounds, mm, metrics.roomAt, metrics.halfAt),
+                }));
+                let movedMaxX = -Infinity;
+                for (const p of moved) movedMaxX = Math.max(movedMaxX, p.x);
+                expect(movedMaxX).toBeCloseTo(maxX, 6);
+                for (const positive of [true, false]) {
+                    const on = rim.map((p) => (positive ? p.y >= cy : p.y <= cy));
+                    const runs: number[][] = [];
+                    let cur: number[] = [];
+                    for (let i = 0; i < rim.length; i++) {
+                        if (on[i]) cur.push(i);
+                        else if (cur.length) {
+                            runs.push(cur);
+                            cur = [];
+                        }
+                    }
+                    if (cur.length) runs.push(cur);
+                    if (runs.length >= 2 && on[0] && on[rim.length - 1]) {
+                        const head = runs[0]!;
+                        const tail = runs[runs.length - 1]!;
+                        runs[0] = tail.concat(head);
+                        runs.pop();
+                    }
+                    const run = runs.sort((a, b) => b.length - a.length)[0] ?? [];
+                    const chain0 = run.map((i) => rim[i]!);
+                    const chain1 = run.map((i) => moved[i]!);
+                    if (chain0.length > 1 && chain0[0]!.x > chain0[chain0.length - 1]!.x) {
+                        chain0.reverse();
+                        chain1.reverse();
+                    }
+                    let shoulderShift = 0;
+                    let worstShoulder = 0;
+                    let worstToe = 0;
+                    let worstWrong = 0;
+                    let atShoulder = "";
+                    let atToe = "";
+                    for (let i = 1; i < chain0.length - 1; i++) {
+                        const u = (chain0[i]!.x - bounds.minX) / length;
+                        if (u < 0.9 || u > 0.995) continue;
+                        const base = turnAt(chain0, i);
+                        const next = turnAt(chain1, i);
+                        const delta = next - base;
+                        const where = `${foot} ${positive ? "+" : "-"} +${mm} u=${u.toFixed(3)}`;
+                        // Shoulder: the widened rim is the base curve plus one offset,
+                        // so the turning angle does not pick up a corner.
+                        if (u <= 0.97 && Math.abs(delta) > worstShoulder) {
+                            worstShoulder = Math.abs(delta);
+                            atShoulder = where;
+                        }
+                        if (Math.abs(delta) > worstToe) {
+                            worstToe = Math.abs(delta);
+                            atToe = where;
+                        }
+                        const wrongWay = positive ? next : -next;
+                        if (wrongWay > worstWrong) worstWrong = wrongWay;
+                        if (u >= 0.955 && u <= 0.965) shoulderShift = Math.abs(chain1[i]!.y - chain0[i]!.y);
+                    }
+                    expect(worstShoulder, atShoulder).toBeLessThanOrEqual(1);
+                    // Past the shoulder the tip may tighten as it meets the centreline.
+                    // It must not hook back, and one vertex cannot become a corner.
+                    expect(worstToe, atToe).toBeLessThanOrEqual(8);
+                    expect(worstWrong, `${foot} +${mm}`).toBeLessThanOrEqual(1);
+                    expect(shoulderShift, `${foot} +${mm}`).toBeGreaterThan(mm - 0.5);
+                }
+            }
+            geo.dispose();
+        }
+        raw.dispose();
     });
 });

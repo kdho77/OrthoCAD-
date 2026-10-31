@@ -39,6 +39,12 @@ export interface ForefootRigidBox {
  * that station. X never moves, and a 0 mm width never reaches it.
  */
 const TOE_FAIR_U0 = 0.955;
+/**
+ * Envelope hold ends here and its slope is 0. Widening keeps the rim offset
+ * reached at this station. Falling with the envelope after it hooks the
+ * shoulder where the top rim is sampled.
+ */
+const TOE_WIDEN_U0 = 0.95;
 /** Half-width of the outline sample used for the gain plateau, in u. */
 const FOREFOOT_ROOM_WINDOW_U = 0.004;
 /** Station a full-length wedge freezes when a forefoot width shift is also on. */
@@ -47,6 +53,11 @@ export const FOREFOOT_SHIFT_U_HOLD = 0.985;
 const FOREFOOT_SHIFT_SLOPE_CAP = 0.75;
 /** Plateau starts just inboard of the bottom outline so the outline is at full shift. */
 const FOREFOOT_OUTLINE_ROOM_SCALE = 0.92;
+/**
+ * Smallest widened-toe knee. Below this the outline ring and the top vertex
+ * half a millimetre apart disagree by more than 1 mm.
+ */
+const FOREFOOT_TIP_KNEE_FLOOR_MM = 8.5;
 
 /**
  * Outer |y − centre| of one side of the bottom outline. The gain plateau
@@ -164,26 +175,54 @@ function forefootBodyShiftMm(
 type HalfFn = (u: number, positive: boolean) => number;
 
 /**
- * Toe shift. The rim amount is frozen at {@link TOE_FAIR_U0} and carried
- * through the toe, so the tip moves with the side and the offset does not
- * change along the foot (that shear folds the wall and pinches the sole).
- * Inboard it is the same linear gain as the body, so the top sheet does not
- * step at the join. Narrowing cannot cross the centre.
+ * Toe shift. Widening holds the rim amount from {@link TOE_WIDEN_U0}, where
+ * the envelope slope is 0, so the shoulder keeps the base curve's turn.
+ * The gain knee tracks the local outline and is floored at the tip so the
+ * top rim and the outline ring stay within a millimetre. A knee frozen at
+ * the join lies on the narrowing rim and corners it. Narrowing keeps that
+ * frozen field — a live knee there folds the sheet — and cannot cross the centre.
  */
 function toeArcShiftMm(
-    _u: number,
+    u: number,
     y: number,
     cy: number,
     widthMm: number,
     roomAt: HalfFn,
-    _halfAt: HalfFn,
+    halfAt: HalfFn,
 ): number {
     const dist = Math.abs(y - cy);
     if (dist <= 0) return 0;
     const positive = y >= cy;
-    let shift = forefootBodyShiftMm(TOE_FAIR_U0, dist, positive, Math.abs(widthMm), roomAt);
-    if (widthMm < 0 && shift > 0.95 * dist) shift = 0.95 * dist;
-    return shift;
+    const absMm = Math.abs(widthMm);
+    if (widthMm < 0) {
+        let shift = forefootBodyShiftMm(TOE_FAIR_U0, dist, positive, absMm, roomAt);
+        if (shift > 0.95 * dist) shift = 0.95 * dist;
+        return shift;
+    }
+    // Probe past the knee so this is the rim amount, constant in u.
+    const applied = forefootBodyShiftMm(TOE_WIDEN_U0, dist + 1e6, positive, absMm, roomAt);
+    const outer = Math.max(roomAt(u, positive), halfAt(u, positive));
+    const rawKnee = Math.max(1, outer * FOREFOOT_OUTLINE_ROOM_SCALE);
+    // Floor a collapsed tip knee so the outline ring and the top vertex,
+    // half a millimetre apart, stay within 1 mm. The shoulder is wider
+    // than the floor and stays on the full offset.
+    const knee = Math.max(rawKnee, FOREFOOT_TIP_KNEE_FLOOR_MM, applied * 0.85);
+    if (dist >= knee) return applied;
+    const linear = dist / knee;
+    // Hand the linear ramp to the plateau with a flat slope, so the rim
+    // does not corner where it crosses the floor. Inboard of the join the
+    // ramp is unchanged.
+    const join = knee * 0.4;
+    if (dist <= join) return applied * linear;
+    const span = knee - join;
+    const s = (dist - join) / span;
+    const g0 = join / knee;
+    const slope = span / knee;
+    const target = 1 - g0 - slope;
+    const b = -slope - 2 * target;
+    const a = target - b;
+    const gain = g0 + slope * s + a * s * s + b * s * s * s;
+    return applied * gain;
 }
 
 /** Lateral shift (mm) at a plan point. X and Z stay put. 0 below the ramp. */
@@ -207,8 +246,9 @@ export function forefootPlanShiftMm(
     const positive = y >= cy;
     const dist = Math.abs(y - cy);
     const halfFn = halfAt ?? roomAt;
+    const toeFrom = forefootWidthMm < 0 ? TOE_FAIR_U0 : TOE_WIDEN_U0;
     const mag =
-        fairToeHold || uRaw <= TOE_FAIR_U0
+        fairToeHold || uRaw <= toeFrom
             ? forefootBodyShiftMm(u, dist, positive, Math.abs(forefootWidthMm), roomAt)
             : toeArcShiftMm(uRaw, y, cy, forefootWidthMm, roomAt, halfFn);
     if (mag === 0) return 0;
