@@ -1,8 +1,7 @@
 import { BufferAttribute, BufferGeometry } from "three";
 
 // Pure-TS binary STL writer. Works on any indexed or non-indexed
-// THREE.BufferGeometry with a "position" attribute. Used as the default STL
-// exporter until the Chili3D OpenCascade kernel STL writer is wired in.
+// THREE.BufferGeometry with a "position" attribute.
 
 export function geometryToBinarySTL(geometry: BufferGeometry): ArrayBuffer {
     const position = geometry.getAttribute("position");

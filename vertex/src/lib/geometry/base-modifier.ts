@@ -1,8 +1,6 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
-import type { SolidResult } from "@/lib/chili3d/kernel";
 import { applyArchSkiveToTopMesh } from "@/lib/geometry/arch-skive";
 import { getDesignBase } from "@/lib/geometry/base-asset";
 import {
@@ -10,6 +8,7 @@ import {
     fullLengthDeltaFromField,
     fullLengthWedgeActive,
 } from "@/lib/geometry/full-length-wedge";
+import type { SolidResult } from "@/lib/geometry/geometry-kernel";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
     forefootWidthPerSideDeltaMm,
@@ -18,6 +17,7 @@ import {
     heightAt,
     quinticSmoothstep,
     resolveOutlineHalfWidth,
+    resolveShellThicknessContext,
     smoothstep,
 } from "@/lib/geometry/height-field";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
@@ -36,6 +36,7 @@ import {
     applyTrimmableForefootExtension,
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
+import { neutralShellThicknessContext } from "@/lib/geometry/shell-thickness-zonal";
 import { sinksActive, sinkThicknessAt } from "@/lib/geometry/sink";
 import { wedgeCorrectionActive, wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { DesignState, Side, SideCorrections } from "@/types";
@@ -83,8 +84,10 @@ export const BASE_REFERENCE_THICKNESS_MM = 2;
 
 /** Neutral field (no corrections, no elements) used as the displacement baseline. */
 export function neutralField(field: HeightFieldParams): HeightFieldParams {
+    const activeShell = resolveShellThicknessContext(field);
     return {
         ...field,
+        shell: neutralShellThicknessContext(activeShell, BASE_REFERENCE_THICKNESS_MM),
         // Fixed baseline thickness so the thickness slider produces a real delta
         // (top lifts upward) instead of cancelling out in `correctionDeltaAt`.
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
@@ -2677,7 +2680,8 @@ export function applyBaseModifiers(
     let thicknessMmForDelta = field.thicknessMm;
     let thicknessDatumClamped = false;
     let thicknessDatumNativeMm: number | null = null;
-    if (isMultiMesh && topVertexCount > 0) {
+    const shellMode = resolveShellThicknessContext(field).mode;
+    if (isMultiMesh && topVertexCount > 0 && shellMode !== "zonal") {
         const datum = deriveNativeShellThicknessDatum(base);
         if (datum) {
             thicknessDatumNativeMm = datum.nativeMinClearanceMm;
@@ -3381,7 +3385,7 @@ export function modifiedBaseResult(
     }
     return {
         geometry,
-        manifold: { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight },
+        manifold: { ...mesh, solidClosed: false, isWatertight: mesh.isWatertight },
     };
 }
 

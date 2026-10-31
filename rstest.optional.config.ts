@@ -8,7 +8,6 @@ export default defineConfig({
     exclude: ["**/cpp/**", "**/*.wasm.test.ts", "**/dump-*.test.ts"],
     globals: true,
     testEnvironment: "happy-dom",
-    setupFiles: ["./rstest-setup.ts"],
     tools: {
         rspack: {
             resolve: {
@@ -25,7 +24,6 @@ export default defineConfig({
     },
     resolve: {
         alias: {
-            "./viewGizmo": "./packages/three/test/viewGizmo.ts",
             "@": resolve("vertex/src"),
         },
     },

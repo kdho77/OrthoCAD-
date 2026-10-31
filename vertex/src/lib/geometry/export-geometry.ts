@@ -1,13 +1,6 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
-import {
-    ensureKernelReady,
-    getKernel,
-    isAuthoritativeKernel,
-    isKernelInitFailed,
-} from "@/lib/chili3d/kernel";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import {
     BASE_REFERENCE_THICKNESS_MM,
@@ -15,9 +8,10 @@ import {
     getBaseFootprintFrame,
 } from "@/lib/geometry/base-modifier";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
+import { getKernel } from "@/lib/geometry/geometry-kernel";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
-import { insoleParamsFromDesign, isOcctKernelActive } from "@/lib/geometry/kernel-build";
+import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import {
     assertClosedSolidAcceptable,
     closeGlbInsoleToSolid,
@@ -34,7 +28,7 @@ import { curveToPolyPoints, useBottomPatternStore } from "@/stores/bottom-patter
 import { useDesignStore } from "@/stores/design-store";
 import type { DesignState, ProductionMethod, Side } from "@/types";
 
-/** Export routing: manufacturing uses OCCT sew first; preview uses mesh-close. */
+/** Export routing: manufacturing and preview STL both use mesh-close. */
 export type ExportMode = "preview" | "manufacturing";
 
 export function exportModeFromMethod(method: ProductionMethod): ExportMode {
@@ -112,88 +106,6 @@ async function buildModifiedBaseGeometry(
     }
 }
 
-/** Load raw base GLB geometry without modifier deformation (for OCCT sew input). */
-async function loadRawBaseGeometry(design: DesignState, side: Side): Promise<BufferGeometry | null> {
-    const base = getDesignBase(design, side);
-    if (!base) return null;
-    return loadBaseGeometry(base);
-}
-
-/** PATH A — OCCT sew manufacturing STL from raw GLB base (test hook). */
-export async function exportManufacturingStlAttempt(
-    design: DesignState,
-    side: Side,
-): Promise<ArrayBuffer | null> {
-    return tryOcctManufacturingStl(design, side);
-}
-
-/** PATH A — OCCT sew manufacturing STL from raw GLB base. */
-async function tryOcctManufacturingStl(design: DesignState, side: Side): Promise<ArrayBuffer | null> {
-    if (isKernelInitFailed()) {
-        if (typeof console !== "undefined") {
-            console.log("[EXPORT] OCCT unavailable — using mesh-close fallback");
-        }
-        return null;
-    }
-
-    const kernelReady = await ensureKernelReady();
-    if (!kernelReady) {
-        if (typeof console !== "undefined") {
-            console.log("[EXPORT] OCCT unavailable — using mesh-close fallback");
-        }
-        return null;
-    }
-
-    const raw = await loadRawBaseGeometry(design, side);
-    if (!raw) return null;
-    let sized: BufferGeometry | null = null;
-
-    try {
-        const layout = insoleLayoutFromDesign(design);
-        sized = scaleGeometryToInsoleSize(raw, layout.lengthMm, layout.widthMm);
-        const effThickness = design.paired
-            ? side === "left"
-                ? design.paired.leftThicknessMm
-                : design.paired.rightThicknessMm
-            : design.thicknessMm;
-        const field = baseModifierFieldAuthoritative(design, side, effThickness);
-        const kernel = getKernel();
-        if (!kernel.ready || typeof kernel.exportManufacturingStlFromBase !== "function") {
-            if (typeof console !== "undefined") {
-                console.error("[EXPORT] OCCT kernel not ready — falling back");
-            }
-            return null;
-        }
-        if (field.sinks && field.sinks.length > 0 && typeof kernel.buildFromBase === "function") {
-            const built = kernel.buildFromBase(sized, field, 2);
-            cutExportSinks(built.geometry, field);
-            return geometryToBinarySTL(built.geometry);
-        }
-        const stl = kernel.exportManufacturingStlFromBase(sized, field) ?? null;
-        if (stl) {
-            if (typeof console !== "undefined") {
-                console.log("[EXPORT] OCCT sew path: success");
-            }
-            return stl;
-        }
-        if (typeof console !== "undefined") {
-            console.warn(
-                "[EXPORT] OCCT sew path: failed reason=sew returned null — falling back to mesh-close",
-            );
-        }
-        return null;
-    } catch (err) {
-        if (typeof console !== "undefined") {
-            const reason = err instanceof Error ? err.message : String(err);
-            console.warn(`[EXPORT] OCCT sew path failed: ${reason} — falling back to mesh-close`);
-        }
-        return null;
-    } finally {
-        raw.dispose();
-        sized?.dispose();
-    }
-}
-
 /** Builds export geometry for a side — base+modifiers only; no parametric fallback. */
 export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
@@ -209,15 +121,9 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
 }
 
 /** Export STL bytes for the active design side. */
-export async function buildExportStl(side: Side, options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
+export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
     const { design } = useDesignStore.getState();
     assertShapeFinishExportAllowed(design, side);
-    const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
-
-    if (exportMode === "manufacturing" && isAuthoritativeKernel()) {
-        const occtStl = await tryOcctManufacturingStl(design, side);
-        if (occtStl) return occtStl;
-    }
 
     const modifiedBase = await buildModifiedBaseGeometry(design, side, 0);
     if (!modifiedBase) {
@@ -264,20 +170,6 @@ export async function buildExportGlbGeometry(side: Side): Promise<BufferGeometry
     const layout = insoleLayoutFromDesign(design);
     const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(layout.lengthMm, layout.widthMm);
 
-    if (isAuthoritativeKernel()) {
-        try {
-            const solid = getKernel().buildInsoleSolid({ ...params, trimline });
-            if (solid.manifold.occtClosed || solid.manifold.isWatertight) {
-                return solid.geometry;
-            }
-            solid.geometry.dispose();
-        } catch (err) {
-            if (typeof console !== "undefined") {
-                console.warn("[export-geometry] OCCT solid unavailable, using trimline mesh:", err);
-            }
-        }
-    }
-
     try {
         return await geometryEngine.buildTrimlineMesh({
             trimline,
@@ -301,10 +193,7 @@ export async function buildExportGlbGeometry(side: Side): Promise<BufferGeometry
         });
     } catch (err) {
         if (typeof console !== "undefined") {
-            console.warn("[export-geometry] Trimline mesh failed, falling back to kernel build:", err);
-        }
-        if (isOcctKernelActive()) {
-            return getKernel().buildInsole({ ...params, trimline });
+            console.warn("[export-geometry] Trimline mesh failed, falling back to base export:", err);
         }
         return buildExportGeometry(side);
     }
@@ -312,8 +201,7 @@ export async function buildExportGlbGeometry(side: Side): Promise<BufferGeometry
 
 /**
  * Build the watertight tapered insole geometry intended for manufacturing pipelines
- * that need a BufferGeometry (e.g. hybrid server upload). Manufacturing mode skips
- * mesh-close when OCCT already produced a solid.
+ * that need a BufferGeometry (e.g. hybrid server upload).
  */
 export async function buildExportSolid(
     side: Side,
@@ -321,27 +209,6 @@ export async function buildExportSolid(
 ): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
     const exportMode = options.exportMode ?? exportModeFromMethod(design.method);
-
-    if (exportMode === "manufacturing" && isAuthoritativeKernel()) {
-        const raw = await loadRawBaseGeometry(design, side);
-        if (raw) {
-            try {
-                const effThickness = design.paired
-                    ? side === "left"
-                        ? design.paired.leftThicknessMm
-                        : design.paired.rightThicknessMm
-                    : design.thicknessMm;
-                const field = baseModifierFieldAuthoritative(design, side, effThickness);
-                const result = getKernel().buildFromBase(raw, field, 2);
-                if (result.manifold.occtClosed || result.manifold.isWatertight) {
-                    return cutExportSinks(result.geometry, field);
-                }
-                result.geometry.dispose();
-            } finally {
-                raw.dispose();
-            }
-        }
-    }
 
     const geometry = await buildExportGlbGeometry(side);
     if (exportMode === "manufacturing") {

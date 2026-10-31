@@ -1,7 +1,7 @@
 import type { BufferGeometry } from "three";
 import * as THREE from "three";
-import type { SolidResult } from "@/lib/chili3d/kernel";
-import { getKernel } from "@/lib/chili3d/kernel";
+import type { SolidResult } from "@/lib/geometry/geometry-kernel";
+import { getKernel } from "@/lib/geometry/geometry-kernel";
 import type { InsoleParams } from "@/lib/geometry/insole";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
@@ -11,10 +11,6 @@ import { effectiveLengthMm, getSideShapeFinish } from "@/lib/geometry/shape-fini
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import type { DesignState, Side } from "@/types";
-
-export function isOcctKernelActive(): boolean {
-    return getKernel().name === "opencascade-wasm";
-}
 
 /** Build canonical insole params from the live design store + optional preview merges.
  * Supports paired workspace: uses per-side thickness/method/base from design.paired if present.
@@ -44,12 +40,17 @@ export function insoleParamsFromDesign(
         corrections: mergeCorrections(side, design.corrections[side]),
         elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
         method: method,
+        shellThicknessMode: design.shellThicknessMode,
+        shellThicknessRfMm: design.shellThicknessRfMm,
+        shellThicknessMfMm: design.shellThicknessMfMm,
+        shellThicknessFfMm: design.shellThicknessFfMm,
+        shellThicknessBlendMm: design.shellThicknessBlendMm,
         shapeFinish,
         ...segmentsForQuality(quality),
     };
 }
 
-/** Yield to the browser before heavy synchronous OCCT work. */
+/** Yield to the browser before a synchronous kernel build. */
 export function scheduleMainThread<T>(fn: () => T): Promise<T> {
     return new Promise((resolve) => {
         requestAnimationFrame(() => resolve(fn()));
@@ -76,7 +77,7 @@ function applyMeshEdits(geometry: BufferGeometry, options: MeshEditOptions): Buf
     return g;
 }
 
-/** Production-grade build via the active kernel (OCCT when loaded). */
+/** Build via the active geometry kernel. */
 export async function buildViaKernel(
     params: InsoleParams,
     meshEdits: MeshEditOptions = {},
@@ -87,7 +88,7 @@ export async function buildViaKernel(
     });
 }
 
-/** Production-grade solid + watertight validation via the active kernel. */
+/** Solid plus watertight validation via the active kernel. */
 export async function buildSolidViaKernel(params: InsoleParams): Promise<SolidResult> {
     return scheduleMainThread(() => getKernel().buildInsoleSolid(params));
 }

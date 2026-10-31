@@ -8,7 +8,6 @@ import { stlExportUserMessage } from "@/features/exports/export-user-message";
 import { TextSummary } from "@/features/exports/TextSummary";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { useSolidValidation } from "@/hooks/useSolidValidation";
-import { isOcctKernelActive } from "@/lib/geometry/kernel-build";
 import type { HardnessExportReport } from "@/lib/hardness/report";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
@@ -29,7 +28,6 @@ export function ExportPanel() {
     const glbCheck = canExport(user, license, "glb");
     const threeMfCheck = canExport(user, license, "3mf");
     const validation = useSolidValidation(design, exportSide);
-    const occtActive = isOcctKernelActive();
     const busy = busyKind !== null;
     const [report, setReport] = useState<HardnessExportReport | null>(null);
     const [warning, setWarning] = useState<string | null>(null);
@@ -86,9 +84,7 @@ export function ExportPanel() {
     };
 
     const watertightLabel = validation.isWatertight
-        ? occtActive && validation.occtClosed
-            ? "OCCT watertight solid"
-            : "Watertight solid"
+        ? "Watertight solid"
         : validation.triangleCount > 0
           ? `${validation.openEdges} open edges`
           : "Analyzing…";

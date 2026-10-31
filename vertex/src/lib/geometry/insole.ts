@@ -1,10 +1,17 @@
 import { BufferAttribute, BufferGeometry } from "three";
 import { type HeightFieldParams, heightAt, resolveOutlineHalfWidth } from "@/lib/geometry/height-field";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
-import type { PlacedElement, ProductionMethod, Side, SideCorrections, SideShapeFinish } from "@/types";
+import type {
+    PlacedElement,
+    ProductionMethod,
+    ShellThicknessMode,
+    Side,
+    SideCorrections,
+    SideShapeFinish,
+} from "@/types";
 
 // Generates a parametric orthotic insole mesh from correction parameters.
-// Procedural fallback when the OpenCascade WASM kernel is unavailable.
+//
 
 export interface InsoleParams {
     side: Side;
@@ -15,16 +22,21 @@ export interface InsoleParams {
     elements?: PlacedElement[];
     segmentsX?: number;
     segmentsY?: number;
-    /** Production method — `printing_shell` triggers OCCT wall shelling when WASM is active. */
+    /** Production method — `printing_shell` triggers procedural wall shelling. */
     method?: ProductionMethod;
     /** User-edited perimeter override for this side. */
     trimline?: TrimlineCurve | null;
     /**
-     * When true (OCCT only), apply the trimline as a clean boolean cut on top of
+     * When true, apply the trimline as a clean boolean cut on top of
      * the lofted base instead of relying solely on per-station width sampling.
      * Reserved for Confirm / Export; falls back to the lofted footprint on error.
      */
     useBooleanTrimline?: boolean;
+    shellThicknessMode?: ShellThicknessMode;
+    shellThicknessRfMm?: number;
+    shellThicknessMfMm?: number;
+    shellThicknessFfMm?: number;
+    shellThicknessBlendMm?: number;
     shapeFinish?: SideShapeFinish | null;
 }
 
@@ -39,6 +51,12 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         segmentsX = 96,
         segmentsY = 48,
         trimline = null,
+        shellThicknessMode,
+        shellThicknessRfMm,
+        shellThicknessMfMm,
+        shellThicknessFfMm,
+        shellThicknessBlendMm,
+        method,
         shapeFinish = null,
     } = params;
 
@@ -52,6 +70,12 @@ export function buildInsoleGeometry(params: InsoleParams): BufferGeometry {
         includeSkives: true,
         includeElements: true,
         trimline,
+        shellThicknessMode,
+        shellThicknessRfMm,
+        shellThicknessMfMm,
+        shellThicknessFfMm,
+        shellThicknessBlendMm,
+        method,
         shapeFinish,
     };
 

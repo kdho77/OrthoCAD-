@@ -28,7 +28,6 @@ import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-
 import { cn } from "@/lib/utils";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/design-store";
-import { useKernelStore } from "@/stores/kernel-store";
 import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
@@ -79,7 +78,6 @@ function resolveDefaultEditSide(viewer: ViewerSettings, target: MeshEditTarget |
 
 export function Viewer3D() {
     const controls = useRef<OrbitControlsImpl>(null);
-    const kernelName = useKernelStore((s) => s.name);
     const {
         design,
         viewer,
@@ -438,7 +436,7 @@ export function Viewer3D() {
                     label="Scan"
                 />
                 {typeof window !== "undefined" &&
-                (window.localStorage.getItem("chili3d:dev") === "1" ||
+                (window.localStorage.getItem("vertex:dev") === "1" ||
                     new URLSearchParams(window.location.search).has("dev")) ? (
                     <ToggleButton
                         active={showPerf}
@@ -613,7 +611,7 @@ export function Viewer3D() {
             <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="h-3.5 w-3.5" />
                 {interacting ? "Preview mesh · " : ""}
-                {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural worker"} kernel · ⌘P Rx
+                Procedural geometry kernel · ⌘P Rx
                 · ⌘E export · T transparent · Esc deselect
                 {selectedScanId ? " · arrows nudge scan" : ""}
             </div>

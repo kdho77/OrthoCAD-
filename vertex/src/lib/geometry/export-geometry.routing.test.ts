@@ -1,11 +1,9 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { describe, expect, test, beforeEach } from "@rstest/core";
+import { beforeEach, describe, expect, test } from "@rstest/core";
 import { BufferAttribute, BufferGeometry } from "three";
 import type { DesignState } from "@/types";
 
-const mockEnsureKernelReady = rs.fn<() => Promise<boolean>>();
 const mockExportManufacturingStlFromBase = rs.fn<() => ArrayBuffer | null>();
 const mockCloseGlbInsoleToSolid = rs.fn<(geometry: BufferGeometry) => BufferGeometry>();
 const mockGeometryToBinarySTL = rs.fn<(geometry: BufferGeometry) => ArrayBuffer>();
@@ -31,10 +29,10 @@ rs.mock("@/stores/design-store", () => ({
     },
 }));
 
-rs.mock("@/lib/chili3d/kernel", () => ({
+rs.mock("@/lib/geometry/geometry-kernel", () => ({
     getKernel: () => ({
-        name: "opencascade-wasm",
-        tier: "authoritative",
+        name: "three-procedural",
+        tier: "preview",
         ready: true,
         exportManufacturingStlFromBase: mockExportManufacturingStlFromBase,
         exportSTL: () => new ArrayBuffer(84),
@@ -42,9 +40,7 @@ rs.mock("@/lib/chili3d/kernel", () => ({
         buildInsoleSolid: mockBuildInsoleSolid,
         buildFromBase: mockBuildFromBase,
     }),
-    isAuthoritativeKernel: () => true,
-    isKernelInitFailed: () => false,
-    ensureKernelReady: () => mockEnsureKernelReady(),
+    isAuthoritativeKernel: () => false,
 }));
 
 rs.mock("@/lib/geometry/mesh-close", () => ({
@@ -73,7 +69,6 @@ rs.mock("@/lib/geometry/kernel-build", () => ({
         corrections: [],
         elements: [],
     }),
-    isOcctKernelActive: () => true,
 }));
 
 rs.mock("@/lib/geometry/trimline", () => ({
@@ -94,10 +89,7 @@ rs.mock("@/lib/geometry/glb-export", () => ({
 
 function makeTestGeometry(): BufferGeometry {
     const geometry = new BufferGeometry();
-    geometry.setAttribute(
-        "position",
-        new BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), 3),
-    );
+    geometry.setAttribute("position", new BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), 3));
     geometry.setIndex([0, 1, 2]);
     geometry.userData = { isMultiMeshBase: true, topVertexCount: 3 };
     return geometry;
@@ -105,8 +97,6 @@ function makeTestGeometry(): BufferGeometry {
 
 describe("export-geometry routing", () => {
     beforeEach(() => {
-        mockEnsureKernelReady.mockReset();
-        mockEnsureKernelReady.mockResolvedValue(true);
         mockExportManufacturingStlFromBase.mockReset();
         mockCloseGlbInsoleToSolid.mockReset();
         mockGeometryToBinarySTL.mockReset();
@@ -134,7 +124,7 @@ describe("export-geometry routing", () => {
         });
         mockBuildFromBase.mockImplementation(() => ({
             geometry: makeTestGeometry(),
-            manifold: { isWatertight: false, occtClosed: false },
+            manifold: { isWatertight: false, solidClosed: false },
         }));
         mockCloseGlbInsoleToSolid.mockImplementation((geometry) => geometry);
         mockGeometryToBinarySTL.mockImplementation(() => new ArrayBuffer(84));
@@ -147,20 +137,7 @@ describe("export-geometry routing", () => {
         expect(exportModeFromMethod("printing_shell")).toBe("preview");
     });
 
-    test("Printing Solid export uses OCCT path", async () => {
-        const occtBytes = new ArrayBuffer(128);
-        mockExportManufacturingStlFromBase.mockReturnValue(occtBytes);
-
-        const { buildExportStl } = await import("@/lib/geometry/export-geometry");
-        const result = await buildExportStl("left", { exportMode: "manufacturing" });
-
-        expect(mockExportManufacturingStlFromBase).toHaveBeenCalledTimes(1);
-        expect(mockCloseGlbInsoleToSolid).not.toHaveBeenCalled();
-        expect(result).toBe(occtBytes);
-    });
-
-    test("OCCT path failure falls back to GLB rim-close", async () => {
-        mockExportManufacturingStlFromBase.mockReturnValue(null);
+    test("manufacturing STL uses GLB rim-close and does not call a B-rep sew export", async () => {
         const closedGeo = makeTestGeometry();
         mockCloseGlbInsoleToSolid.mockReturnValue(closedGeo);
         const stlBytes = new ArrayBuffer(96);
@@ -169,7 +146,7 @@ describe("export-geometry routing", () => {
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         const result = await buildExportStl("left", { exportMode: "manufacturing" });
 
-        expect(mockExportManufacturingStlFromBase).toHaveBeenCalledTimes(1);
+        expect(mockExportManufacturingStlFromBase).not.toHaveBeenCalled();
         expect(mockCloseGlbInsoleToSolid).toHaveBeenCalledTimes(1);
         expect(mockGeometryToBinarySTL).toHaveBeenCalledWith(closedGeo);
         expect(result).toBe(stlBytes);
@@ -179,12 +156,5 @@ describe("export-geometry routing", () => {
         const { buildExportGlb } = await import("@/lib/geometry/export-geometry");
         await buildExportGlb("left");
         expect(mockCloseGlbInsoleToSolid).not.toHaveBeenCalled();
-    });
-
-    test("exportManufacturingStlAttempt returns null without a loaded base design", async () => {
-        mockGetDesignBase.mockReturnValue(null);
-        const { exportManufacturingStlAttempt } = await import("@/lib/geometry/export-geometry");
-        const result = await exportManufacturingStlAttempt(mockDesign, "left");
-        expect(result).toBeNull();
     });
 });

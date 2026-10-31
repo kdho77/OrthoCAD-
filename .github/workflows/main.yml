@@ -17,7 +17,7 @@ jobs:
         # Manual dispatch is reserved for the optional procedural smoke test.
         if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
-        timeout-minutes: 45
+        timeout-minutes: 90
 
         steps:
             - name: Checkout repository

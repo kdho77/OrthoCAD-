@@ -20,7 +20,6 @@ export const useKernelStore = create<KernelStore>((set) => ({
         set((s) => ({
             version: s.version + 1,
             name: kernelName,
-            loadState: kernelName === "opencascade-wasm" ? "ready" : s.loadState,
         })),
     setLoadState: (loadState, loadError = null) => set({ loadState, loadError }),
 }));
