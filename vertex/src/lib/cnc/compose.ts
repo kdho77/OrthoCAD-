@@ -10,6 +10,31 @@ import type { DesignState, Side } from "@/types";
 import type { CncWorkpiece, MillingProfile } from "./types";
 import { workpieceFromGeometry } from "./workpiece";
 
+const TEXT_USERDATA_KEYS = [
+    "textMarking",
+    "textGuide",
+    "textFitError",
+    "bottomOutlineWorld",
+    "outlineWorld",
+] as const;
+
+/**
+ * CNC never cuts bottom or wall text. The order may still carry a print marking;
+ * the toolpath sees a copy with that input removed.
+ */
+export function designWithoutText<T extends { textMarking?: unknown }>(design: T): T {
+    if (design.textMarking == null) return design;
+    return { ...design, textMarking: undefined };
+}
+
+/** Drop engraved-text payloads if a mesh brought them in from a print solid. */
+export function clearTextUserData(geometry: BufferGeometry): void {
+    const ud = geometry.userData;
+    if (!ud || typeof ud !== "object") return;
+    const bag = ud as Record<string, unknown>;
+    for (const key of TEXT_USERDATA_KEYS) delete bag[key];
+}
+
 /** Keep the composed top for mill orbit. Clone when `composed` is the loaded SAMPLE_Top sheet. */
 export function attachOrbitMesh(
     wp: CncWorkpiece,
@@ -46,7 +71,8 @@ export async function workpiecesFromDesign(
     },
 ): Promise<CncWorkpiece[]> {
     const out: CncWorkpiece[] = [];
-    const layout = insoleLayoutFromDesign(design);
+    const cncDesign = designWithoutText(design);
+    const layout = insoleLayoutFromDesign(cncDesign);
     for (const side of sides) {
         const loaded = await loadGeo(side);
         if (!loaded) continue;
@@ -54,16 +80,21 @@ export async function workpiecesFromDesign(
         // Scale before compose so elements and the outline share that frame.
         const raw = scaleGeometryToInsoleSize(loaded, layout.lengthMm, layout.widthMm);
         if (raw !== loaded) loaded.dispose();
-        const thickness = design.paired
+        const thickness = cncDesign.paired
             ? side === "left"
-                ? design.paired.leftThicknessMm
-                : design.paired.rightThicknessMm
-            : design.thicknessMm;
-        const field = baseModifierFieldAuthoritative(design, side, thickness ?? BASE_REFERENCE_THICKNESS_MM);
-        const widthId = shoeWidthForSide(design, side);
+                ? cncDesign.paired.leftThicknessMm
+                : cncDesign.paired.rightThicknessMm
+            : cncDesign.thicknessMm;
+        const field = baseModifierFieldAuthoritative(
+            cncDesign,
+            side,
+            thickness ?? BASE_REFERENCE_THICKNESS_MM,
+        );
+        const widthId = shoeWidthForSide(cncDesign, side);
         const heelW = field.corrections?.heelCupWidthMm ?? 0;
         const composed = await composePrintSolidTop(raw, {
             // Same field the order build uses (includeElements, shape finish, effective length).
+            // Text is not an input: designWithoutText already dropped it.
             sourceField: field,
             shoeWidth: {
                 width: widthId,
@@ -72,7 +103,9 @@ export async function workpiecesFromDesign(
                 heelOverrideMm: heelW,
             },
         });
+        clearTextUserData(composed);
         const workpiece = attachOrbitMesh(workpieceFromGeometry(composed, side, profile), composed, raw);
+        if (workpiece.mesh) clearTextUserData(workpiece.mesh);
         if (workpiece.mesh !== raw) raw.dispose();
         out.push(workpiece);
     }

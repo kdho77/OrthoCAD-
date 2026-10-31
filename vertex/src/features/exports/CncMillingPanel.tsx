@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { exportCncGcode } from "@/features/exports/export-service";
+import { orderDownloadSides } from "@/lib/geometry/export-geometry";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import type { HeelDirection, ToolType } from "@/lib/cnc/types";
 import { cn } from "@/lib/utils";
@@ -53,11 +54,16 @@ export function CncMillingPanel() {
     const [busy, setBusy] = useState(false);
     const [feet, setFeet] = useState<"active" | "both">("both");
     const gcodeCheck = canExport(user, license, "gcode");
+    const milledOrder = design.method === "milling_3axis";
 
     const onExport = async () => {
         setBusy(true);
         setStatus("Generating CNC G-code…");
-        const sides: Side[] = feet === "both" && design.paired ? ["left", "right"] : [exportSide];
+        const sides: Side[] = milledOrder
+            ? orderDownloadSides(design)
+            : feet === "both" && design.paired
+              ? ["left", "right"]
+              : [exportSide];
         try {
             const res = await exportCncGcode(sides, profile);
             setStatus(res.ok ? `Exported ${res.filename}` : (res.reason ?? "CNC export failed"));
@@ -183,23 +189,29 @@ export function CncMillingPanel() {
                 {profile.topFeeds.slow} · contour {profile.topFeeds.contour}
             </div>
 
-            <div className="flex gap-1">
-                {(["both", "active"] as const).map((f) => (
-                    <button
-                        key={f}
-                        type="button"
-                        onClick={() => setFeet(f)}
-                        className={cn(
-                            "flex-1 rounded-md border px-2 py-1 text-[10px]",
-                            feet === f
-                                ? "border-primary bg-primary/10"
-                                : "border-border text-muted-foreground",
-                        )}
-                    >
-                        {f === "both" ? "Both pockets (L+R)" : "Active foot only"}
-                    </button>
-                ))}
-            </div>
+            {milledOrder ? (
+                <p className="text-[10px] text-muted-foreground">
+                    Milled orders export one L+R CNC file. Bottom and wall text are not cut.
+                </p>
+            ) : (
+                <div className="flex gap-1">
+                    {(["both", "active"] as const).map((f) => (
+                        <button
+                            key={f}
+                            type="button"
+                            onClick={() => setFeet(f)}
+                            className={cn(
+                                "flex-1 rounded-md border px-2 py-1 text-[10px]",
+                                feet === f
+                                    ? "border-primary bg-primary/10"
+                                    : "border-border text-muted-foreground",
+                            )}
+                        >
+                            {f === "both" ? "Both pockets (L+R)" : "Active foot only"}
+                        </button>
+                    ))}
+                </div>
+            )}
 
             <Button className="w-full" disabled={busy || !gcodeCheck.ok} onClick={onExport}>
                 {busy ? (
