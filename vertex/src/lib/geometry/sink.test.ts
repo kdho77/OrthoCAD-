@@ -18,6 +18,8 @@ import {
     forefootThicknessPlan,
     guardedRimLowering,
     LATERAL_WALL_MIN_MM,
+    PLATEAU_GAP_MM,
+    plateauGapMm,
     RKW_MEDIAL_INSET_MM,
     SINK_DEFAULT_DEPTH_MM,
     SINK_KIND_ORDER,
@@ -109,29 +111,43 @@ describe("sink scalar field", () => {
     test("named profile table matches the clinical spec", () => {
         expect(SINK_PROFILES.mpj1).toMatchObject({
             u: 0.69,
-            v: 0.1,
-            lengthMm: 20,
-            widthMm: 20,
-            blendMm: 8,
+            v: 0.145,
+            lengthMm: 22,
+            widthMm: 22,
+            blendMm: 7,
             maxDepthMm: 4,
             rotationDeg: 0,
-            deepestProximalMm: 0,
+            deepestProximalMm: 3,
             deepestLateralMm: 0,
         });
         expect(SINK_PROFILES.mpj2).toMatchObject({
-            u: 0.705,
-            v: 0.28,
-            lengthMm: 14,
-            widthMm: 14,
-            maxDepthMm: 3,
-        });
-        expect(SINK_PROFILES.mpj3).toMatchObject({ u: 0.705, v: 0.48, lengthMm: 14, widthMm: 14 });
-        expect(SINK_PROFILES.mpj4).toMatchObject({ u: 0.685, v: 0.67, lengthMm: 14, widthMm: 14 });
-        expect(SINK_PROFILES.mpj5).toMatchObject({
-            u: 0.65,
-            v: 0.85,
+            u: 0.71,
+            v: 0.365,
             lengthMm: 16,
             widthMm: 16,
+            blendMm: 5,
+            maxDepthMm: 3,
+        });
+        expect(SINK_PROFILES.mpj3).toMatchObject({
+            u: 0.705,
+            v: 0.55,
+            lengthMm: 15,
+            widthMm: 15,
+            blendMm: 5,
+        });
+        expect(SINK_PROFILES.mpj4).toMatchObject({
+            u: 0.69,
+            v: 0.715,
+            lengthMm: 13,
+            widthMm: 13,
+            blendMm: 5,
+        });
+        expect(SINK_PROFILES.mpj5).toMatchObject({
+            u: 0.665,
+            v: 0.88,
+            lengthMm: 13,
+            widthMm: 13,
+            blendMm: 5,
             maxDepthMm: 4,
             rotationDeg: 0,
             lateralWallFade: true,
@@ -195,8 +211,9 @@ describe("sink scalar field", () => {
                             expect(frame).toBeTruthy();
                             if (!frame) continue;
                             const shift = Math.hypot(frame.dx - frame.cx, frame.dy - frame.cy);
-                            if (kind === "rkw") expect(shift).toBeCloseTo(profile.deepestProximalMm, 2);
-                            else expect(shift).toBeLessThan(0.05);
+                            if (kind === "rkw" || kind === "mpj1") {
+                                expect(shift).toBeCloseTo(profile.deepestProximalMm, 2);
+                            } else expect(shift).toBeLessThan(0.05);
                             const rotation = Math.atan2(frame.ty, frame.tx) * (180 / Math.PI);
                             const expectedRot = side === "left" ? -profile.rotationDeg : profile.rotationDeg;
                             expect(rotation).toBeCloseTo(expectedRot, 5);
@@ -300,7 +317,7 @@ describe("sink scalar field", () => {
             expect(
                 Math.abs(secant(blendEnd - 0.05, blendEnd) - secant(blendEnd, blendEnd + 0.05)),
             ).toBeLessThan(0.02);
-            const h2 = 0.2;
+            const h2 = Math.min(0.2, frame.blendMm * 0.025);
             const second = (s: number) => (cut(s + h2) - 2 * cut(s) + cut(s - h2)) / (h2 * h2);
             expect(Math.abs(second(boundary))).toBeLessThan(0.05);
             expect(Math.abs(second(blendEnd))).toBeLessThan(0.05);
@@ -319,11 +336,11 @@ describe("sink scalar field", () => {
 
     test("met-head diameters scale at 247 mm and 297 mm", () => {
         const diameters = [
-            ["mpj1", 20],
-            ["mpj2", 14],
-            ["mpj3", 14],
-            ["mpj4", 14],
-            ["mpj5", 16],
+            ["mpj1", 22],
+            ["mpj2", 16],
+            ["mpj3", 15],
+            ["mpj4", 13],
+            ["mpj5", 13],
         ] as const;
         for (const lengthMm of [247, 297]) {
             const s = lengthMm / SINK_REFERENCE_LENGTH_MM;
@@ -335,17 +352,18 @@ describe("sink scalar field", () => {
                 const frame = sinkFrame(sink, ctx)!;
                 expect(frame.halfLengthMm * 2).toBeCloseTo(diameter * s, 4);
                 expect(frame.halfWidthMm * 2).toBeCloseTo(diameter * s, 4);
+                expect(frame.blendMm).toBe(SINK_PROFILES[kind].blendMm);
             }
         }
     });
 
     test("centres sit on both feet at two lengths, and the 1st MPJ is medial", () => {
         const centres = [
-            ["mpj1", 0.69, 0.1],
-            ["mpj2", 0.705, 0.28],
-            ["mpj3", 0.705, 0.48],
-            ["mpj4", 0.685, 0.67],
-            ["mpj5", 0.65, 0.85],
+            ["mpj1", 0.69, 0.145],
+            ["mpj2", 0.71, 0.365],
+            ["mpj3", 0.705, 0.55],
+            ["mpj4", 0.69, 0.715],
+            ["mpj5", 0.665, 0.88],
         ] as const;
         const widthMm = 95;
         for (const lengthMm of [247, 297]) {
@@ -370,6 +388,53 @@ describe("sink scalar field", () => {
                 })!;
                 expect(first.v).toBeLessThan(0.2);
                 expect(first.cy).toBeLessThan(0);
+            }
+        }
+    });
+
+    test("plateau gap is at least 0.5 mm at 247 mm and 297 mm", () => {
+        const kinds = ["mpj1", "mpj2", "mpj3", "mpj4", "mpj5"] as const;
+        for (const lengthMm of [247, 297]) {
+            const widthMm = 95;
+            const s = lengthMm / SINK_REFERENCE_LENGTH_MM;
+            const outline = rectFoot(lengthMm, widthMm);
+            for (const side of SIDES) {
+                const sinks = kinds.map((kind) => placed(kind, 2));
+                const ctx = { side, lengthMm, widthMm, sinks, footOutline: outline };
+                const frames = sinks.map((sink) => sinkFrame(sink, ctx)!);
+                for (let i = 0; i < frames.length; i++) {
+                    for (let j = i + 1; j < frames.length; j++) {
+                        expect(plateauGapMm(frames[i]!, frames[j]!)).toBeGreaterThanOrEqual(
+                            PLATEAU_GAP_MM - 1e-4,
+                        );
+                    }
+                }
+                const first = frames[0]!;
+                expect(first.halfWidthMm * 2).toBeCloseTo(SINK_PROFILES.mpj1.widthMm * s, 4);
+                expect(first.blendMm).toBe(SINK_PROFILES.mpj1.blendMm);
+                for (const frame of frames) {
+                    expect(frame.blendMm).toBe(SINK_PROFILES[frame.kind].blendMm);
+                    expect(frame.depthMm).toBe(SINK_DEFAULT_DEPTH_MM);
+                }
+            }
+        }
+    });
+
+    test("5th MPJ plateau stays inside the lateral edge", () => {
+        for (const lengthMm of [247, 297]) {
+            const widthMm = 95;
+            const outline = rectFoot(lengthMm, widthMm);
+            const lateral = widthMm / 2;
+            for (const side of SIDES) {
+                const row = (["mpj1", "mpj2", "mpj3", "mpj4", "mpj5"] as const).map((kind) =>
+                    placed(kind, 2),
+                );
+                for (const sinks of [[placed("mpj5", 2)], row]) {
+                    const ctx = { side, lengthMm, widthMm, sinks, footOutline: outline };
+                    const frame = sinkFrame(sinks.find((sink) => sink.kind === "mpj5")!, ctx)!;
+                    expect(frame.cy + frame.halfWidthMm).toBeLessThanOrEqual(lateral + 1e-6);
+                    expect(frame.v).toBeCloseTo(SINK_PROFILES.mpj5.v, 3);
+                }
             }
         }
     });

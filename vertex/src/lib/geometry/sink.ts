@@ -29,10 +29,20 @@ export const RKW_MEDIAL_INSET_MM = 3;
  * the wall. The deepest point stays past this band.
  */
 export const RKW_MEDIAL_FADE_MM = 12;
-/** 5th MPJ body stays at least this far from the lateral edge. Blend is not included. */
-export const MPJ5_BODY_CLEAR_MM = 4;
-
 export const SINK_DEFAULT_DEPTH_MM = 2;
+/**
+ * Full-depth plateaus stay at least this far apart. The smoothstep taper
+ * outside a plateau may overlap; the deeper sink wins, and the depths are
+ * never added.
+ */
+export const PLATEAU_GAP_MM = 0.5;
+/**
+ * Who gives up plateau diameter when two plateaus are closer than
+ * {@link PLATEAU_GAP_MM}. MPJ4, then MPJ5, before MPJ3 and MPJ2. MPJ1 keeps
+ * its spec diameter. Taper width is not changed.
+ */
+const PLATEAU_YIELD_ORDER: readonly SinkKind[] = ["mpj4", "mpj5", "mpj3", "mpj2"];
+const PLATEAU_HALF_MIN_MM = 0.5;
 /** Added on top of the deepest forefoot sink. Floor under that sink = current + this. */
 export const FOREFOOT_THICKNESS_CLEARANCE_MM = 0.5;
 /** Local blend length of a forefoot sink's thickness addition. */
@@ -61,7 +71,7 @@ export const STYLOID_RIM_OVERRIDE_FLOOR_MM = 2;
 export const MPJ5_V_FADE_START = 0.88;
 export const MPJ5_V_FADE_END = 0.95;
 /**
- * 1st MPJ cut fades only on the extreme medial rim. The centre sits at v 0.10,
+ * 1st MPJ cut fades only on the extreme medial rim. The centre sits at v 0.145,
  * so the band must stay below that or the circle would lose depth at its middle.
  */
 export const MPJ1_V_FADE_START = 0.04;
@@ -73,7 +83,7 @@ export const MPJ1_V_FADE_END = 0;
  */
 export const RIM_LIP_MAX_DEG = 30;
 const RIM_LIP_REACH_MM = 15;
-export const ELLIPSE_NEWTON_ITERS = 4;
+export const ELLIPSE_NEWTON_ITERS = 8;
 
 export interface SinkProfile {
     kind: SinkKind;
@@ -120,13 +130,13 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         kind: "mpj1",
         label: "1st MPJ",
         u: 0.69,
-        v: 0.1,
-        lengthMm: 20,
-        widthMm: 20,
-        blendMm: 8,
+        v: 0.145,
+        lengthMm: 22,
+        widthMm: 22,
+        blendMm: 7,
         defaultDepthMm: SINK_DEFAULT_DEPTH_MM,
         maxDepthMm: 4,
-        deepestProximalMm: 0,
+        deepestProximalMm: 3,
         deepestLateralMm: 0,
         rotationDeg: 0,
         lateralWallFade: false,
@@ -136,11 +146,11 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
     mpj2: {
         kind: "mpj2",
         label: "2nd MPJ",
-        u: 0.705,
-        v: 0.28,
-        lengthMm: 14,
-        widthMm: 14,
-        blendMm: 6,
+        u: 0.71,
+        v: 0.365,
+        lengthMm: 16,
+        widthMm: 16,
+        blendMm: 5,
         defaultDepthMm: SINK_DEFAULT_DEPTH_MM,
         maxDepthMm: 3,
         deepestProximalMm: 0,
@@ -154,10 +164,10 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         kind: "mpj3",
         label: "3rd MPJ",
         u: 0.705,
-        v: 0.48,
-        lengthMm: 14,
-        widthMm: 14,
-        blendMm: 6,
+        v: 0.55,
+        lengthMm: 15,
+        widthMm: 15,
+        blendMm: 5,
         defaultDepthMm: SINK_DEFAULT_DEPTH_MM,
         maxDepthMm: 3,
         deepestProximalMm: 0,
@@ -170,11 +180,11 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
     mpj4: {
         kind: "mpj4",
         label: "4th MPJ",
-        u: 0.685,
-        v: 0.67,
-        lengthMm: 14,
-        widthMm: 14,
-        blendMm: 6,
+        u: 0.69,
+        v: 0.715,
+        lengthMm: 13,
+        widthMm: 13,
+        blendMm: 5,
         defaultDepthMm: SINK_DEFAULT_DEPTH_MM,
         maxDepthMm: 3,
         deepestProximalMm: 0,
@@ -187,11 +197,11 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
     mpj5: {
         kind: "mpj5",
         label: "5th MPJ",
-        u: 0.65,
-        v: 0.85,
-        lengthMm: 16,
-        widthMm: 16,
-        blendMm: 6,
+        u: 0.665,
+        v: 0.88,
+        lengthMm: 13,
+        widthMm: 13,
+        blendMm: 5,
         defaultDepthMm: SINK_DEFAULT_DEPTH_MM,
         maxDepthMm: 4,
         deepestProximalMm: 0,
@@ -674,15 +684,74 @@ function placeStyloidRim(
     return { cy: next, marginMm, shiftMm: cy - next, blocked, warning };
 }
 
-export function sinkFrame(sink: PlacedSink, ctx: SinkSurfaceContext): SinkOvalFrame | null {
+/** Gap between two full-depth plateaus along the line joining their deepest points. */
+export function plateauGapMm(a: SinkOvalFrame, b: SinkOvalFrame): number {
+    const vx = b.dx - a.dx;
+    const vy = b.dy - a.dy;
+    const dist = Math.hypot(vx, vy);
+    if (dist < 1e-9) return -a.halfWidthMm - b.halfWidthMm;
+    return dist - plateauRadiusToward(a, b.dx, b.dy) - plateauRadiusToward(b, a.dx, a.dy);
+}
+
+function plateauRadiusToward(frame: SinkOvalFrame, x: number, y: number): number {
+    const vx = x - frame.dx;
+    const vy = y - frame.dy;
+    const len = Math.hypot(vx, vy);
+    if (len < 1e-9) return Math.max(frame.aProx, frame.aDist, frame.bMed, frame.bLat);
+    const ulx = (vx * frame.tx + vy * frame.ty) / len;
+    const uly = (vx * frame.nx + vy * frame.ny) / len;
+    const a = ulx >= 0 ? frame.aDist : frame.aProx;
+    const b = uly >= 0 ? frame.bLat : frame.bMed;
+    const h = Math.hypot(ulx / Math.max(a, 1e-6), uly / Math.max(b, 1e-6));
+    return h > 1e-12 ? 1 / h : 0;
+}
+
+const plateauScaleCache = new WeakMap<SinkSurfaceContext, Map<string, number>>();
+
+/** Extra diameter scale (≤ 1) so MPJ plateaus in this context keep a 0.5 mm gap. */
+function plateauDiameterScales(ctx: SinkSurfaceContext): Map<string, number> {
+    const hit = plateauScaleCache.get(ctx);
+    if (hit) return hit;
+    const scales = new Map<string, number>();
+    const sinks = (ctx.sinks ?? []).filter((sink) => sink.kind.startsWith("mpj"));
+    if (sinks.length < 2) {
+        plateauScaleCache.set(ctx, scales);
+        return scales;
+    }
+    for (const kind of PLATEAU_YIELD_ORDER) {
+        const sink = sinks.find((item) => item.kind === kind);
+        if (!sink) continue;
+        const frames: SinkOvalFrame[] = [];
+        for (const item of sinks) {
+            const frame = frameSink(item, ctx, scales.get(item.id) ?? 1);
+            if (frame) frames.push(frame);
+        }
+        const mine = frames.find((frame) => frame.sinkId === sink.id);
+        if (!mine) continue;
+        let deficit = 0;
+        for (const other of frames) {
+            if (other.sinkId === mine.sinkId) continue;
+            deficit = Math.max(deficit, PLATEAU_GAP_MM - plateauGapMm(mine, other));
+        }
+        if (deficit <= 1e-6) continue;
+        const scale = scales.get(sink.id) ?? 1;
+        const specHalf = mine.halfWidthMm / Math.max(scale, 1e-6);
+        const nextHalf = Math.max(PLATEAU_HALF_MIN_MM, mine.halfWidthMm - deficit);
+        scales.set(sink.id, specHalf > 1e-6 ? nextHalf / specHalf : scale);
+    }
+    plateauScaleCache.set(ctx, scales);
+    return scales;
+}
+
+function frameSink(sink: PlacedSink, ctx: SinkSurfaceContext, diameterScale = 1): SinkOvalFrame | null {
     const profile = SINK_PROFILES[sink.kind];
     if (!profile) return null;
     const clamped = clampSinkDepth(sink.kind, sink.depthMm);
     const uv = resolveUV(sink, ctx.sinkMarkers);
     const edges = planEdges(ctx);
     const scale = sinkPlanScale(edges.lengthMm);
-    const halfLengthMm = (profile.lengthMm / 2) * scale;
-    const halfWidthMm = (profile.widthMm / 2) * scale;
+    const halfLengthMm = (profile.lengthMm / 2) * scale * diameterScale;
+    const halfWidthMm = (profile.widthMm / 2) * scale * diameterScale;
     const rotationDeg = signedSinkRotationDeg(profile.rotationDeg, ctx.side);
     const theta = (rotationDeg * Math.PI) / 180;
     const axes = frameAxes(theta);
@@ -701,10 +770,10 @@ export function sinkFrame(sink: PlacedSink, ctx: SinkSurfaceContext): SinkOvalFr
         v = span > 1e-6 ? (cy - medial) / span : 0.5;
     }
     if (sink.kind === "mpj5" && span > 1e-6) {
-        const clearance = lateral - cy - halfWidthMm;
-        if (clearance < MPJ5_BODY_CLEAR_MM) {
-            const target = lateral - MPJ5_BODY_CLEAR_MM - halfWidthMm;
-            cy = Math.max(medial + halfWidthMm, Math.min(cy, target));
+        const limit = lateral - halfWidthMm;
+        if (cy > limit) {
+            const minCy = medial + halfWidthMm;
+            cy = minCy <= limit ? limit : (medial + lateral) / 2;
             v = (cy - medial) / span;
         }
     }
@@ -764,6 +833,11 @@ export function sinkFrame(sink: PlacedSink, ctx: SinkSurfaceContext): SinkOvalFr
     };
 }
 
+export function sinkFrame(sink: PlacedSink, ctx: SinkSurfaceContext): SinkOvalFrame | null {
+    const scales = plateauDiameterScales(ctx);
+    return frameSink(sink, ctx, scales.get(sink.id) ?? 1);
+}
+
 const ellipseCache = new Map<string, number>();
 
 /** Exact distance from a point outside an axis-aligned ellipse to the ellipse. 0 inside. */
@@ -792,9 +866,7 @@ export function ellipseOffsetDistance(px: number, py: number, a: number, b: numb
     }
     const da = mu + a2;
     const db = mu + b2;
-    const x = (a2 * ax) / da;
-    const y = (b2 * ay) / db;
-    const dist = Math.hypot(ax - x, ay - y);
+    const dist = Math.hypot(ax - (a2 * ax) / da, ay - (b2 * ay) / db);
     if (ellipseCache.size > 8192) ellipseCache.clear();
     ellipseCache.set(key, dist);
     return dist;
@@ -809,8 +881,9 @@ function eggWeight(frame: SinkOvalFrame, x: number, y: number, blendMm: number):
     const b = ly >= 0 ? frame.bLat : frame.bMed;
     const r = Math.hypot(lx / a, ly / b);
     if (r <= 1) return 1;
-    const dist = ellipseOffsetDistance(lx, ly, a, b);
     if (blendMm <= 1e-9) return 0;
+    const dist = ellipseOffsetDistance(lx, ly, a, b);
+    if (dist >= blendMm) return 0;
     return 1 - smootherstep01(dist / blendMm);
 }
 
@@ -873,20 +946,53 @@ function specVAt(x: number, yLateral: number, ctx: SinkSurfaceContext): { v: num
     return { v: span > 1e-6 ? (yLateral - medial) / span : 0.5, span };
 }
 
+function smoothstepDeriv01(t: number): number {
+    if (t <= 0 || t >= 1) return 0;
+    return 6 * t * (1 - t);
+}
+
 /** Keep a sink's cut and its local thicken off the wall. 1 in the interior. */
-function wallFadeFactor(frame: SinkOvalFrame, v: number, spanMm: number): number {
+function wallFade(
+    frame: SinkOvalFrame,
+    v: number,
+    spanMm: number,
+    forThickness = false,
+): { factor: number; dfdy: number } {
     let factor = 1;
+    let dfdy = 0;
+    const dvdy = spanMm > 1e-6 ? 1 / spanMm : 0;
+    const mul = (piece: number, dfdv: number) => {
+        dfdy = dfdy * piece + factor * dfdv * dvdy;
+        factor *= piece;
+    };
     if (frame.lateralWallFade) {
-        factor *= 1 - smoothstep01((v - MPJ5_V_FADE_START) / (MPJ5_V_FADE_END - MPJ5_V_FADE_START));
+        const denom = MPJ5_V_FADE_END - MPJ5_V_FADE_START;
+        const t = (v - MPJ5_V_FADE_START) / denom;
+        mul(1 - smoothstep01(t), -smoothstepDeriv01(t) / denom);
     }
     if (frame.medialWallFade) {
-        const startV =
+        let startV =
             frame.medialFadeMm > 0 && spanMm > 1e-6
                 ? Math.min(0.49, frame.medialFadeMm / spanMm)
                 : MPJ1_V_FADE_START;
-        factor *= 1 - smoothstep01((startV - v) / Math.max(startV, 1e-6));
+        // The cut stays off the rim in a short band. Thickness is a wider
+        // addition, so the same band leaves a ridge on the mesh. Spread the
+        // thickness fade, keep the sink centre full, and reach zero a few
+        // millimetres inside the outline so the loft wall is not crossed.
+        let endV = 0;
+        if (forThickness && spanMm > 1e-6) {
+            if (!(frame.medialFadeMm > 0)) {
+                const wide = 12 / spanMm;
+                const cap = Math.max(startV, frame.v * 0.8);
+                startV = Math.min(Math.max(startV, wide), cap);
+            }
+            endV = Math.min(4 / spanMm, startV * 0.5);
+        }
+        const spanV = Math.max(startV - endV, 1e-6);
+        const t = (startV - v) / spanV;
+        mul(1 - smoothstep01(t), smoothstepDeriv01(t) / spanV);
     }
-    return factor;
+    return { factor, dfdy };
 }
 
 export function sinkThicknessMm(x: number, yLateral: number, ctx: SinkSurfaceContext): number {
@@ -896,7 +1002,8 @@ export function sinkThicknessMm(x: number, yLateral: number, ctx: SinkSurfaceCon
     for (const p of prepare(ctx)) {
         const localOk = p.frame.forefoot || (ctx.sinkStyloidThicken && p.frame.kind === "styloid");
         if (!localOk) continue;
-        const w = eggWeight(p.frame, x, yLateral, BLEND_LEN_MM) * wallFadeFactor(p.frame, at.v, at.span);
+        const w =
+            eggWeight(p.frame, x, yLateral, BLEND_LEN_MM) * wallFade(p.frame, at.v, at.span, true).factor;
         const local = (p.frame.depthMm + FOREFOOT_THICKNESS_CLEARANCE_MM) * w;
         if (local > t) t = local;
     }
@@ -941,7 +1048,7 @@ export function sinkCutMm(
     let sinkId: string | undefined;
     let weight = 0;
     for (const p of prepare(ctx)) {
-        const w = eggWeight(p.frame, x, yLateral, p.frame.blendMm) * wallFadeFactor(p.frame, v, at.span);
+        const w = eggWeight(p.frame, x, yLateral, p.frame.blendMm) * wallFade(p.frame, v, at.span).factor;
         const d = p.frame.depthMm * w;
         if (d > best) {
             best = d;
@@ -950,6 +1057,18 @@ export function sinkCutMm(
         }
     }
     return { mm: best, sinkId, weight };
+}
+
+/** True where two tapers both still cut, so a hard max would crease the loft. */
+function taperOverlap(x: number, yLateral: number, ctx: SinkSurfaceContext): boolean {
+    const at = specVAt(x, yLateral, ctx);
+    let n = 0;
+    for (const p of prepare(ctx)) {
+        const w = eggWeight(p.frame, x, yLateral, p.frame.blendMm) * wallFade(p.frame, at.v, at.span).factor;
+        if (p.frame.depthMm * w > 0.4) n++;
+        if (n >= 2) return true;
+    }
+    return false;
 }
 
 /** Anatomical mm of the deepest point (shifted centre). */
@@ -1461,6 +1580,58 @@ function raiseInboardOfGuardedRim(
 }
 
 /**
+ * Where two tapers cross, the hard max is a valley. One loft triangle on each
+ * wall can fold past 60°. Lower only the shoulder, and leave plateau vertices
+ * alone so the floor stays at depth + 0.5 mm.
+ */
+function relaxOverlapShoulder(
+    positions: number[],
+    topCount: number,
+    rim: Map<number, number>,
+    onPlateau: (x: number, y: number) => boolean,
+    inOverlap: (x: number, y: number) => boolean,
+): void {
+    const slope = Math.tan((28 * Math.PI) / 180);
+    const cell = 2.5;
+    const buckets = new Map<string, number[]>();
+    for (let i = 0; i < topCount; i++) {
+        if (rim.has(i)) continue;
+        const key = `${Math.floor(positions[i * 3]! / cell)},${Math.floor(positions[i * 3 + 1]! / cell)}`;
+        const bucket = buckets.get(key);
+        if (bucket) bucket.push(i);
+        else buckets.set(key, [i]);
+    }
+    const next = new Float64Array(topCount);
+    for (let i = 0; i < topCount; i++) next[i] = positions[i * 3 + 2]!;
+    for (let i = 0; i < topCount; i++) {
+        if (rim.has(i)) continue;
+        const x = positions[i * 3]!;
+        const y = positions[i * 3 + 1]!;
+        if (onPlateau(x, y) || !inOverlap(x, y)) continue;
+        const cx = Math.floor(x / cell);
+        const cy = Math.floor(y / cell);
+        let cap = next[i]!;
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                const bucket = buckets.get(`${cx + dx},${cy + dy}`);
+                if (!bucket) continue;
+                for (const j of bucket) {
+                    if (j === i) continue;
+                    const dist = Math.hypot(x - positions[j * 3]!, y - positions[j * 3 + 1]!);
+                    if (dist < 0.25 || dist > cell) continue;
+                    const allowed = positions[j * 3 + 2]! + dist * slope;
+                    if (allowed < cap) cap = allowed;
+                }
+            }
+        }
+        const floor = next[i]! - 1.4;
+        if (cap < floor) cap = floor;
+        if (cap < next[i]!) next[i] = cap;
+    }
+    for (let i = 0; i < topCount; i++) positions[i * 3 + 2] = next[i]!;
+}
+
+/**
  * T, then S, then a vertical wall stretch and styloid notch.
  * The loft has already been built from the unsunk rim, so only z is written.
  */
@@ -1577,6 +1748,20 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
         if (t !== 0 || guarded.cutMm !== 0) input.positions[i * 3 + 2] = Math.max(0, z - guarded.cutMm);
     }
     raiseInboardOfGuardedRim(input, rimStation, rimCut, rimR);
+    relaxOverlapShoulder(
+        input.positions,
+        topCount,
+        rimStation,
+        (x, y) => sampleAt(x, y).cut.weight >= 0.98,
+        (x, y) => {
+            if (useMesh) return taperOverlap(x, meshYToAnatomical(y, input.side, input.medialYSign), ctx);
+            const u = Math.max(0, Math.min(1, (x - input.bounds.minX) / length));
+            const mMesh = (y - widCenter) / halfW;
+            const vSigned = Math.max(-1, Math.min(1, -(mMesh * input.medialYSign) * medialSign(input.side)));
+            const pt = pointMm(u, vSigned, ctx);
+            return taperOverlap(pt.x, pt.y, ctx);
+        },
+    );
     const styloid = input.sinks!.find((s) => s.kind === "styloid");
     const depth = styloid ? clampSinkDepth("styloid", styloid.depthMm).depthMm : 0;
     const touched = new Set<number>();
