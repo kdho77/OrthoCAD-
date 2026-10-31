@@ -70,8 +70,7 @@ export function LoginScreen() {
             />
             <div className="relative flex w-full max-w-[400px] flex-col items-center">
                 <img
-                    src="/brand/orthocad-logo-dark.png"
-                    srcSet="/brand/orthocad-logo-dark.png 1x, /brand/orthocad-logo-dark@2x.png 2x"
+                    src="/brand/orthocad-logo-transparent.png"
                     alt="OrthoCAD by Vertex Orthopedic Group"
                     width={320}
                     height={107}

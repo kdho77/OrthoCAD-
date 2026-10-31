@@ -47,7 +47,7 @@ describe("LoginScreen", () => {
 
     test("shows modern lockup, copy, and footer without legacy dev chrome", async () => {
         await renderLogin();
-        expect(container.querySelector('img[src="/brand/orthocad-logo-dark.png"]')).toBeTruthy();
+        expect(container.querySelector('img[src="/brand/orthocad-logo-transparent.png"]')).toBeTruthy();
         expect(container.textContent).toContain("Sign in");
         expect(container.textContent).toContain("Use your Vertex account");
         expect(container.textContent).toContain("© 2026 Vertex Orthopedic Group");
