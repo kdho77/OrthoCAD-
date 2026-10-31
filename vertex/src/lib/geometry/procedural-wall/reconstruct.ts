@@ -50,7 +50,7 @@ import {
     clampPostingOnTopSheet,
     FOREFOOT_SHIFT_U_HOLD,
     footprintVSignedFromMeshY,
-    forefootOutlineRoomMm,
+    forefootOutlineMetrics,
     forefootWidthPlanDy,
     type ProceduralModifierInput,
     type ProceduralWallStyle,
@@ -1932,7 +1932,7 @@ export function reconstructProceduralWalls(
         (grid.quality as { nFlippedWallFaces?: number }).nFlippedWallFaces = wallFlip.n;
     }
     if (forefootMm !== 0) {
-        const roomAt = forefootOutlineRoomMm(grid.outlineRing, model.bounds);
+        const metrics = forefootOutlineMetrics(grid.outlineRing, model.bounds);
         const fairToe = fullLengthWedgeActive(options.corrections);
         applyForefootPlanShift(
             positions,
@@ -1943,7 +1943,15 @@ export function reconstructProceduralWalls(
             fairToe,
         );
         for (const p of grid.outlineRing) {
-            p.y += forefootWidthPlanDy(p.x, p.y, model.bounds, forefootMm, roomAt, fairToe);
+            p.y += forefootWidthPlanDy(
+                p.x,
+                p.y,
+                model.bounds,
+                forefootMm,
+                metrics.roomAt,
+                metrics.halfAt,
+                fairToe,
+            );
         }
         // Non-uniform Y can flip a z=0 triangle. A bottom that is already
         // down is left byte-for-byte alone. Width 0 never reaches this block.
