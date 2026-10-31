@@ -80,16 +80,29 @@ function relsXml(): string {
 </Relationships>`;
 }
 
-function modelXml(shell: TriangleMesh, modifiers: ResolvedModifier[]): string {
+function modelXml(
+    shell: TriangleMesh,
+    modifiers: ResolvedModifier[],
+    extras: Array<{ shell: TriangleMesh; modifiers: ResolvedModifier[] }> = [],
+): string {
     const objects: string[] = [];
     objects.push(`<object id="2" type="model">${meshXml(shell)}</object>`);
     let nextId = 3;
     const componentIds = ["2"];
-    for (const m of modifiers) {
-        if (m.status !== "present" || m.mesh.indices.length === 0) continue;
-        objects.push(`<object id="${nextId}" type="model">${meshXml(m.mesh)}</object>`);
+    const pushModifiers = (mods: ResolvedModifier[]) => {
+        for (const m of mods) {
+            if (m.status !== "present" || m.mesh.indices.length === 0) continue;
+            objects.push(`<object id="${nextId}" type="model">${meshXml(m.mesh)}</object>`);
+            componentIds.push(String(nextId));
+            nextId += 1;
+        }
+    };
+    pushModifiers(modifiers);
+    for (const extra of extras) {
+        objects.push(`<object id="${nextId}" type="model">${meshXml(extra.shell)}</object>`);
         componentIds.push(String(nextId));
         nextId += 1;
+        pushModifiers(extra.modifiers);
     }
     const components = componentIds
         .map((id) => `<component objectid="${id}" transform="${IDENTITY}"/>`)
@@ -109,44 +122,60 @@ function partMetadata(lines: Array<[string, string]>): string {
         .join("");
 }
 
-export function modelSettingsXml(modifiers: ResolvedModifier[], designHash: string): string {
+function shellPart(id: number, name: string): string {
+    return `<part id="${id}" subtype="normal_part">${partMetadata([
+        ["name", name],
+        ["matrix", "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"],
+        ["slow_down_layer_time", "0"],
+    ])}</part>`;
+}
+
+export function modelSettingsXml(
+    modifiers: ResolvedModifier[],
+    designHash: string,
+    extras: Array<{ name: string; modifiers: ResolvedModifier[] }> = [],
+): string {
     const parts: string[] = [];
-    parts.push(
-        `<part id="2" subtype="normal_part">${partMetadata([
-            ["name", "shell"],
-            ["matrix", "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"],
-        ])}</part>`,
-    );
+    parts.push(shellPart(2, "shell"));
     let partId = 3;
-    for (const m of modifiers) {
-        if (m.status !== "present" || m.mesh.indices.length === 0) continue;
-        const vs = volumeSettingsFor(m.region);
-        const meta: Array<[string, string]> = [
-            ["name", m.region.label ?? m.region.regionId],
-            ["matrix", "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"],
-            ["sparse_infill_density", `${vs.densityPct}%`],
-            ["sparse_infill_pattern", vs.pattern],
-            ["regionId", m.region.regionId],
-            ["kind", m.region.kind],
-            ["hardnessClass", m.region.hardnessClass],
-            ["priority", String(m.region.priority)],
-            ["depth", JSON.stringify(m.region.depth)],
-            ["overrides", JSON.stringify(m.region.overrides ?? {})],
-            ["sourceHash", m.sourceHash],
-            ["meshSha", m.meshSha],
-            ["designHash", designHash],
-        ];
-        if (vs.speedMmS !== undefined) {
-            meta.splice(4, 0, ["sparse_infill_speed", vs.speedMmS.toFixed(1)]);
+    const pushMods = (mods: ResolvedModifier[]) => {
+        for (const m of mods) {
+            if (m.status !== "present" || m.mesh.indices.length === 0) continue;
+            const vs = volumeSettingsFor(m.region);
+            const meta: Array<[string, string]> = [
+                ["name", m.region.label ?? m.region.regionId],
+                ["matrix", "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"],
+                ["sparse_infill_density", `${vs.densityPct}%`],
+                ["sparse_infill_pattern", vs.pattern],
+                ["regionId", m.region.regionId],
+                ["kind", m.region.kind],
+                ["hardnessClass", m.region.hardnessClass],
+                ["priority", String(m.region.priority)],
+                ["depth", JSON.stringify(m.region.depth)],
+                ["overrides", JSON.stringify(m.region.overrides ?? {})],
+                ["sourceHash", m.sourceHash],
+                ["meshSha", m.meshSha],
+                ["designHash", designHash],
+            ];
+            if (vs.speedMmS !== undefined) {
+                meta.splice(4, 0, ["sparse_infill_speed", vs.speedMmS.toFixed(1)]);
+            }
+            meta.splice(5, 0, ["sparse_infill_line_width", vs.lineWidthMm.toFixed(1)]);
+            parts.push(`<part id="${partId}" subtype="modifier_part">${partMetadata(meta)}</part>`);
+            partId += 1;
         }
-        meta.splice(5, 0, ["sparse_infill_line_width", vs.lineWidthMm.toFixed(1)]);
-        parts.push(`<part id="${partId}" subtype="modifier_part">${partMetadata(meta)}</part>`);
+    };
+    pushMods(modifiers);
+    for (const extra of extras) {
+        parts.push(shellPart(partId, extra.name));
         partId += 1;
+        pushMods(extra.modifiers);
     }
     return `<?xml version="1.0" encoding="UTF-8"?>
 <config>
 <object id="1">
 <metadata type="object" key="name" value="orthotic"/>
+<metadata type="object" key="slow_down_layer_time" value="0"/>
 ${parts.join("\n")}
 </object>
 </config>
@@ -164,17 +193,39 @@ export async function packHardness3mf(options: {
     side: Side;
     shell: TriangleMesh;
     modifiers: ResolvedModifier[];
+    /** Additional feet. Absent ⇒ the single-shell pack. */
+    extraShells?: Array<{ name: string; shell: TriangleMesh; modifiers: ResolvedModifier[] }>;
 }): Promise<Packed3mf> {
-    const designJson = canonicalizeJson({
-        side: options.side,
-        design: options.design,
-    });
+    const extras = options.extraShells ?? [];
+    const designJson = canonicalizeJson(
+        extras.length
+            ? {
+                  side: options.side,
+                  design: options.design,
+                  sides: [options.side, ...extras.map((e) => e.name)],
+              }
+            : { side: options.side, design: options.design },
+    );
     const designHash = sha256Utf8(designJson);
     const files: Array<[string, string]> = [
         ["[Content_Types].xml", contentTypesXml()],
         ["_rels/.rels", relsXml()],
-        ["3D/3dmodel.model", modelXml(options.shell, options.modifiers)],
-        ["Metadata/model_settings.config", modelSettingsXml(options.modifiers, designHash)],
+        [
+            "3D/3dmodel.model",
+            modelXml(
+                options.shell,
+                options.modifiers,
+                extras.map((e) => ({ shell: e.shell, modifiers: e.modifiers })),
+            ),
+        ],
+        [
+            "Metadata/model_settings.config",
+            modelSettingsXml(
+                options.modifiers,
+                designHash,
+                extras.map((e) => ({ name: e.name, modifiers: e.modifiers })),
+            ),
+        ],
         ["Metadata/orthocad_design.json", designJson],
         ["Metadata/orthocad_design.sha256", `${designHash}\n`],
     ];

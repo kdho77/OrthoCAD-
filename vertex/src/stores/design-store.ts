@@ -513,7 +513,7 @@ export interface DesignStore {
     setUkShoeSize: (ukSize: number) => void;
     /** Change foot length in mm and auto-scale. */
     setFootLengthMm: (mm: number) => void;
-    setShoeWidth: (width: "narrow" | "medium" | "wide" | "extra_wide", side?: Side) => void;
+    setShoeWidth: (width: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide", side?: Side) => void;
 
     /** Patch corrections for a side. When linked, mirrors to the other side. */
     updateCorrection: (side: Side, patch: Partial<SideCorrections>) => void;
