@@ -147,7 +147,7 @@ export function PrintingPanel({
     };
 
     const showPrimaryOnly = clinicalMode && primaryOnly;
-    const showProceduralWallControls = !cncSelected && (showWallPreview ?? !showPrimaryOnly);
+    const showProceduralWallControls = !cncSelected && !isCnc && (showWallPreview ?? !showPrimaryOnly);
 
     const onWallStyle = (t: ProceduralWallStyleChoice) => {
         setViewer({ wallStyle: t });
@@ -187,9 +187,9 @@ export function PrintingPanel({
                 </div>
             </div>
 
-            {cncSelected ? <CncMillingPanel /> : null}
+            {cncSelected || isCnc ? <CncMillingPanel /> : null}
 
-            {!cncSelected && !showPrimaryOnly ? (
+            {!cncSelected && !isCnc && !showPrimaryOnly ? (
                 <div className="flex gap-1">
                     {(["left", "right"] as Side[]).map((s) => (
                         <Button
@@ -205,7 +205,7 @@ export function PrintingPanel({
                 </div>
             ) : null}
 
-            {cncSelected ? null : !showPrimaryOnly ? (
+            {cncSelected || isCnc ? null : !showPrimaryOnly ? (
                 <div className="space-y-1.5">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                         {isCnc ? "Mill preset" : "Printer preset"}
@@ -241,7 +241,7 @@ export function PrintingPanel({
 
             {showProceduralWallControls ? <ProceduralWallPreviewControls onWallStyle={onWallStyle} /> : null}
 
-            {cncSelected ? null : !showPrimaryOnly && isBeltPreset ? (
+            {cncSelected || isCnc ? null : !showPrimaryOnly && isBeltPreset ? (
                 <div className="space-y-1.5">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                         Grinding Style (server hybrid)
@@ -277,7 +277,7 @@ export function PrintingPanel({
                 </div>
             ) : null}
 
-            {cncSelected ? null : !showPrimaryOnly && isCnc ? (
+            {cncSelected || isCnc ? null : !showPrimaryOnly && isCnc ? (
                 <SliderField
                     label="Tool diameter"
                     value={toolDia}
@@ -318,13 +318,13 @@ export function PrintingPanel({
                 </>
             )}
 
-            {cncSelected ? null : !clinicalMode ? (
+            {cncSelected || isCnc ? null : !clinicalMode ? (
                 <Button variant="secondary" className="w-full" disabled={busy || !preset} onClick={onPreview}>
                     <Play className="h-4 w-4" /> {busy ? "Generating…" : "Generate toolpath"}
                 </Button>
             ) : null}
 
-            {cncSelected ? null : result ? (
+            {cncSelected || isCnc ? null : result ? (
                 <div className="space-y-1 rounded-md border border-border bg-background/50 p-2 text-xs">
                     <Row label="Moves" value={result.moveCount.toLocaleString()} />
                     <Row label="Est. time" value={fmtTime(result.stats.estimatedTimeSec)} />
@@ -341,14 +341,14 @@ export function PrintingPanel({
                 </div>
             ) : null}
 
-            {cncSelected ? null : !clinicalMode ? (
+            {cncSelected || isCnc ? null : !clinicalMode ? (
                 <Button className="w-full" disabled={busy || !preset || !gcodeCheck.ok} onClick={onExport}>
                     {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                     Export G-code · {TOKEN_COST.gcode} tokens (client)
                 </Button>
             ) : null}
 
-            {cncSelected ? null : isBeltPreset ? (
+            {cncSelected || isCnc ? null : isBeltPreset ? (
                 <Button
                     variant="default"
                     className="w-full"
@@ -366,14 +366,14 @@ export function PrintingPanel({
                 </Button>
             ) : null}
 
-            {cncSelected ? null : !gcodeCheck.ok ? (
+            {cncSelected || isCnc ? null : !gcodeCheck.ok ? (
                 <p className="text-xs text-amber-400">{gcodeCheck.reason}</p>
             ) : null}
-            {cncSelected ? null : status ? (
+            {cncSelected || isCnc ? null : status ? (
                 <p className="rounded-md bg-muted px-2 py-1.5 text-xs">{status}</p>
             ) : null}
 
-            {cncSelected ? null : !showPrimaryOnly ? (
+            {cncSelected || isCnc ? null : !showPrimaryOnly ? (
                 <p className="text-xs text-muted-foreground">
                     {preset?.beltAngleDeg
                         ? `Belt presets support client preview or server G-code from the finished viewer solid.`

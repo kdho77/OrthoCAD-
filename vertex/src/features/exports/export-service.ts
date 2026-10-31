@@ -32,6 +32,25 @@ import { bindPrintRecipeProfile } from "../../../shared/print-recipe/print-recip
 // Re-export for convenience in UI components
 export type GrindingStyleInput = GrindingStyle;
 
+/** Print STL, 3MF, GLB, and print G-code are refused for a milling order. */
+export const MILLED_ORDER_PRINT_REASON = "Milled orders export an L+R CNC file only";
+
+export function isMilledOrder(design: DesignState): boolean {
+    return design.method === "milling_3axis";
+}
+
+/** A milled order always mills every foot on the order. The active-foot toggle does not apply. */
+export function cncSidesForOrder(design: DesignState, requested: Side[]): Side[] {
+    if (!isMilledOrder(design)) return requested;
+    const sides = orderDownloadSides(design);
+    return sides.length > 0 ? sides : requested;
+}
+
+function refuseMilledPrint(design: DesignState): ExportOutcome | null {
+    if (!isMilledOrder(design)) return null;
+    return { ok: false, reason: MILLED_ORDER_PRINT_REASON };
+}
+
 export interface ExportOutcome {
     ok: boolean;
     reason?: string;
@@ -109,6 +128,8 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 export async function exportDesign(format: ExportFormat, side: Side = "left"): Promise<ExportOutcome> {
+    const blocked = refuseMilledPrint(useDesignStore.getState().design);
+    if (blocked) return blocked;
     if (format === "gcode") {
         return { ok: false, reason: "Use Generate + Export G-code in the Printing tab" };
     }
@@ -227,6 +248,8 @@ export async function packOrder3mf(
 }
 
 export async function export3mf(side: Side): Promise<ExportOutcome> {
+    const blocked = refuseMilledPrint(useDesignStore.getState().design);
+    if (blocked) return blocked;
     const { user, license, deductTokens } = useAuthStore.getState();
     const check = canExport(user, license, "3mf");
     if (!check.ok) return { ok: false, reason: check.reason };
@@ -246,6 +269,8 @@ export async function export3mf(side: Side): Promise<ExportOutcome> {
 }
 
 export async function exportGlb(side: Side): Promise<ExportOutcome> {
+    const blocked = refuseMilledPrint(useDesignStore.getState().design);
+    if (blocked) return blocked;
     const { user, license } = useAuthStore.getState();
     const check = canExport(user, license, "glb");
     if (!check.ok) return { ok: false, reason: check.reason };
@@ -263,10 +288,11 @@ export async function exportGlb(side: Side): Promise<ExportOutcome> {
 
 export async function exportCncGcode(sides: Side[], profile: MillingProfile): Promise<ExportOutcome> {
     const { design } = useDesignStore.getState();
+    const millSides = cncSidesForOrder(design, sides);
     const before = JSON.stringify(design);
-    const filename = `insole-cnc-${sides.join("-")}-${Date.now()}${profile.fileExtension || ".gcode"}`;
+    const filename = `insole-cnc-${millSides.join("-")}-${Date.now()}${profile.fileExtension || ".gcode"}`;
     try {
-        const parts = await workpiecesFromDesign(design, sides, profile);
+        const parts = await workpiecesFromDesign(design, millSides, profile);
         if (parts.length === 0) {
             return { ok: false, reason: "No insole geometry to mill" };
         }
@@ -278,11 +304,11 @@ export async function exportCncGcode(sides: Side[], profile: MillingProfile): Pr
         }
         const blob = new Blob([job.gcode], { type: "text/plain" });
         downloadBlob(blob, filename);
-        const auth = await authorize("gcode", sides[0] ?? "left", filename);
+        const auth = await authorize("gcode", millSides[0] ?? "left", filename);
         if (!auth.ok) return { ok: false, reason: auth.reason };
         useAuditStore
             .getState()
-            .record("export_generated", `CNC G-code ${sides.join("+")} · ${profile.name}`);
+            .record("export_generated", `CNC G-code ${millSides.join("+")} · ${profile.name}`);
         return {
             ok: true,
             filename,
@@ -306,6 +332,8 @@ export async function exportGcode(
     overrides: CamOverrides = {},
 ): Promise<ExportOutcome> {
     const { design } = useDesignStore.getState();
+    const blocked = refuseMilledPrint(design);
+    if (blocked) return blocked;
     const sides = orderDownloadSides(design);
     const filename = `insole-${sides.join("-")}-${preset.id}-${Date.now()}.gcode`;
     const auth = await authorize("gcode", side, filename);
@@ -331,6 +359,8 @@ export async function generateHybridGcode(
     grindingStyle: GrindingStyleInput,
     overrides: CamOverrides = {},
 ): Promise<ExportOutcome> {
+    const blocked = refuseMilledPrint(useDesignStore.getState().design);
+    if (blocked) return blocked;
     const activeDesignId = useClientStore.getState().activeDesignId;
     const outputType = preset.beltAngleDeg ? "gcode" : "stl";
     const ext = outputType === "gcode" ? "gcode" : "stl";
