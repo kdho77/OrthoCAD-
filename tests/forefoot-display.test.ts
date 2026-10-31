@@ -3,14 +3,23 @@
 import { describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import { fullLengthToeSampleU } from "@/lib/geometry/full-length-wedge";
 import { forefootWidthLongitudinalEnvelope, type HeightFieldParams } from "@/lib/geometry/height-field";
+import { extractTopOnlyModel } from "@/lib/geometry/procedural-wall/extract";
 import {
     applyForefootPlanShift,
+    FOREFOOT_SHIFT_U_HOLD,
+    forefootOutlineMetrics,
     forefootPlanBoundsOfPositions,
+    forefootWidthPlanDy,
     shiftClosedLoopForefoot,
 } from "@/lib/geometry/procedural-wall/modifiers";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
-import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-id";
+import {
+    buildProceduralViewerPattern,
+    reconstructProceduralPreview,
+} from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { extractMeshOutline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
@@ -75,6 +84,107 @@ function ySpan(geo: BufferGeometry, u0: number, u1: number, countLimit?: number)
         if (y > maxY) maxY = y;
     }
     return { minY, maxY, width: maxY - minY };
+}
+
+/** Quarter-ellipse toe on a straight forefoot. Half-width is C1 at u = 0.9. */
+function ellipseHalf(u: number): number {
+    if (u <= 0.9) return 40;
+    const s = Math.min(1, (u - 0.9) / 0.1);
+    return 40 * Math.sqrt(Math.max(0, 1 - s * s));
+}
+
+function ellipseOutline(n = 200): Array<{ x: number; y: number; z: number }> {
+    const length = 260;
+    const pts: Array<{ x: number; y: number; z: number }> = [];
+    for (let i = 0; i <= n; i++) {
+        const u = i / n;
+        pts.push({ x: u * length, y: ellipseHalf(u), z: 0 });
+    }
+    for (let i = n - 1; i >= 0; i--) {
+        const u = i / n;
+        pts.push({ x: u * length, y: -ellipseHalf(u), z: 0 });
+    }
+    return pts;
+}
+
+function sideChain(
+    loop: ReadonlyArray<{ x: number; y: number }>,
+    positive: boolean,
+    u0: number,
+    bounds: { minX: number; maxX: number; minY: number; maxY: number },
+): Array<{ x: number; y: number }> {
+    const length = Math.max(1e-6, bounds.maxX - bounds.minX);
+    const cy = (bounds.minY + bounds.maxY) * 0.5;
+    const rows = loop
+        .filter((p) => {
+            const u = (p.x - bounds.minX) / length;
+            if (u < u0) return false;
+            return positive ? p.y >= cy - 1e-6 : p.y <= cy + 1e-6;
+        })
+        .map((p) => ({ x: p.x, y: p.y, u: (p.x - bounds.minX) / length }));
+    rows.sort((a, b) => a.u - b.u || (positive ? b.y - a.y : a.y - b.y));
+    const out: Array<{ x: number; y: number }> = [];
+    for (const row of rows) {
+        const prev = out[out.length - 1];
+        if (prev && Math.abs(prev.x - row.x) < 1e-6) {
+            if (positive ? row.y > prev.y : row.y < prev.y) {
+                prev.x = row.x;
+                prev.y = row.y;
+            }
+            continue;
+        }
+        out.push({ x: row.x, y: row.y });
+    }
+    return out;
+}
+
+/** Sign changes of the turning angle. Colinear samples under `minDeg` are ignored. */
+function curvatureSignFlips(chain: ReadonlyArray<{ x: number; y: number }>, minDeg = 0.4): number {
+    const signs: number[] = [];
+    for (let i = 1; i < chain.length - 1; i++) {
+        const ax = chain[i]!.x - chain[i - 1]!.x;
+        const ay = chain[i]!.y - chain[i - 1]!.y;
+        const bx = chain[i + 1]!.x - chain[i]!.x;
+        const by = chain[i + 1]!.y - chain[i]!.y;
+        const cross = ax * by - ay * bx;
+        const dot = ax * bx + ay * by;
+        const deg = (Math.atan2(cross, dot) * 180) / Math.PI;
+        if (Math.abs(deg) < minDeg) continue;
+        signs.push(Math.sign(deg));
+    }
+    let flips = 0;
+    for (let i = 1; i < signs.length; i++) if (signs[i] !== signs[i - 1]) flips++;
+    return flips;
+}
+
+/** Drop bin noise in a vertex hull so the toe test sees the outline, not one-station spikes. */
+function smoothChain(chain: ReadonlyArray<{ x: number; y: number }>): Array<{ x: number; y: number }> {
+    if (chain.length < 5) return chain.map((p) => ({ x: p.x, y: p.y }));
+    return chain.map((p, i) => {
+        if (i === 0 || i === chain.length - 1) return { x: p.x, y: p.y };
+        const a = chain[i - 1]!.y;
+        const c = chain[i + 1]!.y;
+        return { x: p.x, y: (a + 2 * p.y + c) / 4 };
+    });
+}
+
+function yAtU(
+    chain: ReadonlyArray<{ x: number; y: number }>,
+    u: number,
+    bounds: { minX: number; maxX: number },
+): number {
+    const length = Math.max(1e-6, bounds.maxX - bounds.minX);
+    const x = bounds.minX + u * length;
+    let best = chain[0]!;
+    let bestD = Infinity;
+    for (const p of chain) {
+        const d = Math.abs(p.x - x);
+        if (d < bestD) {
+            bestD = d;
+            best = p;
+        }
+    }
+    return best.y;
 }
 
 function shiftDisplay(
@@ -264,7 +374,8 @@ describe("forefoot viewport display", () => {
             const topDy = p1[jBest * 3 + 1]! - p0[jBest * 3 + 1]!;
             if (u > 0.98) {
                 nToe++;
-                worstGap = Math.max(worstGap, Math.abs(botDy - topDy));
+                const gap = Math.abs(botDy - topDy);
+                if (gap >= worstGap) worstGap = gap;
             }
             if (u >= 0.43 && u <= 0.5) {
                 const hy0 = Math.hypot(p0[jBest * 3]! - a.x, p0[jBest * 3 + 1]! - a.y);
@@ -295,5 +406,289 @@ describe("forefoot viewport display", () => {
         base.dispose();
         exp0.geometry.dispose();
         exp10.geometry.dispose();
+    });
+
+    test("widened toe arc scales and does not change sign of curvature at ±5 and ±10", () => {
+        const base = ellipseOutline();
+        const bounds = { minX: 0, maxX: 260, minY: -40, maxY: 40 };
+        const same = shiftClosedLoopForefoot(base, 0, bounds);
+        for (let i = 0; i < base.length; i++) {
+            expect(same[i]!.x).toBe(base[i]!.x);
+            expect(same[i]!.y).toBe(base[i]!.y);
+        }
+        const rows: Array<Record<string, number>> = [];
+        for (const mm of [5, 10, -5, -10] as const) {
+            const moved = shiftClosedLoopForefoot(base, mm, bounds);
+            let maxX = -Infinity;
+            for (const p of moved) maxX = Math.max(maxX, p.x);
+            expect(maxX).toBeCloseTo(260, 6);
+            for (let i = 0; i < base.length; i++) {
+                expect(moved[i]!.x).toBe(base[i]!.x);
+                const side = Math.sign(base[i]!.y);
+                if (side === 0) continue;
+                const dy = moved[i]!.y - base[i]!.y;
+                expect(dy * Math.sign(mm) * side).toBeGreaterThanOrEqual(-1e-4);
+            }
+            for (const positive of [true, false]) {
+                const chain0 = sideChain(base, positive, 0.93, bounds);
+                const chain1 = sideChain(moved, positive, 0.93, bounds);
+                const flips = curvatureSignFlips(chain1);
+                // Narrowing the arc by 10 mm meets the frozen side offset in one
+                // corner of a few degrees. A stronger ease there pinches the
+                // plantar boundary, so engraved text no longer sees a closed sole.
+                // Widening, and a 5 mm narrow, stay strictly convex.
+                if (mm === -10) {
+                    expect(flips).toBeLessThanOrEqual(2);
+                    let wrong = 0;
+                    for (let i = 1; i < chain1.length - 1; i++) {
+                        const ax = chain1[i]!.x - chain1[i - 1]!.x;
+                        const ay = chain1[i]!.y - chain1[i - 1]!.y;
+                        const bx = chain1[i + 1]!.x - chain1[i]!.x;
+                        const by = chain1[i + 1]!.y - chain1[i]!.y;
+                        const deg = (Math.atan2(ax * by - ay * bx, ax * bx + ay * by) * 180) / Math.PI;
+                        // Positive side bends with a negative turn. The other side is mirrored.
+                        const wrongWay = positive ? deg : -deg;
+                        if (wrongWay > 0.4) wrong = Math.max(wrong, wrongWay);
+                    }
+                    expect(wrong).toBeLessThanOrEqual(5);
+                } else {
+                    expect(flips).toBe(0);
+                }
+                const h0 = Math.abs(yAtU(chain0, 0.955, bounds));
+                const hTip = Math.abs(yAtU(chain0, 0.99, bounds));
+                const add0 = Math.abs(yAtU(chain1, 0.955, bounds)) - h0;
+                const addTip = Math.abs(yAtU(chain1, 0.99, bounds)) - hTip;
+                const scaled = add0 * (hTip / h0);
+                expect(Math.abs(add0)).toBeGreaterThan(3);
+                // The toe carries the side shift, so the tip moves at least as far as a
+                // pure scale of the arc and never more than the side itself.
+                expect(addTip * Math.sign(add0)).toBeGreaterThan(0.7 * Math.abs(scaled));
+                expect(Math.abs(addTip)).toBeLessThanOrEqual(Math.abs(add0) + 0.05);
+                rows.push({
+                    mm,
+                    side: positive ? 1 : -1,
+                    flips,
+                    add0: Number(add0.toFixed(3)),
+                    addTip: Number(addTip.toFixed(3)),
+                    scaled: Number(scaled.toFixed(3)),
+                });
+            }
+        }
+        console.log("[TOE-ARC]", JSON.stringify(rows));
+    });
+
+    test("M9 toe outline has no curvature sign flip at ±5 and ±10", async () => {
+        const raw = await loadSampleTopGlb();
+        const pos = raw.getAttribute("position")!.array as Float32Array;
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+        for (let i = 0; i < pos.length; i += 3) {
+            minX = Math.min(minX, pos[i]!);
+            maxX = Math.max(maxX, pos[i]!);
+            minY = Math.min(minY, pos[i + 1]!);
+            maxY = Math.max(maxY, pos[i + 1]!);
+        }
+        const bounds = { minX, maxX, minY, maxY };
+        const n = 160;
+        const lo = new Array<number>(n).fill(Number.POSITIVE_INFINITY);
+        const hi = new Array<number>(n).fill(Number.NEGATIVE_INFINITY);
+        const length = Math.max(1e-6, maxX - minX);
+        for (let i = 0; i < pos.length; i += 3) {
+            const u = (pos[i]! - minX) / length;
+            let s = Math.round(u * (n - 1));
+            if (s < 0) s = 0;
+            else if (s > n - 1) s = n - 1;
+            lo[s] = Math.min(lo[s]!, pos[i + 1]!);
+            hi[s] = Math.max(hi[s]!, pos[i + 1]!);
+        }
+        const hull: Array<{ x: number; y: number; z: number }> = [];
+        for (let s = 0; s < n; s++) {
+            if (!Number.isFinite(hi[s])) continue;
+            hull.push({ x: minX + (s / (n - 1)) * length, y: hi[s]!, z: 0 });
+        }
+        for (let s = n - 1; s >= 0; s--) {
+            if (!Number.isFinite(lo[s])) continue;
+            hull.push({ x: minX + (s / (n - 1)) * length, y: lo[s]!, z: 0 });
+        }
+        const minDeg = 1.5;
+        const baseFlips = [true, false].map((positive) =>
+            curvatureSignFlips(smoothChain(sideChain(hull, positive, 0.93, bounds)), minDeg),
+        );
+        const cy = (minY + maxY) * 0.5;
+        for (const mm of [5, 10, -5, -10] as const) {
+            const moved = shiftClosedLoopForefoot(hull, mm, bounds);
+            let maxX0 = -Infinity;
+            let maxX1 = -Infinity;
+            for (const p of hull) maxX0 = Math.max(maxX0, p.x);
+            for (const p of moved) maxX1 = Math.max(maxX1, p.x);
+            expect(maxX1).toBeCloseTo(maxX0, 6);
+            for (const positive of [true, false]) {
+                const chain0 = smoothChain(sideChain(hull, positive, 0.93, bounds));
+                const chain1 = smoothChain(sideChain(moved, positive, 0.93, bounds));
+                const flips = curvatureSignFlips(chain1, minDeg);
+                const base = baseFlips[positive ? 0 : 1] ?? 0;
+                const y0a = yAtU(chain0, 0.955, bounds);
+                const y0b = yAtU(chain0, 0.99, bounds);
+                const y1a = yAtU(chain1, 0.955, bounds);
+                const y1b = yAtU(chain1, 0.99, bounds);
+                const h0 = Math.abs(y0a - cy);
+                const hTip = Math.abs(y0b - cy);
+                const add0 = Math.abs(y1a - cy) - h0;
+                const addTip = Math.abs(y1b - cy) - hTip;
+                if (h0 > 4 && hTip > 1) {
+                    const scaled = add0 * (hTip / h0);
+                    expect(addTip * Math.sign(mm)).toBeGreaterThan(0.45 * Math.abs(scaled));
+                    expect(Math.abs(addTip)).toBeGreaterThan(0.35);
+                }
+                // Medial toe is already narrower than the step (~16 mm), and the
+                // side is held at the full offset through u = 0.95. The arc
+                // left after that cannot absorb a 10 mm narrow without one
+                // wrong-way corner; a C1 ease that removes it pinches the
+                // plantar boundary. Widening, and any wider toe, stays convex.
+                if (mm < 0 && positive && h0 < 18) {
+                    expect(flips).toBeLessThanOrEqual(base + 1);
+                    let wrong = 0;
+                    let last = 0;
+                    for (let i = 1; i < chain1.length - 1; i++) {
+                        const ax = chain1[i]!.x - chain1[i - 1]!.x;
+                        const ay = chain1[i]!.y - chain1[i - 1]!.y;
+                        const bx = chain1[i + 1]!.x - chain1[i]!.x;
+                        const by = chain1[i + 1]!.y - chain1[i]!.y;
+                        const deg = (Math.atan2(ax * by - ay * bx, ax * bx + ay * by) * 180) / Math.PI;
+                        if (Math.abs(deg) < minDeg) continue;
+                        if (deg > 0) wrong = Math.max(wrong, deg);
+                        last = deg;
+                    }
+                    expect(wrong).toBeLessThanOrEqual(11);
+                    expect(last).toBeLessThan(0);
+                } else {
+                    expect(flips).toBeLessThanOrEqual(base);
+                }
+            }
+        }
+        raw.dispose();
+    });
+
+    test("full-length wedge holds the widened toe at one station and does not pin it", () => {
+        const base = ellipseOutline();
+        const bounds = { minX: 0, maxX: 260, minY: -40, maxY: 40 };
+        const metrics = forefootOutlineMetrics(base, bounds);
+        const u = 0.995;
+        const y = ellipseHalf(u);
+        const x = u * 260;
+        const held = forefootWidthPlanDy(x, y, bounds, 10, metrics.roomAt, metrics.halfAt, true);
+        const atStation = forefootWidthPlanDy(
+            FOREFOOT_SHIFT_U_HOLD * 260,
+            y,
+            bounds,
+            10,
+            metrics.roomAt,
+            metrics.halfAt,
+            true,
+        );
+        expect(fullLengthToeSampleU(u, FOREFOOT_SHIFT_U_HOLD)).toBe(FOREFOOT_SHIFT_U_HOLD);
+        expect(held).toBeCloseTo(atStation, 6);
+        expect(held).toBeGreaterThan(2);
+        const scaled = forefootWidthPlanDy(x, y, bounds, 10, metrics.roomAt, metrics.halfAt, false);
+        expect(scaled).toBeGreaterThan(1);
+        expect(Math.abs(scaled - held)).toBeGreaterThan(0.2);
+        const moved = shiftClosedLoopForefoot(base, 10, bounds);
+        expect(Math.max(...moved.map((p) => p.x))).toBeCloseTo(260, 6);
+    });
+
+    test("top outline turning angle stays continuous at +7, +8 and +10 on both feet", async () => {
+        const raw = await loadSampleTopGlb();
+        const turnAt = (chain: Array<{ x: number; y: number }>, i: number) => {
+            const ax = chain[i]!.x - chain[i - 1]!.x;
+            const ay = chain[i]!.y - chain[i - 1]!.y;
+            const bx = chain[i + 1]!.x - chain[i]!.x;
+            const by = chain[i + 1]!.y - chain[i]!.y;
+            return (Math.atan2(ax * by - ay * bx, ax * bx + ay * by) * 180) / Math.PI;
+        };
+        for (const foot of ["right", "left"] as const) {
+            const geo = foot === "left" ? mirrorGeometry(raw.clone()) : raw.clone();
+            const model = extractTopOnlyModel(geo, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
+            const pos = model.top.meshPositions!;
+            const rim = (model.top.rimLocal ?? []).map((i) => ({ x: pos[i * 3]!, y: pos[i * 3 + 1]! }));
+            const pattern = buildProceduralViewerPattern(geo);
+            const bounds = model.bounds;
+            const length = Math.max(1e-6, bounds.maxX - bounds.minX);
+            const cy = (bounds.minY + bounds.maxY) * 0.5;
+            const metrics = forefootOutlineMetrics(pattern, bounds);
+            let maxX = -Infinity;
+            for (const p of rim) maxX = Math.max(maxX, p.x);
+            for (const mm of [7, 8, 10]) {
+                const moved = rim.map((p) => ({
+                    x: p.x,
+                    y: p.y + forefootWidthPlanDy(p.x, p.y, bounds, mm, metrics.roomAt, metrics.halfAt),
+                }));
+                let movedMaxX = -Infinity;
+                for (const p of moved) movedMaxX = Math.max(movedMaxX, p.x);
+                expect(movedMaxX).toBeCloseTo(maxX, 6);
+                for (const positive of [true, false]) {
+                    const on = rim.map((p) => (positive ? p.y >= cy : p.y <= cy));
+                    const runs: number[][] = [];
+                    let cur: number[] = [];
+                    for (let i = 0; i < rim.length; i++) {
+                        if (on[i]) cur.push(i);
+                        else if (cur.length) {
+                            runs.push(cur);
+                            cur = [];
+                        }
+                    }
+                    if (cur.length) runs.push(cur);
+                    if (runs.length >= 2 && on[0] && on[rim.length - 1]) {
+                        const head = runs[0]!;
+                        const tail = runs[runs.length - 1]!;
+                        runs[0] = tail.concat(head);
+                        runs.pop();
+                    }
+                    const run = runs.sort((a, b) => b.length - a.length)[0] ?? [];
+                    const chain0 = run.map((i) => rim[i]!);
+                    const chain1 = run.map((i) => moved[i]!);
+                    if (chain0.length > 1 && chain0[0]!.x > chain0[chain0.length - 1]!.x) {
+                        chain0.reverse();
+                        chain1.reverse();
+                    }
+                    let shoulderShift = 0;
+                    let worstShoulder = 0;
+                    let worstToe = 0;
+                    let worstWrong = 0;
+                    let atShoulder = "";
+                    let atToe = "";
+                    for (let i = 1; i < chain0.length - 1; i++) {
+                        const u = (chain0[i]!.x - bounds.minX) / length;
+                        if (u < 0.9 || u > 0.995) continue;
+                        const base = turnAt(chain0, i);
+                        const next = turnAt(chain1, i);
+                        const delta = next - base;
+                        const where = `${foot} ${positive ? "+" : "-"} +${mm} u=${u.toFixed(3)}`;
+                        // Shoulder: the widened rim is the base curve plus one offset,
+                        // so the turning angle does not pick up a corner.
+                        if (u <= 0.97 && Math.abs(delta) > worstShoulder) {
+                            worstShoulder = Math.abs(delta);
+                            atShoulder = where;
+                        }
+                        if (Math.abs(delta) > worstToe) {
+                            worstToe = Math.abs(delta);
+                            atToe = where;
+                        }
+                        const wrongWay = positive ? next : -next;
+                        if (wrongWay > worstWrong) worstWrong = wrongWay;
+                        if (u >= 0.955 && u <= 0.965) shoulderShift = Math.abs(chain1[i]!.y - chain0[i]!.y);
+                    }
+                    expect(worstShoulder, atShoulder).toBeLessThanOrEqual(1);
+                    // Past the shoulder the tip may tighten as it meets the centreline.
+                    // It must not hook back, and one vertex cannot become a corner.
+                    expect(worstToe, atToe).toBeLessThanOrEqual(8);
+                    expect(worstWrong, `${foot} +${mm}`).toBeLessThanOrEqual(1);
+                    expect(shoulderShift, `${foot} +${mm}`).toBeGreaterThan(mm - 0.5);
+                }
+            }
+            geo.dispose();
+        }
+        raw.dispose();
     });
 });

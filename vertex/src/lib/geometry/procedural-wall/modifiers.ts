@@ -33,14 +33,18 @@ export interface ForefootRigidBox {
 }
 
 /**
- * Toe fairing starts just past the u = 0.95 gate sample. Through the
- * collapsed tip the shift used to freeze at u = 0.985, which chopped a
- * nonzero slope, then the slope cap tracked the outline and folded the wall.
- * Past this station the envelope eases to 0 with a matched tangent.
- * A full-length wedge eases the plan onto {@link FOREFOOT_SHIFT_U_HOLD}
- * so the ruled stations share that station.
+ * Width alone carries the forefoot rim offset through the toe so the tip
+ * moves with the side. A full-length wedge instead eases
+ * the plan onto {@link FOREFOOT_SHIFT_U_HOLD} so the ruled stations share
+ * that station. X never moves, and a 0 mm width never reaches it.
  */
 const TOE_FAIR_U0 = 0.955;
+/**
+ * Envelope hold ends here and its slope is 0. Widening keeps the rim offset
+ * reached at this station. Falling with the envelope after it hooks the
+ * shoulder where the top rim is sampled.
+ */
+const TOE_WIDEN_U0 = 0.95;
 /** Half-width of the outline sample used for the gain plateau, in u. */
 const FOREFOOT_ROOM_WINDOW_U = 0.004;
 /** Station a full-length wedge freezes when a forefoot width shift is also on. */
@@ -49,6 +53,11 @@ export const FOREFOOT_SHIFT_U_HOLD = 0.985;
 const FOREFOOT_SHIFT_SLOPE_CAP = 0.75;
 /** Plateau starts just inboard of the bottom outline so the outline is at full shift. */
 const FOREFOOT_OUTLINE_ROOM_SCALE = 0.92;
+/**
+ * Smallest widened-toe knee. Below this the outline ring and the top vertex
+ * half a millimetre apart disagree by more than 1 mm.
+ */
+const FOREFOOT_TIP_KNEE_FLOOR_MM = 8.5;
 
 /**
  * Outer |y − centre| of one side of the bottom outline. The gain plateau
@@ -61,6 +70,16 @@ export function forefootOutlineRoomMm(
     outline: ReadonlyArray<{ x: number; y: number }>,
     bounds: PlanBounds,
 ): (u: number, positive: boolean) => number {
+    return outlineSides(outline, bounds).roomAt;
+}
+
+function outlineSides(
+    outline: ReadonlyArray<{ x: number; y: number }>,
+    bounds: PlanBounds,
+): {
+    roomAt: (u: number, positive: boolean) => number;
+    halfAt: (u: number, positive: boolean) => number;
+} {
     const cy = (bounds.minY + bounds.maxY) * 0.5;
     const length = Math.max(1e-3, bounds.maxX - bounds.minX);
     const side = (positive: boolean) => {
@@ -98,7 +117,7 @@ export function forefootOutlineRoomMm(
             const t = (u - a.u) / Math.max(1e-9, b.u - a.u);
             return a.d + t * (b.d - a.d);
         };
-        return (u: number) => {
+        const room = (u: number) => {
             const loU = u - FOREFOOT_ROOM_WINDOW_U;
             const hiU = u + FOREFOOT_ROOM_WINDOW_U;
             let best = Math.max(at(loU), at(hiU));
@@ -114,29 +133,96 @@ export function forefootOutlineRoomMm(
             }
             return best;
         };
+        return { half: at, room };
     };
     const pos = side(true);
     const neg = side(false);
-    return (u, positive) => (positive ? pos(u) : neg(u));
+    return {
+        roomAt: (u, positive) => (positive ? pos.room(u) : neg.room(u)),
+        halfAt: (u, positive) => (positive ? pos.half(u) : neg.half(u)),
+    };
 }
 
+/** Local outline half-width and the gain-plateau room, from one pass over the loop. */
+export function forefootOutlineMetrics(
+    outline: ReadonlyArray<{ x: number; y: number }>,
+    bounds: PlanBounds,
+): {
+    roomAt: (u: number, positive: boolean) => number;
+    halfAt: (u: number, positive: boolean) => number;
+} {
+    return outlineSides(outline, bounds);
+}
+
+/** Additive outline shift (mm) at one station. Slope cap stays off the toe. */
+function forefootBodyShiftMm(
+    u: number,
+    dist: number,
+    positive: boolean,
+    absWidthMm: number,
+    roomAt: (u: number, positive: boolean) => number,
+): number {
+    const env = forefootWidthLongitudinalEnvelope(u);
+    if (env <= 0 || dist <= 0) return 0;
+    const outlineHalf = roomAt(u, positive);
+    const capRoom = Math.max(1, outlineHalf * FOREFOOT_OUTLINE_ROOM_SCALE);
+    const envShift = absWidthMm * env;
+    const applied = Math.min(envShift, FOREFOOT_SHIFT_SLOPE_CAP * capRoom);
+    const gain = dist >= capRoom ? 1 : dist / capRoom;
+    return applied * gain;
+}
+
+type HalfFn = (u: number, positive: boolean) => number;
+
 /**
- * C1 ease from the live envelope at {@link TOE_FAIR_U0} down to 0 at the
- * tip. Zero slope at u = 1, same value and slope as the live envelope at
- * the join, so the rim offset does not hook where the toe collapses.
+ * Toe shift. Widening holds the rim amount from {@link TOE_WIDEN_U0}, where
+ * the envelope slope is 0, so the shoulder keeps the base curve's turn.
+ * The gain knee tracks the local outline and is floored at the tip so the
+ * top rim and the outline ring stay within a millimetre. A knee frozen at
+ * the join lies on the narrowing rim and corners it. Narrowing keeps that
+ * frozen field — a live knee there folds the sheet — and cannot cross the centre.
  */
-function fairedToeEnvelope(u: number): number {
-    const live = forefootWidthLongitudinalEnvelope(u);
-    if (u <= TOE_FAIR_U0) return live;
-    const e0 = forefootWidthLongitudinalEnvelope(TOE_FAIR_U0);
-    const h = 1e-4;
-    const de0 = (e0 - forefootWidthLongitudinalEnvelope(TOE_FAIR_U0 - h)) / h;
-    const span = 1 - TOE_FAIR_U0;
-    const t = Math.min(1, (u - TOE_FAIR_U0) / span);
-    const h00 = (2 * t - 3) * t * t + 1;
-    const h10 = t * t * t - 2 * t * t + t;
-    const h01 = (3 - 2 * t) * t * t;
-    return Math.max(0, h00 * e0 + h10 * de0 * span + h01 * 0);
+function toeArcShiftMm(
+    u: number,
+    y: number,
+    cy: number,
+    widthMm: number,
+    roomAt: HalfFn,
+    halfAt: HalfFn,
+): number {
+    const dist = Math.abs(y - cy);
+    if (dist <= 0) return 0;
+    const positive = y >= cy;
+    const absMm = Math.abs(widthMm);
+    if (widthMm < 0) {
+        let shift = forefootBodyShiftMm(TOE_FAIR_U0, dist, positive, absMm, roomAt);
+        if (shift > 0.95 * dist) shift = 0.95 * dist;
+        return shift;
+    }
+    // Probe past the knee so this is the rim amount, constant in u.
+    const applied = forefootBodyShiftMm(TOE_WIDEN_U0, dist + 1e6, positive, absMm, roomAt);
+    const outer = Math.max(roomAt(u, positive), halfAt(u, positive));
+    const rawKnee = Math.max(1, outer * FOREFOOT_OUTLINE_ROOM_SCALE);
+    // Floor a collapsed tip knee so the outline ring and the top vertex,
+    // half a millimetre apart, stay within 1 mm. The shoulder is wider
+    // than the floor and stays on the full offset.
+    const knee = Math.max(rawKnee, FOREFOOT_TIP_KNEE_FLOOR_MM, applied * 0.85);
+    if (dist >= knee) return applied;
+    const linear = dist / knee;
+    // Hand the linear ramp to the plateau with a flat slope, so the rim
+    // does not corner where it crosses the floor. Inboard of the join the
+    // ramp is unchanged.
+    const join = knee * 0.4;
+    if (dist <= join) return applied * linear;
+    const span = knee - join;
+    const s = (dist - join) / span;
+    const g0 = join / knee;
+    const slope = span / knee;
+    const target = 1 - g0 - slope;
+    const b = -slope - 2 * target;
+    const a = target - b;
+    const gain = g0 + slope * s + a * s * s + b * s * s * s;
+    return applied * gain;
 }
 
 /** Lateral shift (mm) at a plan point. X and Z stay put. 0 below the ramp. */
@@ -145,7 +231,8 @@ export function forefootPlanShiftMm(
     y: number,
     bounds: PlanBounds,
     forefootWidthMm: number,
-    roomAt: (u: number, positive: boolean) => number,
+    roomAt: HalfFn,
+    halfAt?: HalfFn,
     fairToeHold = false,
 ): number {
     if (!forefootWidthMm) return 0;
@@ -153,23 +240,19 @@ export function forefootPlanShiftMm(
     const cy = (bounds.minY + bounds.maxY) * 0.5;
     if (y === cy) return 0;
     const uRaw = Math.max(0, Math.min(1, (x - bounds.minX) / length));
-    // Width alone fairs the envelope to 0 at the tip. A full-length wedge
-    // eases onto the hold so the ruled tilt and the plan share one toe station.
+    // A full-length wedge samples the body law at the held station so the
+    // ruled tilt and the plan share one toe. Width alone scales the arc.
     const u = fairToeHold ? fullLengthToeSampleU(uRaw, FOREFOOT_SHIFT_U_HOLD) : uRaw;
-    const toe = !fairToeHold && u > TOE_FAIR_U0;
-    const env = toe ? fairedToeEnvelope(u) : forefootWidthLongitudinalEnvelope(u);
-    if (env <= 0) return 0;
     const positive = y >= cy;
-    const outlineHalf = roomAt(u, positive);
-    const capRoom = Math.max(1, outlineHalf * FOREFOOT_OUTLINE_ROOM_SCALE);
-    const envShift = Math.abs(forefootWidthMm) * env;
-    const roomCap = FOREFOOT_SHIFT_SLOPE_CAP * capRoom;
-    // In the toe the faired envelope already falls to 0. Tracking the
-    // collapsing outline with the slope cap hooks the rim and folds the wall.
-    const applied = toe ? envShift : Math.min(envShift, roomCap);
     const dist = Math.abs(y - cy);
-    const gain = dist >= capRoom ? 1 : dist / capRoom;
-    return Math.sign(y - cy) * Math.sign(forefootWidthMm) * applied * gain;
+    const halfFn = halfAt ?? roomAt;
+    const toeFrom = forefootWidthMm < 0 ? TOE_FAIR_U0 : TOE_WIDEN_U0;
+    const mag =
+        fairToeHold || uRaw <= toeFrom
+            ? forefootBodyShiftMm(u, dist, positive, Math.abs(forefootWidthMm), roomAt)
+            : toeArcShiftMm(uRaw, y, cy, forefootWidthMm, roomAt, halfFn);
+    if (mag === 0) return 0;
+    return Math.sign(y - cy) * Math.sign(forefootWidthMm) * mag;
 }
 
 /**
@@ -182,13 +265,14 @@ export function forefootWidthPlanDy(
     y: number,
     bounds: PlanBounds,
     forefootWidthMm: number,
-    roomAt?: (u: number, positive: boolean) => number,
+    roomAt?: HalfFn,
+    halfAt?: HalfFn,
     fairToeHold = false,
 ): number {
     if (!forefootWidthMm) return 0;
     const half = Math.max(1e-3, (bounds.maxY - bounds.minY) * 0.5);
     const fallback = roomAt ?? (() => half);
-    return forefootPlanShiftMm(x, y, bounds, forefootWidthMm, fallback, fairToeHold);
+    return forefootPlanShiftMm(x, y, bounds, forefootWidthMm, fallback, halfAt ?? fallback, fairToeHold);
 }
 
 /** Met pads and text move rigidly; every other vertex uses the envelope. */
@@ -201,7 +285,7 @@ export function applyForefootPlanShift(
     fairToeHold = false,
 ): void {
     if (!forefootWidthMm) return;
-    const roomAt = outline && outline.length >= 8 ? forefootOutlineRoomMm(outline, bounds) : undefined;
+    const metrics = outline && outline.length >= 8 ? forefootOutlineMetrics(outline, bounds) : undefined;
     const count = Math.floor(positions.length / 3);
     const dy = new Float64Array(count);
     for (let i = 0; i < count; i++) {
@@ -210,7 +294,8 @@ export function applyForefootPlanShift(
             positions[i * 3 + 1]!,
             bounds,
             forefootWidthMm,
-            roomAt,
+            metrics?.roomAt,
+            metrics?.halfAt,
             fairToeHold,
         );
     }
@@ -229,7 +314,15 @@ export function applyForefootPlanShift(
             const cyBox = (box.minY + box.maxY) * 0.5;
             const hx = Math.max(1e-3, (box.maxX - box.minX) * 0.5);
             const hy = Math.max(1e-3, (box.maxY - box.minY) * 0.5);
-            const rigid = forefootWidthPlanDy(cx, cyBox, bounds, forefootWidthMm, roomAt, fairToeHold);
+            const rigid = forefootWidthPlanDy(
+                cx,
+                cyBox,
+                bounds,
+                forefootWidthMm,
+                metrics?.roomAt,
+                metrics?.halfAt,
+                fairToeHold,
+            );
             for (const i of ids) {
                 const x = positions[i * 3]!;
                 const y = positions[i * 3 + 1]!;
@@ -318,7 +411,9 @@ export function forefootLateralOffsetFn(
     forefootWidthMm: number,
 ): (x: number, y: number) => number {
     if (!forefootWidthMm || rim.length < 3) return () => 0;
-    return (x: number, y: number) => forefootWidthPlanDy(x, y, bounds, forefootWidthMm);
+    const metrics = forefootOutlineMetrics(rim, bounds);
+    return (x: number, y: number) =>
+        forefootWidthPlanDy(x, y, bounds, forefootWidthMm, metrics.roomAt, metrics.halfAt);
 }
 
 /** Pure lateral offset of a closed plan loop. X is unchanged. */
@@ -328,9 +423,10 @@ export function offsetPlanLoopForefootWidthMm(
     forefootWidthMm: number,
 ): PolyPoint[] {
     if (!forefootWidthMm || loop.length < 3) return loop;
+    const metrics = forefootOutlineMetrics(loop, bounds);
     return loop.map((p) => ({
         x: p.x,
-        y: p.y + forefootWidthPlanDy(p.x, p.y, bounds, forefootWidthMm),
+        y: p.y + forefootWidthPlanDy(p.x, p.y, bounds, forefootWidthMm, metrics.roomAt, metrics.halfAt),
         z: p.z,
     }));
 }
@@ -380,10 +476,10 @@ export function shiftClosedLoopForefoot<T extends { x: number; y: number }>(
 ): T[] {
     if (!forefootWidthMm || points.length < 3) return points.map((p) => ({ ...p }));
     const box = bounds ?? forefootPlanBoundsOfPoints(points);
-    const roomAt = forefootOutlineRoomMm(points, box);
+    const metrics = forefootOutlineMetrics(points, box);
     return points.map((p) => ({
         ...p,
-        y: p.y + forefootWidthPlanDy(p.x, p.y, box, forefootWidthMm, roomAt),
+        y: p.y + forefootWidthPlanDy(p.x, p.y, box, forefootWidthMm, metrics.roomAt, metrics.halfAt),
     }));
 }
 
