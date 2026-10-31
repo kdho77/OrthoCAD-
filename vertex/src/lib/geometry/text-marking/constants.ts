@@ -100,7 +100,7 @@ export const TEXT_OUTSIDE_IDENT_MM = 1e-4;
 
 export const TEXT_CAP = {
     wall: { min: 2.5, default: 3.5, max: 12 },
-    bottom: { min: 2.5, default: 6, max: 12 },
+    bottom: { min: 2.5, default: 12, max: 12 },
 } as const;
 
 export const TEXT_ENGRAVE = {

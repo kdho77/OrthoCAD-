@@ -109,16 +109,16 @@ describe("text marking SAMPLE_Top apply guards", () => {
             ).textMarking;
             const cents = meta?.centroids ?? [];
             expect(cents.length).toBeGreaterThan(3);
-            const cy = cents.reduce((s, p) => s + p.y, 0) / cents.length;
-            const placedYs = cents.map((p) => p.y - cy);
+            const cx = cents.reduce((s, p) => s + p.x, 0) / cents.length;
+            const placedXs = cents.map((p) => p.x - cx);
             const src = flat.centroids;
-            const srcCy = src.reduce((s, p) => s + p.y, 0) / Math.max(1, src.length);
-            const srcYs = src.map((p) => p.y - srcCy);
-            // Pancake-flip about X (Y → −Y) undoes the bottom glyph mirror.
+            const srcCx = src.reduce((s, p) => s + p.x, 0) / Math.max(1, src.length);
+            const srcXs = src.map((p) => p.x - srcCx);
+            // Bottom glyph placement flips X (−x) so centered placement matches negated source X.
             let match = 0;
-            const n = Math.min(placedYs.length, srcYs.length);
+            const n = Math.min(placedXs.length, srcXs.length);
             for (let i = 0; i < n; i++) {
-                if (Math.abs(placedYs[i]! + srcYs[i]!) < 1.2) match++;
+                if (Math.abs(placedXs[i]! + srcXs[i]!) < 1.2) match++;
             }
             expect(match / n).toBeGreaterThanOrEqual(0.9);
             tagged.dispose();
