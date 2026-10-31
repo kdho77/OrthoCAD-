@@ -15,10 +15,12 @@ import {
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import {
     FOREFOOT_THICKNESS_CLEARANCE_MM,
+    footOutlineFromGeometry,
+    meshYToAnatomical,
     SINK_DEFAULT_DEPTH_MM,
     SINK_KIND_ORDER,
     SINK_PROFILES,
-    sinkCutAt,
+    sinkCutMm,
     specVFromVSigned,
 } from "@/lib/geometry/sink";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
@@ -254,7 +256,6 @@ function deepestFloor(
     const a = base.getAttribute("position");
     const b = sunk.getAttribute("position");
     const topN = (base.userData as { topVertexCount?: number }).topVertexCount ?? a.count;
-    const medialYSign = ((base.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1) as 1 | -1;
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
@@ -268,13 +269,18 @@ function deepestFloor(
     }
     const lengthMm = Math.max(1e-3, maxX - minX);
     const widthMm = Math.max(1e-3, maxY - minY);
-    const ctx = { side: "left" as const, lengthMm, widthMm, sinks };
-    const bounds = { minY, maxY };
+    const medialYSign = ((base.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1) as 1 | -1;
+    const ctx = {
+        side: "left" as const,
+        lengthMm,
+        widthMm,
+        sinks,
+        medialYSign,
+        footOutline: footOutlineFromGeometry(base, 0, 1, limit),
+    };
     const best: Record<string, { dz: number; weight: number }> = {};
     for (let i = 0; i < limit; i++) {
-        const u = Math.max(0, Math.min(1, (a.getX(i) - minX) / lengthMm));
-        const vSigned = footprintVSignedFromMeshY(a.getY(i), bounds, "left", medialYSign);
-        const sample = sinkCutAt(u, vSigned, ctx);
+        const sample = sinkCutMm(a.getX(i), meshYToAnatomical(a.getY(i), "left", medialYSign), ctx);
         if (!sample.sinkId || sample.weight <= 0) continue;
         const prev = best[sample.sinkId];
         if (prev && sample.weight <= prev.weight) continue;

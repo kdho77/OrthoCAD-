@@ -7,15 +7,19 @@ import type {
     OrbitControls as OrbitControlsImpl,
     TransformControls as TransformControlsImpl,
 } from "three-stdlib";
+import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import { gizmoElementScale } from "@/lib/geometry/element-scale";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { sinksForSide } from "@/lib/geometry/migrate-corrections";
+import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import type { SinkOutlinePoint } from "@/lib/geometry/sink";
+import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
-import type { PlacedElement, Side } from "@/types";
+import type { DesignState, PlacedElement, Side } from "@/types";
 import {
     elementFootprintPose,
     type FootprintPose,
@@ -139,6 +143,23 @@ function FootprintPatch({
     );
 }
 
+function sinkOutlineForSide(
+    design: DesignState,
+    side: Side,
+    outlines: ReturnType<typeof useBaseOutlineStore.getState>["outlines"],
+): SinkOutlinePoint[] | null {
+    const wallModel = design.viewer?.wallModel ?? "procedural";
+    const base = getDesignBase(design, side);
+    const proceduralKey =
+        wallModel === "procedural" && base
+            ? `${SAMPLE_TOP_ASSET_ID}:${side}:${base.mirrored ? "m" : "p"}`
+            : null;
+    const baseKey = getBaseCacheKey(base) ?? base?.assetId ?? null;
+    const curve = (proceduralKey ? outlines[proceduralKey] : null) ?? (baseKey ? outlines[baseKey] : null);
+    if (!curve || curve.points.length < 6) return null;
+    return curve.points.map((p) => ({ x: p.x, y: p.y }));
+}
+
 /**
  * Semi-transparent sink planforms. Drawn in the same Rx(−90°) frame as the
  * insole so Top and Bottom both see the patch. Wedges and pads are skipped.
@@ -150,6 +171,7 @@ export function ElementFootprints() {
     const showLeft = useDesignStore((s) => s.viewer.showLeft);
     const showRight = useDesignStore((s) => s.viewer.showRight);
     const previews = usePerformanceStore((s) => s.elementPreviews);
+    const outlines = useBaseOutlineStore((s) => s.outlines);
     const [selectedSink, setSelectedSink] = useState<string | null>(null);
     const layout = insoleLayoutFromDesign(design);
     const centerX = layout.lengthMm / 2;
@@ -191,8 +213,9 @@ export function ElementFootprints() {
                     if (element.side !== side) continue;
                     poses.push(elementFootprintPose(element, layout.lengthMm));
                 }
+                const footOutline = sinkOutlineForSide(design, side, outlines);
                 for (const sink of sinksForSide(design, side) ?? []) {
-                    const pose = sinkFootprintPose(sink, side, layout.lengthMm, layout.widthMm);
+                    const pose = sinkFootprintPose(sink, side, layout.lengthMm, layout.widthMm, footOutline);
                     if (pose) poses.push(pose);
                 }
                 if (poses.length === 0) return null;

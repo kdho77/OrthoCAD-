@@ -280,7 +280,7 @@ export interface PlacedElement {
  * and an empty list leaves every existing element output byte-identical.
  * u, v are outline fractions (heel→toe, medial→lateral). A scan marker overrides them.
  */
-export type SinkKind = "mpj1" | "mpj2" | "mpj3" | "mpj4" | "mpj5" | "styloid";
+export type SinkKind = "mpj1" | "mpj2" | "mpj3" | "mpj4" | "mpj5" | "rkw" | "styloid";
 
 export interface PlacedSink {
     id: string;

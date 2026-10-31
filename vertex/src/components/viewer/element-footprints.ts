@@ -3,10 +3,15 @@
 import { ELEMENT_PROFILES, type ElementShape } from "@/lib/geometry/elements";
 import { heightAt } from "@/lib/geometry/height-field";
 import { sinkStyloidThickenForSide, sinksForSide } from "@/lib/geometry/migrate-corrections";
-import { type SinkOvalFrame, sinkFrame } from "@/lib/geometry/sink";
+import {
+    type SinkOutlinePoint,
+    type SinkOvalFrame,
+    type SinkSurfaceContext,
+    sinkFrame,
+} from "@/lib/geometry/sink";
 import { effectiveOutlineHalfWidth } from "@/lib/geometry/trimline";
 import { splitOverlayOutline } from "@/lib/hardness/split-overlay";
-import type { DesignState, PlacedElement, PlacedSink, Side, SinkSurfaceContext } from "@/types";
+import type { DesignState, PlacedElement, PlacedSink, Side } from "@/types";
 
 /**
  * Sink planform colors for the Elements viewer. Selected is a brighter magenta.
@@ -134,18 +139,26 @@ export function sinkSurfaceContext(
     side: Side,
     lengthMm: number,
     widthMm: number,
+    footOutline?: SinkOutlinePoint[] | null,
 ): SinkSurfaceContext {
-    return { side, lengthMm, widthMm, sinks: [sink] };
+    return {
+        side,
+        lengthMm,
+        widthMm,
+        sinks: [sink],
+        ...(footOutline && footOutline.length >= 6 ? { footOutline } : {}),
+    };
 }
 
-/** Circle or oval planform of an MPJ / styloid sink, in the same frame as the cut. */
+/** Circle or oval planform of an MPJ / styloid / wedge sink, in the same frame as the cut. */
 export function sinkFootprintPose(
     sink: PlacedSink,
     side: Side,
     lengthMm: number,
     widthMm: number,
+    footOutline?: SinkOutlinePoint[] | null,
 ): FootprintPose | null {
-    const frame = sinkFrame(sink, sinkSurfaceContext(sink, side, lengthMm, widthMm));
+    const frame = sinkFrame(sink, sinkSurfaceContext(sink, side, lengthMm, widthMm, footOutline));
     if (!frame) return null;
     return poseFromSinkFrame(sink.id, side, frame);
 }

@@ -37,7 +37,13 @@ import {
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
 import { neutralShellThicknessContext } from "@/lib/geometry/shell-thickness-zonal";
-import { sinksActive, sinkThicknessAt } from "@/lib/geometry/sink";
+import {
+    meshYToAnatomical,
+    sinkContextForMesh,
+    sinksActive,
+    sinkThicknessAt,
+    sinkThicknessMm,
+} from "@/lib/geometry/sink";
 import { wedgeCorrectionActive, wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
@@ -2778,6 +2784,23 @@ export function applyBaseModifiers(
     const wedgeAt = wedgeActive ? new Float32Array(count) : null;
     const sinkTActive = sinksActive(field.sinks);
     const sinkTAt = sinkTActive ? new Float32Array(count) : null;
+    const sinkMeshCtx = sinkTActive
+        ? sinkContextForMesh(
+              {
+                  side: field.side,
+                  lengthMm: field.lengthMm,
+                  widthMm: field.widthMm,
+                  trimline: field.trimline,
+                  sinks: field.sinks,
+                  sinkStyloidThicken: field.sinkStyloidThicken,
+                  sinkMarkers: field.sinkMarkers,
+              },
+              array,
+              topVertexCount > 0 ? topVertexCount : count,
+              lengthAxis,
+              widthAxis,
+          )
+        : null;
     const sampleEnd = useShellFieldSync && topVertexCount > 0 ? topVertexCount : count;
     for (let i = 0; i < sampleEnd; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
@@ -2798,8 +2821,10 @@ export function applyBaseModifiers(
                 d -= postD;
             }
         }
-        if (sinkTAt && !(isMultiMesh && topVertexCount > 0 && i >= topVertexCount)) {
-            sinkTAt[i] = sinkThicknessAt(u, vSigned, field);
+        if (sinkTAt && sinkMeshCtx && !(isMultiMesh && topVertexCount > 0 && i >= topVertexCount)) {
+            sinkTAt[i] = sinkMeshCtx.footOutline
+                ? sinkThicknessMm(lenCoord, meshYToAnatomical(widCoord, field.side), sinkMeshCtx)
+                : sinkThicknessAt(u, vSigned, field);
         }
         delta[i] = d;
     }
