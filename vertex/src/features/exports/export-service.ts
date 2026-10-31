@@ -264,7 +264,7 @@ export async function generateHybridGcode(
             const viewerStl = await buildManufacturingStl(side);
             const stlBuffer =
                 outputType === "gcode"
-                    ? stlForBeltGcodeExport(viewerStl, { addLeaderBlock: options.addLeaderBlock })
+                    ? await stlForBeltGcodeExport(viewerStl, { addLeaderBlock: options.addLeaderBlock })
                     : viewerStl;
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 
