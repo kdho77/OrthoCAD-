@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { ELEMENT_PROFILES, type ElementShape } from "@/lib/geometry/elements";
+import { medialSign, meshYFromAnatomicalLateral } from "@/lib/geometry/handedness";
 import { heightAt } from "@/lib/geometry/height-field";
 import { sinkStyloidThickenForSide, sinksForSide } from "@/lib/geometry/migrate-corrections";
 import {
@@ -35,7 +36,7 @@ export interface FootprintPose {
     kind: "element" | "sink";
     /** Heel-origin X in the insole frame (mesh vertex X). */
     x: number;
-    /** Mesh Y. Same axis as PlacedElement.position.y (+medial on the left foot). */
+    /** Mesh Y. Medial is medialSign(side): −Y on the left foot, +Y on the right. */
     y: number;
     /** Rotation in that mesh XY frame, degrees. Local +X is the long axis before rotating. */
     rotationDeg: number;
@@ -66,22 +67,23 @@ export function isLibrarySinkElement(element: PlacedElement): boolean {
     return shape != null && LIBRARY_SINK_SHAPES.has(shape);
 }
 
-/** Anatomical +lateral Y to the viewer's mesh Y. */
+/** Anatomical +lateral Y to mesh Y. Medial lands on {@link medialSign}. */
 export function anatomicalToMeshY(yLateral: number, side: Side): number {
-    return side === "left" ? -yLateral : yLateral;
+    return meshYFromAnatomicalLateral(yLateral, side);
 }
 
-/** Inverse of {@link anatomicalToMeshY}. */
+/** Inverse of {@link anatomicalToMeshY}. The ±1 reflection is its own inverse. */
 export function meshToAnatomicalY(yMesh: number, side: Side): number {
-    return side === "left" ? -yMesh : yMesh;
+    return meshYFromAnatomicalLateral(yMesh, side);
 }
 
 /**
- * Sink long-axis angle in mesh XY. `frameRotationDeg` is already mirrored for
- * the left foot in anatomical (+lateral) space.
+ * Sink long-axis angle in mesh XY. `frameRotationDeg` is the anatomical angle
+ * (already mirrored left-to-right). Mirroring Y negates it, and the mirror
+ * factor is −medialSign.
  */
 export function sinkMeshRotationDeg(frameRotationDeg: number, side: Side): number {
-    return side === "left" ? -frameRotationDeg : frameRotationDeg;
+    return -medialSign(side) * frameRotationDeg;
 }
 
 export function ellipseOutline(
@@ -145,6 +147,7 @@ export function sinkSurfaceContext(
         side,
         lengthMm,
         widthMm,
+        medialYSign: medialSign(side),
         sinks: [sink],
         ...(footOutline && footOutline.length >= 6 ? { footOutline } : {}),
     };

@@ -2823,7 +2823,11 @@ export function applyBaseModifiers(
         }
         if (sinkTAt && sinkMeshCtx && !(isMultiMesh && topVertexCount > 0 && i >= topVertexCount)) {
             sinkTAt[i] = sinkMeshCtx.footOutline
-                ? sinkThicknessMm(lenCoord, meshYToAnatomical(widCoord, field.side), sinkMeshCtx)
+                ? sinkThicknessMm(
+                      lenCoord,
+                      meshYToAnatomical(widCoord, field.side, sinkMeshCtx.medialYSign),
+                      sinkMeshCtx,
+                  )
                 : sinkThicknessAt(u, vSigned, field);
         }
         delta[i] = d;

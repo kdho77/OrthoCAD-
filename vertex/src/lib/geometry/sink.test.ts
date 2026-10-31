@@ -69,7 +69,7 @@ function placed(kind: SinkKind, depthMm: number, id = kind): PlacedSink {
     return { id, kind, depthMm };
 }
 
-/** Full-width rectangle in mesh Y. Medial is −Y on the right and +Y on the left. */
+/** Full-width rectangle in mesh Y, symmetric about 0. Anatomical medial is the smaller Y. */
 function rectFoot(lengthMm: number, widthMm: number): { x: number; y: number }[] {
     const y0 = -widthMm / 2;
     const y1 = widthMm / 2;

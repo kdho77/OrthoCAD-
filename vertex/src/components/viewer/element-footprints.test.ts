@@ -8,6 +8,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Euler, Vector3 } from "three";
 import { defaultElementPose } from "@/lib/geometry/elements";
+import { medialSign } from "@/lib/geometry/handedness";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { sinkCutMm, sinkFrame } from "@/lib/geometry/sink";
@@ -135,8 +136,8 @@ describe("element footprint planforms", () => {
         }
         const left = required(sinkFootprintPose(sink("mpj1"), "left", layout.lengthMm, layout.widthMm));
         const right = required(sinkFootprintPose(sink("mpj1"), "right", layout.lengthMm, layout.widthMm));
-        expect(left.y).toBeGreaterThan(0);
-        expect(right.y).toBeLessThan(0);
+        expect(Math.sign(left.y)).toBe(medialSign("left"));
+        expect(Math.sign(right.y)).toBe(medialSign("right"));
         expect(left.x).toBeCloseTo(right.x, 4);
 
         const moved = required(

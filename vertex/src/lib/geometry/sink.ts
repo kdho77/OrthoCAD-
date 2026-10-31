@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferAttribute, BufferGeometry } from "three";
+import { medialSign } from "@/lib/geometry/handedness";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import type { PlacedElement, PlacedSink, Side, SinkKind, SinkMarkerRef, TextMarking } from "@/types";
@@ -270,8 +271,8 @@ export interface SinkSurfaceContext {
      */
     footOutline?: SinkOutlinePoint[] | null;
     /**
-     * Which mesh-Y direction is medial. +1 means +Y is medial (mirrored left).
-     * When omitted, a left foot is treated as +1 and a right foot as -1.
+     * Which mesh-Y direction is medial. +1 means +Y is medial.
+     * When omitted, {@link medialSign}: −1 on the left foot, +1 on the right.
      */
     medialYSign?: 1 | -1;
 }
@@ -361,11 +362,12 @@ export function sinkPlanScale(lengthMm: number): number {
 
 /**
  * Mesh width coordinate to anatomical +lateral (medial is the smaller value).
- * A mirrored left foot has medial at +Y. An unmirrored scan keeps medial at
- * the sign detected from the arch (`medialYSign` -1).
+ * The default sign is {@link medialSign}: the left stock mesh has its arch
+ * on −Y, and the right foot is that mesh mirrored onto +Y. Pass
+ * `medialYSign` only when the arch was measured on this mesh.
  */
 export function meshYToAnatomical(yMesh: number, side: Side, medialYSign?: 1 | -1): number {
-    const sign = medialYSign ?? (side === "left" ? 1 : -1);
+    const sign = medialYSign ?? medialSign(side);
     return -sign * yMesh;
 }
 
@@ -460,7 +462,7 @@ function buildOutlineEdges(points: SinkOutlinePoint[], side: Side, medialYSign?:
 function planEdges(ctx: SinkSurfaceContext): PlanEdges {
     const outline = ctx.footOutline;
     if (outline && outline.length >= 6) {
-        const medialYSign = ctx.medialYSign ?? (ctx.side === "left" ? 1 : -1);
+        const medialYSign = ctx.medialYSign ?? medialSign(ctx.side);
         const cached = edgeCache.get(outline);
         if (cached && cached.side === ctx.side && cached.medialYSign === medialYSign) return cached.edges;
         const built = buildOutlineEdges(outline, ctx.side, medialYSign);
@@ -565,15 +567,13 @@ function resolveUV(sink: PlacedSink, markers?: SinkMarkerRef[]): { u: number; v:
 
 /** Spec v (0 medial → 1 lateral) from a height-field vSigned. */
 export function specVFromVSigned(vSigned: number, side: Side): number {
-    const medialSign = side === "left" ? -1 : 1;
-    const m = -(vSigned * medialSign);
+    const m = -(vSigned * medialSign(side));
     return (1 - m) / 2;
 }
 
 /** Height-field vSigned of a spec v. ±1 lies on the local outline. */
 export function vSignedFromSpecV(v: number, side: Side): number {
-    const medialSign = side === "left" ? -1 : 1;
-    return medialSign * (2 * v - 1);
+    return medialSign(side) * (2 * v - 1);
 }
 
 export interface SinkOvalFrame {
@@ -1116,7 +1116,7 @@ export function applySinkCutToGeometry(
         const lenCoord = base[i * 3 + lengthAxis]!;
         const widCoord = base[i * 3 + widthAxis]!;
         const sample = useMesh
-            ? sinkCutMm(lenCoord, meshYToAnatomical(widCoord, ctx.side), cutCtx)
+            ? sinkCutMm(lenCoord, meshYToAnatomical(widCoord, ctx.side, cutCtx.medialYSign), cutCtx)
             : sinkCutAt(
                   Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize)),
                   Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2))),
@@ -1175,7 +1175,7 @@ export function applySinkThicknessToGeometry(
         const lenCoord = arr[i * 3 + lengthAxis]!;
         const widCoord = arr[i * 3 + widthAxis]!;
         const t = useMesh
-            ? sinkThicknessMm(lenCoord, meshYToAnatomical(widCoord, ctx.side), thickCtx)
+            ? sinkThicknessMm(lenCoord, meshYToAnatomical(widCoord, ctx.side, thickCtx.medialYSign), thickCtx)
             : sinkThicknessAt(
                   Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize)),
                   Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2))),
@@ -1212,8 +1212,7 @@ export function applySinkCutToProceduralPositions(
         const u = Math.max(0, Math.min(1, (x - bounds.minX) / length));
         const mMesh = (y - widCenter) / halfW;
         const m = mMesh * medialYSign;
-        const medialSign = ctx.side === "left" ? -1 : 1;
-        const vSigned = Math.max(-1, Math.min(1, -m * medialSign));
+        const vSigned = Math.max(-1, Math.min(1, -m * medialSign(ctx.side)));
         const sample = sinkCutAt(u, vSigned, meshCtx);
         if (sample.mm <= 0) continue;
         const z = pos[i * 3 + 2]!;
@@ -1312,8 +1311,7 @@ function localTopSurfaceZ(
     const width = Math.max(1e-3, bounds.maxY - bounds.minY);
     const u = Math.max(0, Math.min(1, (foot.x - bounds.minX) / length));
     const mMesh = (foot.y - centerY) / (width / 2);
-    const medialSign = side === "left" ? -1 : 1;
-    const vSigned = Math.max(-1, Math.min(1, -mMesh * medialYSign * medialSign));
+    const vSigned = Math.max(-1, Math.min(1, -mMesh * medialYSign * medialSign(side)));
     const outlined = !!ctx.footOutline && ctx.footOutline.length >= 6;
     const t = outlined
         ? sinkThicknessMm(foot.x, meshYToAnatomical(foot.y, side, ctx.medialYSign), ctx)
@@ -1351,8 +1349,7 @@ export function applyStyloidWallRelief(input: StyloidWallReliefInput): SinkWarni
         const u = Math.max(0, Math.min(1, (rim.x - input.bounds.minX) / length));
         const mMesh = (rim.y - widCenter) / halfW;
         const m = mMesh * input.medialYSign;
-        const medialSign = input.side === "left" ? -1 : 1;
-        const vSigned = Math.max(-1, Math.min(1, -m * medialSign));
+        const vSigned = Math.max(-1, Math.min(1, -m * medialSign(input.side)));
         const v = specVFromVSigned(vSigned, input.side);
         if (v < 0.5) continue;
         const sample = sinkCutAt(u, vSigned, ctx);
@@ -1488,7 +1485,6 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
     );
     const widCenter = (input.bounds.minY + input.bounds.maxY) * 0.5;
     const halfW = width / 2;
-    const medialSign = input.side === "left" ? -1 : 1;
     const useMesh = !!ctx.footOutline && ctx.footOutline.length >= 6;
     const sampleAt = (x: number, y: number): { t: number; cut: SinkCutSample } => {
         if (useMesh) {
@@ -1497,7 +1493,7 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
         }
         const u = Math.max(0, Math.min(1, (x - input.bounds.minX) / length));
         const mMesh = (y - widCenter) / halfW;
-        const vSigned = Math.max(-1, Math.min(1, -(mMesh * input.medialYSign) * medialSign));
+        const vSigned = Math.max(-1, Math.min(1, -(mMesh * input.medialYSign) * medialSign(input.side)));
         return { t: sinkThicknessAt(u, vSigned, ctx), cut: sinkCutAt(u, vSigned, ctx) };
     };
     const rimH = new Float64Array(input.nS);
