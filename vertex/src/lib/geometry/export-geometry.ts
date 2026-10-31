@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import type { BufferGeometry } from "three";
+import { BufferAttribute, BufferGeometry } from "three";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import {
     BASE_REFERENCE_THICKNESS_MM,
@@ -21,6 +21,7 @@ import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/previ
 import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { assertShapeFinishExportAllowed } from "@/lib/geometry/shape-finish-gates";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
+import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
@@ -70,6 +71,10 @@ async function buildModifiedBaseGeometry(
             : design.thicknessMm;
         const field = baseModifierFieldAuthoritative(design, side, effThickness);
         const stored = useBottomPatternStore.getState().getPattern(side);
+        const layout = insoleLayoutFromDesign(design);
+        const heelW = field.corrections?.heelCupWidthMm ?? 0;
+        // Same composition as the print viewport: elements (includeElements) and
+        // the shoe-width affine (wide = +5 mm ball). Analytic loft dropped both.
         const preview = await buildProceduralExportSolid({
             mirrored: Boolean(base.mirrored),
             corrections: field.corrections,
@@ -79,6 +84,15 @@ async function buildModifiedBaseGeometry(
             scanPattern: design.pattern,
             textMarking: design.textMarking,
             side,
+            sourceField: field,
+            footprintMm: { lengthMm: layout.lengthMm, widthMm: layout.widthMm },
+            shoeWidth: {
+                width: shoeWidthForSide(design, side),
+                ballWidthMm: layout.widthMm,
+                heelWidthMm: layout.widthMm * 0.62,
+                heelOverrideMm: heelW,
+            },
+            trimline: field.trimline,
             ...(field.sinks && field.sinks.length > 0
                 ? { sinks: field.sinks, sinkStyloidThicken: field.sinkStyloidThicken }
                 : {}),
@@ -120,11 +134,66 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
     );
 }
 
-/** Export STL bytes for the active design side. */
-export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
-    const { design } = useDesignStore.getState();
-    assertShapeFinishExportAllowed(design, side);
+/** Feet in an order download. One foot when that side has no paired base. */
+export function orderDownloadSides(design: DesignState): Side[] {
+    const sides: Side[] = [];
+    if (design.paired?.leftBase ?? design.base) sides.push("left");
+    if (design.paired?.rightBase) sides.push("right");
+    if (sides.length === 0) sides.push("left");
+    return sides;
+}
 
+/** Shift a foot in Y so a pair file does not stack both solids on the same origin. */
+export function offsetGeometryY(geometry: BufferGeometry, dy: number): BufferGeometry {
+    const g = geometry.clone();
+    const pos = g.getAttribute("position");
+    if (!pos || dy === 0) return g;
+    for (let i = 0; i < pos.count; i++) pos.setY(i, pos.getY(i) + dy);
+    pos.needsUpdate = true;
+    g.computeBoundingBox();
+    g.computeBoundingSphere();
+    return g;
+}
+
+/** One indexed mesh. Each input keeps its vertex order. */
+export function mergeGeometries(parts: BufferGeometry[]): BufferGeometry {
+    let vCount = 0;
+    let iCount = 0;
+    for (const p of parts) {
+        const pos = p.getAttribute("position");
+        if (!pos) continue;
+        vCount += pos.count;
+        iCount += p.getIndex()?.count ?? pos.count;
+    }
+    const positions = new Float32Array(vCount * 3);
+    const indices = new Uint32Array(iCount);
+    let vOff = 0;
+    let iOff = 0;
+    for (const p of parts) {
+        const pos = p.getAttribute("position");
+        if (!pos) continue;
+        for (let i = 0; i < pos.count; i++) {
+            positions[(vOff + i) * 3] = pos.getX(i);
+            positions[(vOff + i) * 3 + 1] = pos.getY(i);
+            positions[(vOff + i) * 3 + 2] = pos.getZ(i);
+        }
+        const idx = p.getIndex();
+        const n = idx?.count ?? pos.count;
+        for (let i = 0; i < n; i++) indices[iOff + i] = (idx ? idx.getX(i) : i) + vOff;
+        vOff += pos.count;
+        iOff += n;
+    }
+    const g = new BufferGeometry();
+    g.setAttribute("position", new BufferAttribute(positions, 3));
+    g.setIndex(new BufferAttribute(indices, 1));
+    g.computeVertexNormals();
+    g.computeBoundingBox();
+    return g;
+}
+
+async function buildClosedExportGeometry(side: Side): Promise<BufferGeometry> {
+    const { design, viewer } = useDesignStore.getState();
+    assertShapeFinishExportAllowed(design, side);
     const modifiedBase = await buildModifiedBaseGeometry(design, side, 0);
     if (!modifiedBase) {
         throw new Error(
@@ -133,26 +202,69 @@ export async function buildExportStl(side: Side, _options: BuildExportStlOptions
                 "Parametric export is not supported.",
         );
     }
-    const geometry = modifiedBase;
     try {
-        if (typeof console !== "undefined") {
-            console.log("[EXPORT] closing GLB insole rims...");
-        }
-        const solid = closeGlbInsoleToSolid(geometry);
+        const solid = closeGlbInsoleToSolid(modifiedBase);
         const topN = (solid.userData as { topVertexCount?: number }).topVertexCount ?? 0;
-        assertClosedSolidAcceptable(solid, topN, topN > 0 ? DEFAULT_GLB_CLOSED_BASELINE : null);
-        try {
-            return geometryToBinarySTL(solid);
-        } finally {
-            solid.dispose();
-        }
-    } catch (e) {
-        if (typeof console !== "undefined") {
-            console.error("[EXPORT] export failed:", e);
-        }
-        throw e;
+        const base = getDesignBase(design, side);
+        const procedural = wantsProceduralExportSolid(base, viewer?.wallModel);
+        // Default.glb stays on the pinned euler baseline. A shoe-sized SAMPLE_Top
+        // solid is a genus-0 manifold (euler 2); that baseline is the legacy sheet.
+        assertClosedSolidAcceptable(
+            solid,
+            topN,
+            !procedural && topN > 0 ? DEFAULT_GLB_CLOSED_BASELINE : null,
+        );
+        return solid;
     } finally {
-        geometry.dispose();
+        modifiedBase.dispose();
+    }
+}
+
+/**
+ * Closed solids for every foot on the order, in one mesh.
+ * The right foot is shifted in +Y by the shoe width plus the viewer gap so the
+ * shells do not occupy the same origin. Each foot is still the order solid.
+ */
+export async function buildOrderPairGeometry(): Promise<BufferGeometry> {
+    const { design } = useDesignStore.getState();
+    const sides = orderDownloadSides(design);
+    const layout = insoleLayoutFromDesign(design);
+    const gap = layout.widthMm + 30;
+    const parts: BufferGeometry[] = [];
+    try {
+        for (const side of sides) {
+            const solid = await buildClosedExportGeometry(side);
+            const dy = side === "right" && sides.length > 1 ? gap : 0;
+            const placed = dy === 0 ? solid : offsetGeometryY(solid, dy);
+            if (placed !== solid) solid.dispose();
+            parts.push(placed);
+        }
+        if (parts.length === 1) return parts[0]!;
+        const merged = mergeGeometries(parts);
+        return merged;
+    } finally {
+        // mergeGeometries copies vertices. A single part is returned as-is.
+        if (parts.length > 1) for (const p of parts) p.dispose();
+    }
+}
+
+/** Export STL bytes for one foot. Pair downloads use {@link buildOrderPairGeometry}. */
+export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
+    const solid = await buildClosedExportGeometry(side);
+    try {
+        return geometryToBinarySTL(solid);
+    } finally {
+        solid.dispose();
+    }
+}
+
+/** STL bytes for every foot on the order, one file. */
+export async function buildOrderPairStl(): Promise<ArrayBuffer> {
+    const solid = await buildOrderPairGeometry();
+    try {
+        return geometryToBinarySTL(solid);
+    } finally {
+        solid.dispose();
     }
 }
 

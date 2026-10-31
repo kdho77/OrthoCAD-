@@ -367,12 +367,12 @@ export interface DesignState {
     ukSize?: number;
     /** Foot length in mm (Mondopoint-style). Used when `sizeSystem` is `"mm"`. */
     footLengthMm?: number;
-    /** Last width vs Medium. Forefoot Δ −5/0/+5/+10 mm; heel capped ±2 mm. */
-    shoeWidth?: "narrow" | "medium" | "wide" | "extra_wide";
+    /** Last width vs Medium. Forefoot Δ −10/−5/0/+5/+10 mm (width only); heel capped ±2 mm. */
+    shoeWidth?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
     /** Per-foot width when L/R corrections are unlinked. Linked designs use `shoeWidth`. */
     shoeWidthBySide?: {
-        left?: "narrow" | "medium" | "wide" | "extra_wide";
-        right?: "narrow" | "medium" | "wide" | "extra_wide";
+        left?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
+        right?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
     };
     corrections: Corrections;
     elements: PlacedElement[];

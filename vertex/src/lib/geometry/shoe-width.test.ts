@@ -7,7 +7,9 @@ import {
     applyShoeWidthToGeometry,
     applyShoeWidthToPoints,
     formatShoeWidthSummary,
+    SHOE_WIDTH_BALL_DELTA_MM,
     SHOE_WIDTH_HEEL_CAP_MM,
+    SHOE_WIDTH_LABELS,
     shoeWidthAffineY,
     shoeWidthBallScale,
     shoeWidthForSide,
@@ -20,6 +22,7 @@ describe("shoe width rule", () => {
         for (const size of [6, 9, 12]) {
             const ball = insoleLayoutForUsMenSize(size).widthMm;
             for (const [id, delta] of [
+                ["extra_narrow", -10],
                 ["narrow", -5],
                 ["medium", 0],
                 ["wide", 5],
@@ -48,6 +51,25 @@ describe("shoe width rule", () => {
 
     test("length is unchanged — scale is Y-only", () => {
         expect(shoeWidthBallScale(95, "wide")).toBeCloseTo(100 / 95, 6);
+        expect(SHOE_WIDTH_BALL_DELTA_MM).toEqual({
+            extra_narrow: -10,
+            narrow: -5,
+            medium: 0,
+            wide: 5,
+            extra_wide: 10,
+        });
+        expect(SHOE_WIDTH_LABELS.extra_narrow).toBe("2X Narrow");
+        expect(SHOE_WIDTH_LABELS.extra_wide).toBe("2X Wide");
+        const pts = [
+            { x: 0, y: 0 },
+            { x: 130, y: 40 },
+            { x: 260, y: -20 },
+        ];
+        const opts = { ballWidthMm: 95, heelWidthMm: 59, minX: 0, lengthMm: 260 };
+        for (const id of ["extra_narrow", "narrow", "medium", "wide", "extra_wide"] as const) {
+            const out = applyShoeWidthToPoints(pts, id, opts);
+            expect(out.map((p) => p.x)).toEqual(pts.map((p) => p.x));
+        }
     });
 
     test("outline X is unchanged and correction millimetre values stay put", () => {

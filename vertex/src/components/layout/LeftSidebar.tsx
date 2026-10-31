@@ -540,7 +540,7 @@ function ShoeWidthSelect() {
     const linked = useDesignStore((s) => s.design.corrections.linked);
     const design = useDesignStore((s) => s.design);
     const setShoeWidth = useDesignStore((s) => s.setShoeWidth);
-    const ids: ShoeWidthId[] = ["narrow", "medium", "wide", "extra_wide"];
+    const ids: ShoeWidthId[] = ["extra_narrow", "narrow", "medium", "wide", "extra_wide"];
 
     const renderGrid = (side?: Side) => {
         const width = side ? shoeWidthForSide(design, side) : normalizeShoeWidth(design.shoeWidth);
