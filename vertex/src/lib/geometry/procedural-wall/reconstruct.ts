@@ -11,10 +11,12 @@ import {
     forefootWidthLongitudinalEnvelope,
     type HeightFieldParams,
     heelCupWidthScaleFactor,
+    resolveOutlineHalfWidth,
     widthCorrectionFollowEnvelope,
 } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
+import { mortonsActive, mortonsTopDeltaAt } from "@/lib/geometry/mortons";
 import { applyAnalyticSinkToLoftedSolid, sinksActive } from "@/lib/geometry/sink";
 import type { SideCorrections } from "@/types";
 import {
@@ -270,6 +272,17 @@ function applyAnalyticTopDeltas(
     const widCenter = (bounds.minY + bounds.maxY) * 0.5;
     const medialYSign = (input.medialYSign ?? 1) as 1 | -1;
     const count = pos.length / 3;
+    const mortonsSpec = input.sourceField?.mortons;
+    const mortonsCtx =
+        mortonsSpec && mortonsActive(mortonsSpec)
+            ? {
+                  side,
+                  lengthMm: length,
+                  widthMm: width,
+                  mortons: mortonsSpec,
+                  widthMmAt: (uu: number) => resolveOutlineHalfWidth(uu, field) * width,
+              }
+            : null;
     for (let i = 0; i < count; i++) {
         const x = pos[i * 3]!;
         const y = pos[i * 3 + 1]!;
@@ -277,6 +290,7 @@ function applyAnalyticTopDeltas(
         const vSigned = footprintVSignedFromMeshY(y, bounds, side, medialYSign);
         pos[i * 3 + 2]! += correctionDeltaAt(u, vSigned, field, neutral);
         pos[i * 3 + 2]! += postingZDelta(x, y, bounds, postingInput);
+        if (mortonsCtx) pos[i * 3 + 2]! += mortonsTopDeltaAt(u, vSigned, mortonsCtx, field.thicknessMm);
         const heelW = c.heelCupWidthMm ?? 0;
         if (heelW !== 0) {
             const scale = heelCupWidthScaleFactor(u, heelW);
@@ -1976,6 +1990,7 @@ export function reconstructProceduralWalls(
             side: sinkSide,
             sinks: reliefSinks,
             sinkStyloidThicken: options.sourceField?.sinkStyloidThicken ?? options.sinkStyloidThicken,
+            ...(options.sourceField?.mortons ? { mortons: options.sourceField.mortons } : {}),
         });
     }
     const geo = new BufferGeometry();

@@ -5,6 +5,7 @@ import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { sinkStyloidThickenForSide, sinksForSide } from "@/lib/geometry/migrate-corrections";
+import { mortonsActive } from "@/lib/geometry/mortons";
 import {
     SAMPLE_TOP_ASSET_ID,
     SAMPLE_TOP_GLB_PATH,
@@ -902,6 +903,7 @@ export async function loadBaseGeometry(
 export function baseModifierField(design: DesignState, side: Side, thicknessMm: number): HeightFieldParams {
     const params = insoleParamsFromDesign(design, side, "full");
     const sinks = sinksForSide(design, side);
+    const mortons = design.mortons?.[side];
     return {
         side,
         lengthMm: params.lengthMm,
@@ -926,6 +928,8 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         shapeFinish: getSideShapeFinish(design, side),
         // Omit the keys when this foot has no sink so the field shape matches main.
         ...(sinks ? { sinks, sinkStyloidThicken: sinkStyloidThickenForSide(design, side) } : {}),
+        // Same for Morton's: an off foot must not grow a new field key.
+        ...(mortons && mortonsActive(mortons) ? { mortons } : {}),
     };
 }
 

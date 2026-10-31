@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { mortonsActive } from "@/lib/geometry/mortons";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import type { DesignState, Side } from "@/types";
 import { classDensityPct } from "../../../shared/print-recipe/hardness-class-table";
@@ -18,6 +19,7 @@ export function samplerForDesign(design: DesignState, side: Side, excludeElement
             ? design.paired.leftThicknessMm
             : design.paired.rightThicknessMm
         : design.thicknessMm;
+    const mortons = design.mortons?.[side];
     const params: HeightFieldParams = {
         side,
         lengthMm: layout.lengthMm,
@@ -25,6 +27,7 @@ export function samplerForDesign(design: DesignState, side: Side, excludeElement
         thicknessMm: thickness,
         corrections: design.corrections[side],
         elements: design.elements.filter((e) => e.side === side),
+        ...(mortons && mortonsActive(mortons) ? { mortons } : {}),
     };
     return makeParametricSampler(params, excludeElementId);
 }

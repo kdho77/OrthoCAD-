@@ -6,6 +6,7 @@ import {
 } from "@/lib/geometry/full-length-wedge";
 import { type HeelLiftTaperOptions, heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
+import { type MortonsSampleContext, mortonsActive, mortonsTopDeltaAt } from "@/lib/geometry/mortons";
 import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
 import {
     type ShellThicknessContext,
@@ -16,6 +17,7 @@ import { sinksActive, sinkThicknessAt } from "@/lib/geometry/sink";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type {
+    MortonsSide,
     PlacedElement,
     PlacedSink,
     ProductionMethod,
@@ -38,6 +40,11 @@ export interface HeightFieldParams {
     elements?: PlacedElement[];
     /** MPJ / styloid sinks. Absent or empty ⇒ sinkThicknessAt is not called. */
     sinks?: PlacedSink[];
+    /**
+     * Morton's extension / reverse on the first ray. Absent ⇒ not evaluated,
+     * so the height sum stays bit-identical.
+     */
+    mortons?: MortonsSide | null;
     /** Styloid midfoot thickness. Default off. Ignored when `sinks` is empty. */
     sinkStyloidThicken?: boolean;
     /** Scan markers that override PlacedSink u, v. */
@@ -508,6 +515,19 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // Absent sinks skip the call so this sum stays bit-identical.
     if (sinksActive(params.sinks)) {
         h += sinkThicknessAt(u, vSigned, params);
+    }
+
+    // Morton's — after lift, intrinsic shaping, and posting; before skive.
+    // Inactive specs skip the call so the sum stays bit-identical.
+    if (params.mortons && mortonsActive(params.mortons)) {
+        const mortonsCtx: MortonsSampleContext = {
+            side,
+            lengthMm,
+            widthMm,
+            mortons: params.mortons,
+            widthMmAt: (uu) => resolveOutlineHalfWidth(uu, params) * widthMm,
+        };
+        h += mortonsTopDeltaAt(u, vSigned, mortonsCtx, thicknessTerm);
     }
 
     // Phase 4: operator graph contribution (additive, regional, STA-aware, etc.).

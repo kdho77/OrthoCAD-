@@ -38,6 +38,7 @@ import { BottomPatternEditTools } from "./BottomPatternEditTools";
 import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
+import { MortonsFootprintOverlay } from "./MortonsFootprintOverlay";
 import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
 import { PrintLoftSplash } from "./PrintLoftSplash";
 import { ScanMarkerPlacement } from "./ScanMarkerPlacement";
@@ -254,6 +255,7 @@ export function Viewer3D() {
                     <ScanRotateTool />
                     <ScanTransformTool />
                     {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
+                    {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <MortonsFootprintOverlay /> : null}
                     {workflowStep === "print" && !hideInsoleForMarkers && !loftOverlay.blockViewport ? (
                         <SplitElementOverlays />
                     ) : null}

@@ -126,6 +126,12 @@ describe("anatomical element footprints", () => {
         const cluffyR = defaultElementPose("cluffy_wedge", "right");
         expect(cluffyL.position.y).toBeLessThan(0); // medial left
         expect(cluffyR.position.y).toBeGreaterThan(0); // medial right
+
+        const mortonsL = defaultElementPose("mortons_extension", "left");
+        const mortonsR = defaultElementPose("mortons_extension", "right");
+        expect(mortonsL.position.y).toBeLessThan(0);
+        expect(mortonsR.position.y).toBeGreaterThan(0);
+        expect(mortonsL.position.x).toBeGreaterThan(40);
     });
 
     test("Cluffy starts toward the hallux in the displayed pair on both feet and across sizes", () => {

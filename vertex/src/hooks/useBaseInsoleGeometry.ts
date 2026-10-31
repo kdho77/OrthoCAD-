@@ -984,6 +984,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.textMarking,
         design.sinks,
         design.sinkStyloidThicken,
+        design.mortons,
         correctionPreview,
         thicknessPreview,
         elementPreviews,

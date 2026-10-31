@@ -85,6 +85,11 @@ const designTrimlines = z
     })
     .optional();
 
+const mortonsSide = z.object({
+    mode: z.enum(["extension", "reverse"]),
+    amountMm: z.number(),
+});
+
 export const designStateSchema = z.object({
     pattern: z.enum(SCAN_PATTERNS),
     method: z.enum(PRODUCTION_METHODS),
@@ -119,6 +124,12 @@ export const designStateSchema = z.object({
             letterSpacingMm: z.number(),
             rotationDeg: z.number(),
             placementU: z.number(),
+        })
+        .optional(),
+    mortons: z
+        .object({
+            left: mortonsSide.optional(),
+            right: mortonsSide.optional(),
         })
         .optional(),
 });

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { medialSign } from "@/lib/geometry/mortons";
 import type { ElementKind, PlacedElement, Side } from "@/types";
 
 /**
@@ -192,10 +193,20 @@ export const ELEMENT_HEIGHT_LIMITS: Partial<Record<ElementKind, { min: number; m
 
 const DEG = Math.PI / 180;
 
-/** Medial direction in element-local +Y for this foot side. */
+/**
+ * Older library anchors treat +Y as medial on the left foot. The stock pair
+ * does the opposite: left medial is Y−, mirrored right medial is Y+.
+ * First-ray pads use {@link medialSign}. Other anchors stay where they were approved.
+ */
 function medialYSign(side: Side): number {
-    // Left: +y is medial; right: −y is medial (matches height-field convention).
     return side === "left" ? 1 : -1;
+}
+
+function placementMedial(kind: ElementKind, side: Side): number {
+    if (kind === "cluffy_wedge" || kind === "mortons_extension" || kind === "reverse_mortons") {
+        return medialSign(side);
+    }
+    return medialYSign(side);
 }
 
 function clamp01(t: number): number {
@@ -427,9 +438,9 @@ export function defaultElementPose(
     widthMm = 95,
 ): Pick<PlacedElement, "position" | "rotationDeg" | "scale" | "heightMm" | "placementMode"> {
     const p = ELEMENT_PROFILES[kind];
-    // Cluffy belongs under the hallux: inward is -Y on left, +Y on right.
-    // Keep the other library anchors unchanged; their positions are already approved.
-    const medial = medialYSign(side) * (kind === "cluffy_wedge" ? -1 : 1);
+    // First-ray pads (Cluffy, Morton's, reverse Morton's) sit on the hallux side
+    // of the displayed pair. Other library anchors keep their approved Y.
+    const medial = placementMedial(kind, side);
     return {
         position: {
             x: p.defaultU * lengthMm - lengthMm / 2,

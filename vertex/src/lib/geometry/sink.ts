@@ -2,8 +2,17 @@
 
 import type { BufferAttribute, BufferGeometry } from "three";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
+import { mortonsCutMm, sinkCutAfterMortons } from "@/lib/geometry/mortons";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
-import type { PlacedElement, PlacedSink, Side, SinkKind, SinkMarkerRef, TextMarking } from "@/types";
+import type {
+    MortonsSide,
+    PlacedElement,
+    PlacedSink,
+    Side,
+    SinkKind,
+    SinkMarkerRef,
+    TextMarking,
+} from "@/types";
 
 /**
  * Elements > Sink. Two top-sheet terms, never a boolean and never the bottom:
@@ -202,6 +211,11 @@ export interface SinkSurfaceContext {
     /** Default false. Forefoot thickness only, unless this and a styloid sink are set. */
     sinkStyloidThicken?: boolean;
     sinkMarkers?: SinkMarkerRef[];
+    /**
+     * Reverse Morton's already applied on this top. The 1st MPJ cut keeps only
+     * the depth past that sink (deepest wins). Absent ⇒ the cut is unchanged.
+     */
+    mortons?: MortonsSide | null;
 }
 
 export interface SinkWarning {
@@ -486,6 +500,25 @@ function prepare(ctx: SinkSurfaceContext): PreparedSink[] {
     return out;
 }
 
+/** Reverse-Morton's cut already baked into the top. 0 when it is off — no extra work. */
+function bakedMortonsCutMm(u: number, vSigned: number, ctx: SinkSurfaceContext): number {
+    if (ctx.mortons?.mode !== "reverse") return 0;
+    return mortonsCutMm(u, vSigned, {
+        side: ctx.side,
+        lengthMm: ctx.lengthMm,
+        widthMm: ctx.widthMm,
+        mortons: ctx.mortons,
+        widthMmAt: (uu) =>
+            effectiveOutlineHalfWidth(uu, ctx.lengthMm, ctx.widthMm, ctx.trimline) * ctx.widthMm,
+    });
+}
+
+function cutMmAfterBakedMortons(sinkMm: number, u: number, vSigned: number, ctx: SinkSurfaceContext): number {
+    const overlap = bakedMortonsCutMm(u, vSigned, ctx);
+    if (!(overlap > 0)) return sinkMm;
+    return sinkCutAfterMortons(sinkMm, overlap);
+}
+
 function proximalTipX(frame: SinkOvalFrame): number {
     const reach = frame.halfLengthMm + frame.blendMm;
     return frame.cx - frame.tx * reach;
@@ -738,9 +771,10 @@ export function applySinkCutToGeometry(
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
         const sample = sinkCutAt(u, vSigned, ctx);
-        if (sample.mm <= 0) continue;
+        const cutMm = cutMmAfterBakedMortons(sample.mm, u, vSigned, ctx);
+        if (cutMm <= 0) continue;
         const z = arr[i * 3 + thickAxis]!;
-        const guarded = applyFloorGuard(z, sample.mm, sample.sinkId);
+        const guarded = applyFloorGuard(z, cutMm, sample.sinkId);
         if (guarded.warning && !seen.has(guarded.warning.sinkId)) {
             seen.add(guarded.warning.sinkId);
             warnings.push(guarded.warning);
@@ -826,9 +860,10 @@ export function applySinkCutToProceduralPositions(
         const medialSign = ctx.side === "left" ? -1 : 1;
         const vSigned = Math.max(-1, Math.min(1, -m * medialSign));
         const sample = sinkCutAt(u, vSigned, meshCtx);
-        if (sample.mm <= 0) continue;
+        const cutMm = cutMmAfterBakedMortons(sample.mm, u, vSigned, meshCtx);
+        if (cutMm <= 0) continue;
         const z = pos[i * 3 + 2]!;
-        const guarded = applyFloorGuard(z, sample.mm, sample.sinkId);
+        const guarded = applyFloorGuard(z, cutMm, sample.sinkId);
         if (guarded.warning && !seen.has(guarded.warning.sinkId)) {
             seen.add(guarded.warning.sinkId);
             warnings.push(guarded.warning);
@@ -927,7 +962,8 @@ function localTopSurfaceZ(
     const vSigned = Math.max(-1, Math.min(1, -mMesh * medialYSign * medialSign));
     const t = sinkThicknessAt(u, vSigned, ctx);
     const cut = sinkCutAt(u, vSigned, ctx);
-    const guarded = applyFloorGuard(foot.z + t, cut.mm, cut.sinkId);
+    const cutMm = cutMmAfterBakedMortons(cut.mm, u, vSigned, ctx);
+    const guarded = applyFloorGuard(foot.z + t, cutMm, cut.sinkId);
     return foot.z + t - guarded.cutMm;
 }
 
@@ -1017,6 +1053,8 @@ export interface AnalyticSinkLoftInput {
     side: Side;
     sinks?: PlacedSink[];
     sinkStyloidThicken?: boolean;
+    /** Reverse Morton's already on the lofted top. Deepest wins against MPJ cuts. */
+    mortons?: MortonsSide | null;
 }
 
 /**
@@ -1083,6 +1121,7 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
         widthMm: width,
         sinks: input.sinks,
         sinkStyloidThicken: input.sinkStyloidThicken,
+        ...(input.mortons ? { mortons: input.mortons } : {}),
     };
     const widCenter = (input.bounds.minY + input.bounds.maxY) * 0.5;
     const halfW = width / 2;
@@ -1107,7 +1146,8 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
         const at = sampleAt(x, y);
         rimT[s] = sinkThicknessAt(at.u, at.vSigned, ctx);
         const cut = sinkCutAt(at.u, at.vSigned, ctx);
-        const floor = applyFloorGuard(rimH[s]! + rimT[s]!, cut.mm, cut.sinkId);
+        const cutMm = cutMmAfterBakedMortons(cut.mm, at.u, at.vSigned, ctx);
+        const floor = applyFloorGuard(rimH[s]! + rimT[s]!, cutMm, cut.sinkId);
         const localTop = localTopSurfaceZ(
             input.positions,
             topCount,
@@ -1133,8 +1173,9 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
         const at = sampleAt(input.positions[i * 3]!, input.positions[i * 3 + 1]!);
         const t = sinkThicknessAt(at.u, at.vSigned, ctx);
         const cut = sinkCutAt(at.u, at.vSigned, ctx);
+        const cutMm = cutMmAfterBakedMortons(cut.mm, at.u, at.vSigned, ctx);
         const z = input.positions[i * 3 + 2]! + t;
-        const guarded = applyFloorGuard(z, cut.mm, cut.sinkId);
+        const guarded = applyFloorGuard(z, cutMm, cut.sinkId);
         if (guarded.warning && !seen.has(guarded.warning.sinkId)) {
             seen.add(guarded.warning.sinkId);
             warnings.push(guarded.warning);

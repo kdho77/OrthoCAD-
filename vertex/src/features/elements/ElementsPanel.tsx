@@ -19,6 +19,7 @@ import { loadElementManifest } from "@/lib/geometry/element-assets/element-asset
 import type { ElementManifestEntry } from "@/lib/geometry/element-assets/types";
 import { ELEMENT_HEIGHT_LIMITS } from "@/lib/geometry/elements";
 import { sinkStyloidThickenForSide, sinksForSide } from "@/lib/geometry/migrate-corrections";
+import { mortonsAmountWarning, mortonsDefaultMm, mortonsMaxMm } from "@/lib/geometry/mortons";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { SINK_KIND_ORDER, SINK_PROFILES } from "@/lib/geometry/sink";
 import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
@@ -31,7 +32,16 @@ import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
-import type { ElementKind, PlacedElement, PlacedSink, Side, SinkKind, TextMarking } from "@/types";
+import type {
+    ElementKind,
+    MortonsMode,
+    MortonsSide,
+    PlacedElement,
+    PlacedSink,
+    Side,
+    SinkKind,
+    TextMarking,
+} from "@/types";
 
 export function ElementsPanel() {
     const {
@@ -45,6 +55,7 @@ export function ElementsPanel() {
         updateSink,
         removeSink,
         setSinkStyloidThicken,
+        setMortons,
         exportSide,
     } = useDesignStore();
     const layout = insoleLayoutFromDesign(design);
@@ -172,6 +183,16 @@ export function ElementsPanel() {
                     </div>
                 ) : null}
             </div>
+            <MortonsGroup
+                spec={design.mortons?.[sinkSide]}
+                side={sinkSide}
+                linked={sinksLinked || placementFoot === "both"}
+                onChange={(spec) => {
+                    for (const side of sinksLinked ? [sinkSide] : elementPlacementSides()) {
+                        setMortons(side, spec);
+                    }
+                }}
+            />
             <SinkGroup
                 sinks={sideSinks}
                 thicken={sideThicken}
@@ -561,6 +582,101 @@ export function ElementsPanel() {
                 sourceId={displaySelected?.id}
                 side={displaySelected?.side}
             />
+        </div>
+    );
+}
+
+function MortonsGroup(props: {
+    spec?: MortonsSide;
+    side: Side;
+    linked: boolean;
+    onChange: (spec: MortonsSide | null) => void;
+}) {
+    const mode = props.spec?.mode;
+    const active = mode === "extension" || mode === "reverse";
+    const amount = props.spec?.amountMm ?? 0;
+    const max = active ? mortonsMaxMm(mode) : 0;
+    const warn = active ? mortonsAmountWarning(mode, amount) : null;
+    const setMode = (next: MortonsMode | "off") => {
+        if (next === "off") {
+            props.onChange(null);
+            return;
+        }
+        props.onChange({ mode: next, amountMm: mortonsDefaultMm(next) });
+    };
+    const modeButton = (id: MortonsMode | "off", label: string) => {
+        const selected = id === "off" ? !active : mode === id;
+        return (
+            <button
+                type="button"
+                data-testid={`mortons-mode-${id}`}
+                onClick={() => setMode(id)}
+                className={cn(
+                    "rounded-md border px-2 py-1 text-[10px]",
+                    selected
+                        ? "border-primary bg-primary/10 text-foreground"
+                        : "border-border text-muted-foreground hover:text-foreground",
+                )}
+            >
+                {label}
+            </button>
+        );
+    };
+    return (
+        <div data-testid="mortons-panel">
+            <div className="mb-1.5 flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                <span>Morton&apos;s</span>
+                <span className="text-[10px] font-normal normal-case tracking-normal">
+                    {props.linked ? "Left + Right" : props.side === "left" ? "Left" : "Right"}
+                </span>
+            </div>
+            <div className="rounded-md border border-border bg-background px-2 py-1.5">
+                <div className="flex gap-1">
+                    {modeButton("off", "Off")}
+                    {modeButton("extension", "Extension")}
+                    {modeButton("reverse", "Reverse")}
+                </div>
+                {active ? (
+                    <div className="mt-1 space-y-1">
+                        <label className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                            {mode === "extension" ? "Raise" : "Depth"}
+                            <input
+                                type="number"
+                                data-testid="mortons-amount"
+                                min={0}
+                                step={0.1}
+                                value={amount}
+                                className="w-16 rounded border border-border bg-background px-1 py-0.5 text-right text-xs text-foreground"
+                                onChange={(e) => {
+                                    const n = Number(e.target.value);
+                                    if (Number.isFinite(n) && mode)
+                                        props.onChange({ mode, amountMm: Math.max(0, n) });
+                                }}
+                            />
+                        </label>
+                        <SliderField
+                            label={mode === "extension" ? "Raise" : "Depth"}
+                            value={Math.min(max, Math.max(0, amount))}
+                            min={0}
+                            max={max}
+                            step={0.1}
+                            unit="mm"
+                            defaultValue={mode ? mortonsDefaultMm(mode) : 0}
+                            displayText={Math.min(max, Math.max(0, amount)).toFixed(1)}
+                            onChange={(v) => {
+                                if (!mode) return;
+                                const clamped = Math.min(max, Math.max(0, v));
+                                if (amount > max && clamped >= max) return;
+                                props.onChange({ mode, amountMm: clamped });
+                            }}
+                        />
+                        {warn ? <p className="text-[10px] text-amber-600">{warn}</p> : null}
+                        <p className="text-[10px] text-muted-foreground">
+                            First ray only. One mode per foot. Extension and reverse are not combined.
+                        </p>
+                    </div>
+                ) : null}
+            </div>
         </div>
     );
 }
