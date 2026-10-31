@@ -5,6 +5,10 @@ import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { loadPressureMapFromFile } from "@/lib/pressure-map/import";
+import {
+    PRESSURE_MAP_MAX_DATA_URL_CHARS,
+    PRESSURE_MAP_MAX_EDGE_PX,
+} from "@/lib/pressure-map/constants";
 import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
@@ -32,7 +36,7 @@ export function PressureMapPanel() {
         setBusy(true);
         setError(null);
         try {
-            const footState = await loadPressureMapFromFile(file);
+            const footState = await loadPressureMapFromFile(file, side);
             setPressureMap(side, footState);
         } catch (e) {
             setError(e instanceof Error ? e.message : "Import failed");
@@ -53,10 +57,19 @@ export function PressureMapPanel() {
                 ) : null}
             </div>
             <p className="text-[10px] leading-relaxed text-muted-foreground">
-                Import a plantar image (PNG/JPEG). It auto-aligns under the {sideLabel.toLowerCase()} insole and shows
-                through the existing <span className="text-foreground">Transparent</span> toggle — not included in
-                exports.
+                Import a plantar image (PNG/JPEG). Stored maps are downscaled to max {PRESSURE_MAP_MAX_EDGE_PX}px and
+                about {Math.round(PRESSURE_MAP_MAX_DATA_URL_CHARS / 1000)} KB. Auto-align uses rotation only; a mirror
+                is applied only when the image looks like the opposite foot.
             </p>
+            {foot?.orientation?.oppositeFootMirror ? (
+                <p className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-100/90">
+                    This image appears to be a{" "}
+                    <strong className="font-medium">
+                        {foot.orientation.detectedImageSide === "left" ? "left" : "right"}
+                    </strong>{" "}
+                    foot — mirrored to fit the {sideLabel.toLowerCase()} slot. Adjust alignment if it looks wrong.
+                </p>
+            ) : null}
             <input
                 ref={inputRef}
                 type="file"

@@ -358,6 +358,13 @@ export interface PressureMapContentBounds {
     maxV: number;
 }
 
+/** Content-based foot side and auto alignment from import analysis. */
+export interface PressureImageOrientation {
+    detectedImageSide: Side;
+    autoRotationDeg: number;
+    oppositeFootMirror: boolean;
+}
+
 /** Persisted per-foot plantar pressure image (viewer only). */
 export interface PressureMapFoot {
     imageDataUrl: string;
@@ -368,6 +375,7 @@ export interface PressureMapFoot {
     imageHeight: number;
     contentBounds: PressureMapContentBounds;
     alignment: PressureMapAlignment;
+    orientation?: PressureImageOrientation;
 }
 
 export interface DesignPressureMaps {

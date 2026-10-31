@@ -6,12 +6,13 @@ import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
 import type {
     DesignState,
+    PressureImageOrientation,
     PressureMapAlignment,
     PressureMapContentBounds,
     PressureMapFoot,
     Side,
 } from "@/types";
-import { DEFAULT_PRESSURE_MAP_ALIGNMENT, medialFootprintSign } from "./types";
+import { DEFAULT_PRESSURE_MAP_ALIGNMENT } from "./types";
 
 export interface FootprintRect {
     minX: number;
@@ -25,13 +26,10 @@ export interface FootprintRect {
 }
 
 export interface PressureMapPlanePlacement {
-    /** Center in footprint mm (x heel→toe, y medial/lateral). */
     centerFootprint: THREE.Vector2;
-    /** Full plane extent along footprint X and Y (mm). */
     sizeFootprint: THREE.Vector2;
-    /** Rotation in footprint plane (radians). */
     rotationRad: number;
-    /** When true, sample U is mirrored so medial stays medial for this side. */
+    /** Sagittal mirror only when image anatomical side ≠ assigned foot side. */
     mirrorImageU: boolean;
 }
 
@@ -80,17 +78,26 @@ function contentSizePx(
     return { w, h, cu, cv };
 }
 
+function orientationOf(foot: PressureMapFoot): PressureImageOrientation {
+    if (foot.orientation) return foot.orientation;
+    return {
+        detectedImageSide: "left",
+        autoRotationDeg: -90,
+        oppositeFootMirror: false,
+    };
+}
+
 /**
- * Auto-fit pressure content into the footprint AABB, preserving aspect ratio.
- * Image +U → footprint +X (heel→toe). Image +V maps to lateral direction without
- * swapping feet; right foot mirrors across the sagittal plane via `mirrorImageU`.
+ * Auto-fit pressure ink into the footprint AABB. Toe→+X and medial→footprint medial
+ * via rotation; UV mirror only when `oppositeFootMirror`.
  */
 export function autoPressureMapPlacement(
     side: Side,
     footprint: FootprintRect,
-    foot: Pick<PressureMapFoot, "imageWidth" | "imageHeight" | "contentBounds">,
+    foot: Pick<PressureMapFoot, "imageWidth" | "imageHeight" | "contentBounds" | "alignment" | "orientation">,
     alignment: PressureMapAlignment = DEFAULT_PRESSURE_MAP_ALIGNMENT,
 ): PressureMapPlanePlacement {
+    const orient = orientationOf(foot as PressureMapFoot);
     const { w: cw, h: ch, cu, cv } = contentSizePx(foot.contentBounds, foot.imageWidth, foot.imageHeight);
     const contentAspect = cw / ch;
     const footAspect = footprint.lengthMm / Math.max(footprint.widthMm, 1e-6);
@@ -120,28 +127,59 @@ export function autoPressureMapPlacement(
     planeLen *= scale;
     planeWid *= scale;
 
-    const rot = THREE.MathUtils.degToRad(alignment.rotationDeg);
+    const rot = THREE.MathUtils.degToRad(orient.autoRotationDeg + alignment.rotationDeg);
     const center = new THREE.Vector2(
         footprint.centerX + alignment.offsetMm.x,
         footprint.centerY + alignment.offsetMm.y,
     );
 
-    // Shift so detected content centroid lands on footprint center (approximate registration).
     const du = cu - 0.5;
     const dv = cv - 0.5;
-    center.x -= du * planeLen;
-    const medialSign = medialFootprintSign(side);
-    center.y -= medialSign * dv * planeWid;
+    const c = Math.cos(rot);
+    const s = Math.sin(rot);
+    let pu = du;
+    const pv = dv;
+    if (orient.oppositeFootMirror) pu = -pu;
+    const rx = c * pu - s * pv;
+    let ry = s * pu + c * pv;
+    if (side === "right") ry = -ry;
+    center.x -= rx * planeLen;
+    const medialSign = side === "left" ? -1 : 1;
+    center.y -= medialSign * ry * planeWid;
 
     return {
         centerFootprint: center,
         sizeFootprint: new THREE.Vector2(planeLen, planeWid),
         rotationRad: rot,
-        mirrorImageU: side === "right",
+        mirrorImageU: orient.oppositeFootMirror,
     };
 }
 
-/** World/group-local pose for the overlay mesh (same Rx(−90°) parent as InsoleMesh). */
+/** Map normalized image UV to footprint mm using the same transform as auto placement. */
+export function footprintMmFromImageUv(
+    u: number,
+    v: number,
+    side: Side,
+    foot: PressureMapFoot,
+    placement: PressureMapPlanePlacement,
+): { x: number; y: number } {
+    const orient = orientationOf(foot);
+    let pu = u - 0.5;
+    const pv = v - 0.5;
+    if (orient.oppositeFootMirror) pu = -pu;
+    const rot = THREE.MathUtils.degToRad(orient.autoRotationDeg + foot.alignment.rotationDeg);
+    const c = Math.cos(rot);
+    const s = Math.sin(rot);
+    const rx = c * pu - s * pv;
+    let ry = s * pu + c * pv;
+    if (side === "right") ry = -ry;
+    const medialSign = side === "left" ? -1 : 1;
+    return {
+        x: placement.centerFootprint.x + rx * placement.sizeFootprint.x,
+        y: placement.centerFootprint.y - medialSign * ry * placement.sizeFootprint.y,
+    };
+}
+
 export function pressureMapMeshPose(
     design: DesignState,
     side: Side,
@@ -164,4 +202,9 @@ export function pressureMapMeshPose(
         scale: placement.sizeFootprint,
         mirrorImageU: placement.mirrorImageU,
     };
+}
+
+/** Footprint Y sign for medial (matches height-field / trimline). */
+export function footprintMedialY(side: Side): number {
+    return side === "left" ? -1 : 1;
 }
