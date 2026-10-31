@@ -65,6 +65,7 @@ import type {
     DesignBase,
     DesignState,
     ElementKind,
+    MortonsSide,
     PlacedElement,
     PlacedSink,
     PrescriptionParseResult,
@@ -198,6 +199,28 @@ function sinkKindById(design: DesignState, id: string): PlacedSink["kind"] | und
         if (hit) return hit.kind;
     }
     return undefined;
+}
+
+/** Linking copies the left foot's Morton's spec onto the right. */
+function copyLinkedMortons(design: DesignState): DesignState["mortons"] {
+    const left = design.mortons?.left;
+    if (!left) return undefined;
+    return { left: { ...left }, right: { ...left } };
+}
+
+function writeSideMortons(design: DesignState, side: Side, spec: MortonsSide | null): DesignState["mortons"] {
+    if (design.corrections.linked) {
+        if (!spec) return undefined;
+        return { left: { ...spec }, right: { ...spec } };
+    }
+    const next: { left?: MortonsSide; right?: MortonsSide } = {
+        ...(design.mortons?.left ? { left: design.mortons.left } : {}),
+        ...(design.mortons?.right ? { right: design.mortons.right } : {}),
+    };
+    if (spec) next[side] = { ...spec };
+    else delete next[side];
+    if (!next.left && !next.right) return undefined;
+    return next;
 }
 
 /** Linking copies the left foot's sinks onto the right, matching shoe-width link. */
@@ -538,6 +561,8 @@ export interface DesignStore {
     ) => void;
     removeSink: (id: string, side: Side) => void;
     setSinkStyloidThicken: (on: boolean, side: Side) => void;
+    /** One mode per foot. `null` turns Morton's off. Linked corrections mirror both feet. */
+    setMortons: (side: Side, spec: MortonsSide | null) => void;
     selectElement: (id: string | null) => void;
     setTransformMode: (mode: TransformMode) => void;
     setCustomPrefab: (customPrefabId: string, customPrefabName: string) => void;
@@ -738,6 +763,7 @@ export const useDesignStore = create<DesignStore>()(
                                       sinkStyloidThicken: sinkStyloidThickenForSide(s.design, "left")
                                           ? { left: true, right: true }
                                           : undefined,
+                                      ...(s.design.mortons ? { mortons: copyLinkedMortons(s.design) } : {}),
                                   }
                                 : {}),
                         },
@@ -1246,6 +1272,16 @@ export const useDesignStore = create<DesignStore>()(
                         ...s.design,
                         sinkStyloidThicken: writeSideThicken(s.design, side, on),
                     };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next };
+                });
+            },
+
+            setMortons: (side, spec) => {
+                get().checkpoint("set-mortons");
+                set((s) => {
+                    const next = { ...s.design, mortons: writeSideMortons(s.design, side, spec) };
                     const eff = buildEffectiveTrimlines(next);
                     useIssuesStore.getState().recompute(next, eff);
                     return { design: next };

@@ -292,6 +292,18 @@ export interface PlacedSink {
     markerId?: string;
 }
 
+/**
+ * First-ray Morton's modifier. Extension and reverse are mutually exclusive.
+ * Absent on a foot means off (exports stay byte-identical).
+ */
+export type MortonsMode = "extension" | "reverse";
+
+export interface MortonsSide {
+    mode: MortonsMode;
+    /** Requested mm. Clamped at evaluation: extension max 6, reverse max 4. */
+    amountMm: number;
+}
+
 /** Scan marker that overrides a sink's u, v. */
 export interface SinkMarkerRef {
     id: string;
@@ -397,6 +409,12 @@ export interface DesignState {
      * (forefoot only) until Kendon confirms otherwise.
      */
     sinkStyloidThicken?: { left?: boolean; right?: boolean };
+    /**
+     * Morton's extension (raise) or reverse Morton's (sink) on the first ray.
+     * One mode per foot. Absent or empty means off.
+     * `corrections.linked` mirrors edits the same way as the other corrections.
+     */
+    mortons?: { left?: MortonsSide; right?: MortonsSide };
     /** Print-step Split mode: elements are selectable hardness regions. */
     splitElements?: boolean;
     /**

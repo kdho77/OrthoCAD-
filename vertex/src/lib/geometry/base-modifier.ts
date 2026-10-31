@@ -27,6 +27,7 @@ import {
     SMOOTH_INWARD_LIMIT_MM,
     submeshByVertexRange,
 } from "@/lib/geometry/mesh-close";
+import { mortonsActive, mortonsTopDeltaAt } from "@/lib/geometry/mortons";
 import {
     deriveNativeShellThicknessDatum,
     thicknessOffsetFromDatum,
@@ -36,7 +37,7 @@ import {
     applyTrimmableForefootExtension,
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
-import { neutralShellThicknessContext } from "@/lib/geometry/shell-thickness-zonal";
+import { neutralShellThicknessContext, shellThicknessMmAtU } from "@/lib/geometry/shell-thickness-zonal";
 import { sinksActive, sinkThicknessAt } from "@/lib/geometry/sink";
 import { wedgeCorrectionActive, wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { DesignState, Side, SideCorrections } from "@/types";
@@ -106,6 +107,9 @@ export function neutralField(field: HeightFieldParams): HeightFieldParams {
         sinks: undefined,
         sinkStyloidThicken: undefined,
         sinkMarkers: undefined,
+        // Morton's is a top-only term applied after F. Only override when the
+        // field actually carries it, so an off design keeps this object's shape.
+        ...(field.mortons ? { mortons: undefined } : {}),
         // Skives are applied post-sync on the top mesh only (R11) — never in F.
         includeSkives: false,
         trimline: null,
@@ -2710,6 +2714,8 @@ export function applyBaseModifiers(
         sinks: undefined,
         sinkStyloidThicken: undefined,
         sinkMarkers: undefined,
+        // Morton's is applied top-only after bottom sync, before skive.
+        mortons: undefined,
         corrections: {
             ...field.corrections,
             heelCupDepthMm: 0,
@@ -3159,6 +3165,31 @@ export function applyBaseModifiers(
                 topVertexCount,
                 widthSign,
             });
+        }
+    }
+
+    // Morton's — TOP ONLY, after posting / bottom sync, before Kirby skive.
+    // Inactive designs skip the block so vertex writes stay byte-identical.
+    if (field.mortons && mortonsActive(field.mortons)) {
+        const baseArr = base.getAttribute("position")!.array as Float32Array;
+        const topLimit = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
+        const shellCtx = resolveShellThicknessContext(field);
+        const mortonsCtx = {
+            side: field.side,
+            lengthMm: field.lengthMm,
+            widthMm: field.widthMm,
+            mortons: field.mortons,
+            widthMmAt: (uu: number) => resolveOutlineHalfWidth(uu, field) * field.widthMm,
+        };
+        for (let i = 0; i < topLimit; i++) {
+            if (!(isMultiMesh && topVertexCount > 0) && topFactors && topFactors[i]! <= 0.5) continue;
+            const lenCoord = baseArr[i * 3 + lengthAxis]!;
+            const widCoord = baseArr[i * 3 + widthAxis]!;
+            const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
+            const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
+            const shellT = shellCtx.mode === "zonal" ? shellThicknessMmAtU(u, shellCtx) : field.thicknessMm;
+            const dz = mortonsTopDeltaAt(u, vSigned, mortonsCtx, shellT);
+            if (dz !== 0) array[i * 3 + thickAxis] = array[i * 3 + thickAxis]! + dz;
         }
     }
 

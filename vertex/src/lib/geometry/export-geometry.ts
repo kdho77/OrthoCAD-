@@ -17,6 +17,7 @@ import {
     closeGlbInsoleToSolid,
     DEFAULT_GLB_CLOSED_BASELINE,
 } from "@/lib/geometry/mesh-close";
+import { mortonsActive } from "@/lib/geometry/mortons";
 import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { assertShapeFinishExportAllowed } from "@/lib/geometry/shape-finish-gates";
@@ -170,6 +171,7 @@ export async function buildExportGlbGeometry(side: Side): Promise<BufferGeometry
     const layout = insoleLayoutFromDesign(design);
     const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(layout.lengthMm, layout.widthMm);
 
+    const mortons = design.mortons?.[side];
     try {
         return await geometryEngine.buildTrimlineMesh({
             trimline,
@@ -183,6 +185,7 @@ export async function buildExportGlbGeometry(side: Side): Promise<BufferGeometry
                 includeSkives: true,
                 includeElements: true,
                 trimline,
+                ...(mortons && mortonsActive(mortons) ? { mortons } : {}),
             },
             perimeterSamples: 192,
             topRings: 14,
