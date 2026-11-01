@@ -35,7 +35,10 @@ export function RowMenu({ items, label = "Row menu" }: { items: RowMenuItem[]; l
                 <MoreHorizontal className="h-4 w-4" />
             </button>
             {open ? (
-                <div role="menu" className="absolute right-0 z-30 mt-1 w-44 rounded-md border border-border bg-panel py-1 shadow-xl">
+                <div
+                    role="menu"
+                    className="absolute right-0 z-30 mt-1 w-44 rounded-md border border-border bg-panel py-1 shadow-xl"
+                >
                     {items.map((item) => (
                         <button
                             key={item.label}

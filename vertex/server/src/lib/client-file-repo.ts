@@ -36,6 +36,7 @@ function mapClient(row: Row): ClientRow {
         lastName: String(row.lastName ?? ""),
         dateOfBirth: dob ? dob.slice(0, 10) : null,
         reference: asString(row.reference),
+        orderedBy: asString(row.orderedBy),
         mrn: asString(row.mrn),
         email: asString(row.email),
         phone: asString(row.phone),
@@ -93,22 +94,40 @@ export function supabaseClientFileRepo(supabase: SupabaseClient): ClientFileRepo
             // Shoe columns are written by the Prisma adapter after the local
             // migration. Omitting them keeps an unmigrated fallback database
             // able to create clients. Scan bytes are never sent here.
-            const { shoeSizeUs, shoeSizesSplit, shoeSizeLeftUs, shoeSizeRightUs, shoeWidth, ...rest } = row;
+            const {
+                shoeSizeUs,
+                shoeSizesSplit,
+                shoeSizeLeftUs,
+                shoeSizeRightUs,
+                shoeWidth,
+                orderedBy,
+                ...rest
+            } = row;
             void shoeSizeUs;
             void shoeSizesSplit;
             void shoeSizeLeftUs;
             void shoeSizeRightUs;
             void shoeWidth;
+            void orderedBy;
             const { error } = await supabase.from("clients").insert(rest);
             if (error) throw new ClientFileError("BAD_REQUEST", error.message);
         },
         async patchClient(id, patch) {
-            const { shoeSizeUs, shoeSizesSplit, shoeSizeLeftUs, shoeSizeRightUs, shoeWidth, ...rest } = patch;
+            const {
+                shoeSizeUs,
+                shoeSizesSplit,
+                shoeSizeLeftUs,
+                shoeSizeRightUs,
+                shoeWidth,
+                orderedBy,
+                ...rest
+            } = patch;
             void shoeSizeUs;
             void shoeSizesSplit;
             void shoeSizeLeftUs;
             void shoeSizeRightUs;
             void shoeWidth;
+            void orderedBy;
             const { data, error } = await supabase
                 .from("clients")
                 .update(rest)
@@ -276,12 +295,23 @@ export async function actorFor(
     user: { id: string; email: string; role: string },
     supabase: SupabaseClient,
 ): Promise<Actor> {
-    const { data } = await supabase.from("users").select("tenantId, role").eq("id", user.id).maybeSingle();
-    const row = data as { tenantId?: string | null; role?: string } | null;
+    const { data } = await supabase
+        .from("users")
+        .select("tenantId, role, tenant:tenants(name)")
+        .eq("id", user.id)
+        .maybeSingle();
+    const row = data as {
+        tenantId?: string | null;
+        role?: string;
+        tenant?: { name?: string } | { name?: string }[] | null;
+    } | null;
+    const tenant = row?.tenant;
+    const tenantName = Array.isArray(tenant) ? tenant[0]?.name : tenant?.name;
     return {
         id: user.id,
         email: user.email,
         role: resolveDevRole(user.email, user.role || row?.role),
         tenantId: row?.tenantId ?? null,
+        tenantName: tenantName ?? null,
     };
 }

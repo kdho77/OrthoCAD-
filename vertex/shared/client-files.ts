@@ -7,7 +7,7 @@ export type DesignKind = (typeof DESIGN_KINDS)[number];
 export const CLIENT_FILTERS = ["all", "insole", "afo", "archived"] as const;
 export type ClientFilter = (typeof CLIENT_FILTERS)[number];
 
-export const CLIENT_SORT_KEYS = ["name", "dob", "reference", "designs", "modified"] as const;
+export const CLIENT_SORT_KEYS = ["name", "dob", "reference", "orderedBy", "designs", "modified"] as const;
 export type ClientSortKey = (typeof CLIENT_SORT_KEYS)[number];
 
 export const DESIGN_SORT_KEYS = ["kind", "name", "created", "modified", "notes"] as const;
@@ -29,6 +29,13 @@ export const DEFAULT_CHART_SHOE_SIZE_US = 9;
 export const CHART_SHOE_WIDTHS = ["narrow", "medium", "wide", "extra_wide"] as const;
 export type ChartShoeWidth = (typeof CHART_SHOE_WIDTHS)[number];
 export const DEFAULT_CHART_SHOE_WIDTH: ChartShoeWidth = "medium";
+
+export const CHART_SHOE_WIDTH_LABELS: Record<ChartShoeWidth, string> = {
+    narrow: "Narrow",
+    medium: "Medium",
+    wide: "Wide",
+    extra_wide: "Extra wide",
+};
 
 export interface ShoeChart {
     /** Single size used when left and right are not split. */
@@ -77,6 +84,26 @@ export function shoeChartFromInput(input?: Partial<ShoeChart> | null): ShoeChart
     };
 }
 
+export const CHART_SHOE_SIZE_MESSAGE = "Enter a shoe size between 1 and 16 in half sizes.";
+
+function isUsableChartSize(value: number | null | undefined): boolean {
+    if (value == null || !Number.isFinite(value)) return false;
+    if (value < CHART_SHOE_SIZE_MIN || value > CHART_SHOE_SIZE_MAX) return false;
+    return Math.abs(value * 2 - Math.round(value * 2)) < 1e-6;
+}
+
+/** Validates raw chart input before normalization. Used on create and in the client form. */
+export function validateClientChartInput(input: Partial<ShoeChart>): string | null {
+    if (input.shoeSizesSplit === true) {
+        if (!isUsableChartSize(input.shoeSizeLeftUs) || !isUsableChartSize(input.shoeSizeRightUs)) {
+            return CHART_SHOE_SIZE_MESSAGE;
+        }
+        return null;
+    }
+    if (!isUsableChartSize(input.shoeSizeUs)) return CHART_SHOE_SIZE_MESSAGE;
+    return null;
+}
+
 /**
  * Generated designs have one US men's size (`usMenSize`).
  * A split chart still stores both feet. The shared length is the left size
@@ -86,11 +113,27 @@ export function chartGeneratedSize(chart: ShoeChart): number {
     return chart.shoeSizesSplit ? chart.shoeSizeLeftUs : chart.shoeSizeUs;
 }
 
+export function formatClientShoeSummary(chart: ShoeChart): string {
+    const width = CHART_SHOE_WIDTH_LABELS[chart.shoeWidth];
+    if (chart.shoeSizesSplit) {
+        return `L ${chart.shoeSizeLeftUs} / R ${chart.shoeSizeRightUs} · ${width}`;
+    }
+    return `US men's ${chart.shoeSizeUs} · ${width}`;
+}
+
+function resolveOrderedByOnCreate(input: ClientInput, actor: { tenantName?: string | null }): string | null {
+    const explicit = blankToNull(input.orderedBy);
+    if (explicit !== null) return explicit;
+    return blankToNull(actor.tenantName);
+}
+
 export interface Actor {
     id: string;
     email: string;
     role: string;
     tenantId: string | null;
+    /** Commercial tenant display name; used as the default Ordered by label on create. */
+    tenantName?: string | null;
 }
 
 export interface ClientRow {
@@ -103,6 +146,8 @@ export interface ClientRow {
     lastName: string;
     /** Internal client reference. Not a medical record number. */
     reference: string | null;
+    /** Customer account that ordered this client file; optional override of tenant name. */
+    orderedBy: string | null;
     dateOfBirth: string | null;
     /** Medical record number. Stored only when STORE_PHI is on. */
     mrn: string | null;
@@ -137,8 +182,10 @@ export interface ClientInput {
     displayName?: string | null;
     firstName: string;
     lastName: string;
-    /** Internal reference. Required on create. */
+    /** Internal reference. Optional. */
     reference?: string | null;
+    /** Customer account name; defaults to the creating tenant on create. */
+    orderedBy?: string | null;
     dateOfBirth?: string | null;
     mrn?: string | null;
     email?: string | null;
@@ -363,7 +410,6 @@ export function resolveClientIdentity(input: ClientInput): {
     const displayName = explicit || formatClientName({ firstName: first, lastName: last });
     if (!displayName) throw new ClientFileError("BAD_REQUEST", "Display name or initials are required");
     const reference = (input.reference ?? "").trim();
-    if (!reference) throw new ClientFileError("BAD_REQUEST", "Client reference is required");
     if (explicit && !first && !last) {
         const comma = explicit.indexOf(",");
         if (comma >= 0) {
@@ -414,12 +460,15 @@ export function redactDesignRow<T extends DesignRow>(design: T, storePhi: boolea
 
 export function prepareClientRecord(
     input: ClientInput,
-    actor: { id: string; tenantId: string | null },
+    actor: { id: string; tenantId: string | null; tenantName?: string | null },
     options?: WriteOptions & { id?: string },
 ): ClientRow {
     const { now, storePhi } = writeOptions(options);
     const identity = resolveClientIdentity(input);
+    const chartMessage = validateClientChartInput(input);
+    if (chartMessage) throw new ClientFileError("BAD_REQUEST", chartMessage);
     const createdAt = stamp(now);
+    const orderedBy = resolveOrderedByOnCreate(input, actor);
     return {
         id: options?.id ?? crypto.randomUUID(),
         ownerId: actor.id,
@@ -427,7 +476,8 @@ export function prepareClientRecord(
         displayName: identity.displayName,
         firstName: identity.firstName,
         lastName: identity.lastName,
-        reference: identity.reference,
+        reference: blankToNull(identity.reference),
+        orderedBy,
         ...phiClientFields(input, storePhi),
         ...shoeChartFromInput(input),
         archivedAt: null,
@@ -580,10 +630,12 @@ export function clientMatchesQuery(item: ClientListItem, rawQuery: string): bool
     const client = item.client;
     const name = `${client.lastName} ${client.firstName} ${formatClientName(client)}`.toLowerCase();
     const reference = (client.reference ?? "").toLowerCase();
+    const orderedBy = (client.orderedBy ?? "").toLowerCase();
     const mrn = (client.mrn ?? "").toLowerCase();
     return (
         name.includes(query) ||
         reference.includes(query) ||
+        orderedBy.includes(query) ||
         mrn.includes(query) ||
         dobSearchText(client.dateOfBirth).includes(query)
     );
@@ -614,6 +666,8 @@ export function sortClientItems(
         else if (sort === "dob") order = compareText(a.client.dateOfBirth ?? "", b.client.dateOfBirth ?? "");
         else if (sort === "reference")
             order = compareText(a.client.reference ?? "", b.client.reference ?? "");
+        else if (sort === "orderedBy")
+            order = compareText(a.client.orderedBy ?? "", b.client.orderedBy ?? "");
         else if (sort === "designs") order = designCounts(a.designs).total - designCounts(b.designs).total;
         else order = compareText(clientLastModified(a), clientLastModified(b));
         return order * factor;
@@ -803,9 +857,10 @@ export async function updateClientFile(
         next.lastName = identity.lastName;
     }
     if (patch.reference !== undefined) {
-        const reference = (patch.reference ?? "").trim();
-        if (!reference) throw new ClientFileError("BAD_REQUEST", "Client reference is required");
-        next.reference = reference;
+        next.reference = blankToNull(patch.reference);
+    }
+    if (patch.orderedBy !== undefined) {
+        next.orderedBy = blankToNull(patch.orderedBy);
     }
     if (!storePhi) {
         next.dateOfBirth = null;
@@ -1098,6 +1153,7 @@ export function planOrphanAttachment(args: {
         lastName: "Unassigned",
         dateOfBirth: null,
         reference: null,
+        orderedBy: null,
         mrn: null,
         email: null,
         phone: null,

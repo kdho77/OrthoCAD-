@@ -342,6 +342,7 @@ model Client {
     email       String?
     phone       String?
     notes       String?
+    orderedBy   String?
     shoeSizeUs      Float    @default(9)
     shoeSizesSplit  Boolean  @default(false)
     shoeSizeLeftUs  Float    @default(9)

@@ -13,6 +13,7 @@ import {
     createClientFile,
     createDesignFile,
     createMemoryClientFileRepo,
+    defaultClientListQuery,
     defaultShoeChart,
     duplicateDesignFile,
     editNotes,
@@ -53,6 +54,7 @@ function client(partial: Partial<ClientRow> & Pick<ClientRow, "id" | "ownerId" |
         lastName: "Lovelace",
         dateOfBirth: "1990-01-02",
         reference: null,
+        orderedBy: null,
         mrn: null,
         email: null,
         phone: null,
@@ -97,6 +99,7 @@ describe("client file API", () => {
                 lastName: "Doe",
                 dateOfBirth: "1980-05-04",
                 reference: "MRN-1",
+                ...defaultShoeChart(),
             },
             { storePhi: true },
         );
@@ -130,7 +133,13 @@ describe("client file API", () => {
         await createClientFile(
             repo,
             me,
-            { firstName: "Jane", lastName: "Doe", dateOfBirth: "1980-05-04", reference: "A-1" },
+            {
+                firstName: "Jane",
+                lastName: "Doe",
+                dateOfBirth: "1980-05-04",
+                reference: "A-1",
+                ...defaultShoeChart(),
+            },
             { storePhi: true },
         );
         const again = await createClientFile(
@@ -141,6 +150,7 @@ describe("client file API", () => {
                 lastName: "DOE",
                 dateOfBirth: "1980-05-04",
                 reference: "A-2",
+                ...defaultShoeChart(),
             },
             { storePhi: true },
         );
@@ -160,6 +170,7 @@ describe("client file API", () => {
             firstName: "Jane",
             lastName: "Doe",
             reference: "REF-1",
+            ...defaultShoeChart(),
         });
         await expect(hardDeleteClientFile(repo, clinician, created.id)).rejects.toMatchObject({
             code: "FORBIDDEN",
@@ -186,6 +197,7 @@ describe("client file API", () => {
             firstName: "Jane",
             lastName: "Doe",
             reference: "REF-1",
+            ...defaultShoeChart(),
         });
         const design = await createDesignFile(repo, me, {
             clientId: created.id,
@@ -231,6 +243,7 @@ describe("client file API", () => {
             firstName: "Jane",
             lastName: "Doe",
             reference: "REF-1",
+            ...defaultShoeChart(),
         });
         const design = await createDesignFile(repo, me, {
             clientId: created.id,
@@ -265,6 +278,7 @@ describe("client file API", () => {
             email: "a@example.com",
             phone: "555",
             notes: "heel pain",
+            ...defaultShoeChart(),
         });
         expect(created.displayName).toBe("JD");
         expect(created.reference).toBe("C-1");
@@ -283,10 +297,93 @@ describe("client file API", () => {
         const saved = await updateDesignMeta(repo, me, design.id, { notes: "heel pain" });
         expect(saved.notes).toBe("");
         await expect(
-            createClientFile(repo, me, { displayName: "JD", firstName: "", lastName: "", reference: "" }),
-        ).rejects.toMatchObject({
-            code: "BAD_REQUEST",
+            createClientFile(repo, me, {
+                displayName: "JD",
+                firstName: "",
+                lastName: "",
+                reference: "",
+                ...defaultShoeChart(),
+            }),
+        ).resolves.toMatchObject({
+            client: expect.objectContaining({ displayName: "JD", reference: null }),
         });
+    });
+
+    test("create requires an explicit shoe size", async () => {
+        const repo = createMemoryClientFileRepo(emptyDb());
+        const me = actor("clinician", ORG);
+        await expect(
+            createClientFile(repo, me, {
+                displayName: "Sized",
+                firstName: "",
+                lastName: "",
+                reference: "R-1",
+                shoeSizeUs: undefined,
+            }),
+        ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+        const { client } = await createClientFile(repo, me, {
+            displayName: "Sized",
+            firstName: "",
+            lastName: "",
+            reference: "R-1",
+            shoeSizeUs: 11,
+            shoeWidth: "wide",
+        });
+        expect(client.shoeSizeUs).toBe(11);
+        expect(client.shoeWidth).toBe("wide");
+    });
+
+    test("create defaults ordered by to the tenant account name", async () => {
+        const repo = createMemoryClientFileRepo(emptyDb());
+        const me = { ...actor("clinician", ORG), tenantName: "Apex Clinic" };
+        const { client } = await createClientFile(repo, me, {
+            displayName: "Buyer",
+            firstName: "",
+            lastName: "",
+            reference: "B-1",
+            ...defaultShoeChart(),
+        });
+        expect(client.orderedBy).toBe("Apex Clinic");
+    });
+
+    test("list search and sort include ordered by", () => {
+        const items = [
+            {
+                client: {
+                    ...client({
+                        id: "c1",
+                        ownerId: "u1",
+                        tenantId: ORG,
+                        displayName: "Alpha",
+                        firstName: "A",
+                        lastName: "One",
+                    }),
+                    orderedBy: "Zulu Account",
+                },
+                designs: [],
+            },
+            {
+                client: {
+                    ...client({
+                        id: "c2",
+                        ownerId: "u1",
+                        tenantId: ORG,
+                        displayName: "Beta",
+                        firstName: "B",
+                        lastName: "Two",
+                    }),
+                    orderedBy: "Alpha Account",
+                },
+                designs: [],
+            },
+        ];
+        expect(queryClientList(items, { ...defaultClientListQuery(), q: "zulu" }).total).toBe(1);
+        const sorted = queryClientList(items, {
+            ...defaultClientListQuery(),
+            sort: "orderedBy",
+            dir: "asc",
+        });
+        expect(sorted.rows[0]?.client.orderedBy).toBe("Alpha Account");
     });
 
     test("duplicate design is named Copy of and does not block", async () => {
@@ -297,6 +394,7 @@ describe("client file API", () => {
             firstName: "Jane",
             lastName: "Doe",
             reference: "REF-1",
+            ...defaultShoeChart(),
         });
         const design = await createDesignFile(repo, me, {
             clientId: created.id,

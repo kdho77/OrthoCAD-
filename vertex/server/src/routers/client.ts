@@ -16,7 +16,8 @@ const clientInput = z.object({
     displayName: z.string().max(120).nullable().optional(),
     firstName: z.string().max(100).optional().default(""),
     lastName: z.string().max(100).optional().default(""),
-    reference: z.string().min(1).max(60),
+    reference: z.string().max(60).optional().default(""),
+    orderedBy: z.string().max(120).nullable().optional(),
     dateOfBirth: z
         .string()
         .regex(/^\d{4}-\d{2}-\d{2}$/)

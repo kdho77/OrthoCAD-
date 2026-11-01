@@ -15,15 +15,22 @@ import {
     canRestoreDesign,
     type DesignKind,
     type DesignSortKey,
-    type ShoeChart,
-    shoeChartFromInput,
     formatClientName,
     formatExact,
     formatRelative,
     isOrgAdmin,
+    type ShoeChart,
+    shoeChartFromInput,
     sortDesigns,
 } from "../../../shared/client-files";
-import { archiveClientRecord, createDesignRecord, designStateForKind, saveClientRecord, saveDesignNotes } from "./client-actions";
+import { ClientFileHeaderSummary } from "./ClientFileHeaderSummary";
+import {
+    archiveClientRecord,
+    createDesignRecord,
+    designStateForKind,
+    saveClientRecord,
+    saveDesignNotes,
+} from "./client-actions";
 import { DesignNotesField } from "./DesignNotesField";
 import { DirectoryHeader } from "./DirectoryHeader";
 import { NewClientDialog } from "./NewClientDialog";
@@ -98,6 +105,7 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
             firstName: client.firstName,
             lastName: client.lastName,
             reference: client.reference ?? "",
+            orderedBy: client.orderedBy,
             dateOfBirth: client.dateOfBirth,
             mrn: client.mrn,
             email: client.email,
@@ -138,9 +146,7 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                     <div className="flex items-start justify-between gap-3">
                         <div>
                             <h1 className="text-lg font-semibold">{formatClientName(client)}</h1>
-                            <p className="text-sm text-muted-foreground">
-                                {client.reference ?? "No reference"}
-                            </p>
+                            <ClientFileHeaderSummary client={client} />
                             {storePhi ? (
                                 <>
                                     <p className="text-sm text-muted-foreground">
@@ -198,150 +204,150 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                 ) : null}
                 {flow === null ? <ShoeChartPanel chart={chart} onChange={saveChart} /> : null}
                 {flow === null ? (
-                <section>
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                        <h2 className="text-sm font-semibold">
-                            Designs (
-                            {designs.filter((design) => !design.deletedAt && !design.archivedAt).length})
-                        </h2>
-                        <div className="flex items-center gap-2">
-                            {archivedCount > 0 ? (
-                                <button
-                                    type="button"
-                                    className="min-h-11 text-xs text-muted-foreground underline"
-                                    onClick={() => setShowArchived((value) => !value)}
-                                >
-                                    {showArchived ? "Show active" : `Archived (${archivedCount})`}
-                                </button>
-                            ) : null}
-                            <Button type="button" className="min-h-11" onClick={() => setPicker(true)}>
-                                <Plus className="h-4 w-4" /> New design
-                            </Button>
-                        </div>
-                    </div>
-                    {visible.length === 0 && !showArchived ? (
-                        <div>
-                            <p className="mb-3 text-sm text-muted-foreground">No designs yet</p>
-                            <div className="grid gap-3 sm:grid-cols-2">
-                                <TypeCard
-                                    label="Insole"
-                                    detail="Full-length or 3/4 foot orthotic"
-                                    onClick={() => setFlow("choice")}
-                                    testId="type-insole"
-                                />
-                                <TypeCard
-                                    label="AFO"
-                                    detail="Ankle-foot orthosis"
-                                    onClick={() => void pick("afo")}
-                                    testId="type-afo"
-                                />
+                    <section>
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                            <h2 className="text-sm font-semibold">
+                                Designs (
+                                {designs.filter((design) => !design.deletedAt && !design.archivedAt).length})
+                            </h2>
+                            <div className="flex items-center gap-2">
+                                {archivedCount > 0 ? (
+                                    <button
+                                        type="button"
+                                        className="min-h-11 text-xs text-muted-foreground underline"
+                                        onClick={() => setShowArchived((value) => !value)}
+                                    >
+                                        {showArchived ? "Show active" : `Archived (${archivedCount})`}
+                                    </button>
+                                ) : null}
+                                <Button type="button" className="min-h-11" onClick={() => setPicker(true)}>
+                                    <Plus className="h-4 w-4" /> New design
+                                </Button>
                             </div>
                         </div>
-                    ) : (
-                        <div className="flex flex-col gap-2">
-                            <div
-                                className={cn(
-                                    "hidden text-xs text-muted-foreground md:grid md:px-2",
-                                    designGridClass(storePhi),
-                                )}
-                            >
-                                <SortButton
-                                    label="Type"
-                                    sortKey="kind"
-                                    sort={sort}
-                                    dir={dir}
-                                    onSort={setSort}
-                                    onDir={setDir}
-                                />
-                                <SortButton
-                                    label="Name"
-                                    sortKey="name"
-                                    sort={sort}
-                                    dir={dir}
-                                    onSort={setSort}
-                                    onDir={setDir}
-                                />
-                                <SortButton
-                                    label="Created"
-                                    sortKey="created"
-                                    sort={sort}
-                                    dir={dir}
-                                    onSort={setSort}
-                                    onDir={setDir}
-                                    className="hidden xl:flex"
-                                />
-                                <SortButton
-                                    label="Last modified"
-                                    sortKey="modified"
-                                    sort={sort}
-                                    dir={dir}
-                                    onSort={setSort}
-                                    onDir={setDir}
-                                />
-                                {storePhi ? (
+                        {visible.length === 0 && !showArchived ? (
+                            <div>
+                                <p className="mb-3 text-sm text-muted-foreground">No designs yet</p>
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                    <TypeCard
+                                        label="Insole"
+                                        detail="Full-length or 3/4 foot orthotic"
+                                        onClick={() => setFlow("choice")}
+                                        testId="type-insole"
+                                    />
+                                    <TypeCard
+                                        label="AFO"
+                                        detail="Ankle-foot orthosis"
+                                        onClick={() => void pick("afo")}
+                                        testId="type-afo"
+                                    />
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="flex flex-col gap-2">
+                                <div
+                                    className={cn(
+                                        "hidden text-xs text-muted-foreground md:grid md:px-2",
+                                        designGridClass(storePhi),
+                                    )}
+                                >
                                     <SortButton
-                                        label="Notes"
-                                        sortKey="notes"
+                                        label="Type"
+                                        sortKey="kind"
                                         sort={sort}
                                         dir={dir}
                                         onSort={setSort}
                                         onDir={setDir}
                                     />
-                                ) : null}
-                                <span />
-                            </div>
-                            {visible.map((design) => (
-                                <DesignRowView
-                                    key={design.id}
-                                    design={design}
-                                    onOpen={() => navigate(designPath(client.id, design.id))}
-                                    onDelete={() => setPendingDelete(design)}
-                                    onDuplicate={() => {
-                                        const id = useClientStore.getState().duplicateDesign(design.id);
-                                        if (!id) return;
-                                        const copy = useClientStore
-                                            .getState()
-                                            .designs.find((row) => row.id === id);
-                                        setToast({ id, name: copy?.name ?? "Copy" });
-                                    }}
-                                    storePhi={storePhi}
-                                    onNotes={(notes) => void saveDesignNotes(design.id, notes)}
-                                />
-                            ))}
-                        </div>
-                    )}
-                    {admin && deleted.length > 0 ? (
-                        <div className="mt-6">
-                            <h3 className="mb-2 text-sm font-semibold">Recently deleted</h3>
-                            {deleted.map((design) => {
-                                const open = canRestoreDesign(design.deletedAt);
-                                return (
-                                    <div
+                                    <SortButton
+                                        label="Name"
+                                        sortKey="name"
+                                        sort={sort}
+                                        dir={dir}
+                                        onSort={setSort}
+                                        onDir={setDir}
+                                    />
+                                    <SortButton
+                                        label="Created"
+                                        sortKey="created"
+                                        sort={sort}
+                                        dir={dir}
+                                        onSort={setSort}
+                                        onDir={setDir}
+                                        className="hidden xl:flex"
+                                    />
+                                    <SortButton
+                                        label="Last modified"
+                                        sortKey="modified"
+                                        sort={sort}
+                                        dir={dir}
+                                        onSort={setSort}
+                                        onDir={setDir}
+                                    />
+                                    {storePhi ? (
+                                        <SortButton
+                                            label="Notes"
+                                            sortKey="notes"
+                                            sort={sort}
+                                            dir={dir}
+                                            onSort={setSort}
+                                            onDir={setDir}
+                                        />
+                                    ) : null}
+                                    <span />
+                                </div>
+                                {visible.map((design) => (
+                                    <DesignRowView
                                         key={design.id}
-                                        className="flex min-h-11 items-center justify-between gap-2 border-b border-border/60 py-2 text-sm"
-                                    >
-                                        <span className="truncate">{design.name}</span>
-                                        {open ? (
-                                            <button
-                                                type="button"
-                                                className="min-h-11 text-primary"
-                                                onClick={() =>
-                                                    useClientStore.getState().restoreDesign(design.id)
-                                                }
-                                            >
-                                                Restore
-                                            </button>
-                                        ) : (
-                                            <span className="text-xs text-muted-foreground">
-                                                Restore window closed
-                                            </span>
-                                        )}
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    ) : null}
-                </section>
+                                        design={design}
+                                        onOpen={() => navigate(designPath(client.id, design.id))}
+                                        onDelete={() => setPendingDelete(design)}
+                                        onDuplicate={() => {
+                                            const id = useClientStore.getState().duplicateDesign(design.id);
+                                            if (!id) return;
+                                            const copy = useClientStore
+                                                .getState()
+                                                .designs.find((row) => row.id === id);
+                                            setToast({ id, name: copy?.name ?? "Copy" });
+                                        }}
+                                        storePhi={storePhi}
+                                        onNotes={(notes) => void saveDesignNotes(design.id, notes)}
+                                    />
+                                ))}
+                            </div>
+                        )}
+                        {admin && deleted.length > 0 ? (
+                            <div className="mt-6">
+                                <h3 className="mb-2 text-sm font-semibold">Recently deleted</h3>
+                                {deleted.map((design) => {
+                                    const open = canRestoreDesign(design.deletedAt);
+                                    return (
+                                        <div
+                                            key={design.id}
+                                            className="flex min-h-11 items-center justify-between gap-2 border-b border-border/60 py-2 text-sm"
+                                        >
+                                            <span className="truncate">{design.name}</span>
+                                            {open ? (
+                                                <button
+                                                    type="button"
+                                                    className="min-h-11 text-primary"
+                                                    onClick={() =>
+                                                        useClientStore.getState().restoreDesign(design.id)
+                                                    }
+                                                >
+                                                    Restore
+                                                </button>
+                                            ) : (
+                                                <span className="text-xs text-muted-foreground">
+                                                    Restore window closed
+                                                </span>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ) : null}
+                    </section>
                 ) : null}
             </div>
             {toast ? (
