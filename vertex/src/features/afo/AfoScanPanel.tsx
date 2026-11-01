@@ -9,7 +9,6 @@ import {
     AFO_PROXIMAL_TRIM_OFFSET_MM,
     AFO_REQUIRED_LANDMARK_COUNT,
     afoFrameSide,
-    afoStageSnapshot,
     applyAfoAlignment,
     commitAfoScanPoint,
     redoAfoMarker,
@@ -17,6 +16,16 @@ import {
     skipAfoLandmark,
     undoAfoMarker,
 } from "@/features/afo/afo-scan-markers";
+import {
+    AfoChecklistCheck,
+    afoChecklistRowState,
+} from "@/features/afo/AfoScanGuidedCard";
+import {
+    afoPlacementComplete,
+    afoRequiredLandmarkSummary,
+    ensureAfoScanPlacement,
+    jumpToFirstMissingRequired,
+} from "@/features/afo/afo-scan-ui";
 import { ScanImport } from "@/features/scans/ScanImport";
 import { selectAfoLandmarkRevision, selectScanGateRevision } from "@/lib/clinical/clinical-step-gates";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
@@ -43,17 +52,21 @@ export function AfoScanPanel() {
     const afoRevision = useDesignStore(selectAfoLandmarkRevision);
     const footKnown = useClinicalWorkflowStore((s) => s.footSideExplicitlyChosen);
     const workflow = useDesignStore((s) => s.design.afo?.scanWorkflow) ?? defaultAfoScanWorkflow();
-    const placing = useAfoStore((s) => s.scanPlacement);
+    const autoFrame = useAfoStore((s) => s.scanAutoFrame);
+    const setAutoFrame = useAfoStore((s) => s.setScanAutoFrame);
     const landmarkError = useAfoStore((s) => s.scanLandmarkError);
     const scanTick = useScanStore((s) =>
         s.scans.map((scan) => `${scan.id}:${scan.display.displayScale}`).join("|"),
     );
     const [alignError, setAlignError] = useState<string | null>(null);
-    const stage = afoStageSnapshot(workflow);
     const plantarReady = Boolean(workflow.plantar.heel && workflow.plantar.m1p && workflow.plantar.m5p);
     const hasMalleoli = Boolean(workflow.landmarks.medial_malleolus && workflow.landmarks.lateral_malleolus);
 
     const forefoot = useMemo(() => previewForefoot(workflow, scanTick), [workflow, scanTick]);
+
+    useEffect(() => {
+        if (scanForAfoWorkflow() && !afoPlacementComplete(workflow)) ensureAfoScanPlacement();
+    }, [scanTick, workflow]);
 
     useEffect(() => {
         if (!import.meta.env.DEV) return;
@@ -94,17 +107,12 @@ export function AfoScanPanel() {
         try {
             applyAfoAlignment(level);
             setAlignError(null);
+            useAfoStore.getState().setScanPlacement({ redo: null, paused: false });
+            useAfoStore.getState().setScanAutoFrameSuppressed(false);
         } catch (error) {
             setAlignError(error instanceof Error ? error.message : "Alignment failed");
         }
     };
-
-    const redoLabel = labelForRedo(placing?.redo ?? null);
-    const hint = redoLabel
-        ? `Redo: ${redoLabel}`
-        : stage.nextLabel
-          ? `Next: ${stage.nextLabel}`
-          : "All landmarks placed";
 
     return (
         <div
@@ -114,14 +122,13 @@ export function AfoScanPanel() {
             data-foot-known={footKnown ? "yes" : "no"}
         >
             <p className="font-medium text-foreground" data-testid="afo-stage">
-                {stage.title}
+                {workflow.alignmentApplied
+                    ? `Landmarks · ${afoRequiredLandmarkSummary(workflow)}`
+                    : "Alignment · 3 plantar points"}
             </p>
             <p className="text-muted-foreground leading-relaxed">
-                Step 1 snaps three plantar points and applies a rigid align. Step 2 places eight anatomical
-                landmarks, one at a time. Warnings never move the scan.
-            </p>
-            <p className="text-[11px] text-cyan-200" data-testid="afo-next-marker">
-                {hint}
+                Place plantar alignment, apply the rigid fit, then walk through anatomical landmarks in the
+                viewport card.
             </p>
             <button
                 type="button"
@@ -132,29 +139,29 @@ export function AfoScanPanel() {
             </button>
             <ScanImport />
 
-            <div className="space-y-1">
+            <div className="space-y-1" data-testid="afo-plantar-checklist">
                 {AFO_PLANTAR_STEPS.map((step) => {
                     const point = workflow.plantar[step.id];
-                    if (!point) return null;
+                    const state = point ? "done" : "waiting";
                     return (
-                        <MarkerRow
+                        <button
                             key={step.id}
-                            label={step.label}
-                            onUndo={() => undoAfoMarker(step.id)}
-                            onRedo={() => redoAfoMarker(step.id)}
-                        />
+                            type="button"
+                            className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-[11px] hover:bg-muted/40"
+                            onClick={() => {
+                                if (point) redoAfoMarker(step.id);
+                                else ensureAfoScanPlacement();
+                            }}
+                        >
+                            <AfoChecklistCheck state={state} />
+                            <span className={state === "done" ? "text-foreground" : "text-muted-foreground"}>
+                                {step.label}
+                            </span>
+                        </button>
                     );
                 })}
             </div>
 
-            <button
-                type="button"
-                data-testid="afo-place"
-                onClick={() => useAfoStore.getState().setScanPlacement(placing ? null : { redo: null })}
-                className="h-8 w-full rounded-md bg-muted text-[12px] font-medium text-foreground"
-            >
-                {placing ? "Done placing" : stage.stage === 1 ? "Place alignment" : "Place landmarks"}
-            </button>
             <button
                 type="button"
                 data-testid="afo-apply-alignment"
@@ -194,61 +201,79 @@ export function AfoScanPanel() {
                 </div>
             ) : null}
 
-            {stage.stage === 2 ? (
+            {workflow.alignmentApplied ? (
                 <div className="space-y-1" data-testid="afo-landmark-list">
-                    {AFO_LANDMARK_STEPS.map((step, index) => {
+                    {AFO_LANDMARK_STEPS.map((step) => {
                         const point = workflow.landmarks[step.id];
-                        const skipped = (workflow.skippedLandmarks ?? []).includes(step.id);
-                        const settled = Boolean(point) || skipped;
+                        const rowState = afoChecklistRowState(workflow, step.id, point, step.optional);
                         return (
-                            <div key={step.id} className="flex items-center gap-1 text-[11px]">
+                            <button
+                                key={step.id}
+                                type="button"
+                                className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-[11px] hover:bg-muted/40"
+                                onClick={() => {
+                                    if (rowState === "skipped") {
+                                        redoAfoMarker(step.id);
+                                    } else if (point) {
+                                        redoAfoMarker(step.id);
+                                    } else if (step.optional) {
+                                        const message = skipAfoLandmark(step.id);
+                                        useAfoStore.getState().setScanLandmarkError(message);
+                                    } else {
+                                        redoAfoMarker(step.id);
+                                    }
+                                    ensureAfoScanPlacement();
+                                }}
+                            >
+                                <AfoChecklistCheck state={rowState} />
                                 <span
                                     className={
-                                        settled && !skipped ? "text-emerald-300" : "text-muted-foreground"
+                                        rowState === "done"
+                                            ? "text-foreground"
+                                            : rowState === "skipped"
+                                              ? "text-violet-300"
+                                              : "text-muted-foreground"
                                     }
                                 >
-                                    {index + 1}. {step.label}
-                                    {step.optional ? " (optional)" : ""}
-                                    {point ? "" : skipped ? " — skipped" : " — waiting"}
+                                    {step.label}
+                                    {rowState === "skipped" ? " · Skipped · Add" : ""}
                                 </span>
-                                <span className="ml-auto flex gap-1">
-                                    {step.optional && !point && !skipped ? (
-                                        <button
-                                            type="button"
-                                            className="underline"
-                                            data-testid={`afo-skip-${step.id}`}
-                                            onClick={() => {
-                                                const message = skipAfoLandmark(step.id);
-                                                useAfoStore.getState().setScanLandmarkError(message);
-                                            }}
-                                        >
-                                            Skip
-                                        </button>
-                                    ) : null}
-                                    {settled ? (
-                                        <button
-                                            type="button"
-                                            className="underline"
-                                            onClick={() => undoAfoMarker(step.id)}
-                                        >
-                                            Undo
-                                        </button>
-                                    ) : null}
-                                    {point ? (
-                                        <button
-                                            type="button"
-                                            className="underline"
-                                            onClick={() => redoAfoMarker(step.id)}
-                                        >
-                                            Redo
-                                        </button>
-                                    ) : null}
-                                </span>
-                            </div>
+                                {step.optional && rowState === "waiting" ? (
+                                    <span
+                                        className="ml-auto text-[10px] underline"
+                                        data-testid={`afo-skip-${step.id}`}
+                                        onClick={(event) => {
+                                            event.stopPropagation();
+                                            const message = skipAfoLandmark(step.id);
+                                            useAfoStore.getState().setScanLandmarkError(message);
+                                        }}
+                                    >
+                                        Skip
+                                    </span>
+                                ) : null}
+                            </button>
                         );
                     })}
                 </div>
             ) : null}
+
+            <button
+                type="button"
+                data-testid="afo-place"
+                onClick={() => jumpToFirstMissingRequired()}
+                className="h-8 w-full rounded-md bg-muted text-[12px] font-medium text-foreground"
+            >
+                Done
+            </button>
+
+            <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                <input
+                    type="checkbox"
+                    checked={autoFrame}
+                    onChange={(event) => setAutoFrame(event.target.checked)}
+                />
+                Auto-frame camera per marker
+            </label>
 
             <DerivedReadout workflow={workflow} />
 
@@ -262,22 +287,6 @@ export function AfoScanPanel() {
                     {landmarkError}
                 </p>
             ) : null}
-        </div>
-    );
-}
-
-function MarkerRow({ label, onUndo, onRedo }: { label: string; onUndo: () => void; onRedo: () => void }) {
-    return (
-        <div className="flex items-center gap-1 text-[11px]">
-            <span className="text-emerald-300">{label}</span>
-            <span className="ml-auto flex gap-1">
-                <button type="button" className="underline" onClick={onUndo}>
-                    Undo
-                </button>
-                <button type="button" className="underline" onClick={onRedo}>
-                    Redo
-                </button>
-            </span>
         </div>
     );
 }
@@ -343,15 +352,6 @@ function DerivedReadout({ workflow }: { workflow: AfoScanWorkflow }) {
                     </p>
                 ))}
         </div>
-    );
-}
-
-function labelForRedo(id: string | null): string | null {
-    if (!id) return null;
-    return (
-        AFO_PLANTAR_STEPS.find((step) => step.id === id)?.label ??
-        AFO_LANDMARK_STEPS.find((step) => step.id === id)?.label ??
-        null
     );
 }
 

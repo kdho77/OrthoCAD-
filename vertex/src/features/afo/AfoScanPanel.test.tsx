@@ -20,6 +20,7 @@ import {
     skipAfoLandmark,
     undoAfoMarker,
 } from "./afo-scan-markers";
+import { cameraViewForAfoMarker } from "./afo-scan-ui";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -110,13 +111,11 @@ describe("AFO scan marker placement", () => {
         addBox("leg", "left");
         await renderPanel();
 
-        const place = buttonByText(container, "Place alignment");
         const apply = buttonByText(container, "Apply alignment");
-        expect(place.disabled).toBe(false);
         expect(apply.disabled).toBe(true);
-        expect(container.textContent).toMatch(/Step 1 of 2: Align/);
-        expect(container.textContent).toMatch(/Next: Plantar heel center/);
+        expect(container.textContent).toMatch(/Alignment · 3 plantar points/);
         expect(evaluateScanStepGate().ok).toBe(false);
+        expect(useAfoStore.getState().scanPlacement).toBeTruthy();
 
         await act(async () => {
             commitAfoScanPoint(HEEL, "leg", 1);
@@ -129,8 +128,7 @@ describe("AFO scan marker placement", () => {
             buttonByText(container, "Apply alignment").click();
         });
         expect(useAfoStore.getState().sourceMesh?.positions.length ?? 0).toBeGreaterThan(0);
-        expect(container.textContent).toMatch(/Step 2 of 2: Landmarks 0\/5 required \(\+3 optional\)/);
-        expect(container.textContent).toMatch(/Next: Posterior calcaneus center/);
+        expect(container.textContent).toMatch(/Landmarks · 0\/5 required \(\+3 optional\)/);
         expect(evaluateScanStepGate().ok).toBe(false);
 
         const landmarks = [
@@ -146,7 +144,7 @@ describe("AFO scan marker placement", () => {
         await act(async () => {
             for (const point of landmarks) commitAfoScanPoint(point, "leg", 1);
         });
-        expect(container.textContent).toMatch(/Step 2 of 2: Landmarks 5\/5 required \(\+3 optional\)/);
+        expect(container.textContent).toMatch(/Landmarks · 5\/5 required \(\+3 optional\)/);
         expect(evaluateScanStepGate().ok).toBe(true);
         const workflow = useDesignStore.getState().design.afo?.scanWorkflow;
         expect(workflow?.landmarks.medial_malleolus).toBeTruthy();
@@ -165,7 +163,7 @@ describe("AFO scan marker placement", () => {
             applyAfoAlignment(false);
         });
         expect(container.querySelector("[data-testid=afo-skip-navicular]")).toBeTruthy();
-        expect(container.textContent).toMatch(/Navicular tuberosity \(optional\)/);
+        expect(container.textContent).toMatch(/Navicular tuberosity/);
 
         await act(async () => {
             commitAfoScanPoint({ x: -4, y: 0, z: 12 }, "leg", 1);
@@ -177,7 +175,7 @@ describe("AFO scan marker placement", () => {
             commitAfoScanPoint({ x: 18, y: 14, z: 70 }, "leg", 1);
         });
 
-        expect(container.textContent).toMatch(/Landmarks 5\/5 required \(\+3 optional\)/);
+        expect(container.textContent).toMatch(/5\/5 required \(\+3 optional\)/);
         expect(container.textContent).toMatch(/Proximal trim cap is unchecked/);
         expect(evaluateScanStepGate().ok).toBe(true);
         const workflow = useDesignStore.getState().design.afo?.scanWorkflow;
@@ -191,22 +189,22 @@ describe("AFO scan marker placement", () => {
         expect(container.textContent).not.toMatch(/Alignment failed|That landmark is required/);
     });
 
-    test("left, right, and both keep Place alignment enabled", async () => {
+    test("left, right, and both keep scan placement active", async () => {
         armAfo("left");
         addBox("L", "left");
         addBox("R", "right");
         await renderPanel();
-        expect(buttonByText(container, "Place alignment").disabled).toBe(false);
+        expect(useAfoStore.getState().scanPlacement).toBeTruthy();
 
         await act(async () => {
             useClinicalWorkflowStore.getState().acknowledgeExplicitFootSide("right");
         });
-        expect(buttonByText(container, "Place alignment").disabled).toBe(false);
+        expect(useAfoStore.getState().scanPlacement).toBeTruthy();
 
         await act(async () => {
             useClinicalWorkflowStore.getState().acknowledgePairAssignment();
         });
-        expect(buttonByText(container, "Place alignment").disabled).toBe(false);
+        expect(useAfoStore.getState().scanPlacement).toBeTruthy();
     });
 
     test("insole Place markers stays disabled until the landmark base is loaded", async () => {
@@ -258,5 +256,14 @@ describe("AFO marker placement helpers", () => {
         expect(workflow?.landmarks.m1_mpj).toBeTruthy();
         expect(workflow?.landmarks.m5_mpj).toBeFalsy();
         expect(skipAfoLandmark("navicular")).toMatch(/before/);
+    });
+
+    test("camera presets follow medialSign for left and right", () => {
+        expect(cameraViewForAfoMarker("medial_malleolus", "left")).toBe("right");
+        expect(cameraViewForAfoMarker("lateral_malleolus", "left")).toBe("left");
+        expect(cameraViewForAfoMarker("medial_malleolus", "right")).toBe("left");
+        expect(cameraViewForAfoMarker("lateral_malleolus", "right")).toBe("right");
+        expect(cameraViewForAfoMarker("heel", "left")).toBe("bottom");
+        expect(cameraViewForAfoMarker("posterior_calcaneus", "right")).toBe("back");
     });
 });

@@ -3,6 +3,7 @@ import { Canvas } from "@react-three/fiber";
 import {
     Activity,
     Box,
+    Crosshair,
     Eye,
     EyeOff,
     Layers,
@@ -14,6 +15,7 @@ import {
     Scale3d,
     Scissors,
     Spline,
+    Tag,
     X,
 } from "lucide-react";
 import { Suspense, useEffect, useRef } from "react";
@@ -37,6 +39,11 @@ import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
 import { AfoMarkerPlacement } from "./AfoMarkerPlacement";
 import { AfoMeshes } from "./AfoMeshes";
+import { recenterAfoScanCamera, useAfoScanCameraFrame } from "./AfoScanCameraFrame";
+import { AfoScanGuidedCard } from "@/features/afo/AfoScanGuidedCard";
+import { AfoScanHoverDot } from "./AfoScanHoverDot";
+import { AfoScanLandmarkLighting } from "./AfoScanLandmarkLighting";
+import { AfoScanMarkers } from "./AfoScanMarkers";
 import { AfoScanLandmarkPlacement } from "./AfoScanLandmarkPlacement";
 import { BaseInsoleMesh } from "./BaseInsoleMesh";
 import { BottomPatternEditTools } from "./BottomPatternEditTools";
@@ -157,7 +164,15 @@ export function Viewer3D() {
     const isAfo = design.productType === "afo";
     const placingScanMarkers = useScanStore((s) => s.placementMode != null);
     const placingAfoLandmarks = useAfoStore((s) => s.scanPlacement != null);
+    const afoScanLabels = useAfoStore((s) => s.scanShowMarkerLabels);
+    const afoAutoFrame = useAfoStore((s) => s.scanAutoFrame);
+    const setAfoScanLabels = useAfoStore((s) => s.setScanShowMarkerLabels);
+    const setAfoAutoFrame = useAfoStore((s) => s.setScanAutoFrame);
     const markerLayer = activeMarkerPlacementLayer(isAfo, placingScanMarkers, placingAfoLandmarks);
+    const afoScanLandmarking = isAfo && workflowStep === "scan" && placingAfoLandmarks;
+    const scanTransparent = afoScanLandmarking ? false : viewer.transparent;
+
+    useAfoScanCameraFrame(controls);
     const showLeftInsole = !isAfo && viewer.showLeft && !hideInsoleForMarkers;
     const showRightInsole = !isAfo && viewer.showRight && !hideInsoleForMarkers;
     const loftPhaseBySide = usePreviewLoftStatusStore((s) => s.phaseBySide);
@@ -226,9 +241,14 @@ export function Viewer3D() {
                 }}
             >
                 <color attach="background" args={["#0c111b"]} />
-                <ambientLight intensity={0.6} />
-                <directionalLight position={[150, 300, 200]} intensity={1.1} castShadow />
-                <directionalLight position={[-150, 100, -100]} intensity={0.4} />
+                {afoScanLandmarking ? null : (
+                    <>
+                        <ambientLight intensity={0.6} />
+                        <directionalLight position={[150, 300, 200]} intensity={1.1} castShadow />
+                        <directionalLight position={[-150, 100, -100]} intensity={0.4} />
+                    </>
+                )}
+                <AfoScanLandmarkLighting />
 
                 <Suspense fallback={null}>
                     <PressureMapOverlayPair showLeft={showLeftInsole} showRight={showRightInsole} />
@@ -269,9 +289,14 @@ export function Viewer3D() {
                         </>
                     ) : null}
                     {showScans && !(isAfo && afoWorkingMesh) ? (
-                        <ScanMeshes transparent={viewer.transparent} heightmap={viewer.heightmap} />
+                        <ScanMeshes
+                            transparent={scanTransparent}
+                            heightmap={afoScanLandmarking ? false : viewer.heightmap}
+                        />
                     ) : null}
                     {isAfo ? <AfoMeshes /> : null}
+                    {isAfo ? <AfoScanMarkers /> : null}
+                    <AfoScanHoverDot />
                     {markerLayer === "afo-scan" ? (
                         <AfoScanLandmarkPlacement />
                     ) : markerLayer === "afo-design" ? (
@@ -304,6 +329,33 @@ export function Viewer3D() {
                     enabled={!trimlineEdit?.isDragging && !afoDraggingTrim}
                 />
             </Canvas>
+
+            {afoScanLandmarking ? <AfoScanGuidedCard /> : null}
+
+            {afoScanLandmarking ? (
+                <div className="absolute right-3 top-[11.5rem] flex flex-col gap-1">
+                    <ToggleButton
+                        active={afoScanLabels}
+                        onClick={() => setAfoScanLabels(!afoScanLabels)}
+                        icon={<Tag className="h-3.5 w-3.5" />}
+                        label="Labels"
+                    />
+                    <ToggleButton
+                        active={afoAutoFrame}
+                        onClick={() => setAfoAutoFrame(!afoAutoFrame)}
+                        icon={<Crosshair className="h-3.5 w-3.5" />}
+                        label="Auto-frame"
+                    />
+                    <Button
+                        size="sm"
+                        variant="secondary"
+                        className="h-7 w-32 justify-start text-[11px]"
+                        onClick={() => recenterAfoScanCamera(controls.current)}
+                    >
+                        Recenter
+                    </Button>
+                </div>
+            ) : null}
 
             {/* View buttons — cross pad: Front | Left | Top/Bottom | Right | Back */}
             <div
@@ -427,8 +479,11 @@ export function Viewer3D() {
             {/* Display toggles */}
             <div className="absolute right-3 top-3 flex flex-col gap-1">
                 <ToggleButton
-                    active={viewer.transparent}
-                    onClick={() => setViewer({ transparent: !viewer.transparent })}
+                    active={scanTransparent && viewer.transparent}
+                    onClick={() => {
+                        if (afoScanLandmarking) return;
+                        setViewer({ transparent: !viewer.transparent });
+                    }}
                     icon={<Maximize2 className="h-3.5 w-3.5" />}
                     label="Transparent"
                 />

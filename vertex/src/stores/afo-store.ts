@@ -20,8 +20,14 @@ interface AfoSessionStore {
     /** Scaled scan before the plantar rigid map. Level to rearfoot rebuilds from this. */
     unorientedMesh: AfoTriMesh | null;
     /** Active Stage 1 / Stage 2 click session. `redo` replaces that marker on the next click. */
-    scanPlacement: { redo: string | null } | null;
+    scanPlacement: { redo: string | null; paused?: boolean } | null;
     scanLandmarkError: string | null;
+    scanShowMarkerLabels: boolean;
+    scanAutoFrame: boolean;
+    scanAutoFrameSuppressed: boolean;
+    scanLastUndoId: string | null;
+    scanDraggingMarkerId: string | null;
+    scanHoverWorld: { x: number; y: number; z: number } | null;
     placingLandmarkIndex: number;
     placingClinicalId: AfoClinicalMarkerId | null;
     placingTrim: boolean;
@@ -33,8 +39,14 @@ interface AfoSessionStore {
     setCorrectedMesh: (mesh: AfoTriMesh | null) => void;
     setShellMesh: (mesh: AfoTriMesh | null) => void;
     setUnorientedMesh: (mesh: AfoTriMesh | null) => void;
-    setScanPlacement: (placement: { redo: string | null } | null) => void;
+    setScanPlacement: (placement: { redo: string | null; paused?: boolean } | null) => void;
     setScanLandmarkError: (message: string | null) => void;
+    setScanShowMarkerLabels: (on: boolean) => void;
+    setScanAutoFrame: (on: boolean) => void;
+    setScanAutoFrameSuppressed: (on: boolean) => void;
+    setScanLastUndoId: (id: string | null) => void;
+    setScanDraggingMarkerId: (id: string | null) => void;
+    setScanHoverWorld: (point: { x: number; y: number; z: number } | null) => void;
     setPlacingLandmarkIndex: (index: number) => void;
     setPlacingClinicalId: (id: AfoClinicalMarkerId | null) => void;
     setPlacingTrim: (on: boolean) => void;
@@ -153,6 +165,12 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
     unorientedMesh: null,
     scanPlacement: null,
     scanLandmarkError: null,
+    scanShowMarkerLabels: true,
+    scanAutoFrame: true,
+    scanAutoFrameSuppressed: false,
+    scanLastUndoId: null,
+    scanDraggingMarkerId: null,
+    scanHoverWorld: null,
     placingLandmarkIndex: 0,
     placingClinicalId: null,
     placingTrim: false,
@@ -170,6 +188,12 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
     setUnorientedMesh: (mesh) => set({ unorientedMesh: mesh ? cloneMesh(mesh) : null }),
     setScanPlacement: (placement) => set({ scanPlacement: placement }),
     setScanLandmarkError: (message) => set({ scanLandmarkError: message }),
+    setScanShowMarkerLabels: (on) => set({ scanShowMarkerLabels: on }),
+    setScanAutoFrame: (on) => set({ scanAutoFrame: on }),
+    setScanAutoFrameSuppressed: (on) => set({ scanAutoFrameSuppressed: on }),
+    setScanLastUndoId: (id) => set({ scanLastUndoId: id }),
+    setScanDraggingMarkerId: (id) => set({ scanDraggingMarkerId: id }),
+    setScanHoverWorld: (point) => set({ scanHoverWorld: point }),
     setPlacingLandmarkIndex: (index) => set({ placingLandmarkIndex: index }),
     setPlacingClinicalId: (id) => set({ placingClinicalId: id }),
     setPlacingTrim: (on) => set({ placingTrim: on }),
@@ -185,6 +209,12 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
             unorientedMesh: null,
             scanPlacement: null,
             scanLandmarkError: null,
+            scanShowMarkerLabels: true,
+            scanAutoFrame: true,
+            scanAutoFrameSuppressed: false,
+            scanLastUndoId: null,
+            scanDraggingMarkerId: null,
+            scanHoverWorld: null,
             placingLandmarkIndex: 0,
             placingClinicalId: null,
             placingTrim: false,
