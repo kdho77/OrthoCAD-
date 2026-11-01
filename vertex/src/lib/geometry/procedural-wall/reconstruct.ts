@@ -2008,7 +2008,9 @@ export function reconstructProceduralWalls(
         const vertAt = (row: number, station: number) => gridVert(row, station);
         applyAnalyticSinkToLoftedSolid({
             positions,
-            topCount: topPos.length / 3,
+            // Even-split inserts rim vertices after the source sheet and before
+            // the wall. They are part of the top and must take the same cut.
+            topCount: generatedStart,
             nS,
             nJ,
             vertAt,

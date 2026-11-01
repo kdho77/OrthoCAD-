@@ -11,7 +11,13 @@ import {
     composeViewerPrintSolidTop,
 } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import { sampleTopFromArrayBuffer } from "@/lib/geometry/procedural-wall/sample-top-preview";
-import { SINK_KIND_ORDER, SINK_PROFILES, sinkCutAt } from "@/lib/geometry/sink";
+import {
+    footOutlineFromGeometry,
+    meshYToAnatomical,
+    SINK_KIND_ORDER,
+    SINK_PROFILES,
+    sinkCutMm,
+} from "@/lib/geometry/sink";
 import type { PlacedSink, SideCorrections, SinkKind } from "@/types";
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
@@ -74,25 +80,23 @@ function sinkHeightReport(
     sinks: PlacedSink[],
 ) {
     const frame = getBaseFootprintFrame(raw, "left");
-    const ctx = field(sinks);
     const base = raw.getAttribute("position");
     const a = plain.getAttribute("position");
     const b = sunk.getAttribute("position");
     const best = new Map<string, { dz: number; weight: number }>();
     let xyMm = 0;
     const n = Math.min(a.count, b.count, base.count);
+    const ctx = {
+        ...field(sinks),
+        footOutline: footOutlineFromGeometry(raw, frame.lengthAxis, frame.widthAxis, n),
+    };
     for (let i = 0; i < n; i++) {
         const ax = a.getX(i);
         const ay = a.getY(i);
         xyMm = Math.max(xyMm, Math.hypot(b.getX(i) - ax, b.getY(i) - ay));
         const len = base.getComponent(i, frame.lengthAxis);
         const wid = base.getComponent(i, frame.widthAxis);
-        const u = Math.max(0, Math.min(1, (len - frame.lenMin) / frame.lenSize));
-        const vSigned = Math.max(
-            -1,
-            Math.min(1, (frame.widthSign * (wid - frame.widCenter)) / (frame.widSize / 2)),
-        );
-        const sample = sinkCutAt(u, vSigned, ctx);
+        const sample = sinkCutMm(len, meshYToAnatomical(wid, "left"), ctx);
         if (!sample.sinkId || sample.weight <= 0) continue;
         const dz = b.getComponent(i, frame.thickAxis) - a.getComponent(i, frame.thickAxis);
         const prev = best.get(sample.sinkId);

@@ -18,17 +18,26 @@ import {
     forefootThicknessPlan,
     guardedRimLowering,
     LATERAL_WALL_MIN_MM,
-    MPJ1_PROXIMAL_SHIFT_MM,
-    MPJ5_LATERAL_SHIFT_MM,
+    PLATEAU_GAP_MM,
+    plateauGapMm,
+    RKW_MEDIAL_INSET_MM,
     SINK_DEFAULT_DEPTH_MM,
     SINK_KIND_ORDER,
     SINK_PROFILES,
+    SINK_REFERENCE_LENGTH_MM,
     type SinkSurfaceContext,
+    STYLOID_RIM_CLEAR_MM,
+    STYLOID_RIM_HARD_MM,
+    STYLOID_RIM_OVERRIDE_FLOOR_MM,
+    STYLOID_ROTATION_DEG,
     sinkCutMm,
     sinkDepthWarnings,
     sinkFrame,
+    sinkPlanScale,
+    sinkRimWarnings,
     sinksActive,
     sinkThicknessAt,
+    sinkThicknessMm,
     smootherstep01,
     smoothstep01,
     specVFromVSigned,
@@ -62,6 +71,17 @@ function placed(kind: SinkKind, depthMm: number, id = kind): PlacedSink {
     return { id, kind, depthMm };
 }
 
+/** Full-width rectangle in mesh Y, symmetric about 0. Anatomical medial is the smaller Y. */
+function rectFoot(lengthMm: number, widthMm: number): { x: number; y: number }[] {
+    const y0 = -widthMm / 2;
+    const y1 = widthMm / 2;
+    const n = 8;
+    const pts: { x: number; y: number }[] = [];
+    for (let i = 0; i < n; i++) pts.push({ x: (lengthMm * i) / (n - 1), y: y0 });
+    for (let i = n - 1; i >= 0; i--) pts.push({ x: (lengthMm * i) / (n - 1), y: y1 });
+    return pts;
+}
+
 function surface(menSize: number, side: Side, sinks: PlacedSink[], thicken = false): SinkSurfaceContext {
     const layout = insoleLayoutForUsMenSize(menSize);
     return {
@@ -90,36 +110,76 @@ function field(ctx: SinkSurfaceContext, sinks: PlacedSink[] | undefined): Height
 describe("sink scalar field", () => {
     test("named profile table matches the clinical spec", () => {
         expect(SINK_PROFILES.mpj1).toMatchObject({
-            u: 0.71,
-            v: 0.15,
+            u: 0.665,
+            v: 0.145,
             lengthMm: 22,
-            widthMm: 20,
-            blendMm: 8,
+            widthMm: 22,
+            blendMm: 7,
             maxDepthMm: 4,
-            deepestProximalMm: MPJ1_PROXIMAL_SHIFT_MM,
+            rotationDeg: 0,
+            deepestProximalMm: 3,
+            deepestLateralMm: 0,
         });
-        expect(SINK_PROFILES.mpj2.maxDepthMm).toBe(3);
-        expect(SINK_PROFILES.mpj5).toMatchObject({
-            lengthMm: 18,
+        expect(SINK_PROFILES.mpj2).toMatchObject({
+            u: 0.685,
+            v: 0.365,
+            lengthMm: 16,
             widthMm: 16,
+            blendMm: 5,
+            maxDepthMm: 3,
+        });
+        expect(SINK_PROFILES.mpj3).toMatchObject({
+            u: 0.68,
+            v: 0.55,
+            lengthMm: 15,
+            widthMm: 15,
+            blendMm: 5,
+        });
+        expect(SINK_PROFILES.mpj4).toMatchObject({
+            u: 0.665,
+            v: 0.715,
+            lengthMm: 13,
+            widthMm: 13,
+            blendMm: 5,
+        });
+        expect(SINK_PROFILES.mpj5).toMatchObject({
+            u: 0.64,
+            v: 0.88,
+            lengthMm: 13,
+            widthMm: 13,
+            blendMm: 5,
             maxDepthMm: 4,
-            deepestLateralMm: MPJ5_LATERAL_SHIFT_MM,
+            rotationDeg: 0,
             lateralWallFade: true,
         });
+        expect(SINK_PROFILES.rkw).toMatchObject({
+            label: "Reverse kinetic wedge",
+            u: 0.68,
+            lengthMm: 40,
+            widthMm: 23,
+            blendMm: 6,
+            maxDepthMm: 4,
+            deepestProximalMm: 3,
+            forefoot: true,
+        });
         expect(SINK_PROFILES.styloid).toMatchObject({
-            label: "5th Met Base (Styloid)",
+            label: "5th IPJ (Styloid)",
             u: 0.42,
-            v: 0.95,
+            v: 0.92,
             lengthMm: 20,
             widthMm: 14,
             blendMm: 8,
             maxDepthMm: 3,
+            rotationDeg: STYLOID_ROTATION_DEG,
         });
         expect(SINK_DEFAULT_DEPTH_MM).toBe(2);
         expect(FOREFOOT_THICKNESS_CLEARANCE_MM).toBe(0.5);
         expect(BLEND_LEN_MM).toBe(25);
         expect(FLOOR_MIN_MM).toBe(2);
-        expect(LATERAL_WALL_MIN_MM).toBe(3);
+        expect(LATERAL_WALL_MIN_MM).toBe(2);
+        expect(STYLOID_RIM_CLEAR_MM).toBe(4);
+        expect(STYLOID_RIM_HARD_MM).toBe(3);
+        expect(STYLOID_RIM_OVERRIDE_FLOOR_MM).toBe(2);
     });
 
     test("no sinks is a no-op, including styloid thicken alone", () => {
@@ -151,32 +211,40 @@ describe("sink scalar field", () => {
                             expect(frame).toBeTruthy();
                             if (!frame) continue;
                             const shift = Math.hypot(frame.dx - frame.cx, frame.dy - frame.cy);
-                            if (kind === "mpj1") {
-                                expect(Math.abs(shift - MPJ1_PROXIMAL_SHIFT_MM)).toBeLessThan(0.5);
-                            } else if (kind === "mpj5") {
-                                expect(Math.abs(shift - MPJ5_LATERAL_SHIFT_MM)).toBeLessThan(0.5);
-                            } else {
-                                expect(shift).toBeLessThan(0.05);
+                            if (kind === "rkw" || kind === "mpj1") {
+                                expect(shift).toBeCloseTo(profile.deepestProximalMm, 2);
+                            } else expect(shift).toBeLessThan(0.05);
+                            const rotation = Math.atan2(frame.ty, frame.tx) * (180 / Math.PI);
+                            const expectedRot = side === "left" ? -profile.rotationDeg : profile.rotationDeg;
+                            expect(rotation).toBeCloseTo(expectedRot, 5);
+                            if (kind === "styloid" && !frame.rimBlocked) {
+                                expect(frame.rimMarginMm).toBeGreaterThanOrEqual(STYLOID_RIM_CLEAR_MM - 1e-6);
                             }
                             const cut = sinkCutMm(frame.dx, frame.dy, ctx);
-                            expect(Math.abs(cut.mm - depth)).toBeLessThan(0.05);
                             const added = sinkThicknessAt(
                                 frame.dx / ctx.lengthMm,
                                 vSignedFromSpecV(frame.v, side),
                                 ctx,
                             );
-                            if (profile.forefoot) {
-                                expect(
-                                    Math.abs(added - cut.mm - FOREFOOT_THICKNESS_CLEARANCE_MM),
-                                ).toBeLessThan(0.05);
-                            } else if (!thicken) {
+                            if (frame.rimBlocked) {
+                                expect(cut.mm).toBe(0);
                                 expect(added).toBeLessThan(1e-6);
                             } else {
+                                expect(Math.abs(cut.mm - depth)).toBeLessThan(0.05);
+                                // The footprint taper carries depth + 0.5 even when the wide
+                                // styloid pad is off, so the cut cannot fall through the plain top.
                                 expect(
                                     Math.abs(added - cut.mm - FOREFOOT_THICKNESS_CLEARANCE_MM),
                                 ).toBeLessThan(0.05);
                             }
-                            expect(frame.blendMm).toBe(profile.blendMm);
+                            if (sinkPlanScale(ctx.lengthMm) >= 0.8) {
+                                expect(frame.blendMm).toBe(profile.blendMm);
+                                expect(frame.fallbackStep).toBe(0);
+                                expect(frame.u).toBeCloseTo(Number.isFinite(sink.u) ? sink.u! : profile.u, 5);
+                            } else {
+                                expect(frame.blendMm).toBeGreaterThanOrEqual(Math.max(3, 1.1 * depth) - 1e-6);
+                                expect(frame.blendMm).toBeLessThanOrEqual(profile.blendMm + 1e-6);
+                            }
                             expect(frame.depthMm).toBe(depth);
                         }
                     }
@@ -185,7 +253,7 @@ describe("sink scalar field", () => {
         }
     });
 
-    test("axes scale with length and width; depth and blend do not", () => {
+    test("axes scale with insole length; depth and blend do not", () => {
         const sink = placed("mpj2", 2);
         const m9 = sinkFrame(sink, surface(9, "right", [sink]))!;
         const m1 = sinkFrame(sink, surface(1, "left", [sink]))!;
@@ -193,44 +261,55 @@ describe("sink scalar field", () => {
         const l9 = insoleLayoutForUsMenSize(9).lengthMm;
         const l1 = insoleLayoutForUsMenSize(1).lengthMm;
         const l16 = insoleLayoutForUsMenSize(16).lengthMm;
-        expect(Math.abs(m1.halfLengthMm / m9.halfLengthMm - l1 / l9)).toBeLessThan(1e-6);
-        expect(Math.abs(m16.halfLengthMm / m9.halfLengthMm - l16 / l9)).toBeLessThan(1e-6);
+        expect(m1.halfLengthMm / m9.halfLengthMm).toBeCloseTo(sinkPlanScale(l1) / sinkPlanScale(l9), 5);
+        expect(m16.halfLengthMm / m9.halfLengthMm).toBeCloseTo(sinkPlanScale(l16) / sinkPlanScale(l9), 5);
+        expect(m1.halfWidthMm / m9.halfWidthMm).toBeCloseTo(m1.halfLengthMm / m9.halfLengthMm, 5);
         expect(m1.halfWidthMm).not.toBeCloseTo(m9.halfWidthMm, 2);
+        expect(sinkPlanScale(l1)).toBeCloseTo(l1 / SINK_REFERENCE_LENGTH_MM, 6);
+        expect(sinkPlanScale(l1)).toBeGreaterThanOrEqual(0.65);
+        expect(sinkPlanScale(l1)).toBeLessThan(0.8);
         expect(m1.blendMm).toBe(m9.blendMm);
         expect(m16.depthMm).toBe(m9.depthMm);
         expect(m1.aProx).toBeGreaterThan(0.5);
         expect(m1.bLat).toBeGreaterThan(0.5);
     });
 
-    test("forefoot thickness is deepest + 0.5, full ahead of the ovals, zero in the rearfoot", () => {
+    test("forefoot thickness is local depth + 0.5, blended over 25 mm, and the floor stays at least 2 mm", () => {
         const sinks = SINK_KIND_ORDER.map((kind) => placed(kind, kind === "mpj1" ? 4 : 2));
         const ctx = surface(9, "left", sinks, false);
         const plan = forefootThicknessPlan(ctx)!;
         expect(plan.A).toBeCloseTo(4 + FOREFOOT_THICKNESS_CLEARANCE_MM, 6);
-        const deep = { ...placed("mpj1", 4, "deep"), u: 0.8, v: 0.12 };
-        const shallow = { ...placed("mpj2", 2, "shallow"), u: 0.8, v: 0.78 };
+        const deep = { ...placed("mpj1", 4, "deep"), u: 0.8, v: 0.4 };
+        const shallow = { ...placed("mpj2", 2, "shallow"), u: 0.55, v: 0.4 };
         const split = surface(9, "left", [deep, shallow], false);
+        const deepFrame = sinkFrame(deep, split)!;
         const shallowFrame = sinkFrame(shallow, split)!;
-        const t2 = sinkThicknessAt(shallowFrame.dx / split.lengthMm, vSignedFromSpecV(0.78, "left"), split);
-        const s2 = sinkCutMm(shallowFrame.dx, shallowFrame.dy, split).mm;
-        expect(s2).toBeCloseTo(2, 1);
-        expect(Math.abs(t2 - s2 - (4.5 - 2))).toBeLessThan(0.05);
-        expect(sinkThicknessAt(plan.x0 / ctx.lengthMm - 1 / ctx.lengthMm, 0, ctx)).toBeLessThan(1e-6);
+        const tDeep = sinkThicknessAt(deepFrame.u, vSignedFromSpecV(deepFrame.v, "left"), split);
+        const tShallow = sinkThicknessAt(shallowFrame.u, vSignedFromSpecV(shallowFrame.v, "left"), split);
+        expect(tDeep).toBeCloseTo(4.5, 2);
+        expect(tShallow).toBeCloseTo(2.5, 2);
+        const shell = 2;
+        expect(shell + tDeep - 4).toBeGreaterThanOrEqual(FLOOR_MIN_MM - 1e-6);
+        expect(shell + tShallow - 2).toBeGreaterThanOrEqual(FLOOR_MIN_MM - 1e-6);
+        const alone = surface(9, "left", [deep], false);
+        const aloneFrame = sinkFrame(deep, alone)!;
+        const uOut = (aloneFrame.cx - aloneFrame.halfLengthMm - BLEND_LEN_MM - 2) / alone.lengthMm;
+        expect(sinkThicknessAt(uOut, vSignedFromSpecV(aloneFrame.v, "left"), alone)).toBeLessThan(1e-4);
         expect(sinkThicknessAt(0.13, 0, ctx)).toBeLessThan(1e-6);
-        const atFull = sinkThicknessAt(plan.xFull / ctx.lengthMm, 0.4, ctx);
-        expect(Math.abs(atFull - plan.A)).toBeLessThan(0.01);
-        const sample = (x: number) => sinkThicknessAt(x / ctx.lengthMm, 0, ctx);
-        const jump = (x: number) => {
-            const h = 0.05;
-            const left = (sample(x) - sample(x - h)) / h;
-            const right = (sample(x + h) - sample(x)) / h;
-            return Math.abs(right - left);
-        };
-        expect(jump(plan.x0)).toBeLessThan(1e-3);
-        expect(jump(plan.xFull)).toBeLessThan(1e-3);
+        const sample = (s: number) =>
+            sinkThicknessAt(
+                (aloneFrame.cx + aloneFrame.tx * s) / alone.lengthMm,
+                vSignedFromSpecV(aloneFrame.v, "left"),
+                alone,
+            );
+        const edge = aloneFrame.halfLengthMm + BLEND_LEN_MM;
+        const h = 0.05;
+        const slope = (s: number) => (sample(s + h) - sample(s - h)) / (2 * h);
+        expect(Math.abs(slope(aloneFrame.halfLengthMm))).toBeLessThan(0.02);
+        expect(Math.abs(slope(edge))).toBeLessThan(0.02);
     });
 
-    test("profile is C1 across the oval boundary and the blend end", () => {
+    test("profile is C2 across the oval boundary and the blend end", () => {
         for (const kind of SINK_KIND_ORDER) {
             const sink = placed(kind, SINK_PROFILES[kind].maxDepthMm);
             const ctx = surface(9, "right", [sink]);
@@ -245,6 +324,10 @@ describe("sink scalar field", () => {
             expect(
                 Math.abs(secant(blendEnd - 0.05, blendEnd) - secant(blendEnd, blendEnd + 0.05)),
             ).toBeLessThan(0.02);
+            const h2 = Math.min(0.2, frame.blendMm * 0.025);
+            const second = (s: number) => (cut(s + h2) - 2 * cut(s) + cut(s - h2)) / (h2 * h2);
+            expect(Math.abs(second(boundary))).toBeLessThan(0.05);
+            expect(Math.abs(second(blendEnd))).toBeLessThan(0.05);
         }
     });
 
@@ -258,6 +341,163 @@ describe("sink scalar field", () => {
         expect(cut.mm).toBeLessThan(4);
     });
 
+    test("met-head diameters scale at 247 mm and 297 mm", () => {
+        const diameters = [
+            ["mpj1", 22],
+            ["mpj2", 16],
+            ["mpj3", 15],
+            ["mpj4", 13],
+            ["mpj5", 13],
+        ] as const;
+        for (const lengthMm of [247, 297]) {
+            const s = lengthMm / SINK_REFERENCE_LENGTH_MM;
+            expect(s).toBeGreaterThan(0.8);
+            expect(s).toBeLessThan(1.3);
+            for (const [kind, diameter] of diameters) {
+                const sink = placed(kind, 2);
+                const ctx = { side: "right" as const, lengthMm, widthMm: 95, sinks: [sink] };
+                const frame = sinkFrame(sink, ctx)!;
+                expect(frame.halfLengthMm * 2).toBeCloseTo(diameter * s, 4);
+                expect(frame.halfWidthMm * 2).toBeCloseTo(diameter * s, 4);
+                expect(frame.blendMm).toBe(SINK_PROFILES[kind].blendMm);
+            }
+        }
+    });
+
+    test("centres sit on both feet at two lengths, and the 1st MPJ is medial", () => {
+        const centres = [
+            ["mpj1", 0.665, 0.145],
+            ["mpj2", 0.685, 0.365],
+            ["mpj3", 0.68, 0.55],
+            ["mpj4", 0.665, 0.715],
+            ["mpj5", 0.64, 0.88],
+        ] as const;
+        const widthMm = 95;
+        for (const lengthMm of [247, 297]) {
+            const outline = rectFoot(lengthMm, widthMm);
+            for (const side of SIDES) {
+                for (const [kind, u, v] of centres) {
+                    const sink = placed(kind, 2);
+                    const ctx = { side, lengthMm, widthMm, sinks: [sink], footOutline: outline };
+                    const frame = sinkFrame(sink, ctx)!;
+                    expect(frame.u).toBeCloseTo(u, 5);
+                    expect(frame.v).toBeCloseTo(v, 3);
+                    expect(frame.cx).toBeCloseTo(u * lengthMm, 3);
+                    const medial = -widthMm / 2;
+                    expect(frame.cy).toBeCloseTo(medial + v * widthMm, 3);
+                }
+                const first = sinkFrame(placed("mpj1", 2), {
+                    side,
+                    lengthMm,
+                    widthMm,
+                    sinks: [placed("mpj1", 2)],
+                    footOutline: outline,
+                })!;
+                expect(first.v).toBeLessThan(0.2);
+                expect(first.cy).toBeLessThan(0);
+            }
+        }
+    });
+
+    test("plateau gap is at least 0.5 mm at 247 mm and 297 mm", () => {
+        const kinds = ["mpj1", "mpj2", "mpj3", "mpj4", "mpj5"] as const;
+        for (const lengthMm of [247, 297]) {
+            const widthMm = 95;
+            const s = lengthMm / SINK_REFERENCE_LENGTH_MM;
+            const outline = rectFoot(lengthMm, widthMm);
+            for (const side of SIDES) {
+                const sinks = kinds.map((kind) => placed(kind, 2));
+                const ctx = { side, lengthMm, widthMm, sinks, footOutline: outline };
+                const frames = sinks.map((sink) => sinkFrame(sink, ctx)!);
+                for (let i = 0; i < frames.length; i++) {
+                    for (let j = i + 1; j < frames.length; j++) {
+                        expect(plateauGapMm(frames[i]!, frames[j]!)).toBeGreaterThanOrEqual(
+                            PLATEAU_GAP_MM - 1e-4,
+                        );
+                    }
+                }
+                const first = frames[0]!;
+                expect(first.halfWidthMm * 2).toBeCloseTo(SINK_PROFILES.mpj1.widthMm * s, 4);
+                expect(first.blendMm).toBe(SINK_PROFILES.mpj1.blendMm);
+                for (const frame of frames) {
+                    expect(frame.blendMm).toBe(SINK_PROFILES[frame.kind].blendMm);
+                    expect(frame.depthMm).toBe(SINK_DEFAULT_DEPTH_MM);
+                }
+            }
+        }
+    });
+
+    test("5th MPJ plateau stays inside the lateral edge", () => {
+        for (const lengthMm of [247, 297]) {
+            const widthMm = 95;
+            const outline = rectFoot(lengthMm, widthMm);
+            const lateral = widthMm / 2;
+            for (const side of SIDES) {
+                const row = (["mpj1", "mpj2", "mpj3", "mpj4", "mpj5"] as const).map((kind) =>
+                    placed(kind, 2),
+                );
+                for (const sinks of [[placed("mpj5", 2)], row]) {
+                    const ctx = { side, lengthMm, widthMm, sinks, footOutline: outline };
+                    const frame = sinkFrame(sinks.find((sink) => sink.kind === "mpj5")!, ctx)!;
+                    expect(frame.cy + frame.halfWidthMm).toBeLessThanOrEqual(lateral + 1e-6);
+                    expect(frame.v).toBeCloseTo(SINK_PROFILES.mpj5.v, 3);
+                }
+            }
+        }
+    });
+
+    test("reverse kinetic wedge sits 3 mm off the medial edge on both feet", () => {
+        const widthMm = 95;
+        for (const lengthMm of [247, 297]) {
+            const s = lengthMm / SINK_REFERENCE_LENGTH_MM;
+            const outline = rectFoot(lengthMm, widthMm);
+            const medial = -widthMm / 2;
+            const centres: number[] = [];
+            for (const side of SIDES) {
+                const sink = placed("rkw", 2);
+                const ctx = { side, lengthMm, widthMm, sinks: [sink], footOutline: outline };
+                const frame = sinkFrame(sink, ctx)!;
+                expect(frame.halfLengthMm * 2).toBeCloseTo(40 * s, 4);
+                expect(frame.halfWidthMm * 2).toBeCloseTo(23 * s, 4);
+                expect(frame.cx).toBeCloseTo(0.68 * lengthMm, 3);
+                expect(frame.cy - frame.halfWidthMm).toBeCloseTo(medial + RKW_MEDIAL_INSET_MM, 3);
+                expect(frame.dx).toBeCloseTo(frame.cx - 3, 2);
+                expect(frame.dy).toBeCloseTo(frame.cy, 2);
+                expect(frame.rotationDeg).toBeCloseTo(0, 5);
+                centres.push(frame.cy);
+            }
+            expect(centres[0]).toBeCloseTo(centres[1]!, 3);
+        }
+    });
+
+    test("1st MPJ and the reverse kinetic wedge overlap by the deeper cut only", () => {
+        const mpj = placed("mpj1", 4, "mpj");
+        const wedge = placed("rkw", 2, "rkw");
+        const outline = rectFoot(260, 95);
+        const ctx = {
+            side: "right" as const,
+            lengthMm: 260,
+            widthMm: 95,
+            sinks: [mpj, wedge],
+            footOutline: outline,
+        };
+        const frame = sinkFrame(mpj, ctx)!;
+        const cut = sinkCutMm(frame.dx, frame.dy, ctx);
+        expect(cut.mm).toBeCloseTo(4, 2);
+        expect(cut.sinkId).toBe("mpj");
+        const thick = sinkThicknessMm(frame.dx, frame.dy, ctx);
+        expect(thick).toBeCloseTo(4.5, 2);
+        expect(thick).toBeLessThan(6);
+        const wedgeFrame = sinkFrame(wedge, ctx)!;
+        const wedgeOnly = sinkCutMm(wedgeFrame.dx, wedgeFrame.dy, {
+            ...ctx,
+            sinks: [wedge],
+        });
+        expect(wedgeOnly.mm).toBeCloseTo(2, 2);
+        const shared = sinkCutMm(wedgeFrame.dx, wedgeFrame.dy, ctx);
+        expect(shared.mm).toBeCloseTo(4, 2);
+    });
+
     test("depth above max warns and the cut clamps", () => {
         const sink = placed("mpj2", 9);
         const warnings = sinkDepthWarnings([sink]);
@@ -268,7 +508,7 @@ describe("sink scalar field", () => {
         expect(sinkCutMm(frame.dx, frame.dy, ctx).mm).toBeCloseTo(3, 2);
     });
 
-    test("floor guard holds 2 mm and the wall guard holds 3 mm", () => {
+    test("floor guard holds 2 mm and the wall guard holds 2 mm", () => {
         const floor = applyFloorGuard(2.4, 1.2, "mpj1");
         expect(floor.cutMm).toBeCloseTo(0.4, 6);
         expect(floor.warning?.code).toBe("floor");
@@ -276,17 +516,17 @@ describe("sink scalar field", () => {
         expect(ok.cutMm).toBe(2);
         expect(ok.warning).toBeUndefined();
         const wall = guardedRimLowering(4, 2, 0);
-        expect(wall.warning).toBe(true);
-        expect(wall.lowering).toBeCloseTo(1, 6);
-        // Crest stays LATERAL_WALL_MIN_MM above the local footbed, not above z=0.
+        expect(wall.warning).toBe(false);
+        expect(wall.lowering).toBeCloseTo(2, 6);
         const aboveBed = guardedRimLowering(8, 4, 5);
         expect(aboveBed.warning).toBe(true);
-        expect(aboveBed.lowering).toBeCloseTo(0, 6);
+        expect(aboveBed.lowering).toBeCloseTo(1, 6);
         const clearance = guardedRimLowering(10, 4, 6);
-        expect(clearance.lowering).toBeCloseTo(1, 6);
+        expect(clearance.warning).toBe(true);
+        expect(clearance.lowering).toBeCloseTo(2, 6);
     });
 
-    test("wall relief keeps 3 mm above the inboard footbed", () => {
+    test("wall relief keeps 2 mm above the inboard footbed", () => {
         const length = 260;
         const width = 95;
         const rimX = 0.42 * length;
@@ -307,33 +547,66 @@ describe("sink scalar field", () => {
             side: "right",
             sinks: [{ id: "sty", kind: "styloid", depthMm: 3, u: rimX / length, v }],
         });
-        // A z=0 guard would drop the crest by the full 3 mm (8 → 5).
-        expect(positions[2]).toBeCloseTo(8, 3);
+        expect(positions[2]).toBeGreaterThanOrEqual(5 + LATERAL_WALL_MIN_MM - 1e-3);
         expect(positions[0]).toBeCloseTo(rimX, 6);
         expect(positions[1]).toBeCloseTo(rimY, 6);
     });
 
-    test("5th MPJ is zero at the lateral rim; styloid is not", () => {
+    test("5th MPJ taper reaches the lateral outline; styloid still cuts", () => {
         const fifth = placed("mpj5", 4);
         const ctx = surface(9, "left", [fifth]);
         const frame = sinkFrame(fifth, ctx)!;
         expect(sinkCutMm(frame.dx, frame.dy, ctx).mm).toBeGreaterThan(3.9);
-        expect(sinkCutMm(frame.cx, frame.cy, ctx, 0.95).mm).toBe(0);
-        expect(sinkCutMm(frame.cx, frame.cy, ctx, 0.97).mm).toBe(0);
+        const half = effectiveOutlineHalfWidth(frame.u, ctx.lengthMm, ctx.widthMm, null) * (ctx.widthMm / 2);
+        const lateralY = half;
+        const cut = sinkCutMm(frame.cx, lateralY, ctx).mm;
+        const thick = sinkThicknessMm(frame.cx, lateralY, ctx);
+        expect(cut, "5th MPJ taper reaches the lateral outline").toBeGreaterThan(0);
+        expect(cut).toBeLessThanOrEqual(thick + 1e-6);
         const sty = placed("styloid", 2);
         const styCtx = surface(9, "left", [sty]);
         const styFrame = sinkFrame(sty, styCtx)!;
         expect(sinkCutMm(styFrame.dx, styFrame.dy, styCtx, 0.95).mm).toBeGreaterThan(1.9);
     });
 
-    test("1st MPJ fades out before the medial rim and stays full at the deep point", () => {
+    test("1st MPJ cut stays within the added thickness out to the medial outline", () => {
         const first = placed("mpj1", 4);
         const ctx = surface(9, "left", [first]);
         const frame = sinkFrame(first, ctx)!;
         expect(sinkCutMm(frame.dx, frame.dy, ctx).mm).toBeGreaterThan(3.9);
-        expect(sinkCutMm(frame.cx, frame.cy, ctx, 0.05).mm).toBe(0);
-        expect(sinkCutMm(frame.cx, frame.cy, ctx, 0.02).mm).toBe(0);
-        expect(sinkCutMm(frame.cx, frame.cy, ctx, 0.12).mm).toBeGreaterThan(3.9);
+        const half = effectiveOutlineHalfWidth(frame.u, ctx.lengthMm, ctx.widthMm, null) * (ctx.widthMm / 2);
+        const span = half * 2;
+        const yAt = (v: number) => -half + v * span;
+        for (const v of [0, 0.02, 0.04]) {
+            const cut = sinkCutMm(frame.cx, yAt(v), ctx).mm;
+            const thick = sinkThicknessMm(frame.cx, yAt(v), ctx);
+            expect(cut, `cut > 0 at the medial taper v=${v}`).toBeGreaterThan(0);
+            expect(cut, `cut <= added thickness at v=${v}`).toBeLessThanOrEqual(thick + 1e-6);
+            expect(thick - cut, `floor is plain + clearance at v=${v}`).toBeGreaterThanOrEqual(0);
+        }
+        const deepCut = sinkCutMm(frame.dx, frame.dy, ctx).mm;
+        const deepThick = sinkThicknessMm(frame.dx, frame.dy, ctx);
+        expect(deepCut).toBeGreaterThan(3.9);
+        expect(deepThick - deepCut).toBeGreaterThanOrEqual(0.5 - 1e-6);
+    });
+
+    test("reverse kinetic wedge and 1st MPJ both taper through the medial outline", () => {
+        const wedge = placed("rkw", 4);
+        const ctx = surface(9, "left", [wedge]);
+        const frame = sinkFrame(wedge, ctx)!;
+        const half = effectiveOutlineHalfWidth(frame.u, ctx.lengthMm, ctx.widthMm, null) * (ctx.widthMm / 2);
+        const wedgeCut = sinkCutMm(frame.cx, -half + 1, ctx).mm;
+        const wedgeThick = sinkThicknessMm(frame.cx, -half + 1, ctx);
+        expect(wedgeCut).toBeGreaterThan(0);
+        expect(wedgeCut).toBeLessThanOrEqual(wedgeThick + 1e-6);
+        const first = placed("mpj1", 4);
+        const mpjCtx = surface(9, "left", [first]);
+        const mpj = sinkFrame(first, mpjCtx)!;
+        const mpjHalf =
+            effectiveOutlineHalfWidth(mpj.u, mpjCtx.lengthMm, mpjCtx.widthMm, null) * (mpjCtx.widthMm / 2);
+        const mpjCut = sinkCutMm(mpj.cx, -mpjHalf + 1, mpjCtx).mm;
+        expect(mpjCut).toBeGreaterThan(0);
+        expect(mpjCut).toBeLessThanOrEqual(sinkThicknessMm(mpj.cx, -mpjHalf + 1, mpjCtx) + 1e-6);
     });
 
     test("heightAt adds T and leaves the wedge term unchanged", () => {
@@ -437,7 +710,7 @@ describe("sink scalar field", () => {
         expect(ellipseOffsetDistance(1, 0, 5, 3)).toBe(0);
     });
 
-    test("styloid wall relief changes z only and fades below the floor", () => {
+    test("styloid wall relief fades below the floor and does not notch a cleared rim", () => {
         expect(styloidWallReliefAt(10, 12, 2, 2)).toBeLessThan(0);
         expect(styloidWallReliefAt(12 - 2 - 4, 12, 2, 2)).toBeCloseTo(0, 5);
         const nS = 6;
@@ -477,7 +750,64 @@ describe("sink scalar field", () => {
             }
         }
         const moved = positions.some((z, i) => i % 3 === 2 && z !== before[i]);
-        expect(moved).toBe(true);
+        expect(moved).toBe(false);
+    });
+
+    test("styloid rim shifts medially to keep 4 mm and mirrors rotation on the left", () => {
+        for (const side of SIDES) {
+            const sink = placed("styloid", 2);
+            const ctx = surface(9, side, [sink]);
+            const frame = sinkFrame(sink, ctx)!;
+            expect(frame.rimBlocked).toBe(false);
+            expect(frame.rimMarginMm).toBeGreaterThanOrEqual(STYLOID_RIM_CLEAR_MM - 1e-4);
+            expect(frame.rimMarginMm).toBeLessThan(STYLOID_RIM_CLEAR_MM + 0.05);
+            expect(frame.rimShiftMm).toBeGreaterThan(1);
+            expect(frame.v).toBeLessThan(0.95);
+            expect(frame.rotationDeg).toBe(side === "left" ? -STYLOID_ROTATION_DEG : STYLOID_ROTATION_DEG);
+            expect(vSignedFromSpecV(0.95, "left")).toBeCloseTo(-vSignedFromSpecV(0.95, "right"), 6);
+            const cut = sinkCutMm(frame.dx, frame.dy, ctx);
+            expect(cut.mm).toBeCloseTo(2, 2);
+            expect(sinkRimWarnings(ctx)).toHaveLength(0);
+        }
+    });
+
+    test("styloid rim warns under 4 mm and hard-stops under 3 mm unless overridden to 2 mm", () => {
+        const sink = placed("styloid", 2);
+        const wide = surface(9, "right", [sink]);
+        const halfAt = (widthMm: number) => {
+            const ctx = { ...wide, widthMm, sinks: [sink] };
+            return sinkFrame(sink, ctx)!;
+        };
+        let warnWidth = 0;
+        let stopWidth = 0;
+        for (let width = 95; width >= 20; width -= 1) {
+            const frame = halfAt(width);
+            if (!warnWidth && frame.rimWarning?.code === "rim") warnWidth = width;
+            if (!stopWidth && frame.rimBlocked) stopWidth = width;
+        }
+        expect(warnWidth).toBeGreaterThan(0);
+        expect(stopWidth).toBeGreaterThan(0);
+        expect(stopWidth).toBeLessThan(warnWidth);
+        const warned = halfAt(warnWidth);
+        expect(warned.rimBlocked).toBe(false);
+        expect(warned.rimMarginMm).toBeLessThan(STYLOID_RIM_CLEAR_MM);
+        expect(warned.rimMarginMm).toBeGreaterThanOrEqual(STYLOID_RIM_HARD_MM - 0.05);
+        const stopped = halfAt(stopWidth);
+        expect(stopped.rimMarginMm).toBeLessThan(STYLOID_RIM_HARD_MM);
+        expect(sinkCutMm(stopped.dx, stopped.dy, { ...wide, widthMm: stopWidth, sinks: [sink] }).mm).toBe(0);
+        const override = { ...sink, rimOverride: true };
+        const overridden = sinkFrame(override, { ...wide, widthMm: stopWidth, sinks: [override] })!;
+        if (overridden.rimMarginMm >= STYLOID_RIM_OVERRIDE_FLOOR_MM) {
+            expect(overridden.rimBlocked).toBe(false);
+            expect(
+                sinkCutMm(overridden.dx, overridden.dy, { ...wide, widthMm: stopWidth, sinks: [override] })
+                    .mm,
+            ).toBeGreaterThan(1);
+        }
+        const tiny = sinkFrame(override, { ...wide, widthMm: 20, sinks: [override] })!;
+        expect(tiny.rimMarginMm).toBeLessThan(STYLOID_RIM_OVERRIDE_FLOOR_MM);
+        expect(tiny.rimBlocked).toBe(true);
+        expect(tiny.rimWarning?.code).toBe("rim-hard-stop");
     });
 
     test("migrateDesignSinks leaves a missing list and splits a legacy array per side", () => {
