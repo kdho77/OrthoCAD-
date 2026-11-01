@@ -1280,9 +1280,13 @@ export function applySinkCutToGeometry(
             (x, y) => taperOverlap(x, meshYToAnatomical(y, ctx.side, cutCtx.medialYSign), cutCtx),
         );
         for (let i = 0; i < count; i++) {
-            const floor = base[i * 3 + thickAxis]!;
+            const cutZ = arr[i * 3 + thickAxis]!;
+            const plain = base[i * 3 + thickAxis]!;
             const next = positions[i * 3 + 2]!;
-            arr[i * 3 + thickAxis] = next < floor ? floor : next;
+            // Relax may ease a shoulder. When the cut already sits on the
+            // thickened surface, do not let that ease fall through the plain.
+            // A cut-only call is below that plain on purpose and must stay cut.
+            arr[i * 3 + thickAxis] = cutZ >= plain - 1e-6 ? Math.max(next, plain) : next;
         }
     }
     pos.needsUpdate = true;
