@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
+
 import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
 import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
@@ -52,6 +54,7 @@ import {
     reconstructProceduralPreviewInWorker,
 } from "@/lib/geometry/procedural-wall/preview-loft-worker";
 import { composeViewerPrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
+import { printSolidOptions } from "@/lib/geometry/procedural-wall/print-solid-options";
 import { proceduralViewerStockGate } from "@/lib/geometry/procedural-wall/sample-top-display";
 import {
     loadSampleTopGeometry,
@@ -829,32 +832,23 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         if (session.cancelled) return;
                         const started = performance.now();
                         try {
-                            const preview = await reconstructProceduralPreviewInWorker(raw, {
-                                corrections: field.corrections,
-                                thicknessMm,
-                                stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
-                                deviceType,
-                                lateralFlange: {
-                                    heightMm: lateralFlangeHeightMm,
-                                    lengthMm: lateralFlangeLengthMm,
-                                    angleDeg: lateralFlangeAngleDeg,
-                                },
-                                archGrindDepthMm: 0,
-                                wallStyle,
-                                scanPattern: design.pattern,
-                                sourceField: field,
-                                composedTop: true,
-                                shoeWidth: {
-                                    width: widthId,
-                                    ballWidthMm: layout.widthMm,
-                                    heelWidthMm: layout.widthMm * 0.62,
-                                    heelOverrideMm: heelW,
-                                },
-                                trimline: printTrim,
-                                textMarking: design.textMarking,
-                                side,
-                                ...(livePts ? { bottomPattern: livePts } : {}),
-                            });
+                            const preview = await reconstructProceduralPreviewInWorker(
+                                raw,
+                                printSolidOptions({
+                                    design,
+                                    side,
+                                    field,
+                                    viewer: {
+                                        wallStyle,
+                                        deviceType,
+                                        lateralFlangeHeightMm,
+                                        lateralFlangeLengthMm,
+                                        lateralFlangeAngleDeg,
+                                    },
+                                    trimline: printTrim,
+                                    bottomPattern: livePts,
+                                }),
+                            );
                             let placementReference: BufferGeometry;
                             try {
                                 placementReference = await composeViewerPrintSolidTop({

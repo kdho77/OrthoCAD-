@@ -2,11 +2,7 @@
 
 import type { BufferGeometry } from "three";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
-import {
-    BASE_REFERENCE_THICKNESS_MM,
-    classifyBaseTopFactors,
-    getBaseFootprintFrame,
-} from "@/lib/geometry/base-modifier";
+import { classifyBaseTopFactors, getBaseFootprintFrame } from "@/lib/geometry/base-modifier";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { getKernel } from "@/lib/geometry/geometry-kernel";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
@@ -17,7 +13,9 @@ import {
     closeGlbInsoleToSolid,
     DEFAULT_GLB_CLOSED_BASELINE,
 } from "@/lib/geometry/mesh-close";
+import { resolveLiveBottomPattern } from "@/lib/geometry/procedural-wall/live-bottom-pattern";
 import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/preview-loft-ui";
+import { printSolidOptions } from "@/lib/geometry/procedural-wall/print-solid-options";
 import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { assertShapeFinishExportAllowed } from "@/lib/geometry/shape-finish-gates";
 import {
@@ -28,8 +26,9 @@ import {
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
-import { curveToPolyPoints, useBottomPatternStore } from "@/stores/bottom-pattern-store";
+import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
+import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, ProductionMethod, Side } from "@/types";
 
 /** Export routing: manufacturing and preview STL both use mesh-close. */
@@ -73,20 +72,20 @@ async function buildModifiedBaseGeometry(
                 : design.paired.rightThicknessMm
             : design.thicknessMm;
         const field = baseModifierFieldAuthoritative(design, side, effThickness);
-        const stored = useBottomPatternStore.getState().getPattern(side);
+        const edits = useMeshEditStore.getState();
         const preview = await buildProceduralExportSolid({
+            ...printSolidOptions({
+                design,
+                side,
+                field,
+                viewer: viewer ?? {},
+                trimline: edits.getActiveDraftTrimline(side) ?? getDesignTrimline(design, side),
+                bottomPattern: resolveLiveBottomPattern({
+                    draft: edits.getActiveDraftBottomPattern(side),
+                    stored: useBottomPatternStore.getState().getPattern(side),
+                }),
+            }),
             mirrored: Boolean(base.mirrored),
-            corrections: field.corrections,
-            thicknessMm: effThickness,
-            stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
-            wallStyle: viewer?.wallStyle ?? "straight",
-            scanPattern: design.pattern,
-            textMarking: design.textMarking,
-            side,
-            ...(field.sinks && field.sinks.length > 0
-                ? { sinks: field.sinks, sinkStyloidThicken: field.sinkStyloidThicken }
-                : {}),
-            ...(stored ? { bottomPattern: curveToPolyPoints(stored) } : {}),
         });
         return preview.geometry;
     }
@@ -124,42 +123,39 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
     );
 }
 
-/** Export STL bytes for the active design side. */
-export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
+/** Build and validate the actual manufacturing mesh. Caller owns the geometry. */
+export async function buildValidatedExportGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
     assertShapeFinishExportAllowed(design, side);
-
-    const modifiedBase = await buildModifiedBaseGeometry(design, side, 0);
-    if (!modifiedBase) {
+    const geometry = await buildModifiedBaseGeometry(design, side, 0);
+    if (!geometry) {
         throw new Error(
-            "[EXPORT] No GLB base geometry available. " +
-                "Load a stock base before exporting. " +
-                "Parametric export is not supported.",
+            "[EXPORT] No GLB base geometry available. Load a stock base before exporting. Parametric export is not supported.",
         );
     }
-    const geometry = modifiedBase;
+    let solid: BufferGeometry | undefined;
     try {
-        if (typeof console !== "undefined") {
-            console.log("[EXPORT] closing GLB insole rims...");
-        }
-        const solid = closeGlbInsoleToSolid(geometry);
+        solid = closeGlbInsoleToSolid(geometry);
         const topN = (solid.userData as { topVertexCount?: number }).topVertexCount ?? 0;
         assertClosedSolidAcceptable(solid, topN, topN > 0 ? DEFAULT_GLB_CLOSED_BASELINE : null);
-        // Men's 9 is scale 1 (no vertex writes). Other sizes scale the closed
-        // solid in XY so the native loft and seam close stay on the approved sheet.
         scaleFootprintUniform(solid, insoleLayoutFromDesign(design).scale);
-        try {
-            return geometryToBinarySTL(solid);
-        } finally {
-            solid.dispose();
-        }
-    } catch (e) {
-        if (typeof console !== "undefined") {
-            console.error("[EXPORT] export failed:", e);
-        }
-        throw e;
+        return solid;
+    } catch (error) {
+        if (solid && solid !== geometry) solid.dispose();
+        if (!solid || solid === geometry) geometry.dispose();
+        throw error;
     } finally {
-        geometry.dispose();
+        if (solid && solid !== geometry) geometry.dispose();
+    }
+}
+
+/** STL and 3MF serialize the same validated manufacturing shell. */
+export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
+    const solid = await buildValidatedExportGeometry(side);
+    try {
+        return geometryToBinarySTL(solid);
+    } finally {
+        solid.dispose();
     }
 }
 
