@@ -72,6 +72,7 @@ import {
     limitStationSkew,
     minInsetForLeanMm,
     PATTERN_SOURCE_FAIRED_STOCK,
+    reseatDenseOutlineHeadings,
     scalePatternWidth,
     shiftPatternByRimFollow,
     smoothMovedStationOutline,
@@ -1519,10 +1520,12 @@ export function reconstructProceduralWalls(
         reparameterizeBArcLength(stations, hygiened.loop);
     }
     if (model.mortonsPatternRim && model.mortonsPatternRim.length >= 8) {
-        // Rim-arc B keeps headings on a dense medial blend. The pattern inset
-        // is not the same arc fraction as the rim, so pull skew back after
-        // that parameterization. Uniform rims never set this outline.
+        // Skew pull squares the columns. On the dense medial blend that
+        // slide walks the outline ahead of the rim and the heading exceeds
+        // 15°. Seat that run back on the rim normal. The lip is not moved.
+        // Uniform rims never set this outline.
         limitStationSkew(stations, hygiened.loop, r1, r2, stationSkewOpts);
+        reseatDenseOutlineHeadings(stations, hygiened.loop);
     }
     assertClosedStationRing(stations, rimLocal);
     {

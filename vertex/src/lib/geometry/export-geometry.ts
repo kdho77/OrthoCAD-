@@ -84,6 +84,11 @@ async function buildModifiedBaseGeometry(
                 ? { sinks: field.sinks, sinkStyloidThicken: field.sinkStyloidThicken }
                 : {}),
             ...(stored ? { bottomPattern: curveToPolyPoints(stored) } : {}),
+            // Morton's is applied on the composed top. Passing sourceField
+            // only while it is active leaves the off path byte-identical.
+            ...(field.mortons && mortonsActive(field.mortons)
+                ? { sourceField: field, composedTop: true as const }
+                : {}),
         });
         return preview.geometry;
     }
@@ -141,7 +146,16 @@ export async function buildExportStl(side: Side, _options: BuildExportStlOptions
         }
         const solid = closeGlbInsoleToSolid(geometry);
         const topN = (solid.userData as { topVertexCount?: number }).topVertexCount ?? 0;
-        assertClosedSolidAcceptable(solid, topN, topN > 0 ? DEFAULT_GLB_CLOSED_BASELINE : null);
+        const mortonsOn = Boolean(design.mortons?.[side] && mortonsActive(design.mortons[side]));
+        // Morton's refines the rim, so the closed solid is a manifold sphere
+        // (Euler 2). The no-Morton's pin stays on the legacy baseline.
+        const baseline =
+            topN > 0
+                ? mortonsOn
+                    ? { eulerCharacteristic: 2, heelBridgeSelfIntersections: 0 }
+                    : DEFAULT_GLB_CLOSED_BASELINE
+                : null;
+        assertClosedSolidAcceptable(solid, topN, baseline);
         try {
             return geometryToBinarySTL(solid);
         } finally {

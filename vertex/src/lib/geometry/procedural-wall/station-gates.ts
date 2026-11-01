@@ -25,7 +25,12 @@ import { fairedPattern } from "./faired-pattern";
 import type { HermiteStation } from "./loft";
 import { outwardNormal } from "./measure";
 import { enforceMinRimInset } from "./pattern-hygiene";
-import { type ForefootSkewExempt, nearestRayHitOnLoop, spreadClosedOnLoop } from "./stations";
+import {
+    type ForefootSkewExempt,
+    nearestRayHitOnLoop,
+    segmentsCrossXY,
+    spreadClosedOnLoop,
+} from "./stations";
 
 export const PATTERN_SOURCE_FAIRED_STOCK = "faired-stock";
 export const MIN_INSET_FLOOR_MM = 1;
@@ -696,6 +701,509 @@ function slideSkewStations(
         const hl = Math.hypot(dx, dy);
         if (hl > 1e-6) st.n = { x: dx / hl, y: dy / hl };
         st.tB = nearestS01(st.outline, loop);
+    }
+}
+
+function unwrapNear(s01: number[]): number[] {
+    const out = new Array<number>(s01.length);
+    out[0] = s01[0] ?? 0;
+    for (let i = 1; i < s01.length; i++) {
+        let s = s01[i] ?? 0;
+        const prev = out[i - 1] ?? 0;
+        while (s < prev - 0.5) s += 1;
+        while (s > prev + 0.5) s -= 1;
+        out[i] = s;
+    }
+    return out;
+}
+
+const SHORT_COLUMN_MM = 16;
+/** Outline-parameter span of two local neighbours. Larger than this is a cross-foot jump. */
+const LOCAL_TB_SPAN = 0.045;
+
+function columnLen(st: HermiteStation): number {
+    return Math.hypot(st.outline.x - st.rim.x, st.outline.y - st.rim.y);
+}
+
+function writeLoopOutline(st: HermiteStation, loop: PolyPoint[], s: number): void {
+    const s01 = ((s % 1) + 1) % 1;
+    const p = sampleClosedAtArc01(loop, s01);
+    st.outline = { x: p.x, y: p.y, z: 0 };
+    st.tB = s01;
+    const dx = p.x - st.rim.x;
+    const dy = p.y - st.rim.y;
+    const hl = Math.hypot(dx, dy);
+    if (hl > 1e-6) st.n = { x: dx / hl, y: dy / hl };
+}
+
+function forwardSpan(sL: number, sR: number): { sL: number; sR: number; span: number } {
+    let right = sR;
+    while (right <= sL) right += 1;
+    return { sL, sR: right, span: right - sL };
+}
+
+/** Plan crossings of column i against non-adjacent columns in a local window. */
+function columnCrossesNear(stations: HermiteStation[], i: number, window: number): number {
+    const n = stations.length;
+    const a0 = stations[i]!.outline;
+    const a1 = stations[i]!.rim;
+    let hits = 0;
+    for (let k = 2; k <= window; k++) {
+        const j0 = (i + k) % n;
+        const j1 = (i - k + n) % n;
+        if (segmentsCrossXY(a0, a1, stations[j0]!.outline, stations[j0]!.rim)) hits++;
+        if (segmentsCrossXY(a0, a1, stations[j1]!.outline, stations[j1]!.rim)) hits++;
+    }
+    return hits;
+}
+
+const EASE_COLUMN_MM = 24;
+
+/**
+ * A dense medial rim can fold the outline parameter backwards by a few
+ * millimetres and pick it up again at the next wide step. Shift that run
+ * forward, as one piece, into the absorbing gap so the columns stay in
+ * order. Relative spacing inside the run is unchanged, so only the kink
+ * turns. The rim is not moved.
+ */
+function repairParameterPleats(stations: HermiteStation[], loop: PolyPoint[]): void {
+    const n = stations.length;
+    const rim = stations.map((s) => s.rim);
+    const c = centroidOf(rim);
+    const outward = rim.map((_, i) => outwardNormal(rim, i, c));
+
+    for (let pass = 0; pass < 4; pass++) {
+        const s0 = unwrapNear(stations.map((st) => st.tB ?? nearestS01(st.outline, loop)));
+        const positive: number[] = [];
+        for (let i = 0; i < n; i++) {
+            const d = (s0[(i + 1) % n] ?? 0) - (s0[i] ?? 0);
+            if (d > 1e-5 && d < 0.02) positive.push(d);
+        }
+        positive.sort((a, b) => a - b);
+        const median = positive[Math.floor(positive.length / 2)] ?? 0.001;
+        const jump = Math.max(median * 4, 0.0035);
+        const retractPrefix = (at: number) => {
+            if (at <= 0 || at + 1 >= n) return;
+            const residual = (s0[at] ?? 0) - (s0[at + 1] ?? 0) + median * 0.35;
+            if (residual <= 1e-5) return;
+            let anchor = at;
+            for (let t = at; t > Math.max(0, at - 40); t--) {
+                anchor = t;
+                const gap = (s0[t] ?? 0) - (s0[t - 1] ?? 0);
+                if (gap >= residual + median * 0.2) break;
+            }
+            if (anchor <= 0) return;
+            const gap = (s0[anchor] ?? 0) - (s0[anchor - 1] ?? 0);
+            const delta = Math.min(residual, Math.max(0, gap - median * 0.2));
+            if (delta <= 1e-5) return;
+            const movedIdx: number[] = [];
+            for (let t = anchor; t <= at; t++) movedIdx.push(t);
+            const snap = movedIdx.map((idx) => ({
+                outline: { ...stations[idx]!.outline },
+                tB: stations[idx]!.tB,
+                nvec: { ...stations[idx]!.n },
+            }));
+            const fits = (d: number): boolean => {
+                for (const idx of movedIdx) {
+                    writeLoopOutline(stations[idx]!, loop, (s0[idx] ?? 0) - d);
+                    const m = columnInsetSkew(stations[idx]!.rim, stations[idx]!.outline, outward[idx]!);
+                    const cap = SKEW_INSET_RATIO * Math.max(m.insetMm, 0);
+                    if (
+                        m.insetMm + 1e-3 < MIN_INSET_FLOOR_MM ||
+                        m.skewMm > cap + 1e-3 ||
+                        columnLen(stations[idx]!) > 28
+                    ) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+            let bestD = 0;
+            let loD = 0;
+            let hiD = delta;
+            for (let step = 0; step < 6; step++) {
+                const mid = (loD + hiD) * 0.5;
+                if (fits(mid)) {
+                    bestD = mid;
+                    loD = mid;
+                } else {
+                    hiD = mid;
+                }
+            }
+            if (bestD <= 1e-5) {
+                for (let t = 0; t < movedIdx.length; t++) {
+                    stations[movedIdx[t]!]!.outline = snap[t]!.outline;
+                    stations[movedIdx[t]!]!.tB = snap[t]!.tB;
+                    stations[movedIdx[t]!]!.n = snap[t]!.nvec;
+                }
+                return;
+            }
+            for (const idx of movedIdx) {
+                writeLoopOutline(stations[idx]!, loop, (s0[idx] ?? 0) - bestD);
+                s0[idx] = (s0[idx] ?? 0) - bestD;
+            }
+        };
+        let fixed = 0;
+        for (let i = 0; i + 1 < n; i++) {
+            if ((s0[i + 1] ?? 0) >= (s0[i] ?? 0) - 1e-5) continue;
+            const need = (s0[i] ?? 0) + median * 0.75 - (s0[i + 1] ?? 0);
+            if (need <= 1e-5) continue;
+            let k = i + 1;
+            let guard = 0;
+            while (guard++ < 48 && k + 1 < n) {
+                const step = (s0[k + 1] ?? 0) - (s0[k] ?? 0);
+                if (step < -1e-5) break;
+                if (step > jump) break;
+                k++;
+            }
+            if (k + 1 >= n) continue;
+            const room = (s0[k + 1] ?? 0) - (s0[k] ?? 0) - median * 0.5;
+            const appliedMax = Math.min(need, room);
+            if (appliedMax <= 1e-5) continue;
+            const idxs: number[] = [];
+            for (let t = i + 1; t <= k; t++) idxs.push(t);
+            const prior = idxs.map((idx) => {
+                const m = columnInsetSkew(stations[idx]!.rim, stations[idx]!.outline, outward[idx]!);
+                return { skew: m.skewMm, inset: m.insetMm };
+            });
+            const stillLegal = (idxPos: number): boolean => {
+                const idx = idxs[idxPos]!;
+                const { insetMm, skewMm } = columnInsetSkew(
+                    stations[idx]!.rim,
+                    stations[idx]!.outline,
+                    outward[idx]!,
+                );
+                if (columnLen(stations[idx]!) > 28) return false;
+                const was = prior[idxPos]!;
+                const wasOk =
+                    was.inset + 1e-3 >= MIN_INSET_FLOOR_MM &&
+                    was.skew <= SKEW_INSET_RATIO * Math.max(was.inset, 0) + 1e-3;
+                if (!wasOk)
+                    return (
+                        skewMm <= was.skew + 1e-3 && insetMm + 1e-3 >= Math.min(was.inset, MIN_INSET_FLOOR_MM)
+                    );
+                if (insetMm + 1e-3 < MIN_INSET_FLOOR_MM) return false;
+                return skewMm <= SKEW_INSET_RATIO * Math.max(insetMm, 0) + 1e-3;
+            };
+            const saved = idxs.map((idx) => ({
+                outline: { ...stations[idx]!.outline },
+                tB: stations[idx]!.tB,
+                nvec: { ...stations[idx]!.n },
+            }));
+            const restore = () => {
+                for (let t = 0; t < idxs.length; t++) {
+                    stations[idxs[t]!]!.outline = saved[t]!.outline;
+                    stations[idxs[t]!]!.tB = saved[t]!.tB;
+                    stations[idxs[t]!]!.n = saved[t]!.nvec;
+                }
+            };
+            const apply = (delta: number) => {
+                for (const idx of idxs) writeLoopOutline(stations[idx]!, loop, (s0[idx] ?? 0) + delta);
+            };
+            const crossBefore =
+                columnCrossesNear(stations, i, 48) +
+                columnCrossesNear(stations, i + 1, 48) +
+                columnCrossesNear(stations, k, 48);
+            const headBefore = headingDeg(stations[i]!, stations[i + 1]!);
+            let best = 0;
+            let lo = 0;
+            let hi = appliedMax;
+            for (let step = 0; step < 8; step++) {
+                const mid = (lo + hi) * 0.5;
+                apply(mid);
+                const ok = idxs.every((_, pos) => stillLegal(pos));
+                const head = headingDeg(stations[i]!, stations[i + 1]!);
+                const cross =
+                    columnCrossesNear(stations, i, 48) +
+                    columnCrossesNear(stations, i + 1, 48) +
+                    columnCrossesNear(stations, k, 48);
+                if (ok && cross <= crossBefore && head + 1e-3 < headBefore) {
+                    best = mid;
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            if (best <= 1e-5) {
+                restore();
+                const probe = Math.min(appliedMax, median);
+                apply(probe);
+                const cut = idxs.findIndex((_, t) => !stillLegal(t));
+                restore();
+                if (cut > 0) {
+                    const k2 = idxs[cut - 1]!;
+                    const anchor = idxs[cut]!;
+                    const room2 = (s0[anchor] ?? 0) - (s0[k2] ?? 0) - median * 0.5;
+                    const max2 = Math.min(need, room2);
+                    const idxs2 = idxs.slice(0, cut);
+                    if (max2 > 1e-5 && anchor === k2 + 1) {
+                        const saved2 = idxs2.map((idx) => ({
+                            outline: { ...stations[idx]!.outline },
+                            tB: stations[idx]!.tB,
+                            nvec: { ...stations[idx]!.n },
+                        }));
+                        const prior2 = idxs2.map((idx) => prior[idxs.indexOf(idx)]!);
+                        const apply2 = (delta: number) => {
+                            for (const idx of idxs2)
+                                writeLoopOutline(stations[idx]!, loop, (s0[idx] ?? 0) + delta);
+                        };
+                        const legal2 = () =>
+                            idxs2.every((idx, t) => {
+                                const { insetMm, skewMm } = columnInsetSkew(
+                                    stations[idx]!.rim,
+                                    stations[idx]!.outline,
+                                    outward[idx]!,
+                                );
+                                if (columnLen(stations[idx]!) > 28) return false;
+                                const was = prior2[t]!;
+                                const wasOk =
+                                    was.inset + 1e-3 >= MIN_INSET_FLOOR_MM &&
+                                    was.skew <= SKEW_INSET_RATIO * Math.max(was.inset, 0) + 1e-3;
+                                if (!wasOk) {
+                                    return (
+                                        skewMm <= was.skew + 1e-3 &&
+                                        insetMm + 1e-3 >= Math.min(was.inset, MIN_INSET_FLOOR_MM)
+                                    );
+                                }
+                                if (insetMm + 1e-3 < MIN_INSET_FLOOR_MM) return false;
+                                return skewMm <= SKEW_INSET_RATIO * Math.max(insetMm, 0) + 1e-3;
+                            });
+                        const cross0 =
+                            columnCrossesNear(stations, i, 48) + columnCrossesNear(stations, i + 1, 48);
+                        let best2 = 0;
+                        let lo2 = 0;
+                        let hi2 = max2;
+                        for (let step = 0; step < 8; step++) {
+                            const mid = (lo2 + hi2) * 0.5;
+                            apply2(mid);
+                            const head = headingDeg(stations[i]!, stations[i + 1]!);
+                            const cross =
+                                columnCrossesNear(stations, i, 48) + columnCrossesNear(stations, i + 1, 48);
+                            if (legal2() && cross <= cross0 && head + 1e-3 < headBefore) {
+                                best2 = mid;
+                                lo2 = mid;
+                            } else {
+                                hi2 = mid;
+                            }
+                        }
+                        if (best2 > 1e-5) {
+                            apply2(best2);
+                            for (const idx of idxs2) s0[idx] = (s0[idx] ?? 0) + best2;
+                            retractPrefix(i);
+                            fixed++;
+                            continue;
+                        }
+                        for (let t = 0; t < idxs2.length; t++) {
+                            stations[idxs2[t]!]!.outline = saved2[t]!.outline;
+                            stations[idxs2[t]!]!.tB = saved2[t]!.tB;
+                            stations[idxs2[t]!]!.n = saved2[t]!.nvec;
+                        }
+                    }
+                }
+                continue;
+            }
+            apply(best);
+            for (const idx of idxs) s0[idx] = (s0[idx] ?? 0) + best;
+            retractPrefix(i);
+            fixed++;
+        }
+        if (!fixed) break;
+    }
+    const s1 = unwrapNear(stations.map((st) => st.tB ?? nearestS01(st.outline, loop)));
+    const { total } = polylineArcLengths(loop);
+    if (total < 1e-3) return;
+    for (let i = 0; i + 1 < n; i++) {
+        const behindS = (s1[i] ?? 0) - (s1[i + 1] ?? 0);
+        if (behindS <= 1e-6) continue;
+        const want = behindS * total + 0.22;
+        const floor = 0.16;
+        const gaps: number[] = [];
+        const span = Math.min(i, 28);
+        for (let t = i; t > i - span; t--) {
+            gaps.push(
+                Math.hypot(
+                    stations[t]!.outline.x - stations[t - 1]!.outline.x,
+                    stations[t]!.outline.y - stations[t - 1]!.outline.y,
+                ),
+            );
+        }
+        const surplus = gaps.reduce((sum, d) => sum + Math.max(0, d - floor), 0);
+        const take = Math.min(want, surplus);
+        if (take <= 1e-3) continue;
+        const uses: number[] = [];
+        let left = take;
+        for (const d of gaps) {
+            const use = Math.min(Math.max(0, d - floor), left);
+            uses.push(use);
+            left -= use;
+        }
+        const snap = uses.map((_, k) => {
+            const idx = i - k;
+            return {
+                outline: { ...stations[idx]!.outline },
+                tB: stations[idx]!.tB,
+                nvec: { ...stations[idx]!.n },
+            };
+        });
+        let shift = take;
+        let ok = true;
+        for (let k = 0; k < uses.length; k++) {
+            const idx = i - k;
+            writeLoopOutline(stations[idx]!, loop, (s1[idx] ?? 0) - shift / total);
+            const m = columnInsetSkew(stations[idx]!.rim, stations[idx]!.outline, outward[idx]!);
+            const cap = SKEW_INSET_RATIO * Math.max(m.insetMm, 0);
+            if (
+                m.insetMm + 1e-3 < MIN_INSET_FLOOR_MM ||
+                m.skewMm > cap + 1e-3 ||
+                columnLen(stations[idx]!) > 28
+            ) {
+                ok = false;
+            }
+            shift -= uses[k]!;
+        }
+        if (!ok) {
+            for (let k = 0; k < uses.length; k++) {
+                const idx = i - k;
+                stations[idx]!.outline = snap[k]!.outline;
+                stations[idx]!.tB = snap[k]!.tB;
+                stations[idx]!.n = snap[k]!.nvec;
+            }
+            continue;
+        }
+        let acc = take;
+        for (let k = 0; k < uses.length; k++) {
+            s1[i - k] = (s1[i - k] ?? 0) - acc / total;
+            acc -= uses[k]!;
+        }
+    }
+}
+
+/**
+ * The skew slide can land a dense medial column on the far side of the
+ * pattern (a ray along the inward normal hits the other edge inside 80 mm),
+ * or fold the outline parameter back on itself where the rim is dense.
+ * Pull far columns back between short neighbours, shift a folded run into
+ * the gap that absorbs it, then ease any remaining heading over 15°. The
+ * rim is not moved. Uniform outlines never enter: the caller gates this on
+ * the Morton's rim.
+ */
+export function reseatDenseOutlineHeadings(stations: HermiteStation[], loop: PolyPoint[]): void {
+    const n = stations.length;
+    if (n < 8 || loop.length < 8) return;
+    const unwrapped = () => unwrapNear(stations.map((st) => st.tB ?? nearestS01(st.outline, loop)));
+    repairParameterPleats(stations, loop);
+
+    for (let pass = 0; pass < 4; pass++) {
+        const s0 = unwrapped();
+        const lens = stations.map(columnLen);
+        const claimed = new Array<boolean>(n).fill(false);
+        let moved = 0;
+        for (let i = 0; i < n; i++) {
+            if (claimed[i] || lens[i]! <= SHORT_COLUMN_MM) continue;
+            let left = -1;
+            let right = -1;
+            for (let k = 1; k <= 24; k++) {
+                const j = (i - k + n) % n;
+                if (lens[j]! <= SHORT_COLUMN_MM) {
+                    left = j;
+                    break;
+                }
+            }
+            for (let k = 1; k <= 24; k++) {
+                const j = (i + k) % n;
+                if (lens[j]! <= SHORT_COLUMN_MM) {
+                    right = j;
+                    break;
+                }
+            }
+            if (left < 0 || right < 0) continue;
+            const span = forwardSpan(s0[left] ?? 0, s0[right] ?? 0);
+            if (span.span <= 1e-5 || span.span > 0.08) continue;
+            const idxs: number[] = [];
+            for (let k = (left + 1) % n; k !== right; k = (k + 1) % n) {
+                idxs.push(k);
+                if (idxs.length > 24) break;
+            }
+            if (idxs.length === 0 || idxs.length > 24) continue;
+            const chain = [left, ...idxs, right];
+            const gaps: number[] = [];
+            for (let k = 0; k < chain.length - 1; k++) {
+                const a = stations[chain[k]!]!.rim;
+                const b = stations[chain[k + 1]!]!.rim;
+                gaps.push(Math.max(1e-4, Math.hypot(b.x - a.x, b.y - a.y)));
+            }
+            const gapSum = gaps.reduce((s, d) => s + d, 0) || 1;
+            let acc = 0;
+            for (let k = 0; k < idxs.length; k++) {
+                acc += gaps[k]!;
+                writeLoopOutline(stations[idxs[k]!]!, loop, span.sL + span.span * (acc / gapSum));
+                claimed[idxs[k]!] = true;
+                moved++;
+            }
+        }
+        if (!moved) break;
+    }
+
+    const rim = stations.map((s) => s.rim);
+    const c = centroidOf(rim);
+    const outward = rim.map((_, i) => outwardNormal(rim, i, c));
+    for (let pass = 0; pass < 8; pass++) {
+        const s0 = unwrapped();
+        let moved = 0;
+        for (let i = 0; i < n; i++) {
+            const prev = (i + n - 1) % n;
+            const next = (i + 1) % n;
+            const hL = headingDeg(stations[prev]!, stations[i]!);
+            const hR = headingDeg(stations[i]!, stations[next]!);
+            if (Math.max(hL, hR) <= PRELOFT_HEADING_MAX_DEG + 1e-3) continue;
+            if (
+                columnLen(stations[i]!) > EASE_COLUMN_MM ||
+                columnLen(stations[prev]!) > EASE_COLUMN_MM ||
+                columnLen(stations[next]!) > EASE_COLUMN_MM
+            ) {
+                continue;
+            }
+            const span = forwardSpan(s0[prev] ?? 0, s0[next] ?? 0);
+            if (span.span <= 1e-5 || span.span > LOCAL_TB_SPAN) continue;
+            const beforeCross = columnCrossesNear(stations, i, 48);
+            const saved = {
+                outline: { ...stations[i]!.outline },
+                tB: stations[i]!.tB,
+                nvec: { ...stations[i]!.n },
+            };
+            let bestS: number | null = null;
+            let bestScore = Math.max(hL, hR);
+            const steps = 20;
+            for (let k = 1; k < steps; k++) {
+                const s = span.sL + (span.span * k) / steps;
+                writeLoopOutline(stations[i]!, loop, s);
+                if (columnLen(stations[i]!) > EASE_COLUMN_MM) continue;
+                const { insetMm, skewMm } = columnInsetSkew(
+                    stations[i]!.rim,
+                    stations[i]!.outline,
+                    outward[i]!,
+                );
+                const cap = SKEW_INSET_RATIO * Math.max(insetMm, 0);
+                if (insetMm + 1e-3 < MIN_INSET_FLOOR_MM || skewMm > cap + 1e-3) continue;
+                const score = Math.max(
+                    headingDeg(stations[prev]!, stations[i]!),
+                    headingDeg(stations[i]!, stations[next]!),
+                );
+                if (score + 1e-4 < bestScore && columnCrossesNear(stations, i, 48) <= beforeCross) {
+                    bestScore = score;
+                    bestS = s;
+                }
+            }
+            if (bestS == null) {
+                stations[i]!.outline = saved.outline;
+                stations[i]!.tB = saved.tB;
+                stations[i]!.n = saved.nvec;
+                continue;
+            }
+            writeLoopOutline(stations[i]!, loop, bestS);
+            moved++;
+        }
+        if (!moved) break;
     }
 }
 

@@ -599,7 +599,7 @@ function refineMinAngle(
         refine.push(...filled.extra);
         const steiner = [...baseSteiner, ...refine];
         const points = [...loop, ...extra, ...steiner];
-        nudgeInteriorDuplicates(points, loop.length, loop, keep);
+        nudgeInteriorDuplicates(points, loop.length, loop, keep, minLoopEdge(loop) < 0.25 ? 0.12 : 0.045);
         const faces = libraryCdtInterior(points, loop.length, extraEdges);
         assertIEdges(faces, loop.length);
         assertLibraryDisk(faces, loop.length);
@@ -648,7 +648,9 @@ function cdtDiskOf(
     for (let pass = 0; pass < 10; pass++) {
         const steiner = wantSteiner ? [...collar, ...inward, ...hex, ...refine] : [];
         points = [...loop, ...extra, ...steiner];
-        nudgeInteriorDuplicates(points, loop.length, loop, keep);
+        // Morton's rims are finer than ~0.2 mm. Stock outlines on this solid
+        // sit at ~0.34 mm and must keep the 0.045 mm nudge (byte pin).
+        nudgeInteriorDuplicates(points, loop.length, loop, keep, minEdge < 0.25 ? 0.12 : 0.045);
         faces = libraryCdtInterior(points, loop.length, extraEdges);
         assertIEdges(faces, loop.length);
         assertLibraryDisk(faces, loop.length);

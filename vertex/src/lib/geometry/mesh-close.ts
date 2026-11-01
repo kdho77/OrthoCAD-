@@ -1542,6 +1542,26 @@ export function buildGuardedEqualCountBridgeFaces(
  */
 export function triTriIntersect(t1: [Vector3, Vector3, Vector3], t2: [Vector3, Vector3, Vector3]): boolean {
     const eps = 1e-8;
+    // Parallel rim slivers (Morton's dense border) have no edge-cross axis along
+    // the rim, so SAT reports a hit when the boxes are disjoint. A separating
+    // world axis is conclusive.
+    for (let axis = 0; axis < 3; axis++) {
+        let min1 = Infinity;
+        let max1 = -Infinity;
+        let min2 = Infinity;
+        let max2 = -Infinity;
+        for (const p of t1) {
+            const v = axis === 0 ? p.x : axis === 1 ? p.y : p.z;
+            min1 = Math.min(min1, v);
+            max1 = Math.max(max1, v);
+        }
+        for (const p of t2) {
+            const v = axis === 0 ? p.x : axis === 1 ? p.y : p.z;
+            min2 = Math.min(min2, v);
+            max2 = Math.max(max2, v);
+        }
+        if (max1 < min2 - eps || max2 < min1 - eps) return false;
+    }
     const edges1 = [
         new Vector3().subVectors(t1[1], t1[0]),
         new Vector3().subVectors(t1[2], t1[1]),
