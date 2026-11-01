@@ -10,6 +10,7 @@ import { designPath } from "@/features/clients/routes";
 import { cn } from "@/lib/utils";
 import { useProductionStore } from "@/stores/production-store";
 import { formatRelative } from "../../../shared/client-files";
+import { gcodeRetentionLabel } from "../../../shared/retention";
 import {
     type DueFilter,
     defaultHistoryQuery,
@@ -51,7 +52,11 @@ export function ProductionPage({ tab }: { tab: ProductionTab }) {
     const printers = useProductionStore((state) => state.printers);
 
     useEffect(() => {
-        void loadProduction();
+        void loadProduction().finally(() => {
+            if (!import.meta.env.DEV) return;
+            if (!new URLSearchParams(window.location.search).has("e2eRetention")) return;
+            useProductionStore.getState().seedRetentionDemo();
+        });
     }, []);
 
     return (
@@ -164,6 +169,7 @@ function QueueTab({ jobs, printers }: { jobs: ProductionJob[]; printers: { id: s
                             <tr key={job.id} className="border-b border-border/60 align-top">
                                 <td className="py-2 pr-3">
                                     <JobTitle job={job} />
+                                    <GcodeRetention job={job} />
                                 </td>
                                 <td className="py-2 pr-3">{job.clientLabel}</td>
                                 <td className="py-2 pr-3">
@@ -195,6 +201,7 @@ function QueueTab({ jobs, printers }: { jobs: ProductionJob[]; printers: { id: s
                 {rows.map((job) => (
                     <article key={job.id} className="rounded-xl border border-border bg-panel p-3 text-sm">
                         <JobTitle job={job} />
+                        <GcodeRetention job={job} />
                         <p className="text-muted-foreground">{job.clientLabel}</p>
                         <p>
                             <Source job={job} /> · {processLabel(job.process)} · <Status job={job} />
@@ -352,6 +359,7 @@ function HistoryTab({ jobs }: { jobs: ProductionJob[] }) {
                             <tr key={job.id} className="border-b border-border/60">
                                 <td className="py-2 pr-3">
                                     <JobTitle job={job} />
+                                    <GcodeRetention job={job} />
                                 </td>
                                 <td className="py-2 pr-3">{job.clientLabel}</td>
                                 <td className="py-2 pr-3">
@@ -385,6 +393,16 @@ function HistoryTab({ jobs }: { jobs: ProductionJob[] }) {
                 </table>
             </div>
         </section>
+    );
+}
+
+function GcodeRetention({ job }: { job: ProductionJob }) {
+    const label = gcodeRetentionLabel(job.gcodeStoredAt, job.orderOpen);
+    if (!label) return null;
+    return (
+        <p className="text-xs text-muted-foreground" data-testid="gcode-countdown">
+            {label}
+        </p>
     );
 }
 

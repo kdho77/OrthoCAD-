@@ -7,6 +7,7 @@ import {
     type ClientRow,
     type DesignKind,
     prepareClientRecord,
+    shoeChartFromInput,
 } from "../../shared/client-files";
 
 // Client and design records stay in memory for the session. Names, dates of
@@ -107,6 +108,13 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
                         email: patch.email !== undefined ? patch.email : client.email,
                         phone: patch.phone !== undefined ? patch.phone : client.phone,
                         notes: patch.notes !== undefined ? patch.notes : client.notes,
+                        ...shoeChartFromInput({
+                            shoeSizeUs: patch.shoeSizeUs ?? client.shoeSizeUs,
+                            shoeSizesSplit: patch.shoeSizesSplit ?? client.shoeSizesSplit,
+                            shoeSizeLeftUs: patch.shoeSizeLeftUs ?? client.shoeSizeLeftUs,
+                            shoeSizeRightUs: patch.shoeSizeRightUs ?? client.shoeSizeRightUs,
+                            shoeWidth: patch.shoeWidth ?? client.shoeWidth,
+                        }),
                     },
                     { id: client.ownerId, tenantId: client.tenantId },
                     { storePhi: storePhiEnabled(), id: client.id },

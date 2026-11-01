@@ -15,18 +15,21 @@ import {
     canRestoreDesign,
     type DesignKind,
     type DesignSortKey,
+    type ShoeChart,
+    shoeChartFromInput,
     formatClientName,
     formatExact,
     formatRelative,
     isOrgAdmin,
     sortDesigns,
 } from "../../../shared/client-files";
-import { archiveClientRecord, createDesignRecord, saveClientRecord, saveDesignNotes } from "./client-actions";
+import { archiveClientRecord, createDesignRecord, designStateForKind, saveClientRecord, saveDesignNotes } from "./client-actions";
 import { DesignNotesField } from "./DesignNotesField";
 import { DirectoryHeader } from "./DirectoryHeader";
 import { NewClientDialog } from "./NewClientDialog";
 import { RowMenu } from "./RowMenu";
 import { designPath } from "./routes";
+import { ScanStart, ShoeChartPanel, StartChoice } from "./StartInsole";
 import { TypePickerDialog } from "./TypePickerDialog";
 
 export function ClientFilePage({ clientId }: { clientId: string }) {
@@ -46,6 +49,9 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
     const [toast, setToast] = useState<{ name: string; id: string } | null>(null);
     const [pendingDelete, setPendingDelete] = useState<DesignRecord | null>(null);
     const [storePhi, setStorePhi] = useState(storePhiEnabled);
+    const [flow, setFlow] = useState<"choice" | "scan" | null>(() =>
+        new URLSearchParams(window.location.search).get("start") === "insole" ? "choice" : null,
+    );
 
     useEffect(() => {
         if (!isApiConfigured()) return;
@@ -85,10 +91,32 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
         );
     }
 
+    const chart = shoeChartFromInput(client);
+    const saveChart = (next: ShoeChart) => {
+        void saveClientRecord(client.id, {
+            displayName: client.displayName,
+            firstName: client.firstName,
+            lastName: client.lastName,
+            reference: client.reference ?? "",
+            dateOfBirth: client.dateOfBirth,
+            mrn: client.mrn,
+            email: client.email,
+            phone: client.phone,
+            notes: client.notes,
+            ...next,
+        });
+    };
+    const openDesign = async (kind: DesignKind, state = designStateForKind(kind, chart)) => {
+        const designId = await createDesignRecord(client.id, kind, state);
+        navigate(designPath(client.id, designId));
+    };
     const pick = async (kind: DesignKind) => {
         setPicker(false);
-        const designId = await createDesignRecord(client.id, kind);
-        navigate(designPath(client.id, designId));
+        if (kind === "insole") {
+            setFlow("choice");
+            return;
+        }
+        await openDesign(kind);
     };
 
     return (
@@ -152,6 +180,24 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                         </div>
                     </div>
                 </section>
+                {flow === "choice" ? (
+                    <StartChoice
+                        onTemplate={() => void openDesign("insole")}
+                        onScan={() => setFlow("scan")}
+                        onBack={() => setFlow(null)}
+                    />
+                ) : null}
+                {flow === "scan" ? (
+                    <ScanStart
+                        client={client}
+                        chart={chart}
+                        onChart={saveChart}
+                        onBack={() => setFlow("choice")}
+                        onCreate={(state) => void openDesign("insole", state)}
+                    />
+                ) : null}
+                {flow === null ? <ShoeChartPanel chart={chart} onChange={saveChart} /> : null}
+                {flow === null ? (
                 <section>
                     <div className="mb-2 flex items-center justify-between gap-2">
                         <h2 className="text-sm font-semibold">
@@ -180,7 +226,7 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                                 <TypeCard
                                     label="Insole"
                                     detail="Full-length or 3/4 foot orthotic"
-                                    onClick={() => void pick("insole")}
+                                    onClick={() => setFlow("choice")}
                                     testId="type-insole"
                                 />
                                 <TypeCard
@@ -296,6 +342,7 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                         </div>
                     ) : null}
                 </section>
+                ) : null}
             </div>
             {toast ? (
                 <div className="fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-md border border-border bg-panel px-3 py-2 text-sm shadow-xl">

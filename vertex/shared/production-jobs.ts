@@ -294,6 +294,14 @@ async function requireJob(repo: ProductionRepo, actor: Actor, id: string): Promi
     return job;
 }
 
+export async function getProductionJob(
+    repo: ProductionRepo,
+    actor: Actor,
+    id: string,
+): Promise<ProductionJob> {
+    return requireJob(repo, actor, id);
+}
+
 export async function expireStoredGcode(repo: ProductionRepo, actor: Actor, now = new Date()): Promise<void> {
     for (const job of await visibleJobs(repo, actor)) {
         if (!job.gcodeStoredAt || !job.gcodeSha256) continue;

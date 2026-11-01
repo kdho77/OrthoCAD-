@@ -31,6 +31,8 @@ interface ProductionStore {
     assign: (id: string, printerId: string) => Promise<void>;
     rerun: (id: string) => Promise<void>;
     download: (id: string) => Promise<{ filename: string; gcode: string; sha256: string }>;
+    /** Dev-only preview of the G-code countdown. Not used in production builds. */
+    seedRetentionDemo: () => void;
 }
 
 function actor(): Actor {
@@ -118,5 +120,53 @@ export const useProductionStore = create<ProductionStore>((_set, _get) => ({
     },
     download(id) {
         return downloadGcode(repo(), actor(), id);
+    },
+    seedRetentionDemo() {
+        const current = useProductionStore.getState();
+        if (current.jobs.some((job) => job.id === "e2e-retention-queue")) return;
+        const storedAt = new Date(Date.now() - 67 * 24 * 60 * 60 * 1000).toISOString();
+        const base: ProductionJob = {
+            id: "e2e-retention-queue",
+            designId: "00000000-0000-4000-8000-000000000010",
+            designName: "Insole",
+            designKind: "insole",
+            clientId: "00000000-0000-4000-8000-000000000011",
+            clientLabel: "Demo",
+            ownerId: actor().id,
+            tenantId: null,
+            process: "mill",
+            status: "waiting",
+            orderNumber: null,
+            orderUrl: null,
+            orderOpen: false,
+            printerId: null,
+            printerName: null,
+            dueAt: null,
+            createdAt: storedAt,
+            updatedAt: storedAt,
+            startedAt: null,
+            finishedAt: null,
+            durationMs: null,
+            operatorName: null,
+            failureReason: null,
+            progress: null,
+            gcodeSha256: "e2e",
+            gcodeStoredAt: storedAt,
+        };
+        useProductionStore.setState({
+            jobs: [
+                base,
+                {
+                    ...base,
+                    id: "e2e-retention-history",
+                    status: "done",
+                    startedAt: storedAt,
+                    finishedAt: storedAt,
+                    durationMs: 1000,
+                    operatorName: "demo",
+                },
+                ...current.jobs,
+            ],
+        });
     },
 }));

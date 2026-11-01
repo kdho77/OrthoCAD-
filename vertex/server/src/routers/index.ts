@@ -7,6 +7,7 @@ import { exportRouter } from "./export.js";
 import { libraryRouter } from "./library.js";
 import { manufacturingRouter } from "./manufacturing.js";
 import { productionRouter } from "./production.js";
+import { scanRouter } from "./scan.js";
 import { stockRouter } from "./stock.js";
 import { userRouter } from "./user.js";
 
@@ -21,6 +22,7 @@ export const appRouter = router({
     stock: stockRouter,
     manufacturing: manufacturingRouter,
     production: productionRouter,
+    scan: scanRouter,
 });
 
 export type AppRouter = typeof appRouter;

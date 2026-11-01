@@ -1,11 +1,12 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { templateDesignFromChart } from "@/lib/clinical/chart-design";
 import { storePhiEnabled } from "@/lib/phi-policy";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { type ClientInput, useClientStore } from "@/stores/client-store";
 import { createDesignWithStockPlaceholder } from "@/stores/design-store";
 import type { DesignState } from "@/types";
-import { type DesignKind, defaultDesignName } from "../../../shared/client-files";
+import { type DesignKind, defaultDesignName, type ShoeChart } from "../../../shared/client-files";
 
 export async function createClientRecord(input: ClientInput): Promise<string> {
     if (isApiConfigured()) {
@@ -16,6 +17,11 @@ export async function createClientRecord(input: ClientInput): Promise<string> {
                 firstName: input.firstName,
                 lastName: input.lastName,
                 reference: input.reference || "",
+                shoeSizeUs: input.shoeSizeUs,
+                shoeSizesSplit: input.shoeSizesSplit,
+                shoeSizeLeftUs: input.shoeSizeLeftUs,
+                shoeSizeRightUs: input.shoeSizeRightUs,
+                shoeWidth: input.shoeWidth,
                 dateOfBirth: phi ? input.dateOfBirth || null : null,
                 mrn: phi ? input.mrn || null : null,
                 email: phi ? input.email || null : null,
@@ -45,6 +51,11 @@ export async function saveClientRecord(id: string, input: ClientInput): Promise<
             firstName: input.firstName,
             lastName: input.lastName,
             reference: input.reference || "",
+            shoeSizeUs: input.shoeSizeUs,
+            shoeSizesSplit: input.shoeSizesSplit,
+            shoeSizeLeftUs: input.shoeSizeLeftUs,
+            shoeSizeRightUs: input.shoeSizeRightUs,
+            shoeWidth: input.shoeWidth,
             dateOfBirth: phi ? input.dateOfBirth || null : null,
             mrn: phi ? input.mrn || null : null,
             email: phi ? input.email || null : null,
@@ -99,8 +110,16 @@ export function createLocalDesign(
     return useClientStore.getState().addDesign(clientId, name, state, kind);
 }
 
-export async function createDesignRecord(clientId: string, kind: DesignKind): Promise<string> {
-    const state = createDesignWithStockPlaceholder();
+export function designStateForKind(_kind: DesignKind, chart?: ShoeChart): DesignState {
+    if (chart) return templateDesignFromChart(chart);
+    return createDesignWithStockPlaceholder();
+}
+
+export async function createDesignRecord(
+    clientId: string,
+    kind: DesignKind,
+    state: DesignState = createDesignWithStockPlaceholder(),
+): Promise<string> {
     const name = defaultDesignName(kind);
     if (isApiConfigured()) {
         try {

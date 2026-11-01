@@ -195,6 +195,7 @@ model User {
     adminAudits     AdminAuditLog[]     @relation("AuditActor")
     shopJobs        ShopJob[]
     shopPrinters    ShopPrinter[]
+    clientScans     ClientScan[]
 
     @@index([role])
     @@index([tenantId])
@@ -262,6 +263,7 @@ model Tenant {
     clients      Client[]
     shopPrinters ShopPrinter[]
     shopJobs     ShopJob[]
+    clientScans  ClientScan[]
 
     @@index([status])
     @@index([plan])
@@ -340,6 +342,11 @@ model Client {
     email       String?
     phone       String?
     notes       String?
+    shoeSizeUs      Float    @default(9)
+    shoeSizesSplit  Boolean  @default(false)
+    shoeSizeLeftUs  Float    @default(9)
+    shoeSizeRightUs Float    @default(9)
+    shoeWidth       String   @default("medium")
     archivedAt  DateTime?
     createdAt   DateTime  @default(now())
     updatedAt   DateTime  @updatedAt
@@ -348,8 +355,9 @@ model Client {
     owner    User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
     tenantId String? @db.Uuid
     tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-    designs  Design[]
-    shopJobs ShopJob[]
+    designs     Design[]
+    shopJobs    ShopJob[]
+    clientScans ClientScan[]
 
     @@index([ownerId])
     @@index([tenantId])
@@ -406,6 +414,39 @@ model Scan {
 
     @@index([designId])
     @@map("scans")
+}
+
+// Uploaded foot scan for a client chart. Bytes live in client_scan_blobs.
+// This is PHI. It is not the manufacturing mesh and it is not `scans`.
+model ClientScan {
+    id          String   @id @default(uuid()) @db.Uuid
+    clientId    String   @db.Uuid
+    ownerId     String   @db.Uuid
+    tenantId    String?  @db.Uuid
+    side        Side
+    fileName    String
+    contentType String
+    byteLength  Int
+    sha256      String
+    uploadedAt  DateTime @default(now())
+
+    client Client          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+    owner  User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+    tenant Tenant?         @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+    blob   ClientScanBlob?
+
+    @@index([clientId])
+    @@index([tenantId])
+    @@map("client_scans")
+}
+
+model ClientScanBlob {
+    scanId String @id @db.Uuid
+    body   Bytes
+
+    scan ClientScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+    @@map("client_scan_blobs")
 }
 
 // Parametric corrections, one row per side per design.

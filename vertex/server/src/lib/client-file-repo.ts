@@ -10,6 +10,7 @@ import {
     type DesignKind,
     type DesignRow,
     type DuplicateCopy,
+    shoeChartFromInput,
 } from "../../../shared/client-files.js";
 import { resolveDevRole } from "./dev-auth.js";
 
@@ -39,6 +40,13 @@ function mapClient(row: Row): ClientRow {
         email: asString(row.email),
         phone: asString(row.phone),
         notes: asString(row.notes),
+        ...shoeChartFromInput({
+            shoeSizeUs: typeof row.shoeSizeUs === "number" ? row.shoeSizeUs : undefined,
+            shoeSizesSplit: row.shoeSizesSplit === true,
+            shoeSizeLeftUs: typeof row.shoeSizeLeftUs === "number" ? row.shoeSizeLeftUs : undefined,
+            shoeSizeRightUs: typeof row.shoeSizeRightUs === "number" ? row.shoeSizeRightUs : undefined,
+            shoeWidth: asString(row.shoeWidth) as "medium" | undefined,
+        }),
         archivedAt: asString(row.archivedAt),
         createdAt: String(row.createdAt),
         updatedAt: String(row.updatedAt),
@@ -82,13 +90,28 @@ export function supabaseClientFileRepo(supabase: SupabaseClient): ClientFileRepo
             return data ? mapClient(data as Row) : null;
         },
         async insertClient(row) {
-            const { error } = await supabase.from("clients").insert(row);
+            // Shoe columns are written by the Prisma adapter after the local
+            // migration. Omitting them keeps an unmigrated fallback database
+            // able to create clients. Scan bytes are never sent here.
+            const { shoeSizeUs, shoeSizesSplit, shoeSizeLeftUs, shoeSizeRightUs, shoeWidth, ...rest } = row;
+            void shoeSizeUs;
+            void shoeSizesSplit;
+            void shoeSizeLeftUs;
+            void shoeSizeRightUs;
+            void shoeWidth;
+            const { error } = await supabase.from("clients").insert(rest);
             if (error) throw new ClientFileError("BAD_REQUEST", error.message);
         },
         async patchClient(id, patch) {
+            const { shoeSizeUs, shoeSizesSplit, shoeSizeLeftUs, shoeSizeRightUs, shoeWidth, ...rest } = patch;
+            void shoeSizeUs;
+            void shoeSizesSplit;
+            void shoeSizeLeftUs;
+            void shoeSizeRightUs;
+            void shoeWidth;
             const { data, error } = await supabase
                 .from("clients")
-                .update(patch)
+                .update(rest)
                 .eq("id", id)
                 .select("*")
                 .single();

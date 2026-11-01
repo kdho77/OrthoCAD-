@@ -11,6 +11,7 @@ import {
     type DesignGeometryWrite,
     type DesignKind,
     type DesignRow,
+    normalizeChartShoeWidth,
 } from "../../../shared/client-files.js";
 import { resolveDevRole } from "./dev-auth.js";
 
@@ -27,6 +28,11 @@ type ClientRecord = {
     email: string | null;
     phone: string | null;
     notes: string | null;
+    shoeSizeUs: number;
+    shoeSizesSplit: boolean;
+    shoeSizeLeftUs: number;
+    shoeSizeRightUs: number;
+    shoeWidth: string;
     archivedAt: Date | null;
     createdAt: Date;
     updatedAt: Date;
@@ -59,6 +65,11 @@ function mapClient(row: ClientRecord): ClientRow {
         email: row.email,
         phone: row.phone,
         notes: row.notes,
+        shoeSizeUs: row.shoeSizeUs,
+        shoeSizesSplit: row.shoeSizesSplit,
+        shoeSizeLeftUs: row.shoeSizeLeftUs,
+        shoeSizeRightUs: row.shoeSizeRightUs,
+        shoeWidth: normalizeChartShoeWidth(row.shoeWidth),
         archivedAt: iso(row.archivedAt),
         createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
@@ -107,6 +118,11 @@ function clientData(row: ClientRow): Prisma.ClientCreateInput {
         email: row.email,
         phone: row.phone,
         notes: row.notes,
+        shoeSizeUs: row.shoeSizeUs,
+        shoeSizesSplit: row.shoeSizesSplit,
+        shoeSizeLeftUs: row.shoeSizeLeftUs,
+        shoeSizeRightUs: row.shoeSizeRightUs,
+        shoeWidth: row.shoeWidth,
         archivedAt: asDate(row.archivedAt),
         createdAt: new Date(row.createdAt),
         updatedAt: new Date(row.updatedAt),
@@ -139,6 +155,11 @@ export function prismaClientFileRepo(prisma: PrismaClient): ClientFileRepo {
             if (patch.email !== undefined) data.email = patch.email;
             if (patch.phone !== undefined) data.phone = patch.phone;
             if (patch.notes !== undefined) data.notes = patch.notes;
+            if (patch.shoeSizeUs !== undefined) data.shoeSizeUs = patch.shoeSizeUs;
+            if (patch.shoeSizesSplit !== undefined) data.shoeSizesSplit = patch.shoeSizesSplit;
+            if (patch.shoeSizeLeftUs !== undefined) data.shoeSizeLeftUs = patch.shoeSizeLeftUs;
+            if (patch.shoeSizeRightUs !== undefined) data.shoeSizeRightUs = patch.shoeSizeRightUs;
+            if (patch.shoeWidth !== undefined) data.shoeWidth = patch.shoeWidth;
             if (patch.archivedAt !== undefined) data.archivedAt = asDate(patch.archivedAt);
             if (patch.updatedAt !== undefined) data.updatedAt = new Date(patch.updatedAt);
             if (patch.tenantId !== undefined) {

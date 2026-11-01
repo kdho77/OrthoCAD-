@@ -21,6 +21,7 @@ import {
     formatRelative,
     isOrgAdmin,
     parseClientListQuery,
+    shoeChartFromInput,
     queryClientList,
     serializeClientListQuery,
 } from "../../../shared/client-files";
@@ -28,6 +29,7 @@ import {
     archiveClientRecord,
     createClientRecord,
     createDesignRecord,
+    designStateForKind,
     hardDeleteClientRecord,
     restoreClientRecord,
     saveClientRecord,
@@ -306,7 +308,16 @@ function writeQuery(query: ClientListQuery) {
 }
 
 async function startDesign(clientId: string, kind: DesignKind) {
-    const designId = await createDesignRecord(clientId, kind);
+    if (kind === "insole") {
+        navigate(`${clientFilePath(clientId)}?start=insole`);
+        return;
+    }
+    const client = useClientStore.getState().clients.find((row) => row.id === clientId);
+    const designId = await createDesignRecord(
+        clientId,
+        kind,
+        designStateForKind(kind, client ? shoeChartFromInput(client) : undefined),
+    );
     navigate(`/clients/${clientId}/designs/${designId}`);
 }
 

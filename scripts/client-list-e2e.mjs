@@ -42,6 +42,7 @@ async function pass(width, height, tag) {
     await page.getByLabel("Client reference").fill("C-1001");
     await page.getByTestId("create-and-design").click();
     await page.getByTestId("type-insole").click();
+    await page.getByTestId("start-from-template").click();
     await page.waitForURL(/\/clients\/[0-9a-f-]{36}\/designs\/[0-9a-f-]{36}/i);
     await page.getByTestId("breadcrumb-client").waitFor();
     const crumb = await page.getByTestId("breadcrumb-client").innerText();

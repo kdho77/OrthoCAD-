@@ -26,6 +26,11 @@ const clientInput = z.object({
     email: z.string().email().nullable().optional().or(z.literal("")),
     phone: z.string().max(40).nullable().optional(),
     notes: z.string().max(2000).nullable().optional(),
+    shoeSizeUs: z.number().min(1).max(16).optional(),
+    shoeSizesSplit: z.boolean().optional(),
+    shoeSizeLeftUs: z.number().min(1).max(16).optional(),
+    shoeSizeRightUs: z.number().min(1).max(16).optional(),
+    shoeWidth: z.enum(["narrow", "medium", "wide", "extra_wide"]).optional(),
 });
 
 async function scope(ctx: { user: { id: string; email: string; role: string } }) {

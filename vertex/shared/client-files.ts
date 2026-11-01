@@ -21,6 +21,71 @@ export const IDLE_LOGOUT_MS = 15 * 60 * 1000;
 export const IDLE_WARNING_MS = IDLE_LOGOUT_MS - 60 * 1000;
 export const CLINICAL_DOCUMENT_TITLE = "OrthoCAD · Client";
 
+/** US men's half sizes offered on the client chart. Matches the CAD size range. */
+export const CHART_SHOE_SIZE_MIN = 1;
+export const CHART_SHOE_SIZE_MAX = 16;
+/** Men's 9 is the reference template. A default chart must keep that size. */
+export const DEFAULT_CHART_SHOE_SIZE_US = 9;
+export const CHART_SHOE_WIDTHS = ["narrow", "medium", "wide", "extra_wide"] as const;
+export type ChartShoeWidth = (typeof CHART_SHOE_WIDTHS)[number];
+export const DEFAULT_CHART_SHOE_WIDTH: ChartShoeWidth = "medium";
+
+export interface ShoeChart {
+    /** Single size used when left and right are not split. */
+    shoeSizeUs: number;
+    shoeSizesSplit: boolean;
+    shoeSizeLeftUs: number;
+    shoeSizeRightUs: number;
+    shoeWidth: ChartShoeWidth;
+}
+
+export function defaultShoeChart(): ShoeChart {
+    return {
+        shoeSizeUs: DEFAULT_CHART_SHOE_SIZE_US,
+        shoeSizesSplit: false,
+        shoeSizeLeftUs: DEFAULT_CHART_SHOE_SIZE_US,
+        shoeSizeRightUs: DEFAULT_CHART_SHOE_SIZE_US,
+        shoeWidth: DEFAULT_CHART_SHOE_WIDTH,
+    };
+}
+
+export function normalizeChartShoeSize(value: number | null | undefined): number {
+    if (value == null || !Number.isFinite(value)) return DEFAULT_CHART_SHOE_SIZE_US;
+    const clamped = Math.min(CHART_SHOE_SIZE_MAX, Math.max(CHART_SHOE_SIZE_MIN, value));
+    return Math.round(clamped * 2) / 2;
+}
+
+export function normalizeChartShoeWidth(value: string | null | undefined): ChartShoeWidth {
+    return (CHART_SHOE_WIDTHS as readonly string[]).includes(value ?? "")
+        ? (value as ChartShoeWidth)
+        : DEFAULT_CHART_SHOE_WIDTH;
+}
+
+export function shoeChartFromInput(input?: Partial<ShoeChart> | null): ShoeChart {
+    const shoeSizeUs = normalizeChartShoeSize(input?.shoeSizeUs);
+    const shoeSizesSplit = input?.shoeSizesSplit === true;
+    return {
+        shoeSizeUs,
+        shoeSizesSplit,
+        shoeSizeLeftUs: shoeSizesSplit
+            ? normalizeChartShoeSize(input?.shoeSizeLeftUs ?? shoeSizeUs)
+            : shoeSizeUs,
+        shoeSizeRightUs: shoeSizesSplit
+            ? normalizeChartShoeSize(input?.shoeSizeRightUs ?? shoeSizeUs)
+            : shoeSizeUs,
+        shoeWidth: normalizeChartShoeWidth(input?.shoeWidth),
+    };
+}
+
+/**
+ * Generated designs have one US men's size (`usMenSize`).
+ * A split chart still stores both feet. The shared length is the left size
+ * when the feet differ, because this app does not add a second scale path.
+ */
+export function chartGeneratedSize(chart: ShoeChart): number {
+    return chart.shoeSizesSplit ? chart.shoeSizeLeftUs : chart.shoeSizeUs;
+}
+
 export interface Actor {
     id: string;
     email: string;
@@ -47,6 +112,11 @@ export interface ClientRow {
     archivedAt: string | null;
     createdAt: string;
     updatedAt: string;
+    shoeSizeUs: number;
+    shoeSizesSplit: boolean;
+    shoeSizeLeftUs: number;
+    shoeSizeRightUs: number;
+    shoeWidth: ChartShoeWidth;
 }
 
 export interface DesignRow {
@@ -74,6 +144,11 @@ export interface ClientInput {
     email?: string | null;
     phone?: string | null;
     notes?: string | null;
+    shoeSizeUs?: number;
+    shoeSizesSplit?: boolean;
+    shoeSizeLeftUs?: number;
+    shoeSizeRightUs?: number;
+    shoeWidth?: ChartShoeWidth;
 }
 
 /** Same argument object the Postgres function `vertex_save_design` already accepts. */
@@ -354,6 +429,7 @@ export function prepareClientRecord(
         lastName: identity.lastName,
         reference: identity.reference,
         ...phiClientFields(input, storePhi),
+        ...shoeChartFromInput(input),
         archivedAt: null,
         createdAt,
         updatedAt: createdAt,
@@ -638,6 +714,15 @@ async function requireClient(repo: ClientFileRepo, actor: Actor, id: string): Pr
     return client;
 }
 
+export async function getClientFile(
+    repo: ClientFileRepo,
+    actor: Actor,
+    id: string,
+    storePhi = false,
+): Promise<ClientRow> {
+    return redactClientRow(await requireClient(repo, actor, id), storePhi);
+}
+
 async function requireDesign(
     repo: ClientFileRepo,
     actor: Actor,
@@ -735,6 +820,15 @@ export async function updateClientFile(
         if (patch.phone !== undefined) next.phone = blankToNull(patch.phone);
         if (patch.notes !== undefined)
             next.notes = blankToNull(patch.notes)?.slice(0, CLIENT_NOTES_MAX) ?? null;
+    }
+    if (
+        patch.shoeSizeUs !== undefined ||
+        patch.shoeSizesSplit !== undefined ||
+        patch.shoeSizeLeftUs !== undefined ||
+        patch.shoeSizeRightUs !== undefined ||
+        patch.shoeWidth !== undefined
+    ) {
+        Object.assign(next, shoeChartFromInput({ ...current, ...patch }));
     }
     const saved = await repo.patchClient(id, next);
     await repo.audit({ userId: actor.id, action: "client_updated", targetId: id });
@@ -1008,6 +1102,7 @@ export function planOrphanAttachment(args: {
         email: null,
         phone: null,
         notes: "Designs that had no client file were attached here. Their created and modified dates were not changed.",
+        ...defaultShoeChart(),
         archivedAt: null,
         createdAt: args.now,
         updatedAt: args.now,
