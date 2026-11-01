@@ -1,328 +1,172 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { beforeAll, describe, expect, test } from "@rstest/core";
+import { describe, expect, test } from "@rstest/core";
 import * as THREE from "three";
-import { heuristicParse } from "@/features/ai-prescription/heuristic";
 import { generateOrthoticFromScanAndRx } from "@/lib/clinical/generateOrthoticFromScanAndRx";
-import { clearMarkerFrameRegistry } from "@/lib/geometry/marker-frame";
 import { buildScanDisplayInfo } from "@/lib/geometry/scan-display";
-import { suggestScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
 import { createDesignWithStockPlaceholder, defaultDesign } from "@/stores/design-store";
-import {
-    buildBulkyFootKeptScan,
-    buildDefaultGlbRegisteredScan,
-    buildSyntheticFootScanBundle,
-    bulkyFootSoup,
-    registerDefaultGlbBaseAsync,
-    syntheticFootGeometry,
-} from "../../../../tests/helpers/clinical-scan-fixtures";
+import { archHeightScan } from "../../../../tests/helpers/arch-height-scan";
 
-const SOURCE = "p7-default-glb";
-let rawBase: THREE.BufferGeometry;
-
-beforeAll(async () => {
-    clearMarkerFrameRegistry();
-    rawBase = await registerDefaultGlbBaseAsync(SOURCE);
-});
-
-function scanBundle(side: "left" | "right" = "left") {
-    const scan = buildDefaultGlbRegisteredScan(SOURCE, rawBase);
-    if (!scan) throw new Error("Default.glb registered scan fixture unavailable");
+function bundle(heightMm: number, side: "left" | "right" = "left", displayScale?: number) {
+    const geometry = archHeightScan(heightMm, side);
+    const display = buildScanDisplayInfo(geometry);
     return {
         side,
-        geometry: scan.geometry,
-        display: scan.display,
-        markers: scan.markers,
-        suggestedLandmarks: scan.suggested,
+        geometry,
+        display: displayScale === undefined ? display : { ...display, displayScale },
         keepSetApproved: true,
     };
 }
 
-describe("P7 matrix — generateOrthoticFromScanAndRx", () => {
-    test("high arch Rx raises archHeightMm", () => {
-        const bundle = scanBundle();
+const shoe = { system: "us" as const, value: 9 };
+
+describe("one-click recipe matrix", () => {
+    test("pathology words do not set arch height or a wedge", () => {
+        const foot = bundle(24);
         const out = generateOrthoticFromScanAndRx({
             baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
-            scans: [bundle],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: heuristicParse("Left high arch pes cavus"),
+            scans: [foot],
+            shoeSize: shoe,
+            prescriptionText: "Left high arch pes cavus",
         });
-        if (!out.ok) throw new Error(`${out.failedStep}: ${out.reason}`);
-        expect(out.design.corrections.left.archHeightMm).toBeGreaterThan(6);
-        bundle.geometry.dispose();
+        if (!out.ok) throw new Error(out.reason);
+        expect(out.pathology?.status).toBe("needs_design");
+        expect(out.design.corrections.left.archHeightMm).toBe(0);
+        expect(out.design.corrections.left.rearfootWedge).toBeUndefined();
+        foot.geometry.dispose();
     });
 
-    test("low arch Rx lower than high arch Rx", () => {
-        const base = createDesignWithStockPlaceholder(defaultDesign());
-        const hi = generateOrthoticFromScanAndRx({
-            baselineDesign: base,
-            scans: [scanBundle()],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: heuristicParse("Left high arch"),
-        });
-        const lo = generateOrthoticFromScanAndRx({
-            baselineDesign: base,
-            scans: [scanBundle()],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: heuristicParse("Left low arch flat foot"),
-        });
-        expect(hi.ok && lo.ok).toBe(true);
-        if (!hi.ok || !lo.ok) return;
-        expect(lo.design.corrections.left.archHeightMm).toBeLessThan(
-            hi.design.corrections.left.archHeightMm ?? 99,
-        );
-    });
-
-    test("wide vs narrow forefoot width class from ball measurement", () => {
-        const wide = scanBundle();
-        const narrow = scanBundle();
-        narrow.geometry.applyMatrix4(new THREE.Matrix4().makeScale(1, 0.75, 1));
-        const narrowDisplay = buildScanDisplayInfo(narrow.geometry);
-        const wideOut = generateOrthoticFromScanAndRx({
+    test("a named diagnosis beside an explicit correction is not guessed further", () => {
+        const foot = bundle(20);
+        const out = generateOrthoticFromScanAndRx({
             baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
-            scans: [wide],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: null,
+            scans: [foot],
+            shoeSize: shoe,
+            prescriptionText: "Left plantar fasciitis. Left medial skive 2 mm",
         });
-        const narrowOut = generateOrthoticFromScanAndRx({
-            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
-            scans: [{ ...narrow, display: narrowDisplay }],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: null,
-        });
-        expect(wideOut.ok && narrowOut.ok).toBe(true);
-        if (!wideOut.ok || !narrowOut.ok) return;
-        const wideClass = wideOut.design.shoeWidthBySide?.left ?? wideOut.design.shoeWidth;
-        const narrowClass = narrowOut.design.shoeWidthBySide?.left ?? narrowOut.design.shoeWidth;
-        expect(wideClass).toBeDefined();
-        expect(narrowClass).toBeDefined();
-        wide.geometry.dispose();
-        narrow.geometry.dispose();
+        if (!out.ok) throw new Error(out.reason);
+        expect(out.pathology).toBeNull();
+        expect(out.design.corrections.left.medialSkiveMm).toBe(2);
+        expect(out.design.corrections.left.archHeightMm).toBe(-3.5);
+        expect(out.design.corrections.left.rearfootWedge).toBeUndefined();
+        expect(out.warnings.some((w) => w.includes("Only explicit"))).toBe(true);
+        foot.geometry.dispose();
     });
 
-    test("US shoe sizes 8, 9, 10 succeed", () => {
+    test("US shoe sizes 8, 9 and 10 come from the required input", () => {
         for (const us of [8, 9, 10]) {
-            const bundle = scanBundle();
+            const foot = bundle(23);
             const out = generateOrthoticFromScanAndRx({
-                baselineDesign: createDesignWithStockPlaceholder({
-                    ...defaultDesign(),
-                    usMenSize: us,
-                    sizeSystem: "us",
-                }),
-                scans: [bundle],
-                rawBaseGeometry: rawBase,
-                sourceAssetId: SOURCE,
-                prescription: null,
+                baselineDesign: createDesignWithStockPlaceholder({ ...defaultDesign(), usMenSize: 13 }),
+                scans: [foot],
+                shoeSize: { system: "us", value: us },
             });
-            expect(out.ok).toBe(true);
-            bundle.geometry.dispose();
+            if (!out.ok) throw new Error(out.reason);
+            expect(out.design.usMenSize).toBe(us);
+            expect(out.design.corrections.left.archHeightMm).toBe(0);
+            foot.geometry.dispose();
         }
     });
 
-    test("rotated scan (yaw) still succeeds with auto landmarks", () => {
-        const bundle = scanBundle();
-        bundle.geometry.applyMatrix4(new THREE.Matrix4().makeRotationZ(0.12));
+    test("display scale converts a metre-unit arch into millimetres", () => {
+        const geometry = archHeightScan(20, "left");
+        geometry.scale(0.001, 0.001, 0.001);
+        const display = buildScanDisplayInfo(geometry);
+        expect(display.displayScale).toBe(1000);
         const out = generateOrthoticFromScanAndRx({
             baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
-            scans: [bundle],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: null,
+            scans: [{ side: "left", geometry, display, keepSetApproved: true }],
+            shoeSize: shoe,
         });
-        expect(out.ok).toBe(true);
-        bundle.geometry.dispose();
+        if (!out.ok) throw new Error(out.reason);
+        expect(out.perFoot[0]?.archHeightMeasuredMm).toBeCloseTo(20, 0);
+        expect(out.design.corrections.left.archHeightMm).toBe(-3.5);
+        geometry.dispose();
     });
 
-    test("metre-unit scan displayScale 1000 succeeds", () => {
-        const bundle = scanBundle();
-        const display = { ...bundle.display, displayScale: 1000 };
-        const out = generateOrthoticFromScanAndRx({
-            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
-            scans: [{ ...bundle, display }],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: null,
-        });
-        expect(typeof out.ok).toBe("boolean");
-        if (!out.ok) expect(out.failedStep).toMatch(/registration|arch_fit|landmarks/);
-        bundle.geometry.dispose();
-    });
-
-    test("inch-like displayScale ambiguity (25.4) still runs or fails landmarks cleanly", () => {
-        const soup = bulkyFootSoup(0.26, 0.1, 0.08);
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute("position", new THREE.BufferAttribute(soup, 3));
-        const baseDisplay = buildScanDisplayInfo(geo);
-        const display = { ...baseDisplay, displayScale: 25.4, inferredUnit: "mm" as const };
+    test("a scan that is too small to measure fails at arch height", () => {
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(9), 3));
         const out = generateOrthoticFromScanAndRx({
             baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
             scans: [
                 {
                     side: "left",
-                    geometry: geo,
-                    display,
-                    markers: { M1: null, M2: null, M3: null, ARCH: null },
-                    suggestedLandmarks: null,
+                    geometry,
+                    display: buildScanDisplayInfo(geometry),
                     keepSetApproved: true,
                 },
             ],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: null,
-        });
-        expect(typeof out.ok).toBe("boolean");
-        if (!out.ok) expect(out.failedStep).toMatch(/landmarks|registration|arch_fit/);
-        geo.dispose();
-    });
-
-    test("missing manual landmarks uses auto-fill when suggestions provided", () => {
-        const foot = buildSyntheticFootScanBundle("left");
-        const out = generateOrthoticFromScanAndRx({
-            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
-            scans: [
-                {
-                    side: "left",
-                    geometry: foot.geometry,
-                    display: foot.display,
-                    markers: { M1: null, M2: null, M3: null, ARCH: null },
-                    suggestedLandmarks: foot.suggested,
-                    keepSetApproved: true,
-                },
-            ],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: null,
-        });
-        if (out.ok) {
-            expect(out.perFoot[0]?.landmarksAutoFilled.length).toBeGreaterThan(0);
-        } else {
-            expect(out.failedStep).toBe("arch_fit");
-        }
-        foot.geometry.dispose();
-    });
-
-    test("bulky-foot scan-components fixture (real ranked keep-set)", () => {
-        const foot = buildBulkyFootKeptScan("left");
-        const out = generateOrthoticFromScanAndRx({
-            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
-            scans: [
-                {
-                    side: "left",
-                    geometry: foot.geometry,
-                    display: foot.display,
-                    markers: { M1: null, M2: null, M3: null, ARCH: null },
-                    suggestedLandmarks: foot.suggested,
-                    keepSetApproved: true,
-                },
-            ],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: null,
-        });
-        if (!out.ok) {
-            expect(out.failedStep).toMatch(/registration|arch_fit|landmarks/);
-        } else {
-            expect(out.perFoot[0]?.landmarksAutoFilled.length).toBeGreaterThan(0);
-        }
-        foot.geometry.dispose();
-    });
-
-    test("conflicting bilateral rearfoot wedges surface warning", () => {
-        const rx = heuristicParse("Left supination Right pronation");
-        const out = generateOrthoticFromScanAndRx({
-            baselineDesign: createDesignWithStockPlaceholder({
-                ...defaultDesign(),
-                corrections: { ...defaultDesign().corrections, linked: false },
-            }),
-            scans: [scanBundle()],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: rx,
-        });
-        expect(out.ok).toBe(true);
-        if (!out.ok) return;
-        expect(out.warnings.some((w) => w.includes("rearfoot wedges") || w.includes("Rx overrides"))).toBe(
-            true,
-        );
-    });
-
-    test("incomplete Rx low confidence warns", () => {
-        const out = generateOrthoticFromScanAndRx({
-            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
-            scans: [scanBundle()],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: {
-                corrections: {},
-                elements: [],
-                notes: "stub",
-                confidence: 0.1,
-                provider: "heuristic",
-            },
-        });
-        expect(out.ok).toBe(true);
-        if (!out.ok) return;
-        expect(out.warnings.some((w) => w.includes("Low Rx parse confidence"))).toBe(true);
-    });
-
-    test("noisy incomplete scan fails (no landmark suggest)", () => {
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(9), 3));
-        const out = generateOrthoticFromScanAndRx({
-            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
-            scans: [
-                {
-                    side: "left",
-                    geometry: geo,
-                    display: buildScanDisplayInfo(geo),
-                    markers: { M1: null, M2: null, M3: null, ARCH: null },
-                    suggestedLandmarks: null,
-                    keepSetApproved: true,
-                },
-            ],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: null,
+            shoeSize: shoe,
         });
         expect(out.ok).toBe(false);
-        geo.dispose();
+        if (out.ok) return;
+        expect(out.failedStep).toBe("arch_height");
+        geometry.dispose();
     });
 
-    test("bilateral Rx with different sides warns", () => {
+    test("an unapproved keep-set blocks generation", () => {
+        const foot = bundle(24);
         const out = generateOrthoticFromScanAndRx({
-            baselineDesign: createDesignWithStockPlaceholder({
-                ...defaultDesign(),
-                corrections: { ...defaultDesign().corrections, linked: false },
-            }),
-            scans: [scanBundle()],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: heuristicParse("Left medial skive 4mm Right lateral skive 3mm"),
+            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
+            scans: [{ ...foot, keepSetApproved: false }],
+            shoeSize: shoe,
         });
-        expect(out.ok).toBe(true);
-        if (!out.ok) return;
-        expect(out.warnings.some((w) => w.includes("left") || w.includes("Right"))).toBe(true);
+        expect(out.ok).toBe(false);
+        if (!out.ok) expect(out.failedStep).toBe("scan_cleanup");
+        foot.geometry.dispose();
     });
 
-    test("deterministic corrections on repeat", () => {
-        const bundle = scanBundle();
-        const input = {
+    test("explicit apex overrides the flexible checkbox", () => {
+        const foot = bundle(28, "right");
+        const out = generateOrthoticFromScanAndRx({
             baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
-            scans: [bundle],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: heuristicParse("Left medial skive 4mm"),
-        };
-        const a = generateOrthoticFromScanAndRx(input);
-        const b = generateOrthoticFromScanAndRx(input);
-        expect(a.ok && b.ok).toBe(true);
-        if (!a.ok || !b.ok) return;
-        expect(JSON.stringify(a.design.corrections)).toBe(JSON.stringify(b.design.corrections));
-        bundle.geometry.dispose();
+            scans: [foot],
+            shoeSize: shoe,
+            flexibleBySide: { right: true },
+            prescriptionText: "Right apex 1 mm",
+        });
+        if (!out.ok) throw new Error(out.reason);
+        expect(out.design.corrections.right.archHeightMm).toBe(3);
+        expect(out.design.corrections.right.apexMoveMm).toBe(1);
+        expect(out.design.corrections.left.apexMoveMm).toBe(0);
+        foot.geometry.dispose();
+    });
+
+    test("bilateral explicit corrections stay on the named feet", () => {
+        const left = bundle(20, "left");
+        const right = bundle(28, "right");
+        const out = generateOrthoticFromScanAndRx({
+            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
+            scans: [left, right],
+            shoeSize: shoe,
+            prescriptionText: "Left medial skive 4 mm. Right lateral skive 3 mm",
+        });
+        if (!out.ok) throw new Error(out.reason);
+        expect(out.design.corrections.left.medialSkiveMm).toBe(4);
+        expect(out.design.corrections.left.lateralSkiveMm).toBe(0);
+        expect(out.design.corrections.left.archHeightMm).toBe(-3.5);
+        expect(out.design.corrections.right.lateralSkiveMm).toBe(3);
+        expect(out.design.corrections.right.medialSkiveMm).toBe(0);
+        expect(out.design.corrections.right.archHeightMm).toBe(3);
+        left.geometry.dispose();
+        right.geometry.dispose();
+    });
+
+    test("an unnamed correction is not copied when both feet are present", () => {
+        const left = bundle(24, "left");
+        const right = bundle(24, "right");
+        const out = generateOrthoticFromScanAndRx({
+            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
+            scans: [left, right],
+            shoeSize: shoe,
+            prescriptionText: "medial skive 4mm",
+        });
+        if (!out.ok) throw new Error(out.reason);
+        expect(out.design.corrections.left.medialSkiveMm).toBe(0);
+        expect(out.design.corrections.right.medialSkiveMm).toBe(0);
+        expect(out.warnings.some((w) => w.includes("Ambiguous"))).toBe(true);
+        left.geometry.dispose();
+        right.geometry.dispose();
     });
 });

@@ -2,17 +2,16 @@
 
 import { Loader2, Sparkles, Undo2 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { heuristicParse } from "@/features/ai-prescription/heuristic";
-import { parsePrescription } from "@/features/ai-prescription/parse-service";
 import {
-    generateOrthoticFromScanAndRx,
     type GenerateOrthoticSuccess,
+    generateOrthoticFromScanAndRx,
+    type RequiredShoeSize,
 } from "@/lib/clinical/generateOrthoticFromScanAndRx";
-import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import { footLengthMmOptions, ukShoeSizeOptions, usShoeSizeOptions } from "@/lib/geometry/shoe-size";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useScanStore } from "@/stores/scan-store";
-import type { PrescriptionParseResult } from "@/types";
+import type { Side } from "@/types";
 
 function applyGeneratedDesign(result: GenerateOrthoticSuccess) {
     const store = useDesignStore.getState();
@@ -24,10 +23,6 @@ function applyGeneratedDesign(result: GenerateOrthoticSuccess) {
 
 export function GenerateOrthoticPanel() {
     const scans = useScanStore((s) => s.scans);
-    const markersByScanId = useScanStore((s) => s.markersByScanId);
-    const manualOffsetByScanId = useScanStore((s) => s.manualOffsetByScanId);
-    const landmarkSourceAssetId = useScanStore((s) => s.landmarkSourceAssetId);
-    const rawBaseBySourceId = useScanStore((s) => s.rawBaseBySourceId);
     const design = useDesignStore((s) => s.design);
     const canUndo = useDesignStore((s) => s.canUndo());
     const undo = useDesignStore((s) => s.undo);
@@ -36,6 +31,9 @@ export function GenerateOrthoticPanel() {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [lastResult, setLastResult] = useState<GenerateOrthoticSuccess | null>(null);
+    const [sizeSystem, setSizeSystem] = useState<RequiredShoeSize["system"]>("us");
+    const [sizeValue, setSizeValue] = useState("");
+    const [flexible, setFlexible] = useState<Record<Side, boolean>>({ left: false, right: false });
 
     const bundles = useMemo(
         () =>
@@ -43,48 +41,49 @@ export function GenerateOrthoticPanel() {
                 side: scan.side,
                 geometry: scan.geometry,
                 display: scan.display,
-                markers: markersByScanId[scan.id] ?? {
-                    M1: null,
-                    M2: null,
-                    M3: null,
-                    ARCH: null,
-                },
-                suggestedLandmarks: scan.suggestedLandmarks,
-                manualOffset: manualOffsetByScanId[scan.id] ?? null,
                 keepSetApproved: scan.keepSetApproved,
             })),
-        [scans, markersByScanId, manualOffsetByScanId],
+        [scans],
     );
+
+    const sides = useMemo(() => [...new Set(bundles.map((b) => b.side))], [bundles]);
+
+    const shoeSize: RequiredShoeSize | null = useMemo(() => {
+        if (sizeValue.trim() === "") return null;
+        const value = Number(sizeValue);
+        if (!Number.isFinite(value)) return null;
+        return { system: sizeSystem, value };
+    }, [sizeSystem, sizeValue]);
+
+    const sizeOptions = useMemo(() => {
+        if (sizeSystem === "uk")
+            return ukShoeSizeOptions().map((o) => ({ value: String(o.ukSize), label: o.label }));
+        if (sizeSystem === "mm") {
+            return footLengthMmOptions().map((o) => ({ value: String(o.footLengthMm), label: o.label }));
+        }
+        return usShoeSizeOptions().map((o) => ({ value: String(o.menSize), label: o.label }));
+    }, [sizeSystem]);
 
     const onGenerate = async () => {
         setError(null);
         setLastResult(null);
-        const sourceId = landmarkSourceAssetId;
-        const rawBase = sourceId ? rawBaseBySourceId[sourceId] : undefined;
-        if (!sourceId || !rawBase) {
-            setError("Wait for the clinical base (SAMPLE_Top) to finish loading.");
-            return;
-        }
         if (bundles.length === 0) {
             setError("Import a foot scan first.");
+            return;
+        }
+        if (!shoeSize) {
+            setError("Shoe size is required. It is not taken from the scan.");
             return;
         }
 
         setBusy(true);
         try {
-            let prescription: PrescriptionParseResult | null = null;
-            if (rxText.trim()) {
-                const parsed = await parsePrescription({ text: rxText });
-                if (parsed.ok && parsed.result) prescription = parsed.result;
-                else if (!parsed.ok) prescription = heuristicParse(rxText);
-            }
-
             const outcome = generateOrthoticFromScanAndRx({
                 baselineDesign: design,
                 scans: bundles,
-                rawBaseGeometry: rawBase,
-                sourceAssetId: sourceId,
-                prescription,
+                shoeSize,
+                flexibleBySide: flexible,
+                prescriptionText: rxText,
             });
 
             if (!outcome.ok) {
@@ -100,8 +99,6 @@ export function GenerateOrthoticPanel() {
         }
     };
 
-    const layout = insoleLayoutFromDesign(design);
-
     return (
         <div className="space-y-2 rounded-md border border-primary/30 bg-primary/5 p-2">
             <div className="flex items-center gap-2">
@@ -109,11 +106,54 @@ export function GenerateOrthoticPanel() {
                 <p className="text-[11px] font-semibold text-foreground">Generate Orthotic</p>
             </div>
             <p className="text-[10px] text-muted-foreground leading-relaxed">
-                One step: auto-measure the scan, fit the default SAMPLE_Top shell, and merge your Rx.
-                Explicit Rx beats scan fit. Review warnings before manufacturing.
+                Shoe size scales the default SAMPLE_Top. The scan sets arch height only (Low −3.5 mm, Standard
+                unchanged, High +3 mm). Flexible foot moves the apex 4 mm forward. Explicit Rx wins. Review
+                warnings before manufacturing.
             </p>
+            <label className="block text-[10px] font-medium text-muted-foreground" htmlFor="shoe-size-system">
+                Shoe size (required)
+            </label>
+            <div className="flex gap-1">
+                <select
+                    id="shoe-size-system"
+                    value={sizeSystem}
+                    onChange={(e) => {
+                        setSizeSystem(e.target.value as RequiredShoeSize["system"]);
+                        setSizeValue("");
+                    }}
+                    className="rounded border border-border bg-background px-1.5 py-1 text-[11px]"
+                >
+                    <option value="us">US</option>
+                    <option value="uk">UK</option>
+                    <option value="mm">mm</option>
+                </select>
+                <select
+                    id="shoe-size-value"
+                    aria-label="Shoe size"
+                    value={sizeValue}
+                    onChange={(e) => setSizeValue(e.target.value)}
+                    className="min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-1 text-[11px]"
+                >
+                    <option value="">Select size</option>
+                    {sizeOptions.map((o) => (
+                        <option key={o.value} value={o.value}>
+                            {o.label}
+                        </option>
+                    ))}
+                </select>
+            </div>
+            {sides.map((side) => (
+                <label key={side} className="flex items-center gap-2 text-[11px] text-foreground">
+                    <input
+                        type="checkbox"
+                        checked={flexible[side]}
+                        onChange={(e) => setFlexible((prev) => ({ ...prev, [side]: e.target.checked }))}
+                    />
+                    Flexible foot ({side}) — apex 4 mm forward
+                </label>
+            ))}
             <label className="block text-[10px] font-medium text-muted-foreground" htmlFor="rx-text">
-                Prescription (optional — defaults apply when empty)
+                Prescription (optional)
             </label>
             <textarea
                 id="rx-text"
@@ -125,7 +165,7 @@ export function GenerateOrthoticPanel() {
             />
             <button
                 type="button"
-                disabled={busy || bundles.length === 0}
+                disabled={busy || bundles.length === 0 || !shoeSize}
                 onClick={() => void onGenerate()}
                 className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-[11px] font-semibold text-primary-foreground disabled:opacity-50"
             >
@@ -153,11 +193,12 @@ export function GenerateOrthoticPanel() {
                     <ul className="list-inside list-disc text-muted-foreground">
                         {lastResult.perFoot.map((f) => (
                             <li key={f.side}>
-                                {f.side}: {f.sizeLabel ?? "size unchanged"} · arch {f.archSource ?? "—"} · RMS{" "}
-                                {f.registrationRmsMm?.toFixed(1) ?? "—"} mm
+                                {f.side}: {f.sizeLabel} · arch {f.archHeightMeasuredMm.toFixed(1)} mm{" "}
+                                {f.archBand}
+                                {f.archReviewBelow18 ? " (review)" : ""} · correction {f.archHeightMm} mm
+                                {f.flexible ? " · flexible apex +4 mm" : ""}
                             </li>
                         ))}
-                        <li>Template layout {layout.lengthMm.toFixed(0)} × {layout.widthMm.toFixed(0)} mm</li>
                     </ul>
                     {lastResult.warnings.length > 0 ? (
                         <div>
@@ -169,10 +210,8 @@ export function GenerateOrthoticPanel() {
                             </ul>
                         </div>
                     ) : null}
-                    {lastResult.elementSuggestions.length > 0 ? (
-                        <p className="text-muted-foreground">
-                            Suggested elements ({lastResult.elementSuggestions.length}) — confirm in Elements.
-                        </p>
+                    {lastResult.pathology ? (
+                        <p className="text-amber-100/90">{lastResult.pathology.reason}</p>
                     ) : null}
                 </div>
             ) : null}

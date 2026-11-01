@@ -1,53 +1,47 @@
 # One-click scan + Rx validation report
 
 **Branch:** `feature/one-click-scan-rx-generation` (PR #234)
-**Scope:** Automated engineering validation only — not clinical fit, comfort, or dispensing sign-off.
+**Scope:** Automated engineering validation of Kendon's one-click recipe. Not clinical fit, comfort, or dispensing sign-off.
 
-## Baseline STL parity (unchanged default design)
+## Recipe
+
+Shoe size is a required input. It scales the default SAMPLE_Top. Scan length is not a size. The scan contributes arch height only, measured as the medial midfoot height above the heel and forefoot floor.
+
+| Measured arch | Band | Parametric `archHeightMm` |
+|---------------|------|---------------------------|
+| Below 23 mm | Low. Below 18 mm is still Low and is flagged for review | −3.5 |
+| 23–26 mm (23 and 26 included) | Standard | 0 (default mesh) |
+| Above 26 mm | High | +3 |
+
+Flexible foot sets `apexMoveMm` to +4. In the height field that is 4 mm toward the toe (`apexCenter = 0.42 + apexMoveMm / length`). An explicit Rx arch or apex replaces the class or the checkbox. Other Rx items are explicit corrections, elements, and sinks. Left and right stay unlinked. An unnamed clause is not copied when both feet are present. Pathology words with no explicit correction, element, or sink call `PathologyDesigner`. The stub returns `needs_design` and does not invent millimetres. Gap-fit and registration are not on this path.
+
+## Baseline STL parity (unchanged when one-click is unused)
 
 | Item | Value |
 |------|--------|
 | Main pin commit | `53ebd8e5` |
 | Export settings | SAMPLE_Top procedural wall, `straight`, manufacturing STL, mesh closed after the loft |
-| US men's 9 | Left and right SHA-256 **unchanged** from the pin (`6c67e279…` / `cd57887c…`) |
-| US men's 8 / 10 / 11 | Distinct hashes. XY scale is applied to the **closed** solid (`layout.scale` vs Men's 9). The loft and seam close still run on the native sheet. |
-| Left length (maxX − minX) | US 8 **264.3 mm**, US 9 **273.1 mm**, US 10 **281.9 mm**, US 11 **290.7 mm** (US 8 / US 9 = 30/31) |
+| US men's 9 | Left `6c67e279aa33ea15bd6ffb0c9ba8feecee907d73dfdc5eacadda24e09052df14`, right `cd57887c45189bce39b0ead2fbcc959e1bdfebe12a11256f05751ff670d76c99` |
+| US men's 8 / 10 / 11 | Distinct hashes. XY scale is applied to the closed solid. The loft still runs on the native sheet. |
+| Left length (maxX − minX) | US 8 **264.3 mm**, US 9 **273.1 mm**, US 10 **281.9 mm**, US 11 **290.7 mm** |
 
-Shoe-size scale does not run when one-click is unused and the design is Men's 9. The viewer procedural preview is still the native sheet.
+## Sample export (gen.design)
 
-## What the Default.glb scan fits
+US men's 9. Left scan arch 20 mm, Flexible foot checked. Right scan arch 24 mm, not flexible. No other Rx.
 
-The previous −8 mm arch was not a 1.5 mm clearance constant. The fixture ARCH sat on the B1–B3 chord (Z ≈ 3.2 mm) while the stock top at that XY is the dome (Z ≈ 12.0 mm). `fitArchParamsFromApexMarker` reported that gap, and the heel-width sample was a 10 mm landmark patch against a 67 mm shell, which clamped `heelCupWidthMm` to −10.
+| Item | Result |
+|------|--------|
+| Left class / correction | Low, `archHeightMm` **−3.5**, `apexMoveMm` **+4** |
+| Right class / correction | Standard, arch **0**, apex **0** |
+| Left STL SHA-256 | `14b8136885be58d973c5edfffd72f93edeacdd14ae1fd6e4b2a917b8d85e5f40` (differs from the default left) |
+| Right STL SHA-256 | `cd57887c…` — **byte-identical** to the default right US men's 9 export |
+| Arch apex side | Left Y **−36.3** (medial −Y), right Y **+36.3** (medial +Y) |
+| Left / right bbox | X −0.7→272.4, Y −46.4→46.4, Z 0→**22.8** / X −0.7→272.4, Y −46.3→46.3, Z 0→**25.2** |
+| Manufactured length | maxX − minX ≈ **273.1 mm** on both shells |
 
-The Default.glb scan arch is now seated on the stock medial top (same rigid offset Kabsch removes). Heel-cup fits from a scan heel under 35 mm, or under half the shell heel, are not applied.
+The height-field tests hold the exact deltas: Low and High are −3.5 mm and +3 mm versus the default at the apex station, and the flexible apex station is 4 mm anterior. On the closed left STL the medial crest inside x 85–145 dropped **2.63 mm** (Z 25.24 → 22.61) and sits on the heel edge of that window (x 85.3 versus 89.3). Sampling the medial top ±4 mm from the default crest, the toe-side station dropped **2.79 mm** and the heel-side station **2.55 mm**. That crest is the rim of a lowered dome, so it is not a second measurement of the parametric −3.5 mm.
 
-`one-click-e2e-clinical-match.test.ts` (production `matchClinicalParamsFromRegisteredScanAuto`, no injected seam):
-
-| Correction | Result |
-|------------|--------|
-| Left `archHeightMm` | **0.9** (gate ±1 mm) |
-| Left `apexMoveMm` | **2.9** (rigid fit onto the sized frame; not a second dome) |
-| Left `heelCupWidthMm` | **0** |
-| Right arch / skive | **0** (feet are unlinked; nothing is copied) |
-
-## Generation export (gen.design, no template fallback)
-
-Prescription: `Left medial heel skive 4mm rearfoot 4 deg varus`.
-
-The manufacturing STL is `gen.design` itself. Kirby skive is applied on the procedural top (it used to be omitted because `includeSkives` stays false inside the analytic delta). Varus is a **medial** rearfoot wedge.
-
-| Metric | Value |
-|--------|--------|
-| Left medial skive | **4 mm** |
-| Left rearfoot wedge | **medial 4°** (varus) |
-| Right skive / wedge / arch | **0** — right STL SHA-256 matches the default right export |
-| Left medial / lateral heel top-quartile Z vs default | **+3.53 mm** / **+0.58 mm** |
-| Right shell, same 4 mm skive + 4° medial wedge | Medial **+3.46 mm**, lateral **+0.57 mm** (medialSign +Y) |
-| Arch apex | Left Y **−37.2** (medial −Y), right Y **+36.3** (medial +Y) |
-| Left bbox | X −0.7→272.4, Y −46.3→46.4, Z 0→28.8 |
-| Right bbox | X −0.7→272.4, Y −46.3→46.3, Z 0→25.2 |
-
-S1-B / S1-PRELOFT completed on this design (those gates throw inside the loft; the export returned). There is no silent fallback to a skive-only template. `assertClosedSolidAcceptable` is stubbed in this harness the same way as the baseline parity test. Trimesh on the written STLs: watertight, one body.
+S1-B / S1-PRELOFT completed (those gates throw inside the loft). `assertClosedSolidAcceptable` is stubbed in this harness, the same way as the baseline parity test. Trimesh: both STLs watertight, one body (left 37 954 vertices, right 37 428).
 
 **Artifacts** (after `tests/one-click-export-artifacts.test.ts`):
 
@@ -60,9 +54,8 @@ S1-B / S1-PRELOFT completed on this design (those gates throw inside the loft; t
 ## Still untested / known gaps
 
 - Clinical wear, patient sign-off, and printer/material validation
-- The 0.9 mm arch and 2.9 mm apex are registration residual of this fixture, not a claim that every scan of the stock shell lands on exactly 0
-- Medial-heel raise is about the 4 mm skive (measured +3.5 mm on the upper quartile), not a point sample at the Kirby one-third line
+- The STL crest drop (about 2.6 mm) is not the parametric −3.5 mm. The −3.5 / +3 / +4 mm checks are on `heightAt`
 - Bilateral different US sizes on one design row
-- External vendor foot scans (in-repo Default.glb + synthetic fixtures only)
-- OCCT authoritative kernel (CI forces the preview / mesh-close path)
-- Full `npm test` wall time is the PR CI job (`trimesh` + `scipy` for `tests/helpers/stl-gates.py`)
+- External vendor foot scans (synthetic arch-height grids in the recipe tests)
+- The pathology result is a stub. No biomechanics model is called
+- OCCT authoritative kernel (this harness forces the preview / mesh-close path)

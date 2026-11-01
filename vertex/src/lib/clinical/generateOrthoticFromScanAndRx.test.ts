@@ -1,30 +1,15 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { beforeAll, describe, expect, test } from "@rstest/core";
+import { describe, expect, test } from "@rstest/core";
 import * as THREE from "three";
 import { heuristicParse } from "@/features/ai-prescription/heuristic";
 import { generateOrthoticFromScanAndRx } from "@/lib/clinical/generateOrthoticFromScanAndRx";
 import { medialWidthSignForSide } from "@/lib/clinical/medial-sign";
 import { mergeScanFitWithPrescription } from "@/lib/clinical/resolve-rx-vs-scan-corrections";
-import { clearMarkerFrameRegistry, registerRawBaseGeometry } from "@/lib/geometry/marker-frame";
 import { buildScanDisplayInfo } from "@/lib/geometry/scan-display";
 import { suggestScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
-import { extractMergedGeometry, loadGlbFromBuffer, reorientToFootprintFrame } from "@/lib/library/loaders";
 import { createDesignWithStockPlaceholder, defaultDesign } from "@/stores/design-store";
-
-const FIXTURE = resolve(process.cwd(), "tests/fixtures/Default.glb");
-const SOURCE_ID = "test-sample-top";
-
-const mockClinicalMatch = () => ({
-    correction: { archHeightMm: 2.5, apexMoveMm: 0, archFillMm: 0 },
-    message: "mock arch fit",
-    archSource: "gap" as const,
-    heel: null,
-});
-
-let rawBase: THREE.BufferGeometry;
+import { archHeightScan } from "../../../../tests/helpers/arch-height-scan";
 
 function syntheticFootGeometry(length = 270, side: "left" | "right" = "left"): THREE.BufferGeometry {
     const positions: number[] = [];
@@ -89,15 +74,10 @@ function syntheticFootGeometry(length = 270, side: "left" | "right" = "left"): T
     return foot;
 }
 
-beforeAll(async () => {
-    clearMarkerFrameRegistry();
-    const buf = readFileSync(FIXTURE);
-    const group = await loadGlbFromBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
-    const merged = extractMergedGeometry(group);
-    if (!merged) throw new Error("fixture load failed");
-    rawBase = reorientToFootprintFrame(merged.geometry);
-    registerRawBaseGeometry(SOURCE_ID, rawBase, { primarySide: "left" });
-});
+function bundle(heightMm: number, side: "left" | "right") {
+    const geometry = archHeightScan(heightMm, side);
+    return { side, geometry, display: buildScanDisplayInfo(geometry), keepSetApproved: true };
+}
 
 describe("medial/lateral landmarks", () => {
     test("left foot: M1 is medial to M2 on width axis", () => {
@@ -120,94 +100,55 @@ describe("medial/lateral landmarks", () => {
 });
 
 describe("generateOrthoticFromScanAndRx", () => {
-    test("left scan end-to-end succeeds with auto landmarks", () => {
-        const foot = syntheticFootGeometry();
-        const display = buildScanDisplayInfo(foot);
+    test("left scan sets the arch class and leaves the baseline untouched", () => {
+        const foot = bundle(20, "left");
         const baseline = createDesignWithStockPlaceholder(defaultDesign());
+        const before = JSON.stringify(baseline);
         const out = generateOrthoticFromScanAndRx({
             baselineDesign: baseline,
-            scans: [
-                {
-                    side: "left",
-                    geometry: foot,
-                    display,
-                    markers: { M1: null, M2: null, M3: null, ARCH: null },
-                    suggestedLandmarks: suggestScanLandmarks(foot, "left"),
-                    keepSetApproved: true,
-                },
-            ],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE_ID,
-            prescription: null,
-            matchClinical: mockClinicalMatch,
+            scans: [foot],
+            shoeSize: { system: "us", value: 9 },
         });
         if (!out.ok) throw new Error(`${out.failedStep}: ${out.reason}`);
         expect(out.perFoot[0]?.side).toBe("left");
-        expect(out.design.corrections.left.archHeightMm).toBe(2.5);
-        foot.dispose();
+        expect(out.design.corrections.left.archHeightMm).toBe(-3.5);
+        expect(JSON.stringify(baseline)).toBe(before);
+        foot.geometry.dispose();
     });
 
     test("Rx applies only to the prescribed side (left)", () => {
-        const foot = syntheticFootGeometry(270, "left");
-        const display = buildScanDisplayInfo(foot);
-        const rx = heuristicParse("Left medial heel skive 4mm");
-        const baseline = createDesignWithStockPlaceholder({
-            ...defaultDesign(),
-            corrections: {
-                ...defaultDesign().corrections,
-                linked: false,
-            },
-        });
+        const foot = bundle(24, "left");
         const out = generateOrthoticFromScanAndRx({
-            baselineDesign: baseline,
-            scans: [
-                {
-                    side: "left",
-                    geometry: foot,
-                    display,
-                    markers: { M1: null, M2: null, M3: null, ARCH: null },
-                    suggestedLandmarks: suggestScanLandmarks(foot, "left"),
-                    keepSetApproved: true,
-                },
-            ],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE_ID,
-            prescription: rx,
-            matchClinical: mockClinicalMatch,
+            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
+            scans: [foot],
+            shoeSize: { system: "us", value: 9 },
+            prescriptionText: "Left: 4° rearfoot varus, medial skive 4 mm",
         });
         if (!out.ok) throw new Error(`${out.failedStep}: ${out.reason}`);
-        expect(out.design.corrections.left.medialSkiveMm).toBeGreaterThan(0);
-        expect(out.design.corrections.right.medialSkiveMm ?? 0).toBe(0);
-        foot.dispose();
+        expect(out.design.corrections.left.medialSkiveMm).toBe(4);
+        expect(out.design.corrections.left.rearfootWedge).toEqual({ side: "medial", value: 4, unit: "deg" });
+        expect(out.design.corrections.right.medialSkiveMm).toBe(0);
+        expect(out.design.corrections.right.rearfootWedge).toBeUndefined();
+        foot.geometry.dispose();
     });
 
     test("deterministic corrections for identical inputs", () => {
-        const foot = syntheticFootGeometry(265);
-        const display = buildScanDisplayInfo(foot);
-        const sug = suggestScanLandmarks(foot, "left");
+        const foot = bundle(26.1, "left");
         const baseline = createDesignWithStockPlaceholder(defaultDesign());
         const input = {
             baselineDesign: baseline,
-            scans: [
-                {
-                    side: "left" as const,
-                    geometry: foot,
-                    display,
-                    markers: { M1: null, M2: null, M3: null, ARCH: null },
-                    suggestedLandmarks: sug,
-                    keepSetApproved: true,
-                },
-            ],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE_ID,
-            prescription: null,
-            matchClinical: mockClinicalMatch,
+            scans: [foot],
+            shoeSize: { system: "us" as const, value: 10 },
+            prescriptionText: "Left heel lift 3 mm",
         };
         const a = generateOrthoticFromScanAndRx(input);
         const b = generateOrthoticFromScanAndRx(input);
         if (!a.ok || !b.ok) throw new Error("expected success");
+        expect(a.design.corrections.left.archHeightMm).toBe(3);
+        expect(a.design.corrections.left.heelLiftMm).toBe(3);
+        expect(a.design.usMenSize).toBe(10);
         expect(JSON.stringify(a.design.corrections)).toBe(JSON.stringify(b.design.corrections));
-        foot.dispose();
+        foot.geometry.dispose();
     });
 
     test("unchanged default design when generation fails early", () => {
@@ -216,11 +157,11 @@ describe("generateOrthoticFromScanAndRx", () => {
         const out = generateOrthoticFromScanAndRx({
             baselineDesign: baseline,
             scans: [],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE_ID,
-            prescription: null,
+            shoeSize: { system: "us", value: 9 },
         });
         expect(out.ok).toBe(false);
+        if (out.ok) return;
+        expect(out.failedStep).toBe("scan");
         expect(JSON.stringify(baseline.corrections)).toBe(before);
     });
 });

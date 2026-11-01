@@ -3,27 +3,26 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from "@rstest/core";
+import { afterEach, beforeEach, describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
-import { heuristicParse } from "@/features/ai-prescription/heuristic";
 import { generateOrthoticFromScanAndRx } from "@/lib/clinical/generateOrthoticFromScanAndRx";
+import { medialSign } from "@/lib/clinical/medial-sign";
 import * as baseAsset from "@/lib/geometry/base-asset";
-import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { buildInsoleGeometry } from "@/lib/geometry/insole";
 import { analyzeManifold } from "@/lib/geometry/manifold";
-import { clearMarkerFrameRegistry } from "@/lib/geometry/marker-frame";
 import * as meshClose from "@/lib/geometry/mesh-close";
 import { SAMPLE_TOP_PUBLIC_PATH } from "@/lib/geometry/procedural-wall/sample-top-id";
 import { resetSampleTopGeometryCache } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import { buildScanDisplayInfo } from "@/lib/geometry/scan-display";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { createDesignWithStockPlaceholder, defaultDesign, useDesignStore } from "@/stores/design-store";
-import { buildDefaultGlbRegisteredScan, registerDefaultGlbBaseAsync } from "./helpers/clinical-scan-fixtures";
+import type { Side } from "@/types";
+import { archHeightScan } from "./helpers/arch-height-scan";
 import { DEFAULT_GLB_FIXTURE_PATH, loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
 import { encodePng, renderMesh } from "./helpers/render-png";
-import { checkStlArchApexMedial, meanTopHeelZ, stlBoundingBox } from "./helpers/stl-foot-checks";
+import { checkStlArchApexMedial, stlBoundingBox } from "./helpers/stl-foot-checks";
 
 const SAMPLE_TOP_FIXTURE_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
-const SOURCE = "artifact-default-glb";
 const ARTIFACT_ROOTS = ["/opt/cursor/artifacts/one-click", "/tmp/one-click-artifacts"];
 
 const mockEnsureKernelReady = rs.fn<() => Promise<boolean>>();
@@ -68,14 +67,7 @@ function writeArtifact(rel: string, data: Buffer | Uint8Array): void {
     }
 }
 
-let rawBase: BufferGeometry;
-
 describe("one-click export artifacts (real export path)", () => {
-    beforeAll(async () => {
-        clearMarkerFrameRegistry();
-        rawBase = await registerDefaultGlbBaseAsync(SOURCE);
-    });
-
     beforeEach(() => {
         mockEnsureKernelReady.mockReset();
         mockEnsureKernelReady.mockResolvedValue(false);
@@ -104,7 +96,7 @@ describe("one-click export artifacts (real export path)", () => {
 
     afterEach(() => rs.restoreAllMocks());
 
-    test("Default.glb scan + Rx exports gen.design (no template fallback)", async () => {
+    test("Low flexible left and Standard right export gen.design", async () => {
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
         const { binaryStlToGeometry } = await import("@/lib/geometry/stl");
 
@@ -122,42 +114,44 @@ describe("one-click export artifacts (real export path)", () => {
         install(createDesignWithStockPlaceholder(defaultDesign()));
         const defaultLeft = await buildExportStl("left", { exportMode: "manufacturing" });
         const defaultRight = await buildExportStl("right", { exportMode: "manufacturing" });
+        const defaultLeftHash = createHash("sha256").update(Buffer.from(defaultLeft)).digest("hex");
         const defaultRightHash = createHash("sha256").update(Buffer.from(defaultRight)).digest("hex");
-        const defaultLeftMedial = meanTopHeelZ(defaultLeft, true, "left");
-        const defaultLeftLateral = meanTopHeelZ(defaultLeft, false, "left");
+        const defaultLeftApex = checkStlArchApexMedial(defaultLeft, "left");
+        const defaultRightApex = checkStlArchApexMedial(defaultRight, "right");
 
-        const scan = buildDefaultGlbRegisteredScan(SOURCE, rawBase);
-        expect(scan).not.toBeNull();
-        if (!scan) throw new Error("Default.glb registered scan unavailable");
+        const leftScan = archHeightScan(20, "left");
+        const rightScan = archHeightScan(24, "right");
         const gen = generateOrthoticFromScanAndRx({
             baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
             scans: [
                 {
                     side: "left",
-                    geometry: scan.geometry,
-                    display: scan.display,
-                    markers: scan.markers,
-                    suggestedLandmarks: scan.suggested,
+                    geometry: leftScan,
+                    display: buildScanDisplayInfo(leftScan),
+                    keepSetApproved: true,
+                },
+                {
+                    side: "right",
+                    geometry: rightScan,
+                    display: buildScanDisplayInfo(rightScan),
                     keepSetApproved: true,
                 },
             ],
-            rawBaseGeometry: rawBase,
-            sourceAssetId: SOURCE,
-            prescription: heuristicParse("Left medial heel skive 4mm rearfoot 4 deg varus"),
+            shoeSize: { system: "us", value: 9 },
+            flexibleBySide: { left: true, right: false },
         });
         expect(gen.ok).toBe(true);
         if (!gen.ok) throw new Error(gen.reason);
 
         const leftCorr = gen.design.corrections.left;
         const rightCorr = gen.design.corrections.right;
-        expect(Math.abs(leftCorr.archHeightMm)).toBeLessThanOrEqual(1);
-        expect(Math.abs(leftCorr.apexMoveMm)).toBeLessThanOrEqual(5);
+        expect(leftCorr.archHeightMm).toBe(-3.5);
+        expect(leftCorr.apexMoveMm).toBe(4);
         expect(leftCorr.heelCupWidthMm).toBe(0);
-        expect(leftCorr.medialSkiveMm).toBe(4);
-        expect(leftCorr.rearfootWedge).toEqual({ side: "medial", value: 4, unit: "deg" });
-        expect(rightCorr.medialSkiveMm).toBe(0);
         expect(rightCorr.archHeightMm).toBe(0);
-        expect(rightCorr.rearfootWedge).toBeUndefined();
+        expect(rightCorr.apexMoveMm).toBe(0);
+        expect(rightCorr.medialSkiveMm).toBe(0);
+        expect(gen.design.usMenSize).toBe(9);
 
         install(gen.design);
         const leftStl = await buildExportStl("left", { exportMode: "manufacturing" });
@@ -165,79 +159,75 @@ describe("one-click export artifacts (real export path)", () => {
         writeArtifact("generated-left.stl", Buffer.from(leftStl));
         writeArtifact("generated-right.stl", Buffer.from(rightStl));
 
+        const leftHash = createHash("sha256").update(Buffer.from(leftStl)).digest("hex");
+        const rightHash = createHash("sha256").update(Buffer.from(rightStl)).digest("hex");
+        expect(leftHash).not.toBe(defaultLeftHash);
+        expect(rightHash).toBe(defaultRightHash);
+
         const leftMedial = checkStlArchApexMedial(leftStl, "left");
         const rightMedial = checkStlArchApexMedial(rightStl, "right");
         expect(leftMedial.ok, leftMedial.reason).toBe(true);
         expect(rightMedial.ok, rightMedial.reason).toBe(true);
         expect(leftMedial.medialSign).toBe(-1);
         expect(rightMedial.medialSign).toBe(1);
-
-        const medHeelZ = meanTopHeelZ(leftStl, true, "left");
-        const latHeelZ = meanTopHeelZ(leftStl, false, "left");
-        const medialRaise = medHeelZ - defaultLeftMedial;
-        const lateralRaise = latHeelZ - defaultLeftLateral;
-        // 4 mm medial skive plus a 4° medial (varus) wedge, at the medial heel.
-        expect(medialRaise).toBeGreaterThan(3);
-        expect(medialRaise).toBeLessThan(12);
-        expect(lateralRaise).toBeLessThan(medialRaise - 2);
-
-        const rightHash = createHash("sha256").update(Buffer.from(rightStl)).digest("hex");
-        expect(rightHash).toBe(defaultRightHash);
-
-        // Same Rx on the right shell. medialSign is +Y; the left shell stays the unilateral case above.
-        const defaultRightMedial = meanTopHeelZ(defaultRight, true, "right");
-        const defaultRightLateral = meanTopHeelZ(defaultRight, false, "right");
-        const rightDesign = {
-            ...gen.design,
-            corrections: {
-                ...gen.design.corrections,
-                linked: false,
-                right: {
-                    ...gen.design.corrections.right,
-                    medialSkiveMm: 4,
-                    rearfootWedge: { side: "medial" as const, value: 4, unit: "deg" as const },
-                },
-            },
+        expect(defaultLeftApex.ok, defaultLeftApex.reason).toBe(true);
+        expect(defaultRightApex.ok, defaultRightApex.reason).toBe(true);
+        // Low arch lowers the medial crest. +apexMoveMm centers that drop 4 mm toward the toe (+X).
+        const medialMaxZNearX = (stl: ArrayBuffer, side: Side, xCenter: number) => {
+            const geo = binaryStlToGeometry(stl);
+            const pos = geo.getAttribute("position");
+            const sign = medialSign(side);
+            let best = -Infinity;
+            for (let i = 0; i < pos.count; i++) {
+                const x = pos.getX(i);
+                const y = pos.getY(i);
+                const z = pos.getZ(i);
+                if (Math.abs(x - xCenter) > 3) continue;
+                if (y * sign <= 8) continue;
+                if (z > best) best = z;
+            }
+            geo.dispose();
+            return best;
         };
-        resetSampleTopGeometryCache();
-        install(rightDesign);
-        const rightSkived = await buildExportStl("right", { exportMode: "manufacturing" });
-        const rightSkiveMedial = checkStlArchApexMedial(rightSkived, "right");
-        expect(rightSkiveMedial.ok, rightSkiveMedial.reason).toBe(true);
-        expect(rightSkiveMedial.medialSign).toBe(1);
-        const rightMedialRaise = meanTopHeelZ(rightSkived, true, "right") - defaultRightMedial;
-        const rightLateralRaise = meanTopHeelZ(rightSkived, false, "right") - defaultRightLateral;
-        expect(rightMedialRaise).toBeGreaterThan(3);
-        expect(rightMedialRaise).toBeLessThan(12);
-        expect(rightLateralRaise).toBeLessThan(rightMedialRaise - 2);
+        const forwardX = defaultLeftApex.apexX + 4;
+        const backX = defaultLeftApex.apexX - 4;
+        const dropForward =
+            medialMaxZNearX(defaultLeft, "left", forwardX) - medialMaxZNearX(leftStl, "left", forwardX);
+        const dropBack =
+            medialMaxZNearX(defaultLeft, "left", backX) - medialMaxZNearX(leftStl, "left", backX);
+        expect(defaultLeftApex.apexZ - leftMedial.apexZ).toBeGreaterThan(2);
+        expect(dropForward).toBeGreaterThan(2);
+        expect(dropForward).toBeGreaterThan(dropBack);
 
         const leftBox = stlBoundingBox(leftStl);
         const rightBox = stlBoundingBox(rightStl);
         const layout = insoleLayoutFromDesign(gen.design);
         const metrics = {
+            sample: "Low flexible left (measured 20 mm), Standard right (measured 24 mm), US men's 9",
             layoutLengthMm: layout.lengthMm,
             layoutWidthMm: layout.widthMm,
             leftArchHeightMm: leftCorr.archHeightMm,
             leftApexMoveMm: leftCorr.apexMoveMm,
-            leftMedialSkiveMm: leftCorr.medialSkiveMm,
-            leftRearfootWedge: leftCorr.rearfootWedge,
-            rightMedialSkiveMm: rightCorr.medialSkiveMm,
+            rightArchHeightMm: rightCorr.archHeightMm,
+            rightApexMoveMm: rightCorr.apexMoveMm,
             generatedUsMenSize: gen.design.usMenSize,
             exportedDesignIsGenDesign: true,
-            baselineDefaultArchHeightMm: 0,
+            leftHash,
+            rightHash,
+            defaultLeftHash,
+            defaultRightHash,
+            rightMatchesDefault: rightHash === defaultRightHash,
+            leftDiffersFromDefault: leftHash !== defaultLeftHash,
             exportedLeftBboxMm: leftBox,
             exportedRightBboxMm: rightBox,
             leftArchApexMedialCheck: leftMedial,
             rightArchApexMedialCheck: rightMedial,
-            medialHeelZ: medHeelZ,
-            lateralHeelZ: latHeelZ,
-            defaultMedialHeelZ: defaultLeftMedial,
-            defaultLateralHeelZ: defaultLeftLateral,
-            medialHeelRaiseMm: medialRaise,
-            lateralHeelRaiseMm: lateralRaise,
-            rightMatchesDefault: true,
-            rightPrescribedMedialHeelRaiseMm: rightMedialRaise,
-            rightPrescribedLateralHeelRaiseMm: rightLateralRaise,
+            defaultLeftApex,
+            defaultRightApex,
+            leftApexDropMm: defaultLeftApex.apexZ - leftMedial.apexZ,
+            leftCrestShiftMm: leftMedial.apexX - defaultLeftApex.apexX,
+            medialDropForwardMm: dropForward,
+            medialDropBackMm: dropBack,
         };
         writeArtifact("validation-metrics.json", Buffer.from(JSON.stringify(metrics, null, 2)));
 
@@ -277,6 +267,7 @@ describe("one-click export artifacts (real export path)", () => {
             paint(rightStl, { right: [-1, 0, 0], up: [0, 0, 1], light: [0.2, 0.6, 0.4] }),
         );
 
-        scan.geometry.dispose();
+        leftScan.dispose();
+        rightScan.dispose();
     }, 420000);
 });

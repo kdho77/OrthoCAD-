@@ -1,76 +1,82 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import type * as THREE from "three";
 import type { BufferGeometry } from "three";
-import { medialWidthSignForSide } from "@/lib/clinical/medial-sign";
+import { type ArchBand, classifyArchHeightMm, FLEXIBLE_APEX_ANTERIOR_MM } from "@/lib/clinical/arch-class";
+import { measureScanArchHeightMm } from "@/lib/clinical/measure-scan-arch";
+import { interpretOneClickRx } from "@/lib/clinical/one-click-rx";
 import {
-    detectRxConflicts,
-    mergeScanFitWithPrescription,
-} from "@/lib/clinical/resolve-rx-vs-scan-corrections";
-import { computeScanRegistration, registrationKabschReady } from "@/lib/clinical/scan-registration-compute";
-import { suggestShoeWidthFromBallWidth } from "@/lib/clinical/suggest-shoe-width-from-scan";
+    type PathologyDesigner,
+    type PathologyDesignResult,
+    stubPathologyDesigner,
+} from "@/lib/clinical/pathology-designer";
 import { constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
-import { ArchFitError } from "@/lib/geometry/fit-arch-from-scan";
-import {
-    ARCH_MATCH_BLOCK_RMS_MM,
-    ARCH_MATCH_WARN_RMS_MM,
-    gateArchMatch,
-    matchClinicalParamsFromRegisteredScanAuto,
-    shouldAutoApplySize,
-    suggestSizeFromScanGeometry,
-} from "@/lib/geometry/match-design-from-scan";
-import { measureBallWidthMm } from "@/lib/geometry/measure-foot-from-scan";
+import { defaultElementPose } from "@/lib/geometry/elements";
 import type { ScanDisplayInfo } from "@/lib/geometry/scan-display";
-import { resolveScanMeshMatrix } from "@/lib/geometry/scan-display";
-import type { SuggestedScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
-import { suggestScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
-import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
-import type { ScanMarkers, ScanRegistrationState } from "@/stores/scan-store";
-import { getScanRegistrationMatrix } from "@/stores/scan-store";
-import type { DesignState, ParsedElement, PrescriptionParseResult, Side, SideCorrections } from "@/types";
+import {
+    insoleLayoutForUkSize,
+    insoleLayoutForUsMenSize,
+    insoleLayoutFromDesign,
+    normalizeFootLengthMm,
+    ukToUsMen,
+    usMenToUk,
+} from "@/lib/geometry/shoe-size";
+import { SINK_PROFILES } from "@/lib/geometry/sink";
+import type { ScanMarkers } from "@/stores/scan-store";
+import type {
+    DesignState,
+    ElementKind,
+    PlacedElement,
+    PlacedSink,
+    Side,
+    SideCorrections,
+    SinkKind,
+} from "@/types";
 
 export type FootScanBundle = {
     side: Side;
     geometry: BufferGeometry;
     display: ScanDisplayInfo;
-    markers: ScanMarkers;
-    suggestedLandmarks?: SuggestedScanLandmarks | null;
-    manualOffset?: { x: number; y: number; z: number; rz?: number } | null;
+    markers?: ScanMarkers;
     keepSetApproved?: boolean;
+};
+
+/** Clinician-entered shoe size. Never taken from scan length. */
+export type RequiredShoeSize = {
+    system: "us" | "uk" | "mm";
+    /** US men's size, UK size, or foot length in mm. */
+    value: number;
 };
 
 export type GenerateOrthoticInput = {
     baselineDesign: DesignState;
     scans: FootScanBundle[];
-    rawBaseGeometry: BufferGeometry;
-    sourceAssetId: string;
-    prescription: PrescriptionParseResult | null;
-    /** Test seam — override clinical match (defaults to production fit). */
-    matchClinical?: typeof matchClinicalParamsFromRegisteredScanAuto;
+    /** Required. Generation fails when this is missing. */
+    shoeSize: RequiredShoeSize | null;
+    /** Per foot. Checked → apexMoveMm +4 mm (anterior), unless the Rx sets apex. */
+    flexibleBySide?: Partial<Record<Side, boolean>>;
+    prescriptionText?: string;
+    pathologyDesigner?: PathologyDesigner;
 };
 
 export type FootGenerationSummary = {
     side: Side;
-    sizeApplied: boolean;
-    sizeLabel?: string;
-    widthClass?: string;
-    archSource?: "marker" | "gap";
-    archMessage?: string;
-    registrationRmsMm?: number | null;
-    landmarksAutoFilled: MarkerId[];
-    reviewLandmarks: MarkerId[];
+    archHeightMeasuredMm: number;
+    archBand: ArchBand;
+    archReviewBelow18: boolean;
+    archHeightMm: number;
+    apexMoveMm: number;
+    flexible: boolean;
+    rxArchOverride: boolean;
+    sizeLabel: string;
 };
-
-type MarkerId = "M1" | "M2" | "M3" | "ARCH";
 
 export type GenerateOrthoticSuccess = {
     ok: true;
     design: DesignState;
     warnings: string[];
     reviewItems: string[];
-    elementSuggestions: ParsedElement[];
     perFoot: FootGenerationSummary[];
-    rxNotes?: string;
+    pathology: PathologyDesignResult | null;
 };
 
 export type GenerateOrthoticFailure = {
@@ -82,6 +88,26 @@ export type GenerateOrthoticFailure = {
 
 export type GenerateOrthoticResult = GenerateOrthoticSuccess | GenerateOrthoticFailure;
 
+function freshSide(): SideCorrections {
+    return {
+        forefootPostingDeg: 0,
+        rearfootPostingDeg: 0,
+        medialSkiveMm: 0,
+        lateralSkiveMm: 0,
+        archFillMm: 0,
+        archHeightMm: 0,
+        archEaseMm: 0,
+        heelCupDepthMm: 0,
+        heelCupHeightMm: 0,
+        heelCupWidthMm: 0,
+        forefootWidthMm: 0,
+        heelLiftMm: 0,
+        apexMoveMm: 0,
+        medialFlangeMm: 0,
+        lateralFlangeMm: 0,
+    };
+}
+
 function cloneDesignState(d: DesignState): DesignState {
     return {
         ...d,
@@ -89,8 +115,9 @@ function cloneDesignState(d: DesignState): DesignState {
             ...d.corrections,
             left: { ...d.corrections.left },
             right: { ...d.corrections.right },
+            linked: false,
         },
-        elements: d.elements.map((e) => ({ ...e })),
+        elements: d.elements.map((e) => ({ ...e, position: { ...e.position }, scale: { ...e.scale } })),
         trimlines: d.trimlines ? { ...d.trimlines } : d.trimlines,
         sinks: d.sinks
             ? { ...d.sinks, left: [...(d.sinks.left ?? [])], right: [...(d.sinks.right ?? [])] }
@@ -98,137 +125,142 @@ function cloneDesignState(d: DesignState): DesignState {
     };
 }
 
-function cloneMarkers(m: ScanMarkers): ScanMarkers {
-    const cloneV = (v: THREE.Vector3 | null) => (v ? v.clone() : null);
-    return { M1: cloneV(m.M1), M2: cloneV(m.M2), M3: cloneV(m.M3), ARCH: cloneV(m.ARCH) };
-}
-
-function autoFillMarkers(args: {
-    side: Side;
-    geometry: BufferGeometry;
-    markers: ScanMarkers;
-    suggested?: SuggestedScanLandmarks | null;
-}): {
-    markers: ScanMarkers;
-    autoFilled: MarkerId[];
-    review: MarkerId[];
-    warnings: string[];
-} {
-    const warnings: string[] = [];
-    const autoFilled: MarkerId[] = [];
-    const review: MarkerId[] = [];
-    let markers = cloneMarkers(args.markers);
-    const sug = args.suggested ?? suggestScanLandmarks(args.geometry, args.side);
-    if (!sug) {
-        if (!markers.M1 || !markers.M2 || !markers.M3) {
-            warnings.push(`${args.side}: could not suggest M1–M3 — place markers manually`);
-        }
-        return { markers, autoFilled, review, warnings };
-    }
-
-    const tryFill = (
-        id: MarkerId,
-        point: THREE.Vector3,
-        confidence: "high" | "medium" | "low" | undefined,
-    ) => {
-        if (markers[id]) return;
-        if (confidence === "low") {
-            review.push(id);
-            warnings.push(`${args.side}: ${id} suggestion low confidence — confirm landmark`);
-            return;
-        }
-        markers = { ...markers, [id]: point.clone() };
-        autoFilled.push(id);
-    };
-
-    tryFill("M1", sug.M1, "high");
-    tryFill("M2", sug.M2, "high");
-    tryFill("M3", sug.M3, "high");
-    if (sug.ARCH) {
-        tryFill("ARCH", sug.ARCH, sug.archConfidence ?? "medium");
-    } else if (!markers.ARCH) {
-        review.push("ARCH");
-        warnings.push(`${args.side}: ARCH apex not suggested — place ARCH or allow gap-fit`);
-    }
-
-    // Medial/lateral sanity: M1 medial of M2 on width axis for assigned side.
-    if (markers.M1 && markers.M2) {
-        const medialSign = medialWidthSignForSide(args.side);
-        const m1Medial = markers.M1.y * medialSign;
-        const m2Medial = markers.M2.y * medialSign;
-        if (m1Medial <= m2Medial) {
-            warnings.push(`${args.side}: M1 may be on wrong side — verify medial/lateral landmarks`);
-            review.push("M1", "M2");
-        }
-    }
-
-    return { markers, autoFilled, review, warnings };
-}
-
-function applySizingToDesign(
-    design: DesignState,
-    suggestion: ReturnType<typeof suggestSizeFromScanGeometry>,
-    side: Side,
-): { design: DesignState; applied: boolean; label?: string } {
-    if (!suggestion) return { design, applied: false };
-    if (!shouldAutoApplySize(design, suggestion) && suggestion.confidence === "low") {
-        return { design, applied: false, label: "Size not auto-applied (low confidence)" };
-    }
-    const system = design.sizeSystem ?? "us";
-    const next = { ...design };
-    if (system === "uk") next.ukSize = suggestion.ukSize;
-    else if (system === "mm") next.footLengthMm = suggestion.layout.footLengthMm;
-    else next.usMenSize = suggestion.usMenSize;
-    return {
-        design: next,
-        applied: true,
-        label: `${suggestion.layout.lengthMm.toFixed(0)} mm insole`,
-    };
-}
-
-function patchSideCorrections(design: DesignState, side: Side, patch: Partial<SideCorrections>): DesignState {
-    const thickness = design.thicknessMm;
-    const baseSide = side === "left" ? design.corrections.left : design.corrections.right;
-    const merged = { ...baseSide, ...patch };
-    const clamped = constrainSideCorrections(merged, thickness).constrained;
-    if (side === "left") {
+function applyShoeSize(design: DesignState, shoe: RequiredShoeSize): DesignState | null {
+    if (!Number.isFinite(shoe.value)) return null;
+    if (shoe.system === "uk") {
+        const layout = insoleLayoutForUkSize(shoe.value);
         return {
             ...design,
-            corrections: {
-                ...design.corrections,
-                left: clamped,
-                right: design.corrections.linked ? clamped : design.corrections.right,
-            },
+            sizeSystem: "uk",
+            ukSize: layout.ukSize,
+            usMenSize: ukToUsMen(layout.ukSize),
+            footLengthMm: layout.footLengthMm,
         };
     }
+    if (shoe.system === "mm") {
+        const footLengthMm = normalizeFootLengthMm(shoe.value);
+        const layout = insoleLayoutFromDesign({ sizeSystem: "mm", footLengthMm });
+        return {
+            ...design,
+            sizeSystem: "mm",
+            footLengthMm,
+            usMenSize: layout.usMenSize,
+            ukSize: usMenToUk(layout.usMenSize),
+        };
+    }
+    const layout = insoleLayoutForUsMenSize(shoe.value);
+    return {
+        ...design,
+        sizeSystem: "us",
+        usMenSize: layout.usMenSize,
+        ukSize: usMenToUk(layout.usMenSize),
+        footLengthMm: layout.footLengthMm,
+    };
+}
+
+function writeSide(design: DesignState, side: Side, patch: SideCorrections): DesignState {
+    const clamped = constrainSideCorrections(patch, design.thicknessMm).constrained;
     return {
         ...design,
         corrections: {
             ...design.corrections,
-            right: clamped,
+            linked: false,
+            [side]: clamped,
         },
     };
 }
 
+function placeElement(
+    kind: ElementKind,
+    side: Side,
+    lengthMm: number,
+    widthMm: number,
+    n: number,
+): PlacedElement {
+    const pose = defaultElementPose(kind, side, lengthMm, widthMm);
+    return {
+        id: `one-click-${side}-${kind}-${n}`,
+        kind,
+        side,
+        position: pose.position,
+        rotationDeg: pose.rotationDeg,
+        scale: pose.scale,
+        scaleLocked: true,
+        heightMm: pose.heightMm,
+        placementMode: pose.placementMode,
+    };
+}
+
+function placeSink(kind: SinkKind, depthMm: number | undefined, n: number): PlacedSink {
+    const profile = SINK_PROFILES[kind];
+    return {
+        id: `one-click-${kind}-${n}`,
+        kind,
+        depthMm: depthMm ?? profile.defaultDepthMm,
+        u: profile.u,
+        v: profile.v,
+    };
+}
+
 /**
- * One-shot scan + Rx orthotic generation. Returns a new design snapshot or failure
- * without mutating the input baseline.
+ * One-click generation. Shoe size scales the default SAMPLE_Top. The scan
+ * contributes arch height only. Rx contributes explicit corrections, elements,
+ * and sinks. Feet are independent. The input baseline is not mutated.
  */
 export function generateOrthoticFromScanAndRx(input: GenerateOrthoticInput): GenerateOrthoticResult {
-    const warnings: string[] = [...detectRxConflicts(input.prescription)];
+    const warnings: string[] = [];
     const reviewItems: string[] = [];
-    const perFoot: FootGenerationSummary[] = [];
-    let design: DesignState = cloneDesignState(input.baselineDesign);
-    // One-click feet are independent. A linked baseline must not copy the
-    // scanned foot's arch fit or Rx onto the other foot.
-    design = {
-        ...design,
-        corrections: { ...design.corrections, linked: false },
-    };
 
+    if (!input.shoeSize || !Number.isFinite(input.shoeSize.value)) {
+        return {
+            ok: false,
+            reason: "Shoe size is required. It is not taken from the scan.",
+            failedStep: "shoe_size",
+            warnings,
+        };
+    }
     if (input.scans.length === 0) {
         return { ok: false, reason: "Import at least one foot scan", failedStep: "scan", warnings };
     }
+
+    let design = cloneDesignState(input.baselineDesign);
+    const sized = applyShoeSize(design, input.shoeSize);
+    if (!sized) {
+        return {
+            ok: false,
+            reason: "Shoe size is required. It is not taken from the scan.",
+            failedStep: "shoe_size",
+            warnings,
+        };
+    }
+    design = sized;
+    const layout = insoleLayoutFromDesign(design);
+    const sizeLabel =
+        design.sizeSystem === "uk"
+            ? `UK ${design.ukSize}`
+            : design.sizeSystem === "mm"
+              ? `${design.footLengthMm} mm`
+              : `US men's ${design.usMenSize}`;
+
+    const present = [...new Set(input.scans.map((s) => s.side))];
+    const rx = interpretOneClickRx(input.prescriptionText ?? "", present);
+    warnings.push(...rx.warnings);
+
+    const designer = input.pathologyDesigner ?? stubPathologyDesigner;
+    const pathology = rx.pathologyOnly
+        ? designer.design({ text: input.prescriptionText ?? "", sides: present })
+        : null;
+    if (pathology) {
+        warnings.push(pathology.reason);
+        reviewItems.push(pathology.reason);
+    } else if (rx.pathologyMentioned) {
+        warnings.push("Pathology noted. Only explicit Rx corrections were applied.");
+    }
+
+    const perFoot: FootGenerationSummary[] = [];
+    const rxElements: PlacedElement[] = [];
+    const sinks: { left: PlacedSink[]; right: PlacedSink[] } = { left: [], right: [] };
+    let seq = 0;
 
     for (const scan of input.scans) {
         if (scan.keepSetApproved === false) {
@@ -239,192 +271,80 @@ export function generateOrthoticFromScanAndRx(input: GenerateOrthoticInput): Gen
                 warnings,
             };
         }
-        const vertexCount = scan.geometry.getAttribute("position")?.count ?? 0;
-        if (vertexCount < 30) {
+        const measured = measureScanArchHeightMm(scan.geometry, scan.side, scan.display.displayScale);
+        if (!measured) {
             return {
                 ok: false,
-                reason: `${scan.side} scan mesh too sparse`,
-                failedStep: "scan_quality",
+                reason: `${scan.side}: could not measure arch height from the scan`,
+                failedStep: "arch_height",
                 warnings,
             };
         }
-
-        const filled = autoFillMarkers({
-            side: scan.side,
-            geometry: scan.geometry,
-            markers: scan.markers,
-            suggested: scan.suggestedLandmarks,
-        });
-        warnings.push(...filled.warnings);
-        reviewItems.push(...filled.review.map((id) => `${scan.side}:${id}`));
-
-        const markers = filled.markers;
-        const layoutBefore = insoleLayoutFromDesign(design);
-        const regState = computeScanRegistration({
-            scanGeometry: scan.geometry,
-            scanSide: scan.side,
-            display: scan.display,
-            markers,
-            sourceAssetId: input.sourceAssetId,
-            rawBaseGeometry: input.rawBaseGeometry,
-            targetLayout: { lengthMm: layoutBefore.lengthMm, widthMm: layoutBefore.widthMm },
-        });
-
-        if (!registrationKabschReady(markers)) {
-            return {
-                ok: false,
-                reason: `${scan.side}: incomplete landmarks (need M1–M3)`,
-                failedStep: "landmarks",
-                warnings,
-            };
+        const classified = classifyArchHeightMm(measured.heightMm);
+        if (classified.reviewBelow18) {
+            const note = `${scan.side}: arch ${measured.heightMm.toFixed(1)} mm is below 18 mm — Low, review the scan`;
+            warnings.push(note);
+            reviewItems.push(note);
         }
 
-        const gate = gateArchMatch({
-            residualRmsMm: regState.residualRmsMm,
-            incomplete: regState.incomplete,
-            error: regState.error,
-            hasRawBase: true,
-            sizeAccepted: true,
-        });
-        if (!gate.ok) {
-            return { ok: false, reason: gate.reason, failedStep: "registration", warnings };
-        }
-        if (gate.warning) warnings.push(gate.warning);
-        if (regState.residualRmsMm != null && regState.residualRmsMm > ARCH_MATCH_BLOCK_RMS_MM) {
-            return {
-                ok: false,
-                reason: `Registration RMS ${regState.residualRmsMm.toFixed(1)} mm exceeds limit`,
-                failedStep: "registration",
-                warnings,
-            };
+        const explicit = rx.correctionsBySide[scan.side] ?? {};
+        const rxArchOverride = Object.hasOwn(explicit, "archHeightMm");
+        const rxApexOverride = Object.hasOwn(explicit, "apexMoveMm");
+        const flexible = input.flexibleBySide?.[scan.side] === true;
+        const archHeightMm = rxArchOverride ? (explicit.archHeightMm as number) : classified.archHeightMm;
+        const apexMoveMm = rxApexOverride
+            ? (explicit.apexMoveMm as number)
+            : flexible
+              ? FLEXIBLE_APEX_ANTERIOR_MM
+              : 0;
+        if (rxArchOverride) {
+            warnings.push(`${scan.side}: Rx arch height overrides the ${classified.band} scan class`);
         }
 
-        const sizeSuggestion = suggestSizeFromScanGeometry({
-            geometry: scan.geometry,
-            displayScale: scan.display.displayScale,
-            dominantRawAxis: scan.display.dominantRawAxis,
-            sizeSystem: design.sizeSystem,
-            m1: markers.M1,
-            m2: markers.M2,
-        });
-        const sized = applySizingToDesign(design, sizeSuggestion, scan.side);
-        design = sized.design;
-        if (sizeSuggestion?.warnings.length) warnings.push(...sizeSuggestion.warnings);
+        const sidePatch: SideCorrections = {
+            ...freshSide(),
+            ...explicit,
+            archHeightMm,
+            apexMoveMm,
+            rearfootWedge: explicit.rearfootWedge,
+            forefootWedge: explicit.forefootWedge,
+            fullLengthWedge: explicit.fullLengthWedge,
+        };
+        design = writeSide(design, scan.side, sidePatch);
 
-        const layout = insoleLayoutFromDesign(design);
-        const regSized = computeScanRegistration({
-            scanGeometry: scan.geometry,
-            scanSide: scan.side,
-            display: scan.display,
-            markers,
-            sourceAssetId: input.sourceAssetId,
-            rawBaseGeometry: input.rawBaseGeometry,
-            targetLayout: { lengthMm: layout.lengthMm, widthMm: layout.widthMm },
-        });
-        const registration = regSized as ScanRegistrationState;
-        const regMatrix = getScanRegistrationMatrix(registration);
-        if (!regMatrix) {
-            return {
-                ok: false,
-                reason: "Registration matrix unavailable",
-                failedStep: "registration",
-                warnings,
-            };
+        for (const el of rx.elements) {
+            if (el.side !== scan.side) continue;
+            rxElements.push(placeElement(el.kind, el.side, layout.lengthMm, layout.widthMm, seq++));
         }
-
-        const scanToBase = resolveScanMeshMatrix(scan.display, regMatrix, scan.manualOffset ?? null);
-        const pos = scan.geometry.getAttribute("position");
-        if (!pos) {
-            return { ok: false, reason: "Scan has no positions", failedStep: "scan", warnings };
+        for (const sink of rx.sinks) {
+            if (sink.side !== scan.side) continue;
+            sinks[sink.side].push(placeSink(sink.kind, sink.depthMm, seq++));
         }
-
-        let clinical;
-        const matchClinical = input.matchClinical ?? matchClinicalParamsFromRegisteredScanAuto;
-        try {
-            clinical = matchClinical({
-                scanPositions: pos.array as ArrayLike<number>,
-                scanVertexCount: pos.count,
-                scanToBase,
-                rawBase: input.rawBaseGeometry,
-                side: scan.side,
-                layout,
-                archMarkerLocal: markers.ARCH,
-                heelMarkerLocal: markers.M3,
-                allowGapFit: true,
-            });
-        } catch (e) {
-            const msg =
-                e instanceof ArchFitError ? e.message : e instanceof Error ? e.message : "Arch fit failed";
-            return { ok: false, reason: msg, failedStep: "arch_fit", warnings };
-        }
-
-        let widthClass: string | undefined;
-        if (markers.M1 && markers.M2) {
-            const ball = measureBallWidthMm(markers.M1, markers.M2, scan.display.displayScale);
-            const sw = suggestShoeWidthFromBallWidth({
-                ballWidthMm: ball,
-                templateBallWidthMm: layout.widthMm,
-            });
-            widthClass = sw.width;
-            if (sw.confidence === "low") {
-                warnings.push(`${scan.side}: forefoot width class uncertain — confirm width`);
-            }
-            if (design.corrections.linked) {
-                design = {
-                    ...design,
-                    shoeWidth: sw.width,
-                    shoeWidthBySide: { left: sw.width, right: sw.width },
-                };
-            } else {
-                design = {
-                    ...design,
-                    shoeWidthBySide: { ...design.shoeWidthBySide, [scan.side]: sw.width },
-                };
-            }
-        }
-
-        const { merged, rxKeys, scanOnlyKeys } = mergeScanFitWithPrescription({
-            side: scan.side,
-            scanFit: clinical.correction,
-            rx: input.prescription,
-        });
-        if (rxKeys.length) {
-            warnings.push(`${scan.side}: Rx overrides scan fit for ${rxKeys.join(", ")}`);
-        }
-        design = patchSideCorrections(design, scan.side, merged);
 
         perFoot.push({
             side: scan.side,
-            sizeApplied: sized.applied,
-            sizeLabel: sized.label,
-            widthClass,
-            archSource: clinical.archSource,
-            archMessage: clinical.message,
-            registrationRmsMm: registration.residualRmsMm,
-            landmarksAutoFilled: filled.autoFilled,
-            reviewLandmarks: filled.review,
+            archHeightMeasuredMm: measured.heightMm,
+            archBand: classified.band,
+            archReviewBelow18: classified.reviewBelow18,
+            archHeightMm: design.corrections[scan.side].archHeightMm,
+            apexMoveMm: design.corrections[scan.side].apexMoveMm,
+            flexible,
+            rxArchOverride,
+            sizeLabel,
         });
-        void scanOnlyKeys;
     }
 
-    // Apply global Rx fields once (method/pattern/thickness) without cross-foot correction copy.
-    if (input.prescription) {
-        if (input.prescription.method) design = { ...design, method: input.prescription.method };
-        if (input.prescription.pattern) design = { ...design, pattern: input.prescription.pattern };
-        if (input.prescription.thicknessMm != null) {
-            design = { ...design, thicknessMm: input.prescription.thicknessMm };
-        }
+    if (rx.elements.length > 0 || rx.sinks.length > 0) {
+        const touched = new Set(present);
+        design = {
+            ...design,
+            elements: [...design.elements.filter((e) => !touched.has(e.side)), ...rxElements],
+            sinks: {
+                left: present.includes("left") ? sinks.left : (design.sinks?.left ?? []),
+                right: present.includes("right") ? sinks.right : (design.sinks?.right ?? []),
+            },
+        };
     }
 
-    const elementSuggestions = input.prescription?.elements ?? [];
-
-    return {
-        ok: true,
-        design,
-        warnings,
-        reviewItems,
-        elementSuggestions,
-        perFoot,
-        rxNotes: input.prescription?.notes,
-    };
+    return { ok: true, design, warnings, reviewItems, perFoot, pathology };
 }

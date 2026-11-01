@@ -1,5 +1,7 @@
 # One-click scan + Rx generation — reuse audit (2026-10-31)
 
+One-click generation no longer uses the scan-fit path described below. Shoe size is required, the scan contributes arch height only, and gap-fit / registration stay on the manual scan tools.
+
 ## Objective
 
 Orchestrate existing scan measurement, registration, parametric fit, and Rx parsing into a single **Generate Orthotic** transaction without replacing geometry engines or the SAMPLE_Top stock mesh.

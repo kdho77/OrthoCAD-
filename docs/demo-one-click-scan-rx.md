@@ -6,8 +6,8 @@ Representative flows validated in automated tests (`generateOrthoticFromScanAndR
 
 1. Clinical workflow → **Scan** step.
 2. Import side **Left**; approve keep-set if prompted.
-3. Leave Rx empty (defaults: round walls after generate, Medium width class, stock posting).
-4. **Generate Orthotic** — auto M1/M2/M3/ARCH from suggest, size from length, arch from marker/gap-fit.
+3. Choose a shoe size. Generation stays blocked until a size is selected. Size is never taken from scan length.
+4. **Generate Orthotic** — the scan sets arch class only (below 23 mm Low −3.5 mm, 23–26 mm Standard, above 26 mm High +3 mm). Check **Flexible foot** to move that foot's apex 4 mm forward. Explicit Rx corrections, elements, and sinks apply. A pathology-only note is flagged for a future design and does not guess millimetres.
 5. Review summary warnings; open **Corrections** / **Export** as usual.
 
 ## Fixture B — Right foot with text Rx
@@ -26,7 +26,7 @@ Import **Pair** (two files). Generate once; each foot uses its assigned side and
 
 ## Validation evidence
 
-- Unit tests: medial/lateral landmark ordering, Rx side isolation, determinism (double-run hash of corrections JSON).
+- Unit tests: arch bands at 17.9 / 18 / 22.9 / 23 / 26 / 26.1 mm, Low −3.5 and High +3 at the apex, flexible apex +4 mm, shoe size required, L/R independence.
 - Regression: default design with **no scans** unchanged (corrections snapshot test).
 - Manual: viewer overlay scan + generated insole; ARCH/M1 medial on both feet in L/R imports.
 
