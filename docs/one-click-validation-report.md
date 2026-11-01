@@ -13,7 +13,9 @@ Shoe size is a required input. It scales the default SAMPLE_Top. Scan length is 
 | 23–26 mm (23 and 26 included) | Standard | 0 (default mesh) |
 | Above 26 mm | High | +3 |
 
-Flexible foot sets `apexMoveMm` to +4. In the height field that is 4 mm toward the toe (`apexCenter = 0.42 + apexMoveMm / length`). An explicit Rx arch or apex replaces the class or the checkbox. Other Rx items are explicit corrections, elements, and sinks. Left and right stay unlinked. An unnamed clause is not copied when both feet are present. Pathology words with no explicit correction, element, or sink call `PathologyDesigner`. The stub returns `needs_design` and does not invent millimetres. Gap-fit and registration are not on this path.
+Flexible foot adds +4 mm to the apex control, toward the toe. A manual Rx apex adds to that and the sum is clamped to the existing control range (−12 to +12 mm), with a warning when it clamps. That policy lives only in `combineFlexibleApex`. An explicit Rx arch height replaces the scan class. A leading `+` is an explicit arch height (`arch height +2 mm`, `+2mm`, `+ 2 mm`). Other Rx items are explicit corrections, elements, and sinks. Left and right stay unlinked. An unnamed clause is not copied when both feet are present. Pathology words with no explicit correction, element, or sink call `PathologyDesigner`. The stub returns `needs_design` and does not invent millimetres. Gap-fit and registration are not on this path.
+
+On a Standard arch the height-field bump is multiplied by an arch delta of 0, so the apex control does not move the stock crest. The needed slide is then the full 4 mm, applied by the same apex-move correction: a Z-only shift of the stock arch (`z` at `x` takes the stock `z` from `x − shift`). The shift is `apexMoveMm` only when `archHeightMm + archFillMm` is 0. That branches on the arch delta, not on the Low/Standard/High name. Low and High already recenter the bump, so their extra slide is 0 and the loft is not rewritten. The window is 0 for `u ≤ 0.15` and `u ≥ 0.46` (forefoot `u > 0.60` is inside that), and the top rim is shifted along itself so the wall column does not fold. Heel and forefoot outline XY stay put. On Default.glb the shell copies the height field onto the wall before that slide, so the wall then inherits the rim's Z change. An apex-only move (10 mm) keeps heel wall-top versus rim mismatch at 0.176 mm.
 
 ## Baseline STL parity (unchanged when one-click is unused)
 
@@ -27,21 +29,23 @@ Flexible foot sets `apexMoveMm` to +4. In the height field that is 4 mm toward t
 
 ## Sample export (gen.design)
 
-US men's 9. Left scan arch 20 mm, Flexible foot checked. Right scan arch 24 mm, not flexible. No other Rx.
+US men's 9. Both scans 24 mm (Standard). Flexible foot checked on both. No other Rx.
 
 | Item | Result |
 |------|--------|
-| Left class / correction | Low, `archHeightMm` **−3.5**, `apexMoveMm` **+4** |
-| Right class / correction | Standard, arch **0**, apex **0** |
-| Left STL SHA-256 | `14b8136885be58d973c5edfffd72f93edeacdd14ae1fd6e4b2a917b8d85e5f40` (differs from the default left) |
-| Right STL SHA-256 | `cd57887c…` — **byte-identical** to the default right US men's 9 export |
-| Arch apex side | Left Y **−36.3** (medial −Y), right Y **+36.3** (medial +Y) |
-| Left / right bbox | X −0.7→272.4, Y −46.4→46.4, Z 0→**22.8** / X −0.7→272.4, Y −46.3→46.3, Z 0→**25.2** |
-| Manufactured length | maxX − minX ≈ **273.1 mm** on both shells |
+| Class / correction | Standard, `archHeightMm` **0**, `apexMoveMm` **+4** on both feet |
+| Left STL SHA-256 | `1f1f0267b68371f7bade1402392c56530bf1102df253855ed3a6d1b21ea28dd9` |
+| Right STL SHA-256 | `742d5e03645de10032b991a8e9db888856f3cda9090b922c2f4806f403ecd9bd` |
+| Default US 9 hashes | Still the pins above (non-flexible export unchanged) |
+| Peak vs default | Left and right **+4.006 mm** in X, **0.000 mm** in Z |
+| Arch apex | Left Y **−37.19** (medial −Y), right Y **+37.19** (medial +Y), Z **25.240** |
+| Bbox | Z min **0**. X about −0.7→272.4. Outline XY within 0.02 mm of the default |
+| Medial wall vs surface | Wall-top change minus rim change **≤ 0.007 mm** |
+| Two-face fold | Straight export worst edge **58.319°**. Matrix worst **59.078°** (Low, flex off) |
 
-The height-field tests hold the exact deltas: Low and High are −3.5 mm and +3 mm versus the default at the apex station, and the flexible apex station is 4 mm anterior. On the closed left STL the medial crest inside x 85–145 dropped **2.63 mm** (Z 25.24 → 22.61) and sits on the heel edge of that window (x 85.3 versus 89.3). Sampling the medial top ±4 mm from the default crest, the toe-side station dropped **2.79 mm** and the heel-side station **2.55 mm**. That crest is the rim of a lowered dome, so it is not a second measurement of the parametric −3.5 mm.
+Low and High with Flexible do not take this stock slide. Their solid crest X stays within 0.2 mm of the same arch without the extra warp. Across straight, round, and hybrid, Standard/Low/High, Flexible on and off, both feet: zero-area faces 0, flipped edges 0, bottom z = 0, watertight. Hybrid skips the stock crease band x 70–78 (the first stock edge sits at x 71.7, just before 72).
 
-S1-B / S1-PRELOFT completed (those gates throw inside the loft). `assertClosedSolidAcceptable` is stubbed in this harness, the same way as the baseline parity test. Trimesh: both STLs watertight, one body (left 37 954 vertices, right 37 428).
+Trimesh on the two sample STLs: watertight, winding consistent, one body, no face under 1e-8 mm². S1 gates throw inside the loft if they fail. `assertClosedSolidAcceptable` is stubbed in this harness, the same way as the baseline parity test.
 
 **Artifacts** (after `tests/one-click-export-artifacts.test.ts`):
 
@@ -54,8 +58,9 @@ S1-B / S1-PRELOFT completed (those gates throw inside the loft). `assertClosedSo
 ## Still untested / known gaps
 
 - Clinical wear, patient sign-off, and printer/material validation
-- The STL crest drop (about 2.6 mm) is not the parametric −3.5 mm. The −3.5 / +3 / +4 mm checks are on `heightAt`
 - Bilateral different US sizes on one design row
 - External vendor foot scans (synthetic arch-height grids in the recipe tests)
 - The pathology result is a stub. No biomechanics model is called
 - OCCT authoritative kernel (this harness forces the preview / mesh-close path)
+- Low/High + Flexible byte hashes were not frozen against the pre-warp commit. The stock slide is skipped when the arch delta is non-zero, so that loft is the previous analytic path
+- Founder confirmation of additive Flexible + manual apex is still open. Change only `combineFlexibleApex`

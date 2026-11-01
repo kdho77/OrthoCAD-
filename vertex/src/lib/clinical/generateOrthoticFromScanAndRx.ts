@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
-import { type ArchBand, classifyArchHeightMm, FLEXIBLE_APEX_ANTERIOR_MM } from "@/lib/clinical/arch-class";
+import { type ArchBand, classifyArchHeightMm, combineFlexibleApex } from "@/lib/clinical/arch-class";
 import { measureScanArchHeightMm } from "@/lib/clinical/measure-scan-arch";
 import { interpretOneClickRx } from "@/lib/clinical/one-click-rx";
 import {
@@ -52,7 +52,7 @@ export type GenerateOrthoticInput = {
     scans: FootScanBundle[];
     /** Required. Generation fails when this is missing. */
     shoeSize: RequiredShoeSize | null;
-    /** Per foot. Checked → apexMoveMm +4 mm (anterior), unless the Rx sets apex. */
+    /** Per foot. Checked → add +4 mm to the apex control (anterior). */
     flexibleBySide?: Partial<Record<Side, boolean>>;
     prescriptionText?: string;
     pathologyDesigner?: PathologyDesigner;
@@ -292,11 +292,16 @@ export function generateOrthoticFromScanAndRx(input: GenerateOrthoticInput): Gen
         const rxApexOverride = Object.hasOwn(explicit, "apexMoveMm");
         const flexible = input.flexibleBySide?.[scan.side] === true;
         const archHeightMm = rxArchOverride ? (explicit.archHeightMm as number) : classified.archHeightMm;
-        const apexMoveMm = rxApexOverride
-            ? (explicit.apexMoveMm as number)
-            : flexible
-              ? FLEXIBLE_APEX_ANTERIOR_MM
-              : 0;
+        const combinedApex = combineFlexibleApex(
+            rxApexOverride ? (explicit.apexMoveMm as number) : 0,
+            flexible,
+        );
+        const apexMoveMm = combinedApex.apexMoveMm;
+        if (combinedApex.clamped) {
+            const note = `${scan.side}: flexible apex plus the Rx apex clamped to ${apexMoveMm} mm`;
+            warnings.push(note);
+            reviewItems.push(note);
+        }
         if (rxArchOverride) {
             warnings.push(`${scan.side}: Rx arch height overrides the ${classified.band} scan class`);
         }

@@ -117,7 +117,7 @@ describe("one-click recipe matrix", () => {
         foot.geometry.dispose();
     });
 
-    test("explicit apex overrides the flexible checkbox", () => {
+    test("explicit apex adds to the flexible checkbox and clamps at the control limit", () => {
         const foot = bundle(28, "right");
         const out = generateOrthoticFromScanAndRx({
             baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
@@ -128,9 +128,22 @@ describe("one-click recipe matrix", () => {
         });
         if (!out.ok) throw new Error(out.reason);
         expect(out.design.corrections.right.archHeightMm).toBe(3);
-        expect(out.design.corrections.right.apexMoveMm).toBe(1);
+        expect(out.design.corrections.right.apexMoveMm).toBe(5);
         expect(out.design.corrections.left.apexMoveMm).toBe(0);
         foot.geometry.dispose();
+
+        const high = bundle(28, "left");
+        const clamped = generateOrthoticFromScanAndRx({
+            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
+            scans: [high],
+            shoeSize: shoe,
+            flexibleBySide: { left: true },
+            prescriptionText: "Left apex +10 mm",
+        });
+        if (!clamped.ok) throw new Error(clamped.reason);
+        expect(clamped.design.corrections.left.apexMoveMm).toBe(12);
+        expect(clamped.warnings.some((w) => w.includes("clamped"))).toBe(true);
+        high.geometry.dispose();
     });
 
     test("bilateral explicit corrections stay on the named feet", () => {

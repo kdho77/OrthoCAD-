@@ -156,6 +156,21 @@ describe("one-click recipe", () => {
         foot.geometry.dispose();
     });
 
+    test("a leading plus is an explicit arch height", () => {
+        for (const text of ["Left arch height +2 mm", "Left +2mm", "Left + 2 mm"]) {
+            const foot = scan(24, "left");
+            const out = generateOrthoticFromScanAndRx({
+                baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
+                scans: [foot],
+                shoeSize: shoe,
+                prescriptionText: text,
+            });
+            if (!out.ok) throw new Error(`${text}: ${out.reason}`);
+            expect(out.design.corrections.left.archHeightMm, text).toBe(2);
+            foot.geometry.dispose();
+        }
+    });
+
     test("an unnamed side is not copied onto both feet", () => {
         const parsed = interpretOneClickRx("medial skive 4mm", ["left", "right"]);
         expect(parsed.correctionsBySide.left).toBeUndefined();

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { BufferAttribute, BufferGeometry } from "three";
+import { apexWarpShiftMm, applyDefaultArchApexWarp } from "@/lib/geometry/apex-move-warp";
 import {
     applyBaseModifiers,
     BASE_REFERENCE_THICKNESS_MM,
@@ -1193,6 +1194,27 @@ export function reconstructProceduralWalls(
         rimLocal = model.top.rimLocal.slice();
         if (hasCurveOrTopModifiers(options)) {
             applyAnalyticTopDeltas(topPos, model.bounds, options);
+        }
+        // Same stock-arch slide as applyBaseModifiers. The composed-top path
+        // (viewport) already ran it there and skips this branch. A non-zero
+        // arch delta recenters the peak by itself, so the shift is 0 and
+        // this write is skipped — Low/High stay on the previous loft.
+        const apexShift = apexWarpShiftMm(options.corrections ?? {});
+        const stockTop = model.top.meshPositions;
+        if (apexShift !== 0 && stockTop) {
+            const lenSize = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+            applyDefaultArchApexWarp({
+                positions: topPos,
+                original: stockTop,
+                index: topIdx,
+                lengthAxis: 0,
+                widthAxis: 1,
+                thickAxis: 2,
+                lenMin: model.bounds.minX,
+                lenSize,
+                topVertexCount: 0,
+                shiftMm: apexShift,
+            });
         }
     } else {
         throw new Error("procedural reconstruct: TopSheet required (exact stock top mesh)");

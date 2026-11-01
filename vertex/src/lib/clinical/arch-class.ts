@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { CLINICAL_LIMITS } from "@/lib/geometry/clinical-constraints";
+
 /**
  * Kendon's one-click arch bands. Measured arch height is an absolute mm
  * value from the scan, not a gap against SAMPLE_Top.
@@ -18,6 +20,22 @@ export const ARCH_LOW_DELTA_MM = -3.5;
 export const ARCH_HIGH_DELTA_MM = 3;
 /** Flexible foot: move the existing apex parameter this far toward the toe. */
 export const FLEXIBLE_APEX_ANTERIOR_MM = 4;
+
+/**
+ * Flexible apex plus a manual Corrections / Rx apex.
+ * Additive on purpose (Founder confirmation still pending — change only this function).
+ * Clamped to the existing apex control range.
+ */
+export function combineFlexibleApex(
+    manualApexMm: number,
+    flexible: boolean,
+): { apexMoveMm: number; clamped: boolean } {
+    const manual = Number.isFinite(manualApexMm) ? manualApexMm : 0;
+    const requested = manual + (flexible ? FLEXIBLE_APEX_ANTERIOR_MM : 0);
+    const { min, max } = CLINICAL_LIMITS.apexMoveMm;
+    const apexMoveMm = Math.min(max, Math.max(min, requested));
+    return { apexMoveMm, clamped: apexMoveMm !== requested };
+}
 
 export type ArchBand = "low" | "standard" | "high";
 

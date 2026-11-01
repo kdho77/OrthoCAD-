@@ -35,11 +35,14 @@ const SINK_RULES: { re: RegExp; kind: SinkKind }[] = [
     { re: /\bstyloid\b/i, kind: "styloid" },
 ];
 
+const SIGNED_MM = String.raw`[+-]?\s*\d+(?:\.\d+)?\s*mm`;
+
 function numberIn(text: string, re: RegExp): number | undefined {
     const m = text.match(re);
     if (!m) return undefined;
-    const n = m[0].match(/-?\d+(\.\d+)?/);
-    return n ? Number(n[0]) : undefined;
+    const n = m[0].match(/[+-]?\s*\d+(?:\.\d+)?/);
+    if (!n) return undefined;
+    return Number(n[0].replace(/\s+/g, ""));
 }
 
 function wedgeDegrees(clause: string, zone: "rear" | "fore"): number | undefined {
@@ -100,9 +103,15 @@ export function interpretOneClickRx(text: string, present: Side[]): ExplicitRx {
         const presentSides = sides.filter((s) => present.includes(s));
         if (presentSides.length === 0) continue;
 
-        const medialSkive = numberIn(clause, /medial\s*(?:heel\s*)?skive[^.]{0,24}?\d+(?:\.\d+)?\s*mm/i);
+        const medialSkive = numberIn(
+            clause,
+            new RegExp(String.raw`medial\s*(?:heel\s*)?skive[^.]{0,24}?${SIGNED_MM}`, "i"),
+        );
         if (medialSkive !== undefined) addPatch(out, presentSides, { medialSkiveMm: medialSkive });
-        const lateralSkive = numberIn(clause, /lateral\s*(?:heel\s*)?skive[^.]{0,24}?\d+(?:\.\d+)?\s*mm/i);
+        const lateralSkive = numberIn(
+            clause,
+            new RegExp(String.raw`lateral\s*(?:heel\s*)?skive[^.]{0,24}?${SIGNED_MM}`, "i"),
+        );
         if (lateralSkive !== undefined) addPatch(out, presentSides, { lateralSkiveMm: lateralSkive });
 
         const rear = wedgeDegrees(clause, "rear");
@@ -123,13 +132,25 @@ export function interpretOneClickRx(text: string, present: Side[]): ExplicitRx {
             });
         }
 
-        const heelCup = numberIn(clause, /heel\s*cup[^.]{0,24}?\d+(?:\.\d+)?\s*mm/i);
+        const heelCup = numberIn(clause, new RegExp(String.raw`heel\s*cup[^.]{0,24}?${SIGNED_MM}`, "i"));
         if (heelCup !== undefined) addPatch(out, presentSides, { heelCupDepthMm: heelCup });
-        const arch = numberIn(clause, /\barch(?:\s*height)?\s*[:=]?\s*-?\d+(?:\.\d+)?\s*mm\b/i);
+        let arch = numberIn(
+            clause,
+            new RegExp(String.raw`\barch(?:\s*height)?\s*[:=]?\s*${SIGNED_MM}\b`, "i"),
+        );
+        if (arch === undefined) {
+            const bare = clause.replace(/\b(?:left|right)\b/gi, "").trim();
+            if (/^[+-]\s*\d+(?:\.\d+)?\s*mm$/i.test(bare)) {
+                arch = numberIn(bare, new RegExp(SIGNED_MM, "i"));
+            }
+        }
         if (arch !== undefined) addPatch(out, presentSides, { archHeightMm: arch });
-        const apex = numberIn(clause, /\bapex(?:\s*move)?\s*[:=]?\s*-?\d+(?:\.\d+)?\s*mm\b/i);
+        const apex = numberIn(
+            clause,
+            new RegExp(String.raw`\bapex(?:\s*move)?\s*[:=]?\s*${SIGNED_MM}\b`, "i"),
+        );
         if (apex !== undefined) addPatch(out, presentSides, { apexMoveMm: apex });
-        const lift = numberIn(clause, /heel\s*lift[^.]{0,16}?\d+(?:\.\d+)?\s*mm/i);
+        const lift = numberIn(clause, new RegExp(String.raw`heel\s*lift[^.]{0,16}?${SIGNED_MM}`, "i"));
         if (lift !== undefined) addPatch(out, presentSides, { heelLiftMm: lift });
 
         for (const rule of ELEMENT_RULES) {
@@ -139,7 +160,7 @@ export function interpretOneClickRx(text: string, present: Side[]): ExplicitRx {
         }
         for (const rule of SINK_RULES) {
             if (!rule.re.test(clause)) continue;
-            const depth = numberIn(clause, /\d+(?:\.\d+)?\s*mm/i);
+            const depth = numberIn(clause, new RegExp(SIGNED_MM, "i"));
             for (const side of presentSides) out.sinks.push({ kind: rule.kind, side, depthMm: depth });
         }
     }
