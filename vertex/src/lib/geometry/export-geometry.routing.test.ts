@@ -13,6 +13,32 @@ const mockBuildFromBase = rs.fn<() => { geometry: BufferGeometry; manifold: { is
 const mockGetDesignBase = rs.fn<() => unknown>();
 const mockBaseModifierField = rs.fn<() => object>();
 
+const mockAssertClosed = rs.fn();
+const mockProcedural = rs.fn<() => boolean>();
+const mockProceduralBuild = rs.fn<(options: unknown) => Promise<{ geometry: BufferGeometry }>>();
+const mockDraftPattern = rs.fn();
+const mockStoredPattern = rs.fn();
+const mockDraftTrim = rs.fn();
+
+rs.mock("@/lib/geometry/procedural-wall/preview-loft-ui", () => ({
+    wantsProceduralExportSolid: () => mockProcedural(),
+}));
+rs.mock("@/lib/geometry/procedural-wall/sample-top-preview", () => ({
+    buildProceduralExportSolid: (options: unknown) => mockProceduralBuild(options),
+}));
+rs.mock("@/stores/mesh-edit-store", () => ({
+    useMeshEditStore: {
+        getState: () => ({
+            getActiveDraftBottomPattern: mockDraftPattern,
+            getActiveDraftTrimline: mockDraftTrim,
+        }),
+    },
+}));
+rs.mock("@/stores/bottom-pattern-store", () => ({
+    useBottomPatternStore: { getState: () => ({ getPattern: mockStoredPattern }) },
+    curveToPolyPoints: (curve: { points: unknown[] }) => curve.points,
+}));
+
 const mockDesign: DesignState = {
     method: "printing_solid",
     thicknessMm: 3,
@@ -45,7 +71,7 @@ rs.mock("@/lib/geometry/geometry-kernel", () => ({
 
 rs.mock("@/lib/geometry/mesh-close", () => ({
     closeGlbInsoleToSolid: (geometry: BufferGeometry) => mockCloseGlbInsoleToSolid(geometry),
-    assertClosedSolidAcceptable: () => undefined,
+    assertClosedSolidAcceptable: (...args: unknown[]) => mockAssertClosed(...args),
     DEFAULT_GLB_CLOSED_BASELINE: { eulerCharacteristic: 3, heelBridgeSelfIntersections: 0 },
     MeshNotWatertightError: class MeshNotWatertightError extends Error {},
 }));
@@ -97,6 +123,12 @@ function makeTestGeometry(): BufferGeometry {
 
 describe("export-geometry routing", () => {
     beforeEach(() => {
+        mockAssertClosed.mockReset();
+        mockProcedural.mockReturnValue(false);
+        mockProceduralBuild.mockImplementation(async () => ({ geometry: makeTestGeometry() }));
+        mockDraftPattern.mockReturnValue(null);
+        mockStoredPattern.mockReturnValue(null);
+        mockDraftTrim.mockReturnValue(null);
         mockExportManufacturingStlFromBase.mockReset();
         mockCloseGlbInsoleToSolid.mockReset();
         mockGeometryToBinarySTL.mockReset();
@@ -150,6 +182,64 @@ describe("export-geometry routing", () => {
         expect(mockCloseGlbInsoleToSolid).toHaveBeenCalledTimes(1);
         expect(mockGeometryToBinarySTL).toHaveBeenCalledWith(closedGeo);
         expect(result).toBe(stlBytes);
+    });
+
+    test("procedural export composes the complete field and prefers live edit outlines", async () => {
+        mockProcedural.mockReturnValue(true);
+        const pattern = {
+            points: [
+                { x: 0, y: 0, z: 0 },
+                { x: 2, y: 0, z: 0 },
+                { x: 0, y: 2, z: 0 },
+            ],
+        };
+        const trimline = { points: pattern.points };
+        mockDraftPattern.mockReturnValue(pattern);
+        mockStoredPattern.mockReturnValue({ points: [] });
+        mockDraftTrim.mockReturnValue(trimline);
+        const { buildExportStl } = await import("@/lib/geometry/export-geometry");
+        await buildExportStl("left");
+        expect(mockProceduralBuild).toHaveBeenCalledWith(
+            expect.objectContaining({
+                sourceField: expect.objectContaining({ includeElements: true, includeSkives: true }),
+                composedTop: true,
+                shoeWidth: expect.objectContaining({ width: "medium" }),
+                trimline,
+                bottomPattern: pattern.points,
+                lateralFlange: { heightMm: 0, lengthMm: 40, angleDeg: 10 },
+                side: "left",
+            }),
+        );
+    });
+
+    test("validation and STL both reject the real procedural build failure", async () => {
+        mockProcedural.mockReturnValue(true);
+        mockProceduralBuild.mockRejectedValue(new Error("[S1-PATTERN] outside the TopSheet rim"));
+        const { buildExportStl, buildValidatedExportGeometry } = await import(
+            "@/lib/geometry/export-geometry"
+        );
+        await expect(buildValidatedExportGeometry("left")).rejects.toThrow("outside the TopSheet rim");
+        await expect(buildExportStl("left")).rejects.toThrow("outside the TopSheet rim");
+        expect(mockGeometryToBinarySTL).not.toHaveBeenCalled();
+    });
+
+    test("procedural top metadata uses Euler 2 while legacy Default retains Euler 3", async () => {
+        const { buildExportStl } = await import("@/lib/geometry/export-geometry");
+        const procedural = makeTestGeometry();
+        procedural.userData.wallModel = "procedural";
+        mockCloseGlbInsoleToSolid.mockReturnValue(procedural);
+        await buildExportStl("left");
+        expect(mockAssertClosed).toHaveBeenLastCalledWith(procedural, 3, {
+            eulerCharacteristic: 2,
+            heelBridgeSelfIntersections: 0,
+        });
+        const legacy = makeTestGeometry();
+        mockCloseGlbInsoleToSolid.mockReturnValue(legacy);
+        await buildExportStl("left");
+        expect(mockAssertClosed).toHaveBeenLastCalledWith(legacy, 3, {
+            eulerCharacteristic: 3,
+            heelBridgeSelfIntersections: 0,
+        });
     });
 
     test("GLB download path does not call closeGlbInsoleToSolid", async () => {
