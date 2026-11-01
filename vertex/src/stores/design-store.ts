@@ -216,6 +216,7 @@ function defaultShapeFinishModifiers(method: ProductionMethod = "printing_solid"
 
 export function defaultDesign(): DesignState {
     return {
+        productType: "insole",
         pattern: "full_contact",
         method: "printing_solid",
         printRecipe: migratePrintRecipe(undefined),
@@ -383,6 +384,10 @@ function upgradeStockBaseAsync(apply: () => Promise<void>, reason: string): void
  * Safe to call repeatedly — dedupes in-flight requests and re-runs after auth is ready.
  */
 export function ensureDefaultStockBaseResolved(): void {
+    if (useDesignStore.getState().design.productType === "afo") {
+        stockFixLog("ensureDefaultStockBaseResolved() skipped — AFO product");
+        return;
+    }
     if (!isApiConfigured()) {
         stockFixLog("ensureDefaultStockBaseResolved() skipped — API not configured");
         if (useDesignStore.getState().stockBaseLoading) {
@@ -1605,6 +1610,19 @@ export const useDesignStore = create<DesignStore>()(
             },
             onRehydrateStorage: () => (state) => {
                 if (!state?.design) return;
+                if (state.design.productType === "afo") {
+                    const design = {
+                        ...state.design,
+                        corrections: migrateCorrections(state.design.corrections),
+                    };
+                    useDesignStore.setState({
+                        design,
+                        stockBaseError: null,
+                        stockBaseLoading: false,
+                        stockBaseResolutionState: "resolved",
+                    });
+                    return;
+                }
                 let design = migrateDesignSinks(
                     replaceBuiltinDefaultWithSampleTop(sanitizeDesignStockBases(state.design)),
                 );

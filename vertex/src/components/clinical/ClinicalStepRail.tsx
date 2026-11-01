@@ -1,21 +1,28 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { AlertCircle, Check, CircleDot } from "lucide-react";
+import { useSaveDesign } from "@/features/designs/SaveControl";
 import {
     clinicalRailBannerReason,
     evaluateNextGate,
     evaluateStepComplete,
+    selectAfoLandmarkRevision,
+    selectScanGateRevision,
 } from "@/lib/clinical/clinical-step-gates";
 import { cn } from "@/lib/utils";
+import { useAppNavStore } from "@/stores/app-nav-store";
 import {
-    CLINICAL_STEPS,
     type ClinicalStepId,
     clinicalStepShort,
+    stepsForProduct,
     useClinicalWorkflowStore,
 } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
+import { useScanStore } from "@/stores/scan-store";
 
 export function ClinicalStepRail() {
+    const productType = useClinicalWorkflowStore((s) => s.productType);
+    const steps = stepsForProduct(productType);
     const step = useClinicalWorkflowStore((s) => s.step);
     const completedSteps = useClinicalWorkflowStore((s) => s.completedSteps);
     const nextBlockReason = useClinicalWorkflowStore((s) => s.nextBlockReason);
@@ -24,12 +31,19 @@ export function ClinicalStepRail() {
     void footSideExplicitlyChosen;
     const setStep = useClinicalWorkflowStore((s) => s.setStep);
     const method = useDesignStore((s) => s.design.method);
+    const scanGateRevision = useScanStore(selectScanGateRevision);
+    const afoLandmarkRevision = useDesignStore(selectAfoLandmarkRevision);
+    const stockGate = useDesignStore((s) => `${s.stockBaseLoading ? 1 : 0}:${s.stockBaseError ?? ""}`);
 
     const stepState = (id: ClinicalStepId) => {
         if (step === id) return "current";
         if (evaluateStepComplete(id, completedSteps)) return "completed";
-        if (stepIndex(id) < stepIndex(step)) return "visited";
-        if (stepIndex(id) > stepIndex(step) && !evaluateNextGate(step).ok && id !== "scan") {
+        if (stepIndexOf(id, steps) < stepIndexOf(step, steps)) return "visited";
+        if (
+            stepIndexOf(id, steps) > stepIndexOf(step, steps) &&
+            !evaluateNextGate(step).ok &&
+            id !== "scan"
+        ) {
             return "attention";
         }
         return "upcoming";
@@ -40,9 +54,14 @@ export function ClinicalStepRail() {
     void nextBlockReason;
 
     return (
-        <div className="border-b border-border bg-panel px-3 py-2">
+        <div
+            className="border-b border-border bg-panel px-3 py-2"
+            data-scan-gate={scanGateRevision}
+            data-afo-landmarks={afoLandmarkRevision}
+            data-stock-gate={stockGate}
+        >
             <nav aria-label="Clinical workflow" className="flex flex-wrap items-center gap-1">
-                {CLINICAL_STEPS.map((s, i) => {
+                {steps.map((s, i) => {
                     const state = stepState(s.id);
                     return (
                         <button
@@ -86,8 +105,8 @@ export function ClinicalStepRail() {
     );
 }
 
-function stepIndex(step: ClinicalStepId): number {
-    return CLINICAL_STEPS.findIndex((s) => s.id === step);
+function stepIndexOf(step: ClinicalStepId, steps: { id: ClinicalStepId }[]): number {
+    return steps.findIndex((s) => s.id === step);
 }
 
 export function ClinicalStepFooter() {
@@ -98,12 +117,27 @@ export function ClinicalStepFooter() {
     void footSideExplicitlyChosen;
     const goNext = useClinicalWorkflowStore((s) => s.goNext);
     const goBack = useClinicalWorkflowStore((s) => s.goBack);
-    const atFirst = step === "scan";
-    const atLast = step === "export";
+    const productType = useClinicalWorkflowStore((s) => s.productType);
+    const scanGateRevision = useScanStore(selectScanGateRevision);
+    const afoLandmarkRevision = useDesignStore(selectAfoLandmarkRevision);
+    const stockGate = useDesignStore((s) => `${s.stockBaseLoading ? 1 : 0}:${s.stockBaseError ?? ""}`);
+    const steps = stepsForProduct(productType);
+    const atFirst = step === steps[0]?.id;
+    const atLast = step === steps[steps.length - 1]?.id;
     const gate = evaluateNextGate(step);
+    const isAfoPrint = productType === "afo" && step === "print";
+
+    if (isAfoPrint) {
+        return <AfoPrintFooter />;
+    }
 
     return (
-        <div className="sticky bottom-0 z-10 border-t border-border bg-panel px-3 py-2">
+        <div
+            className="sticky bottom-0 z-10 border-t border-border bg-panel px-3 py-2"
+            data-scan-gate={scanGateRevision}
+            data-afo-landmarks={afoLandmarkRevision}
+            data-stock-gate={stockGate}
+        >
             <div className="flex gap-2">
                 <button
                     type="button"
@@ -128,6 +162,33 @@ export function ClinicalStepFooter() {
                     {gate.reason} Next jumps to what’s missing.
                 </p>
             ) : null}
+        </div>
+    );
+}
+
+function AfoPrintFooter() {
+    const { saved, onSave, dialog } = useSaveDesign();
+    const setNav = useAppNavStore((s) => s.setNav);
+
+    return (
+        <div className="sticky bottom-0 z-10 border-t border-border bg-panel px-3 py-2">
+            <div className="flex gap-2">
+                <button
+                    type="button"
+                    onClick={onSave}
+                    className="h-8 flex-1 rounded-md bg-primary text-[12px] font-medium text-primary-foreground"
+                >
+                    {saved ? "Saved" : "Save"}
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setNav("Clients")}
+                    className="h-8 flex-1 rounded-md border border-border bg-background text-[12px] font-medium text-foreground"
+                >
+                    Return to patient file
+                </button>
+            </div>
+            {dialog}
         </div>
     );
 }

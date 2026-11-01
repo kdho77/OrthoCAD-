@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import type { SolidValidation } from "@/lib/geometry/geometry-kernel";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
+import { analyzeManifoldBuffers } from "@/lib/geometry/manifold-core";
+import { useAfoStore } from "@/stores/afo-store";
 import { useKernelStore } from "@/stores/kernel-store";
 import type { DesignState, Side } from "@/types";
 
@@ -19,12 +21,31 @@ export function useSolidValidation(design: DesignState, side: Side, debounceMs =
     const [report, setReport] = useState<SolidValidation>(EMPTY);
     const kernelVersion = useKernelStore((s) => s.version);
     const kernelLoadState = useKernelStore((s) => s.loadState);
+    const afoShell = useAfoStore((s) => s.shellMesh);
 
     // kernelVersion/kernelLoadState stay in the dependency list so a future kernel swap re-validates.
     // biome-ignore lint/correctness/useExhaustiveDependencies: kernel store identity is an explicit trigger
     useEffect(() => {
         let cancelled = false;
         const timer = setTimeout(() => {
+            if (design.productType === "afo") {
+                if (!afoShell) {
+                    if (!cancelled) setReport(EMPTY);
+                    return;
+                }
+                const r = analyzeManifoldBuffers(afoShell.positions, afoShell.indices);
+                if (!cancelled) {
+                    setReport({
+                        triangleCount: r.triangleCount,
+                        vertexCount: r.vertexCount,
+                        openEdges: r.openEdges,
+                        nonManifoldEdges: r.nonManifoldEdges,
+                        isWatertight: r.isWatertight,
+                        solidClosed: r.isWatertight,
+                    });
+                }
+                return;
+            }
             void geometryEngine
                 .validateProductionSolid(insoleParamsFromDesign(design, side, "full"))
                 .then((r) => {
@@ -39,7 +60,7 @@ export function useSolidValidation(design: DesignState, side: Side, debounceMs =
             cancelled = true;
             clearTimeout(timer);
         };
-    }, [design, side, debounceMs, kernelVersion, kernelLoadState]);
+    }, [design, side, debounceMs, kernelVersion, kernelLoadState, afoShell]);
 
     return report;
 }

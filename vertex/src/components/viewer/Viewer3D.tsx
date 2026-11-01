@@ -3,6 +3,7 @@ import { Canvas } from "@react-three/fiber";
 import {
     Activity,
     Box,
+    Crosshair,
     Eye,
     EyeOff,
     Layers,
@@ -14,11 +15,13 @@ import {
     Scale3d,
     Scissors,
     Spline,
+    Tag,
     X,
 } from "lucide-react";
 import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
+import { activeMarkerPlacementLayer } from "@/features/afo/afo-scan-markers";
 import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
@@ -26,6 +29,7 @@ import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-previ
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
 import { cn } from "@/lib/utils";
+import { useAfoStore } from "@/stores/afo-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/design-store";
 import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -33,6 +37,14 @@ import { usePerformanceStore } from "@/stores/performance-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
+import { AfoMarkerPlacement } from "./AfoMarkerPlacement";
+import { AfoMeshes } from "./AfoMeshes";
+import { recenterAfoScanCamera, useAfoScanCameraFrame } from "./AfoScanCameraFrame";
+import { AfoScanGuidedCard } from "@/features/afo/AfoScanGuidedCard";
+import { AfoScanHoverDot } from "./AfoScanHoverDot";
+import { AfoScanLandmarkLighting } from "./AfoScanLandmarkLighting";
+import { AfoScanMarkers } from "./AfoScanMarkers";
+import { AfoScanLandmarkPlacement } from "./AfoScanLandmarkPlacement";
 import { BaseInsoleMesh } from "./BaseInsoleMesh";
 import { BottomPatternEditTools } from "./BottomPatternEditTools";
 import { ElementMarkers } from "./ElementMarkers";
@@ -106,6 +118,8 @@ export function Viewer3D() {
     const beginBottomPatternEdit = useMeshEditStore((s) => s.beginBottomPatternEdit);
     const target = useMeshEditStore((s) => s.target);
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
+    const afoDraggingTrim = useAfoStore((s) => s.draggingTrimIndex != null);
+    const afoWorkingMesh = useAfoStore((s) => s.castMesh);
     const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
@@ -147,12 +161,25 @@ export function Viewer3D() {
     const rotateDraft = useScanStore((s) => s.rotateDraft);
     const hasScans = useScanStore((s) => s.scans.length > 0);
     const showScans = viewer.showScans ?? true;
-    const showLeftInsole = viewer.showLeft && !hideInsoleForMarkers;
-    const showRightInsole = viewer.showRight && !hideInsoleForMarkers;
+    const isAfo = design.productType === "afo";
+    const placingScanMarkers = useScanStore((s) => s.placementMode != null);
+    const placingAfoLandmarks = useAfoStore((s) => s.scanPlacement != null);
+    const afoScanLabels = useAfoStore((s) => s.scanShowMarkerLabels);
+    const afoAutoFrame = useAfoStore((s) => s.scanAutoFrame);
+    const setAfoScanLabels = useAfoStore((s) => s.setScanShowMarkerLabels);
+    const setAfoAutoFrame = useAfoStore((s) => s.setScanAutoFrame);
+    const markerLayer = activeMarkerPlacementLayer(isAfo, placingScanMarkers, placingAfoLandmarks);
+    const afoScanLandmarking = isAfo && workflowStep === "scan" && placingAfoLandmarks;
+    const scanTransparent = afoScanLandmarking ? false : viewer.transparent;
+
+    useAfoScanCameraFrame(controls);
+    const showLeftInsole = !isAfo && viewer.showLeft && !hideInsoleForMarkers;
+    const showRightInsole = !isAfo && viewer.showRight && !hideInsoleForMarkers;
     const loftPhaseBySide = usePreviewLoftStatusStore((s) => s.phaseBySide);
     const loftError = usePreviewLoftStatusStore((s) => s.error);
     const loftOverlay = viewerLoftOverlayState({
-        showBase,
+        // AFO does not show the insole, so a stuck top-mesh load must not cover the scan.
+        showBase: isAfo ? false : showBase,
         showLeft: viewer.showLeft,
         showRight: viewer.showRight,
         stockBaseLoading,
@@ -214,9 +241,14 @@ export function Viewer3D() {
                 }}
             >
                 <color attach="background" args={["#0c111b"]} />
-                <ambientLight intensity={0.6} />
-                <directionalLight position={[150, 300, 200]} intensity={1.1} castShadow />
-                <directionalLight position={[-150, 100, -100]} intensity={0.4} />
+                {afoScanLandmarking ? null : (
+                    <>
+                        <ambientLight intensity={0.6} />
+                        <directionalLight position={[150, 300, 200]} intensity={1.1} castShadow />
+                        <directionalLight position={[-150, 100, -100]} intensity={0.4} />
+                    </>
+                )}
+                <AfoScanLandmarkLighting />
 
                 <Suspense fallback={null}>
                     <PressureMapOverlayPair showLeft={showLeftInsole} showRight={showRightInsole} />
@@ -256,22 +288,36 @@ export function Viewer3D() {
                             )}
                         </>
                     ) : null}
-                    {showScans ? (
-                        <ScanMeshes transparent={viewer.transparent} heightmap={viewer.heightmap} />
+                    {showScans && !(isAfo && afoWorkingMesh) ? (
+                        <ScanMeshes
+                            transparent={scanTransparent}
+                            heightmap={afoScanLandmarking ? false : viewer.heightmap}
+                        />
                     ) : null}
-                    <ScanMarkerPlacement />
-                    <ScanPlaneSliceTool />
-                    <ScanRotateTool />
-                    <ScanTransformTool />
-                    {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
-                    {workflowStep === "print" && !hideInsoleForMarkers && !loftOverlay.blockViewport ? (
-                        <SplitElementOverlays />
-                    ) : null}
-                    {/* Invisible pick meshes can start geometry edits on pointer-down,
-                        before an element's click opens its hardness selector. */}
-                    {!printPreview ? <MeshEditTools /> : null}
-                    {!printPreview && !loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
-                    {!printPreview && !loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
+                    {isAfo ? <AfoMeshes /> : null}
+                    {isAfo ? <AfoScanMarkers /> : null}
+                    <AfoScanHoverDot />
+                    {markerLayer === "afo-scan" ? (
+                        <AfoScanLandmarkPlacement />
+                    ) : markerLayer === "afo-design" ? (
+                        <AfoMarkerPlacement />
+                    ) : (
+                        <ScanMarkerPlacement />
+                    )}
+                    {isAfo ? null : (
+                        <>
+                            <ScanPlaneSliceTool />
+                            <ScanRotateTool />
+                            <ScanTransformTool />
+                            {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
+                            {workflowStep === "print" && !hideInsoleForMarkers && !loftOverlay.blockViewport ? (
+                                <SplitElementOverlays />
+                            ) : null}
+                            {!printPreview ? <MeshEditTools /> : null}
+                            {!printPreview && !loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
+                            {!printPreview && !loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
+                        </>
+                    )}
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
@@ -280,9 +326,36 @@ export function Viewer3D() {
                     makeDefault
                     enableDamping
                     dampingFactor={0.1}
-                    enabled={!trimlineEdit?.isDragging}
+                    enabled={!trimlineEdit?.isDragging && !afoDraggingTrim}
                 />
             </Canvas>
+
+            {afoScanLandmarking ? <AfoScanGuidedCard /> : null}
+
+            {afoScanLandmarking ? (
+                <div className="absolute right-3 top-[11.5rem] flex flex-col gap-1">
+                    <ToggleButton
+                        active={afoScanLabels}
+                        onClick={() => setAfoScanLabels(!afoScanLabels)}
+                        icon={<Tag className="h-3.5 w-3.5" />}
+                        label="Labels"
+                    />
+                    <ToggleButton
+                        active={afoAutoFrame}
+                        onClick={() => setAfoAutoFrame(!afoAutoFrame)}
+                        icon={<Crosshair className="h-3.5 w-3.5" />}
+                        label="Auto-frame"
+                    />
+                    <Button
+                        size="sm"
+                        variant="secondary"
+                        className="h-7 w-32 justify-start text-[11px]"
+                        onClick={() => recenterAfoScanCamera(controls.current)}
+                    >
+                        Recenter
+                    </Button>
+                </div>
+            ) : null}
 
             {/* View buttons — cross pad: Front | Left | Top/Bottom | Right | Back */}
             <div
@@ -366,12 +439,12 @@ export function Viewer3D() {
                         Editing bottom pattern · {bottomPatternEdit.side}
                     </span>
                 ) : null}
-                {hideInsoleForMarkers && !placingArchOnly ? (
+                {!isAfo && hideInsoleForMarkers && !placingArchOnly ? (
                     <span className="w-fit rounded bg-amber-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         Placing M1–M3 · insole hidden until all 4 markers
                     </span>
                 ) : null}
-                {placingArchOnly ? (
+                {!isAfo && placingArchOnly ? (
                     <span className="w-fit rounded bg-fuchsia-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         Place ARCH apex on medial arch · insole stays hidden until ARCH
                     </span>
@@ -406,8 +479,11 @@ export function Viewer3D() {
             {/* Display toggles */}
             <div className="absolute right-3 top-3 flex flex-col gap-1">
                 <ToggleButton
-                    active={viewer.transparent}
-                    onClick={() => setViewer({ transparent: !viewer.transparent })}
+                    active={scanTransparent && viewer.transparent}
+                    onClick={() => {
+                        if (afoScanLandmarking) return;
+                        setViewer({ transparent: !viewer.transparent });
+                    }}
                     icon={<Maximize2 className="h-3.5 w-3.5" />}
                     label="Transparent"
                 />
@@ -621,8 +697,7 @@ export function Viewer3D() {
             <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="h-3.5 w-3.5" />
                 {interacting ? "Preview mesh · " : ""}
-                Procedural geometry kernel · ⌘P Rx
-                · ⌘E export · T transparent · Esc deselect
+                Procedural geometry kernel · ⌘P Rx · ⌘E export · T transparent · Esc deselect
                 {selectedScanId ? " · arrows nudge scan" : ""}
             </div>
         </div>

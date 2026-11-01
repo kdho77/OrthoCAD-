@@ -2,6 +2,7 @@
 // These mirror the Prisma schema but are framework-agnostic for use in the
 // browser, stores and the 3D pipeline.
 
+import type { AfoDesignState } from "@/lib/geometry/afo/types";
 import type { RegionHardnessClass } from "../../shared/print-recipe/hardness-class-table";
 import type { DepthSpec, HardnessOverrides } from "../../shared/print-recipe/hardness-region";
 import type { PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
@@ -9,6 +10,7 @@ import type { PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
 export type { HardnessName, PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
 export type { DepthSpec, HardnessOverrides, HardnessRegion, RegionKind } from "../../shared/print-recipe/hardness-region";
 export type { RegionHardnessClass } from "../../shared/print-recipe/hardness-class-table";
+export type { AfoDesignState, ProductType } from "@/lib/geometry/afo/types";
 
 export type Role = "super_admin" | "admin" | "clinician";
 
@@ -384,6 +386,10 @@ export interface DesignPressureMaps {
 }
 
 export interface DesignState {
+    /** Insole (default) vs ankle-foot orthosis. AFO never loads SAMPLE_Top. */
+    productType?: "insole" | "afo";
+    /** AFO parameter block. Ignored when productType is insole / absent. */
+    afo?: AfoDesignState;
     pattern: ScanPattern;
     /** When pattern is driven by a user custom prefab. */
     customPrefabId?: string;

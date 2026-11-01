@@ -1,5 +1,5 @@
 import { Check, Save } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -7,9 +7,12 @@ import { useAuditStore } from "@/stores/audit-store";
 import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
 
-// Header save control: persists the live design into the active client/design.
-// Prompts for client + design names when nothing is active (no silent Quick Client).
-export function SaveControl() {
+/** Persist the live design into the active client/design (or prompt for names). */
+export function useSaveDesign(): {
+    saved: boolean;
+    onSave: () => void;
+    dialog: ReactNode;
+} {
     const [saved, setSaved] = useState(false);
     const [dialogOpen, setDialogOpen] = useState(false);
     const [firstName, setFirstName] = useState("");
@@ -62,6 +65,64 @@ export function SaveControl() {
     const needsNewClient = !activeClientId;
     const canConfirm = designName.trim().length > 0 && (!needsNewClient || lastName.trim().length > 0);
 
+    const dialog = (
+        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <DialogContent className="max-w-sm">
+                <DialogHeader>
+                    <DialogTitle>Save design</DialogTitle>
+                    <p className="text-xs text-muted-foreground">
+                        Name this design before saving.{" "}
+                        {needsNewClient ? "Enter client details too." : "Saving under the active client."}
+                    </p>
+                </DialogHeader>
+                <div className="space-y-2">
+                    {needsNewClient ? (
+                        <>
+                            <Input
+                                placeholder="Client first name"
+                                value={firstName}
+                                onChange={(e) => setFirstName(e.target.value)}
+                            />
+                            <Input
+                                placeholder="Client last name (required)"
+                                value={lastName}
+                                onChange={(e) => setLastName(e.target.value)}
+                            />
+                        </>
+                    ) : null}
+                    <Input
+                        placeholder="Design name (required)"
+                        value={designName}
+                        autoFocus={!needsNewClient}
+                        onChange={(e) => setDesignName(e.target.value)}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter" && canConfirm) onConfirmNewSave();
+                        }}
+                    />
+                </div>
+                <div className="flex justify-end gap-2">
+                    <Button type="button" variant="secondary" onClick={() => setDialogOpen(false)}>
+                        Cancel
+                    </Button>
+                    <Button type="button" disabled={!canConfirm} onClick={onConfirmNewSave}>
+                        Save design
+                    </Button>
+                </div>
+            </DialogContent>
+        </Dialog>
+    );
+
+    return { saved, onSave, dialog };
+}
+
+// Header save control: persists the live design into the active client/design.
+// Prompts for client + design names when nothing is active (no silent Quick Client).
+export function SaveControl() {
+    const { saved, onSave, dialog } = useSaveDesign();
+    const activeDesignId = useClientStore((s) => s.activeDesignId);
+    const designs = useClientStore((s) => s.designs);
+    const record = designs.find((d) => d.id === activeDesignId);
+
     return (
         <div className="flex items-center gap-2">
             {record ? (
@@ -75,51 +136,7 @@ export function SaveControl() {
                 )}
                 {saved ? "Saved" : "Save"}
             </Button>
-
-            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-                <DialogContent className="max-w-sm">
-                    <DialogHeader>
-                        <DialogTitle>Save design</DialogTitle>
-                        <p className="text-xs text-muted-foreground">
-                            Name this design before saving.{" "}
-                            {needsNewClient ? "Enter client details too." : "Saving under the active client."}
-                        </p>
-                    </DialogHeader>
-                    <div className="space-y-2">
-                        {needsNewClient ? (
-                            <>
-                                <Input
-                                    placeholder="Client first name"
-                                    value={firstName}
-                                    onChange={(e) => setFirstName(e.target.value)}
-                                />
-                                <Input
-                                    placeholder="Client last name (required)"
-                                    value={lastName}
-                                    onChange={(e) => setLastName(e.target.value)}
-                                />
-                            </>
-                        ) : null}
-                        <Input
-                            placeholder="Design name (required)"
-                            value={designName}
-                            autoFocus={!needsNewClient}
-                            onChange={(e) => setDesignName(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter" && canConfirm) onConfirmNewSave();
-                            }}
-                        />
-                    </div>
-                    <div className="flex justify-end gap-2">
-                        <Button type="button" variant="secondary" onClick={() => setDialogOpen(false)}>
-                            Cancel
-                        </Button>
-                        <Button type="button" disabled={!canConfirm} onClick={onConfirmNewSave}>
-                            Save design
-                        </Button>
-                    </div>
-                </DialogContent>
-            </Dialog>
+            {dialog}
         </div>
     );
 }

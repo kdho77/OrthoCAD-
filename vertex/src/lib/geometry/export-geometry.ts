@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
+import { afoMeshToGeometry } from "@/lib/geometry/afo/mesh-ops";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import {
     BASE_REFERENCE_THICKNESS_MM,
@@ -28,6 +29,7 @@ import {
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
+import { useAfoStore } from "@/stores/afo-store";
 import { curveToPolyPoints, useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
 import type { DesignState, ProductionMethod, Side } from "@/types";
@@ -127,6 +129,19 @@ export async function buildExportGeometry(side: Side): Promise<BufferGeometry> {
 /** Export STL bytes for the active design side. */
 export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
     const { design } = useDesignStore.getState();
+    if (design.productType === "afo") {
+        const shell = useAfoStore.getState().shellMesh;
+        if (!shell) {
+            throw new Error("[EXPORT] Generate the AFO shell on the Print step before exporting STL.");
+        }
+        const geometry = afoMeshToGeometry(shell);
+        assertClosedSolidAcceptable(geometry, 0, null);
+        try {
+            return geometryToBinarySTL(geometry);
+        } finally {
+            geometry.dispose();
+        }
+    }
     assertShapeFinishExportAllowed(design, side);
 
     const modifiedBase = await buildModifiedBaseGeometry(design, side, 0);

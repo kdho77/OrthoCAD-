@@ -6,11 +6,12 @@ import { KernelLoadingBanner } from "@/components/layout/KernelLoadingBanner";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { SessionRecoveryDialog } from "@/components/layout/SessionRecoveryDialog";
 import { StatusBar } from "@/components/layout/StatusBar";
-import { type NavItem, TopNav } from "@/components/layout/TopNav";
+import { TopNav } from "@/components/layout/TopNav";
 import { PrescriptionUpload } from "@/components/prescription-upload/PrescriptionUpload";
 import { Viewer3D } from "@/components/viewer/Viewer3D";
 import { AdminApp } from "@/features/admin/AdminApp";
 import { useLocationPath } from "@/features/admin/admin-nav";
+import { ProductTypeBar } from "@/features/afo/ProductTypeBar";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { ClientsView } from "@/features/clients/ClientsView";
 import { exportDesign } from "@/features/exports/export-service";
@@ -23,6 +24,7 @@ import { applyViewerWallFlagFromSearch } from "@/lib/geometry/procedural-wall/vi
 import { stockDebug, stockGlbLog } from "@/lib/geometry/stock-debug";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
+import { useAppNavStore } from "@/stores/app-nav-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
@@ -56,7 +58,8 @@ export default function App() {
 }
 
 function CadApp() {
-    const [nav, setNav] = useState<NavItem>("Production");
+    const nav = useAppNavStore((s) => s.nav);
+    const setNav = useAppNavStore((s) => s.setNav);
     const [rxOpen, setRxOpen] = useState(false);
     const applyPrescription = useDesignStore((s) => s.applyPrescription);
     const method = useDesignStore((s) => s.design.method);
@@ -85,6 +88,10 @@ function CadApp() {
             glbPath: bootstrapBase?.glbPath ?? null,
         });
 
+        if (useDesignStore.getState().design.productType === "afo") {
+            stockDebug("App stock bootstrap skipped — AFO product (no SAMPLE_Top)");
+            return;
+        }
         if (authLoading) {
             stockDebug("App stock bootstrap waiting for auth");
             return;
@@ -124,6 +131,7 @@ function CadApp() {
                 <div className="flex min-h-0 flex-1">
                     {nav === "Production" ? (
                         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                            <ProductTypeBar />
                             <ClinicalStepRail />
                             <CaseSummaryBar />
                             <div className="relative flex min-h-0 flex-1">
