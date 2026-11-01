@@ -17,6 +17,7 @@ import {
     closeGlbInsoleToSolid,
     DEFAULT_GLB_CLOSED_BASELINE,
 } from "@/lib/geometry/mesh-close";
+import { viewerWallStyleOrDefault } from "@/lib/geometry/procedural-wall/defaults";
 import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { assertShapeFinishExportAllowed } from "@/lib/geometry/shape-finish-gates";
@@ -79,7 +80,7 @@ async function buildModifiedBaseGeometry(
             corrections: field.corrections,
             thicknessMm: effThickness,
             stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
-            wallStyle: viewer?.wallStyle ?? "straight",
+            wallStyle: viewerWallStyleOrDefault(viewer?.wallStyle),
             scanPattern: design.pattern,
             textMarking: design.textMarking,
             side,

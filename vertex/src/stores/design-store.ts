@@ -26,6 +26,7 @@ import {
     sinkStyloidThickenForSide,
     sinksForSide,
 } from "@/lib/geometry/migrate-corrections";
+import { DEFAULT_PROCEDURAL_WALL_STYLE } from "@/lib/geometry/procedural-wall/defaults";
 import {
     defaultSideShapeFinish,
     normalizeSideShapeFinish,
@@ -453,13 +454,14 @@ export interface ViewerSettings {
     view: CameraView;
     /**
      * Procedural walls rebuild from SAMPLE_Top + the faired bottom pattern.
-     * Default `'procedural'` (Grinding Straight). `'legacy'` is test-only via
-     * `?wallModel=legacy`. Not persisted; never touches modifiers/export.
+     * Default `'procedural'`. `'legacy'` is test-only via `?wallModel=legacy`.
+     * Not persisted; never touches modifiers/export.
      */
     wallModel?: "legacy" | "procedural";
     /**
-     * Print-step grinding dropdown → wall mid-style. Default `'straight'`.
-     * Applied only when `wallModel === "procedural"` (also `?wallStyle=`).
+     * Print-step grinding dropdown → wall mid-style. New sessions default to
+     * {@link DEFAULT_PROCEDURAL_WALL_STYLE}. Applied when `wallModel === "procedural"`
+     * (also `?wallStyle=`).
      */
     wallStyle?: "straight" | "round" | "hybrid";
     /** Viewer-only device-type preset for the procedural wall. Not persisted. */
@@ -632,7 +634,7 @@ export const useDesignStore = create<DesignStore>()(
                 showScans: true,
                 view: "iso",
                 wallModel: "procedural",
-                wallStyle: "straight",
+                wallStyle: DEFAULT_PROCEDURAL_WALL_STYLE,
             },
             selectedElementId: null,
             transformMode: "translate",
