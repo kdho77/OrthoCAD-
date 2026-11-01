@@ -117,6 +117,50 @@ export interface AfoWarning {
     blocking: boolean;
 }
 
+/** Stage 1 plantar points, in unoriented scan millimetres. */
+export type AfoPlantarPointId = "heel" | "m1p" | "m5p";
+
+/** Stage 2 anatomical landmarks, in unoriented scan millimetres. */
+export type AfoAnatomicalLandmarkId =
+    | "posterior_calcaneus"
+    | "m1_mpj"
+    | "m5_mpj"
+    | "navicular"
+    | "fifth_met_base"
+    | "medial_malleolus"
+    | "lateral_malleolus"
+    | "fibular_head";
+
+/** Values derived from the landmark frame. Shell/trim geometry does not read these yet. */
+export interface AfoScanDerived {
+    forefootToRearfootDeg: number | null;
+    /** Malleolar apices in the oriented frame. The future Cast-tab DF/PF pivot. */
+    ankleAxis: { medial: AfoVec3; lateral: AfoVec3 } | null;
+    plannedReliefsMm: { malleoli: number; navicular: number; styloid: number };
+    /** Fibular head minus the proximal-trim offset, in the oriented frame. */
+    proximalTrimCap: { offsetMm: number; point: AfoVec3 } | null;
+    heelCupCenter: AfoVec3 | null;
+    mpjBreak: { m1: AfoVec3; m5: AfoVec3 } | null;
+    shankTiltDeg: { sagittal: number; frontal: number } | null;
+    warnings: { id: string; message: string }[];
+}
+
+/**
+ * Two-stage AFO scan registration.
+ * Points stay in unoriented millimetres so Level to rearfoot can rebuild the rigid map.
+ */
+export interface AfoScanWorkflow {
+    scanId: string | null;
+    displayScale: number;
+    plantar: Partial<Record<AfoPlantarPointId, AfoVec3>>;
+    alignmentApplied: boolean;
+    levelToRearfoot: boolean;
+    /** Column-major 4×4. Unoriented millimetres → oriented millimetres. Null before Apply. */
+    matrixElements: number[] | null;
+    landmarks: Partial<Record<AfoAnatomicalLandmarkId, AfoVec3>>;
+    derived: AfoScanDerived | null;
+}
+
 /** Persisted AFO parameter block (lives on DesignState.afo). */
 export interface AfoDesignState {
     side: Side;
@@ -128,6 +172,7 @@ export interface AfoDesignState {
     crest: AfoCrestState;
     effectiveFeatherMm: number;
     landmarks: AfoLandmark[];
+    scanWorkflow: AfoScanWorkflow;
     trimPoints: AfoTrimPoint[];
     trimClosed: boolean;
     trimConfirmed: boolean;

@@ -15,7 +15,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
-import { AFO_MARKER_LABELS, markerPlaceControl } from "@/features/afo/afo-scan-markers";
+import { markerPlaceControl } from "@/features/afo/afo-scan-markers";
 import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
 import { ArchFitError } from "@/lib/geometry/fit-arch-from-scan";
 import { importScanFile } from "@/lib/geometry/import";
@@ -71,7 +71,6 @@ function ScanMarkersSection({
     placed,
     placing,
     baseReady,
-    isAfo,
     blockedTitle,
     nextLabel,
     onConfirm,
@@ -85,7 +84,6 @@ function ScanMarkersSection({
     placed: number;
     placing: boolean;
     baseReady: boolean;
-    isAfo: boolean;
     blockedTitle: string | null;
     nextLabel: string | null;
     onConfirm: (id: MarkerId) => void;
@@ -136,17 +134,14 @@ function ScanMarkersSection({
                         ? "All markers placed — expand to edit"
                         : sug
                           ? "Confirm or place markers to register"
-                          : isAfo
-                            ? "Expand to place heel, medial mal, lateral mal"
-                            : "Expand to place M1 → M2 → M3 (+ optional ARCH)"}
+                          : "Expand to place M1 → M2 → M3 (+ optional ARCH)"}
                 </p>
             ) : (
                 <div className="space-y-1">
                     {placing ? (
                         <p className="text-[10px] leading-snug text-cyan-200/90">
-                            {isAfo
-                                ? "Click the scan: heel, then medial malleolus, then lateral malleolus."
-                                : "Depth shading is on while placing. Amber = M1–M3. Magenta = optional ARCH apex. Light cyan = suggested spots. Insole B1–B3 targets are hidden until you finish."}
+                            Depth shading is on while placing. Amber = M1–M3. Magenta = optional ARCH apex.
+                            Light cyan = suggested spots. Insole B1–B3 targets are hidden until you finish.
                         </p>
                     ) : null}
                     {sug ? (
@@ -192,11 +187,9 @@ function ScanMarkersSection({
                             disabled={!baseReady}
                             title={
                                 baseReady
-                                    ? isAfo
-                                        ? "Place heel, medial malleolus, and lateral malleolus"
-                                        : placing && nextLabel?.startsWith("ARCH")
-                                          ? "Skip optional ARCH apex"
-                                          : "Place M1→M2→M3, then optional ARCH apex"
+                                    ? placing && nextLabel?.startsWith("ARCH")
+                                        ? "Skip optional ARCH apex"
+                                        : "Place M1→M2→M3, then optional ARCH apex"
                                     : (blockedTitle ?? "Base geometry not loaded")
                             }
                             onClick={onTogglePlacement}
@@ -215,7 +208,7 @@ function ScanMarkersSection({
                                 ? nextLabel?.startsWith("ARCH")
                                     ? "Skip ARCH"
                                     : "Done placing"
-                                : !isAfo && placed >= 3 && !markers?.ARCH
+                                : placed >= 3 && !markers?.ARCH
                                   ? "Place ARCH (optional)"
                                   : "Place markers"}
                         </button>
@@ -597,7 +590,7 @@ export function ScanImport() {
                 });
                 const baseReady = placeControl.enabled;
                 const sug = s.suggestedLandmarks;
-                const markerLabels = isAfo ? AFO_MARKER_LABELS : MARKER_LABELS;
+                const markerLabels = MARKER_LABELS;
 
                 return (
                     <div
@@ -695,30 +688,29 @@ export function ScanImport() {
                             ))}
                         </div>
 
-                        <ScanMarkersSection
-                            scanId={s.id}
-                            sug={sug}
-                            markers={markers}
-                            placed={placed}
-                            placing={placing}
-                            baseReady={baseReady}
-                            isAfo={isAfo}
-                            blockedTitle={placeControl.blockedTitle}
-                            nextLabel={placing && placementMode ? markerLabels[placementMode.next] : null}
-                            onConfirm={(id) => {
-                                if (!sug || id === "ARCH") return;
-                                setMarker(s.id, id, sug[id]);
-                            }}
-                            onDismiss={() => setSuggestedLandmarks(s.id, null)}
-                            onTogglePlacement={() => (placing ? exitPlacement() : enterPlacement(s.id))}
-                            onResetMarkers={() => resetMarkers(s.id)}
-                        />
+                        {isAfo ? null : (
+                            <ScanMarkersSection
+                                scanId={s.id}
+                                sug={sug}
+                                markers={markers}
+                                placed={placed}
+                                placing={placing}
+                                baseReady={baseReady}
+                                blockedTitle={placeControl.blockedTitle}
+                                nextLabel={placing && placementMode ? markerLabels[placementMode.next] : null}
+                                onConfirm={(id) => {
+                                    if (!sug || id === "ARCH") return;
+                                    setMarker(s.id, id, sug[id]);
+                                }}
+                                onDismiss={() => setSuggestedLandmarks(s.id, null)}
+                                onTogglePlacement={() => (placing ? exitPlacement() : enterPlacement(s.id))}
+                                onResetMarkers={() => resetMarkers(s.id)}
+                            />
+                        )}
 
                         {/* Readout */}
                         <div className="space-y-0.5 rounded border border-border/60 bg-muted/30 px-1.5 py-1 text-[11px] text-muted-foreground">
-                            {isAfo && placed >= 3 ? (
-                                <p className="text-emerald-400">3-point markers placed — apply orient</p>
-                            ) : reg?.incomplete || placed < 3 ? (
+                            {isAfo ? null : reg?.incomplete || placed < 3 ? (
                                 <p>Registration: waiting for 3 markers ({placed}/3)</p>
                             ) : reg?.error ? (
                                 <p className="text-destructive">

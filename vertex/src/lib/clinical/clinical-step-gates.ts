@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { evaluateAfoScanProgress } from "@/lib/geometry/afo/landmark-frame";
 import { designHasBase, designNeedsDefaultStockResolution } from "@/lib/geometry/base-asset";
-import { useAfoStore } from "@/stores/afo-store";
+import { getAfoState } from "@/stores/afo-store";
 import type { ClinicalStepId } from "@/stores/clinical-workflow-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -50,19 +51,11 @@ export function evaluateScanStepGate(): StepGateResult {
 
     const product = useClinicalWorkflowStore.getState().productType;
     if (product === "afo") {
-        if (useAfoStore.getState().castMesh) return { ok: true };
         const scans = useScanStore.getState().scans;
         if (scans.length === 0) {
             return { ok: false, reason: "Import a foot+leg scan to start the AFO case." };
         }
-        const oriented = scans.some((s) => {
-            const m = useScanStore.getState().markersByScanId[s.id];
-            return Boolean(m?.M1 && m.M2 && m.M3);
-        });
-        if (!oriented) {
-            return { ok: false, reason: "Place the 3-point orient (heel, medial mal, lateral mal)." };
-        }
-        return { ok: true };
+        return evaluateAfoScanProgress(getAfoState().scanWorkflow);
     }
 
     const ready = isReadyToShape();
@@ -158,6 +151,25 @@ export function selectScanGateRevision(s: {
             return `${scan.id}:${placed}:${aligned}`;
         })
         .join("|");
+}
+
+/** Re-render the rail when AFO plantar points, alignment, or the 8 landmarks change. */
+export function selectAfoLandmarkRevision(s: {
+    design: {
+        afo?: {
+            scanWorkflow?: {
+                alignmentApplied: boolean;
+                levelToRearfoot: boolean;
+                plantar: { heel?: unknown; m1p?: unknown; m5p?: unknown };
+                landmarks: Record<string, unknown>;
+            };
+        } | null;
+    };
+}): string {
+    const workflow = s.design.afo?.scanWorkflow;
+    if (!workflow) return "";
+    const plantar = `${workflow.plantar.heel ? 1 : 0}${workflow.plantar.m1p ? 1 : 0}${workflow.plantar.m5p ? 1 : 0}`;
+    return `${workflow.alignmentApplied ? 1 : 0}:${workflow.levelToRearfoot ? 1 : 0}:${plantar}:${Object.keys(workflow.landmarks).length}`;
 }
 
 /**

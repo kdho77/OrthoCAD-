@@ -6,7 +6,7 @@ import { applyAfoCorrections } from "@/lib/geometry/afo/corrections";
 import { detectTibialCrest } from "@/lib/geometry/afo/crest";
 import { defaultAfoDesignState } from "@/lib/geometry/afo/defaults";
 import { cloneMesh } from "@/lib/geometry/afo/mesh-ops";
-import type { AfoClinicalMarkerId, AfoTriMesh } from "@/lib/geometry/afo/types";
+import type { AfoClinicalMarkerId, AfoScanWorkflow, AfoTriMesh } from "@/lib/geometry/afo/types";
 import { useDesignStore } from "@/stores/design-store";
 import type { Side } from "@/types";
 
@@ -17,6 +17,11 @@ interface AfoSessionStore {
     castMesh: AfoTriMesh | null;
     correctedMesh: AfoTriMesh | null;
     shellMesh: AfoTriMesh | null;
+    /** Scaled scan before the plantar rigid map. Level to rearfoot rebuilds from this. */
+    unorientedMesh: AfoTriMesh | null;
+    /** Active Stage 1 / Stage 2 click session. `redo` replaces that marker on the next click. */
+    scanPlacement: { redo: string | null } | null;
+    scanLandmarkError: string | null;
     placingLandmarkIndex: number;
     placingClinicalId: AfoClinicalMarkerId | null;
     placingTrim: boolean;
@@ -27,6 +32,9 @@ interface AfoSessionStore {
     setCastMesh: (mesh: AfoTriMesh | null) => void;
     setCorrectedMesh: (mesh: AfoTriMesh | null) => void;
     setShellMesh: (mesh: AfoTriMesh | null) => void;
+    setUnorientedMesh: (mesh: AfoTriMesh | null) => void;
+    setScanPlacement: (placement: { redo: string | null } | null) => void;
+    setScanLandmarkError: (message: string | null) => void;
     setPlacingLandmarkIndex: (index: number) => void;
     setPlacingClinicalId: (id: AfoClinicalMarkerId | null) => void;
     setPlacingTrim: (on: boolean) => void;
@@ -54,7 +62,19 @@ export function getAfoState() {
         crest: { ...base.crest, ...design.afo.crest },
         clinicalMarkers: design.afo.clinicalMarkers ?? [],
         landmarks: design.afo.landmarks ?? [],
+        scanWorkflow: mergeScanWorkflow(base.scanWorkflow, design.afo.scanWorkflow),
         trimPoints: design.afo.trimPoints ?? [],
+    };
+}
+
+function mergeScanWorkflow(base: AfoScanWorkflow, extra?: AfoScanWorkflow): AfoScanWorkflow {
+    if (!extra) return base;
+    return {
+        ...base,
+        ...extra,
+        plantar: { ...base.plantar, ...(extra.plantar ?? {}) },
+        landmarks: { ...base.landmarks, ...(extra.landmarks ?? {}) },
+        derived: extra.derived === undefined ? base.derived : extra.derived,
     };
 }
 
@@ -129,6 +149,9 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
     castMesh: null,
     correctedMesh: null,
     shellMesh: null,
+    unorientedMesh: null,
+    scanPlacement: null,
+    scanLandmarkError: null,
     placingLandmarkIndex: 0,
     placingClinicalId: null,
     placingTrim: false,
@@ -143,6 +166,9 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
     setCastMesh: (mesh) => set({ castMesh: mesh ? cloneMesh(mesh) : null }),
     setCorrectedMesh: (mesh) => set({ correctedMesh: mesh ? cloneMesh(mesh) : null }),
     setShellMesh: (mesh) => set({ shellMesh: mesh ? cloneMesh(mesh) : null }),
+    setUnorientedMesh: (mesh) => set({ unorientedMesh: mesh ? cloneMesh(mesh) : null }),
+    setScanPlacement: (placement) => set({ scanPlacement: placement }),
+    setScanLandmarkError: (message) => set({ scanLandmarkError: message }),
     setPlacingLandmarkIndex: (index) => set({ placingLandmarkIndex: index }),
     setPlacingClinicalId: (id) => set({ placingClinicalId: id }),
     setPlacingTrim: (on) => set({ placingTrim: on }),
@@ -155,6 +181,9 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
             castMesh: null,
             correctedMesh: null,
             shellMesh: null,
+            unorientedMesh: null,
+            scanPlacement: null,
+            scanLandmarkError: null,
             placingLandmarkIndex: 0,
             placingClinicalId: null,
             placingTrim: false,

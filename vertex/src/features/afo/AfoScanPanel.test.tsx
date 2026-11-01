@@ -14,9 +14,10 @@ import type { Side } from "@/types";
 import { AfoScanPanel } from "./AfoScanPanel";
 import {
     activeMarkerPlacementLayer,
-    afoOrientFromScanMarkers,
+    applyAfoAlignment,
+    commitAfoScanPoint,
     markerPlaceControl,
-    scanIdForThreePointOrient,
+    undoAfoMarker,
 } from "./afo-scan-markers";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
@@ -29,6 +30,10 @@ const MANIFOLD = {
     vertexCount: 8,
     nonManifoldEdges: 0,
 };
+
+const HEEL = { x: 0, y: 0, z: 0 };
+const M1P = { x: 120, y: -40, z: 0 };
+const M5P = { x: 100, y: 35, z: 0 };
 
 function addBox(id: string, side: Side, size: [number, number, number] = [80, 220, 60]) {
     useScanStore.getState().addScan({
@@ -99,81 +104,71 @@ function armAfo(side: Side | "both" = "left") {
 }
 
 describe("AFO scan marker placement", () => {
-    test("Place markers is enabled without an insole base, then Apply 3-point orient runs", async () => {
+    test("alignment enables without an insole base, then Stage 2 gates Next", async () => {
         armAfo("left");
         addBox("leg", "left");
         await renderPanel();
 
-        const place = buttonByText(container, "Place markers");
-        const apply = buttonByText(container, "Apply 3-point orient");
+        const place = buttonByText(container, "Place alignment");
+        const apply = buttonByText(container, "Apply alignment");
         expect(place.disabled).toBe(false);
-        expect(place.getAttribute("title")).toMatch(/heel, medial malleolus, and lateral malleolus/);
         expect(apply.disabled).toBe(true);
-        expect(container.textContent).toMatch(/Place the 3-point orient/);
+        expect(container.textContent).toMatch(/Step 1 of 2: Align/);
+        expect(container.textContent).toMatch(/Next: Plantar heel center/);
+        expect(evaluateScanStepGate().ok).toBe(false);
 
         await act(async () => {
-            useScanStore.getState().enterPlacement("leg");
-            useScanStore.getState().setMarker("leg", "M1", new THREE.Vector3(0, 0, 0));
-            useScanStore.getState().setMarker("leg", "M2", new THREE.Vector3(30, 40, 70));
-            useScanStore.getState().setMarker("leg", "M3", new THREE.Vector3(-30, 40, 70));
+            commitAfoScanPoint(HEEL, "leg", 1);
+            commitAfoScanPoint(M1P, "leg", 1);
+            commitAfoScanPoint(M5P, "leg", 1);
         });
+        expect(buttonByText(container, "Apply alignment").disabled).toBe(false);
 
-        expect(useScanStore.getState().placementMode).toBeNull();
-        expect(useScanStore.getState().markersByScanId.leg?.ARCH).toBeNull();
+        await act(async () => {
+            buttonByText(container, "Apply alignment").click();
+        });
+        expect(useAfoStore.getState().sourceMesh?.positions.length ?? 0).toBeGreaterThan(0);
+        expect(container.textContent).toMatch(/Step 2 of 2: Landmarks 0\/8/);
+        expect(container.textContent).toMatch(/Next: Posterior calcaneus center/);
+        expect(evaluateScanStepGate().ok).toBe(false);
+
+        const landmarks = [
+            { x: -4, y: 0, z: 12 },
+            { x: 110, y: -30, z: 8 },
+            { x: 100, y: 28, z: 8 },
+            { x: 70, y: -18, z: 22 },
+            { x: 55, y: 22, z: 18 },
+            { x: 30, y: -16, z: 80 },
+            { x: 18, y: 14, z: 70 },
+            { x: 8, y: 24, z: 210 },
+        ];
+        await act(async () => {
+            for (const point of landmarks) commitAfoScanPoint(point, "leg", 1);
+        });
+        expect(container.textContent).toMatch(/Step 2 of 2: Landmarks 8\/8/);
         expect(evaluateScanStepGate().ok).toBe(true);
-        expect(buttonByText(container, "Apply 3-point orient").disabled).toBe(false);
-        expect(container.textContent).toMatch(/3-point markers placed/);
-
-        await act(async () => {
-            buttonByText(container, "Apply 3-point orient").click();
-        });
-        const mesh = useAfoStore.getState().sourceMesh;
-        expect(mesh?.positions.length ?? 0).toBeGreaterThan(0);
+        const workflow = useDesignStore.getState().design.afo?.scanWorkflow;
+        expect(workflow?.landmarks.medial_malleolus).toBeTruthy();
+        expect(workflow?.landmarks.fibular_head).toBeTruthy();
+        expect(workflow?.derived?.plannedReliefsMm).toEqual({ malleoli: -3, navicular: -2, styloid: -2 });
     });
 
-    test("left, right, and both keep Place markers enabled", async () => {
+    test("left, right, and both keep Place alignment enabled", async () => {
         armAfo("left");
         addBox("L", "left");
         addBox("R", "right");
         await renderPanel();
-        for (const button of container.querySelectorAll("button")) {
-            if (button.textContent?.includes("Place markers")) expect(button.disabled).toBe(false);
-        }
+        expect(buttonByText(container, "Place alignment").disabled).toBe(false);
 
         await act(async () => {
             useClinicalWorkflowStore.getState().acknowledgeExplicitFootSide("right");
         });
-        for (const button of container.querySelectorAll("button")) {
-            if (button.textContent?.includes("Place markers")) expect(button.disabled).toBe(false);
-        }
+        expect(buttonByText(container, "Place alignment").disabled).toBe(false);
 
         await act(async () => {
             useClinicalWorkflowStore.getState().acknowledgePairAssignment();
         });
-        for (const button of container.querySelectorAll("button")) {
-            if (button.textContent?.includes("Place markers")) expect(button.disabled).toBe(false);
-        }
-
-        await act(async () => {
-            useScanStore.getState().setMarker("R", "M1", new THREE.Vector3(0, 0, 0));
-            useScanStore.getState().setMarker("R", "M2", new THREE.Vector3(20, 30, 60));
-            useScanStore.getState().setMarker("R", "M3", new THREE.Vector3(-20, 30, 60));
-        });
-        expect(
-            scanIdForThreePointOrient(
-                useScanStore.getState().scans,
-                useScanStore.getState().markersByScanId,
-                "right",
-            ),
-        ).toBe("R");
-        expect(
-            scanIdForThreePointOrient(
-                useScanStore.getState().scans,
-                useScanStore.getState().markersByScanId,
-                "both",
-            ),
-        ).toBe("R");
-        expect(buttonByText(container, "Apply 3-point orient").disabled).toBe(false);
+        expect(buttonByText(container, "Place alignment").disabled).toBe(false);
     });
 
     test("insole Place markers stays disabled until the landmark base is loaded", async () => {
@@ -193,7 +188,7 @@ describe("AFO scan marker placement", () => {
 });
 
 describe("AFO marker placement helpers", () => {
-    test("enable path does not wait on the insole base, and clicks hit the scan while placing", () => {
+    test("enable path does not wait on the insole base, and AFO clicks hit the scan while placing", () => {
         expect(markerPlaceControl({ isAfo: true, hasLandmarkBase: false })).toEqual({
             enabled: true,
             blockedTitle: null,
@@ -204,24 +199,25 @@ describe("AFO marker placement helpers", () => {
         });
         expect(markerPlaceControl({ isAfo: false, hasLandmarkBase: true }).enabled).toBe(true);
         expect(activeMarkerPlacementLayer(true, false)).toBe("afo-design");
+        expect(activeMarkerPlacementLayer(true, false, true)).toBe("afo-scan");
         expect(activeMarkerPlacementLayer(true, true)).toBe("scan");
         expect(activeMarkerPlacementLayer(false, false)).toBe("scan");
     });
 
-    test("metre scans are oriented in millimetres", () => {
-        const geometry = new THREE.BoxGeometry(0.2, 0.32, 0.12);
-        const result = afoOrientFromScanMarkers(
-            geometry,
-            {
-                M1: { x: 0, y: -0.14, z: 0 },
-                M2: { x: 0.04, y: 0.02, z: 0.08 },
-                M3: { x: -0.04, y: 0.02, z: 0.08 },
-            },
-            1000,
-        );
-        let maxAbs = 0;
-        for (const v of result.mesh.positions) maxAbs = Math.max(maxAbs, Math.abs(v));
-        expect(maxAbs).toBeGreaterThan(50);
-        expect(Number.isFinite(result.residualRmsMm)).toBe(true);
+    test("the next click fills the first missing landmark after an undo", () => {
+        armAfo("left");
+        addBox("leg", "left");
+        commitAfoScanPoint(HEEL, "leg", 1);
+        commitAfoScanPoint(M1P, "leg", 1);
+        commitAfoScanPoint(M5P, "leg", 1);
+        applyAfoAlignment(false);
+        expect(commitAfoScanPoint({ x: -4, y: 0, z: 12 }, "leg", 1)).toBeNull();
+        expect(commitAfoScanPoint({ x: 110, y: -20, z: 8 }, "leg", 1)).toBeNull();
+        undoAfoMarker("posterior_calcaneus");
+        expect(commitAfoScanPoint({ x: -2, y: 1, z: 14 }, "leg", 1)).toBeNull();
+        const workflow = useDesignStore.getState().design.afo?.scanWorkflow;
+        expect(workflow?.landmarks.posterior_calcaneus?.x).toBe(-2);
+        expect(workflow?.landmarks.m1_mpj).toBeTruthy();
+        expect(workflow?.landmarks.m5_mpj).toBeFalsy();
     });
 });

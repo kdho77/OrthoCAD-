@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo } from "react";
 import { BufferAttribute, BufferGeometry, DoubleSide, LineBasicMaterial, Line as ThreeLine } from "three";
+import { AFO_LANDMARK_STEPS, AFO_PLANTAR_STEPS } from "@/features/afo/afo-scan-markers";
 import { geodesicPolyline } from "@/lib/geometry/afo/geodesic";
+import { transformAfoPoint } from "@/lib/geometry/afo/landmark-frame";
 import { afoMeshToGeometry } from "@/lib/geometry/afo/mesh-ops";
 import { getAfoState, useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -13,6 +15,8 @@ export function AfoMeshes() {
     const shell = useAfoStore((s) => s.shellMesh);
     const corrected = useAfoStore((s) => s.correctedMesh);
     const cast = useAfoStore((s) => s.castMesh);
+    const source = useAfoStore((s) => s.sourceMesh);
+    const placingScan = useAfoStore((s) => s.scanPlacement != null);
     const show3d = afo.cast.show3dModel;
     const showCorrected = afo.cast.showCorrected;
 
@@ -21,6 +25,37 @@ export function AfoMeshes() {
 
     const castGeo = useMemo(() => (working ? afoMeshToGeometry(working) : null), [working]);
     const shellGeo = useMemo(() => (shell ? afoMeshToGeometry(shell) : null), [shell]);
+    const pickGeo = useMemo(
+        () => (placingScan && source ? afoMeshToGeometry(source) : null),
+        [placingScan, source],
+    );
+    const scanDots = useMemo(() => {
+        const workflow = afo.scanWorkflow;
+        const matrix = workflow?.matrixElements;
+        if (!matrix) return [];
+        const dots: { id: string; position: [number, number, number]; color: string }[] = [];
+        for (const step of AFO_PLANTAR_STEPS) {
+            const point = workflow.plantar[step.id];
+            if (!point) continue;
+            const oriented = transformAfoPoint(point, matrix);
+            dots.push({
+                id: `plantar-${step.id}`,
+                position: [oriented.x, oriented.y, oriented.z],
+                color: "#22d3ee",
+            });
+        }
+        for (const step of AFO_LANDMARK_STEPS) {
+            const point = workflow.landmarks[step.id];
+            if (!point) continue;
+            const oriented = transformAfoPoint(point, matrix);
+            dots.push({
+                id: `landmark-${step.id}`,
+                position: [oriented.x, oriented.y, oriented.z],
+                color: "#fbbf24",
+            });
+        }
+        return dots;
+    }, [afo.scanWorkflow]);
     const trimLine = useMemo(() => {
         if (!working || afo.trimPoints.length < 2) return null;
         const pts = geodesicPolyline(
@@ -47,13 +82,30 @@ export function AfoMeshes() {
         return () => {
             castGeo?.dispose();
             shellGeo?.dispose();
+            pickGeo?.dispose();
             trimLine?.geometry.dispose();
             (trimLine?.material as LineBasicMaterial | undefined)?.dispose();
         };
-    }, [castGeo, shellGeo, trimLine]);
+    }, [castGeo, shellGeo, pickGeo, trimLine]);
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
+            {pickGeo ? (
+                <mesh geometry={pickGeo} visible={false} userData={{ isAfoAlignPick: true }}>
+                    <meshBasicMaterial />
+                </mesh>
+            ) : null}
+            {scanDots.map((dot) => (
+                <mesh
+                    key={dot.id}
+                    position={dot.position}
+                    renderOrder={20}
+                    userData={{ isAfoScanLandmark: true }}
+                >
+                    <sphereGeometry args={[6, 14, 12]} />
+                    <meshBasicMaterial color={dot.color} depthTest={false} />
+                </mesh>
+            ))}
             {showCast && castGeo ? (
                 <mesh geometry={castGeo} userData={{ isAfoCast: true, isScanMesh: true }}>
                     <meshStandardMaterial

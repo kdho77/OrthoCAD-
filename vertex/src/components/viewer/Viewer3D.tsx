@@ -37,6 +37,7 @@ import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
 import { AfoMarkerPlacement } from "./AfoMarkerPlacement";
 import { AfoMeshes } from "./AfoMeshes";
+import { AfoScanLandmarkPlacement } from "./AfoScanLandmarkPlacement";
 import { BaseInsoleMesh } from "./BaseInsoleMesh";
 import { BottomPatternEditTools } from "./BottomPatternEditTools";
 import { ElementMarkers } from "./ElementMarkers";
@@ -155,7 +156,8 @@ export function Viewer3D() {
     const showScans = viewer.showScans ?? true;
     const isAfo = design.productType === "afo";
     const placingScanMarkers = useScanStore((s) => s.placementMode != null);
-    const markerLayer = activeMarkerPlacementLayer(isAfo, placingScanMarkers);
+    const placingAfoLandmarks = useAfoStore((s) => s.scanPlacement != null);
+    const markerLayer = activeMarkerPlacementLayer(isAfo, placingScanMarkers, placingAfoLandmarks);
     const showLeftInsole = !isAfo && viewer.showLeft && !hideInsoleForMarkers;
     const showRightInsole = !isAfo && viewer.showRight && !hideInsoleForMarkers;
     const loftPhaseBySide = usePreviewLoftStatusStore((s) => s.phaseBySide);
@@ -270,7 +272,13 @@ export function Viewer3D() {
                         <ScanMeshes transparent={viewer.transparent} heightmap={viewer.heightmap} />
                     ) : null}
                     {isAfo ? <AfoMeshes /> : null}
-                    {markerLayer === "afo-design" ? <AfoMarkerPlacement /> : <ScanMarkerPlacement />}
+                    {markerLayer === "afo-scan" ? (
+                        <AfoScanLandmarkPlacement />
+                    ) : markerLayer === "afo-design" ? (
+                        <AfoMarkerPlacement />
+                    ) : (
+                        <ScanMarkerPlacement />
+                    )}
                     {isAfo ? null : (
                         <>
                             <ScanPlaneSliceTool />

@@ -10,6 +10,7 @@ import type {
     AfoDesignState,
     AfoPrintParams,
     AfoReliefs,
+    AfoScanWorkflow,
 } from "./types";
 
 /** Plantar / calcaneus Z in the oriented frame (C). */
@@ -145,6 +146,19 @@ export function defaultAfoPrint(): AfoPrintParams {
     };
 }
 
+export function defaultAfoScanWorkflow(): AfoScanWorkflow {
+    return {
+        scanId: null,
+        displayScale: 1,
+        plantar: {},
+        alignmentApplied: false,
+        levelToRearfoot: false,
+        matrixElements: null,
+        landmarks: {},
+        derived: null,
+    };
+}
+
 export function defaultAfoDesignState(side: Side = "left"): AfoDesignState {
     return {
         side,
@@ -156,6 +170,7 @@ export function defaultAfoDesignState(side: Side = "left"): AfoDesignState {
         crest: defaultAfoCrest(),
         effectiveFeatherMm: AFO_FEATHER_MIN_MM,
         landmarks: [],
+        scanWorkflow: defaultAfoScanWorkflow(),
         trimPoints: [],
         trimClosed: false,
         trimConfirmed: false,

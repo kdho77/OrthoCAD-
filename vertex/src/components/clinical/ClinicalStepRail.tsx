@@ -6,6 +6,7 @@ import {
     clinicalRailBannerReason,
     evaluateNextGate,
     evaluateStepComplete,
+    selectAfoLandmarkRevision,
     selectScanGateRevision,
 } from "@/lib/clinical/clinical-step-gates";
 import { cn } from "@/lib/utils";
@@ -31,6 +32,7 @@ export function ClinicalStepRail() {
     const setStep = useClinicalWorkflowStore((s) => s.setStep);
     const method = useDesignStore((s) => s.design.method);
     const scanGateRevision = useScanStore(selectScanGateRevision);
+    const afoLandmarkRevision = useDesignStore(selectAfoLandmarkRevision);
     const stockGate = useDesignStore((s) => `${s.stockBaseLoading ? 1 : 0}:${s.stockBaseError ?? ""}`);
 
     const stepState = (id: ClinicalStepId) => {
@@ -55,6 +57,7 @@ export function ClinicalStepRail() {
         <div
             className="border-b border-border bg-panel px-3 py-2"
             data-scan-gate={scanGateRevision}
+            data-afo-landmarks={afoLandmarkRevision}
             data-stock-gate={stockGate}
         >
             <nav aria-label="Clinical workflow" className="flex flex-wrap items-center gap-1">
@@ -116,6 +119,7 @@ export function ClinicalStepFooter() {
     const goBack = useClinicalWorkflowStore((s) => s.goBack);
     const productType = useClinicalWorkflowStore((s) => s.productType);
     const scanGateRevision = useScanStore(selectScanGateRevision);
+    const afoLandmarkRevision = useDesignStore(selectAfoLandmarkRevision);
     const stockGate = useDesignStore((s) => `${s.stockBaseLoading ? 1 : 0}:${s.stockBaseError ?? ""}`);
     const steps = stepsForProduct(productType);
     const atFirst = step === steps[0]?.id;
@@ -131,6 +135,7 @@ export function ClinicalStepFooter() {
         <div
             className="sticky bottom-0 z-10 border-t border-border bg-panel px-3 py-2"
             data-scan-gate={scanGateRevision}
+            data-afo-landmarks={afoLandmarkRevision}
             data-stock-gate={stockGate}
         >
             <div className="flex gap-2">
