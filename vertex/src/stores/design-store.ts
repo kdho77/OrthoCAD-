@@ -632,7 +632,7 @@ export const useDesignStore = create<DesignStore>()(
             stockBaseResolutionState: "resolved",
             baseMeshLoadingBySide: { left: false, right: false },
             exportSide: "left",
-            exportTarget: null,
+            exportTarget: "pair",
             exportTargetByDesignId: {},
             viewer: {
                 transparent: false,
@@ -1495,7 +1495,7 @@ export const useDesignStore = create<DesignStore>()(
                 }),
             syncExportTargetForDesign: (designId) => {
                 const key = designId ?? "__draft__";
-                const remembered = get().exportTargetByDesignId[key] ?? null;
+                const remembered = get().exportTargetByDesignId[key] ?? "pair";
                 set({
                     exportTarget: remembered,
                     ...(remembered === "left" || remembered === "right" ? { exportSide: remembered } : {}),

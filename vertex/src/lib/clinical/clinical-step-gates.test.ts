@@ -32,6 +32,7 @@ describe("clinical step gates", () => {
     });
 
     test("scan Next blocked until explicit L/R foot choice", () => {
+        useDesignStore.setState({ exportTarget: null });
         expect(isFootSideExplicitlyKnown()).toBe(false);
         const gate = evaluateScanStepGate();
         expect(gate.ok).toBe(false);
@@ -46,6 +47,7 @@ describe("clinical step gates", () => {
     });
 
     test("jumping to Mill then selecting Right clears the side-selection banner", () => {
+        useDesignStore.setState({ exportTarget: null });
         useClinicalWorkflowStore.setState({
             footSideExplicitlyChosen: false,
             step: "print",
