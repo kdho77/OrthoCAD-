@@ -6,6 +6,21 @@ const BG_LUM = 248;
 const ALPHA_FLOOR = 12;
 
 /**
+ * Zero alpha on near-white or uniform light background.
+ * Saturated ink (jet colormap blues through reds) stays opaque.
+ */
+export function keyNearWhiteBackground(rgba: Uint8ClampedArray): void {
+    for (let i = 0; i < rgba.length; i += 4) {
+        const r = rgba[i] ?? 0;
+        const g = rgba[i + 1] ?? 0;
+        const b = rgba[i + 2] ?? 0;
+        const lum = (r + g + b) / 3;
+        const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+        if (lum >= BG_LUM || (lum >= 236 && chroma <= 14)) rgba[i + 3] = 0;
+    }
+}
+
+/**
  * Detect the tight bounding box of visible pressure content, ignoring white margins
  * and transparent padding. Returns normalized UV bounds in [0, 1].
  */

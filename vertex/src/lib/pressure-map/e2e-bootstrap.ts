@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { loadPressureMapFromFile } from "@/lib/pressure-map/import";
+import type { PressureMapContainFit } from "@/lib/pressure-map/placement";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import type { CameraView } from "@/stores/design-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -22,6 +23,20 @@ export interface PressureMapFootMeasure {
     insoleCenter: { x: number; y: number; z: number };
     /** Footprint-Y sign of medial (`left` −1, `right` +1). */
     medialSign: 1 | -1;
+    /** Uniform contain of the cropped ink. Ratios are plane size / insole footprint. */
+    containFit: PressureMapContainFit | null;
+}
+
+export interface PressureMapOutsideCount {
+    /** Saturated or near-white overlay pixels outside the insole silhouette (2 px disk already applied). */
+    outside: number;
+    /** All non-background pixels outside the mask, including shell antialiasing. */
+    fringe: number;
+    /** Insole pixels that differ from the clear color. Zero means the framebuffer was not read. */
+    insideVarying: number;
+    spill: { r: number; g: number; b: number };
+    width: number;
+    height: number;
 }
 
 export interface PressureMapE2EApi {
@@ -36,6 +51,11 @@ export interface PressureMapE2EApi {
     measure?: (
         hallux: Record<Side, { u: number; v: number }>,
     ) => { feet: Record<Side, PressureMapFootMeasure> } | null;
+    /**
+     * Top-view pixel check. Counts framebuffer pixels that are not the clear color
+     * and fall outside each insole's projected silhouette, dilated by 2 px.
+     */
+    countOverlayPixelsOutsideOutline?: () => Promise<PressureMapOutsideCount>;
 }
 
 async function fetchFixtureFile(fileName: string): Promise<File> {

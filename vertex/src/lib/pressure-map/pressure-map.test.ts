@@ -3,7 +3,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
-import { BoxGeometry } from "three";
+import { BoxGeometry, BufferAttribute, BufferGeometry } from "three";
 import { generateCncJob } from "@/lib/cnc/export";
 import { cloneProfile } from "@/lib/cnc/profile";
 import { buildExportGlbGeometry } from "@/lib/geometry/export-geometry";
@@ -18,14 +18,17 @@ import {
     syntheticAsymmetricPressureFoot,
 } from "@/lib/pressure-map/asymmetric-fixture";
 import { PRESSURE_MAP_MAX_DATA_URL_CHARS, PRESSURE_MAP_MAX_EDGE_PX } from "@/lib/pressure-map/constants";
-import { detectContentBoundsFromRgba } from "@/lib/pressure-map/content-bounds";
+import { detectContentBoundsFromRgba, keyNearWhiteBackground } from "@/lib/pressure-map/content-bounds";
 import { designStateForManufacturingExport } from "@/lib/pressure-map/export-strip";
 import { loadPressureMapFixturePng } from "@/lib/pressure-map/fixture-loader";
 import { analyzeFromRgba } from "@/lib/pressure-map/orientation";
+import { meshLocalTopOutline, pointInPolygon } from "@/lib/pressure-map/outline-clip";
+import { countPixelsOutsideMask, dilateMask } from "@/lib/pressure-map/overlay-pixels";
 import {
     autoPressureMapPlacement,
     footprintMedialY,
     footprintMmFromImageUv,
+    footprintPointToCanvasPx,
     footprintRectForDesign,
     medialSign,
     pressureMapMeshPose,
@@ -128,12 +131,41 @@ describe("pressure map overlay", () => {
             };
             const placement = autoPressureMapPlacement(side, fp, foot);
             expect(placement.mirrorImageU).toBe(false);
-            expect(placement.sizeFootprint.x).toBeGreaterThan(fp.lengthMm * 0.9);
-            expect(placement.sizeFootprint.x).toBeLessThan(fp.lengthMm * 1.1);
-            expect(placement.sizeFootprint.y).toBeGreaterThan(fp.widthMm * 0.9);
-            expect(placement.sizeFootprint.y).toBeLessThan(fp.widthMm * 1.1);
+            expect(placement.containFit.limitedBy).toBe("width");
+            expect(placement.containFit.widthRatio).toBeCloseTo(1, 3);
+            expect(placement.containFit.lengthRatio).toBeLessThan(1);
+            expect(placement.containFit.lengthRatio).toBeGreaterThan(0.9);
+            expect(placement.sizeFootprint.x).toBeLessThanOrEqual(fp.lengthMm + 1e-6);
+            expect(placement.sizeFootprint.y).toBeLessThanOrEqual(fp.widthMm + 1e-6);
+            expect(placement.sizeFootprint.y).toBeCloseTo(fp.widthMm, 3);
+            const du = foot.contentBounds.maxU - foot.contentBounds.minU;
+            const dv = foot.contentBounds.maxV - foot.contentBounds.minV;
+            const aspect = (dv * foot.imageHeight) / (du * foot.imageWidth);
+            expect(placement.sizeFootprint.x / placement.sizeFootprint.y).toBeCloseTo(aspect, 3);
             expect(placement.planeScale.y).toBeCloseTo(placement.sizeFootprint.x);
             expect(placement.planeScale.x).toBeCloseTo(placement.sizeFootprint.y);
+            const mid = footprintPointToCanvasPx(fp.centerX, fp.centerY, placement, 100, 200);
+            expect(mid.x).toBeCloseTo(50, 3);
+            expect(mid.y).toBeCloseTo(100, 3);
+            const toe = footprintPointToCanvasPx(
+                fp.centerX + placement.sizeFootprint.x / 2,
+                fp.centerY,
+                placement,
+                100,
+                200,
+            );
+            expect(toe.y).toBeLessThan(2);
+            expect(toe.x).toBeGreaterThan(40);
+            expect(toe.x).toBeLessThan(60);
+            const medial = footprintPointToCanvasPx(
+                fp.centerX,
+                fp.centerY + medialSign(side) * (placement.sizeFootprint.y / 2),
+                placement,
+                100,
+                200,
+            );
+            if (side === "left") expect(medial.x).toBeGreaterThan(98);
+            else expect(medial.x).toBeLessThan(2);
             const pt = footprintMmFromImageUv(hallux[side].u, hallux[side].v, side, foot, placement);
             expect(Math.sign(pt.y - fp.centerY)).toBe(medialSign(side));
             expect(pt.x).toBeGreaterThan(fp.centerX);
@@ -236,6 +268,95 @@ describe("pressure map overlay", () => {
         const b = generateCncJob(profile, [syntheticWorkpiece(profile, "left")]);
         expect(a.gcode).toBe(b.gcode);
         expect(a.designHash).toBe(b.designHash);
+    });
+
+    test("near-white background keys to alpha and saturated ink stays", () => {
+        const rgba = new Uint8ClampedArray([
+            255, 255, 255, 255, 250, 248, 249, 255, 40, 30, 220, 255, 220, 40, 30, 255, 240, 240, 240, 255,
+        ]);
+        keyNearWhiteBackground(rgba);
+        expect(rgba[3]).toBe(0);
+        expect(rgba[7]).toBe(0);
+        expect(rgba[11]).toBe(255);
+        expect(rgba[15]).toBe(255);
+        expect(rgba[19]).toBe(0);
+    });
+
+    test("top outline follows a concave footprint and excludes the notch", () => {
+        const geo = new BufferGeometry();
+        const z = 1;
+        const positions = new Float32Array([
+            0,
+            0,
+            z,
+            10,
+            0,
+            z,
+            10,
+            4,
+            z,
+            0,
+            0,
+            z,
+            10,
+            4,
+            z,
+            0,
+            4,
+            z,
+            0,
+            4,
+            z,
+            4,
+            4,
+            z,
+            4,
+            10,
+            z,
+            0,
+            4,
+            z,
+            4,
+            10,
+            z,
+            0,
+            10,
+            z,
+        ]);
+        geo.setAttribute("position", new BufferAttribute(positions, 3));
+        const loop = meshLocalTopOutline(geo, 0.35);
+        expect(loop.length).toBeGreaterThan(8);
+        expect(pointInPolygon(2, 2, loop)).toBe(true);
+        expect(pointInPolygon(2, 8, loop)).toBe(true);
+        expect(pointInPolygon(8, 8, loop)).toBe(false);
+        expect(pointInPolygon(-1, 2, loop)).toBe(false);
+        geo.dispose();
+    });
+
+    test("outside-mask counter ignores insole pixels and flags overlay spill", () => {
+        const width = 6;
+        const height = 4;
+        const rgba = new Uint8Array(width * height * 4);
+        for (let i = 0; i < rgba.length; i += 4) {
+            rgba[i] = 12;
+            rgba[i + 1] = 17;
+            rgba[i + 2] = 27;
+            rgba[i + 3] = 255;
+        }
+        const mask = new Uint8Array(width * height);
+        mask[1 * width + 2] = 1;
+        const dilated = dilateMask(mask, width, height, 1);
+        const setPx = (x: number, y: number, r: number, g: number, b: number) => {
+            const i = ((height - 1 - y) * width + x) * 4;
+            rgba[i] = r;
+            rgba[i + 1] = g;
+            rgba[i + 2] = b;
+        };
+        setPx(2, 1, 248, 250, 252);
+        setPx(0, 0, 30, 40, 220);
+        const counted = countPixelsOutsideMask(rgba, dilated, width, height, { r: 12, g: 17, b: 27 }, 22);
+        expect(counted.insideVarying).toBeGreaterThan(0);
+        expect(counted.outside).toBe(1);
     });
 
     test("writes software preview PNGs when PRESSURE_MAP_SOFTWARE_PREVIEW=1", () => {

@@ -25,6 +25,16 @@ export interface FootprintRect {
     widthMm: number;
 }
 
+/** Uniform contain of the cropped ink inside the footprint. Aspect is never stretched. */
+export interface PressureMapContainFit {
+    /** Plane length / footprint length. Below 1 when width limits the scale. */
+    lengthRatio: number;
+    /** Plane width / footprint width. Below 1 when length limits the scale. */
+    widthRatio: number;
+    /** Axis that bound the uniform scale. */
+    limitedBy: "length" | "width";
+}
+
 export interface PressureMapPlanePlacement {
     centerFootprint: THREE.Vector2;
     /** Content rectangle in the footprint frame: x = heel→toe length, y = width. */
@@ -38,6 +48,8 @@ export interface PressureMapPlanePlacement {
     rotationRad: number;
     /** Sagittal mirror only when image anatomical side ≠ assigned foot side. */
     mirrorImageU: boolean;
+    /** How the ink rectangle was fitted. Ratios are against the footprint, not a stretch. */
+    containFit: PressureMapContainFit;
 }
 
 /**
@@ -178,8 +190,9 @@ function contentAspect(foot: PressureMapFoot, autoRotationDeg: number): number {
 }
 
 /**
- * Fit the pressure ink (not the padded canvas) to the footprint.
- * Length runs heel→toe. Aspect is preserved. Width may overhang by up to 10%.
+ * Contain the cropped ink inside the footprint on both axes.
+ * One uniform scale keeps the image aspect. The binding axis is reported;
+ * the other axis is shorter than the footprint instead of being stretched.
  */
 export function autoPressureMapPlacement(
     _side: Side,
@@ -190,12 +203,16 @@ export function autoPressureMapPlacement(
     const orient = orientationOf(foot as PressureMapFoot);
     const aspect = contentAspect(foot as PressureMapFoot, orient.autoRotationDeg);
     const userScale = Math.max(0.05, alignment.scale);
+    const maxLen = footprint.lengthMm * userScale;
+    const maxWid = footprint.widthMm * userScale;
 
-    let planeLen = footprint.lengthMm * userScale;
+    let planeLen = maxLen;
     let planeWid = planeLen / aspect;
-    if (planeWid > footprint.widthMm * userScale * 1.1) {
-        planeWid = footprint.widthMm * userScale;
+    let limitedBy: PressureMapContainFit["limitedBy"] = "length";
+    if (planeWid > maxWid) {
+        planeWid = maxWid;
         planeLen = planeWid * aspect;
+        limitedBy = "width";
     }
 
     const rot = THREE.MathUtils.degToRad(orient.autoRotationDeg + alignment.rotationDeg);
@@ -203,6 +220,11 @@ export function autoPressureMapPlacement(
         footprint.centerX + alignment.offsetMm.x,
         footprint.centerY + alignment.offsetMm.y,
     );
+    const containFit: PressureMapContainFit = {
+        lengthRatio: planeLen / Math.max(footprint.lengthMm, 1e-6),
+        widthRatio: planeWid / Math.max(footprint.widthMm, 1e-6),
+        limitedBy,
+    };
 
     return {
         centerFootprint: center,
@@ -210,6 +232,32 @@ export function autoPressureMapPlacement(
         planeScale: planeScaleForRotation(planeLen, planeWid, orient.autoRotationDeg),
         rotationRad: rot,
         mirrorImageU: orient.oppositeFootMirror,
+        containFit,
+    };
+}
+
+/**
+ * Canvas pixel for a footprint point on the cropped-ink texture.
+ * Row 0 is image-up (plane-local +Y), matching a CanvasTexture with flipY.
+ */
+export function footprintPointToCanvasPx(
+    fx: number,
+    fy: number,
+    placement: Pick<PressureMapPlanePlacement, "centerFootprint" | "planeScale" | "rotationRad">,
+    canvasWidth: number,
+    canvasHeight: number,
+): { x: number; y: number } {
+    const dx = fx - placement.centerFootprint.x;
+    const dy = fy - placement.centerFootprint.y;
+    const c = Math.cos(placement.rotationRad);
+    const s = Math.sin(placement.rotationRad);
+    const lx = c * dx + s * dy;
+    const ly = -s * dx + c * dy;
+    const px = lx / placement.planeScale.x;
+    const py = ly / placement.planeScale.y;
+    return {
+        x: (px + 0.5) * canvasWidth,
+        y: (0.5 - py) * canvasHeight,
     };
 }
 
@@ -273,6 +321,9 @@ export function pressureMapMeshPose(
     scale: THREE.Vector2;
     sizeFootprint: THREE.Vector2;
     mirrorImageU: boolean;
+    centerFootprint: THREE.Vector2;
+    rotationRad: number;
+    containFit: PressureMapContainFit;
 } {
     const layout = insoleLayoutFromDesign(design);
     const placement = autoPressureMapPlacement(side, footprint, foot, foot.alignment);
@@ -286,6 +337,9 @@ export function pressureMapMeshPose(
         scale: placement.planeScale,
         sizeFootprint: placement.sizeFootprint,
         mirrorImageU: placement.mirrorImageU,
+        centerFootprint: placement.centerFootprint,
+        rotationRad: placement.rotationRad,
+        containFit: placement.containFit,
     };
 }
 

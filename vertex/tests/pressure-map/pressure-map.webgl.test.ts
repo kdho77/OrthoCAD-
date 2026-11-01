@@ -42,10 +42,12 @@ describe("pressure map WebGL overlay (Playwright + SwiftShader)", () => {
                 widthMm: 91.7,
             };
             const placement = autoPressureMapPlacement(side, fp, foot);
-            expect(placement.sizeFootprint.x).toBeGreaterThan(fp.lengthMm * 0.9);
-            expect(placement.sizeFootprint.y).toBeGreaterThan(fp.widthMm * 0.9);
-            expect(placement.sizeFootprint.x).toBeLessThan(fp.lengthMm * 1.1);
-            expect(placement.sizeFootprint.y).toBeLessThan(fp.widthMm * 1.1);
+            expect(placement.containFit.limitedBy).toBe("width");
+            expect(placement.containFit.widthRatio).toBeCloseTo(1, 3);
+            expect(placement.containFit.lengthRatio).toBeLessThan(1);
+            expect(placement.containFit.lengthRatio).toBeGreaterThan(0.9);
+            expect(placement.sizeFootprint.x).toBeLessThanOrEqual(fp.lengthMm + 1e-6);
+            expect(placement.sizeFootprint.y).toBeLessThanOrEqual(fp.widthMm + 1e-6);
             expect(placement.planeScale.y).toBeGreaterThan(placement.planeScale.x);
         }
     });
@@ -122,8 +124,16 @@ describe("pressure map WebGL overlay (Playwright + SwiftShader)", () => {
                     return (["left", "right"] as const).every((side) => {
                         const foot = measured.feet[side];
                         const ilen = foot.insole.maxX - foot.insole.minX;
+                        const iwid = foot.insole.maxZ - foot.insole.minZ;
                         const plen = foot.plane.maxX - foot.plane.minX;
-                        return ilen > 50 && Math.abs(plen - ilen) / ilen < 0.03;
+                        const pwid = foot.plane.maxZ - foot.plane.minZ;
+                        return (
+                            ilen > 50 &&
+                            iwid > 20 &&
+                            plen <= ilen * 1.02 &&
+                            plen >= ilen * 0.85 &&
+                            Math.abs(pwid - iwid) / iwid < 0.03
+                        );
                     });
                 },
                 HALLUX_UV,
@@ -147,11 +157,33 @@ describe("pressure map WebGL overlay (Playwright + SwiftShader)", () => {
                 expect(foot.plane.maxY).toBeLessThan(foot.insole.minY);
                 expect(Math.sign(foot.halluxWorld.z - foot.insoleCenter.z)).toBe(-foot.medialSign);
                 expect(foot.halluxWorld.x).toBeGreaterThan(foot.insoleCenter.x);
+                expect(foot.containFit?.limitedBy).toBe("width");
+                expect(foot.containFit?.widthRatio ?? 0).toBeGreaterThan(0.98);
+                expect(foot.containFit?.widthRatio ?? 2).toBeLessThanOrEqual(1.001);
+                expect(foot.containFit?.lengthRatio ?? 2).toBeLessThan(0.99);
+                expect(foot.containFit?.lengthRatio ?? 0).toBeGreaterThan(0.85);
             }
 
+            const outside = await page.evaluate(async () => {
+                const api = (window as unknown as { __orthocadPressureMapE2E: PressureMapE2EApi })
+                    .__orthocadPressureMapE2E;
+                return (await api.countOverlayPixelsOutsideOutline?.()) ?? null;
+            });
+            if (!outside) throw new Error("outline pixel check returned null");
+            for (const dir of ARTIFACT_DIRS) {
+                writeFileSync(
+                    resolve(dir, "pressure-map-measure.json"),
+                    JSON.stringify({ measured, outside }, null, 2),
+                );
+            }
             const pairTopOn = await page.screenshot({ type: "png" });
             writeArtifact("pressure-map-pair-top-transparent-on.png", pairTopOn);
             expect(pairTopOn.byteLength).toBeGreaterThan(10_000);
+            expect(outside.insideVarying, "framebuffer was not readable").toBeGreaterThan(1000);
+            expect(
+                outside.outside,
+                `overlay pixels outside the insole outline: ${outside.outside} fringe=${outside.fringe} spill=${outside.spill.r},${outside.spill.g},${outside.spill.b}`,
+            ).toBe(0);
 
             await page.evaluate(() => {
                 (
