@@ -1,3 +1,8 @@
+import type { ApexPrintMaterialId } from "@/features/exports/apex-print-material";
+import { downloadBlob, downloadSequential } from "@/features/exports/export-download";
+import { buildExportFilename } from "@/features/exports/export-filename";
+import { export3mfPairSeparate, exportStlPairSeparate } from "@/features/exports/export-pair";
+import type { ExportOutputTarget } from "@/features/exports/export-target";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { workpiecesFromDesign } from "@/lib/cnc/compose";
 import { generateCncJob } from "@/lib/cnc/export";
@@ -26,11 +31,22 @@ import { bindPrintRecipeProfile } from "../../../shared/print-recipe/print-recip
 // Re-export for convenience in UI components
 export type GrindingStyleInput = GrindingStyle;
 
+export interface ExportedFilePart {
+    side: Side;
+    filename: string;
+    blob: Blob;
+    sizeBytes: number;
+    stats?: CamResult["stats"];
+    productionId?: string;
+}
+
 export interface ExportOutcome {
     ok: boolean;
     reason?: string;
     filename?: string;
     blob?: Blob;
+    /** Pair exports: separate Left and Right files (no zip). */
+    files?: ExportedFilePart[];
     stats?: CamResult["stats"];
     productionId?: string;
     warning?: string;
@@ -97,26 +113,39 @@ async function authorize(
     return { ok: true };
 }
 
-function downloadBlob(blob: Blob, filename: string) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+export interface ExportRunOptions {
+    download?: boolean;
+    /** Pair second side — skip duplicate token charge (offline client path). */
+    skipAuthorize?: boolean;
+    apexMaterialId?: ApexPrintMaterialId;
+    onProgress?: (patch: { phase: "exporting" | "slicing"; message: string }) => void;
 }
 
-export async function exportDesign(format: ExportFormat, side: Side = "left"): Promise<ExportOutcome> {
+export async function exportDesign(
+    format: ExportFormat,
+    target: ExportOutputTarget = "left",
+    options: ExportRunOptions = {},
+): Promise<ExportOutcome> {
+    const download = options.download ?? true;
     if (format === "gcode") {
-        return { ok: false, reason: "Use Generate + Export G-code in the Printing tab" };
+        return { ok: false, reason: "Use Generate G-code in the Print step" };
     }
     if (format === "glb") {
-        return exportGlb(side);
+        const side = target === "pair" ? "left" : target;
+        return exportGlb(side, download);
     }
     if (format === "3mf") {
-        return export3mf(side);
+        options.onProgress?.({ phase: "exporting", message: "Exporting 3MF…" });
+        if (target === "pair") return export3mfPairForTarget(download);
+        return export3mf(target, download);
     }
-    const filename = `insole-${side}-${Date.now()}.stl`;
+    options.onProgress?.({ phase: "exporting", message: "Exporting STL…" });
+    if (target === "pair") return exportStlPairForTarget(download);
+    return exportStlSingle(target, download);
+}
+
+async function exportStlSingle(side: Side, download: boolean): Promise<ExportOutcome> {
+    const filename = buildExportFilename("stl", side);
     try {
         const { design } = useDesignStore.getState();
         const stl = await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
@@ -124,8 +153,7 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
             return { ok: false, reason: "Export failed" };
         }
         const blob = new Blob([stl], { type: "model/stl" });
-        downloadBlob(blob, filename);
-        console.log("[EXPORT] token deducted after download");
+        if (download) downloadBlob(blob, filename);
         const auth = await authorize("stl", side, filename);
         if (!auth.ok) return { ok: false, reason: auth.reason };
         useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
@@ -136,11 +164,33 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
     }
 }
 
-export async function export3mf(side: Side): Promise<ExportOutcome> {
+async function exportStlPairForTarget(download: boolean): Promise<ExportOutcome> {
+    const check = canExport(useAuthStore.getState().user, useAuthStore.getState().license, "stl");
+    if (!check.ok) return { ok: false, reason: check.reason };
+    const res = await exportStlPairSeparate(download);
+    if (!res.ok) return res;
+    const auth = await authorize("stl", "left", res.filename ?? "pair.zip");
+    if (!auth.ok) return { ok: false, reason: auth.reason };
+    useAuditStore.getState().record("export_generated", `STL pair (-${TOKEN_COST.stl})`);
+    return res;
+}
+
+async function export3mfPairForTarget(download: boolean): Promise<ExportOutcome> {
+    const { user, license } = useAuthStore.getState();
+    const check = canExport(user, license, "3mf");
+    if (!check.ok) return { ok: false, reason: check.reason };
+    const res = await export3mfPairSeparate(download);
+    if (!res.ok) return res;
+    useAuthStore.getState().deductTokens(TOKEN_COST["3mf"]);
+    useAuditStore.getState().record("export_generated", `3MF pair (-${TOKEN_COST["3mf"]})`);
+    return res;
+}
+
+export async function export3mf(side: Side, download = true): Promise<ExportOutcome> {
     const { user, license, deductTokens } = useAuthStore.getState();
     const check = canExport(user, license, "3mf");
     if (!check.ok) return { ok: false, reason: check.reason };
-    const filename = `insole-${side}-${Date.now()}.3mf`;
+    const filename = buildExportFilename("3mf", side);
     try {
         const { design } = useDesignStore.getState();
         const stl = await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
@@ -148,7 +198,7 @@ export async function export3mf(side: Side): Promise<ExportOutcome> {
         const shell = parseBinaryStl(stl);
         const packed = await exportHardness3mf({ design, side, shell });
         const blob = new Blob([packed.bytes], { type: "model/3mf" });
-        downloadBlob(blob, filename);
+        if (download) downloadBlob(blob, filename);
         deductTokens(TOKEN_COST["3mf"]);
         useAuditStore.getState().record("export_generated", `3MF ${side} (-${TOKEN_COST["3mf"]})`);
         return { ok: true, filename, blob, report: packed.report };
@@ -157,15 +207,15 @@ export async function export3mf(side: Side): Promise<ExportOutcome> {
     }
 }
 
-export async function exportGlb(side: Side): Promise<ExportOutcome> {
+export async function exportGlb(side: Side, download = true): Promise<ExportOutcome> {
     const { user, license } = useAuthStore.getState();
     const check = canExport(user, license, "glb");
     if (!check.ok) return { ok: false, reason: check.reason };
-    const filename = `insole-${side}-${Date.now()}.glb`;
+    const filename = buildExportFilename("glb", side);
     try {
         const arrayBuffer = await buildExportGlb(side);
         const blob = new Blob([arrayBuffer], { type: "model/gltf-binary" });
-        downloadBlob(blob, filename);
+        if (download) downloadBlob(blob, filename);
         useAuditStore.getState().record("export_generated", `GLB ${side}`);
         return { ok: true, filename, blob };
     } catch (e) {
@@ -216,18 +266,24 @@ export async function exportGcode(
     side: Side,
     preset: PrinterPreset,
     overrides: CamOverrides = {},
+    options: ExportRunOptions = {},
 ): Promise<ExportOutcome> {
-    const filename = `insole-${side}-${preset.id}-${Date.now()}.gcode`;
-    const auth = await authorize("gcode", side, filename);
-    if (!auth.ok) return { ok: false, reason: auth.reason };
+    const download = options.download ?? true;
+    const filename = buildExportFilename("gcode", side, { apexMaterialId: options.apexMaterialId });
+    if (!options.skipAuthorize) {
+        const auth = await authorize("gcode", side, filename);
+        if (!auth.ok) return { ok: false, reason: auth.reason };
+    }
     const geometry = await buildSideGeometry(side);
     const { gcode, stats } = generateGcode(geometry, preset, overrides);
     geometry.dispose();
     const blob = new Blob([gcode], { type: "text/plain" });
-    downloadBlob(blob, filename);
-    useAuditStore
-        .getState()
-        .record("export_generated", `G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
+    if (download) downloadBlob(blob, filename);
+    if (!options.skipAuthorize) {
+        useAuditStore
+            .getState()
+            .record("export_generated", `G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
+    }
     return { ok: true, filename, blob, stats };
 }
 
@@ -240,14 +296,21 @@ export async function generateHybridGcode(
     preset: PrinterPreset,
     grindingStyle: GrindingStyleInput,
     overrides: CamOverrides = {},
+    options: ExportRunOptions = {},
 ): Promise<ExportOutcome> {
+    const download = options.download ?? true;
     const activeDesignId = useClientStore.getState().activeDesignId;
     const outputType = preset.beltAngleDeg ? "gcode" : "stl";
     const ext = outputType === "gcode" ? "gcode" : "stl";
-    const filename = `hybrid-${side}-${preset.id}-${Date.now()}.${ext}`;
+    const filename = buildExportFilename(ext, side, { apexMaterialId: options.apexMaterialId });
 
     if (isApiConfigured()) {
         try {
+            options.onProgress?.({
+                phase: "slicing",
+                message: "Server is generating G-code…",
+            });
+
             const stlBuffer = await buildManufacturingStl(side);
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 
@@ -282,14 +345,14 @@ export async function generateHybridGcode(
                 const data = await resp.arrayBuffer();
                 const mime = outputType === "gcode" ? "text/plain" : "model/stl";
                 blob = new Blob([data], { type: mime });
-                downloadBlob(blob, filename);
+                if (download) downloadBlob(blob, filename);
             } else if (outputType === "gcode" && res.gcode) {
                 blob = new Blob([res.gcode], { type: "text/plain" });
-                downloadBlob(blob, filename);
+                if (download) downloadBlob(blob, filename);
             } else if (outputType === "stl" && res.stlBase64) {
                 const bytes = Uint8Array.from(atob(res.stlBase64), (c) => c.charCodeAt(0));
                 blob = new Blob([bytes], { type: "model/stl" });
-                downloadBlob(blob, filename);
+                if (download) downloadBlob(blob, filename);
             } else {
                 return { ok: false, reason: "Server did not return a downloadable output file" };
             }
@@ -313,9 +376,65 @@ export async function generateHybridGcode(
 
     // Offline fallback — client-side G-code only
     if (outputType === "gcode") {
-        return exportGcode(side, preset, overrides);
+        return exportGcode(side, preset, overrides, options);
     }
-    return exportDesign("stl", side);
+    return exportDesign("stl", side, options);
+}
+
+export async function exportPrintGcode(
+    target: ExportOutputTarget,
+    preset: PrinterPreset,
+    grindingStyle: GrindingStyleInput,
+    overrides: CamOverrides = {},
+    options: ExportRunOptions = {},
+): Promise<ExportOutcome> {
+    const download = options.download ?? true;
+    if (target === "pair") {
+        const left = await generateHybridGcode("left", preset, grindingStyle, overrides, {
+            download: false,
+            apexMaterialId: options.apexMaterialId,
+        });
+        if (!left.ok || !left.blob) return left;
+        const right = await generateHybridGcode("right", preset, grindingStyle, overrides, {
+            download: false,
+            skipAuthorize: true,
+            apexMaterialId: options.apexMaterialId,
+        });
+        if (!right.ok || !right.blob) return right;
+        const leftName = left.filename ?? buildExportFilename("gcode", "left");
+        const rightName = right.filename ?? buildExportFilename("gcode", "right");
+        const files: ExportedFilePart[] = [
+            {
+                side: "left",
+                filename: leftName,
+                blob: left.blob,
+                sizeBytes: left.blob.size,
+                stats: left.stats,
+                productionId: left.productionId,
+            },
+            {
+                side: "right",
+                filename: rightName,
+                blob: right.blob,
+                sizeBytes: right.blob.size,
+                stats: right.stats,
+                productionId: right.productionId,
+            },
+        ];
+        if (download) await downloadSequential(files);
+        useAuditStore
+            .getState()
+            .record("export_generated", `G-code pair L+R · ${preset.name} (-${TOKEN_COST.gcode})`);
+        return {
+            ok: true,
+            files,
+            filename: leftName,
+            blob: left.blob,
+            stats: left.stats,
+        };
+    }
+    const side = target;
+    return generateHybridGcode(side, preset, grindingStyle, overrides, { download });
 }
 
 export async function downloadGcodeByProductionId(productionId: string): Promise<ExportOutcome> {

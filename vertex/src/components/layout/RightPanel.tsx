@@ -3,7 +3,6 @@ import { LeftSidebar } from "@/components/layout/LeftSidebar";
 import { ActiveFootSideBar } from "@/features/clinical/ActiveFootSideBar";
 import { ClinicalPrintStepPanel } from "@/features/clinical/ClinicalPrintStepPanel";
 import { ClinicalScanStepPanel } from "@/features/clinical/ClinicalScanStepPanel";
-import { HardnessStepPanel } from "@/features/clinical/HardnessStepPanel";
 import { CorrectionsPanel } from "@/features/corrections/CorrectionsPanel";
 import { ElementsPanel } from "@/features/elements/ElementsPanel";
 import { ExportPanel } from "@/features/exports/ExportPanel";
@@ -14,22 +13,30 @@ import { ShapeFinishPanel } from "@/features/shape-finish/ShapeFinishPanel";
 import { shouldShowShapeFinishOnShapeStep } from "@/features/shape-finish/shape-finish-mount";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
+import { cn } from "@/lib/utils";
 
 export function RightPanel() {
     const step = useClinicalWorkflowStore((s) => s.step);
     const scanPattern = useDesignStore((s) => s.design.pattern);
-    const method = useDesignStore((s) => s.design.method);
+    const printOrExport = step === "print" || step === "export";
 
     return (
         <aside className="flex h-full w-full flex-col border-l border-border bg-panel lg:w-80 lg:shrink-0">
-            <div className="border-b border-border px-3 py-2">
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Editing
+            {printOrExport ? null : (
+                <div className="border-b border-border px-3 py-2">
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Editing
+                    </div>
+                    <ActiveFootSideBar allowBothWhenLinked />
                 </div>
-                <ActiveFootSideBar allowBothWhenLinked />
-            </div>
+            )}
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="flex-1 overflow-y-auto p-3">
+                <div
+                    className={cn(
+                        "flex min-h-0 flex-1 flex-col p-3",
+                        printOrExport ? "overflow-hidden" : "overflow-y-auto",
+                    )}
+                >
                     {step === "scan" ? <ClinicalScanStepPanel /> : null}
                     {step === "setup" ? <LeftSidebar embedded sections={["production", "size"]} /> : null}
                     {step === "base" ? (
@@ -62,14 +69,17 @@ export function RightPanel() {
                     ) : null}
                     {step === "elements" ? <ElementsPanel /> : null}
                     {step === "print" ? (
-                        <div className="space-y-3">
+                        <div className="flex min-h-0 flex-1 flex-col">
                             <ClinicalPrintStepPanel />
-                            {method === "milling_3axis" ? null : <HardnessStepPanel />}
                         </div>
                     ) : null}
-                    {step === "export" ? <ExportPanel /> : null}
+                    {step === "export" ? (
+                        <div className="flex min-h-0 flex-1 flex-col">
+                            <ExportPanel />
+                        </div>
+                    ) : null}
                 </div>
-                <ClinicalStepFooter />
+                {printOrExport ? null : <ClinicalStepFooter />}
             </div>
         </aside>
     );

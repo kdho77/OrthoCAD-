@@ -20,7 +20,9 @@ function scanRegistrationReady(scanId: string): boolean {
 
 /** Clinician explicitly chose Left or Right (not silent default). */
 export function isFootSideExplicitlyKnown(): boolean {
-    return useClinicalWorkflowStore.getState().footSideExplicitlyChosen;
+    if (useClinicalWorkflowStore.getState().footSideExplicitlyChosen) return true;
+    const target = useDesignStore.getState().exportTarget;
+    return target === "left" || target === "right" || target === "pair";
 }
 
 /** Base GLB loaded and usable for shaping. */

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { ExportOutputTarget } from "@/features/exports/export-target";
 import {
     applyCorrectionPresetToDesign,
     type CorrectionPresetApplyMode,
@@ -489,6 +490,10 @@ export interface DesignStore {
     baseMeshLoadingBySide: Record<Side, boolean>;
     /** Active foot side for STL/GLB/G-code export (shared across tabs + keyboard shortcut). */
     exportSide: Side;
+    /** Print + Export footer target (Left / Right / Pair). Null until the user picks once per design. */
+    exportTarget: ExportOutputTarget | null;
+    /** Remembered footer targets keyed by active design id (or __draft__). */
+    exportTargetByDesignId: Record<string, ExportOutputTarget>;
     viewer: ViewerSettings;
     selectedElementId: string | null;
     transformMode: TransformMode;
@@ -604,6 +609,9 @@ export interface DesignStore {
 
     /** Set paired left/right bases for dual-view workspace. Sets per-side bases, defaults per-side thickness/method from legacy or defaults, sets paired.linked = false for independence. */
     setPairedBases: (left?: DesignBase, right?: DesignBase) => void;
+    setExportTarget: (target: ExportOutputTarget | null) => void;
+    /** Load remembered export target when switching designs. */
+    syncExportTargetForDesign: (designId: string | null) => void;
 }
 
 export const useDesignStore = create<DesignStore>()(
@@ -624,6 +632,8 @@ export const useDesignStore = create<DesignStore>()(
             stockBaseResolutionState: "resolved",
             baseMeshLoadingBySide: { left: false, right: false },
             exportSide: "left",
+            exportTarget: "pair",
+            exportTargetByDesignId: {},
             viewer: {
                 transparent: false,
                 heightmap: false,
@@ -1471,6 +1481,26 @@ export const useDesignStore = create<DesignStore>()(
 
             setViewer: (patch) => set((s) => ({ viewer: { ...s.viewer, ...patch } })),
             setExportSide: (side) => set({ exportSide: side }),
+            setExportTarget: (target) =>
+                set((s) => {
+                    const designKey = useClientStore.getState().activeDesignId ?? "__draft__";
+                    const nextMemory = target
+                        ? { ...s.exportTargetByDesignId, [designKey]: target }
+                        : s.exportTargetByDesignId;
+                    return {
+                        exportTarget: target,
+                        exportTargetByDesignId: nextMemory,
+                        ...(target === "left" || target === "right" ? { exportSide: target } : {}),
+                    };
+                }),
+            syncExportTargetForDesign: (designId) => {
+                const key = designId ?? "__draft__";
+                const remembered = get().exportTargetByDesignId[key] ?? "pair";
+                set({
+                    exportTarget: remembered,
+                    ...(remembered === "left" || remembered === "right" ? { exportSide: remembered } : {}),
+                });
+            },
             setBaseMeshLoading: (side, loading) =>
                 set((s) => ({
                     baseMeshLoadingBySide: { ...s.baseMeshLoadingBySide, [side]: loading },
@@ -1582,6 +1612,7 @@ export const useDesignStore = create<DesignStore>()(
             partialize: (state) => ({
                 design: state.design,
                 pendingSessionDesign: state.pendingSessionDesign,
+                exportTargetByDesignId: state.exportTargetByDesignId,
             }),
             merge: (persisted, current) => {
                 const saved = persisted as
@@ -1596,11 +1627,15 @@ export const useDesignStore = create<DesignStore>()(
                 const draft = saved.design.elements?.length
                     ? saved.design
                     : (saved.pendingSessionDesign ?? null);
+                const savedTargets =
+                    (saved as { exportTargetByDesignId?: Record<string, ExportOutputTarget> })
+                        .exportTargetByDesignId ?? {};
                 return {
                     ...current,
                     design: draft ? createDesignWithStockPlaceholder() : saved.design,
                     pendingSessionDesign: draft,
                     selectedElementId: null,
+                    exportTargetByDesignId: savedTargets,
                 };
             },
             onRehydrateStorage: () => (state) => {

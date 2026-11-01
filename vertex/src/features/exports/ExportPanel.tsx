@@ -1,252 +1,212 @@
-import { Boxes, CheckCircle2, Download, FileCode2, Loader2, Lock, TriangleAlert } from "lucide-react";
-import { useState } from "react";
-import { CaseOrderSummary } from "@/components/clinical/CaseOrderSummary";
-import { Button } from "@/components/ui/button";
-import { HardnessRegionList } from "@/features/clinical/HardnessRegionList";
+import { ChevronRight } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { showSuperAdminLink } from "@/features/admin/admin-nav";
+import { APEX_PRINT_MATERIAL_PICK_HINT } from "@/features/exports/apex-print-material";
+import { effectiveExportTarget } from "@/features/exports/export-target-default";
+import { ExportFileTypePicker } from "@/features/exports/ExportFileTypePicker";
+import { PAIR_MULTI_DOWNLOAD_HINT } from "@/features/exports/export-download";
+import {
+    exportPrimaryButtonLabel,
+    useExportFileTypeStore,
+} from "@/features/exports/export-file-type-store";
+import { designRevisionFingerprint, useExportSessionStore } from "@/features/exports/export-session-store";
+import { downloadBlob } from "@/features/exports/export-download";
 import { exportDesign } from "@/features/exports/export-service";
-import { stlExportUserMessage } from "@/features/exports/export-user-message";
-import { TextSummary } from "@/features/exports/TextSummary";
-import { canExport, TOKEN_COST } from "@/features/licensing/license";
-import { useSolidValidation } from "@/hooks/useSolidValidation";
-import type { HardnessExportReport } from "@/lib/hardness/report";
+import { PrintFooter, useMachineSummaryLine } from "@/features/exports/PrintFooter";
+import { usePrintExportSettingsStore } from "@/features/exports/print-export-settings-store";
+import { ResultCard } from "@/features/exports/ResultCard";
+import { runExportForChoice } from "@/features/exports/run-export-action";
+import { canExport } from "@/features/licensing/license";
+import { presetsForMethod } from "@/lib/kiri";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
-import { useKernelStore } from "@/stores/kernel-store";
-import { SIDE_LABELS, type Side } from "@/types";
-
-type ExportKind = "stl" | "glb" | "3mf" | null;
+import { useMillingProfileStore } from "@/stores/milling-profile-store";
 
 export function ExportPanel() {
     const { user, license } = useAuthStore();
-    const { design, exportSide, setExportSide } = useDesignStore();
-    const kernelName = useKernelStore((s) => s.name);
-    const [status, setStatus] = useState<string | null>(null);
-    const [busyKind, setBusyKind] = useState<ExportKind>(null);
+    const { design, exportTarget } = useDesignStore();
+    const machine = useMillingProfileStore((s) => s.machine);
+    const millingProfile = useMillingProfileStore((s) => s.profile);
+    const setStep = useClinicalWorkflowStore((s) => s.setStep);
+    const fileType = useExportFileTypeStore((s) => s.exportFileType);
+    const hydrateFileType = useExportFileTypeStore((s) => s.hydrateForCurrentUser);
+    const printSettings = usePrintExportSettingsStore();
+    const [devOpen, setDevOpen] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [pulseType, setPulseType] = useState(false);
+    const [pulseMaterial, setPulseMaterial] = useState(false);
+    const [error, setError] = useState<{ message: string; noTokens?: boolean } | null>(null);
 
-    const stlCheck = canExport(user, license, "stl");
-    const glbCheck = canExport(user, license, "glb");
-    const threeMfCheck = canExport(user, license, "3mf");
-    const validation = useSolidValidation(design, exportSide);
-    const busy = busyKind !== null;
-    const [report, setReport] = useState<HardnessExportReport | null>(null);
-    const [warning, setWarning] = useState<string | null>(null);
+    const revision = designRevisionFingerprint(design);
+    const machineSummary = useMachineSummaryLine();
+    const cncLocked = machine === "cnc";
+    const target = effectiveExportTarget(exportTarget, cncLocked);
+    const session = useExportSessionStore();
+    const activeRecord = fileType ? session.byKind[fileType] : undefined;
+    const outOfDate = fileType ? session.isOutOfDate(fileType) : false;
 
-    const handleStl = async () => {
-        setBusyKind("stl");
+    const presets = useMemo(() => presetsForMethod(design.method), [design.method]);
+    const preset = presets.find((p) => p.id === printSettings.presetId) ?? presets[0];
+
+    const licenseOk =
+        fileType === "gcode"
+            ? canExport(user, license, "gcode").ok
+            : fileType === "stl"
+              ? canExport(user, license, "stl").ok
+              : fileType === "3mf"
+                ? canExport(user, license, "3mf").ok
+                : true;
+
+    useEffect(() => {
+        hydrateFileType();
+    }, [hydrateFileType]);
+
+    useEffect(() => {
+        useExportSessionStore.getState().setDesignRevision(revision);
+    }, [revision]);
+
+    const onExport = async () => {
+        if (!fileType) {
+            setPulseType(true);
+            window.setTimeout(() => setPulseType(false), 1200);
+            return;
+        }
+        if (fileType === "gcode" && !cncLocked && !printSettings.apexMaterialId) {
+            setPulseMaterial(true);
+            window.setTimeout(() => setPulseMaterial(false), 1200);
+            return;
+        }
+        if (!licenseOk) return;
+
+        setBusy(true);
+        setError(null);
+        useExportSessionStore.getState().setProgress({
+            phase: fileType === "gcode" ? "slicing" : "exporting",
+            message: fileType === "gcode" ? "Generating G-code…" : `Exporting ${fileType.toUpperCase()}…`,
+        });
         try {
-            const res = await exportDesign("stl", exportSide);
-            setStatus(
-                res.ok
-                    ? `Exported ${res.filename} (-${TOKEN_COST.stl} token)`
-                    : stlExportUserMessage(res.reason),
-            );
-            setWarning(res.warning ?? null);
-        } catch (e) {
-            setStatus(stlExportUserMessage(e instanceof Error ? e.message : undefined));
+            const outcome = await runExportForChoice({
+                choice: fileType,
+                target,
+                cnc: cncLocked,
+                preset,
+                apexMaterialId: printSettings.apexMaterialId,
+                grindingStyle: printSettings.grindingStyle,
+                overrides: printSettings.overrides,
+                millingProfile,
+                designRevision: revision,
+            });
+            if (outcome.ok) {
+                session.recordSuccess(outcome.record);
+            } else {
+                setError({ message: outcome.reason, noTokens: outcome.noTokens });
+                useExportSessionStore.getState().setProgressError(outcome.reason);
+            }
         } finally {
-            setBusyKind(null);
+            setBusy(false);
         }
     };
 
-    const handle3mf = async () => {
-        setBusyKind("3mf");
-        setStatus("Building 3MF with hardness modifiers…");
-        try {
-            const res = await exportDesign("3mf", exportSide);
-            setStatus(
-                res.ok
-                    ? `Exported ${res.filename} (-${TOKEN_COST["3mf"]} token)`
-                    : (res.reason ?? "3MF export failed"),
-            );
-            setReport(res.report ?? null);
-            setWarning(res.warning ?? null);
-        } catch (e) {
-            setStatus(e instanceof Error ? e.message : "3MF export failed");
-        } finally {
-            setBusyKind(null);
-        }
+    const runGlb = async () => {
+        if (target === "pair") return;
+        await exportDesign("glb", target);
     };
-
-    const handleGlb = async () => {
-        setBusyKind("glb");
-        setStatus("Generating GLB…");
-        try {
-            const res = await exportDesign("glb", exportSide);
-            setStatus(
-                res.ok
-                    ? `Exported ${res.filename} (-${TOKEN_COST.glb} token)`
-                    : (res.reason ?? "GLB export failed"),
-            );
-        } finally {
-            setBusyKind(null);
-        }
-    };
-
-    const watertightLabel = validation.error
-        ? "Export geometry invalid"
-        : validation.isWatertight
-          ? "Watertight solid"
-          : validation.triangleCount > 0
-            ? `${validation.openEdges} open edges`
-            : "Analyzing…";
 
     return (
-        <div className="space-y-3">
-            <CaseOrderSummary />
-            <TextSummary />
-            <div className="rounded-md border border-border bg-background/50 p-2 text-xs">
-                <div className="flex justify-between">
-                    <span className="text-muted-foreground">Token balance</span>
-                    <span className="tabular-nums">{user?.tokenBalance ?? 0}</span>
-                </div>
-                <div className="mt-1 flex justify-between">
-                    <span className="text-muted-foreground">License</span>
-                    <span>{license?.status ?? "none"}</span>
-                </div>
-                <div className="mt-1 flex justify-between">
-                    <span className="text-muted-foreground">Kernel</span>
-                    <span className="capitalize">{kernelName.replace(/-/g, " ")}</span>
-                </div>
-            </div>
+        <div className="relative flex min-h-0 flex-1 flex-col gap-2">
+            <ExportFileTypePicker pulse={pulseType} />
 
-            <div className="flex gap-1">
-                {(["left", "right"] as Side[]).map((s) => (
-                    <Button
-                        key={s}
-                        size="sm"
-                        variant={exportSide === s ? "default" : "secondary"}
-                        className="h-8 flex-1"
-                        onClick={() => setExportSide(s)}
+            {fileType === "gcode" ? (
+                <div className="rounded-md border border-border bg-background/40 px-2 py-2 text-[11px]">
+                    <button
+                        type="button"
+                        className="text-primary hover:underline"
+                        onClick={() => setStep("print")}
                     >
-                        {SIDE_LABELS[s]} insole
-                    </Button>
-                ))}
-            </div>
+                        Edit in Print
+                    </button>
+                </div>
+            ) : null}
 
-            <div
-                className={cn(
-                    "flex items-center justify-between rounded-md border px-2 py-1.5 text-xs",
-                    validation.isWatertight
-                        ? "border-emerald-500/40 text-emerald-400"
-                        : "border-amber-500/40 text-amber-400",
-                )}
-            >
-                <span className="flex items-center gap-1.5">
-                    {validation.isWatertight ? (
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                    ) : (
-                        <TriangleAlert className="h-3.5 w-3.5" />
-                    )}
-                    {watertightLabel}
-                </span>
-                <span className="tabular-nums text-muted-foreground">
-                    {validation.triangleCount > 0 ? `${validation.triangleCount.toLocaleString()} tris` : "—"}
-                </span>
-            </div>
+            {showSuperAdminLink(user?.role) ? (
+                <div>
+                    <button
+                        type="button"
+                        onClick={() => setDevOpen((v) => !v)}
+                        className="flex w-full items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                    >
+                        <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", devOpen && "rotate-90")} />
+                        Developer
+                    </button>
+                    {devOpen ? (
+                        <button
+                            type="button"
+                            data-testid="export-dev-glb"
+                            className="mt-2 w-full rounded-md border border-border px-2 py-2 text-left text-xs hover:bg-muted/40"
+                            onClick={runGlb}
+                        >
+                            Download GLB (0 tokens)
+                        </button>
+                    ) : null}
+                </div>
+            ) : null}
 
-            {validation.error ? <p className="text-xs text-amber-400">{validation.error}</p> : null}
-            <HardnessRegionList />
+            {error ? (
+                <ResultCard error={error.message} noTokensCharged={error.noTokens} onRetry={onExport} />
+            ) : null}
 
-            <Button className="w-full" disabled={!stlCheck.ok || busy} onClick={handleStl}>
-                {busyKind === "stl" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                ) : stlCheck.ok ? (
-                    <Download className="h-4 w-4" />
-                ) : (
-                    <Lock className="h-4 w-4" />
-                )}
-                {busyKind === "stl" ? "Exporting STL…" : `Export STL · ${TOKEN_COST.stl} token`}
-            </Button>
-            {!stlCheck.ok ? <p className="text-xs text-amber-400">{stlCheck.reason}</p> : null}
-
-            <Button className="w-full" disabled={!threeMfCheck.ok || busy} onClick={handle3mf}>
-                {busyKind === "3mf" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                ) : threeMfCheck.ok ? (
-                    <Download className="h-4 w-4" />
-                ) : (
-                    <Lock className="h-4 w-4" />
-                )}
-                {busyKind === "3mf" ? "Exporting 3MF…" : `Export 3MF · ${TOKEN_COST["3mf"]} token`}
-            </Button>
-            {!threeMfCheck.ok ? <p className="text-xs text-amber-400">{threeMfCheck.reason}</p> : null}
-
-            <Button
-                variant="secondary"
-                className="w-full"
-                disabled={!glbCheck.ok || busy}
-                onClick={handleGlb}
-                title="Download a watertight, print-ready GLB (top + tapered side walls + bottom) of the current trimline."
-            >
-                {busyKind === "glb" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                ) : glbCheck.ok ? (
-                    <Boxes className="h-4 w-4" />
-                ) : (
-                    <Lock className="h-4 w-4" />
-                )}
-                {busyKind === "glb"
-                    ? "Generating GLB…"
-                    : TOKEN_COST.glb > 0
-                      ? `Download GLB · ${TOKEN_COST.glb} token`
-                      : "Download GLB"}
-            </Button>
-            {!glbCheck.ok ? <p className="text-xs text-amber-400">{glbCheck.reason}</p> : null}
-
-            <div className="flex items-center gap-2 rounded-md border border-border px-2 py-2 text-xs text-muted-foreground">
-                <FileCode2 className="h-4 w-4" />
-                {design.method === "milling_3axis" ? (
-                    <>
-                        3-axis CNC G-code is in the <span className="text-foreground">Mill</span> step ·{" "}
-                        {TOKEN_COST.gcode} tokens
-                    </>
-                ) : (
-                    <>
-                        3D-printer and 3-axis CNC G-code are in the{" "}
-                        <span className="text-foreground">Print</span> step · {TOKEN_COST.gcode} tokens
-                    </>
-                )}
-            </div>
-
-            {status ? <p className="rounded-md bg-muted px-2 py-1.5 text-xs">{status}</p> : null}
-            {warning ? (
-                <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-100/90">
-                    {warning}
+            {fileType && !licenseOk ? (
+                <p className="text-xs text-muted-foreground">
+                    {canExport(user, license, fileType === "gcode" ? "gcode" : fileType).reason}
                 </p>
             ) : null}
-            {report ? (
-                <div
-                    data-testid="hardness-export-report"
-                    className="space-y-1 rounded-md border border-border bg-background/50 p-2 text-[11px]"
-                >
-                    <div className="font-semibold uppercase tracking-wide text-muted-foreground">
-                        Export report {report.ok ? "· ok" : "· failed"}
-                    </div>
-                    {report.errors.map((e) => (
-                        <p key={e} className="text-destructive">
-                            {e}
-                        </p>
-                    ))}
-                    {report.warnings.map((w) => (
-                        <p key={w} className="text-amber-200">
-                            {w}
-                        </p>
-                    ))}
-                    <ul className="space-y-0.5">
-                        {report.regions.map((r) => (
-                            <li key={r.regionId} className="flex justify-between gap-2">
-                                <span>
-                                    {r.regionId} · {r.kind} · {r.hardnessClass} · {r.status}
-                                </span>
-                                <span className="tabular-nums text-muted-foreground">
-                                    {r.volumeMm3.toFixed(1)} mm³
-                                </span>
-                            </li>
-                        ))}
-                    </ul>
-                </div>
+            {fileType === "gcode" && !cncLocked && !printSettings.apexMaterialId && pulseMaterial ? (
+                <p className="text-[10px] text-muted-foreground">{APEX_PRINT_MATERIAL_PICK_HINT}</p>
             ) : null}
+
+            <div className="mt-auto space-y-2 pt-2">
+                {activeRecord ? (
+                    <ResultCard
+                        filename={activeRecord.files?.length ? undefined : activeRecord.filename}
+                        sizeBytes={activeRecord.files?.length ? undefined : activeRecord.sizeBytes}
+                        estimatedTimeSec={
+                            activeRecord.files?.length ? undefined : activeRecord.estimatedTimeSec
+                        }
+                        materialLabel={activeRecord.files?.length ? undefined : activeRecord.materialLabel}
+                        tokensCharged={activeRecord.tokensCharged}
+                        outOfDate={outOfDate}
+                        multiDownloadHint={PAIR_MULTI_DOWNLOAD_HINT}
+                        files={
+                            activeRecord.files?.map((part) => ({
+                                label: part.side === "left" ? "Left" : part.side === "right" ? "Right" : undefined,
+                                filename: part.filename,
+                                sizeBytes: part.sizeBytes,
+                                estimatedTimeSec: part.estimatedTimeSec,
+                                materialLabel: part.materialLabel,
+                                onDownload: () => downloadBlob(part.blob, part.filename),
+                            })) ?? undefined
+                        }
+                        onDownload={
+                            activeRecord.files?.length
+                                ? undefined
+                                : () => downloadBlob(activeRecord.blob, activeRecord.filename)
+                        }
+                    />
+                ) : null}
+
+                <PrintFooter
+                    machineSummary={machineSummary}
+                    cncLocked={cncLocked}
+                    cncLockReason="Left + Right in one file"
+                    primaryLabel={exportPrimaryButtonLabel(fileType, cncLocked)}
+                    onPrimary={onExport}
+                    busy={busy}
+                    primaryDisabled={fileType ? !licenseOk : false}
+                    sendToPrinterPlaceholder={fileType === "gcode" && !cncLocked}
+                />
+            </div>
         </div>
     );
 }

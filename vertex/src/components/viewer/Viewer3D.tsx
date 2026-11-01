@@ -40,6 +40,7 @@ import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
 import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
 import { PressureMapOverlayPair } from "./PressureMapOverlay";
+import { ViewportBusyOverlay } from "@/features/exports/viewport-busy-overlay";
 import { PrintLoftSplash } from "./PrintLoftSplash";
 import { ScanMarkerPlacement } from "./ScanMarkerPlacement";
 import { ScanMeshes } from "./ScanMeshes";
@@ -159,6 +160,7 @@ export function Viewer3D() {
         loadingBySide: baseMeshLoadingBySide,
         phaseBySide: loftPhaseBySide,
         error: loftError,
+        progressInPanel: printPreview,
     });
     // Select primitives only — returning a fresh object from a zustand selector
     // causes an infinite re-render loop (React #185) once registration completes.
@@ -331,6 +333,7 @@ export function Viewer3D() {
             </div>
 
             <PrintLoftSplash overlay={loftOverlay} />
+            {printPreview ? <ViewportBusyOverlay /> : null}
 
             {/* Active view + edit-mode indicator (below the view pad) */}
             <div className="pointer-events-none absolute left-3 top-[5.5rem] flex flex-col gap-1">

@@ -60,6 +60,7 @@ BELT_PRESETS: dict[str, dict[str, Any]] = {
 PRESET_ID_ALIASES: dict[str, str] = {
     "apex-belt-v2": "apex-belt-v2-45",
     "apex-belt-v2-shell": "apex-belt-v2-45",
+    "apex-v2-insole-95a": "apex-belt-v2-45",
     "desktop-fdm": "apex-belt-v2-45",
 }
 

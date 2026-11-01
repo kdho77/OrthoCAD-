@@ -118,6 +118,8 @@ export function viewerLoftOverlayState(args: {
     loadingBySide: Record<Side, boolean>;
     phaseBySide: Record<Side, PreviewLoftPhase>;
     error: string | null;
+    /** When true, print loft progress is shown in the side panel instead of the viewport modal. */
+    progressInPanel?: boolean;
 }): ViewerLoftOverlayState {
     if (!args.showBase) return hiddenOverlay();
     const visible: Side[] = [];
@@ -137,6 +139,7 @@ export function viewerLoftOverlayState(args: {
         return { blockViewport: true, showBanner: true, kind: "error", mode: anyPrint ? "print" : "initial" };
     }
     if (anyPrint) {
+        if (args.progressInPanel) return hiddenOverlay();
         return { blockViewport: true, showBanner: true, kind: "progress", mode: "print" };
     }
     if (anyInitial) {

@@ -24,6 +24,16 @@ export const PRINTER_PRESETS: PrinterPreset[] = [
         bed: { x: 300, y: 100000, z: 200 },
     },
     {
+        id: "apex-v2-insole-95a",
+        name: "Apex V2 insole (locked process)",
+        method: "printing_solid",
+        beltAngleDeg: 45,
+        nozzleMm: 0.6,
+        layerHeightMm: 0.3,
+        material: "TPU 95A",
+        bed: { x: 300, y: 100000, z: 200 },
+    },
+    {
         id: "apex-belt-v2-shell",
         name: "Apex Belt V2 — Shell (TPU)",
         method: "printing_shell",

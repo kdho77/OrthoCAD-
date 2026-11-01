@@ -52,6 +52,7 @@ export const GYROID_MANUFACTURING_PRESET_IDS = new Set([
     "desktop-fdm",
     "apex-belt-v2-45",
     "layerloop-30",
+    "apex-v2-insole-95a",
 ]);
 
 export function isGyroidManufacturingPreset(presetId: string): boolean {

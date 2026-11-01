@@ -1,24 +1,35 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { Cpu, Download, Lock, Play, Printer } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ChevronRight, Cpu, Play, Printer } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
 import { CncMillingPanel } from "@/features/exports/CncMillingPanel";
-import { exportGcode, type GrindingStyleInput, generateHybridGcode } from "@/features/exports/export-service";
-import { stlExportUserMessage } from "@/features/exports/export-user-message";
+import { ApexPrintMaterialPicker } from "@/features/exports/ApexPrintMaterialPicker";
+import { type GrindingStyleInput } from "@/features/exports/export-service";
+import { useExportSessionStore } from "@/features/exports/export-session-store";
+import { MachineSegment, PrintFooter, useMachineSummaryLine } from "@/features/exports/PrintFooter";
 import {
     ProceduralWallPreviewControls,
     type ProceduralWallStyleChoice,
 } from "@/features/exports/procedural-wall-preview-controls";
-import { canExport, TOKEN_COST } from "@/features/licensing/license";
+import { canExport } from "@/features/licensing/license";
 import { getKernel } from "@/lib/geometry/geometry-kernel";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { type CamOverrides, type CamResult, generateGcode, presetsForMethod } from "@/lib/kiri";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
+import { useExportFileTypeStore } from "@/features/exports/export-file-type-store";
+import { usePrintExportSettingsStore } from "@/features/exports/print-export-settings-store";
+import {
+    defaultPrinterPresetForUi,
+    printerPresetsForUi,
+    resolveUiPrinterPresetId,
+} from "@/features/exports/printer-preset-ui";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
+import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { SIDE_LABELS, type Side } from "@/types";
 import { infillFractionFromRecipe, migratePrintRecipe } from "../../../shared/print-recipe/print-recipe";
 
@@ -29,24 +40,23 @@ function fmtTime(sec: number): string {
 }
 
 interface PrintingPanelProps {
-    /** Simplified clinical print step — primary CTA + fewer exposed knobs. */
     clinicalMode?: boolean;
-    /** Clinical print step: only foot side + Prepare for print (AC7). */
     primaryOnly?: boolean;
-    /**
-     * Show the existing viewer.wallModel flag + grinding dropdown.
-     * Defaults on for the full panel; the clinical Print step mounts it once above.
-     */
     showWallPreview?: boolean;
+    /** Material / hardness block inserted between preset and grinding in clinical layout. */
+    materialSection?: ReactNode;
+    advancedSections?: ReactNode;
 }
 
 export function PrintingPanel({
     clinicalMode = false,
     primaryOnly = false,
     showWallPreview,
+    materialSection,
+    advancedSections,
 }: PrintingPanelProps) {
     const { user, license } = useAuthStore();
-    const { design, exportSide, setExportSide, setViewer } = useDesignStore();
+    const { design, exportSide, exportTarget, setExportTarget, setViewer } = useDesignStore();
     const machine = useMillingProfileStore((s) => s.machine);
     const setMachine = useMillingProfileStore((s) => s.setMachine);
     const cncSelected = machine === "cnc";
@@ -56,22 +66,29 @@ export function PrintingPanel({
     const [infill, setInfill] = useState(recipeInfillPct);
     const [toolDia, setToolDia] = useState(6);
     const [result, setResult] = useState<CamResult | null>(null);
-    const [status, setStatus] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [advancedOpen, setAdvancedOpen] = useState(false);
+    const setStep = useClinicalWorkflowStore((s) => s.setStep);
+    const preselectGcode = useExportFileTypeStore((s) => s.preselectGcode);
 
-    // Hybrid manufacturing (server-side solid + G-code) controls
+    const session = useExportSessionStore();
+    const machineSummary = useMachineSummaryLine();
+    const apexMaterialId = usePrintExportSettingsStore((s) => s.apexMaterialId);
+    const setPrintExportSettings = usePrintExportSettingsStore((s) => s.setPrintExportSettings);
+    const loftPhases = usePreviewLoftStatusStore((s) => s.phaseBySide);
+
     const [grindingStyle, setGrindingStyle] = useState<GrindingStyleInput>({
         type: "straight",
         angle_degrees: 8,
     });
 
     const presets = useMemo(() => presetsForMethod(design.method), [design.method]);
-    const defaultPreset = useMemo(() => presets.find((p) => p.beltAngleDeg) ?? presets[0], [presets]);
-    const [presetId, setPresetId] = useState(defaultPreset?.id ?? "");
-    const preset = presets.find((p) => p.id === presetId) ?? defaultPreset;
-
+    const uiPresets = useMemo(() => printerPresetsForUi(presets), [presets]);
+    const defaultPreset = useMemo(() => defaultPrinterPresetForUi(presets), [presets]);
+    const [presetId, setPresetId] = useState(() => resolveUiPrinterPresetId(defaultPreset?.id ?? ""));
+    const resolvedPresetId = resolveUiPrinterPresetId(presetId);
+    const preset = presets.find((p) => p.id === resolvedPresetId) ?? defaultPreset;
     const isBeltPreset = !!preset?.beltAngleDeg;
-
     const isCnc = design.method === "milling_3axis";
     const gcodeCheck = canExport(user, license, "gcode");
 
@@ -82,68 +99,45 @@ export function PrintingPanel({
               infillDensity: (clinicalMode ? recipeInfillPct : infill) / 100,
           };
 
+    useEffect(() => {
+        if (!preset) return;
+        usePrintExportSettingsStore.getState().setPrintExportSettings({
+            presetId: preset.id,
+            grindingStyle,
+            overrides,
+        });
+    }, [preset?.id, grindingStyle, overrides.layerHeightMm, overrides.infillDensity, overrides.toolDiameterMm]);
+
+    useEffect(() => {
+        if (cncSelected) setExportTarget("pair");
+    }, [cncSelected, setExportTarget]);
+
+    useEffect(() => {
+        const working = Object.values(loftPhases).some(
+            (p) => p === "lofting" || p === "queued" || p === "fetching",
+        );
+        const store = useExportSessionStore.getState();
+        if (working) store.setProgress({ phase: "building", message: "Building walls…" });
+        else if (store.progress.phase === "building") store.setProgress({ phase: "idle" });
+    }, [loftPhases]);
+
     const buildGeom = () => getKernel().buildInsole(insoleParamsFromDesign(design, exportSide, "full"));
 
     const onPreview = () => {
         if (!preset) return;
         setBusy(true);
-        setStatus(null);
         try {
             setResult(generateGcode(buildGeom(), preset, overrides));
         } catch (e) {
-            setStatus(e instanceof Error ? e.message : "Toolpath generation failed");
+            /* preview only */
         } finally {
             setBusy(false);
         }
     };
 
-    const onExport = async () => {
-        if (!preset) return;
-        setBusy(true);
-        const res = await exportGcode(exportSide, preset, overrides);
-        setStatus(
-            res.ok
-                ? `Exported ${res.filename} (-${TOKEN_COST.gcode} tokens)`
-                : (res.reason ?? "Export failed"),
-        );
-        if (res.ok && res.stats) setResult((r) => (r ? r : { gcode: "", stats: res.stats!, moveCount: 0 }));
-        setBusy(false);
-    };
-
-    const onHybridGenerate = async () => {
-        if (!preset || !isBeltPreset) return;
-        setBusy(true);
-        setStatus("Exporting finished solid and generating G-code on server…");
-        setResult(null);
-        try {
-            // The helper (generateHybridGcode) derives baseAssetId (and baseGlbUrl) internally
-            // from the current design state in useDesignStore at the time of the call.
-            // This is the canonical place that assembles the full server payload.
-            // baseAssetId will be included (when a base is active) so the server can do
-            // authoritative CustomPrefab lookup + signed URL (see export-service.ts).
-            // designId is also passed when an active persisted design exists.
-            const res = await generateHybridGcode(exportSide, preset, grindingStyle, overrides);
-            if (res.ok) {
-                const idPart = res.productionId ? ` [production ${res.productionId}]` : "";
-                setStatus(
-                    `Server G-code exported ${res.filename || "file"}${idPart} (tokens deducted on success)`,
-                );
-            } else {
-                // Same friendly mapping as ExportPanel — hybrid STL build uses closeGlbInsoleToSolid
-                // and export-service returns the raw MeshNotWatertightError message as res.reason.
-                setStatus(stlExportUserMessage(res.reason ?? "Hybrid generation failed"));
-            }
-            // Note: the hybrid path handles its own download + audit inside the service helper.
-            // Improved feedback: status reflects server nature and success-only deduction.
-        } catch (e) {
-            setStatus(
-                stlExportUserMessage(
-                    e instanceof Error ? e.message : "Hybrid G-code generation failed (unexpected error)",
-                ),
-            );
-        } finally {
-            setBusy(false);
-        }
+    const continueToExport = () => {
+        preselectGcode();
+        setStep("export");
     };
 
     const showPrimaryOnly = clinicalMode && primaryOnly;
@@ -156,40 +150,122 @@ export function PrintingPanel({
         );
     };
 
-    return (
-        <div className="space-y-3">
-            <div className="space-y-1.5">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Machine
-                </div>
-                <div className="flex gap-1">
-                    {(
-                        [
-                            { id: "printer" as const, label: "3D printer", icon: Printer },
-                            { id: "cnc" as const, label: "3-axis CNC", icon: Cpu },
-                        ] as const
-                    ).map((m) => (
-                        <button
-                            key={m.id}
-                            type="button"
-                            onClick={() => setMachine(m.id)}
-                            className={cn(
-                                "flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border px-2 text-xs",
-                                machine === m.id
-                                    ? "border-primary bg-primary/10 text-foreground"
-                                    : "border-border bg-background text-muted-foreground",
-                            )}
+    const recommendedHint =
+        machine === "cnc"
+            ? "CNC export reads the finished design; walls stay straight on the Idaho table."
+            : "Build the procedural solid here, then continue to Export for downloadable files.";
+
+    if (clinicalMode) {
+        return (
+            <div className="relative flex min-h-0 flex-1 flex-col gap-2">
+                <MachineSegment machine={machine} setMachine={setMachine} />
+
+                {cncSelected ? <CncMillingPanel /> : null}
+
+                {!cncSelected ? (
+                    <div className="space-y-1">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Preset
+                        </div>
+                        <select
+                            className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
+                            value={resolvedPresetId}
+                            onChange={(e) => setPresetId(e.target.value)}
+                            data-testid="printer-preset-select"
                         >
-                            <m.icon className="h-3.5 w-3.5" />
-                            {m.label}
-                        </button>
-                    ))}
+                            {uiPresets.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                    {p.name}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                ) : null}
+
+                {!cncSelected ? (
+                    <ApexPrintMaterialPicker
+                        compact
+                        value={apexMaterialId}
+                        onChange={(id) => setPrintExportSettings({ apexMaterialId: id })}
+                    />
+                ) : null}
+
+                {materialSection}
+
+                <div className="space-y-1">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Grinding
+                    </div>
+                    {showProceduralWallControls ? (
+                        <ProceduralWallPreviewControls compact onWallStyle={onWallStyle} />
+                    ) : (
+                        <p className="text-[10px] text-muted-foreground">Straight walls (CNC)</p>
+                    )}
+                </div>
+
+                <button
+                    type="button"
+                    onClick={() => setAdvancedOpen((v) => !v)}
+                    className="flex w-full items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                    aria-expanded={advancedOpen}
+                >
+                    <ChevronRight
+                        className={cn("h-3.5 w-3.5 transition-transform", advancedOpen && "rotate-90")}
+                    />
+                    Advanced
+                </button>
+                {advancedOpen ? (
+                    <div className="space-y-3 rounded-md border border-border bg-background/40 p-2">
+                        {advancedSections}
+                        <p className="text-[10px] text-muted-foreground">
+                            Layer height {layerHeight} mm · gyroid infill {recipeInfillPct}% (from hardness)
+                        </p>
+                        {!isCnc ? (
+                            <>
+                                <SliderField
+                                    label="Layer height"
+                                    value={layerHeight}
+                                    min={0.1}
+                                    max={0.6}
+                                    step={0.05}
+                                    unit="mm"
+                                    onChange={setLayerHeight}
+                                />
+                                <SliderField
+                                    label="Infill"
+                                    value={infill}
+                                    min={0}
+                                    max={100}
+                                    step={5}
+                                    unit="%"
+                                    onChange={setInfill}
+                                />
+                            </>
+                        ) : null}
+                    </div>
+                ) : null}
+
+                {!gcodeCheck.ok ? <p className="text-xs text-muted-foreground">{gcodeCheck.reason}</p> : null}
+
+                <div className="mt-auto pt-2">
+                    <PrintFooter
+                        machineSummary={machineSummary}
+                        cncLocked={cncSelected}
+                        cncLockReason="Left + Right in one file"
+                        primaryLabel="Continue to Export"
+                        onPrimary={continueToExport}
+                        showBackLink
+                    />
                 </div>
             </div>
+        );
+    }
 
+    return (
+        <div className="space-y-3">
+            <MachineSegment machine={machine} setMachine={setMachine} hint={recommendedHint} />
             {cncSelected ? <CncMillingPanel /> : null}
-
-            {!cncSelected && !showPrimaryOnly ? (
+            {!cncSelected ? (
                 <div className="flex gap-1">
                     {(["left", "right"] as Side[]).map((s) => (
                         <Button
@@ -197,15 +273,14 @@ export function PrintingPanel({
                             size="sm"
                             variant={exportSide === s ? "default" : "secondary"}
                             className="h-8 flex-1"
-                            onClick={() => setExportSide(s)}
+                            onClick={() => setExportTarget(s)}
                         >
                             {SIDE_LABELS[s]} insole
                         </Button>
                     ))}
                 </div>
             ) : null}
-
-            {cncSelected ? null : !showPrimaryOnly ? (
+            {!cncSelected ? (
                 <div className="space-y-1.5">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                         {isCnc ? "Mill preset" : "Printer preset"}
@@ -224,171 +299,40 @@ export function PrintingPanel({
                         >
                             {isCnc ? <Cpu className="h-3.5 w-3.5" /> : <Printer className="h-3.5 w-3.5" />}
                             {p.name}
-                            {p.beltAngleDeg ? (
-                                <span className="ml-auto rounded bg-muted px-1 text-[10px]">
-                                    belt {p.beltAngleDeg}°
-                                </span>
-                            ) : null}
                         </button>
                     ))}
                 </div>
-            ) : showPrimaryOnly && preset ? (
-                <p className="text-[10px] text-muted-foreground">
-                    Preset: <span className="text-foreground">{preset.name}</span>
-                    {preset.beltAngleDeg ? ` · belt ${preset.beltAngleDeg}°` : ""}
-                </p>
             ) : null}
-
-            {showProceduralWallControls ? <ProceduralWallPreviewControls onWallStyle={onWallStyle} /> : null}
-
-            {cncSelected ? null : !showPrimaryOnly && isBeltPreset ? (
-                <div className="space-y-1.5">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        Grinding Style (server hybrid)
-                    </div>
-                    <div className="flex gap-2">
-                        {(["straight", "rounded"] as const).map((t) => (
-                            <button
-                                key={t}
-                                type="button"
-                                onClick={() =>
-                                    setGrindingStyle(
-                                        t === "straight"
-                                            ? { type: "straight", angle_degrees: 8 }
-                                            : { type: "rounded", radius_mm: 3 },
-                                    )
-                                }
-                                className={cn(
-                                    "flex-1 rounded-md border px-2 py-1 text-xs",
-                                    grindingStyle.type === t
-                                        ? "border-primary bg-primary/10"
-                                        : "border-border bg-background text-muted-foreground",
-                                )}
-                            >
-                                {t === "straight" ? "Straight (draft)" : "Rounded (fillet)"}
-                            </button>
-                        ))}
-                    </div>
-                    <div className="text-[10px] text-muted-foreground">
-                        {grindingStyle.type === "straight"
-                            ? `Draft angle ${grindingStyle.angle_degrees ?? 8}°`
-                            : `Fillet radius ${grindingStyle.radius_mm ?? 3} mm`}
-                    </div>
-                </div>
-            ) : null}
-
-            {cncSelected ? null : !showPrimaryOnly && isCnc ? (
-                <SliderField
-                    label="Tool diameter"
-                    value={toolDia}
-                    min={1}
-                    max={12}
-                    step={0.5}
-                    unit="mm"
-                    onChange={setToolDia}
+            {!cncSelected ? (
+                <ApexPrintMaterialPicker
+                    value={apexMaterialId}
+                    onChange={(id) => setPrintExportSettings({ apexMaterialId: id })}
                 />
-            ) : showPrimaryOnly ? (
-                <p className="text-[10px] text-muted-foreground">
-                    Layer height {layerHeight} mm · gyroid infill {recipeInfillPct}% (from hardness step)
-                </p>
-            ) : clinicalMode ? (
-                <p className="text-[10px] text-muted-foreground">
-                    Layer height {layerHeight} mm · gyroid infill {recipeInfillPct}% (from hardness step)
-                </p>
-            ) : (
-                <>
-                    <SliderField
-                        label="Layer height"
-                        value={layerHeight}
-                        min={0.1}
-                        max={0.6}
-                        step={0.05}
-                        unit="mm"
-                        onChange={setLayerHeight}
-                    />
-                    <SliderField
-                        label="Infill"
-                        value={infill}
-                        min={0}
-                        max={100}
-                        step={5}
-                        unit="%"
-                        onChange={setInfill}
-                    />
-                </>
-            )}
-
-            {cncSelected ? null : !clinicalMode ? (
+            ) : null}
+            {showProceduralWallControls ? <ProceduralWallPreviewControls onWallStyle={onWallStyle} /> : null}
+            {!clinicalMode ? (
                 <Button variant="secondary" className="w-full" disabled={busy || !preset} onClick={onPreview}>
                     <Play className="h-4 w-4" /> {busy ? "Generating…" : "Generate toolpath"}
                 </Button>
             ) : null}
-
-            {cncSelected ? null : result ? (
+            {result ? (
                 <div className="space-y-1 rounded-md border border-border bg-background/50 p-2 text-xs">
-                    <Row label="Moves" value={result.moveCount.toLocaleString()} />
                     <Row label="Est. time" value={fmtTime(result.stats.estimatedTimeSec)} />
-                    {!isCnc ? (
-                        <Row
-                            label="Material"
-                            value={`${(result.stats.estimatedMaterialMm3 / 1000).toFixed(1)} cm³`}
-                        />
-                    ) : null}
-                    <Row
-                        label="Path length"
-                        value={`${((result.stats.extrudeDistanceMm + result.stats.travelDistanceMm) / 1000).toFixed(1)} m`}
-                    />
                 </div>
             ) : null}
-
-            {cncSelected ? null : !clinicalMode ? (
-                <Button className="w-full" disabled={busy || !preset || !gcodeCheck.ok} onClick={onExport}>
-                    {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
-                    Export G-code · {TOKEN_COST.gcode} tokens (client)
-                </Button>
-            ) : null}
-
-            {cncSelected ? null : isBeltPreset ? (
+            {!clinicalMode ? (
                 <Button
-                    variant="default"
+                    variant="secondary"
                     className="w-full"
-                    disabled={busy || !preset || !gcodeCheck.ok}
-                    onClick={onHybridGenerate}
-                    title="Exports the finished viewer solid as STL, uploads to server, then slices with belt transform"
+                    disabled={busy || !preset}
+                    onClick={() => {
+                        preselectGcode();
+                        setStep("export");
+                    }}
                 >
-                    {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
-                    {clinicalMode ? "Prepare for print" : `Generate G-code (Server) — ${grindingStyle.type}`}
-                </Button>
-            ) : clinicalMode ? (
-                <Button className="w-full" disabled={busy || !preset || !gcodeCheck.ok} onClick={onExport}>
-                    {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
-                    Prepare for print · {TOKEN_COST.gcode} tokens
+                    Continue to Export
                 </Button>
             ) : null}
-
-            {cncSelected ? null : !gcodeCheck.ok ? (
-                <p className="text-xs text-amber-400">{gcodeCheck.reason}</p>
-            ) : null}
-            {cncSelected ? null : status ? (
-                <p className="rounded-md bg-muted px-2 py-1.5 text-xs">{status}</p>
-            ) : null}
-
-            {cncSelected ? null : !showPrimaryOnly ? (
-                <p className="text-xs text-muted-foreground">
-                    {preset?.beltAngleDeg
-                        ? `Belt presets support client preview or server G-code from the finished viewer solid.`
-                        : "In-house CAM engine (Kiri:Moto-compatible seam)."}
-                </p>
-            ) : null}
-        </div>
-    );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-    return (
-        <div className="flex justify-between">
-            <span className="text-muted-foreground">{label}</span>
-            <span className="capitalize tabular-nums">{value}</span>
         </div>
     );
 }
