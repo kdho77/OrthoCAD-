@@ -6,42 +6,69 @@ import { PRINTER_PRESETS } from "@/lib/kiri";
 /** Apex TPU product line for 3D-printer G-code (not CNC). */
 export type ApexPrintMaterialId = "ApexLight" | "ApexCore" | "ApexBounce" | "ApexForge";
 
+/**
+ * VertexSlice `/v1/slice` material ids (locked — matches golden G-code jobs).
+ * @see ApexCore_95A_GOLDEN_2026-10-31 · ApexLight_90A_GOLDEN_2026-10-31
+ */
+export type VertexSliceMaterialId = "apex_core" | "apex_light" | "apex_forge" | "apex_bounce";
+
+/** Locked belt insole process profile — hardness variants are separate ids; material picks 95A vs 90A TPU. */
+export const APEX_V2_INSOLE_LOCKED_PROFILE_ID = "apex-v2-insole-95a";
+
 export interface ApexPrintMaterialOption {
     id: ApexPrintMaterialId;
     label: string;
-    /** Maps to an existing locked PrintRecipe / manufacturing profile id — no new slicer settings. */
-    lockedProfileId?: string;
+    /** Locked manufacturing / PrintRecipe profile id (no ad-hoc slicer settings). */
+    lockedProfileId: string;
+    vertexSliceMaterial: VertexSliceMaterialId;
+    /** Filament identifier shown in QC / result card (VertexSlice contract). */
+    shoreLabel: string;
+    goldenArtifact: string;
     enabled: boolean;
     disabledReason?: string;
 }
 
 /**
- * Enabled materials map to existing locked client preset ids (see shared print-recipe gyroid presets).
- * - ApexCore → apex-belt-v2 (solid belt gyroid, DEFAULT_PRODUCTION_PROFILE_ID)
- * - ApexLight → apex-belt-v2-shell (shell belt profile id)
+ * Enabled materials map to the locked VertexSlice golden pair:
+ * - ApexCore → profile `apex-v2-insole-95a` + material `apex_core` (Shore 95A)
+ * - ApexLight → profile `apex-v2-insole-95a` + material `apex_light` (Shore 90A)
  */
 export const APEX_PRINT_MATERIAL_OPTIONS: readonly ApexPrintMaterialOption[] = [
     {
         id: "ApexLight",
         label: "Apex Light",
-        lockedProfileId: "apex-belt-v2-shell",
+        lockedProfileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+        vertexSliceMaterial: "apex_light",
+        shoreLabel: "Shore 90A",
+        goldenArtifact: "ApexLight_90A_GOLDEN_2026-10-31",
         enabled: true,
     },
     {
         id: "ApexCore",
         label: "Apex Core",
-        lockedProfileId: "apex-belt-v2",
+        lockedProfileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+        vertexSliceMaterial: "apex_core",
+        shoreLabel: "Shore 95A",
+        goldenArtifact: "ApexCore_95A_GOLDEN_2026-10-31",
         enabled: true,
     },
     {
         id: "ApexBounce",
         label: "Apex Bounce",
+        lockedProfileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+        vertexSliceMaterial: "apex_bounce",
+        shoreLabel: "",
+        goldenArtifact: "",
         enabled: false,
         disabledReason: "Settings not set up yet",
     },
     {
         id: "ApexForge",
         label: "Apex Forge",
+        lockedProfileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+        vertexSliceMaterial: "apex_forge",
+        shoreLabel: "",
+        goldenArtifact: "",
         enabled: false,
         disabledReason: "Settings not set up yet",
     },
@@ -57,6 +84,10 @@ export function apexPrintMaterialById(id: ApexPrintMaterialId): ApexPrintMateria
 
 export function apexPrintMaterialLabel(id: ApexPrintMaterialId): string {
     return apexPrintMaterialById(id).label;
+}
+
+export function vertexSliceMaterialForApexMaterial(materialId: ApexPrintMaterialId): VertexSliceMaterialId {
+    return apexPrintMaterialById(materialId).vertexSliceMaterial;
 }
 
 export function isApexPrintMaterialExportReady(
@@ -82,6 +113,7 @@ export function printerPresetForApexMaterial(materialId: ApexPrintMaterialId): P
 }
 
 export function formatResultMaterialLine(materialId: ApexPrintMaterialId, volumeCm3?: string): string {
-    const name = apexPrintMaterialLabel(materialId);
+    const opt = apexPrintMaterialById(materialId);
+    const name = `${opt.label} (${opt.shoreLabel})`;
     return volumeCm3 ? `${name} · ${volumeCm3} cm³` : name;
 }

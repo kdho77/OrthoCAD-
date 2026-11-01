@@ -7,9 +7,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { ApexPrintMaterialPicker } from "@/features/exports/ApexPrintMaterialPicker";
 import {
     APEX_PRINT_MATERIAL_PICK_HINT,
+    APEX_V2_INSOLE_LOCKED_PROFILE_ID,
     apexPrintMaterialById,
     lockedProfileIdForApexMaterial,
     printerPresetForApexMaterial,
+    vertexSliceMaterialForApexMaterial,
 } from "@/features/exports/apex-print-material";
 import { buildExportFilename } from "@/features/exports/export-filename";
 import { usePrintExportSettingsStore } from "@/features/exports/print-export-settings-store";
@@ -22,11 +24,17 @@ import { useMillingProfileStore } from "@/stores/milling-profile-store";
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 
 describe("Apex print material", () => {
-    test("enabled materials map to existing locked profile ids", () => {
-        expect(lockedProfileIdForApexMaterial("ApexCore")).toBe("apex-belt-v2");
-        expect(lockedProfileIdForApexMaterial("ApexLight")).toBe("apex-belt-v2-shell");
-        expect(printerPresetForApexMaterial("ApexCore")?.id).toBe("apex-belt-v2");
-        expect(printerPresetForApexMaterial("ApexLight")?.id).toBe("apex-belt-v2-shell");
+    test("enabled materials map to VertexSlice golden profile + material ids", () => {
+        expect(lockedProfileIdForApexMaterial("ApexCore")).toBe(APEX_V2_INSOLE_LOCKED_PROFILE_ID);
+        expect(lockedProfileIdForApexMaterial("ApexLight")).toBe(APEX_V2_INSOLE_LOCKED_PROFILE_ID);
+        expect(vertexSliceMaterialForApexMaterial("ApexCore")).toBe("apex_core");
+        expect(vertexSliceMaterialForApexMaterial("ApexLight")).toBe("apex_light");
+        expect(apexPrintMaterialById("ApexCore").shoreLabel).toBe("Shore 95A");
+        expect(apexPrintMaterialById("ApexLight").shoreLabel).toBe("Shore 90A");
+        expect(apexPrintMaterialById("ApexCore").goldenArtifact).toBe("ApexCore_95A_GOLDEN_2026-10-31");
+        expect(apexPrintMaterialById("ApexLight").goldenArtifact).toBe("ApexLight_90A_GOLDEN_2026-10-31");
+        expect(printerPresetForApexMaterial("ApexCore")?.id).toBe("apex-v2-insole-95a");
+        expect(printerPresetForApexMaterial("ApexLight")?.id).toBe("apex-v2-insole-95a");
     });
 
     test("Bounce and Forge are disabled options", () => {

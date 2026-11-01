@@ -277,7 +277,11 @@ describe("PrintFooter Send to printer placeholder", () => {
         });
         useMillingProfileStore.setState({ machine: "printer" });
         useDesignStore.setState({ exportTarget: "left" });
-        useExportFileTypeStore.setState({ exportFileType: "gcode", lastByUserId: {} });
+        useExportFileTypeStore.setState({
+            exportFileType: "gcode",
+            lastByUserId: { c1: "gcode" },
+        });
+        usePrintExportSettingsStore.setState({ apexMaterialId: "ApexCore" });
 
         const renderPanel = async () => {
             await act(async () => {
