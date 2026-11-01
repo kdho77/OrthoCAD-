@@ -39,6 +39,7 @@ import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
 import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
+import { PressureMapOverlayPair } from "./PressureMapOverlay";
 import { PrintLoftSplash } from "./PrintLoftSplash";
 import { ScanMarkerPlacement } from "./ScanMarkerPlacement";
 import { ScanMeshes } from "./ScanMeshes";
@@ -184,6 +185,14 @@ export function Viewer3D() {
         setViewer({ view: name });
     };
 
+    useEffect(() => {
+        if (!import.meta.env.DEV) return;
+        if (!new URLSearchParams(window.location.search).has("pressureMapE2E")) return;
+        (
+            window as unknown as { __orthocadApplyCameraView?: (name: CameraView) => void }
+        ).__orthocadApplyCameraView = (name) => setView(name);
+    }, [setViewer]);
+
     return (
         <div className="relative h-full w-full bg-[hsl(222_28%_7%)]">
             <Canvas
@@ -210,6 +219,7 @@ export function Viewer3D() {
                 <directionalLight position={[-150, 100, -100]} intensity={0.4} />
 
                 <Suspense fallback={null}>
+                    <PressureMapOverlayPair showLeft={showLeftInsole} showRight={showRightInsole} />
                     {showLeftInsole ? (
                         <>
                             {!showBase ? (

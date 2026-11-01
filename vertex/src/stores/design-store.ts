@@ -68,6 +68,8 @@ import type {
     PlacedElement,
     PlacedSink,
     PrescriptionParseResult,
+    PressureMapAlignment,
+    PressureMapFoot,
     ProductionMethod,
     ScanPattern,
     ShapeFinishModifiers,
@@ -575,6 +577,11 @@ export interface DesignStore {
         mode: CorrectionPresetApplyMode,
         options?: { activeSide?: Side; label?: string },
     ) => void;
+
+    setPressureMap: (side: Side, foot: PressureMapFoot) => void;
+    removePressureMap: (side: Side) => void;
+    setPressureMapVisible: (side: Side, visible: boolean) => void;
+    patchPressureMapAlignment: (side: Side, patch: Partial<PressureMapAlignment>) => void;
 
     setViewer: (patch: Partial<ViewerSettings>) => void;
     setExportSide: (side: Side) => void;
@@ -1388,6 +1395,77 @@ export const useDesignStore = create<DesignStore>()(
                     const eff = buildEffectiveTrimlines(next);
                     useIssuesStore.getState().recompute(next, eff);
                     return { design: next };
+                });
+            },
+
+            setPressureMap: (side, foot) => {
+                get().checkpoint("pressure-map");
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        pressureMaps: { ...s.design.pressureMaps, [side]: foot },
+                    },
+                }));
+            },
+
+            removePressureMap: (side) => {
+                if (!get().design.pressureMaps?.[side]) return;
+                get().checkpoint("pressure-map-remove");
+                set((s) => {
+                    const pressureMaps = { ...s.design.pressureMaps };
+                    delete pressureMaps[side];
+                    return {
+                        design: {
+                            ...s.design,
+                            pressureMaps: Object.keys(pressureMaps).length ? pressureMaps : undefined,
+                        },
+                    };
+                });
+            },
+
+            setPressureMapVisible: (side, visible) => {
+                const cur = get().design.pressureMaps?.[side];
+                if (!cur || cur.visible === visible) return;
+                set((s) => {
+                    const foot = s.design.pressureMaps?.[side];
+                    if (!foot) return s;
+                    return {
+                        design: {
+                            ...s.design,
+                            pressureMaps: {
+                                ...s.design.pressureMaps,
+                                [side]: { ...foot, visible },
+                            },
+                        },
+                    };
+                });
+            },
+
+            patchPressureMapAlignment: (side, patch) => {
+                const cur = get().design.pressureMaps?.[side];
+                if (!cur) return;
+                get().checkpoint("pressure-map-align");
+                set((s) => {
+                    const foot = s.design.pressureMaps?.[side];
+                    if (!foot) return s;
+                    return {
+                        design: {
+                            ...s.design,
+                            pressureMaps: {
+                                ...s.design.pressureMaps,
+                                [side]: {
+                                    ...foot,
+                                    alignment: {
+                                        ...foot.alignment,
+                                        ...patch,
+                                        offsetMm: patch.offsetMm
+                                            ? { ...foot.alignment.offsetMm, ...patch.offsetMm }
+                                            : foot.alignment.offsetMm,
+                                    },
+                                },
+                            },
+                        },
+                    };
                 });
             },
 

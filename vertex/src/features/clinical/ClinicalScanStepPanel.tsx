@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { ScanImport } from "@/features/scans/ScanImport";
+import { PressureMapPanel } from "@/features/clinical/PressureMapPanel";
 import { evaluateScanStepGate } from "@/lib/clinical/clinical-step-gates";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useScanStore } from "@/stores/scan-store";
@@ -23,6 +24,7 @@ export function ClinicalScanStepPanel() {
                 choose which foot you are working on.
             </p>
             <ScanImport />
+            <PressureMapPanel />
             {!scanGate.ok ? (
                 <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-2 text-[11px] text-amber-100/90">
                     {scanGate.reason}

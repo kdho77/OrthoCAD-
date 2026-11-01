@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import JSZip from "jszip";
+import { designStateForManufacturingExport } from "@/lib/pressure-map/export-strip";
 import type { DesignState, Side } from "@/types";
 import { canonicalizeJson, sha256Utf8 } from "./hash";
 import { fmtMm, type TriangleMesh } from "./mesh";
@@ -167,7 +168,7 @@ export async function packHardness3mf(options: {
 }): Promise<Packed3mf> {
     const designJson = canonicalizeJson({
         side: options.side,
-        design: options.design,
+        design: designStateForManufacturingExport(options.design),
     });
     const designHash = sha256Utf8(designJson);
     const files: Array<[string, string]> = [

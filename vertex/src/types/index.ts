@@ -343,6 +343,46 @@ export interface DesignBase {
     mirroredFrom?: string;
 }
 
+/** Manual fine-tune for a 2D pressure map overlay (footprint mm / degrees). */
+export interface PressureMapAlignment {
+    offsetMm: { x: number; y: number };
+    scale: number;
+    rotationDeg: number;
+}
+
+/** Normalized bounds of pressure content inside an imported image. */
+export interface PressureMapContentBounds {
+    minU: number;
+    minV: number;
+    maxU: number;
+    maxV: number;
+}
+
+/** Content-based foot side and auto alignment from import analysis. */
+export interface PressureImageOrientation {
+    detectedImageSide: Side;
+    autoRotationDeg: number;
+    oppositeFootMirror: boolean;
+}
+
+/** Persisted per-foot plantar pressure image (viewer only). */
+export interface PressureMapFoot {
+    imageDataUrl: string;
+    mimeType: "image/png" | "image/jpeg";
+    fileName?: string;
+    visible: boolean;
+    imageWidth: number;
+    imageHeight: number;
+    contentBounds: PressureMapContentBounds;
+    alignment: PressureMapAlignment;
+    orientation?: PressureImageOrientation;
+}
+
+export interface DesignPressureMaps {
+    left?: PressureMapFoot;
+    right?: PressureMapFoot;
+}
+
 export interface DesignState {
     pattern: ScanPattern;
     /** When pattern is driven by a user custom prefab. */
@@ -417,6 +457,12 @@ export interface DesignState {
      * omitted from the design-state hash so frozen STLs stay byte-identical.
      */
     textMarking?: TextMarking;
+
+    /**
+     * Optional 2D plantar pressure map overlays (viewer only). Omitted from
+     * manufacturing exports so STL / 3MF / G-code bytes stay unchanged.
+     */
+    pressureMaps?: DesignPressureMaps;
 
     /**
      * Paired Left + Right dual-view workspace support.

@@ -126,6 +126,7 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             <mesh
+                name={`insole-${side}`}
                 geometry={displayGeo}
                 material={material}
                 position={[-layout.lengthMm / 2, offsetX, 0]}
