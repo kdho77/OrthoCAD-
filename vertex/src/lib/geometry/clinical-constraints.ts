@@ -10,6 +10,7 @@ import {
     sinkDepthWarnings,
     sinkOverlapWarnings,
     sinkRimWarnings,
+    sulcusClearanceWarnings,
 } from "@/lib/geometry/sink";
 import type { PlacedElement, SideCorrections, TextMarking, WedgeCorrection } from "@/types";
 
@@ -399,6 +400,7 @@ export function evaluateSinkConstraints(
         sinkDepthWarnings(ctx.sinks),
         sinkRimWarnings(ctx),
         sinkOverlapWarnings(ctx, elements, text),
+        sulcusClearanceWarnings(ctx),
     );
 }
 

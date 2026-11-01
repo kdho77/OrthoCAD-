@@ -19,8 +19,19 @@ export const SINK_REFERENCE_LENGTH_MM = INSOLE_LENGTH_MM;
 /** Men's 9 reference width. Used only when no mesh outline is available. */
 export const SINK_REFERENCE_WIDTH_MM = INSOLE_WIDTH_MM;
 /** Plan scale clamp. Same factor on length and width. Depth, taper, and the 3 mm wedge inset do not scale. */
-export const SINK_SCALE_MIN = 0.8;
+export const SINK_SCALE_MIN = 0.65;
 export const SINK_SCALE_MAX = 1.3;
+/**
+ * Plan scales at or above this keep the frame arithmetic from before the
+ * pediatric floor drop. The sulcus fallback does not run on that path.
+ */
+export const SULCUS_ADULT_SCALE = 0.8;
+/** Minimum distance from a sink's distal taper to the toe-sulcus crease. */
+export const SULCUS_CLEARANCE_MM = 3;
+/** Diameter may shrink to this fraction of its plan-scaled size, and no further. */
+export const SULCUS_DIAMETER_MIN = 0.75;
+/** Proximal shift cap when the taper and diameter are already at their floors. */
+export const SULCUS_SHIFT_MAX_MM = 3;
 /** Reverse kinetic wedge: medial edge of the oval, mm from the insole's medial edge. Not scaled. */
 export const RKW_MEDIAL_INSET_MM = 3;
 /**
@@ -291,6 +302,11 @@ export interface SinkSurfaceContext {
      * When omitted, {@link medialSign}: −1 on the left foot, +1 on the right.
      */
     medialYSign?: 1 | -1;
+    /**
+     * Toe-sulcus crease in outline fractions. Omitted uses the baked SAMPLE_Top
+     * polyline. Tests pass a crease that still fails after the fallback.
+     */
+    sulcusCrease?: ReadonlyArray<{ v: number; u: number }>;
 }
 
 export interface SinkWarning {
@@ -302,7 +318,8 @@ export interface SinkWarning {
         | "element-overlap"
         | "text-overlap"
         | "rim"
-        | "rim-hard-stop";
+        | "rim-hard-stop"
+        | "sulcus";
     message: string;
 }
 
@@ -634,6 +651,12 @@ export interface SinkOvalFrame {
     /** Hard-stop: the oval would break the rim floor, so the cut is not applied. */
     rimBlocked: boolean;
     rimWarning?: SinkWarning;
+    /**
+     * 0 untouched, 1 taper, 2 diameter, 3 proximal shift, 4 still under the
+     * sulcus margin so a warning is raised and the footprint is not clipped.
+     * Adult scales stay at 0.
+     */
+    fallbackStep: number;
 }
 
 /** Right-foot angle, mirrored on the left so the oval is the mirror image. */
@@ -749,6 +772,333 @@ function plateauDiameterScales(ctx: SinkSurfaceContext): Map<string, number> {
     return scales;
 }
 
+/** SAMPLE_Top toe-sulcus crease, (v, u) pairs. v is medial → lateral. Both feet share it. */
+const SAMPLE_TOP_SULCUS_VU: readonly number[] = [
+    0.0, 0.7684, 0.01, 0.7684, 0.02, 0.7516, 0.03, 0.7432, 0.04, 0.739, 0.05, 0.739, 0.06, 0.739, 0.07, 0.739,
+    0.08, 0.7474, 0.09, 0.7474, 0.1, 0.7474, 0.11, 0.7516, 0.12, 0.76, 0.13, 0.7558, 0.14, 0.7558, 0.15,
+    0.7726, 0.16, 0.7726, 0.17, 0.7768, 0.18, 0.781, 0.19, 0.781, 0.2, 0.7936, 0.21, 0.7894, 0.22, 0.7894,
+    0.23, 0.7936, 0.24, 0.8062, 0.25, 0.8062, 0.26, 0.8146, 0.27, 0.8146, 0.28, 0.8146, 0.29, 0.8146, 0.3,
+    0.8188, 0.31, 0.8188, 0.32, 0.8188, 0.33, 0.8272, 0.34, 0.823, 0.35, 0.823, 0.36, 0.8272, 0.37, 0.8272,
+    0.38, 0.8272, 0.39, 0.8314, 0.4, 0.8314, 0.41, 0.8314, 0.42, 0.8314, 0.43, 0.8314, 0.44, 0.8272, 0.45,
+    0.8314, 0.46, 0.8314, 0.47, 0.8272, 0.48, 0.8272, 0.49, 0.8272, 0.5, 0.8272, 0.51, 0.8272, 0.52, 0.8272,
+    0.53, 0.8272, 0.54, 0.8272, 0.55, 0.8272, 0.56, 0.8272, 0.57, 0.8272, 0.58, 0.8188, 0.59, 0.8188, 0.6,
+    0.8188, 0.61, 0.8188, 0.62, 0.8188, 0.63, 0.8188, 0.64, 0.8188, 0.65, 0.8104, 0.66, 0.8104, 0.67, 0.8062,
+    0.68, 0.8062, 0.69, 0.8062, 0.7, 0.8062, 0.71, 0.802, 0.72, 0.7978, 0.73, 0.7978, 0.74, 0.7936, 0.75,
+    0.7894, 0.76, 0.7852, 0.77, 0.7894, 0.78, 0.781, 0.79, 0.7768, 0.8, 0.76, 0.81, 0.7684, 0.82, 0.7474,
+    0.83, 0.7474, 0.84, 0.6718, 0.85, 0.655, 0.86, 0.6508, 0.87, 0.676, 0.88, 0.697, 0.89, 0.7054, 0.9,
+    0.7054, 0.91, 0.7054, 0.92, 0.7054, 0.93, 0.7096, 0.94, 0.7096, 0.95, 0.7096, 0.96, 0.7096, 0.97, 0.7054,
+    0.98, 0.6802, 0.99, 0.7348, 1.0, 0.7348,
+];
+
+export interface SulcusFallback {
+    marginMm: number;
+    fallbackStep: 0 | 1 | 2 | 3 | 4;
+    /** Multiplier on the plan-scaled diameter already chosen for this sink. */
+    diameterScale: number;
+    blendMm: number;
+    proximalShiftMm: number;
+    warning: boolean;
+}
+
+function sampleTopSulcusCrease(ctx: SinkSurfaceContext): ReadonlyArray<{ v: number; u: number }> {
+    if (ctx.sulcusCrease && ctx.sulcusCrease.length >= 2) return ctx.sulcusCrease;
+    const out: { v: number; u: number }[] = [];
+    for (let i = 0; i < SAMPLE_TOP_SULCUS_VU.length; i += 2) {
+        out.push({ v: SAMPLE_TOP_SULCUS_VU[i]!, u: SAMPLE_TOP_SULCUS_VU[i + 1]! });
+    }
+    return out;
+}
+
+function creaseMillimetres(
+    edges: PlanEdges,
+    crease: ReadonlyArray<{ v: number; u: number }>,
+): Array<{ x: number; y: number }> {
+    const pts: Array<{ x: number; y: number }> = [];
+    for (const p of crease) {
+        const medial = edges.medialAt(p.u);
+        const lateral = edges.lateralAt(p.u);
+        pts.push({
+            x: edges.originX + p.u * edges.lengthMm,
+            y: medial + p.v * (lateral - medial),
+        });
+    }
+    return pts;
+}
+
+function segmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1e-12) return Math.hypot(px - ax, py - ay);
+    let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+interface FootprintPose {
+    cx: number;
+    cy: number;
+    medial: number;
+    lateral: number;
+    tx: number;
+    ty: number;
+    nx: number;
+    ny: number;
+    theta: number;
+    aDist: number;
+    aProx: number;
+    bLat: number;
+    bMed: number;
+    dx: number;
+    dy: number;
+    halfLengthMm: number;
+    halfWidthMm: number;
+}
+
+function footprintPose(
+    sink: PlacedSink,
+    profile: SinkProfile,
+    ctx: SinkSurfaceContext,
+    edges: PlanEdges,
+    u: number,
+    vSpec: number,
+    halfLengthMm: number,
+    halfWidthMm: number,
+    blendMm: number,
+): FootprintPose {
+    const rotationDeg = signedSinkRotationDeg(profile.rotationDeg, ctx.side);
+    const theta = (rotationDeg * Math.PI) / 180;
+    const axes = frameAxes(theta);
+    const medial = edges.medialAt(u);
+    const lateral = edges.lateralAt(u);
+    const span = lateral - medial;
+    const cx = edges.originX + u * edges.lengthMm;
+    let cy = medial + vSpec * span;
+    if (sink.kind === "rkw" && !vWasExplicit(sink, ctx.sinkMarkers)) {
+        const minCy = medial + halfWidthMm;
+        const maxCy = lateral - halfWidthMm;
+        cy = medial + RKW_MEDIAL_INSET_MM + halfWidthMm;
+        if (maxCy >= minCy - 1e-6) cy = Math.min(maxCy, Math.max(minCy, cy));
+        else cy = (medial + lateral) / 2;
+    }
+    if (sink.kind === "mpj5" && span > 1e-6) {
+        const limit = lateral - halfWidthMm;
+        if (cy > limit) {
+            const minCy = medial + halfWidthMm;
+            cy = minCy <= limit ? limit : (medial + lateral) / 2;
+        }
+    }
+    if (sink.kind === "styloid" && span > 1e-6) {
+        const support = ovalLateralSupportMm(halfLengthMm, halfWidthMm, theta);
+        cy = placeStyloidRim(sink, cy, lateral, medial, support, blendMm).cy;
+    }
+    const prox = Math.min(profile.deepestProximalMm, halfLengthMm * 0.49);
+    const lat = Math.min(profile.deepestLateralMm, halfWidthMm * 0.49);
+    const aProx = Math.max(0.5, halfLengthMm - prox);
+    const aDist = halfLengthMm + prox;
+    const bLat = Math.max(0.5, halfWidthMm - lat);
+    const bMed = halfWidthMm + lat;
+    const dx = cx - axes.tx * prox + axes.nx * lat;
+    const dy = cy - axes.ty * prox + axes.ny * lat;
+    return {
+        cx,
+        cy,
+        medial,
+        lateral,
+        tx: axes.tx,
+        ty: axes.ty,
+        nx: axes.nx,
+        ny: axes.ny,
+        theta,
+        aDist,
+        aProx,
+        bLat,
+        bMed,
+        dx,
+        dy,
+        halfLengthMm,
+        halfWidthMm,
+    };
+}
+
+function distalMarginMm(
+    pose: FootprintPose,
+    blendMm: number,
+    crease: Array<{ x: number; y: number }>,
+): number {
+    for (const p of crease) {
+        const rx = p.x - pose.dx;
+        const ry = p.y - pose.dy;
+        const lx = rx * pose.tx + ry * pose.ty;
+        const ly = rx * pose.nx + ry * pose.ny;
+        if (lx < 0) continue;
+        const b = ly >= 0 ? pose.bLat : pose.bMed;
+        if (ellipseOffsetDistance(lx, ly, pose.aDist, b) <= blendMm + 1e-6) return 0;
+    }
+    let best = Number.POSITIVE_INFINITY;
+    for (let deg = -90; deg <= 90; deg += 3) {
+        const t = (deg * Math.PI) / 180;
+        const b = Math.sin(t) >= 0 ? pose.bLat : pose.bMed;
+        const c = Math.cos(t);
+        const s = Math.sin(t);
+        const ex = pose.aDist * c;
+        const ey = b * s;
+        const gnx = c / Math.max(pose.aDist, 1e-6);
+        const gny = s / Math.max(b, 1e-6);
+        const gl = Math.hypot(gnx, gny) || 1;
+        const ox = ex + (blendMm * gnx) / gl;
+        const oy = ey + (blendMm * gny) / gl;
+        const wx = pose.dx + pose.tx * ox + pose.nx * oy;
+        const wy = pose.dy + pose.ty * oy + pose.ny * oy;
+        for (let i = 0; i < crease.length - 1; i++) {
+            const a = crease[i]!;
+            const bpt = crease[i + 1]!;
+            const dist = segmentDistance(wx, wy, a.x, a.y, bpt.x, bpt.y);
+            if (dist < best) best = dist;
+        }
+    }
+    return best;
+}
+
+function taperReachesOutline(kind: SinkKind, pose: FootprintPose, blendMm: number): boolean {
+    if (kind !== "mpj5" && kind !== "mpj1" && kind !== "rkw") return true;
+    const outer = ovalLateralSupportMm(pose.halfLengthMm, pose.halfWidthMm, pose.theta) + blendMm;
+    const gap = kind === "mpj5" ? pose.lateral - pose.cy : pose.cy - pose.medial;
+    // Stay far enough inside the outline that the taper weight is still positive.
+    return outer >= gap + 0.6;
+}
+
+function sulcusClears(marginMm: number): boolean {
+    return marginMm + 1e-6 >= SULCUS_CLEARANCE_MM;
+}
+
+const sulcusCache = new WeakMap<SinkSurfaceContext, Map<string, SulcusFallback>>();
+
+function resolveSulcusFallback(
+    sink: PlacedSink,
+    ctx: SinkSurfaceContext,
+    edges: PlanEdges,
+    scale: number,
+    plateauScale: number,
+    u0: number,
+    v0: number,
+): SulcusFallback {
+    const profile = SINK_PROFILES[sink.kind];
+    const depthMm = clampSinkDepth(sink.kind, sink.depthMm).depthMm;
+    const blend0 = profile.blendMm;
+    const halfL0 = (profile.lengthMm / 2) * scale * plateauScale;
+    const halfW0 = (profile.widthMm / 2) * scale * plateauScale;
+    const crease = creaseMillimetres(edges, sampleTopSulcusCrease(ctx));
+    const at = (blendMm: number, diameterScale: number, proximalShiftMm: number) => {
+        const halfLengthMm = halfL0 * diameterScale;
+        const halfWidthMm = halfW0 * diameterScale;
+        const u = u0 - proximalShiftMm / edges.lengthMm;
+        const pose = footprintPose(sink, profile, ctx, edges, u, v0, halfLengthMm, halfWidthMm, blendMm);
+        return {
+            pose,
+            marginMm: distalMarginMm(pose, blendMm, crease),
+            reach: taperReachesOutline(sink.kind, pose, blendMm),
+        };
+    };
+    const pack = (
+        marginMm: number,
+        fallbackStep: 0 | 1 | 2 | 3 | 4,
+        diameterScale: number,
+        blendMm: number,
+        proximalShiftMm: number,
+        warning: boolean,
+    ): SulcusFallback => ({ marginMm, fallbackStep, diameterScale, blendMm, proximalShiftMm, warning });
+    const base = at(blend0, 1, 0);
+    if (!(scale < SULCUS_ADULT_SCALE)) {
+        return pack(base.marginMm, 0, 1, blend0, 0, !sulcusClears(base.marginMm));
+    }
+    if (sulcusClears(base.marginMm)) return pack(base.marginMm, 0, 1, blend0, 0, false);
+    const specFloor = Math.max(3, 1.1 * depthMm);
+    let blendMm = blend0;
+    if (blend0 > specFloor + 1e-9) {
+        const start = Math.round(blend0 * 100) - 1;
+        const end = Math.round(specFloor * 100);
+        for (let c = start; c >= end; c--) {
+            const next = Math.max(specFloor, c / 100);
+            const trial = at(next, 1, 0);
+            if (base.reach && !trial.reach) break;
+            blendMm = next;
+            if (sulcusClears(trial.marginMm)) return pack(trial.marginMm, 1, 1, next, 0, false);
+        }
+    }
+    let diameterScale = 1;
+    if (halfL0 > 1e-6) {
+        const minHalf = SULCUS_DIAMETER_MIN * halfL0;
+        const start = Math.round(halfL0 * 100) - 1;
+        const end = Math.round(minHalf * 100);
+        for (let c = start; c >= end; c--) {
+            const half = Math.max(minHalf, c / 100);
+            const next = half / halfL0;
+            const trial = at(blendMm, next, 0);
+            if (base.reach && !trial.reach) break;
+            diameterScale = next;
+            if (sulcusClears(trial.marginMm)) return pack(trial.marginMm, 2, next, blendMm, 0, false);
+        }
+    }
+    let proximalShiftMm = 0;
+    for (let c = 1; c <= Math.round(SULCUS_SHIFT_MAX_MM * 100); c++) {
+        const next = c / 100;
+        const trial = at(blendMm, diameterScale, next);
+        if (base.reach && !trial.reach) break;
+        proximalShiftMm = next;
+        if (sulcusClears(trial.marginMm)) return pack(trial.marginMm, 3, diameterScale, blendMm, next, false);
+    }
+    const final = at(blendMm, diameterScale, proximalShiftMm);
+    return pack(final.marginMm, 4, diameterScale, blendMm, proximalShiftMm, true);
+}
+
+function sulcusFallbackFor(
+    sink: PlacedSink,
+    ctx: SinkSurfaceContext,
+    edges: PlanEdges,
+    scale: number,
+    plateauScale: number,
+    u0: number,
+    v0: number,
+): SulcusFallback {
+    let map = sulcusCache.get(ctx);
+    if (!map) {
+        map = new Map();
+        sulcusCache.set(ctx, map);
+    }
+    const key = `${sink.id}|${sink.kind}|${sink.depthMm}|${scale}|${plateauScale}|${u0}|${v0}`;
+    const hit = map.get(key);
+    if (hit) return hit;
+    const resolved = resolveSulcusFallback(sink, ctx, edges, scale, plateauScale, u0, v0);
+    map.set(key, resolved);
+    return resolved;
+}
+
+/** Sulcus margin and the fallback actually applied. Adult scales never move the frame. */
+export function sulcusClearanceFor(sink: PlacedSink, ctx: SinkSurfaceContext): SulcusFallback {
+    const edges = planEdges(ctx);
+    const scale = sinkPlanScale(edges.lengthMm);
+    const uv = resolveUV(sink, ctx.sinkMarkers);
+    const plateauScale = plateauDiameterScales(ctx).get(sink.id) ?? 1;
+    return sulcusFallbackFor(sink, ctx, edges, scale, plateauScale, uv.u, uv.v);
+}
+
+export function sulcusClearanceWarnings(ctx: SinkSurfaceContext): SinkWarning[] {
+    if (!sinksActive(ctx.sinks)) return [];
+    const out: SinkWarning[] = [];
+    for (const sink of ctx.sinks!) {
+        const hit = sulcusClearanceFor(sink, ctx);
+        if (!hit.warning) continue;
+        out.push({
+            sinkId: sink.id,
+            code: "sulcus",
+            message: `${SINK_LABELS[sink.kind]} sulcus clearance ${hit.marginMm.toFixed(1)} mm is under ${SULCUS_CLEARANCE_MM.toFixed(1)} mm`,
+        });
+    }
+    return out;
+}
+
 function frameSink(sink: PlacedSink, ctx: SinkSurfaceContext, diameterScale = 1): SinkOvalFrame | null {
     const profile = SINK_PROFILES[sink.kind];
     if (!profile) return null;
@@ -756,15 +1106,26 @@ function frameSink(sink: PlacedSink, ctx: SinkSurfaceContext, diameterScale = 1)
     const uv = resolveUV(sink, ctx.sinkMarkers);
     const edges = planEdges(ctx);
     const scale = sinkPlanScale(edges.lengthMm);
-    const halfLengthMm = (profile.lengthMm / 2) * scale * diameterScale;
-    const halfWidthMm = (profile.widthMm / 2) * scale * diameterScale;
+    let halfLengthMm = (profile.lengthMm / 2) * scale * diameterScale;
+    let halfWidthMm = (profile.widthMm / 2) * scale * diameterScale;
+    let blendMm = profile.blendMm;
+    let u = uv.u;
+    let fallbackStep = 0;
+    if (scale < SULCUS_ADULT_SCALE) {
+        const adj = sulcusFallbackFor(sink, ctx, edges, scale, diameterScale, uv.u, uv.v);
+        halfLengthMm *= adj.diameterScale;
+        halfWidthMm *= adj.diameterScale;
+        blendMm = adj.blendMm;
+        u = uv.u - adj.proximalShiftMm / edges.lengthMm;
+        fallbackStep = adj.fallbackStep;
+    }
     const rotationDeg = signedSinkRotationDeg(profile.rotationDeg, ctx.side);
     const theta = (rotationDeg * Math.PI) / 180;
     const axes = frameAxes(theta);
-    const medial = edges.medialAt(uv.u);
-    const lateral = edges.lateralAt(uv.u);
+    const medial = edges.medialAt(u);
+    const lateral = edges.lateralAt(u);
     const span = lateral - medial;
-    const cx = edges.originX + uv.u * edges.lengthMm;
+    const cx = edges.originX + u * edges.lengthMm;
     let cy = medial + uv.v * span;
     let v = uv.v;
     if (sink.kind === "rkw" && !vWasExplicit(sink, ctx.sinkMarkers)) {
@@ -789,7 +1150,7 @@ function frameSink(sink: PlacedSink, ctx: SinkSurfaceContext, diameterScale = 1)
     let rimBlocked = false;
     let rimWarning: SinkWarning | undefined;
     if (sink.kind === "styloid" && span > 1e-6) {
-        const placed = placeStyloidRim(sink, cy, lateral, medial, support, profile.blendMm);
+        const placed = placeStyloidRim(sink, cy, lateral, medial, support, blendMm);
         cy = placed.cy;
         v = (cy - medial) / span;
         rimMarginMm = placed.marginMm;
@@ -808,7 +1169,7 @@ function frameSink(sink: PlacedSink, ctx: SinkSurfaceContext, diameterScale = 1)
     return {
         kind: sink.kind,
         sinkId: sink.id,
-        u: uv.u,
+        u,
         v,
         cx,
         cy,
@@ -818,7 +1179,7 @@ function frameSink(sink: PlacedSink, ctx: SinkSurfaceContext, diameterScale = 1)
         ny: axes.ny,
         halfLengthMm,
         halfWidthMm,
-        blendMm: profile.blendMm,
+        blendMm,
         depthMm: clamped.depthMm,
         aboveMax: clamped.aboveMax,
         forefoot: profile.forefoot,
@@ -836,6 +1197,7 @@ function frameSink(sink: PlacedSink, ctx: SinkSurfaceContext, diameterScale = 1)
         rimShiftMm,
         rimBlocked,
         rimWarning,
+        fallbackStep,
     };
 }
 
@@ -1090,7 +1452,9 @@ function taperOverlap(x: number, yLateral: number, ctx: SinkSurfaceContext): boo
         const cutW = eggWeight(p.frame, x, yLateral, p.frame.blendMm);
         if (p.frame.depthMm * cutW > 0.4) cuts++;
         if (!p.frame.forefoot) continue;
-        const mound = eggWeight(p.frame, x, yLateral, BLEND_LEN_MM) * (p.frame.depthMm + FOREFOOT_THICKNESS_CLEARANCE_MM);
+        const mound =
+            eggWeight(p.frame, x, yLateral, BLEND_LEN_MM) *
+            (p.frame.depthMm + FOREFOOT_THICKNESS_CLEARANCE_MM);
         if (mound > 0.4) mounds++;
         if (cuts >= 2 || mounds >= 2) return true;
     }

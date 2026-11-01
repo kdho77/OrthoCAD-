@@ -237,7 +237,14 @@ describe("sink scalar field", () => {
                                     Math.abs(added - cut.mm - FOREFOOT_THICKNESS_CLEARANCE_MM),
                                 ).toBeLessThan(0.05);
                             }
-                            expect(frame.blendMm).toBe(profile.blendMm);
+                            if (sinkPlanScale(ctx.lengthMm) >= 0.8) {
+                                expect(frame.blendMm).toBe(profile.blendMm);
+                                expect(frame.fallbackStep).toBe(0);
+                                expect(frame.u).toBeCloseTo(Number.isFinite(sink.u) ? sink.u! : profile.u, 5);
+                            } else {
+                                expect(frame.blendMm).toBeGreaterThanOrEqual(Math.max(3, 1.1 * depth) - 1e-6);
+                                expect(frame.blendMm).toBeLessThanOrEqual(profile.blendMm + 1e-6);
+                            }
                             expect(frame.depthMm).toBe(depth);
                         }
                     }
@@ -258,7 +265,9 @@ describe("sink scalar field", () => {
         expect(m16.halfLengthMm / m9.halfLengthMm).toBeCloseTo(sinkPlanScale(l16) / sinkPlanScale(l9), 5);
         expect(m1.halfWidthMm / m9.halfWidthMm).toBeCloseTo(m1.halfLengthMm / m9.halfLengthMm, 5);
         expect(m1.halfWidthMm).not.toBeCloseTo(m9.halfWidthMm, 2);
-        expect(sinkPlanScale(l1)).toBe(0.8);
+        expect(sinkPlanScale(l1)).toBeCloseTo(l1 / SINK_REFERENCE_LENGTH_MM, 6);
+        expect(sinkPlanScale(l1)).toBeGreaterThanOrEqual(0.65);
+        expect(sinkPlanScale(l1)).toBeLessThan(0.8);
         expect(m1.blendMm).toBe(m9.blendMm);
         expect(m16.depthMm).toBe(m9.depthMm);
         expect(m1.aProx).toBeGreaterThan(0.5);
