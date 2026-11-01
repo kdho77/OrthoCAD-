@@ -5,9 +5,26 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import type { ClientInput, ClientRecord } from "@/stores/client-store";
-import { findDuplicateClients, formatClientName, resolveClientIdentity } from "../../../shared/client-files";
+import {
+    CHART_SHOE_SIZE_MESSAGE,
+    CHART_SHOE_WIDTHS,
+    type ChartShoeWidth,
+    defaultShoeChart,
+    findDuplicateClients,
+    formatClientName,
+    resolveClientIdentity,
+    shoeChartFromInput,
+    validateClientChartInput,
+} from "../../../shared/client-files";
 
 const fieldClass = "min-h-11";
+
+const WIDTH_LABELS: Record<ChartShoeWidth, string> = {
+    narrow: "Narrow",
+    medium: "Medium",
+    wide: "Wide",
+    extra_wide: "Extra wide",
+};
 
 interface NewClientDialogProps {
     open: boolean;
@@ -31,6 +48,7 @@ const empty: ClientInput = {
     email: "",
     phone: "",
     notes: "",
+    ...defaultShoeChart(),
 };
 
 export function NewClientDialog({
@@ -45,12 +63,16 @@ export function NewClientDialog({
     onOpenExisting,
 }: NewClientDialogProps) {
     const [form, setForm] = useState<ClientInput>(initial ?? empty);
+    const [identityError, setIdentityError] = useState("");
+    const [chartError, setChartError] = useState("");
     const nameRef = useRef<HTMLInputElement>(null);
     const referenceRef = useRef<HTMLInputElement>(null);
     const formKey = `${open}:${initial?.displayName ?? ""}:${initial?.firstName ?? ""}:${initial?.lastName ?? ""}:${exceptId ?? ""}`;
     const [seenKey, setSeenKey] = useState(formKey);
     if (seenKey !== formKey) {
         setSeenKey(formKey);
+        setIdentityError("");
+        setChartError("");
         setForm(
             initial
                 ? { ...empty, ...initial, displayName: initial.displayName || formatClientName(initial) }
@@ -63,22 +85,55 @@ export function NewClientDialog({
         [clients, form, exceptId, storePhi],
     );
 
+    const chartValidation = mode === "create" ? validateClientChartInput(form) : null;
+    const identityOk = useMemo(() => {
+        try {
+            resolveClientIdentity(form);
+            return true;
+        } catch {
+            return false;
+        }
+    }, [form]);
+    const canSave = identityOk && !chartValidation;
+
     const submit = (intent: "file" | "design") => {
+        setIdentityError("");
+        setChartError("");
         try {
             resolveClientIdentity(form);
         } catch (error) {
-            const message = error instanceof Error ? error.message : "";
-            if (message.includes("reference")) referenceRef.current?.focus();
-            else nameRef.current?.focus();
+            const message = error instanceof Error ? error.message : "Display name or initials are required";
+            setIdentityError(message);
+            nameRef.current?.focus();
             return;
         }
-        const next = storePhi ? form : { ...form, dateOfBirth: "", mrn: "", email: "", phone: "", notes: "" };
+        if (mode === "create") {
+            const message = validateClientChartInput(form);
+            if (message) {
+                setChartError(message);
+                return;
+            }
+        }
+        const chart = shoeChartFromInput(form);
+        const next = storePhi
+            ? { ...form, ...chart }
+            : {
+                  ...form,
+                  ...chart,
+                  dateOfBirth: "",
+                  mrn: "",
+                  email: "",
+                  phone: "",
+                  notes: "",
+              };
         onSubmit(next, intent);
     };
 
+    const setChart = (patch: Partial<ClientInput>) => setForm((current) => ({ ...current, ...patch }));
+
     return (
         <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-            <DialogContent className="max-w-md">
+            <DialogContent className="max-w-lg">
                 <DialogHeader>
                     <DialogTitle>{mode === "edit" ? "Edit details" : "New client"}</DialogTitle>
                 </DialogHeader>
@@ -89,18 +144,31 @@ export function NewClientDialog({
                         placeholder="Display name or initials"
                         aria-label="Display name or initials"
                         value={form.displayName ?? ""}
-                        onChange={(e) =>
-                            setForm({ ...form, displayName: e.target.value, firstName: "", lastName: "" })
-                        }
+                        onChange={(e) => {
+                            setIdentityError("");
+                            setForm({ ...form, displayName: e.target.value, firstName: "", lastName: "" });
+                        }}
                     />
+                    {identityError ? (
+                        <p className="text-xs text-red-300" data-testid="client-name-error">
+                            {identityError}
+                        </p>
+                    ) : null}
                     <Input
                         ref={referenceRef}
                         className={fieldClass}
-                        placeholder="Client reference"
+                        placeholder="Client reference (optional)"
                         aria-label="Client reference"
                         value={form.reference ?? ""}
                         onChange={(e) => setForm({ ...form, reference: e.target.value })}
                     />
+                    {mode === "create" ? (
+                        <CreateClientShoeFields
+                            form={form}
+                            chartError={chartError || chartValidation}
+                            onChange={setChart}
+                        />
+                    ) : null}
                     {storePhi ? (
                         <>
                             <Input
@@ -164,16 +232,22 @@ export function NewClientDialog({
                             </Button>
                         ) : (
                             <>
-                                <Button type="button" className="min-h-11" onClick={() => submit("file")}>
-                                    Create client
+                                <Button
+                                    type="button"
+                                    className="min-h-11"
+                                    disabled={!canSave}
+                                    onClick={() => submit("file")}
+                                >
+                                    Save
                                 </Button>
                                 <Button
                                     type="button"
                                     className="min-h-11"
                                     data-testid="create-and-design"
+                                    disabled={!canSave}
                                     onClick={() => submit("design")}
                                 >
-                                    Create & start design
+                                    Save &amp; Launch Design
                                 </Button>
                             </>
                         )}
@@ -181,5 +255,134 @@ export function NewClientDialog({
                 </div>
             </DialogContent>
         </Dialog>
+    );
+}
+
+function CreateClientShoeFields({
+    form,
+    chartError,
+    onChange,
+}: {
+    form: ClientInput;
+    chartError: string | null;
+    onChange: (patch: Partial<ClientInput>) => void;
+}) {
+    const split = form.shoeSizesSplit === true;
+    const preview = validateClientChartInput(form) ? null : shoeChartFromInput(form);
+    return (
+        <div className="rounded-md border border-border p-3" data-testid="create-client-shoe">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm font-medium">Shoe size</span>
+                <label className="flex min-h-11 items-center gap-2 text-sm">
+                    <input
+                        type="checkbox"
+                        data-testid="shoe-size-split"
+                        checked={split}
+                        onChange={(event) => {
+                            const shoeSizesSplit = event.target.checked;
+                            onChange({
+                                shoeSizesSplit,
+                                shoeSizeLeftUs: form.shoeSizeUs,
+                                shoeSizeRightUs: form.shoeSizeUs,
+                            });
+                        }}
+                    />
+                    Separate left and right sizes
+                </label>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                {split ? (
+                    <>
+                        <DraftSizeField
+                            label="Left size"
+                            testId="shoe-size-left"
+                            value={form.shoeSizeLeftUs}
+                            onChange={(shoeSizeLeftUs) => onChange({ shoeSizeLeftUs })}
+                        />
+                        <DraftSizeField
+                            label="Right size"
+                            testId="shoe-size-right"
+                            value={form.shoeSizeRightUs}
+                            onChange={(shoeSizeRightUs) => onChange({ shoeSizeRightUs })}
+                        />
+                    </>
+                ) : (
+                    <DraftSizeField
+                        label="Shoe size (US men's)"
+                        testId="shoe-size"
+                        value={form.shoeSizeUs}
+                        onChange={(shoeSizeUs) =>
+                            onChange({ shoeSizeUs, shoeSizeLeftUs: shoeSizeUs, shoeSizeRightUs: shoeSizeUs })
+                        }
+                    />
+                )}
+                <label className="text-xs text-muted-foreground">
+                    Width
+                    <select
+                        data-testid="shoe-width"
+                        aria-label="Width"
+                        className="mt-1 block min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                        value={form.shoeWidth ?? "medium"}
+                        onChange={(event) => onChange({ shoeWidth: event.target.value as ChartShoeWidth })}
+                    >
+                        {CHART_SHOE_WIDTHS.map((width) => (
+                            <option key={width} value={width}>
+                                {WIDTH_LABELS[width]}
+                            </option>
+                        ))}
+                    </select>
+                </label>
+            </div>
+            {chartError ? (
+                <p className="mt-2 text-xs text-red-300" data-testid="shoe-size-error">
+                    {chartError}
+                </p>
+            ) : preview ? (
+                <p className="mt-2 text-xs text-muted-foreground">
+                    Generated size US men's{" "}
+                    {preview.shoeSizesSplit ? preview.shoeSizeLeftUs : preview.shoeSizeUs}. Width{" "}
+                    {WIDTH_LABELS[preview.shoeWidth]}.
+                </p>
+            ) : (
+                <p className="mt-2 text-xs text-muted-foreground">{CHART_SHOE_SIZE_MESSAGE}</p>
+            )}
+        </div>
+    );
+}
+
+function DraftSizeField({
+    label,
+    testId,
+    value,
+    onChange,
+}: {
+    label: string;
+    testId: string;
+    value: number | undefined;
+    onChange: (value: number | undefined) => void;
+}) {
+    return (
+        <label className="text-xs text-muted-foreground">
+            {label}
+            <input
+                data-testid={testId}
+                aria-label={label}
+                type="number"
+                min={1}
+                max={16}
+                step={0.5}
+                value={value ?? ""}
+                className="mt-1 block min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                onChange={(event) => {
+                    const raw = event.target.value.trim();
+                    if (!raw) {
+                        onChange(undefined);
+                        return;
+                    }
+                    const next = Number(raw);
+                    onChange(Number.isFinite(next) ? next : undefined);
+                }}
+            />
+        </label>
     );
 }

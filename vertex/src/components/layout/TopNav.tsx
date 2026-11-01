@@ -22,9 +22,9 @@ export function TopNav({ active, onNavigate, onOpenPrescription, leading }: TopN
     const { user, license } = useAuthStore();
 
     return (
-        <header className="flex min-h-12 items-center justify-between gap-2 overflow-hidden border-b border-border bg-panel px-3">
-            <div className="flex min-w-0 flex-1 items-center gap-4">
-                <div className="flex shrink-0 items-center pr-2">
+        <header className="flex min-h-12 flex-wrap items-center justify-between gap-2 border-b border-border bg-panel px-2 sm:px-3">
+            <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4">
+                <div className="flex shrink-0 items-center pr-1 sm:pr-2">
                     <img
                         src="/orthocad-logo.webp"
                         alt="Vertex Orthopedic"
@@ -32,14 +32,19 @@ export function TopNav({ active, onNavigate, onOpenPrescription, leading }: TopN
                     />
                 </div>
                 {leading ? <div className="min-w-0 flex-1">{leading}</div> : null}
-                <nav className={cn("flex items-center gap-1", leading && "hidden")}>
+                <nav
+                    className={cn(
+                        "flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto sm:gap-1",
+                        leading && "hidden",
+                    )}
+                >
                     {NAV.map((item) => (
                         <button
                             key={item}
                             type="button"
                             onClick={() => onNavigate(item)}
                             className={cn(
-                                "rounded px-3 py-1.5 text-sm transition-colors",
+                                "shrink-0 whitespace-nowrap rounded px-2 py-1.5 text-sm transition-colors sm:px-3",
                                 active === item
                                     ? "bg-secondary text-foreground"
                                     : "text-muted-foreground hover:text-foreground",
@@ -52,7 +57,7 @@ export function TopNav({ active, onNavigate, onOpenPrescription, leading }: TopN
                         <button
                             type="button"
                             onClick={() => navigate("/admin")}
-                            className="rounded px-3 py-1.5 text-sm text-sky-300 transition-colors hover:bg-secondary hover:text-sky-200"
+                            className="shrink-0 whitespace-nowrap rounded px-2 py-1.5 text-sm text-sky-300 transition-colors hover:bg-secondary hover:text-sky-200 sm:px-3"
                         >
                             Super admin
                         </button>

@@ -15,8 +15,8 @@ export function DirectoryHeader({ active }: { active: "Clients" | "Production" }
         );
 
     return (
-        <header className="flex h-14 items-center justify-between gap-3 border-b border-border bg-panel px-3">
-            <div className="flex min-w-0 items-center gap-3">
+        <header className="flex min-h-14 flex-wrap items-center justify-between gap-2 border-b border-border bg-panel px-2 sm:px-3">
+            <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
                 <button
                     type="button"
                     onClick={() => navigate("/clients")}
@@ -25,17 +25,23 @@ export function DirectoryHeader({ active }: { active: "Clients" | "Production" }
                 >
                     <img src="/orthocad-logo.webp" alt="OrthoCAD" className="h-7 w-auto object-contain" />
                 </button>
-                <nav className="flex items-center gap-1">
+                <nav className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto sm:gap-1">
                     <button
                         type="button"
-                        className={itemClass(active === "Clients")}
+                        className={cn(
+                            itemClass(active === "Clients"),
+                            "shrink-0 whitespace-nowrap px-2 sm:px-3",
+                        )}
                         onClick={() => navigate("/clients")}
                     >
                         Clients
                     </button>
                     <button
                         type="button"
-                        className={itemClass(active === "Production")}
+                        className={cn(
+                            itemClass(active === "Production"),
+                            "shrink-0 whitespace-nowrap px-2 sm:px-3",
+                        )}
                         onClick={() => navigate("/production/queue")}
                     >
                         Production
@@ -43,7 +49,7 @@ export function DirectoryHeader({ active }: { active: "Clients" | "Production" }
                     {showSuperAdminLink(user?.role) ? (
                         <button
                             type="button"
-                            className="min-h-11 rounded px-3 text-sm text-sky-300 hover:bg-secondary"
+                            className="min-h-11 shrink-0 whitespace-nowrap rounded px-2 text-sm text-sky-300 hover:bg-secondary sm:px-3"
                             onClick={() => navigate("/admin")}
                         >
                             Super admin

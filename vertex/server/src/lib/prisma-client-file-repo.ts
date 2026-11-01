@@ -28,6 +28,7 @@ type ClientRecord = {
     email: string | null;
     phone: string | null;
     notes: string | null;
+    orderedBy: string | null;
     shoeSizeUs: number;
     shoeSizesSplit: boolean;
     shoeSizeLeftUs: number;
@@ -60,6 +61,7 @@ function mapClient(row: ClientRecord): ClientRow {
         firstName: row.firstName,
         lastName: row.lastName,
         reference: row.reference,
+        orderedBy: row.orderedBy,
         dateOfBirth: day(row.dateOfBirth),
         mrn: row.mrn,
         email: row.email,
@@ -113,6 +115,7 @@ function clientData(row: ClientRow): Prisma.ClientCreateInput {
         firstName: row.firstName,
         lastName: row.lastName,
         reference: row.reference,
+        orderedBy: row.orderedBy,
         dateOfBirth: asDate(row.dateOfBirth),
         mrn: row.mrn,
         email: row.email,
@@ -150,6 +153,7 @@ export function prismaClientFileRepo(prisma: PrismaClient): ClientFileRepo {
             if (patch.firstName !== undefined) data.firstName = patch.firstName;
             if (patch.lastName !== undefined) data.lastName = patch.lastName;
             if (patch.reference !== undefined) data.reference = patch.reference;
+            if (patch.orderedBy !== undefined) data.orderedBy = patch.orderedBy;
             if (patch.dateOfBirth !== undefined) data.dateOfBirth = asDate(patch.dateOfBirth);
             if (patch.mrn !== undefined) data.mrn = patch.mrn;
             if (patch.email !== undefined) data.email = patch.email;
@@ -309,12 +313,13 @@ export async function actorFromPostgres(
 ): Promise<Actor> {
     const row = await prisma.user.findUnique({
         where: { id: user.id },
-        select: { tenantId: true, role: true },
+        select: { tenantId: true, role: true, tenant: { select: { name: true } } },
     });
     return {
         id: user.id,
         email: user.email,
         role: resolveDevRole(user.email, user.role || row?.role),
         tenantId: row?.tenantId ?? null,
+        tenantName: row?.tenant?.name ?? null,
     };
 }

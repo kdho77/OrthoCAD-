@@ -2,16 +2,18 @@
 
 import { ArrowLeft } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { formatClientName } from "../../../shared/client-files";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { navigate } from "@/features/admin/admin-nav";
 import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
+import { formatClientName } from "../../../shared/client-files";
 import { clientFilePath } from "./routes";
 
 export function useDesignRoute(clientId: string, designId: string) {
-    const record = useClientStore((s) => s.designs.find((design) => design.id === designId && design.clientId === clientId) ?? null);
+    const record = useClientStore(
+        (s) => s.designs.find((design) => design.id === designId && design.clientId === clientId) ?? null,
+    );
     const [ready, setReady] = useState(false);
 
     useEffect(() => {
@@ -20,7 +22,9 @@ export function useDesignRoute(clientId: string, designId: string) {
             const persist = useDesignStore.persist;
             if (!persist.hasHydrated()) await persist.rehydrate();
             if (cancelled) return;
-            const current = useClientStore.getState().designs.find((design) => design.id === designId && design.clientId === clientId);
+            const current = useClientStore
+                .getState()
+                .designs.find((design) => design.id === designId && design.clientId === clientId);
             useClientStore.getState().setActiveClient(clientId);
             useClientStore.getState().setActiveDesign(designId);
             if (current && current.kind !== "afo") useDesignStore.getState().loadDesign(current.state);
@@ -88,11 +92,21 @@ export function EditorChrome({ clientId, designId }: { clientId: string; designI
 
     return (
         <div className="flex min-w-0 flex-1 items-center gap-2">
-            <button type="button" aria-label="Back to client" className="inline-flex min-h-11 min-w-11 items-center justify-center" onClick={() => leave(back)}>
+            <button
+                type="button"
+                aria-label="Back to client"
+                className="inline-flex min-h-11 min-w-11 items-center justify-center"
+                onClick={() => leave(back)}
+            >
                 <ArrowLeft className="h-4 w-4" />
             </button>
             <div className="flex min-w-0 items-center gap-1 text-sm">
-                <button type="button" data-testid="breadcrumb-client" className="min-h-11 max-w-[40%] shrink truncate font-medium" onClick={() => leave(back)}>
+                <button
+                    type="button"
+                    data-testid="breadcrumb-client"
+                    className="min-h-11 max-w-[40%] shrink truncate font-medium"
+                    onClick={() => leave(back)}
+                >
                     {clientLabel}
                 </button>
                 <span className="text-muted-foreground">›</span>
@@ -107,14 +121,23 @@ export function EditorChrome({ clientId, designId }: { clientId: string; designI
                     }}
                 />
             </div>
-            <span data-testid="save-state" className="shrink-0 text-xs text-muted-foreground">{dirty ? "Saving…" : savedLabel}</span>
+            <span data-testid="save-state" className="shrink-0 text-xs text-muted-foreground">
+                {dirty ? "Saving…" : savedLabel}
+            </span>
             <Dialog open={pendingHref !== null} onOpenChange={(next) => !next && setPendingHref(null)}>
                 <DialogContent className="max-w-sm">
                     <DialogHeader>
                         <DialogTitle>Save changes?</DialogTitle>
                     </DialogHeader>
                     <div className="flex flex-wrap justify-end gap-2">
-                        <Button type="button" variant="secondary" className="min-h-11" onClick={() => setPendingHref(null)}>Stay</Button>
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            className="min-h-11"
+                            onClick={() => setPendingHref(null)}
+                        >
+                            Stay
+                        </Button>
                         <Button
                             type="button"
                             variant="outline"
@@ -131,7 +154,10 @@ export function EditorChrome({ clientId, designId }: { clientId: string; designI
                             type="button"
                             className="min-h-11"
                             onClick={() => {
-                                if (record) useClientStore.getState().saveDesign(record.id, useDesignStore.getState().design);
+                                if (record)
+                                    useClientStore
+                                        .getState()
+                                        .saveDesign(record.id, useDesignStore.getState().design);
                                 const href = pendingHref;
                                 setDirty(false);
                                 setPendingHref(null);
@@ -152,7 +178,9 @@ export function AfoPlaceholder() {
         <div className="flex flex-1 items-center justify-center p-6 text-center">
             <div>
                 <h1 className="text-lg font-semibold">AFO editor coming soon</h1>
-                <p className="mt-2 text-sm text-muted-foreground">This design is saved. The AFO editor is not on this build yet.</p>
+                <p className="mt-2 text-sm text-muted-foreground">
+                    This design is saved. The AFO editor is not on this build yet.
+                </p>
             </div>
         </div>
     );

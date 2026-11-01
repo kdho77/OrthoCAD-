@@ -1,12 +1,12 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { useEffect, useRef, useState } from "react";
-import { IDLE_LOGOUT_MS, IDLE_WARNING_MS, inactivityPhase } from "../../../shared/client-files";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { navigate } from "@/features/admin/admin-nav";
 import { getSupabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
+import { IDLE_LOGOUT_MS, IDLE_WARNING_MS, inactivityPhase } from "../../../shared/client-files";
 
 export function InactivityGuard() {
     const last = useRef(Date.now());

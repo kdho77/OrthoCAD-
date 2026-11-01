@@ -4,23 +4,23 @@
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { designFromScan } from "@/lib/clinical/chart-design";
+import { classifyArchHeightMm } from "@/lib/clinical/one-click-adapter";
 import {
+    archHeightFromDots,
     DOT_LABELS,
     DOT_ORDER,
     type DotKey,
     type FootDots,
-    archHeightFromDots,
     heelToToeAngleDeg,
 } from "@/lib/clinical/scan-dots";
-import { classifyArchHeightMm } from "@/lib/clinical/one-click-adapter";
 import { usMenFootLengthMm } from "@/lib/geometry/shoe-size";
 import type { ClientRecord } from "@/stores/client-store";
 import type { DesignState } from "@/types";
 import {
     CHART_SHOE_WIDTHS,
     type ChartShoeWidth,
-    type ShoeChart,
     chartGeneratedSize,
+    type ShoeChart,
     shoeChartFromInput,
 } from "../../../shared/client-files";
 import { SCAN_RETENTION_NOTICE, type ScanSide } from "../../../shared/client-scans";
@@ -228,7 +228,8 @@ export function ScanStart({
         return rows;
     }, [chart, leftDots, leftFile, rightDots, rightFile]);
 
-    const ready = (leftFile !== null || rightFile !== null) && feet.length === Number(!!leftFile) + Number(!!rightFile);
+    const ready =
+        (leftFile !== null || rightFile !== null) && feet.length === Number(!!leftFile) + Number(!!rightFile);
 
     const storeFile = async (side: ScanSide, file: File | undefined) => {
         if (!file) return;

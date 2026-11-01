@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { useEffect, useRef, useState } from "react";
 import { Check } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { commitNotes, editNotes, revertNotes } from "../../../shared/client-files";
 
 interface DesignNotesFieldProps {

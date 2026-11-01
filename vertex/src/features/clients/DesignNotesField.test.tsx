@@ -27,13 +27,17 @@ describe("design notes autosave", () => {
         const commits: string[] = [];
         act(() => {
             root = createRoot(container);
-            root.render(createElement(DesignNotesField, { value: "kept", onCommit: (notes) => commits.push(notes) }));
+            root.render(
+                createElement(DesignNotesField, { value: "kept", onCommit: (notes) => commits.push(notes) }),
+            );
         });
         const field = container.querySelector("textarea");
         if (!field) throw new Error("notes field missing");
 
         act(() => {
-            Simulate.change(field, { target: { value: "edited" } } as unknown as React.ChangeEvent<HTMLTextAreaElement>);
+            Simulate.change(field, {
+                target: { value: "edited" },
+            } as unknown as React.ChangeEvent<HTMLTextAreaElement>);
         });
         act(() => {
             Simulate.keyDown(field, { key: "Escape" });
@@ -42,7 +46,9 @@ describe("design notes autosave", () => {
         expect(commits).toEqual([]);
 
         act(() => {
-            Simulate.change(field, { target: { value: "Heel note" } } as unknown as React.ChangeEvent<HTMLTextAreaElement>);
+            Simulate.change(field, {
+                target: { value: "Heel note" },
+            } as unknown as React.ChangeEvent<HTMLTextAreaElement>);
         });
         act(() => {
             Simulate.blur(field);

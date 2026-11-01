@@ -8,6 +8,7 @@ import {
     createClientFile,
     createDesignFile,
     createMemoryClientFileRepo,
+    defaultShoeChart,
     getClientFile,
     getDesignFile,
     softDeleteDesignFile,
@@ -49,6 +50,7 @@ describe("tenant isolation by id", () => {
             firstName: "Hid",
             lastName: "Den",
             reference: "REF-9",
+            ...defaultShoeChart(),
         });
         const design = await createDesignFile(files, owner, {
             clientId: client.id,
@@ -122,6 +124,7 @@ describe("tenant isolation by id", () => {
             firstName: "Vis",
             lastName: "Ible",
             reference: "REF-1",
+            ...defaultShoeChart(),
         });
         const design = await createDesignFile(files, owner, {
             clientId: client.id,

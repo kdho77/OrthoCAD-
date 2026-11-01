@@ -21,9 +21,9 @@ import {
     formatRelative,
     isOrgAdmin,
     parseClientListQuery,
-    shoeChartFromInput,
     queryClientList,
     serializeClientListQuery,
+    shoeChartFromInput,
 } from "../../../shared/client-files";
 import {
     archiveClientRecord,
@@ -159,7 +159,9 @@ export function ClientListPage() {
                             value={text}
                             onChange={(event) => setText(event.target.value)}
                             placeholder={
-                                storePhi ? "Search name, reference, MRN, or DOB" : "Search name or reference"
+                                storePhi
+                                    ? "Search name, reference, ordered by, MRN, or DOB"
+                                    : "Search name, reference, or ordered by"
                             }
                             className="min-h-11 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm"
                         />
@@ -208,6 +210,7 @@ export function ClientListPage() {
                                             />
                                         ) : null}
                                         <SortHeader label="Reference" sortKey="reference" query={query} />
+                                        <SortHeader label="Ordered by" sortKey="orderedBy" query={query} />
                                         <SortHeader label="Designs" sortKey="designs" query={query} />
                                         <SortHeader label="Last modified" sortKey="modified" query={query} />
                                         <th className="w-12" />
@@ -308,16 +311,14 @@ function writeQuery(query: ClientListQuery) {
 }
 
 async function startDesign(clientId: string, kind: DesignKind) {
+    const client = useClientStore.getState().clients.find((row) => row.id === clientId);
+    if (!client) return;
+    const chart = shoeChartFromInput(client);
     if (kind === "insole") {
         navigate(`${clientFilePath(clientId)}?start=insole`);
         return;
     }
-    const client = useClientStore.getState().clients.find((row) => row.id === clientId);
-    const designId = await createDesignRecord(
-        clientId,
-        kind,
-        designStateForKind(kind, client ? shoeChartFromInput(client) : undefined),
-    );
+    const designId = await createDesignRecord(clientId, kind, designStateForKind(kind, chart));
     navigate(`/clients/${clientId}/designs/${designId}`);
 }
 
@@ -422,6 +423,7 @@ function ClientRowView({
             <td className="min-h-11 py-2 font-semibold">{formatClientName(client)}</td>
             {storePhi ? <td className="hidden py-2 xl:table-cell">{client.dateOfBirth ?? "—"}</td> : null}
             <td className="py-2">{client.reference ?? "—"}</td>
+            <td className="py-2">{client.orderedBy ?? "—"}</td>
             <td className="py-2">
                 <div>{summary.total}</div>
                 {summary.label ? <div className="text-xs text-muted-foreground">{summary.label}</div> : null}
@@ -473,7 +475,10 @@ function ClientCard({
                     onEdit={onEdit}
                 />
             </div>
-            <div className="text-xs text-muted-foreground">{client.reference ?? "No reference"}</div>
+            <div className="text-xs text-muted-foreground">
+                {client.reference?.trim() ? `Ref ${client.reference}` : "No reference"}
+                {client.orderedBy?.trim() ? ` · Ordered by ${client.orderedBy}` : ""}
+            </div>
             {storePhi ? (
                 <div className="text-xs text-muted-foreground">{client.dateOfBirth ?? "No DOB"}</div>
             ) : null}

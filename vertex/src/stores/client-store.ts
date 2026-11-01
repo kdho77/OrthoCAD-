@@ -64,9 +64,9 @@ interface ClientStore {
     replaceDirectory: (clients: ClientRecord[], designs: DesignRecord[]) => void;
 }
 
-function actorIds(): { ownerId: string; tenantId: string | null } {
+function actorIds(): { id: string; tenantId: string | null; tenantName?: string | null } {
     const user = useAuthStore.getState().user;
-    return { ownerId: user?.id ?? "local", tenantId: null };
+    return { id: user?.id ?? "local", tenantId: null, tenantName: user?.fullName ?? null };
 }
 
 function withoutPhi<
@@ -103,6 +103,7 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
                         firstName: patch.firstName ?? client.firstName,
                         lastName: patch.lastName ?? client.lastName,
                         reference: patch.reference ?? client.reference ?? "",
+                        orderedBy: patch.orderedBy !== undefined ? patch.orderedBy : client.orderedBy,
                         dateOfBirth: patch.dateOfBirth !== undefined ? patch.dateOfBirth : client.dateOfBirth,
                         mrn: patch.mrn !== undefined ? patch.mrn : client.mrn,
                         email: patch.email !== undefined ? patch.email : client.email,
@@ -160,7 +161,7 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
         const record: DesignRecord = {
             id,
             clientId,
-            ownerId: actorIds().ownerId,
+            ownerId: actorIds().id,
             name,
             kind,
             notes: "",

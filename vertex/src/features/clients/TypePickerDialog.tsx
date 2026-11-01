@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import type { DesignKind } from "../../../shared/client-files";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import type { DesignKind } from "../../../shared/client-files";
 
 interface TypePickerDialogProps {
     open: boolean;

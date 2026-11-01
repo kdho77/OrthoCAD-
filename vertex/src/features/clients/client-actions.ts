@@ -17,6 +17,7 @@ export async function createClientRecord(input: ClientInput): Promise<string> {
                 firstName: input.firstName,
                 lastName: input.lastName,
                 reference: input.reference || "",
+                orderedBy: input.orderedBy ?? null,
                 shoeSizeUs: input.shoeSizeUs,
                 shoeSizesSplit: input.shoeSizesSplit,
                 shoeSizeLeftUs: input.shoeSizeLeftUs,
@@ -51,6 +52,7 @@ export async function saveClientRecord(id: string, input: ClientInput): Promise<
             firstName: input.firstName,
             lastName: input.lastName,
             reference: input.reference || "",
+            orderedBy: input.orderedBy ?? null,
             shoeSizeUs: input.shoeSizeUs,
             shoeSizesSplit: input.shoeSizesSplit,
             shoeSizeLeftUs: input.shoeSizeLeftUs,
@@ -110,9 +112,8 @@ export function createLocalDesign(
     return useClientStore.getState().addDesign(clientId, name, state, kind);
 }
 
-export function designStateForKind(_kind: DesignKind, chart?: ShoeChart): DesignState {
-    if (chart) return templateDesignFromChart(chart);
-    return createDesignWithStockPlaceholder();
+export function designStateForKind(_kind: DesignKind, chart: ShoeChart): DesignState {
+    return templateDesignFromChart(chart);
 }
 
 export async function createDesignRecord(
