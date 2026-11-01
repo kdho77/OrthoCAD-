@@ -231,13 +231,11 @@ describe("sink scalar field", () => {
                                 expect(added).toBeLessThan(1e-6);
                             } else {
                                 expect(Math.abs(cut.mm - depth)).toBeLessThan(0.05);
-                                if (profile.forefoot || thicken) {
-                                    expect(
-                                        Math.abs(added - cut.mm - FOREFOOT_THICKNESS_CLEARANCE_MM),
-                                    ).toBeLessThan(0.05);
-                                } else {
-                                    expect(added).toBeLessThan(1e-6);
-                                }
+                                // The footprint taper carries depth + 0.5 even when the wide
+                                // styloid pad is off, so the cut cannot fall through the plain top.
+                                expect(
+                                    Math.abs(added - cut.mm - FOREFOOT_THICKNESS_CLEARANCE_MM),
+                                ).toBeLessThan(0.05);
                             }
                             expect(frame.blendMm).toBe(profile.blendMm);
                             expect(frame.depthMm).toBe(depth);
@@ -545,53 +543,61 @@ describe("sink scalar field", () => {
         expect(positions[1]).toBeCloseTo(rimY, 6);
     });
 
-    test("5th MPJ is zero at the lateral rim; styloid is not", () => {
+    test("5th MPJ taper reaches the lateral outline; styloid still cuts", () => {
         const fifth = placed("mpj5", 4);
         const ctx = surface(9, "left", [fifth]);
         const frame = sinkFrame(fifth, ctx)!;
         expect(sinkCutMm(frame.dx, frame.dy, ctx).mm).toBeGreaterThan(3.9);
-        expect(sinkCutMm(frame.cx, frame.cy, ctx, 0.95).mm).toBe(0);
-        expect(sinkCutMm(frame.cx, frame.cy, ctx, 0.97).mm).toBe(0);
+        const half = effectiveOutlineHalfWidth(frame.u, ctx.lengthMm, ctx.widthMm, null) * (ctx.widthMm / 2);
+        const lateralY = half;
+        const cut = sinkCutMm(frame.cx, lateralY, ctx).mm;
+        const thick = sinkThicknessMm(frame.cx, lateralY, ctx);
+        expect(cut, "5th MPJ taper reaches the lateral outline").toBeGreaterThan(0);
+        expect(cut).toBeLessThanOrEqual(thick + 1e-6);
         const sty = placed("styloid", 2);
         const styCtx = surface(9, "left", [sty]);
         const styFrame = sinkFrame(sty, styCtx)!;
         expect(sinkCutMm(styFrame.dx, styFrame.dy, styCtx, 0.95).mm).toBeGreaterThan(1.9);
     });
 
-    test("1st MPJ fades out before the medial rim and stays full at the deep point", () => {
+    test("1st MPJ cut stays within the added thickness out to the medial outline", () => {
         const first = placed("mpj1", 4);
         const ctx = surface(9, "left", [first]);
         const frame = sinkFrame(first, ctx)!;
         expect(sinkCutMm(frame.dx, frame.dy, ctx).mm).toBeGreaterThan(3.9);
-        expect(sinkCutMm(frame.cx, frame.cy, ctx, 0).mm).toBe(0);
         const half = effectiveOutlineHalfWidth(frame.u, ctx.lengthMm, ctx.widthMm, null) * (ctx.widthMm / 2);
         const span = half * 2;
-        let fadeStart = 0.04;
-        const wide = 12 / span;
-        const cap = Math.max(fadeStart, frame.v * 0.8);
-        fadeStart = Math.min(Math.max(fadeStart, wide), cap);
         const yAt = (v: number) => -half + v * span;
-        for (const v of [0, 0.02, 0.04, fadeStart]) {
+        for (const v of [0, 0.02, 0.04]) {
             const cut = sinkCutMm(frame.cx, yAt(v), ctx).mm;
             const thick = sinkThicknessMm(frame.cx, yAt(v), ctx);
+            expect(cut, `cut > 0 at the medial taper v=${v}`).toBeGreaterThan(0);
             expect(cut, `cut <= added thickness at v=${v}`).toBeLessThanOrEqual(thick + 1e-6);
+            expect(thick - cut, `floor is plain + clearance at v=${v}`).toBeGreaterThanOrEqual(0);
         }
-        expect(sinkCutMm(frame.cx, frame.cy, ctx).mm).toBeGreaterThan(3.9);
+        const deepCut = sinkCutMm(frame.dx, frame.dy, ctx).mm;
+        const deepThick = sinkThicknessMm(frame.dx, frame.dy, ctx);
+        expect(deepCut).toBeGreaterThan(3.9);
+        expect(deepThick - deepCut).toBeGreaterThanOrEqual(0.5 - 1e-6);
     });
 
-    test("reverse kinetic wedge cut still fades out to the medial outline", () => {
+    test("reverse kinetic wedge and 1st MPJ both taper through the medial outline", () => {
         const wedge = placed("rkw", 4);
         const ctx = surface(9, "left", [wedge]);
         const frame = sinkFrame(wedge, ctx)!;
         const half = effectiveOutlineHalfWidth(frame.u, ctx.lengthMm, ctx.widthMm, null) * (ctx.widthMm / 2);
-        const oneMm = sinkCutMm(frame.cx, -half + 1, ctx).mm;
-        expect(oneMm).toBeGreaterThan(0);
+        const wedgeCut = sinkCutMm(frame.cx, -half + 1, ctx).mm;
+        const wedgeThick = sinkThicknessMm(frame.cx, -half + 1, ctx);
+        expect(wedgeCut).toBeGreaterThan(0);
+        expect(wedgeCut).toBeLessThanOrEqual(wedgeThick + 1e-6);
         const first = placed("mpj1", 4);
         const mpjCtx = surface(9, "left", [first]);
         const mpj = sinkFrame(first, mpjCtx)!;
         const mpjHalf =
             effectiveOutlineHalfWidth(mpj.u, mpjCtx.lengthMm, mpjCtx.widthMm, null) * (mpjCtx.widthMm / 2);
-        expect(sinkCutMm(mpj.cx, -mpjHalf + 1, mpjCtx).mm).toBe(0);
+        const mpjCut = sinkCutMm(mpj.cx, -mpjHalf + 1, mpjCtx).mm;
+        expect(mpjCut).toBeGreaterThan(0);
+        expect(mpjCut).toBeLessThanOrEqual(sinkThicknessMm(mpj.cx, -mpjHalf + 1, mpjCtx) + 1e-6);
     });
 
     test("heightAt adds T and leaves the wedge term unchanged", () => {
