@@ -242,6 +242,7 @@ export function ExportPanel() {
                 busy={busy}
                 showTargetPulse={pulseTarget}
                 primaryDisabled={fileType ? !licenseOk : false}
+                sendToPrinterPlaceholder={fileType === "gcode" && !cncLocked}
             />
             {!fileType && pulseType ? (
                 <p className="text-[10px] text-amber-400">Pick a file type</p>

@@ -10,6 +10,8 @@ import { useDesignStore } from "@/stores/design-store";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
 import { SIDE_LABELS, type Side } from "@/types";
 
+export const SEND_TO_PRINTER_TOOLTIP = "Send directly to your Apex V2 printer — coming soon.";
+
 export interface PrintFooterProps {
     machineSummary: string;
     cncLocked?: boolean;
@@ -25,7 +27,8 @@ export interface PrintFooterProps {
     /** Hide the one-line machine summary (Export footer). */
     hideSummary?: boolean;
     /** Hide the output hint under the primary button. */
-    hideOutputHint?: boolean;
+    /** Export footer: disabled Apex direct-send placeholder (G-code + 3D printer only). */
+    sendToPrinterPlaceholder?: boolean;
 }
 
 export function PrintFooter({
@@ -42,6 +45,7 @@ export function PrintFooter({
     focusPrimary,
     hideSummary,
     hideOutputHint,
+    sendToPrinterPlaceholder,
 }: PrintFooterProps) {
     const exportTarget = useDesignStore((s) => s.exportTarget);
     const setExportTarget = useDesignStore((s) => s.setExportTarget);
@@ -110,15 +114,43 @@ export function PrintFooter({
                     <p className="truncate text-[11px] text-muted-foreground">{machineSummary}</p>
                 )}
                 <div className="flex flex-col gap-1.5">
-                    <Button
-                        ref={primaryRef}
-                        className="h-9 w-full"
-                        disabled={primaryDisabled || busy}
-                        onClick={onPrimary}
-                        data-testid="print-export-primary"
+                    <div
+                        className={cn(
+                            "flex gap-1.5",
+                            sendToPrinterPlaceholder ? "flex-row items-stretch" : "flex-col",
+                        )}
                     >
-                        {primaryLabel}
-                    </Button>
+                        <Button
+                            ref={primaryRef}
+                            className={cn("h-9", sendToPrinterPlaceholder ? "min-w-0 flex-1" : "w-full")}
+                            disabled={primaryDisabled || busy}
+                            onClick={onPrimary}
+                            data-testid="print-export-primary"
+                        >
+                            {primaryLabel}
+                        </Button>
+                        {sendToPrinterPlaceholder ? (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                className="h-9 shrink-0 gap-1.5 px-2.5 opacity-60"
+                                disabled
+                                aria-disabled="true"
+                                title={SEND_TO_PRINTER_TOOLTIP}
+                                data-testid="export-send-to-printer"
+                                onClick={(event) => event.preventDefault()}
+                            >
+                                <Printer className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                                <span className="whitespace-nowrap">Send to printer</span>
+                                <span
+                                    className="rounded bg-muted px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground"
+                                    data-testid="export-send-to-printer-tag"
+                                >
+                                    Coming soon
+                                </span>
+                            </Button>
+                        ) : null}
+                    </div>
                     {secondaryLabel && onSecondary ? (
                         <Button
                             variant="secondary"

@@ -14,7 +14,7 @@ import {
 } from "@/features/exports/export-pair";
 import { exportCncGcode, exportPrintGcode } from "@/features/exports/export-service";
 import { useExportSessionStore } from "@/features/exports/export-session-store";
-import { PrintFooter } from "@/features/exports/PrintFooter";
+import { PrintFooter, SEND_TO_PRINTER_TOOLTIP } from "@/features/exports/PrintFooter";
 import { TOKEN_COST } from "@/features/licensing/license";
 import { presetsForMethod } from "@/lib/kiri";
 import { useAuthStore } from "@/stores/auth-store";
@@ -184,6 +184,71 @@ describe("print + export redesign", () => {
             expect(container.querySelector('[data-testid="export-tile-stl"]')).toBeNull();
             expect(container.textContent).not.toMatch(/Developer/i);
         });
+    });
+});
+
+describe("PrintFooter Send to printer placeholder", () => {
+    let container: HTMLDivElement;
+    let root: Root | null = null;
+
+    afterEach(() => {
+        root?.unmount();
+        root = null;
+        container?.remove();
+    });
+
+    test("shows for Export G-code on 3D printer only, disabled with tooltip, no-op on click", async () => {
+        container = document.createElement("div");
+        document.body.appendChild(container);
+        useAuthStore.setState({
+            user: {
+                id: "c1",
+                email: "clinician@example.com",
+                fullName: "Clinician",
+                role: "clinician",
+                tokenBalance: 5,
+            },
+            license: { status: "active" } as never,
+            loading: false,
+        });
+        useMillingProfileStore.setState({ machine: "printer" });
+        useDesignStore.setState({ exportTarget: "left" });
+        useExportFileTypeStore.setState({ exportFileType: "gcode", lastByUserId: {} });
+
+        const renderPanel = async () => {
+            await act(async () => {
+                root = createRoot(container);
+                root.render(createElement(ExportPanel));
+            });
+        };
+
+        await renderPanel();
+        const sendBtn = container.querySelector('[data-testid="export-send-to-printer"]');
+        expect(sendBtn).not.toBeNull();
+        expect(sendBtn?.getAttribute("aria-disabled")).toBe("true");
+        expect(sendBtn?.getAttribute("title")).toBe(SEND_TO_PRINTER_TOOLTIP);
+        expect(container.querySelector('[data-testid="export-send-to-printer-tag"]')?.textContent).toMatch(
+            /Coming soon/i,
+        );
+
+        const tokensBefore = useAuthStore.getState().user?.tokenBalance;
+        await act(async () => {
+            sendBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        expect(useAuthStore.getState().user?.tokenBalance).toBe(tokensBefore);
+
+        useExportFileTypeStore.setState({ exportFileType: "stl" });
+        await act(async () => {
+            root?.render(createElement(ExportPanel));
+        });
+        expect(container.querySelector('[data-testid="export-send-to-printer"]')).toBeNull();
+
+        useExportFileTypeStore.setState({ exportFileType: "gcode" });
+        useMillingProfileStore.setState({ machine: "cnc" });
+        await act(async () => {
+            root?.render(createElement(ExportPanel));
+        });
+        expect(container.querySelector('[data-testid="export-send-to-printer"]')).toBeNull();
     });
 });
 
