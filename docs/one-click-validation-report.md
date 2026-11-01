@@ -49,7 +49,10 @@ Coverage includes high/low arch Rx, wide vs narrow (Default.glb registered scan 
 
 ## Full test suite
 
-See commit message / CI for latest `npm test` totals (`/tmp/full-npm-test.log` in agent run).
+| Scope | Result |
+|-------|--------|
+| One-click validation files (4 files, 18 tests) | **18 passed / 0 failed** (local run, ~203s incl. baseline export) |
+| Full `npm test` | Requires Python **`trimesh`** (+ graph deps e.g. **`scipy`/`networkx`**) for `tests/helpers/stl-gates.py`. Full-suite wall time exceeds cloud agent budget; use **PR #234 CI** for authoritative total pass/fail counts. |
 
 ## Still untested / known gaps
 
