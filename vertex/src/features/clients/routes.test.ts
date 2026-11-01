@@ -17,5 +17,10 @@ describe("clinical routes", () => {
         });
         expect(parseClinicalPath("/clients/Doe-Jane")).toEqual({ kind: "list" });
         expect(parseClinicalPath("/clients/Doe-Jane/designs/Insole")).toEqual({ kind: "list" });
+        expect(parseClinicalPath("/production")).toEqual({ kind: "production", tab: "queue" });
+        expect(parseClinicalPath("/production/queue")).toEqual({ kind: "production", tab: "queue" });
+        expect(parseClinicalPath("/production/printers")).toEqual({ kind: "production", tab: "printers" });
+        expect(parseClinicalPath("/production/history")).toEqual({ kind: "production", tab: "history" });
+        expect(parseClinicalPath("/orders")).toEqual({ kind: "production", tab: "queue" });
     });
 });

@@ -33,6 +33,7 @@ if (!local && !previewOk) {
 const files = [
     "../prisma/migrations/20261101120000_client_list_workflow/migration.sql",
     "../prisma/migrations/20261101143000_phi_minimal_client/migration.sql",
+    "../prisma/migrations/20261101170000_production_jobs/migration.sql",
 ];
 for (const relative of files) {
     const file = fileURLToPath(new URL(relative, import.meta.url));

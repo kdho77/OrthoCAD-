@@ -16,10 +16,10 @@ import { ClientFilePage } from "@/features/clients/ClientFilePage";
 import { ClientListPage } from "@/features/clients/ClientListPage";
 import { AfoPlaceholder, EditorChrome, useDesignRoute } from "@/features/clients/EditorChrome";
 import { InactivityGuard } from "@/features/clients/InactivityGuard";
-import { DirectoryHeader } from "@/features/clients/DirectoryHeader";
 import { parseClinicalPath } from "@/features/clients/routes";
 import { exportDesign } from "@/features/exports/export-service";
 import { MillTableView } from "@/features/mill/MillTableView";
+import { ProductionPage } from "@/features/production/ProductionPage";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useViewportMode } from "@/hooks/useViewportMode";
@@ -31,8 +31,8 @@ import { isApiConfigured } from "@/lib/trpc";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
-import { clinicalDocumentTitle } from "../shared/client-files";
 import { isAdminPath } from "../shared/admin/admin-domain";
+import { clinicalDocumentTitle } from "../shared/client-files";
 
 export default function App() {
     useAuthBootstrap();
@@ -71,27 +71,18 @@ export default function App() {
 function ClinicalRoutes({ pathname }: { pathname: string }) {
     const route = parseClinicalPath(pathname);
 
+    const productionPath = route.kind === "production" ? `/production/${route.tab}` : null;
+
     useLayoutEffect(() => {
         if (route.kind === "home") navigate(`/clients${window.location.search}`);
-    }, [route.kind]);
+        else if (productionPath && pathname !== productionPath) navigate(productionPath);
+    }, [route.kind, productionPath, pathname]);
 
     if (route.kind === "home") return null;
     if (route.kind === "list") return <ClientListPage />;
     if (route.kind === "file") return <ClientFilePage clientId={route.clientId} />;
-    if (route.kind === "orders") return <OrdersPage />;
+    if (route.kind === "production") return <ProductionPage tab={route.tab} />;
     return <CadApp clientId={route.clientId} designId={route.designId} />;
-}
-
-function OrdersPage() {
-    return (
-        <div className="flex h-full flex-col">
-            <DirectoryHeader active="Orders" />
-            <div className="flex flex-1 flex-col items-center justify-center gap-1 text-sm text-muted-foreground">
-                <span className="text-foreground">Orders</span>
-                <span className="text-xs">Production queue &amp; fulfilment tracking.</span>
-            </div>
-        </div>
-    );
 }
 
 function CadApp({ clientId, designId }: { clientId: string; designId: string }) {
@@ -157,7 +148,7 @@ function CadApp({ clientId, designId }: { clientId: string; designId: string }) 
 
     const go = (item: NavItem) => {
         if (item === "Clients") navigate("/clients");
-        else navigate("/orders");
+        else navigate("/production/queue");
     };
 
     return (
@@ -172,7 +163,9 @@ function CadApp({ clientId, designId }: { clientId: string; designId: string }) 
             />
             {afo || !record ? (
                 <div className="flex min-h-0 flex-1 flex-col">
-                    {record ? <AfoPlaceholder /> : (
+                    {record ? (
+                        <AfoPlaceholder />
+                    ) : (
                         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
                             This design is not in the current session.
                         </div>

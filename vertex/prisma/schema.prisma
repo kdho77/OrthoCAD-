@@ -127,11 +127,42 @@ enum AuditAction {
     design_restored
     design_deleted
     design_duplicated
+    job_queued
+    job_assigned
+    job_held
+    job_cancelled
+    job_retried
+    job_completed
+    job_requeued
 }
 
 enum DesignKind {
     insole
     afo
+}
+
+enum ShopProcess {
+    print
+    mill
+}
+
+enum ShopJobStatus {
+    waiting
+    assigned
+    running
+    paused
+    held
+    failed
+    done
+    cancelled
+}
+
+enum PrinterState {
+    idle
+    running
+    paused
+    error
+    offline
 }
 
 // --- Identity & Access ------------------------------------------------------
@@ -162,6 +193,8 @@ model User {
     customPrefabs   CustomPrefab[]
     tenantLedger    TenantTokenLedger[] @relation("LedgerActor")
     adminAudits     AdminAuditLog[]     @relation("AuditActor")
+    shopJobs        ShopJob[]
+    shopPrinters    ShopPrinter[]
 
     @@index([role])
     @@index([tenantId])
@@ -223,10 +256,12 @@ model Tenant {
     createdAt      DateTime     @default(now())
     updatedAt      DateTime     @updatedAt
 
-    members User[]
-    ledger  TenantTokenLedger[]
-    audits  AdminAuditLog[]
-    clients Client[]
+    members      User[]
+    ledger       TenantTokenLedger[]
+    audits       AdminAuditLog[]
+    clients      Client[]
+    shopPrinters ShopPrinter[]
+    shopJobs     ShopJob[]
 
     @@index([status])
     @@index([plan])
@@ -314,6 +349,7 @@ model Client {
     tenantId String? @db.Uuid
     tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
     designs  Design[]
+    shopJobs ShopJob[]
 
     @@index([ownerId])
     @@index([tenantId])
@@ -347,6 +383,7 @@ model Design {
     productions   Production[]
     exports       Export[]
     prescriptions Prescription[]
+    shopJobs      ShopJob[]
 
     @@index([clientId])
     @@index([ownerId])
@@ -431,6 +468,76 @@ model Production {
 
     @@index([designId])
     @@map("productions")
+}
+
+// Shop-floor queue. Separate from `productions`, which stores slice settings.
+// G-code bytes live in JobGcode. The design row is not deleted when G-code expires.
+model ShopPrinter {
+    id        String       @id @default(uuid()) @db.Uuid
+    name      String
+    state     PrinterState @default(idle)
+    ownerId   String       @db.Uuid
+    tenantId  String?      @db.Uuid
+    createdAt DateTime     @default(now())
+    updatedAt DateTime     @updatedAt
+
+    owner  User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+    tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+    @@index([tenantId])
+    @@map("shop_printers")
+}
+
+model ShopJob {
+    id            String        @id @default(uuid()) @db.Uuid
+    designId      String        @db.Uuid
+    designName    String
+    designKind    DesignKind    @default(insole)
+    clientId      String        @db.Uuid
+    clientLabel   String
+    ownerId       String        @db.Uuid
+    tenantId      String?       @db.Uuid
+    process       ShopProcess
+    status        ShopJobStatus @default(waiting)
+    orderNumber   String?
+    orderUrl      String?
+    orderOpen     Boolean       @default(false)
+    printerId     String?       @db.Uuid
+    printerName   String?
+    dueAt         DateTime?
+    startedAt     DateTime?
+    finishedAt    DateTime?
+    durationMs    Int?
+    operatorName  String?
+    failureReason String?
+    progress      Int?
+    gcodeSha256   String?
+    gcodeStoredAt DateTime?
+    createdAt     DateTime      @default(now())
+    updatedAt     DateTime      @updatedAt
+
+    design Design    @relation(fields: [designId], references: [id], onDelete: Cascade)
+    client Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+    owner  User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+    tenant Tenant?   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+    gcode  JobGcode?
+
+    @@index([tenantId])
+    @@index([status])
+    @@index([dueAt])
+    @@index([designId])
+    @@map("shop_jobs")
+}
+
+model JobGcode {
+    jobId    String   @id @db.Uuid
+    sha256   String
+    body     String   @db.Text
+    storedAt DateTime
+
+    job ShopJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+    @@map("job_gcode")
 }
 
 // A token-consuming export of an STL or G-code artifact.

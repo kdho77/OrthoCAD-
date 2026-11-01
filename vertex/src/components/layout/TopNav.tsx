@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
 import { Coins, Shield, ShieldCheck, Sparkles } from "lucide-react";
+import type { ReactNode } from "react";
 import { AccountMenu } from "@/components/layout/AccountMenu";
 import { Button } from "@/components/ui/button";
 import { navigate, showSuperAdminLink } from "@/features/admin/admin-nav";
@@ -7,7 +7,7 @@ import { SaveControl } from "@/features/designs/SaveControl";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 
-const NAV = ["Clients", "Orders"] as const;
+const NAV = ["Clients", "Production"] as const;
 type NavItem = (typeof NAV)[number];
 
 interface TopNavProps {
@@ -64,7 +64,12 @@ export function TopNav({ active, onNavigate, onOpenPrescription, leading }: TopN
                 <div className="hidden md:block">
                     <SaveControl />
                 </div>
-                <Button size="sm" variant="outline" className="hidden md:inline-flex" onClick={onOpenPrescription}>
+                <Button
+                    size="sm"
+                    variant="outline"
+                    className="hidden md:inline-flex"
+                    onClick={onOpenPrescription}
+                >
                     <Sparkles className="h-3.5 w-3.5 text-primary" /> AI Rx
                 </Button>
                 <div className="hidden items-center gap-1.5 rounded-md bg-muted px-2.5 py-1 text-xs md:flex">

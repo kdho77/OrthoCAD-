@@ -2,9 +2,11 @@
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+export type ProductionTab = "queue" | "printers" | "history";
+
 export type ClinicalRoute =
     | { kind: "home" }
-    | { kind: "orders" }
+    | { kind: "production"; tab: ProductionTab }
     | { kind: "list" }
     | { kind: "file"; clientId: string }
     | { kind: "design"; clientId: string; designId: string };
@@ -13,7 +15,10 @@ export type ClinicalRoute =
 export function parseClinicalPath(pathname: string): ClinicalRoute {
     const parts = pathname.split("/").filter(Boolean);
     if (parts.length === 0) return { kind: "home" };
-    if (parts[0] === "orders") return { kind: "orders" };
+    if (parts[0] === "orders" || parts[0] === "production") {
+        const tab = parts[1] === "printers" || parts[1] === "history" ? parts[1] : "queue";
+        return { kind: "production", tab };
+    }
     if (parts[0] !== "clients") return { kind: "home" };
     if (parts.length === 1) return { kind: "list" };
     if (!parts[1] || !UUID.test(parts[1])) return { kind: "list" };

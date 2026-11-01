@@ -75,5 +75,7 @@ describe("TopNav super-admin link", () => {
             );
         });
         expect(container.textContent).toContain("Super admin");
+        expect(container.textContent).toContain("Production");
+        expect(container.textContent).not.toContain("Orders");
     });
 });
