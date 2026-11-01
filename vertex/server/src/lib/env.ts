@@ -23,10 +23,27 @@ export function validateServerEnv(): void {
     if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
         console.warn("[vertex] Supabase service credentials unset — auth/storage disabled");
     }
-    if (!process.env.MANUFACTURING_SERVICE_URL && !process.env.PYTHON_MANUFACTURING_URL) {
+    const slicer = (process.env.MANUFACTURING_SLICER ?? "vertexslice").trim().toLowerCase();
+    if (slicer === "legacy") {
+        if (!process.env.MANUFACTURING_SERVICE_URL && !process.env.PYTHON_MANUFACTURING_URL) {
+            console.warn(
+                "[vertex] MANUFACTURING_SERVICE_URL not set — legacy manufacturing.generateSolid will fall back to " +
+                    "http://localhost:8001 and fail in production. Point it at the Python manufacturing service.",
+            );
+        }
+    } else if (!process.env.VERTEXSLICE_URL) {
+        console.warn("[vertex] VERTEXSLICE_URL not set — manufacturing.startSlice cannot reach VertexSlice.");
+    } else if (!process.env.VERTEXSLICE_API_KEY) {
+        console.warn("[vertex] VERTEXSLICE_API_KEY not set — VertexSlice calls will be unauthenticated.");
+    }
+    if (
+        !process.env.MANUFACTURING_SERVICE_URL &&
+        !process.env.PYTHON_MANUFACTURING_URL &&
+        slicer !== "legacy"
+    ) {
         console.warn(
-            "[vertex] MANUFACTURING_SERVICE_URL not set — manufacturing.generateSolid will fall back to " +
-                "http://localhost:8001 and fail in production. Point it at the Python manufacturing service.",
+            "[vertex] MANUFACTURING_SERVICE_URL not set — STL passthrough and MANUFACTURING_SLICER=legacy " +
+                "will fall back to http://localhost:8001.",
         );
     }
     if (

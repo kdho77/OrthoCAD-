@@ -63,6 +63,15 @@ services:
                 type: web
                 name: vertex-manufacturing
                 envVarKey: MANUFACTURING_INTERNAL_API_KEY
+          # vertexslice (default) routes G-code slicing to VertexSlice. legacy keeps python-service.
+          - key: MANUFACTURING_SLICER
+            value: vertexslice
+          # Full origin of the VertexSlice server, e.g. https://vertexslice.example.com (no trailing slash).
+          - key: VERTEXSLICE_URL
+            sync: false
+          # Server-side secret. Clients send it as X-API-Key. Never commit a value here.
+          - key: VERTEXSLICE_API_KEY
+            sync: false
 
     # Python hybrid-manufacturing microservice: authoritative watertight solid
     # generation (Grinding Style sides) + belt pre-transform + slicing -> G-code.

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
@@ -8,6 +9,7 @@ import {
     printRecipeV1Schema,
     resolveGyroidManufacturingPrintRecipe,
 } from "../../../shared/print-recipe/print-recipe.js";
+import { isCncProcess, SLICE_TOKEN_COST } from "../../../shared/slice-job.js";
 import { getSupabaseAdmin } from "../context.js";
 import { callManufacture } from "../lib/manufacturing-client.js";
 import {
@@ -15,6 +17,8 @@ import {
     deleteManufacturingTempBestEffort,
 } from "../lib/manufacturing-stl-lifecycle.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
+import { enqueueSlice, readSliceForUser, SliceJobNotFoundError } from "../lib/slice-orchestrator.js";
+import { createProductionSliceRuntime } from "../lib/slice-supabase.js";
 import {
     assertManufacturingTempKeyForUser,
     buildManufacturingTempStlKey,
@@ -24,6 +28,7 @@ import {
     uploadAsset,
 } from "../lib/storage.js";
 import { assertActiveLicense, getUserTokenBalance, requireSupabaseAdmin } from "../lib/supabase-db.js";
+import { getManufacturingSlicer } from "../lib/vertexslice-client.js";
 import { protectedProcedure, rateLimitedProcedure, router } from "../trpc.js";
 
 const HYBRID_GCODE_COST = 3;
@@ -49,7 +54,37 @@ const manufactureInputSchema = z.object({
     grindingStyle: grindingStyleSchema.optional(),
     printRecipe: printRecipeV1Schema.optional(),
     fileName: z.string().max(200).optional(),
+    idempotencyKey: z.string().uuid().optional(),
 });
+
+const startSliceInputSchema = z
+    .object({
+        designId: z.string().uuid().optional(),
+        stlUrl: z.string().url().optional(),
+        stlStorageKey: z.string().min(1).optional(),
+        profileId: z.string().min(1).optional(),
+        material: z.string().min(1).optional(),
+        side: z.enum(["left", "right"]).optional(),
+        idempotencyKey: z.string().uuid(),
+        process: z.string().max(80).optional(),
+        fileName: z.string().max(200).optional(),
+        printRecipe: printRecipeV1Schema.optional(),
+        beltAngleDeg: z.number().min(10).max(80).optional(),
+        layerHeightMm: z.number().min(0.05).max(1).optional(),
+        perimeters: z.number().int().min(1).max(10).optional(),
+        grindingStyle: grindingStyleSchema.optional(),
+    })
+    .superRefine((val, ctx) => {
+        if (!val.designId && !val.stlUrl && !val.stlStorageKey) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: "designId or stlUrl is required" });
+        }
+        if (!val.stlUrl && !val.stlStorageKey) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: "stlUrl or stlStorageKey is required" });
+        }
+        if (!val.profileId && !val.material) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: "material or profileId is required" });
+        }
+    });
 
 const uploadStlInputSchema = z.object({
     side: z.enum(["left", "right"]),
@@ -204,7 +239,9 @@ export const manufacturingRouter = router({
             try {
                 await assertActiveLicenseForUser(ctx.user.id);
 
-                const cost = HYBRID_GCODE_COST;
+                const useVertexSlice =
+                    input.outputType === "gcode" && getManufacturingSlicer() === "vertexslice";
+                const cost = useVertexSlice ? SLICE_TOKEN_COST : HYBRID_GCODE_COST;
 
                 if (input.designId) {
                     const supabase = requireSupabaseAdmin();
@@ -232,6 +269,69 @@ export const manufacturingRouter = router({
                 const balance = await getUserTokenBalance(requireSupabaseAdmin(), ctx.user.id);
                 if (balance < cost) {
                     throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
+                }
+
+                if (useVertexSlice) {
+                    if (!supabase) {
+                        throw new TRPCError({
+                            code: "INTERNAL_SERVER_ERROR",
+                            message: "Supabase admin client not configured",
+                        });
+                    }
+                    const runtime = createProductionSliceRuntime(supabase);
+                    const job = await enqueueSlice(
+                        {
+                            userId: ctx.user.id,
+                            idempotencyKey: input.idempotencyKey ?? randomUUID(),
+                            designId: input.designId ?? null,
+                            stlUrl: input.stlUrl ?? null,
+                            stlStorageKey: tempStlKey,
+                            profileId: input.presetId,
+                            side: input.side ?? null,
+                            fileName: input.fileName ?? null,
+                            request: {
+                                beltAngleDeg: input.beltAngleDeg,
+                                layerHeightMm: input.layerHeightMm ?? null,
+                                perimeters: input.perimeters ?? null,
+                                grindingStyle: input.grindingStyle ?? null,
+                                printRecipe: resolvedPrintRecipe ?? null,
+                            },
+                        },
+                        runtime,
+                        { wait: true },
+                    );
+                    const view = await readSliceForUser(job.id, ctx.user.id, runtime);
+                    if (view.status !== "succeeded" || !view.downloadUrl) {
+                        const denied =
+                            view.error === "INSUFFICIENT_TOKENS" || view.error === "NO_VALID_LICENSE";
+                        throw new TRPCError({
+                            code: denied ? "FORBIDDEN" : "INTERNAL_SERVER_ERROR",
+                            message:
+                                view.error === "INSUFFICIENT_TOKENS"
+                                    ? "Insufficient export tokens"
+                                    : view.error === "NO_VALID_LICENSE"
+                                      ? "No valid license"
+                                      : view.error === "timeout"
+                                        ? "Slice timed out"
+                                        : view.error || "Slice failed",
+                        });
+                    }
+                    console.log("[manufacturing] generateSolid vertexslice success", {
+                        userId: ctx.user.id,
+                        jobId: view.jobId,
+                        productionId: view.productionId ?? null,
+                        balance: view.balance ?? null,
+                    });
+                    return {
+                        ok: true as const,
+                        outputType: "gcode" as const,
+                        productionId: view.productionId ?? null,
+                        exportId: view.exportId ?? "",
+                        balance: view.balance ?? 0,
+                        jobId: view.jobId,
+                        downloadUrl: view.downloadUrl,
+                        gcodeDownloadUrl: view.downloadUrl,
+                    };
                 }
 
                 let stlUrl = input.stlUrl;
@@ -391,6 +491,111 @@ export const manufacturingRouter = router({
                 deleteManufacturingTempBestEffort(supabase, tempStlKey);
                 throw err;
             }
+        }),
+
+    /**
+     * Queue a G-code slice. Balance is checked here and not deducted.
+     * The same idempotency key returns the existing job and never opens a second charge.
+     */
+    startSlice: rateLimitedProcedure(RATE_LIMITS.manufacturing, "manufacturing:startSlice")
+        .input(startSliceInputSchema)
+        .mutation(async ({ ctx, input }) => {
+            if (isCncProcess(input.process)) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message: "CNC/milled orders are not sliced",
+                });
+            }
+            await assertActiveLicenseForUser(ctx.user.id);
+            if (input.stlStorageKey) {
+                try {
+                    assertManufacturingTempKeyForUser(input.stlStorageKey, ctx.user.id);
+                } catch {
+                    throw new TRPCError({
+                        code: "BAD_REQUEST",
+                        message: "Invalid manufacturing STL storage key",
+                    });
+                }
+            }
+            if (input.designId) {
+                const supabase = requireSupabaseAdmin();
+                const { data: design, error: designError } = await supabase
+                    .from("designs")
+                    .select("id")
+                    .eq("id", input.designId)
+                    .eq("ownerId", ctx.user.id)
+                    .maybeSingle();
+                if (designError) {
+                    throw new TRPCError({
+                        code: "INTERNAL_SERVER_ERROR",
+                        message: `Failed to verify design ownership: ${designError.message}`,
+                    });
+                }
+                if (!design) {
+                    throw new TRPCError({ code: "FORBIDDEN", message: "Design not found or access denied" });
+                }
+            }
+
+            const supabase = requireSupabaseAdmin();
+            const runtime = createProductionSliceRuntime(supabase);
+            const existing = await runtime.ledger.findByIdempotency(ctx.user.id, input.idempotencyKey);
+            if (!existing) {
+                const balance = await getUserTokenBalance(supabase, ctx.user.id);
+                if (balance < SLICE_TOKEN_COST) {
+                    deleteManufacturingTempBestEffort(supabase, input.stlStorageKey);
+                    throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
+                }
+            }
+
+            let resolvedPrintRecipe: ReturnType<typeof migratePrintRecipe> | undefined;
+            if (input.printRecipe) resolvedPrintRecipe = migratePrintRecipe(input.printRecipe);
+
+            const job = await enqueueSlice(
+                {
+                    userId: ctx.user.id,
+                    idempotencyKey: input.idempotencyKey,
+                    designId: input.designId ?? null,
+                    stlUrl: input.stlUrl ?? null,
+                    stlStorageKey: input.stlStorageKey ?? null,
+                    profileId: input.profileId ?? input.material ?? "apex-v2-insole-95a",
+                    material: input.material ?? null,
+                    side: input.side ?? null,
+                    process: input.process ?? null,
+                    fileName: input.fileName ?? null,
+                    request: {
+                        beltAngleDeg: input.beltAngleDeg ?? 45,
+                        layerHeightMm: input.layerHeightMm ?? null,
+                        perimeters: input.perimeters ?? null,
+                        grindingStyle: input.grindingStyle ?? null,
+                        printRecipe: resolvedPrintRecipe ?? null,
+                    },
+                },
+                runtime,
+            );
+            return { jobId: job.id, status: job.status };
+        }),
+
+    sliceStatus: protectedProcedure
+        .input(z.object({ jobId: z.string().uuid() }))
+        .query(async ({ ctx, input }) => {
+            const supabase = requireSupabaseAdmin();
+            const runtime = createProductionSliceRuntime(supabase);
+            let view: Awaited<ReturnType<typeof readSliceForUser>>;
+            try {
+                view = await readSliceForUser(input.jobId, ctx.user.id, runtime);
+            } catch (err) {
+                if (err instanceof SliceJobNotFoundError) {
+                    throw new TRPCError({ code: "NOT_FOUND", message: err.message });
+                }
+                throw err;
+            }
+            return {
+                status: view.status,
+                error: view.error,
+                downloadUrl: view.downloadUrl,
+                productionId: view.productionId,
+                balance: view.balance,
+            };
         }),
 
     getGcodeDownloadUrl: protectedProcedure
