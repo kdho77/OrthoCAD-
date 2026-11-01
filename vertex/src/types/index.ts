@@ -3,9 +3,13 @@
 // browser, stores and the 3D pipeline.
 
 import type { AfoDesignState } from "@/lib/geometry/afo/types";
+import type { RegionHardnessClass } from "../../shared/print-recipe/hardness-class-table";
+import type { DepthSpec, HardnessOverrides } from "../../shared/print-recipe/hardness-region";
 import type { PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
 
 export type { HardnessName, PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
+export type { DepthSpec, HardnessOverrides, HardnessRegion, RegionKind } from "../../shared/print-recipe/hardness-region";
+export type { RegionHardnessClass } from "../../shared/print-recipe/hardness-class-table";
 export type { AfoDesignState, ProductType } from "@/lib/geometry/afo/types";
 
 export type Role = "super_admin" | "admin" | "clinician";
@@ -35,6 +39,38 @@ export type ScanPattern =
 /** Midfoot arch skive target (distinct from Kirby heel skive). */
 export type ArchSkiveSide = "medial" | "lateral" | "central";
 
+/** `wall` is the outer (lateral) side. `medial` is the inner side. */
+export type TextSurface = "bottom" | "wall" | "medial";
+export type TextMode = "engrave" | "emboss";
+export type TextAnchor = "heel" | "arch" | "forefoot";
+export type TextFeet = "both" | "left" | "right";
+
+/** Custom text. Empty text is a no-op. Placement is mirrored per foot; glyphs are not. */
+export interface TextMarking {
+    text: string;
+    surface: TextSurface;
+    mode: TextMode;
+    /** Always the bundled bold sans. Kept so older designs still round-trip. */
+    bold: boolean;
+    capHeightMm: number;
+    depthMm: number;
+    heightMm: number;
+    letterSpacingMm: number;
+    rotationDeg: number;
+    placementU: number;
+    /** Bottom snap target. Wall / medial ignore this and use mid-height. */
+    anchor: TextAnchor;
+    /** Which feet receive this text. Follows the Editing L / R / Both control. */
+    feet: TextFeet;
+    differentOnLR: boolean;
+    textLeft: string;
+    textRight: string;
+    /** Millimetres along the placement axis, after placementU. */
+    nudgeAlongMm: number;
+    /** Bottom: off the centreline. Sides: off mid-height. */
+    nudgeAcrossMm: number;
+}
+
 /** Track 5b — print / shell shape & finish modifiers (per foot). */
 export interface SideShapeFinish {
     /** Extra top clearance in heel cup / flange for cover bulk (mm). */
@@ -56,9 +92,13 @@ export interface ShapeFinishModifiers {
     linked: boolean;
 }
 
-export type ExportFormat = "stl" | "gcode" | "glb";
+export type ExportFormat = "stl" | "gcode" | "glb" | "3mf";
 
 export type GrindingStyleType = "straight" | "rounded";
+
+export type ShellThicknessMode = "uniform" | "zonal";
+
+export type HeelLiftTaperPreset = "midfoot" | "metHeads" | "sulcus" | "custom";
 
 export interface GrindingStyle {
     type: GrindingStyleType;
@@ -139,12 +179,23 @@ export interface SideCorrections {
      */
     heelCupWidthMm: number;
     /**
+     * Per-side forefoot outline offset (mm at full envelope). Positive moves each
+     * side outward; negative narrows. 0 = baseline outline.
+     */
+    forefootWidthMm?: number;
+    /**
      * Heel lift (longitudinal raise). A value of N mm raises the plantar surface
      * under the center/back of the heel by N mm and tapers linearly to 0 under
      * the metatarsal heads (~75% of insole length). Bottom surface stays flat
      * (z = 0), so the lift is bottom-stable on solid prints. See {@link heelLiftDeltaAt}.
      */
     heelLiftMm: number;
+    /** Heel-lift ramp endpoint preset (Track 4 #4). */
+    heelLiftTaperPreset?: HeelLiftTaperPreset;
+    /** Explicit taper end u ∈ [0.45, 0.90]; overrides preset when set. */
+    heelLiftTaperEndU?: number;
+    /** Custom %AP (25–75) when preset is `custom`. */
+    heelLiftCustomTaperPctAp?: number;
     apexMoveMm: number;
     medialFlangeMm: number;
     lateralFlangeMm: number;
@@ -156,6 +207,16 @@ export interface SideCorrections {
      */
     rearfootWedge?: WedgeCorrection;
     forefootWedge?: WedgeCorrection;
+    /**
+     * Full-length ruled posting on the top rim. Undefined or value 0 is off.
+     * An omitted / non-finite value means 3.0 mm at the heel high edge (u 0.15),
+     * tapering to 0 on the opposite edge. See full-length-wedge.ts.
+     */
+    fullLengthWedge?: {
+        side: "medial" | "lateral";
+        value?: number;
+        unit?: "mm" | "deg";
+    };
 }
 
 export interface Corrections {
@@ -171,6 +232,8 @@ export interface Corrections {
 export type ElementKind =
     | "met_pad"
     | "met_bar"
+    | "toe_crest"
+    | "cuboid_pad"
     | "cluffy_wedge"
     | "mortons_extension"
     | "reverse_mortons"
@@ -184,6 +247,8 @@ export type ElementKind =
 /** Top trim preset id — `custom` when the user edits the spline manually. */
 export type TrimPresetId = "full" | "sulcus" | "met_head" | "custom";
 
+export type ElementPlacementMode = "flow" | "noFlow";
+
 export interface PlacedElement {
     id: string;
     kind: ElementKind | "custom";
@@ -195,7 +260,45 @@ export interface PlacedElement {
     position: { x: number; y: number };
     rotationDeg: number;
     scale: { x: number; y: number };
+    /** Missing on older designs means locked. Height remains independent. */
+    scaleLocked?: boolean;
     heightMm: number;
+    /**
+     * Hardness region fields (Phase 1). Settings stay on this element id through
+     * move/resize/save/reopen. Absent => device default, no modifier volume.
+     */
+    regionId?: string;
+    hardnessClass?: RegionHardnessClass;
+    priority?: number;
+    depth?: DepthSpec;
+    overrides?: HardnessOverrides;
+    /** GLB height-field lift: flow feathers the edge; noFlow keeps a crisp step. */
+    placementMode?: ElementPlacementMode;
+    zOffsetMm?: number;
+}
+
+/**
+ * Forefoot / styloid sinks. Not an ElementKind — overlap is max depth, not a sum,
+ * and an empty list leaves every existing element output byte-identical.
+ * u, v are outline fractions (heel→toe, medial→lateral). A scan marker overrides them.
+ */
+export type SinkKind = "mpj1" | "mpj2" | "mpj3" | "mpj4" | "mpj5" | "styloid";
+
+export interface PlacedSink {
+    id: string;
+    kind: SinkKind;
+    /** Requested depth. Values above the clinical max warn and clamp at the cut. */
+    depthMm: number;
+    u?: number;
+    v?: number;
+    markerId?: string;
+}
+
+/** Scan marker that overrides a sink's u, v. */
+export interface SinkMarkerRef {
+    id: string;
+    u: number;
+    v: number;
 }
 
 /** Serializable trimline control points stored in design state. */
@@ -242,6 +345,46 @@ export interface DesignBase {
     mirroredFrom?: string;
 }
 
+/** Manual fine-tune for a 2D pressure map overlay (footprint mm / degrees). */
+export interface PressureMapAlignment {
+    offsetMm: { x: number; y: number };
+    scale: number;
+    rotationDeg: number;
+}
+
+/** Normalized bounds of pressure content inside an imported image. */
+export interface PressureMapContentBounds {
+    minU: number;
+    minV: number;
+    maxU: number;
+    maxV: number;
+}
+
+/** Content-based foot side and auto alignment from import analysis. */
+export interface PressureImageOrientation {
+    detectedImageSide: Side;
+    autoRotationDeg: number;
+    oppositeFootMirror: boolean;
+}
+
+/** Persisted per-foot plantar pressure image (viewer only). */
+export interface PressureMapFoot {
+    imageDataUrl: string;
+    mimeType: "image/png" | "image/jpeg";
+    fileName?: string;
+    visible: boolean;
+    imageWidth: number;
+    imageHeight: number;
+    contentBounds: PressureMapContentBounds;
+    alignment: PressureMapAlignment;
+    orientation?: PressureImageOrientation;
+}
+
+export interface DesignPressureMaps {
+    left?: PressureMapFoot;
+    right?: PressureMapFoot;
+}
+
 export interface DesignState {
     /** Insole (default) vs ankle-foot orthosis. AFO never loads SAMPLE_Top. */
     productType?: "insole" | "afo";
@@ -257,6 +400,13 @@ export interface DesignState {
     /** Phase A gyroid hardness ladder (PrintRecipe v1). */
     printRecipe?: PrintRecipeV1;
     thicknessMm: number;
+    /** uniform | zonal shell thickness (Track 4 #1). Default zonal. */
+    shellThicknessMode?: ShellThicknessMode;
+    shellThicknessRfMm?: number;
+    shellThicknessMfMm?: number;
+    shellThicknessFfMm?: number;
+    /** Half-width of RF/MF/FF blends along length (mm). Default 12. */
+    shellThicknessBlendMm?: number;
     /**
      * Footprint size system. Default `"us"`.
      * - `us` — US Men's half-size (`usMenSize`); Women's = +1.5; Youth ≤ 7
@@ -282,6 +432,24 @@ export interface DesignState {
     };
     corrections: Corrections;
     elements: PlacedElement[];
+    /**
+     * MPJ and styloid sinks, per foot. Absent or empty on a side ⇒ no thickness
+     * and no cut (exports stay byte-identical). Not summed like elements.
+     * `corrections.linked` mirrors edits the same way as the other corrections.
+     */
+    sinks?: { left?: PlacedSink[]; right?: PlacedSink[] };
+    /**
+     * Midfoot thickness under the styloid sink, per foot. Default off
+     * (forefoot only) until Kendon confirms otherwise.
+     */
+    sinkStyloidThicken?: { left?: boolean; right?: boolean };
+    /** Print-step Split mode: elements are selectable hardness regions. */
+    splitElements?: boolean;
+    /**
+     * Persist-only. Boundary smoothing of split regions needs CAD sign-off —
+     * does not change print geometry.
+     */
+    smoothElements?: boolean;
     /** User-edited insole outline curves — persisted with the design. */
     trimlines?: DesignTrimlines;
     /** Active top-trim preset label per foot (cleared to custom on manual edit). */
@@ -289,6 +457,18 @@ export interface DesignState {
 
     /** Track 5b shape / finish (top cover, trimmable forefoot, arch grind / skive). */
     shapeFinish?: ShapeFinishModifiers;
+
+    /**
+     * Print-step custom text (engrave / emboss). Empty text is a no-op and is
+     * omitted from the design-state hash so frozen STLs stay byte-identical.
+     */
+    textMarking?: TextMarking;
+
+    /**
+     * Optional 2D plantar pressure map overlays (viewer only). Omitted from
+     * manufacturing exports so STL / 3MF / G-code bytes stay unchanged.
+     */
+    pressureMaps?: DesignPressureMaps;
 
     /**
      * Paired Left + Right dual-view workspace support.

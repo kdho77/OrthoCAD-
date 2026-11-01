@@ -1,15 +1,14 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { describe, expect, test } from "@rstest/core";
 import {
     clampSkiveAngleDeg,
     oneThirdLineY,
     resolveSkivePlane,
-    seatTiltRadFromEdges,
-    seatTiltRadFromWedgeField,
     SKIVE_DEFAULT_ANGLE_DEG,
     SKIVE_U_REF,
+    seatTiltRadFromEdges,
+    seatTiltRadFromWedgeField,
     skivePlaneZAtY,
     solveSkiveDerived,
 } from "@/lib/geometry/heel-skive";

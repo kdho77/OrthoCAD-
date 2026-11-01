@@ -26,12 +26,9 @@ export function applyVertexOverrides(
 /**
  * Simplified trim: vertices on the negative side of the trim polyline plane
  * (average normal from polyline) are projected toward the boundary.
- * For the procedural kernel this gives a visible trim effect without OCCT booleans.
+ * For the procedural kernel this gives a visible trim effect without mesh booleans.
  */
-export function applyTrimLines(
-    geometry: THREE.BufferGeometry,
-    trimLines: TrimLine[],
-): THREE.BufferGeometry {
+export function applyTrimLines(geometry: THREE.BufferGeometry, trimLines: TrimLine[]): THREE.BufferGeometry {
     if (trimLines.length === 0 || trimLines.every((t) => t.points.length < 2)) {
         return geometry;
     }

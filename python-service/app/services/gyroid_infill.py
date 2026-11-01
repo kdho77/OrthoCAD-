@@ -1,5 +1,4 @@
-# Part of the Chili3d Project, under the AGPL-3.0 License.
-# See LICENSE file in the project root for full license information.
+# Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 """
 Gyroid TPMS infill (Phase A): marching squares isocontours + Shapely clip.
@@ -8,7 +7,7 @@ Field: f(x,y,z) = sin(kx)cos(ky) + sin(ky)cos(kz) + sin(kz)cos(kx) - t,  k = 2π
 
 Cell period law (seed): L₀ = GYROID_CELL_K * w / sqrt(φ).
 Per-target multiplier μ from LUT (fitted on A1 40×40×6 coupon, w=0.48 mm) so planar fill
-matches 14/20/26/32/38% ±5 points on infill layers.
+matches Extra Soft→Extra Hard (16/22/26/32/38%, pending coupon) ±5 points on infill layers.
 """
 
 from __future__ import annotations

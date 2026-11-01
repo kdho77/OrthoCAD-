@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
 import { U_BANDS } from "./bezier-column";
@@ -288,12 +287,12 @@ function aabbHit(a: BvhNode, b: Tri): boolean {
  * BVH tri-tri test. Pairs that share a vertex or edge (after a 1e-5 mm weld)
  * are excluded. Coplanar overlaps are counted separately from real hits.
  */
-export function countSelfIntersections(geo: BufferGeometry): SelfIntersectionReport {
+export function countSelfIntersections(geo: BufferGeometry, weldMm = WELD_MM): SelfIntersectionReport {
     const pos = geo.getAttribute("position").array as Float32Array;
     const index = geo.getIndex();
     if (!index) return { real: 0, coplanar: 0 };
     const idx = index.array;
-    const weld = weldIndex(pos, WELD_MM);
+    const weld = weldIndex(pos, weldMm);
     const tris: Tri[] = [];
     for (let t = 0; t < idx.length; t += 3) {
         const i0 = weld[idx[t]!]!;

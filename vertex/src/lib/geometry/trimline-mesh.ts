@@ -1,9 +1,8 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { BufferAttribute, BufferGeometry, CatmullRomCurve3, Vector3 } from "three";
+import { BufferAttribute, BufferGeometry, type CatmullRomCurve3, Vector3 } from "three";
 import { type HeightFieldParams, heightAt } from "@/lib/geometry/height-field";
-import { trimlineToCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
+import { type TrimlineCurve, trimlineToCurve } from "@/lib/geometry/trimline";
 
 /**
  * Parameters for the GLB-ready tapered insole mesh generator.
@@ -182,10 +181,7 @@ export function buildTrimlineInsoleMesh(options: TrimlineMeshOptions): BufferGeo
         topRingIdx.push(row);
     }
     // Central top vertex (closes the fan)
-    const topCenterZ = Math.max(
-        bottomZ + minWallThicknessMm,
-        evalHeightAtXY(centroid.x, centroid.y, field),
-    );
+    const topCenterZ = Math.max(bottomZ + minWallThicknessMm, evalHeightAtXY(centroid.x, centroid.y, field));
     const topCenterIdx = pushVertex(builder, centroid.x, centroid.y, topCenterZ);
 
     // Top: quad strips between adjacent rings (winding CCW from above, so face normals point +Z).
@@ -277,10 +273,7 @@ export function buildTrimlineInsoleMesh(options: TrimlineMeshOptions): BufferGeo
     }
 
     const geometry = new BufferGeometry();
-    geometry.setAttribute(
-        "position",
-        new BufferAttribute(new Float32Array(builder.positions), 3),
-    );
+    geometry.setAttribute("position", new BufferAttribute(new Float32Array(builder.positions), 3));
     geometry.setIndex(builder.indices);
     geometry.computeVertexNormals();
     geometry.computeBoundingBox();

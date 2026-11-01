@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { create } from "zustand";
 import {
@@ -7,6 +6,7 @@ import {
     evaluateScanStepGate,
     scanGateBlocksLaterSteps,
 } from "@/lib/clinical/clinical-step-gates";
+import type { ProductionMethod } from "@/types";
 
 export type ClinicalStepId =
     | "scan"
@@ -81,6 +81,16 @@ export function stepsForProduct(
     return product === "afo" ? AFO_STEPS : CLINICAL_STEPS;
 }
 
+/** Print step is labeled Mill when production type is Milling — 3 Axis. */
+export function clinicalStepShort(id: ClinicalStepId, method?: ProductionMethod): string {
+    if (id === "print" && method === "milling_3axis") return "Mill";
+    return (
+        CLINICAL_STEPS.find((s) => s.id === id)?.short ??
+        AFO_STEPS.find((s) => s.id === id)?.short ??
+        id
+    );
+}
+
 /** Parametric-correction section keys. Groups stay collapsed until the user opens one. */
 export const CORRECTIONS_STEP_SECTIONS: CorrectionsSectionKey[] = [
     "Arch",
@@ -115,6 +125,8 @@ interface ClinicalWorkflowStore {
     /** Inline reason when Next is blocked (AC8). */
     nextBlockReason: string | null;
     elementPlacementFoot: ElementPlacementFoot;
+    /** Bumped when Print / Export asks Elements to open the text editor. */
+    textFocusNonce: number;
     pendingCorrectionSections: CorrectionsSectionKey[];
     /** Last applied correction preset — keys stay marked until the user edits them. */
     correctionPresetOrigin: CorrectionPresetOrigin | null;
@@ -122,6 +134,7 @@ interface ClinicalWorkflowStore {
     acknowledgeExplicitFootSide: (side: "left" | "right") => void;
     acknowledgePairAssignment: () => void;
     setElementPlacementFoot: (foot: ElementPlacementFoot) => void;
+    openTextEditor: () => void;
     setCorrectionPresetOrigin: (origin: CorrectionPresetOrigin | null) => void;
     clearCorrectionPresetOriginKey: (side: "left" | "right", key: string) => void;
     goNext: () => void;
@@ -185,19 +198,32 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
     footSideExplicitlyChosen: false,
     scanGateStickyReason: null,
     nextBlockReason: null,
-    elementPlacementFoot: "left",
+    elementPlacementFoot: "both",
+    textFocusNonce: 0,
     pendingCorrectionSections: [],
     correctionPresetOrigin: null,
-    acknowledgeExplicitFootSide: (side) =>
+    acknowledgeExplicitFootSide: (side) => {
         set({
             footSideExplicitlyChosen: true,
             elementPlacementFoot: side,
-        }),
-    acknowledgePairAssignment: () =>
+        });
+        const gate = evaluateScanStepGate();
+        set({
+            scanGateStickyReason: gate.ok ? null : gate.reason,
+            nextBlockReason: gate.ok ? null : gate.reason,
+        });
+    },
+    acknowledgePairAssignment: () => {
         set({
             footSideExplicitlyChosen: true,
             elementPlacementFoot: "both",
-        }),
+        });
+        const gate = evaluateScanStepGate();
+        set({
+            scanGateStickyReason: gate.ok ? null : gate.reason,
+            nextBlockReason: gate.ok ? null : gate.reason,
+        });
+    },
     setCorrectionPresetOrigin: (origin) => set({ correctionPresetOrigin: origin }),
     clearCorrectionPresetOriginKey: (side, key) =>
         set((s) => {
@@ -224,6 +250,11 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         });
     },
     setElementPlacementFoot: (foot) => set({ elementPlacementFoot: foot }),
+    openTextEditor: () =>
+        set((s) => ({
+            step: "elements",
+            textFocusNonce: s.textFocusNonce + 1,
+        })),
     goNext: () => {
         const current = get().step;
         const product = get().productType;

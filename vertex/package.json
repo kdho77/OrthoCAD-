@@ -8,11 +8,8 @@
     },
     "description": "Vertex Orthopedic — browser-based orthotic insole CAD (Phase 0 foundation)",
     "scripts": {
-        "prepare:wasm": "mkdir -p public/chili-wasm && cp -f ../packages/wasm/lib/chili-wasm.js ../packages/wasm/lib/chili-wasm.wasm public/chili-wasm/",
-        "setup:wasm": "cd .. && npm run setup:wasm",
-        "build:wasm": "cd .. && npm run build:wasm && npm run prepare:wasm",
-        "dev": "npm run prepare:wasm && vite",
-        "build": "npm run prepare:wasm && vite build",
+        "dev": "vite",
+        "build": "python3 ../scripts/materialize-incoming-elements.py && vite build",
         "preview": "vite preview",
         "typecheck": "tsc --noEmit",
         "typecheck:server": "tsc --noEmit -p server/tsconfig.json",
@@ -25,8 +22,6 @@
         "cleanup:manufacturing-temp": "tsx scripts/cleanup-manufacturing-temp.ts"
     },
     "dependencies": {
-        "@chili3d/core": "file:../packages/core",
-        "@chili3d/wasm": "file:../packages/wasm",
         "@kninnug/constrainautor": "^4.1.0",
         "@prisma/client": "^5.22.0",
         "@radix-ui/react-dialog": "^1.1.6",
@@ -43,7 +38,10 @@
         "clipper2-ts": "^2.0.1-18",
         "clsx": "^2.1.1",
         "delaunator": "^5.1.0",
+        "jszip": "^3.10.1",
         "lucide-react": "^0.456.0",
+        "manifold-3d": "^3.5.4",
+        "opentype.js": "^2.0.0",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
         "superjson": "^2.2.1",
@@ -59,6 +57,7 @@
     },
     "devDependencies": {
         "@types/node": "^22.9.0",
+        "@types/opentype.js": "^1.3.10",
         "@types/react": "^18.3.12",
         "@types/react-dom": "^18.3.1",
         "@types/three": "^0.169.0",

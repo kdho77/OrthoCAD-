@@ -12,12 +12,26 @@ import {
     stockBaseNeedsServerResolution,
 } from "@/lib/geometry/base-asset";
 import { clearBaseBoundsCache, computeBaseBounds } from "@/lib/geometry/base-bounds";
-import { applyBaseModifiers, BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
-import { heightAt } from "@/lib/geometry/height-field";
+import {
+    applyBaseModifiers,
+    BASE_REFERENCE_THICKNESS_MM,
+    classifyBaseTopFactors,
+    getBaseFootprintFrame,
+} from "@/lib/geometry/base-modifier";
+import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
+import { elementGeometryKey } from "@/lib/geometry/element-geometry-key";
+import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
+import { type HeightFieldParams, heightAt } from "@/lib/geometry/height-field";
 import {
     hashLiveBottomPattern,
     resolveLiveBottomPattern,
 } from "@/lib/geometry/procedural-wall/live-bottom-pattern";
+import {
+    applyForefootPlanShift,
+    FOREFOOT_SHIFT_U_HOLD,
+    forefootFeatureBoxes,
+    forefootPlanBoundsOfPositions,
+} from "@/lib/geometry/procedural-wall/modifiers";
 import {
     enqueuePreviewLoft,
     isCoarsePointerDevice,
@@ -46,7 +60,9 @@ import {
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
+import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
+import { textMarkingHash } from "@/lib/geometry/text-marking/hash";
 import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured } from "@/lib/trpc";
@@ -59,14 +75,48 @@ import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { useScanStore } from "@/stores/scan-store";
-import type { DesignState, Side } from "@/types";
+import type { DesignState, Side, SideCorrections } from "@/types";
 
 const PREVIEW_LOFT_WATCHDOG_MS = PRINT_LOFT_TIMEOUT_MS;
+
+/** Compose key ignores forefoot width so the slider can reuse one unshifted sheet. */
+function forefootViewerCacheKey(input: {
+    side: Side;
+    mirrored: boolean;
+    thicknessMm: number;
+    corrections: SideCorrections;
+    elementsKey: string;
+    shoeWidth: string;
+    heelW: number;
+    trimHash: string;
+    shapeFinishJson: string;
+    lengthMm: number;
+    widthMm: number;
+}): string {
+    const fore = input.corrections.forefootWidthMm ?? 0;
+    const fullLengthToeHoldU =
+        fore !== 0 && fullLengthWedgeActive(input.corrections) ? FOREFOOT_SHIFT_U_HOLD : 0;
+    return JSON.stringify({
+        ...input,
+        corrections: { ...input.corrections, forefootWidthMm: 0 },
+        fullLengthToeHoldU,
+    });
+}
+
+function fieldWithoutForefoot(field: HeightFieldParams, foreW: number): HeightFieldParams {
+    if (foreW === 0) return field;
+    return {
+        ...field,
+        corrections: { ...field.corrections, forefootWidthMm: 0 },
+        ...(fullLengthWedgeActive(field.corrections) ? { fullLengthToeHoldU: FOREFOOT_SHIFT_U_HOLD } : {}),
+    };
+}
 
 export interface BaseInsoleGeometryState {
     geometry: BufferGeometry | null;
     building: boolean;
     hasBase: boolean;
+    elementReference: BufferGeometry | null;
 }
 
 /**
@@ -76,6 +126,9 @@ export interface BaseInsoleGeometryState {
  * parametric designs so callers can fall back to the parametric mesh.
  */
 export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInsoleGeometryState {
+    const [elementReference, setElementReference] = useState<BufferGeometry | null>(null);
+    useEffect(() => () => elementReference?.dispose(), [elementReference]);
+    const geometryElementsKey = elementGeometryKey(design.elements);
     const correctionPreview = usePerformanceStore((s) => s.correctionPreview);
     const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
     const elementPreviews = usePerformanceStore((s) => s.elementPreviews);
@@ -107,6 +160,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const setLoftError = usePreviewLoftStatusStore((s) => s.setError);
     const lastLoftKeyRef = useRef<string | null>(null);
     const loftGenRef = useRef(0);
+    /** Unshifted corrections-step sheet. Forefoot is applied on a clone so the slider stays live. */
+    const forefootBaseRef = useRef<{ key: string; geo: BufferGeometry } | null>(null);
 
     const base = getDesignBase(design, side);
     const assetId = base?.assetId ?? null;
@@ -136,6 +191,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     // biome-ignore lint/correctness/useExhaustiveDependencies: loadKey captures asset + mirror variant
     useEffect(() => {
         let cancelled = false;
+        if (forefootBaseRef.current) {
+            forefootBaseRef.current.geo.dispose();
+            forefootBaseRef.current = null;
+        }
         const ref = getDesignBase(design, side);
         if (!ref) {
             nativeGeoRef.current?.dispose();
@@ -363,6 +422,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 : design.thicknessMm;
             const thicknessMm = thicknessPreview ?? committedThickness ?? BASE_REFERENCE_THICKNESS_MM;
             const field = baseModifierField(design, side, thicknessMm);
+            field.elements = elementsForSurface(
+                field.elements ?? [],
+                clinicalStep === "print" || clinicalStep === "export",
+            );
             const rw = field.corrections?.rearfootWedge;
             if (
                 rw?.unit === "mm" &&
@@ -371,16 +434,26 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 clinicalStep === "corrections"
             ) {
                 const u = 0.1;
-                const neutral = {
+                const wedgeOnly = {
                     ...field,
-                    corrections: { ...field.corrections!, rearfootWedge: undefined },
+                    sinks: undefined,
+                    sinkStyloidThicken: undefined,
+                    sinkMarkers: undefined,
+                };
+                const neutral = {
+                    ...wedgeOnly,
+                    corrections: {
+                        ...wedgeOnly.corrections!,
+                        rearfootWedge: undefined,
+                        fullLengthWedge: undefined,
+                    },
                 };
                 stockDebug("STEP0 design viewer top-sheet z delta (mm)", {
                     side,
-                    border: heightAt(u, 0.98, field) - heightAt(u, 0.98, neutral),
-                    lateralHeelCenter: heightAt(u, 0.5, field) - heightAt(u, 0.5, neutral),
-                    medialHeel: heightAt(u, -0.5, field) - heightAt(u, -0.5, neutral),
-                    medialEdge: heightAt(u, -0.98, field) - heightAt(u, -0.98, neutral),
+                    border: heightAt(u, 0.98, wedgeOnly) - heightAt(u, 0.98, neutral),
+                    lateralHeelCenter: heightAt(u, 0.5, wedgeOnly) - heightAt(u, 0.5, neutral),
+                    medialHeel: heightAt(u, -0.5, wedgeOnly) - heightAt(u, -0.5, neutral),
+                    medialEdge: heightAt(u, -0.98, wedgeOnly) - heightAt(u, -0.98, neutral),
                 });
             }
             const fw = field.corrections?.forefootWedge;
@@ -391,25 +464,118 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 clinicalStep === "corrections"
             ) {
                 const u = 0.88;
-                const neutral = {
+                const wedgeOnly = {
                     ...field,
-                    corrections: { ...field.corrections!, forefootWedge: undefined },
+                    sinks: undefined,
+                    sinkStyloidThicken: undefined,
+                    sinkMarkers: undefined,
+                };
+                const neutral = {
+                    ...wedgeOnly,
+                    corrections: {
+                        ...wedgeOnly.corrections!,
+                        forefootWedge: undefined,
+                        fullLengthWedge: undefined,
+                    },
                 };
                 stockDebug("STEP corrections forefoot lateral mm top z delta (heightAt + mesh)", {
                     side,
                     mm: fw.value,
                     composedPath: true,
-                    lateralBorder: heightAt(u, 0.98, field) - heightAt(u, 0.98, neutral),
-                    medialEdge: heightAt(u, -0.98, field) - heightAt(u, -0.98, neutral),
-                    lateralMet: heightAt(u, 0.5, field) - heightAt(u, 0.5, neutral),
+                    lateralBorder: heightAt(u, 0.98, wedgeOnly) - heightAt(u, 0.98, neutral),
+                    medialEdge: heightAt(u, -0.98, wedgeOnly) - heightAt(u, -0.98, neutral),
+                    lateralMet: heightAt(u, 0.5, wedgeOnly) - heightAt(u, 0.5, neutral),
                 });
             }
             const draft = useMeshEditStore.getState().getActiveDraftBottomPattern(side);
             const stored = useBottomPatternStore.getState().getPattern(side);
             const dragging = Boolean(useMeshEditStore.getState().bottomPatternEdit?.isDragging);
             const heelW = field.corrections?.heelCupWidthMm ?? 0;
+            const foreW = field.corrections?.forefootWidthMm ?? 0;
             const widthId = shoeWidthForSide(design, side);
+            // Pattern stays anatomical. The overlay adds the export shift while the slider moves.
             const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}:w${widthId}`;
+            const zeroField = fieldWithoutForefoot(field, foreW);
+            const liveTrim =
+                useMeshEditStore.getState().getActiveDraftTrimline(side) ?? getDesignTrimline(design, side);
+            const cacheKey = forefootViewerCacheKey({
+                side,
+                mirrored: isMirroredForLoad,
+                thicknessMm: field.thicknessMm,
+                corrections: field.corrections,
+                elementsKey: elementGeometryKey(field.elements ?? []),
+                shoeWidth: widthId,
+                heelW,
+                trimHash: liveTrim ? hashPatternPoints(liveTrim.points) : "",
+                shapeFinishJson: JSON.stringify(field.shapeFinish ?? null),
+                lengthMm: field.lengthMm,
+                widthMm: field.widthMm,
+            });
+            const shoeWidthOpt = {
+                width: widthId,
+                ballWidthMm: layout.widthMm,
+                heelWidthMm: layout.widthMm * 0.62,
+                heelOverrideMm: heelW,
+            };
+            const paintForefootDisplay = (baseGeo: BufferGeometry) => {
+                const display = baseGeo.clone();
+                if (foreW !== 0) {
+                    const pos = display.getAttribute("position");
+                    const pattern = useBottomPatternStore.getState().getPattern(side);
+                    const meshOutline =
+                        useBaseOutlineStore.getState().outlines[
+                            `${SAMPLE_TOP_ASSET_ID}:${side}:${isMirroredForLoad ? "m" : "p"}`
+                        ];
+                    const outline = (pattern?.points ?? meshOutline?.points)?.map((p) => ({
+                        x: p.x,
+                        y: p.y,
+                    }));
+                    if (pos) {
+                        const bounds = forefootPlanBoundsOfPositions(pos.array as ArrayLike<number>);
+                        const boxes = forefootFeatureBoxes(bounds, {
+                            lengthMm: bounds.maxX - bounds.minX,
+                            elements: field.elements,
+                            text: design.textMarking,
+                        });
+                        applyForefootPlanShift(
+                            pos.array as Float32Array,
+                            bounds,
+                            foreW,
+                            boxes,
+                            outline,
+                            fullLengthWedgeActive(field.corrections),
+                        );
+                        pos.needsUpdate = true;
+                        display.computeBoundingBox();
+                        display.computeBoundingSphere();
+                        if (!interacting) display.computeVertexNormals();
+                    }
+                }
+                const previous = workRef.current;
+                const previousOut = outRef.current;
+                workRef.current = display;
+                outRef.current = display;
+                if (previous && previous !== display && previous !== raw && previous !== baseGeo) {
+                    previous.dispose();
+                }
+                if (
+                    previousOut &&
+                    previousOut !== display &&
+                    previousOut !== previous &&
+                    previousOut !== raw &&
+                    previousOut !== baseGeo
+                ) {
+                    previousOut.dispose();
+                }
+                setGeometry((prev) => (prev === display ? prev : display));
+            };
+            const showCorrectionsSheet = !shouldLoftProceduralViewer(clinicalStep, wallModel);
+            if (showCorrectionsSheet && forefootBaseRef.current?.key === cacheKey) {
+                paintForefootDisplay(forefootBaseRef.current.geo);
+                setElementReference(null);
+                setLoftPhase(side, "idle", "Composed top ready");
+                setBaseMeshLoading(side, false);
+            }
             const userEdited = Boolean(stored) && !generatedPatternKey;
             const needPattern = !draft && !userEdited && generatedPatternKey !== patternKey;
             const session = {
@@ -428,15 +594,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         const patternTrim = draftTrimForPattern ?? committedTrimForPattern;
                         let patternTop = raw;
                         try {
-                            patternTop = composeViewerPrintSolidTop({
+                            patternTop = await composeViewerPrintSolidTop({
                                 raw,
-                                sourceField: field,
-                                shoeWidth: {
-                                    width: widthId,
-                                    ballWidthMm: layout.widthMm,
-                                    heelWidthMm: layout.widthMm * 0.62,
-                                    heelOverrideMm: heelW,
-                                },
+                                sourceField: zeroField,
+                                shoeWidth: shoeWidthOpt,
                                 trimline: patternTrim,
                             });
                         } catch (composeErr) {
@@ -449,7 +610,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         const rawPattern = await buildProceduralViewerPatternInWorker(
                             patternTop,
                             design.pattern,
-                            field.corrections,
+                            { ...field.corrections, forefootWidthMm: 0 },
                         );
                         if (patternTop !== raw) patternTop.dispose();
                         if (session.cancelled) return;
@@ -469,6 +630,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             heelOverrideMm: heelW,
                         });
                         useBottomPatternStore.getState().ensureGenerated(side, patternKey, sizedPattern);
+                        if (showCorrectionsSheet && forefootBaseRef.current?.key === cacheKey) {
+                            paintForefootDisplay(forefootBaseRef.current.geo);
+                        }
                     } catch (e) {
                         if (session.cancelled) return;
                         stockDebug("procedural viewer pattern failed", {
@@ -483,6 +647,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     stored: useBottomPatternStore.getState().getPattern(side),
                 });
                 if (!shouldLoftProceduralViewer(clinicalStep, wallModel)) {
+                    setElementReference(null);
+                    if (forefootBaseRef.current?.key === cacheKey) {
+                        setLoftPhase(side, "idle", "Composed top ready");
+                        setBaseMeshLoading(side, false);
+                        return;
+                    }
                     await yieldToMain();
                     if (session.cancelled) return;
                     const draftTrim = useMeshEditStore.getState().getActiveDraftTrimline(side);
@@ -490,15 +660,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     const printTrim = draftTrim ?? committedTrim;
                     let modified = raw;
                     try {
-                        modified = composeViewerPrintSolidTop({
+                        modified = await composeViewerPrintSolidTop({
                             raw,
-                            sourceField: field,
-                            shoeWidth: {
-                                width: widthId,
-                                ballWidthMm: layout.widthMm,
-                                heelWidthMm: layout.widthMm * 0.62,
-                                heelOverrideMm: heelW,
-                            },
+                            sourceField: zeroField,
+                            shoeWidth: shoeWidthOpt,
                             trimline: printTrim,
                         });
                         const fwLog = field.corrections?.forefootWedge;
@@ -509,11 +674,32 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             clinicalStep === "corrections" &&
                             modified !== raw
                         ) {
-                            const neutralField = {
+                            const wedgeField = {
                                 ...field,
-                                corrections: { ...(field.corrections ?? {}), forefootWedge: undefined },
+                                sinks: undefined,
+                                sinkStyloidThicken: undefined,
+                                sinkMarkers: undefined,
                             };
-                            const neutralGeo = composeViewerPrintSolidTop({
+                            const neutralField = {
+                                ...wedgeField,
+                                corrections: {
+                                    ...(wedgeField.corrections ?? {}),
+                                    forefootWedge: undefined,
+                                    fullLengthWedge: undefined,
+                                },
+                            };
+                            const wedgeGeo = await composeViewerPrintSolidTop({
+                                raw,
+                                sourceField: wedgeField,
+                                shoeWidth: {
+                                    width: widthId,
+                                    ballWidthMm: layout.widthMm,
+                                    heelWidthMm: layout.widthMm * 0.62,
+                                    heelOverrideMm: heelW,
+                                },
+                                trimline: printTrim,
+                            });
+                            const neutralGeo = await composeViewerPrintSolidTop({
                                 raw,
                                 sourceField: neutralField,
                                 shoeWidth: {
@@ -524,7 +710,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                 },
                                 trimline: printTrim,
                             });
-                            const posAttr = modified.getAttribute("position");
+                            const posAttr = wedgeGeo.getAttribute("position");
                             const neuAttr = neutralGeo.getAttribute("position");
                             let maxMeshLiftMm = 0;
                             if (posAttr && neuAttr) {
@@ -534,6 +720,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                     maxMeshLiftMm = Math.max(maxMeshLiftMm, pos[vi] - neu[vi]);
                                 }
                             }
+                            wedgeGeo.dispose();
                             neutralGeo.dispose();
                             stockDebug("STEP corrections forefoot lateral composed mesh maxZ lift (mm)", {
                                 side,
@@ -548,16 +735,20 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         });
                         modified = raw;
                     }
-                    if (workRef.current && workRef.current !== modified && workRef.current !== raw) {
-                        workRef.current.dispose();
+                    if (session.cancelled) {
+                        if (modified !== raw) modified.dispose();
+                        return;
                     }
-                    workRef.current = modified;
-                    if (outRef.current && outRef.current !== modified && outRef.current !== raw) {
-                        outRef.current.dispose();
-                    }
-                    outRef.current = modified;
                     lastLoftKeyRef.current = null;
-                    setGeometry((prev) => (prev === modified ? prev : modified));
+                    if (modified !== raw) {
+                        if (forefootBaseRef.current && forefootBaseRef.current.geo !== modified) {
+                            forefootBaseRef.current.geo.dispose();
+                        }
+                        forefootBaseRef.current = { key: cacheKey, geo: modified };
+                        paintForefootDisplay(modified);
+                    } else {
+                        paintForefootDisplay(raw);
+                    }
                     setLoftPhase(side, "idle", "Composed top ready");
                     setBaseMeshLoading(side, false);
                     return;
@@ -589,11 +780,15 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         thicknessMm: field.thicknessMm,
                         includeSkives: field.includeSkives ?? false,
                         includeElements: field.includeElements ?? true,
+                        ...(field.sinks && field.sinks.length > 0
+                            ? { sinks: field.sinks, sinkStyloidThicken: field.sinkStyloidThicken === true }
+                            : {}),
                     }),
                     shapeFinishJson: JSON.stringify(field.shapeFinish ?? null),
-                    elementsJson: JSON.stringify(field.elements ?? []),
+                    elementsJson: elementGeometryKey(field.elements ?? []),
                     trimlineHash: printTrim ? hashPatternPoints(printTrim.points) : "",
                     shoeWidth: widthId,
+                    textMarkingHash: textMarkingHash(design.textMarking),
                 });
                 if (lastLoftKeyRef.current === loftKey && outRef.current) {
                     setBaseMeshLoading(side, false);
@@ -656,12 +851,36 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                     heelOverrideMm: heelW,
                                 },
                                 trimline: printTrim,
+                                textMarking: design.textMarking,
+                                side,
                                 ...(livePts ? { bottomPattern: livePts } : {}),
                             });
+                            let placementReference: BufferGeometry;
+                            try {
+                                placementReference = await composeViewerPrintSolidTop({
+                                    raw,
+                                    sourceField: {
+                                        ...field,
+                                        elements: elementsForSurface(field.elements ?? [], false),
+                                    },
+                                    shoeWidth: {
+                                        width: widthId,
+                                        ballWidthMm: layout.widthMm,
+                                        heelWidthMm: layout.widthMm * 0.62,
+                                        heelOverrideMm: heelW,
+                                    },
+                                    trimline: printTrim,
+                                });
+                            } catch (error) {
+                                preview.geometry.dispose();
+                                throw error;
+                            }
                             if (session.cancelled) {
+                                placementReference.dispose();
                                 preview.geometry.dispose();
                                 return;
                             }
+                            setElementReference(placementReference);
                             if (outRef.current && outRef.current !== workRef.current) {
                                 outRef.current.dispose();
                             }
@@ -706,6 +925,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             : design.thicknessMm;
         const thicknessMm = thicknessPreview ?? committedThickness;
         const field = baseModifierField(design, side, thicknessMm);
+        field.elements = elementsForSurface(
+            field.elements ?? [],
+            clinicalStep === "print" || clinicalStep === "export",
+        );
         // Skip smoothing while dragging for responsiveness; relax once when idle.
         // Slider/gizmo: reuse work buffer + skip normals/clip. Trimline keeps clip.
         const fastPreview = interacting && interactionSource !== "trimline";
@@ -717,6 +940,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             skipNormals: fastPreview,
             skipBottomSync: fastPreview,
         });
+        if (field.sinks && field.sinks.length > 0) {
+            const frame = getBaseFootprintFrame(raw, field.side);
+            const factors = classifyBaseTopFactors(raw);
+            applySinkCutToGeometry(modified, raw, field, frame, factors);
+        }
         if (workRef.current && workRef.current !== modified) {
             workRef.current.dispose();
         }
@@ -747,12 +975,15 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.paired?.leftThicknessMm,
         design.paired?.rightThicknessMm,
         design.corrections,
-        design.elements,
+        geometryElementsKey,
         design.pattern,
         design.shoeWidth,
         design.shoeWidthBySide,
         design.shapeFinish,
         design.trimlines,
+        design.textMarking,
+        design.sinks,
+        design.sinkStyloidThicken,
         correctionPreview,
         thicknessPreview,
         elementPreviews,
@@ -787,9 +1018,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 outRef.current.dispose();
             }
             workRef.current?.dispose();
+            forefootBaseRef.current?.geo.dispose();
+            forefootBaseRef.current = null;
         },
         [],
     );
 
-    return { geometry, building, hasBase: Boolean(base) };
+    return { geometry, building, hasBase: Boolean(base), elementReference };
 }

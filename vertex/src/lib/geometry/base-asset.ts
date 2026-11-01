@@ -1,10 +1,10 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
+import { sinkStyloidThickenForSide, sinksForSide } from "@/lib/geometry/migrate-corrections";
 import {
     SAMPLE_TOP_ASSET_ID,
     SAMPLE_TOP_GLB_PATH,
@@ -901,6 +901,7 @@ export async function loadBaseGeometry(
 /** Height field (with live correction/element previews) for modifier application. */
 export function baseModifierField(design: DesignState, side: Side, thicknessMm: number): HeightFieldParams {
     const params = insoleParamsFromDesign(design, side, "full");
+    const sinks = sinksForSide(design, side);
     return {
         side,
         lengthMm: params.lengthMm,
@@ -916,11 +917,19 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         includeSkives: false,
         includeElements: true,
         trimline: null,
+        shellThicknessMode: design.shellThicknessMode,
+        shellThicknessRfMm: design.shellThicknessRfMm,
+        shellThicknessMfMm: design.shellThicknessMfMm,
+        shellThicknessFfMm: design.shellThicknessFfMm,
+        shellThicknessBlendMm: design.shellThicknessBlendMm,
+        method: params.method,
         shapeFinish: getSideShapeFinish(design, side),
+        // Omit the keys when this foot has no sink so the field shape matches main.
+        ...(sinks ? { sinks, sinkStyloidThicken: sinkStyloidThickenForSide(design, side) } : {}),
     };
 }
 
-/** Authoritative field for the sewn OCCT base path (Phase 3B). */
+/** Authoritative field for the sewn base mesh path (Phase 3B). */
 export function baseModifierFieldAuthoritative(
     design: DesignState,
     side: Side,

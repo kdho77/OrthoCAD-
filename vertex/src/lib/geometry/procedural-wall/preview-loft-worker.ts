@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
 import { type geometryToPayload, payloadToGeometry } from "@/lib/geometry/geometry-buffer";
@@ -118,12 +117,12 @@ export async function reconstructProceduralPreviewInWorker(
     topGeo: BufferGeometry,
     options: ProceduralPreviewOptions = {},
 ): Promise<{ geometry: BufferGeometry; pattern: PolyPoint[] }> {
-    const sync = () => {
-        const preview = reconstructProceduralPreview(topGeo, options);
+    const sync = async () => {
+        const preview = await reconstructProceduralPreview(topGeo, options);
         return { geometry: preview.geometry, pattern: preview.pattern };
     };
     const w = ensureWorker();
-    if (!w) return sync();
+    if (!w) return await sync();
     const id = ++nextId;
     const copy = geometryCopy(topGeo);
     try {

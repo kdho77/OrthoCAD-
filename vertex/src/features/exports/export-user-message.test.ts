@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { describe, expect, test } from "@rstest/core";
 import { stlExportUserMessage } from "@/features/exports/export-user-message";
@@ -26,5 +25,11 @@ describe("stlExportUserMessage", () => {
 
     test("undefined → Export failed", () => {
         expect(stlExportUserMessage(undefined)).toBe("Export failed");
+    });
+
+    test("maps [TEXT] errors to the clear message", () => {
+        expect(stlExportUserMessage("[TEXT] too thin, enable Bold or increase size")).toBe(
+            "too thin, enable Bold or increase size",
+        );
     });
 });

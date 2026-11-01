@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
+import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
+import { elementGeometryKey } from "@/lib/geometry/element-geometry-key";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
 import type { GeometryQuality } from "@/lib/geometry/quality";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
-import { useKernelStore } from "@/stores/kernel-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { mergeCorrections, mergeElementPreviews, usePerformanceStore } from "@/stores/performance-store";
 import type { DesignState, Side } from "@/types";
 
@@ -25,16 +27,16 @@ export interface InsoleGeometryState {
 }
 
 /**
- * Async insole geometry — worker preview while interacting, OCCT kernel when idle.
+ * Async insole geometry — worker preview while interacting, full mesh when idle.
  */
 export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeometryState {
     const { side, design, trimLines, trimline, vertexOverrides, applyEdits } = options;
+    const geometryElementsKey = elementGeometryKey(design.elements);
+    const step = useClinicalWorkflowStore((s) => s.step);
     const interacting = usePerformanceStore((s) => s.interacting);
     const correctionPreview = usePerformanceStore((s) => s.correctionPreview);
     const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
     const elementPreviews = usePerformanceStore((s) => s.elementPreviews);
-    const kernelVersion = useKernelStore((s) => s.version);
-    const kernelLoadState = useKernelStore((s) => s.loadState);
 
     const quality: GeometryQuality = interacting ? "preview" : "full";
     const [geometry, setGeometry] = useState<BufferGeometry | null>(null);
@@ -49,8 +51,8 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         };
     }, []);
 
-    // Preview patches and kernel readiness are intentional effect triggers (not captured as direct reads).
-    // biome-ignore lint/correctness/useExhaustiveDependencies: rebuild when OCCT loads or live previews change
+    // Preview patches are intentional effect triggers (not captured as direct reads).
+    // biome-ignore lint/correctness/useExhaustiveDependencies: rebuild when live previews change
     useEffect(() => {
         let cancelled = false;
         setBuilding(true);
@@ -66,7 +68,10 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         const params = {
             ...insoleParamsFromDesign(design, side, quality),
             corrections: mergeCorrections(side, design.corrections[side]),
-            elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
+            elements: elementsForSurface(
+                mergeElementPreviews(design.elements.filter((e) => e.side === side)),
+                step === "print" || step === "export",
+            ),
             trimline: trimline ?? null,
         };
 
@@ -76,7 +81,6 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
                 quality,
                 trimLines: applyEdits ? trimLines : [],
                 vertexOverrides: applyEdits ? vertexOverrides : new Map(),
-                preferKernel: !interacting && kernelLoadState === "ready",
             })
             .then((geo) => {
                 if (cancelled || !mountedRef.current) {
@@ -96,6 +100,7 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
             cancelled = true;
         };
     }, [
+        step,
         side,
         design.thicknessMm,
         design.method,
@@ -104,7 +109,7 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         design.ukSize,
         design.footLengthMm,
         design.corrections,
-        design.elements,
+        geometryElementsKey,
         trimLines,
         trimline,
         vertexOverrides,
@@ -114,8 +119,6 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         correctionPreview,
         thicknessPreview,
         elementPreviews,
-        kernelVersion,
-        kernelLoadState,
     ]);
 
     useEffect(

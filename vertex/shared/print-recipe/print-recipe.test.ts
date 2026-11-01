@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -20,9 +19,9 @@ import {
 } from "./print-recipe";
 
 describe("print-recipe", () => {
-    test("hardness table matches locked ladder 14/20/26/32/38", () => {
-        expect(HARDNESS_TO_INFILL_PCT["Extra Soft"]).toBe(14);
-        expect(HARDNESS_TO_INFILL_PCT.Soft).toBe(20);
+    test("hardness table matches the single 5-level ladder (pending coupon)", () => {
+        expect(HARDNESS_TO_INFILL_PCT["Extra Soft"]).toBe(16);
+        expect(HARDNESS_TO_INFILL_PCT.Soft).toBe(22);
         expect(HARDNESS_TO_INFILL_PCT.Medium).toBe(26);
         expect(HARDNESS_TO_INFILL_PCT.Hard).toBe(32);
         expect(HARDNESS_TO_INFILL_PCT["Extra Hard"]).toBe(38);
@@ -81,8 +80,35 @@ describe("print-recipe", () => {
         );
     });
 
+    test("zones accept kind zone regions and keep empty legacy arrays", () => {
+        const empty = printRecipeV1Schema.parse({ ...DEFAULT_PRINT_RECIPE_V1 });
+        expect(empty.zones).toEqual([]);
+        const withZone = printRecipeV1Schema.parse({
+            ...DEFAULT_PRINT_RECIPE_V1,
+            zones: [
+                {
+                    regionId: "z-heel",
+                    kind: "zone",
+                    hardnessClass: "Medium",
+                    priority: 0,
+                    depth: { type: "full" },
+                    side: "left",
+                    polygon: [
+                        { x: 0, y: 0 },
+                        { x: 1, y: 0 },
+                        { x: 1, y: 1 },
+                        { x: 0, y: 1 },
+                    ],
+                },
+            ],
+        });
+        expect(withZone.zones[0]!.kind).toBe("zone");
+        expect(withZone.zones[0]!.priority).toBe(0);
+    });
+
     test("infill fraction from recipe", () => {
-        expect(infillFractionFromRecipe({ ...DEFAULT_PRINT_RECIPE_V1, defaultHardness: "Soft" })).toBe(0.2);
+        expect(infillFractionFromRecipe({ ...DEFAULT_PRINT_RECIPE_V1, defaultHardness: "Soft" })).toBe(0.22);
         expect(gyroidInfillPctForHardness("Extra Hard")).toBe(38);
+        expect(gyroidInfillPctForHardness("Extra Soft")).toBe(16);
     });
 });

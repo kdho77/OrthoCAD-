@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { AlertTriangle, ChevronRight, Link2, Lock, Unlink, Unlock } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
@@ -8,15 +7,28 @@ import { useProductionMethodForActiveFoot } from "@/lib/clinical/active-foot-sid
 import {
     CLINICAL_LIMITS,
     constrainDesignCorrections,
+    hasMaxRiseWarning,
     hasPostingAngleWarning,
+    hasShoeCounterHeightWarning,
     hasWedgeViolations,
+    MAX_RISE_WARN_MM,
+    SHOE_COUNTER_HEIGHT_WARN_MM,
 } from "@/lib/geometry/clinical-constraints";
+import {
+    buildWedgeStations,
+    FULL_LENGTH_HEEL_U,
+    fallbackRimXY,
+    fullLengthWedgeActive,
+    highEdgeRiseAt,
+} from "@/lib/geometry/full-length-wedge";
 import {
     SKIVE_ANGLE_MAX_DEG,
     SKIVE_ANGLE_MIN_DEG,
     SKIVE_DEFAULT_ANGLE_DEG,
     solveSkiveDerived,
 } from "@/lib/geometry/heel-skive";
+import { outlineHalfWidth } from "@/lib/geometry/height-field";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { cn } from "@/lib/utils";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
@@ -42,6 +54,7 @@ const FIELDS: {
     max: number;
     group: string;
     unit?: string;
+    hint?: string;
 }[] = [
     {
         key: "archHeightMm",
@@ -74,6 +87,14 @@ const FIELDS: {
         group: "Heel",
     },
     {
+        key: "forefootWidthMm",
+        label: "Forefoot width",
+        min: CLINICAL_LIMITS.forefootWidthMm.min,
+        max: CLINICAL_LIMITS.forefootWidthMm.max,
+        group: "Forefoot",
+        hint: "per side (total width change = 2x)",
+    },
+    {
         key: "heelLiftMm",
         label: "Heel lift",
         min: CLINICAL_LIMITS.heelLiftMm.min,
@@ -84,7 +105,7 @@ const FIELDS: {
     { key: "lateralFlangeMm", label: "Lateral flange", min: 0, max: 8, group: "Flanges" },
 ];
 
-const GROUPS = ["Arch", "Heel", "Flanges", "Posting"];
+const GROUPS = ["Arch", "Heel", "Forefoot", "Flanges", "Posting"];
 
 const WEDGE_ZONES = [
     { zone: "rearfoot" as const, label: "Rearfoot" },
@@ -94,7 +115,12 @@ const WEDGE_ZONES = [
 const SIDE_LABELS: Record<Side, string> = { left: "Left", right: "Right" };
 
 const previewCorrection = rafThrottle((side: Side, patch: Partial<SideCorrections>) => {
-    usePerformanceStore.getState().setCorrectionPreview(side, patch);
+    const store = usePerformanceStore.getState();
+    store.setCorrectionPreview(side, patch);
+    if (useDesignStore.getState().design.corrections.linked) {
+        const other: Side = side === "left" ? "right" : "left";
+        store.setCorrectionPreview(other, patch);
+    }
 });
 
 const previewThickness = rafThrottle((mm: number) => {
@@ -348,9 +374,13 @@ function SkiveSideControl({ side, values, onPreview, onCommit }: SkiveSideContro
 interface WedgeSideControlProps {
     side: Side;
     zoneLabel: string;
-    wedge: WedgeCorrection | undefined;
+    wedge: { side: WedgeEdge; value?: number; unit?: WedgeUnit } | undefined;
     onPreview: (wedge: WedgeCorrection | undefined) => void;
     onCommit: (wedge: WedgeCorrection | undefined) => void;
+    defaultEdge?: WedgeEdge;
+    defaultUnit?: WedgeUnit;
+    maxMm?: number;
+    maxDeg?: number;
 }
 
 function wedgeFromState(edge: WedgeEdge, value: number, unit: WedgeUnit): WedgeCorrection | undefined {
@@ -358,20 +388,50 @@ function wedgeFromState(edge: WedgeEdge, value: number, unit: WedgeUnit): WedgeC
     return { side: edge, value, unit };
 }
 
-function wedgeMaxForUnit(unit: WedgeUnit): number {
-    return unit === "deg" ? CLINICAL_LIMITS.rearfootWedgeDeg.max : CLINICAL_LIMITS.rearfootWedgeMm.max;
+function wedgeMaxForUnit(unit: WedgeUnit, maxMm?: number, maxDeg?: number): number {
+    if (unit === "deg") return maxDeg ?? CLINICAL_LIMITS.rearfootWedgeDeg.max;
+    return maxMm ?? CLINICAL_LIMITS.rearfootWedgeMm.max;
+}
+
+/** Heel high-edge rise and the station where the ruled posting peaks. */
+function fullLengthRiseReadout(side: Side, corrections: SideCorrections, lengthMm: number, widthMm: number) {
+    if (!fullLengthWedgeActive(corrections)) return { heel: 0, max: 0, u: 0, thetaDeg: 0 };
+    const rim = fallbackRimXY(lengthMm, (u) => outlineHalfWidth(u) * (widthMm / 2));
+    const stations = buildWedgeStations(rim, side, corrections.fullLengthWedge, {
+        originX: 0,
+        lengthMm,
+        medialPositiveY: side === "left",
+        ordered: true,
+    });
+    const thetaDeg = stations ? (stations.theta * 180) / Math.PI : 0;
+    return {
+        heel: highEdgeRiseAt(stations, FULL_LENGTH_HEEL_U),
+        max: stations?.maxRiseMm ?? 0,
+        u: stations?.maxRiseU ?? 0,
+        thetaDeg,
+    };
 }
 
 /** One foot column: edge toggle, value input, and unit toggle. Active when value > 0. */
-function WedgeSideControl({ side, zoneLabel, wedge, onPreview, onCommit }: WedgeSideControlProps) {
-    const [draftEdge, setDraftEdge] = useState<WedgeEdge>("lateral");
-    const [draftUnit, setDraftUnit] = useState<WedgeUnit>("deg");
+function WedgeSideControl({
+    side,
+    zoneLabel,
+    wedge,
+    onPreview,
+    onCommit,
+    defaultEdge = "lateral",
+    defaultUnit = "deg",
+    maxMm,
+    maxDeg,
+}: WedgeSideControlProps) {
+    const [draftEdge, setDraftEdge] = useState<WedgeEdge>(defaultEdge);
+    const [draftUnit, setDraftUnit] = useState<WedgeUnit>(defaultUnit);
     const [draftValue, setDraftValue] = useState(0);
 
     const activeEdge = wedge?.side ?? draftEdge;
     const activeUnit = wedge?.unit ?? draftUnit;
     const activeValue = wedge?.value ?? draftValue;
-    const max = wedgeMaxForUnit(activeUnit);
+    const max = wedgeMaxForUnit(activeUnit, maxMm, maxDeg);
     const unitLabel = activeUnit === "deg" ? "°" : "mm";
 
     const update = (edge: WedgeEdge, value: number, unit: WedgeUnit, commit: boolean) => {
@@ -418,7 +478,12 @@ function WedgeSideControl({ side, zoneLabel, wedge, onPreview, onCommit }: Wedge
                 ]}
                 value={activeUnit}
                 onChange={(unit) =>
-                    update(activeEdge, Math.min(activeValue, wedgeMaxForUnit(unit)), unit, true)
+                    update(
+                        activeEdge,
+                        Math.min(activeValue, wedgeMaxForUnit(unit, maxMm, maxDeg)),
+                        unit,
+                        true,
+                    )
                 }
             />
         </div>
@@ -470,9 +535,30 @@ export function CorrectionsPanel() {
         return hasWedgeViolations(violations);
     }, [corrections, design.thicknessMm]);
 
+    const layout = useMemo(() => insoleLayoutFromDesign(design), [design]);
+    const fullLengthRise = useMemo(
+        () => ({
+            left: fullLengthRiseReadout("left", sideValues.left, layout.lengthMm, layout.widthMm),
+            right: fullLengthRiseReadout("right", sideValues.right, layout.lengthMm, layout.widthMm),
+        }),
+        [sideValues, layout.lengthMm, layout.widthMm],
+    );
+
     const showPostingAngleWarning = useMemo(
-        () => hasPostingAngleWarning(sideValues.left) || hasPostingAngleWarning(sideValues.right),
-        [sideValues],
+        () =>
+            hasPostingAngleWarning(sideValues.left, fullLengthRise.left.thetaDeg) ||
+            hasPostingAngleWarning(sideValues.right, fullLengthRise.right.thetaDeg),
+        [sideValues, fullLengthRise],
+    );
+    const showMaxRiseWarning = useMemo(
+        () => hasMaxRiseWarning(fullLengthRise.left.max) || hasMaxRiseWarning(fullLengthRise.right.max),
+        [fullLengthRise],
+    );
+    const showShoeCounterWarning = useMemo(
+        () =>
+            hasShoeCounterHeightWarning(sideValues.left, fullLengthRise.left.heel) ||
+            hasShoeCounterHeightWarning(sideValues.right, fullLengthRise.right.heel),
+        [sideValues, fullLengthRise],
     );
 
     const sectionOpen = (key: string) => openSections[key] ?? false;
@@ -557,13 +643,38 @@ export function CorrectionsPanel() {
                     open={sectionOpen(group)}
                     onOpenChange={() => toggleSection(group)}
                 >
-                    {group === "Posting" && (showWedgeWarning || showPostingAngleWarning) ? (
+                    {group === "Posting" &&
+                    (showWedgeWarning ||
+                        showPostingAngleWarning ||
+                        showMaxRiseWarning ||
+                        showShoeCounterWarning) ? (
                         <div className="mb-2 space-y-1">
                             {showPostingAngleWarning ? (
                                 <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1.5 text-[10px] text-amber-600">
                                     <AlertTriangle className="h-3 w-3 flex-shrink-0" />
                                     <span>
                                         Posting angle above 8° — verify wall thickness and clinical intent.
+                                    </span>
+                                </div>
+                            ) : null}
+                            {showMaxRiseWarning ? (
+                                <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1.5 text-[10px] text-amber-600">
+                                    <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                                    <span>
+                                        Full-length rise above {MAX_RISE_WARN_MM} mm
+                                        {fullLengthRise.left.max >= fullLengthRise.right.max
+                                            ? ` (left ${fullLengthRise.left.max.toFixed(1)} mm at u ${fullLengthRise.left.u.toFixed(2)})`
+                                            : ` (right ${fullLengthRise.right.max.toFixed(1)} mm at u ${fullLengthRise.right.u.toFixed(2)})`}
+                                        .
+                                    </span>
+                                </div>
+                            ) : null}
+                            {showShoeCounterWarning ? (
+                                <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1.5 text-[10px] text-amber-600">
+                                    <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                                    <span>
+                                        Shoe counter: high-side outside heel exceeds{" "}
+                                        {SHOE_COUNTER_HEIGHT_WARN_MM} mm (stock cup + cup height + rise).
                                     </span>
                                 </div>
                             ) : null}
@@ -611,6 +722,48 @@ export function CorrectionsPanel() {
                               );
                           })
                         : null}
+                    {group === "Posting" ? (
+                        <div className="mt-2 border-t border-border pt-2">
+                            <div className="grid grid-cols-2 gap-x-3">
+                                {(["left", "right"] as Side[]).map((side) => {
+                                    const rise = fullLengthRise[side];
+                                    return (
+                                        <div key={side} className="space-y-1">
+                                            <WedgeSideControl
+                                                side={side}
+                                                zoneLabel="Full-length"
+                                                defaultEdge="lateral"
+                                                defaultUnit="mm"
+                                                maxMm={20}
+                                                maxDeg={10}
+                                                wedge={sideValues[side].fullLengthWedge}
+                                                onPreview={(newW) =>
+                                                    previewCorrection(side, { fullLengthWedge: newW })
+                                                }
+                                                onCommit={(newW) => {
+                                                    const preview =
+                                                        usePerformanceStore.getState().correctionPreview[
+                                                            side
+                                                        ] ?? {};
+                                                    updateCorrection(side, {
+                                                        ...preview,
+                                                        fullLengthWedge: newW,
+                                                    });
+                                                    clearCorrectionPreview();
+                                                }}
+                                            />
+                                            {fullLengthWedgeActive(sideValues[side]) ? (
+                                                <p className="text-[10px] text-muted-foreground">
+                                                    Max rise {rise.max.toFixed(1)} mm at u {rise.u.toFixed(2)}
+                                                    {" · "}heel {rise.heel.toFixed(1)} mm
+                                                </p>
+                                            ) : null}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    ) : null}
                     <div className="grid grid-cols-2 gap-x-3">
                         {(["left", "right"] as Side[]).map((side) => (
                             <div key={side} className="space-y-2">
@@ -636,6 +789,7 @@ export function CorrectionsPanel() {
                                             } as Partial<SideCorrections>);
                                             clearPresetKey(side, f.key);
                                         }}
+                                        hint={f.hint}
                                         onPreview={(v) =>
                                             previewCorrection(side, {
                                                 [f.key]: v,

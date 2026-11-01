@@ -1,6 +1,6 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { forefootWidthLongitudinalEnvelope } from "@/lib/geometry/height-field";
 import { type ColumnQuality, columnHeading, FILLET_R_CAP_MM, MIN_ROUND_R_MM } from "./bezier-column";
 import {
     LATERAL_K_SLACK,
@@ -25,7 +25,7 @@ import { fairedPattern } from "./faired-pattern";
 import type { HermiteStation } from "./loft";
 import { outwardNormal } from "./measure";
 import { enforceMinRimInset } from "./pattern-hygiene";
-import { nearestRayHitOnLoop, spreadClosedOnLoop } from "./stations";
+import { type ForefootSkewExempt, nearestRayHitOnLoop, spreadClosedOnLoop } from "./stations";
 
 export const PATTERN_SOURCE_FAIRED_STOCK = "faired-stock";
 export const MIN_INSET_FLOOR_MM = 1;
@@ -667,11 +667,24 @@ export function smoothMovedStationOutline(stations: HermiteStation[], loop: Poly
     }
 }
 
-function slideSkewStations(stations: HermiteStation[], loop: PolyPoint[], r1: number, r2: number): void {
+function slideSkewStations(
+    stations: HermiteStation[],
+    loop: PolyPoint[],
+    r1: number,
+    r2: number,
+    opts?: ForefootSkewExempt & { minX?: number; lengthMm?: number },
+): void {
     const rim = stations.map((s) => s.rim);
     const c = centroidOf(rim);
+    const fore = opts?.forefootWidthMm ?? 0;
+    const minX = opts?.minX ?? opts?.bounds?.minX ?? 0;
+    const lengthMm = opts?.lengthMm ?? (opts?.bounds ? opts.bounds.maxX - opts.bounds.minX : 0);
     for (let i = 0; i < stations.length; i++) {
         const st = stations[i]!;
+        if (fore !== 0 && lengthMm > 1e-3) {
+            const u = Math.max(0, Math.min(1, (st.rim.x - minX) / lengthMm));
+            if (forefootWidthLongitudinalEnvelope(u) > 1e-3) continue;
+        }
         const out = outwardNormal(rim, i, c);
         const { insetMm, skewMm } = columnInsetSkew(st.rim, st.outline, out);
         const cap = SKEW_INSET_RATIO * Math.max(insetMm, 0);
@@ -691,12 +704,13 @@ export function limitStationSkew(
     loop: PolyPoint[],
     r1: number,
     r2: number,
+    opts?: ForefootSkewExempt & { minX?: number; lengthMm?: number },
 ): void {
     if (stations.length < 3 || loop.length < 3) return;
-    slideSkewStations(stations, loop, r1, r2);
+    slideSkewStations(stations, loop, r1, r2, opts);
     repairNeighbourHeading(stations, loop, r1, r2);
     // spreadClosedOnLoop can put skew back over 0.5 inset; slide once more.
-    slideSkewStations(stations, loop, r1, r2);
+    slideSkewStations(stations, loop, r1, r2, opts);
 }
 
 function headingDeg(a: HermiteStation, b: HermiteStation): number {
@@ -757,25 +771,37 @@ function repairNeighbourHeading(stations: HermiteStation[], loop: PolyPoint[], r
     }
 }
 
-export function assertPreLoftStations(stations: HermiteStation[], r1: number, r2: number): void {
+export function assertPreLoftStations(
+    stations: HermiteStation[],
+    r1: number,
+    r2: number,
+    opts?: ForefootSkewExempt & { minX?: number; lengthMm?: number },
+): void {
     if (stations.length < 3) {
         throw new Error("[S1-PRELOFT] station ring < 3");
     }
     const rim = stations.map((s) => s.rim);
     const c = centroidOf(rim);
+    const fore = opts?.forefootWidthMm ?? 0;
+    const minX = opts?.minX ?? opts?.bounds?.minX ?? 0;
+    const lengthMm = opts?.lengthMm ?? (opts?.bounds ? opts.bounds.maxX - opts.bounds.minX : 0);
     const bad: string[] = [];
     for (let i = 0; i < stations.length; i++) {
         const st = stations[i]!;
         const nxt = stations[(i + 1) % stations.length]!;
         const out = outwardNormal(rim, i, c);
         const { insetMm, skewMm } = columnInsetSkew(st.rim, st.outline, out);
+        const u = lengthMm > 1e-3 ? Math.max(0, Math.min(1, (st.rim.x - minX) / lengthMm)) : 0;
+        const foreEnv = fore !== 0 ? forefootWidthLongitudinalEnvelope(u) : 0;
         const need = minInsetAtStationMm(insetMm, r1, r2);
-        if (insetMm + 1e-3 < need) {
+        if (foreEnv <= 1e-3 && insetMm + 1e-3 < need) {
             bad.push(`inset[${i}]=${insetMm.toFixed(3)}<${need.toFixed(3)}`);
         }
-        const skewCap = SKEW_INSET_RATIO * Math.max(insetMm, 0);
-        if (skewMm > skewCap + 1e-3) {
-            bad.push(`skew[${i}]=${skewMm.toFixed(3)}>${skewCap.toFixed(3)}`);
+        if (foreEnv <= 1e-3) {
+            const skewCap = SKEW_INSET_RATIO * Math.max(insetMm, 0);
+            if (skewMm > skewCap + 1e-3) {
+                bad.push(`skew[${i}]=${skewMm.toFixed(3)}>${skewCap.toFixed(3)}`);
+            }
         }
         const col = columnHeading(st);
         // B→R should sit in the outward half-plane of the rim.
@@ -784,14 +810,16 @@ export function assertPreLoftStations(stations: HermiteStation[], r1: number, r2
         const bl = Math.hypot(bx, by);
         const hx = bl > 1e-8 ? bx / bl : -col.h.x;
         const hy = bl > 1e-8 ? by / bl : -col.h.y;
-        if (hx * out.x + hy * out.y < -1e-6) {
+        if (foreEnv <= 1e-3 && hx * out.x + hy * out.y < -1e-6) {
             const deg = (Math.acos(Math.max(-1, Math.min(1, hx * out.x + hy * out.y))) * 180) / Math.PI;
             bad.push(`column-vs-outward-rim[${i}]=${deg.toFixed(1)}>90`);
         }
         const h1 = columnHeading(nxt).h;
         const d = Math.max(-1, Math.min(1, col.h.x * h1.x + col.h.y * h1.y));
         const head = (Math.acos(d) * 180) / Math.PI;
-        if (head > PRELOFT_HEADING_MAX_DEG + 1e-3) {
+        const uNext = lengthMm > 1e-3 ? Math.max(0, Math.min(1, (nxt.rim.x - minX) / lengthMm)) : 0;
+        const nextEnv = fore !== 0 ? forefootWidthLongitudinalEnvelope(uNext) : 0;
+        if ((foreEnv <= 1e-3 || nextEnv <= 1e-3) && head > PRELOFT_HEADING_MAX_DEG + 1e-3) {
             bad.push(`heading[${i}-${(i + 1) % stations.length}]=${head.toFixed(2)}>15`);
         }
     }

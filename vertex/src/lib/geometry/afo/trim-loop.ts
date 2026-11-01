@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { AFO_TRIM_MIN_AREA_MM2, AFO_TRIM_MIN_LENGTH_MM, AFO_TRIM_MIN_POINTS } from "./defaults";
 import { geodesicVertexPath } from "./geodesic";

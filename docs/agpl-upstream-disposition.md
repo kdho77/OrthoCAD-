@@ -1,5 +1,11 @@
 # AGPL / Upstream Disposition Memo
 
+> **Historical planning memo, superseded for the current tree.** Chili3D-derived
+> packages, the OpenCascade WASM tree, and plugins were removed on the
+> license-classification branch. `LICENSE` does not grant the Affero GPL.
+> Current provenance is `docs/license-classification.md`. This memo is not the
+> repository license.
+
 > **READ-ONLY planning memo — NOT legal advice; counsel required.**  
 > This document is for internal planning and decision support only. It does not constitute legal advice and must not be relied upon for compliance, licensing, or commercial decisions without review by qualified counsel.
 

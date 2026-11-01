@@ -1,10 +1,17 @@
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
+import { workpiecesFromDesign } from "@/lib/cnc/compose";
+import { generateCncJob } from "@/lib/cnc/export";
+import type { MillingProfile } from "@/lib/cnc/types";
 import {
     buildExportGeometry,
     buildExportGlb,
     buildExportStl,
     exportModeFromMethod,
 } from "@/lib/geometry/export-geometry";
+import { collectHardnessRegions } from "@/lib/hardness/collect";
+import { parseBinaryStl } from "@/lib/hardness/mesh";
+import { exportHardness3mf, STL_SHELL_ONLY_WARNING } from "@/lib/hardness/pipeline";
+import type { HardnessExportReport } from "@/lib/hardness/report";
 import { type CamOverrides, type CamResult, generateGcode, type PrinterPreset } from "@/lib/kiri";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { mapClientRpcError } from "@/lib/trpc-errors";
@@ -12,6 +19,7 @@ import { useAuditStore } from "@/stores/audit-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
+import { useMillingProfileStore } from "@/stores/milling-profile-store";
 import type { ExportFormat, GrindingStyle, Side } from "@/types";
 import { bindPrintRecipeProfile } from "../../../shared/print-recipe/print-recipe";
 
@@ -25,6 +33,8 @@ export interface ExportOutcome {
     blob?: Blob;
     stats?: CamResult["stats"];
     productionId?: string;
+    warning?: string;
+    report?: HardnessExportReport;
 }
 
 function buildSideGeometry(side: Side) {
@@ -58,7 +68,7 @@ async function uploadManufacturingStlDirect(side: Side, stlBuffer: ArrayBuffer):
     return prep.storageKey;
 }
 
-/** Export the finalized viewer solid as binary STL (OCCT sew primary, mesh-close fallback). */
+/** Export the finalized viewer solid as binary STL (mesh-close primary export path). */
 async function buildManufacturingStl(side: Side): Promise<ArrayBuffer> {
     const { design } = useDesignStore.getState();
     return buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
@@ -103,6 +113,9 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
     if (format === "glb") {
         return exportGlb(side);
     }
+    if (format === "3mf") {
+        return export3mf(side);
+    }
     const product = useDesignStore.getState().design.productType === "afo" ? "afo" : "insole";
     const filename = `${product}-${side}-${Date.now()}.stl`;
     try {
@@ -117,9 +130,31 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
         const auth = await authorize("stl", side, filename);
         if (!auth.ok) return { ok: false, reason: auth.reason };
         useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
-        return { ok: true, filename, blob };
+        const warning = collectHardnessRegions(design, side).length > 0 ? STL_SHELL_ONLY_WARNING : undefined;
+        return { ok: true, filename, blob, warning };
     } catch (e) {
         return { ok: false, reason: e instanceof Error ? e.message : "Export failed" };
+    }
+}
+
+export async function export3mf(side: Side): Promise<ExportOutcome> {
+    const { user, license, deductTokens } = useAuthStore.getState();
+    const check = canExport(user, license, "3mf");
+    if (!check.ok) return { ok: false, reason: check.reason };
+    const filename = `insole-${side}-${Date.now()}.3mf`;
+    try {
+        const { design } = useDesignStore.getState();
+        const stl = await buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
+        if (!stl?.byteLength) return { ok: false, reason: "Export failed" };
+        const shell = parseBinaryStl(stl);
+        const packed = await exportHardness3mf({ design, side, shell });
+        const blob = new Blob([packed.bytes], { type: "model/3mf" });
+        downloadBlob(blob, filename);
+        deductTokens(TOKEN_COST["3mf"]);
+        useAuditStore.getState().record("export_generated", `3MF ${side} (-${TOKEN_COST["3mf"]})`);
+        return { ok: true, filename, blob, report: packed.report };
+    } catch (e) {
+        return { ok: false, reason: e instanceof Error ? e.message : "3MF export failed" };
     }
 }
 
@@ -136,6 +171,45 @@ export async function exportGlb(side: Side): Promise<ExportOutcome> {
         return { ok: true, filename, blob };
     } catch (e) {
         return { ok: false, reason: e instanceof Error ? e.message : "GLB export failed" };
+    }
+}
+
+export async function exportCncGcode(sides: Side[], profile: MillingProfile): Promise<ExportOutcome> {
+    const { design } = useDesignStore.getState();
+    const before = JSON.stringify(design);
+    const filename = `insole-cnc-${sides.join("-")}-${Date.now()}${profile.fileExtension || ".gcode"}`;
+    try {
+        const parts = await workpiecesFromDesign(design, sides, profile);
+        if (parts.length === 0) {
+            return { ok: false, reason: "No insole geometry to mill" };
+        }
+        const placements = useMillingProfileStore.getState().placements;
+        const job = generateCncJob(profile, parts, { placements });
+        const after = JSON.stringify(useDesignStore.getState().design);
+        if (after !== before) {
+            return { ok: false, reason: "CNC export mutated design state" };
+        }
+        const blob = new Blob([job.gcode], { type: "text/plain" });
+        downloadBlob(blob, filename);
+        const auth = await authorize("gcode", sides[0] ?? "left", filename);
+        if (!auth.ok) return { ok: false, reason: auth.reason };
+        useAuditStore
+            .getState()
+            .record("export_generated", `CNC G-code ${sides.join("+")} · ${profile.name}`);
+        return {
+            ok: true,
+            filename,
+            blob,
+            stats: {
+                lines: job.gcode.split("\n").length,
+                extrudeDistanceMm: 0,
+                travelDistanceMm: job.stats.travelDistanceMm,
+                estimatedTimeSec: job.stats.estimatedTimeSec,
+                estimatedMaterialMm3: 0,
+            },
+        };
+    } catch (e) {
+        return { ok: false, reason: e instanceof Error ? e.message : "CNC export failed" };
     }
 }
 

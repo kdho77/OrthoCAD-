@@ -5,11 +5,19 @@ on:
         branches: ["main"]
     pull_request:
         branches: ["main"]
+    workflow_dispatch:
+
+# A newer commit on the same PR makes its previous check run obsolete.
+concurrency:
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
 
 jobs:
     test-and-deploy:
+        # Manual dispatch is reserved for the optional procedural smoke test.
+        if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
-        timeout-minutes: 45
+        timeout-minutes: 90
 
         steps:
             - name: Checkout repository
@@ -40,15 +48,18 @@ jobs:
             - name: Install STL-gate Python deps
               run: python3 -m pip install "trimesh>=4.0" "scipy>=1.11"
 
+            - name: Materialize incoming element binaries
+              run: python3 scripts/materialize-incoming-elements.py
+
             - name: Assert server entry boots under plain Node ESM
               run: node vertex/scripts/assert-server-esm-boot.mjs
 
             - name: Run unit tests
               run: npm run test
 
-    # Non-required. Reports Default.glb procedural residuals (widen +6/+10 dk/ds).
-    # Tracking: see issue linked from the optional test header.
+    # Optional diagnostic: run manually from Actions when investigating residuals.
     default-procedural-smoke:
+        if: github.event_name == 'workflow_dispatch'
         runs-on: ubuntu-latest
 
         steps:

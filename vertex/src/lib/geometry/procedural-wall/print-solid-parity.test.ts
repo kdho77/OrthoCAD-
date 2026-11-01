@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -81,8 +80,8 @@ describe("Print solid composed-top parity", () => {
     test("composeViewerPrintSolidTop STL md5 matches composePrintSolidTop", async () => {
         const raw = await loadSampleTop("right");
         const sourceField = field("right", { ...zero(), medialSkiveMm: 2 });
-        const viaPrint = composePrintSolidTop(raw, { sourceField });
-        const viaViewer = composeViewerPrintSolidTop({ raw, sourceField });
+        const viaPrint = await composePrintSolidTop(raw, { sourceField });
+        const viaViewer = await composeViewerPrintSolidTop({ raw, sourceField });
         expect(stlMd5(viaViewer)).toBe(stlMd5(viaPrint));
         viaPrint.dispose();
         viaViewer.dispose();
@@ -92,8 +91,8 @@ describe("Print solid composed-top parity", () => {
     test("loft top matches composePrintSolidTop within 0.05 mm; skive raise + S1 gates", async () => {
         const raw = await loadSampleTop("right");
         const sourceField = field("right", { ...zero(), medialSkiveMm: 4, heelLiftMm: 4 });
-        const composed = composePrintSolidTop(raw, { sourceField });
-        const preview = reconstructProceduralPreview(raw, {
+        const composed = await composePrintSolidTop(raw, { sourceField });
+        const preview = await reconstructProceduralPreview(raw, {
             sourceField,
             composedTop: true,
             corrections: sourceField.corrections,
@@ -131,7 +130,7 @@ describe("Print solid composed-top parity", () => {
         expect(solidBottom?.length).toBe(outlineRing?.length);
 
         const composedPos = composed.getAttribute("position")!;
-        const plain = composePrintSolidTop(raw, { sourceField: field("right", zero()) });
+        const plain = await composePrintSolidTop(raw, { sourceField: field("right", zero()) });
         const pPos = plain.getAttribute("position")!;
         let maxSkive = 0;
         composed.computeBoundingBox();

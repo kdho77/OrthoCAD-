@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import {
     buildBezierColumns,
@@ -316,6 +315,8 @@ export interface BuildQuadGridInput {
     movedAt?: (u: number) => boolean;
     /** Print-step grinding dropdown → E→F mid-style. */
     wallStyle?: WallStyleParams;
+    /** Smooth Round rim tangents. Set only while a full-length wedge is active. */
+    fairRoundTangent?: boolean;
 }
 
 function headingOfStation(st: HermiteStation): { h: { x: number; y: number }; planLen: number } {
@@ -758,6 +759,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
             input.movedAt,
             input.wallStyle,
             input.footLengthMm,
+            input.fairRoundTangent === true,
         );
     let built = buildCols(plantarSlopeRad, nPlantars);
     const extra = new Array(nS).fill(0);

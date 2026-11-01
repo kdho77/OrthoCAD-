@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /** In-memory sliding-window rate limiter for tRPC mutations (per user + route). */
 export interface RateLimitConfig {
@@ -15,7 +14,10 @@ interface Bucket {
 
 const buckets = new Map<string, Bucket>();
 
-export function checkRateLimit(key: string, config: RateLimitConfig): { ok: true } | { ok: false; retryAfterMs: number } {
+export function checkRateLimit(
+    key: string,
+    config: RateLimitConfig,
+): { ok: true } | { ok: false; retryAfterMs: number } {
     const now = Date.now();
     const cutoff = now - config.windowMs;
     let bucket = buckets.get(key);

@@ -1,0 +1,33 @@
+{
+  "kind": "toe_crest",
+  "label": "Toe crest 1",
+  "nominalPeakMm": 2.47,
+  "refSizeMm": 260,
+  "refMeasuredLengthMm": 271.93,
+  "refNote": "u=(y+1)/260 (length-only 260 basis); v=(x-mid)/halfwidth of unscaled SAMPLE_Top at anchor y, medial +",
+  "anchor": {
+    "u": 0.7802,
+    "v": -0.2859
+  },
+  "anchorConvention": "v=(x-mid)/halfwidth, medial +",
+  "authoredSide": "right",
+  "footprintMm": {
+    "w": 68.5,
+    "l": 55.0,
+    "area": 2021.4
+  },
+  "featherMm": 2,
+  "rotationDeg": 0,
+  "category": "add",
+  "frame": "repo-right (+X medial, +Y toe, Z up)",
+  "origin": "footprint centroid, z>=0",
+  "anchorMm": {
+    "x": -110.95,
+    "y": 201.84
+  },
+  "source": {
+    "file": "toe_crest_1.glb",
+    "sha256": "a9e0f7e06859d9f386d95fbf37315aec7327873b2665fb81ba91d011f5409c9f"
+  },
+  "widthBasis": "SAMPLE_Top unscaled"
+}

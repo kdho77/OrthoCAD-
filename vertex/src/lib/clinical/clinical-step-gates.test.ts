@@ -1,8 +1,8 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { beforeEach, describe, expect, test } from "@rstest/core";
 import {
+    clinicalRailBannerReason,
     evaluateNextGate,
     evaluateScanStepGate,
     evaluateStepComplete,
@@ -39,6 +39,27 @@ describe("clinical step gates", () => {
 
         useClinicalWorkflowStore.getState().acknowledgeExplicitFootSide("right");
         expect(isFootSideExplicitlyKnown()).toBe(true);
+        const after = evaluateScanStepGate();
+        if (!after.ok) expect(after.reason).not.toMatch(/Select Left, Right, or Pair/i);
+        const banner = clinicalRailBannerReason("print");
+        if (banner) expect(banner).not.toMatch(/Select Left, Right, or Pair/i);
+    });
+
+    test("jumping to Mill then selecting Right clears the side-selection banner", () => {
+        useClinicalWorkflowStore.setState({
+            footSideExplicitlyChosen: false,
+            step: "print",
+            scanGateStickyReason: "Select Left, Right, or Pair above before continuing (no silent default).",
+            nextBlockReason: "Select Left, Right, or Pair above before continuing (no silent default).",
+        });
+        expect(clinicalRailBannerReason("print")).toMatch(/Select Left, Right, or Pair/i);
+
+        useClinicalWorkflowStore.getState().acknowledgeExplicitFootSide("right");
+        expect(useClinicalWorkflowStore.getState().footSideExplicitlyChosen).toBe(true);
+        const sticky = useClinicalWorkflowStore.getState().scanGateStickyReason;
+        if (sticky) expect(sticky).not.toMatch(/Select Left, Right, or Pair/i);
+        const banner = clinicalRailBannerReason("print");
+        if (banner) expect(banner).not.toMatch(/Select Left, Right, or Pair/i);
     });
 
     test("scan Next blocked when scans present but not registered", () => {

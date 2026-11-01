@@ -1,16 +1,23 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
-import type { SolidResult } from "@/lib/chili3d/kernel";
 import { applyArchSkiveToTopMesh } from "@/lib/geometry/arch-skive";
 import { getDesignBase } from "@/lib/geometry/base-asset";
+import {
+    type FullLengthRimFrame,
+    fullLengthDeltaFromField,
+    fullLengthWedgeActive,
+} from "@/lib/geometry/full-length-wedge";
+import type { SolidResult } from "@/lib/geometry/geometry-kernel";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
+    forefootWidthPerSideDeltaMm,
     type HeightFieldParams,
     heelCupWidthScaleFactor,
     heightAt,
     quinticSmoothstep,
+    resolveOutlineHalfWidth,
+    resolveShellThicknessContext,
     smoothstep,
 } from "@/lib/geometry/height-field";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
@@ -29,6 +36,8 @@ import {
     applyTrimmableForefootExtension,
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
+import { neutralShellThicknessContext } from "@/lib/geometry/shell-thickness-zonal";
+import { sinksActive, sinkThicknessAt } from "@/lib/geometry/sink";
 import { wedgeCorrectionActive, wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
@@ -55,6 +64,7 @@ const ZERO_CORRECTIONS: SideCorrections = {
     heelCupDepthMm: 0,
     heelCupHeightMm: 0,
     heelCupWidthMm: 0,
+    forefootWidthMm: 0,
     heelLiftMm: 0,
     apexMoveMm: 0,
     medialFlangeMm: 0,
@@ -74,8 +84,10 @@ export const BASE_REFERENCE_THICKNESS_MM = 2;
 
 /** Neutral field (no corrections, no elements) used as the displacement baseline. */
 export function neutralField(field: HeightFieldParams): HeightFieldParams {
+    const activeShell = resolveShellThicknessContext(field);
     return {
         ...field,
+        shell: neutralShellThicknessContext(activeShell, BASE_REFERENCE_THICKNESS_MM),
         // Fixed baseline thickness so the thickness slider produces a real delta
         // (top lifts upward) instead of cancelling out in `correctionDeltaAt`.
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
@@ -86,9 +98,14 @@ export function neutralField(field: HeightFieldParams): HeightFieldParams {
             ...ZERO_CORRECTIONS,
             rearfootWedge: undefined,
             forefootWedge: undefined,
+            fullLengthWedge: undefined,
         },
         elements: [],
         includeElements: false,
+        // T is a separate top-only term. Neutral must not carry it.
+        sinks: undefined,
+        sinkStyloidThicken: undefined,
+        sinkMarkers: undefined,
         // Skives are applied post-sync on the top mesh only (R11) — never in F.
         includeSkives: false,
         trimline: null,
@@ -362,6 +379,45 @@ export function getBaseFootprintFrame(base: BufferGeometry, side: Side): BaseFoo
     return { lengthAxis, widthAxis, thickAxis, lenMin, lenSize, widCenter, widSize, widthSign };
 }
 
+function halfWidthMmAtField(field: HeightFieldParams): (u: number) => number {
+    return (u: number) => resolveOutlineHalfWidth(u, field) * (field.widthMm / 2);
+}
+
+/** Top-sheet extremes in the vSigned frame (y = widthSign · (width − center)). */
+function collectFullLengthRim(base: BufferGeometry, field: HeightFieldParams): FullLengthRimFrame | null {
+    if (!fullLengthWedgeActive(field.corrections)) return null;
+    const extents = getBaseExtents(base);
+    const pos = base.getAttribute("position");
+    if (!extents || !pos) return null;
+    const { lengthAxis, widthAxis, min, size } = extents;
+    const lenMin = min[lengthAxis]!;
+    const lenSize = size[lengthAxis] || 1;
+    const widSize = size[widthAxis] || 1;
+    const widCenter = min[widthAxis]! + widSize / 2;
+    const medialSign = field.side === "left" ? -1 : 1;
+    const widthSign = -(detectArchSideSign(base) * medialSign);
+    const ud = base.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
+    const topN = ud?.isMultiMeshBase && ud.topVertexCount && ud.topVertexCount > 0 ? ud.topVertexCount : 0;
+    const arr = pos.array as ArrayLike<number>;
+    const count = topN > 0 ? topN : pos.count;
+    const points: { x: number; y: number }[] = [];
+    for (let i = 0; i < count; i++) {
+        points.push({
+            x: arr[i * 3 + lengthAxis]!,
+            y: widthSign * (arr[i * 3 + widthAxis]! - widCenter),
+        });
+    }
+    if (points.length < 4) return null;
+    return {
+        points,
+        originX: lenMin,
+        lengthMm: lenSize,
+        medialPositiveY: field.side === "left",
+        yScale: widSize / 2,
+        ordered: false,
+    };
+}
+
 /** Wedge delta (mm) at a base vertex — mirrors applyBaseModifiers sampling. */
 export function wedgeMmAtBaseVertex(
     base: BufferGeometry,
@@ -383,11 +439,16 @@ export function wedgeMmAtBaseVertex(
     const widCoord = arr[vertexIndex * 3 + widthAxis]!;
     const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
     const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
-    return wedgeDeltaAt(u, vSigned, field.side, field.corrections, {
+    const regional = wedgeDeltaAt(u, vSigned, field.side, field.corrections, {
         lengthMm: field.lengthMm,
         widthMm: field.widthMm,
         trimline: field.trimline ?? null,
     });
+    if (!fullLengthWedgeActive(field.corrections)) return regional;
+    const withRim: HeightFieldParams = field.fullLengthRim
+        ? field
+        : { ...field, fullLengthRim: collectFullLengthRim(base, field) };
+    return regional + fullLengthDeltaFromField(u, vSigned, withRim, halfWidthMmAtField(withRim));
 }
 
 export function vertexFootprintAt(
@@ -530,6 +591,9 @@ function sampleFieldDeltaAtXY(
             widthMm: fieldForDelta.widthMm,
             trimline: fieldForDelta.trimline ?? null,
         });
+    }
+    if (skipWedge && fullLengthWedgeActive(fieldForDelta.corrections)) {
+        F_raw -= fullLengthDeltaFromField(u, vSigned, fieldForDelta, halfWidthMmAtField(fieldForDelta));
     }
 
     if (!edgeProfile) return F_raw;
@@ -741,6 +805,8 @@ interface LateralDeltaContext {
     lenMin: number;
     lenSize: number;
     widCenter: number;
+    widSize: number;
+    widthSign: number;
     array: Float32Array;
 }
 
@@ -760,8 +826,11 @@ function buildHeelCupWidthLateralDelta(
 } {
     const { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array } = ctx;
     const syncIndexCount = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
+    const halfW = Math.max(1e-3, ctx.widSize * 0.5);
 
-    if (field.corrections.heelCupWidthMm === 0) {
+    const heelW = field.corrections.heelCupWidthMm ?? 0;
+    const foreW = field.corrections.forefootWidthMm ?? 0;
+    if (heelW === 0 && foreW === 0) {
         const empty = new Float32Array(count);
         return {
             raw: empty,
@@ -778,8 +847,9 @@ function buildHeelCupWidthLateralDelta(
         const widCoord = array[i * 3 + widthAxis]!;
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const offset = widCoord - widCenter;
-        const scale = heelCupWidthScaleFactor(u, field.corrections.heelCupWidthMm);
-        raw[i] = offset * (scale - 1);
+        const heelDelta = offset * (heelCupWidthScaleFactor(u, heelW) - 1);
+        const foreDelta = forefootWidthPerSideDeltaMm(u, offset / halfW, foreW);
+        raw[i] = heelDelta + foreDelta;
     }
 
     const {
@@ -820,8 +890,9 @@ function buildHeelCupWidthLateralDelta(
     // height-blended rim transfer then shears the wall into a shelf. For
     // narrowing: coincidence-weld only (no relax). Widening keeps the welded
     // Laplacian (top-only path; bottom stays fixed).
-    const narrowing = field.corrections.heelCupWidthMm < 0;
-    if (narrowing) {
+    const narrowing = heelW < 0 || foreW < 0;
+    const forefootWidenOnly = heelW === 0 && foreW > 0;
+    if (narrowing || forefootWidenOnly) {
         const smoothed = new Float32Array(raw);
         syncCoincidentDeltas(smoothed, groups);
         return {
@@ -2441,7 +2512,10 @@ export function diagnoseHeelCupWidthLateral(
     const { lengthAxis, widthAxis } = resolveBaseAxes(size[0], size[1], size[2]);
     const lenMin = min[lengthAxis];
     const lenSize = size[lengthAxis];
-    const widCenter = min[widthAxis] + size[widthAxis] / 2;
+    const widSize = size[widthAxis] || 1;
+    const widCenter = min[widthAxis] + widSize / 2;
+    const medialSign = field.side === "left" ? 1 : -1;
+    const widthSign = -(detectArchSideSign(base) * medialSign);
     const array = pos.array as Float32Array;
     const count = pos.count;
     const topFactors = classifyBaseTopFactors(base);
@@ -2457,7 +2531,17 @@ export function diagnoseHeelCupWidthLateral(
         buildHeelCupWidthLateralDelta(
             base,
             field,
-            { count, lengthAxis, widthAxis, lenMin, lenSize, widCenter, array },
+            {
+                count,
+                lengthAxis,
+                widthAxis,
+                lenMin,
+                lenSize,
+                widCenter,
+                widSize,
+                widthSign,
+                array,
+            },
             topFactors,
             isMultiMesh,
             topVertexCount,
@@ -2596,7 +2680,8 @@ export function applyBaseModifiers(
     let thicknessMmForDelta = field.thicknessMm;
     let thicknessDatumClamped = false;
     let thicknessDatumNativeMm: number | null = null;
-    if (isMultiMesh && topVertexCount > 0) {
+    const shellMode = resolveShellThicknessContext(field).mode;
+    if (isMultiMesh && topVertexCount > 0 && shellMode !== "zonal") {
         const datum = deriveNativeShellThicknessDatum(base);
         if (datum) {
             thicknessDatumNativeMm = datum.nativeMinClearanceMm;
@@ -2621,6 +2706,10 @@ export function applyBaseModifiers(
         ...field,
         thicknessMm: thicknessMmForDelta,
         includeSkives: false,
+        // T is added beside the wedge, top-only. Keep it out of correctionDeltaAt.
+        sinks: undefined,
+        sinkStyloidThicken: undefined,
+        sinkMarkers: undefined,
         corrections: {
             ...field.corrections,
             heelCupDepthMm: 0,
@@ -2636,6 +2725,8 @@ export function applyBaseModifiers(
         lenMin,
         lenSize,
         widCenter,
+        widSize,
+        widthSign,
         array,
     };
 
@@ -2659,9 +2750,18 @@ export function applyBaseModifiers(
         (field.corrections.archHeightMm ?? 0) !== 0 ||
         (field.corrections.archFillMm ?? 0) !== 0 ||
         (field.corrections.archEaseMm ?? 0) !== 0;
-    const wedgeActive = wedgeCorrectionActive(field.corrections);
+    const regionalWedgeActive = wedgeCorrectionActive(field.corrections);
+    const flActive = fullLengthWedgeActive(field.corrections);
+    const wedgeActive = regionalWedgeActive || flActive;
+    if (flActive && !fieldForDelta.fullLengthRim) {
+        fieldForDelta.fullLengthRim = collectFullLengthRim(base, field);
+    }
     const useShellFieldSync =
-        isMultiMesh && topVertexCount > 0 && field.corrections.heelCupWidthMm === 0 && !archRaiseActive;
+        isMultiMesh &&
+        topVertexCount > 0 &&
+        (field.corrections.heelCupWidthMm ?? 0) === 0 &&
+        (field.corrections.forefootWidthMm ?? 0) === 0 &&
+        !archRaiseActive;
 
     const wedgeParams = {
         lengthMm: field.lengthMm,
@@ -2676,6 +2776,8 @@ export function applyBaseModifiers(
     //    either way (same u/vSigned → correctionDeltaAt).
     const delta = new Float32Array(count);
     const wedgeAt = wedgeActive ? new Float32Array(count) : null;
+    const sinkTActive = sinksActive(field.sinks);
+    const sinkTAt = sinkTActive ? new Float32Array(count) : null;
     const sampleEnd = useShellFieldSync && topVertexCount > 0 ? topVertexCount : count;
     for (let i = 0; i < sampleEnd; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
@@ -2684,11 +2786,20 @@ export function applyBaseModifiers(
         const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
         let d = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
         if (wedgeActive) {
-            const wD = wedgeDeltaAt(u, vSigned, field.side, field.corrections, wedgeParams);
-            if (wedgeAt) wedgeAt[i] = wD;
+            const wD = regionalWedgeActive
+                ? wedgeDeltaAt(u, vSigned, field.side, field.corrections, wedgeParams)
+                : 0;
+            const flD = flActive
+                ? fullLengthDeltaFromField(u, vSigned, fieldForDelta, halfWidthMmAtField(fieldForDelta))
+                : 0;
+            const postD = wD + flD;
+            if (wedgeAt) wedgeAt[i] = postD;
             if (isMultiMesh && topVertexCount > 0 && i >= topVertexCount) {
-                d -= wD;
+                d -= postD;
             }
+        }
+        if (sinkTAt && !(isMultiMesh && topVertexCount > 0 && i >= topVertexCount)) {
+            sinkTAt[i] = sinkThicknessAt(u, vSigned, field);
         }
         delta[i] = d;
     }
@@ -2770,7 +2881,8 @@ export function applyBaseModifiers(
     // is untouched, so HC-1 holds. Widening keeps the legacy top-only path
     // (bottom fixed; wall follows via rim-conformity) — there the top border
     // is always the widest extent, so the print constraint already holds.
-    const heelCupNarrowing = field.corrections.heelCupWidthMm < 0;
+    const heelCupNarrowing =
+        (field.corrections.heelCupWidthMm ?? 0) < 0 || (field.corrections.forefootWidthMm ?? 0) < 0;
 
     // Parallel composition: vertical, width-lateral, and depth-tangent displacements
     // are each computed from baseline positions (above) and summed here in one pass.
@@ -2802,7 +2914,8 @@ export function applyBaseModifiers(
                 : 1;
         const wedgeScaled = wedgePart > 0 ? wedgePart * wedgeW : 0;
         const vertD = corePart * w + wedgeScaled;
-        const latD = lateralDelta[i]! * (heelCupNarrowing ? 1 : w);
+        const foreWActive = (field.corrections.forefootWidthMm ?? 0) !== 0;
+        const latD = lateralDelta[i]! * (heelCupNarrowing || foreWActive ? 1 : w);
         let dx = 0;
         let dy = 0;
         let dz = 0;
@@ -2814,7 +2927,24 @@ export function applyBaseModifiers(
                 dz = w * depthVec[g * 3 + 2]!;
             }
         }
-        array[i * 3 + thickAxis] = t + vertD;
+        // No sinks: the original assignment. With sinks, T is top-only (rim included).
+        if (sinkTAt) {
+            const sinkW =
+                isMultiMesh && topVertexCount > 0
+                    ? i < topVertexCount
+                        ? 1
+                        : 0
+                    : topFactors
+                      ? topFactors[i]! > 0.5
+                          ? 1
+                          : 0
+                      : w > 0.5
+                        ? 1
+                        : 0;
+            array[i * 3 + thickAxis] = t + vertD + sinkTAt[i]! * sinkW;
+        } else {
+            array[i * 3 + thickAxis] = t + vertD;
+        }
         array[i * 3 + widthAxis] += latD;
         array[i * 3] += dx;
         array[i * 3 + 1] += dy;
@@ -3255,7 +3385,7 @@ export function modifiedBaseResult(
     }
     return {
         geometry,
-        manifold: { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight },
+        manifold: { ...mesh, solidClosed: false, isWatertight: mesh.isWatertight },
     };
 }
 

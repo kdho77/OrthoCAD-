@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+    depthSpecSchema,
+    hardnessClassSchema,
+    hardnessOverridesSchema,
+} from "../../../shared/print-recipe/hardness-region.js";
 import { printRecipeV1Schema } from "../../../shared/print-recipe/print-recipe.js";
 import { ELEMENT_KINDS, PRODUCTION_METHODS, SCAN_PATTERNS } from "./prescription-schema.js";
 
@@ -31,21 +36,40 @@ const sideCorrection = z.object({
     heelCupHeightMm: z.number(),
     // Newer fields are optional so previously-saved designs still validate.
     heelCupWidthMm: z.number().optional(),
+    forefootWidthMm: z.number().optional(),
     heelLiftMm: z.number().optional(),
     apexMoveMm: z.number(),
     medialFlangeMm: z.number(),
     lateralFlangeMm: z.number(),
     rearfootWedge: wedgeCorrection.optional(),
     forefootWedge: wedgeCorrection.optional(),
+    fullLengthWedge: z
+        .object({
+            side: z.enum(["medial", "lateral"]),
+            value: z.number().optional(),
+            unit: z.enum(["mm", "deg"]).optional(),
+        })
+        .optional(),
 });
 
 const placedElement = z.object({
-    kind: z.enum(ELEMENT_KINDS),
+    id: z.string().min(1).optional(),
+    kind: z.enum([...ELEMENT_KINDS, "custom"]),
+    customElementId: z.string().optional(),
+    customName: z.string().optional(),
     side: z.enum(["left", "right"]),
     position: z.object({ x: z.number(), y: z.number() }),
     rotationDeg: z.number(),
     scale: z.object({ x: z.number(), y: z.number() }),
+    scaleLocked: z.boolean().optional(),
     heightMm: z.number(),
+    regionId: z.string().min(1).optional(),
+    hardnessClass: hardnessClassSchema.optional(),
+    priority: z.number().int().optional(),
+    depth: depthSpecSchema.optional(),
+    overrides: hardnessOverridesSchema.optional(),
+    placementMode: z.enum(["flow", "noFlow"]).optional(),
+    zOffsetMm: z.number().optional(),
 });
 
 const trimlinePoint = z.object({
@@ -72,6 +96,8 @@ export const designStateSchema = z.object({
         right: sideCorrection,
     }),
     elements: z.array(placedElement),
+    splitElements: z.boolean().optional(),
+    smoothElements: z.boolean().optional(),
     trimlines: designTrimlines,
     printRecipe: printRecipeV1Schema.optional(),
     shapeFinish: z
@@ -79,6 +105,26 @@ export const designStateSchema = z.object({
             linked: z.boolean(),
             left: sideShapeFinish,
             right: sideShapeFinish,
+        })
+        .optional(),
+    textMarking: z
+        .object({
+            text: z.string().max(40),
+            surface: z.enum(["bottom", "wall"]),
+            mode: z.enum(["engrave", "emboss"]),
+            bold: z.boolean(),
+            capHeightMm: z.number(),
+            depthMm: z.number(),
+            heightMm: z.number(),
+            letterSpacingMm: z.number(),
+            rotationDeg: z.number(),
+            placementU: z.number(),
+        })
+        .optional(),
+    pressureMaps: z
+        .object({
+            left: z.any().optional(),
+            right: z.any().optional(),
         })
         .optional(),
 });

@@ -7,13 +7,12 @@
     "rewrites": [
         { "source": "/trpc", "destination": "/api/trpc" },
         { "source": "/trpc/:path*", "destination": "/api/trpc/:path*" },
-        { "source": "/((?!api/|trpc/).*)", "destination": "/index.html" }
+        {
+            "source": "/((?!api/|trpc/|elements/|Templates/).*)",
+            "destination": "/index.html"
+        }
     ],
     "headers": [
-        {
-            "source": "/chili-wasm/(.*)",
-            "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
-        },
         {
             "source": "/assets/(.*)",
             "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]

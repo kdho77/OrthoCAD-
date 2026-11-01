@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -84,7 +83,7 @@ describe("composePrintSolidTop", () => {
     test("width affine widens the ball and leaves X unchanged", async () => {
         const raw = await loadSampleTop();
         const native = bbox(raw);
-        const composed = composePrintSolidTop(raw, {
+        const composed = await composePrintSolidTop(raw, {
             sourceField: field(),
             shoeWidth: {
                 width: "wide",
@@ -103,8 +102,8 @@ describe("composePrintSolidTop", () => {
         const raw = await loadSampleTop();
         const native = bbox(raw);
         const length = native.maxX - native.minX;
-        const plain = composePrintSolidTop(raw, { sourceField: field() });
-        const skived = composePrintSolidTop(raw, {
+        const plain = await composePrintSolidTop(raw, { sourceField: field() });
+        const skived = await composePrintSolidTop(raw, {
             sourceField: field({ corrections: { ...zero(), medialSkiveMm: 4 } }),
         });
         const a = plain.getAttribute("position")!;
@@ -133,7 +132,7 @@ describe("composePrintSolidTop", () => {
             const t = (i / 24) * Math.PI * 2;
             return new Vector3(cx + Math.cos(t) * rx, cy + Math.sin(t) * ry, 0);
         });
-        const composed = composePrintSolidTop(raw, {
+        const composed = await composePrintSolidTop(raw, {
             sourceField: field(),
             trimline: { points },
         });
@@ -156,8 +155,8 @@ describe("composePrintSolidTop", () => {
             scale: { x: 1, y: 1 },
             heightMm: 5,
         };
-        const plain = composePrintSolidTop(raw, { sourceField: field() });
-        const withEl = composePrintSolidTop(raw, {
+        const plain = await composePrintSolidTop(raw, { sourceField: field() });
+        const withEl = await composePrintSolidTop(raw, {
             sourceField: field({
                 lengthMm: native.maxX - native.minX,
                 widthMm: native.maxY - native.minY,

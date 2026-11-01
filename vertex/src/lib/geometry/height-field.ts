@@ -1,13 +1,33 @@
 import { elementHeightAt } from "@/lib/geometry/elements";
-import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
+import {
+    type FullLengthRimFrame,
+    fullLengthDeltaFromField,
+    fullLengthWedgeActive,
+} from "@/lib/geometry/full-length-wedge";
+import { type HeelLiftTaperOptions, heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
 import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
+import {
+    type ShellThicknessContext,
+    shellThicknessContextFromDesign,
+    shellThicknessMmAtU,
+} from "@/lib/geometry/shell-thickness-zonal";
+import { sinksActive, sinkThicknessAt } from "@/lib/geometry/sink";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
-import type { PlacedElement, Side, SideCorrections, SideShapeFinish } from "@/types";
+import type {
+    PlacedElement,
+    PlacedSink,
+    ProductionMethod,
+    ShellThicknessMode,
+    Side,
+    SideCorrections,
+    SideShapeFinish,
+    SinkMarkerRef,
+} from "@/types";
 
 // Shared parametric height field for insole surfaces. Used by both the procedural
-// Three.js mesher and the OpenCascade solid builder so corrections stay aligned.
+// Three.js mesher and export mesh builders so corrections stay aligned.
 
 export interface HeightFieldParams {
     side: Side;
@@ -16,9 +36,15 @@ export interface HeightFieldParams {
     thicknessMm: number;
     corrections: SideCorrections;
     elements?: PlacedElement[];
-    /** When false, skives are omitted (applied later as OCCT boolean cuts). */
+    /** MPJ / styloid sinks. Absent or empty ⇒ sinkThicknessAt is not called. */
+    sinks?: PlacedSink[];
+    /** Styloid midfoot thickness. Default off. Ignored when `sinks` is empty. */
+    sinkStyloidThicken?: boolean;
+    /** Scan markers that override PlacedSink u, v. */
+    sinkMarkers?: SinkMarkerRef[];
+    /** When false, skives are omitted (applied later on the export mesh path). */
     includeSkives?: boolean;
-    /** When false, elements are omitted (applied later as OCCT booleans). */
+    /** When false, elements are omitted (applied later on the export mesh path). */
     includeElements?: boolean;
     /** Optional user-edited insole perimeter override. */
     trimline?: TrimlineCurve | null;
@@ -32,8 +58,49 @@ export interface HeightFieldParams {
      * edge (r = 1).
      */
     topEdgeAvProfile?: (u: number, vSigned: number) => number;
+    /** When set, overrides design-derived shell thickness sampling. */
+    shell?: ShellThicknessContext | null;
+    shellThicknessMode?: ShellThicknessMode;
+    shellThicknessRfMm?: number;
+    shellThicknessMfMm?: number;
+    shellThicknessFfMm?: number;
+    shellThicknessBlendMm?: number;
+    method?: ProductionMethod;
     /** Track 5b — top-only print/shell finish (excludes bottom-only arch grind). */
     shapeFinish?: SideShapeFinish | null;
+    /**
+     * Real top rim for the full-length wedge, in the same frame as vSigned
+     * (y = vSigned * yScale). Absent → outline fallback inside the wedge module.
+     */
+    fullLengthRim?: FullLengthRimFrame | null;
+    /**
+     * Ruled-tilt sample hold. Set only when a forefoot width shift will freeze
+     * the same u after this height is baked. Absent leaves the toe stations live.
+     */
+    fullLengthToeHoldU?: number;
+}
+
+export function resolveShellThicknessContext(params: HeightFieldParams): ShellThicknessContext {
+    if (params.shell) return params.shell;
+    return shellThicknessContextFromDesign(
+        params.shellThicknessMode,
+        params.thicknessMm,
+        params.lengthMm,
+        {
+            rfMm: params.shellThicknessRfMm,
+            mfMm: params.shellThicknessMfMm,
+            ffMm: params.shellThicknessFfMm,
+        },
+        params.shellThicknessBlendMm,
+    );
+}
+
+function heelLiftTaperFromCorrections(c: SideCorrections): HeelLiftTaperOptions {
+    return {
+        preset: c.heelLiftTaperPreset,
+        endU: c.heelLiftTaperEndU,
+        customPctAp: c.heelLiftCustomTaperPctAp,
+    };
 }
 
 const DEG = Math.PI / 180;
@@ -99,6 +166,91 @@ export function heelCupWidthScaleFactor(u: number, heelCupWidthMm: number): numb
     const targetScale = 1 + (heelCupWidthMm / 10) * HEEL_CUP_WIDTH_MAX_LATERAL_SCALE;
     const env = heelCupWidthLongitudinalEnvelope(u);
     return 1 + env * (targetScale - 1);
+}
+
+/** Forefoot planform widen/narrow envelope stations — pending CAD expert sign-off. */
+export const FOREFOOT_WIDTH_ENVELOPE = {
+    rampStartU: 0.45,
+    rampEndU: 0.65,
+    holdEndU: 0.95,
+    toeTipU: 1.0,
+    toeTipEnvelope: 0.5,
+} as const;
+
+/** C1-smooth longitudinal mask for forefoot width (heel 0 → toe 1). */
+export function forefootWidthLongitudinalEnvelope(u: number): number {
+    const { rampStartU, rampEndU, holdEndU, toeTipU, toeTipEnvelope } = FOREFOOT_WIDTH_ENVELOPE;
+    if (u < rampStartU) return 0;
+    if (u <= holdEndU) {
+        if (u <= rampEndU) return smoothstep(rampStartU, rampEndU, u);
+        return 1;
+    }
+    if (u >= toeTipU) return toeTipEnvelope;
+    const t = smoothstep(holdEndU, toeTipU, u);
+    return 1 + t * (toeTipEnvelope - 1);
+}
+
+/** Normalized half-width of the centre band. Full shift outside it, 0 on v = 0. */
+export const FOREFOOT_WIDTH_MIDLINE_HALF_V = 0.15;
+
+/** 0 on the centreline, 1 for |v| at or beyond the midline band. C1. */
+export function forefootWidthMidlineGain(vAbs: number): number {
+    if (vAbs >= FOREFOOT_WIDTH_MIDLINE_HALF_V) return 1;
+    return smoothstep(0, FOREFOOT_WIDTH_MIDLINE_HALF_V, vAbs);
+}
+
+/**
+ * Per-side forefoot offset (mm). Full envelope at the rim.
+ * `vSigned` is the normalized geometric lateral coordinate (about −1..1),
+ * not millimetres. The shift fades to 0 across |v| < 0.15 so the centre
+ * strip is not opened by 2·forefootWidthMm.
+ * `forefootWidthMm === 0` stays 0 so the zero export is unchanged.
+ */
+export function forefootWidthPerSideDeltaMm(u: number, vSigned: number, forefootWidthMm: number): number {
+    if (forefootWidthMm === 0 || vSigned === 0) return 0;
+    const env = forefootWidthLongitudinalEnvelope(u);
+    if (env <= 0) return 0;
+    const gain = forefootWidthMidlineGain(Math.abs(vSigned));
+    if (gain <= 0) return 0;
+    return Math.sign(vSigned) * forefootWidthMm * env * gain;
+}
+
+/** Heel cup scale delta + forefoot per-side offset (mm) at a lateral sample. */
+export function lateralWidthCorrectionDeltaMm(
+    u: number,
+    vSigned: number,
+    offsetFromCenterMm: number,
+    heelCupWidthMm: number,
+    forefootWidthMm: number,
+): number {
+    const heelScale = heelCupWidthScaleFactor(u, heelCupWidthMm);
+    const heelDelta = offsetFromCenterMm * (heelScale - 1);
+    const foreDelta = forefootWidthPerSideDeltaMm(u, vSigned, forefootWidthMm);
+    return heelDelta + foreDelta;
+}
+
+/** Pattern / rim follow weight for heel cup width only. */
+export function heelWidthCorrectionFollowEnvelope(u: number, heelCupWidthMm: number): number {
+    if (heelCupWidthMm === 0) return 0;
+    return heelCupWidthLongitudinalEnvelope(u);
+}
+
+/** Pattern / rim follow weight for forefoot width only. */
+export function forefootWidthCorrectionFollowEnvelope(u: number, forefootWidthMm: number): number {
+    if (forefootWidthMm === 0) return 0;
+    return forefootWidthLongitudinalEnvelope(u);
+}
+
+/** Combined follow weight when both corrections may be active. */
+export function widthCorrectionFollowEnvelope(
+    u: number,
+    heelCupWidthMm: number,
+    forefootWidthMm: number,
+): number {
+    return Math.max(
+        heelWidthCorrectionFollowEnvelope(u, heelCupWidthMm),
+        forefootWidthCorrectionFollowEnvelope(u, forefootWidthMm),
+    );
 }
 
 export const HEEL_CUP_DEPTH_RIM_LATERAL_GAIN = 0.65;
@@ -330,9 +482,33 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // Added at full strength (not edge-feathered, like posting) since it is a
     // structural raise of the whole rearfoot, and additive on the top surface so
     // the flat z = 0 bottom stays stable on solid prints.
-    const heelLift = heelLiftDeltaAt(u, c.heelLiftMm);
+    const heelLift = heelLiftDeltaAt(u, c.heelLiftMm, heelLiftTaperFromCorrections(c));
 
-    let h = softFloor(thicknessMm + baseline + shaped + archEase + wedge + heelLift, 0.8);
+    // Uniform (and legacy undefined) mode uses thicknessMm directly so the sum
+    // stays bit-identical to main. Zonal mode samples t(u), which already
+    // enforces the minimum wall, and keeps arch ease, wedge, and sinks.
+    const shellCtx = resolveShellThicknessContext(params);
+    const thicknessTerm = shellCtx.mode === "zonal" ? shellThicknessMmAtU(u, shellCtx) : thicknessMm;
+
+    let h = softFloor(thicknessTerm + baseline + shaped + archEase + wedge + heelLift, 0.8);
+
+    // Full-length ruled posting. After lift + intrinsic shaping, before skive.
+    // Omitted entirely when off so the height matches the regional-only field.
+    if (fullLengthWedgeActive(c)) {
+        h += fullLengthDeltaFromField(
+            u,
+            vSigned,
+            params,
+            (uu) => effectiveOutlineHalfWidth(uu, lengthMm, widthMm, params.trimline) * (widthMm / 2),
+        );
+    }
+
+    // Forefoot / styloid thickness T. After posting, before skive. The cut S is
+    // not applied here — it is the last subtraction on the composed top.
+    // Absent sinks skip the call so this sum stays bit-identical.
+    if (sinksActive(params.sinks)) {
+        h += sinkThicknessAt(u, vSigned, params);
+    }
 
     // Phase 4: operator graph contribution (additive, regional, STA-aware, etc.).
     // The graph is the new clinical source of truth when present; the flat
@@ -343,7 +519,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
         h += graphDelta;
     }
 
-    // Kirby heel skive — plane half-space maximum (raise). Parametric / OCCT
+    // Kirby heel skive — plane half-space maximum (raise). Parametric / export
     // loft path only when includeSkives is true. Must NOT run inside the field
     // that drives correctionDeltaAt / #119 bottom sync on loaded bases.
     const includeSkives = params.includeSkives ?? true;
@@ -387,7 +563,7 @@ export interface InsoleGrid {
     bottom: GridPoint[][];
 }
 
-/** Samples the correction surface on the footprint grid (no skives/elements when building OCCT base). */
+/** Samples the correction surface on the footprint grid (no skives/elements when building export base mesh). */
 export function sampleInsoleGrid(params: HeightFieldParams, nx = 48, ny = 24): InsoleGrid {
     const { lengthMm, widthMm } = params;
     const halfW = widthMm / 2;

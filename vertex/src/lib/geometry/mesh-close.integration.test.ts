@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { describe, expect, test } from "@rstest/core";
 import { BufferAttribute, BufferGeometry, Shape, ShapeGeometry, Vector2, Vector3 } from "three";
@@ -10,10 +9,10 @@ import {
     closeMeshPerimeter,
     ensureWatertightForExport,
     generateBridgeStrip,
+    MeshNotWatertightError,
     maxBridgeMidpointDistanceFromPerimeterMm,
     maxSeamVertexNormalDiscontinuityDeg,
     mergeGeometriesWithWeldedBridge,
-    MeshNotWatertightError,
     resampleLoopToCount,
     SMOOTH_INWARD_LIMIT_MM,
     validateManifold,
@@ -61,7 +60,10 @@ function heightAtU(u: number): number {
 }
 
 /** Single open shell (boundary along perimeter only). */
-function buildOpenShell(outline: Vector3[], zFn: (x: number, y: number, u: number) => number): BufferGeometry {
+function buildOpenShell(
+    outline: Vector3[],
+    zFn: (x: number, y: number, u: number) => number,
+): BufferGeometry {
     const shape = new Shape(outline.map((p) => new Vector2(p.x, p.y)));
     const geo = new ShapeGeometry(shape, 48);
     const pos = geo.getAttribute("position");
@@ -85,7 +87,9 @@ function mergeTopBottomShells(top: BufferGeometry, bottom: BufferGeometry): Buff
     positions.set(topPos.array as Float32Array, 0);
     positions.set(botPos.array as Float32Array, topPos.count * 3);
 
-    const topIdx = top.index ? Array.from(top.index.array) : Array.from({ length: topPos.count }, (_, i) => i);
+    const topIdx = top.index
+        ? Array.from(top.index.array)
+        : Array.from({ length: topPos.count }, (_, i) => i);
     const botIdx = bottom.index
         ? Array.from(bottom.index.array).map((i) => i + topPos.count)
         : Array.from({ length: botPos.count }, (_, i) => i + topPos.count);
@@ -93,7 +97,11 @@ function mergeTopBottomShells(top: BufferGeometry, bottom: BufferGeometry): Buff
     const out = new BufferGeometry();
     out.setAttribute("position", new BufferAttribute(positions, 3));
     out.setIndex([...topIdx, ...botIdx]);
-    out.userData = { isMultiMeshBase: true, sourceMeshNames: ["Top", "Bottom"], topVertexCount: topPos.count };
+    out.userData = {
+        isMultiMeshBase: true,
+        sourceMeshNames: ["Top", "Bottom"],
+        topVertexCount: topPos.count,
+    };
     return out;
 }
 

@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { Button } from "@/components/ui/button";
 import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
@@ -25,11 +24,18 @@ export function ActiveFootSideBar({ allowBothWhenLinked = false }: ActiveFootSid
     const setExportSide = useDesignStore((s) => s.setExportSide);
     const setTarget = useMeshEditStore((s) => s.setTarget);
 
+    const syncTextFeet = (feet: "left" | "right" | "both") => {
+        const marking = useDesignStore.getState().design.textMarking;
+        if (!marking) return;
+        useDesignStore.getState().setTextMarking({ feet });
+    };
+
     const pickSide = (side: Side) => {
         acknowledgeExplicitFootSide(side);
         setPlacementFoot(side);
         setExportSide(side);
         setTarget({ type: "insole", side });
+        syncTextFeet(side);
     };
 
     const pickBoth = () => {
@@ -37,6 +43,7 @@ export function ActiveFootSideBar({ allowBothWhenLinked = false }: ActiveFootSid
         setLinked(true);
         setPlacementFoot("both");
         setTarget({ type: "insole", side: active });
+        syncTextFeet("both");
     };
 
     const showBoth = allowBothWhenLinked || linked || placementFoot === "both";

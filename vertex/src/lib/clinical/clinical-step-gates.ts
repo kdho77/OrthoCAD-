@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { designHasBase, designNeedsDefaultStockResolution } from "@/lib/geometry/base-asset";
 import { useAfoStore } from "@/stores/afo-store";
@@ -136,4 +135,15 @@ export function evaluateNextGate(fromStep: ClinicalStepId): StepGateResult {
 export function scanGateBlocksLaterSteps(): StepGateResult {
     const gate = evaluateScanStepGate();
     return gate;
+}
+
+/**
+ * Banner copy for the clinical rail. Always uses the live gate so choosing
+ * Left / Right / Pair (or mill-selecting a side) clears the stale "select a
+ * side" message even if a jump-ahead sticky reason is still stored.
+ */
+export function clinicalRailBannerReason(step: ClinicalStepId): string | null {
+    const live = evaluateNextGate(step);
+    if (live.ok) return null;
+    return live.reason;
 }

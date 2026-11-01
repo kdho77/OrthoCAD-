@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /** Render narrowed shells to PNG for visual CAD review (writes /tmp/renders). */
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -115,13 +114,7 @@ describe("render narrowed shell", () => {
             up[lengthAxis] = -s45 * Math.sin(tilt);
             up[widthAxis] = c45 * Math.sin(tilt);
             up[thickAxis] = Math.cos(tilt);
-            const freeView = renderMesh(
-                pos,
-                index,
-                { right, up, light: [-0.4, -0.4, -0.75] },
-                1200,
-                700,
-            );
+            const freeView = renderMesh(pos, index, { right, up, light: [-0.4, -0.4, -0.75] }, 1200, 700);
             writeFileSync(`/tmp/renders/${name}-free.png`, encodePng(1200, 700, freeView));
 
             if (c) geo.dispose();

@@ -1,11 +1,12 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { type ThreeEvent, useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import { sideOffsetX } from "@/lib/geometry/layout";
+import { shiftClosedLoopForefoot } from "@/lib/geometry/procedural-wall/modifiers";
+import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-id";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import {
     cloneTrimline,
@@ -81,8 +82,17 @@ function TrimlineSideRow({
     // Subscribe to the loaded base's outline so the overlay re-renders (and picks
     // up the mesh-derived default) as soon as the base GLB finishes loading.
     const baseForSide = getDesignBase(design, side);
+    const wallModel = useDesignStore((s) => s.viewer.wallModel ?? "procedural");
     const baseKey = getBaseCacheKey(baseForSide) ?? baseForSide?.assetId ?? null;
-    const baseOutline = useBaseOutlineStore((s) => (baseKey ? (s.outlines[baseKey] ?? null) : null));
+    const proceduralKey =
+        wallModel === "procedural" && baseForSide
+            ? `${SAMPLE_TOP_ASSET_ID}:${side}:${baseForSide.mirrored ? "m" : "p"}`
+            : null;
+    const proceduralOutline = useBaseOutlineStore((s) =>
+        proceduralKey ? (s.outlines[proceduralKey] ?? null) : null,
+    );
+    const legacyOutline = useBaseOutlineStore((s) => (baseKey ? (s.outlines[baseKey] ?? null) : null));
+    const baseOutline = proceduralOutline ?? legacyOutline;
 
     const isEditing = editMode === "edit-trimline" && trimlineEdit?.side === side;
     const committed = getDesignTrimline(design, side);
@@ -153,10 +163,12 @@ function TrimlineSideOverlay({
     // their geometry in. The overlay group below applies the identical
     // `-CENTER_X` / side offset as those meshes, so points map straight through
     // (no extra centering shift) and the trimline stays glued to the surface.
-    const displayPoints = useMemo(
-        () => curve.points.map((p) => new THREE.Vector3(p.x, p.y, p.z + 1.5)),
-        [curve.points],
-    );
+    const forePreview = usePerformanceStore((s) => s.correctionPreview[side]?.forefootWidthMm);
+    const forefootMm = isEditing ? 0 : (forePreview ?? design.corrections[side].forefootWidthMm ?? 0);
+    const displayPoints = useMemo(() => {
+        const shifted = shiftClosedLoopForefoot(curve.points, forefootMm);
+        return shifted.map((p) => new THREE.Vector3(p.x, p.y, (p.z ?? 0) + 1.5));
+    }, [curve.points, forefootMm]);
 
     const outlineColor = isEditing ? (isDragging ? "#ef4444" : "#f97316") : "#64748b";
     const tubeRadius = isEditing ? 0.55 : 0.35;

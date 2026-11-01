@@ -4,7 +4,7 @@
 **Date:** 2026-08-01  
 **Scope:** Slider scrubbing, parametric corrections, foot-scan drag/drop, scan load  
 
-Architecture already targets **&lt; 16 ms preview frames** and **no OCCT during drag/slider scrub** ([hybrid-geometry-architecture.md](./hybrid-geometry-architecture.md), R5 in [orthotic-insole-cad-architecture.md](./orthotic-insole-cad-architecture.md)). OCCT is largely kept off the interaction path. Lag came from **heavy main-thread mesh work that still ran every preview frame** on the Base + Modifier (loaded GLB) path.
+Architecture already targets **&lt; 16 ms preview frames** and **no export mesh during drag/slider scrub** ([hybrid-geometry-architecture.md](./hybrid-geometry-architecture.md), R5 in [orthotic-insole-cad-architecture.md](./orthotic-insole-cad-architecture.md)). export mesh is largely kept off the interaction path. Lag came from **heavy main-thread mesh work that still ran every preview frame** on the Base + Modifier (loaded GLB) path.
 
 ---
 
@@ -153,9 +153,9 @@ After async file parse, `weldAndLabelComponents`, ranking, extract, and `analyze
 
 ---
 
-### 8. Chili3D core parametric path (lower priority for OrthoCAD UI)
+### 8. Vertex core parametric path (lower priority for OrthoCAD UI)
 
-Property panel commits on blur/Enter → sync `generateShape()` + WASM tessellation + dispose/recreate Three meshes. Snap `pointerMove` calls `visual.update()` every move without rAF throttle. Relevant to Chili3D CAD editing; OrthoCAD Vertex lag above is dominated by the base-modifier path.
+Property panel commits on blur/Enter → sync `generateShape()` + WASM tessellation + dispose/recreate Three meshes. Snap `pointerMove` calls `visual.update()` every move without rAF throttle. Relevant to Vertex CAD editing; OrthoCAD Vertex lag above is dominated by the base-modifier path.
 
 ---
 
@@ -163,7 +163,7 @@ Property panel commits on blur/Enter → sync `generateShape()` + WASM tessellat
 
 | Suspect | Finding |
 |---------|---------|
-| OCCT during slider scrub | Avoided while `interacting` on parametric path; R5 largely honored for booleans |
+| export mesh during slider scrub | Avoided while `interacting` on parametric path; R5 largely honored for booleans |
 | Undo history every slider tick | Preview writes performance-store only; design commit on pointer-up |
 | localStorage persist every tick | Zustand persist on committed design, not every preview |
 | GPU fill rate / shadows | Secondary; hitches correlate with CPU geometry rebuilds |

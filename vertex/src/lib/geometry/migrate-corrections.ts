@@ -1,7 +1,16 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import type { Corrections, SideCorrections, WedgeCorrection } from "@/types";
+import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
+import type { Corrections, DesignState, PlacedSink, Side, SideCorrections, WedgeCorrection } from "@/types";
+
+/** Order defaults a full-length wedge replaces. Explicit other regional wedges stay. */
+export const STANDARD_REARFOOT_WEDGE: WedgeCorrection = { side: "medial", value: 3, unit: "mm" };
+export const STANDARD_FOREFOOT_WEDGE: WedgeCorrection = { side: "lateral", value: 1.5, unit: "mm" };
+
+function isStandardWedge(w: WedgeCorrection | undefined, standard: WedgeCorrection): boolean {
+    if (!w) return false;
+    return w.side === standard.side && w.unit === standard.unit && Math.abs(w.value - standard.value) < 1e-6;
+}
 
 function postingDegToWedge(deg: number): WedgeCorrection | undefined {
     if (!Number.isFinite(deg) || Math.abs(deg) < 1e-9) return undefined;
@@ -44,7 +53,57 @@ export function migrateSideCorrections(c: SideCorrections): SideCorrections {
         next.archEaseMm = 0;
     }
 
+    if (next.forefootWidthMm == null || !Number.isFinite(next.forefootWidthMm)) {
+        next.forefootWidthMm = 0;
+    }
+
+    // A full-length wedge note replaces the standard 3 mm medial / 1.5 mm lateral
+    // defaults. Any other regional wedge was written on purpose and stays.
+    if (fullLengthWedgeActive(next)) {
+        if (isStandardWedge(next.rearfootWedge, STANDARD_REARFOOT_WEDGE)) next.rearfootWedge = undefined;
+        if (isStandardWedge(next.forefootWedge, STANDARD_FOREFOOT_WEDGE)) next.forefootWedge = undefined;
+    }
+
     return next;
+}
+
+/** Sinks for one foot. A legacy flat list (pre per-side) is shared by both feet. */
+export function sinksForSide(design: DesignState, side: Side): PlacedSink[] | undefined {
+    const raw = design.sinks as { left?: PlacedSink[]; right?: PlacedSink[] } | PlacedSink[] | undefined;
+    if (!raw) return undefined;
+    const list = Array.isArray(raw) ? raw : raw[side];
+    return list && list.length > 0 ? list : undefined;
+}
+
+/** Styloid thickening for one foot. A legacy boolean applies to both feet. */
+export function sinkStyloidThickenForSide(design: DesignState, side: Side): boolean {
+    const raw = design.sinkStyloidThicken as boolean | { left?: boolean; right?: boolean } | undefined;
+    if (typeof raw === "boolean") return raw;
+    return raw?.[side] === true;
+}
+
+/**
+ * Moves a legacy design-wide sink list onto both feet. An absent list stays
+ * absent — writing `sinks: []` into every saved design would change persisted JSON.
+ */
+export function migrateDesignSinks(design: DesignState): DesignState {
+    const sinksRaw = design.sinks as unknown;
+    const thickRaw = design.sinkStyloidThicken as unknown;
+    const sinksIsArray = Array.isArray(sinksRaw);
+    const thickIsBool = typeof thickRaw === "boolean";
+    if (!sinksIsArray && !thickIsBool) return design;
+    const list = sinksIsArray ? (sinksRaw as PlacedSink[]) : undefined;
+    const sinks = sinksIsArray
+        ? list && list.length > 0
+            ? { left: list, right: list.map((s) => ({ ...s })) }
+            : undefined
+        : design.sinks;
+    const sinkStyloidThicken = thickIsBool
+        ? thickRaw
+            ? { left: true, right: true }
+            : undefined
+        : design.sinkStyloidThicken;
+    return { ...design, sinks, sinkStyloidThicken };
 }
 
 export function migrateCorrections(corrections: Corrections): Corrections {

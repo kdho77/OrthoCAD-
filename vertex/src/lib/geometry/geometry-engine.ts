@@ -1,16 +1,13 @@
 import { type BufferGeometry, Vector3 } from "three";
-import { getKernel } from "@/lib/chili3d/kernel";
 import { geometryToPayload, payloadToGeometry } from "@/lib/geometry/geometry-buffer";
+import type { SolidValidation } from "@/lib/geometry/geometry-kernel";
 import type { InsoleParams } from "@/lib/geometry/insole";
 import { buildInsoleGeometry } from "@/lib/geometry/insole";
-import { isOcctKernelActive, scheduleMainThread } from "@/lib/geometry/kernel-build";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import { serializeTrimLines, serializeVertexOverrides } from "@/lib/geometry/mesh-edit-serialize";
-import { occtWorkerEngine } from "@/lib/geometry/occt-worker-engine";
 import { type GeometryQuality, segmentsForQuality } from "@/lib/geometry/quality";
-import type { SolidValidation } from "@/lib/geometry/repair";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { buildTrimlineInsoleMesh, type TrimlineMeshOptions } from "@/lib/geometry/trimline-mesh";
 import type { WorkerRequest, WorkerResponse } from "@/workers/geometry.worker";
@@ -20,8 +17,6 @@ export interface BuildInsoleOptions {
     quality?: GeometryQuality;
     trimLines?: TrimLine[];
     vertexOverrides?: Map<number, { x: number; y: number; z: number }>;
-    /** When true and OCCT is loaded, build on main thread via IGeometryKernel. */
-    preferKernel?: boolean;
 }
 
 interface PendingRequest {
@@ -91,42 +86,10 @@ class GeometryEngine {
     }
 
     async buildInsole(options: BuildInsoleOptions): Promise<BufferGeometry> {
-        const {
-            params,
-            quality = "full",
-            trimLines = [],
-            vertexOverrides = new Map(),
-            preferKernel = false,
-        } = options;
+        const { params, quality = "full", trimLines = [], vertexOverrides = new Map() } = options;
         const segments = segmentsForQuality(quality);
         const fullParams: InsoleParams = { ...params, ...segments };
         const hasEdits = trimLines.length > 0 || vertexOverrides.size > 0;
-
-        // OCCT production path — worker when available, else rAF main thread.
-        if (preferKernel && isOcctKernelActive() && quality === "full") {
-            try {
-                let geometry = await occtWorkerEngine.buildInsole(fullParams);
-                if (hasEdits) {
-                    geometry = applyTrimLines(geometry, trimLines);
-                    const vecMap = new Map<number, Vector3>();
-                    for (const [idx, v] of vertexOverrides) vecMap.set(idx, new Vector3(v.x, v.y, v.z));
-                    geometry = applyVertexOverrides(geometry, vecMap);
-                }
-                return geometry;
-            } catch (workerErr) {
-                console.warn("[geometry-engine] OCCT worker failed, using main thread:", workerErr);
-                return scheduleMainThread(() => {
-                    let geometry = getKernel().buildInsole(fullParams);
-                    if (hasEdits) {
-                        geometry = applyTrimLines(geometry, trimLines);
-                        const vecMap = new Map<number, Vector3>();
-                        for (const [idx, v] of vertexOverrides) vecMap.set(idx, new Vector3(v.x, v.y, v.z));
-                        geometry = applyVertexOverrides(geometry, vecMap);
-                    }
-                    return geometry;
-                });
-            }
-        }
 
         const requestId = ++this.nextId;
         const buildGeneration = ++this.latestBuildId;
@@ -213,15 +176,11 @@ class GeometryEngine {
         });
     }
 
-    /** Validates a production solid — uses OCCT topology when the kernel provides it. */
+    /** Validates a production solid from the procedural mesh. */
     async validateProductionSolid(params: InsoleParams): Promise<SolidValidation> {
-        if (isOcctKernelActive()) {
-            const result = await scheduleMainThread(() => getKernel().buildInsoleSolid(params));
-            return result.manifold;
-        }
-        const geometry = await this.buildInsole({ params, quality: "full", preferKernel: false });
+        const geometry = await this.buildInsole({ params, quality: "full" });
         const mesh = await this.analyzeManifold(geometry);
-        return { ...mesh, occtClosed: false, isWatertight: mesh.isWatertight };
+        return { ...mesh, solidClosed: false, isWatertight: mesh.isWatertight };
     }
 
     async analyzeManifold(geometry: BufferGeometry): Promise<ManifoldReport> {

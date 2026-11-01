@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { describe, expect, test } from "@rstest/core";
 import { isCombinedStockGeometry, reconstructProceduralPreview } from "@/lib/geometry/procedural-wall";
@@ -10,7 +9,7 @@ describe("procedural mode rejects combined/stock GLB", () => {
     test("Default.glb is combined stock and cannot enter reconstructProceduralPreview", async () => {
         const geo = await loadProductionDefaultGlb({ slot: "left" });
         expect(isCombinedStockGeometry(geo)).toBe(true);
-        expect(() => reconstructProceduralPreview(geo)).toThrow(
+        await expect(reconstructProceduralPreview(geo)).rejects.toThrow(
             /\[S1-PROCEDURAL\] combined\/stock GLB is not a procedural input/,
         );
         expect(

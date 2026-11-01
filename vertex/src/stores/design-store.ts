@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
 import {
     applyCorrectionPresetToDesign,
     type CorrectionPresetApplyMode,
@@ -21,7 +20,12 @@ import {
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { defaultElementPose } from "@/lib/geometry/elements";
-import { migrateCorrections } from "@/lib/geometry/migrate-corrections";
+import {
+    migrateCorrections,
+    migrateDesignSinks,
+    sinkStyloidThickenForSide,
+    sinksForSide,
+} from "@/lib/geometry/migrate-corrections";
 import {
     defaultSideShapeFinish,
     normalizeSideShapeFinish,
@@ -43,11 +47,16 @@ import {
     usMenToUk,
 } from "@/lib/geometry/shoe-size";
 import { normalizeShoeWidth } from "@/lib/geometry/shoe-width";
+import { SINK_DEFAULT_DEPTH_MM } from "@/lib/geometry/sink";
 import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
+import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
+import { normalizeTextMarking } from "@/lib/geometry/text-marking/validate";
 import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/trimline";
+import { applyDefaultSplitHardness, defaultSplitHardnessPatch } from "@/lib/hardness/split-overlay";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
+import { useClientStore } from "@/stores/client-store";
 import { buildEffectiveTrimlines, useIssuesStore } from "@/stores/issues-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
@@ -57,17 +66,23 @@ import type {
     DesignState,
     ElementKind,
     PlacedElement,
+    PlacedSink,
     PrescriptionParseResult,
+    PressureMapAlignment,
+    PressureMapFoot,
     ProductionMethod,
     ScanPattern,
     ShapeFinishModifiers,
     Side,
     SideCorrections,
     SideShapeFinish,
+    SinkKind,
+    TextMarking,
     TrimPresetId,
     Unit,
     WedgeCorrection,
 } from "@/types";
+import type { NamedHardnessClass } from "../../shared/print-recipe/hardness-class-table";
 import { type HardnessName, migratePrintRecipe } from "../../shared/print-recipe/print-recipe";
 
 function defaultSideCorrections(): SideCorrections {
@@ -82,6 +97,7 @@ function defaultSideCorrections(): SideCorrections {
         heelCupDepthMm: 0,
         heelCupHeightMm: 0,
         heelCupWidthMm: 0,
+        forefootWidthMm: 0,
         heelLiftMm: 0,
         apexMoveMm: 0,
         medialFlangeMm: 0,
@@ -149,6 +165,50 @@ function scaleDesignToLayout(
     };
 }
 
+/** Write one foot's sink list. Linked corrections copy it onto the other foot. */
+function writeSideSinks(design: DesignState, side: Side, list: PlacedSink[]): DesignState["sinks"] {
+    const cleaned = list.length > 0 ? list : undefined;
+    if (design.corrections.linked) {
+        if (!cleaned) return undefined;
+        return { left: cleaned, right: cleaned.map((sink) => ({ ...sink })) };
+    }
+    const next: { left?: PlacedSink[]; right?: PlacedSink[] } = {
+        left: sinksForSide(design, "left"),
+        right: sinksForSide(design, "right"),
+    };
+    next[side] = cleaned;
+    if (!next.left?.length) delete next.left;
+    if (!next.right?.length) delete next.right;
+    if (!next.left && !next.right) return undefined;
+    return next;
+}
+
+function writeSideThicken(design: DesignState, side: Side, on: boolean): DesignState["sinkStyloidThicken"] {
+    if (design.corrections.linked) return on ? { left: true, right: true } : undefined;
+    const next = {
+        left: sinkStyloidThickenForSide(design, "left"),
+        right: sinkStyloidThickenForSide(design, "right"),
+    };
+    next[side] = on;
+    if (!next.left && !next.right) return undefined;
+    return { ...(next.left ? { left: true } : {}), ...(next.right ? { right: true } : {}) };
+}
+
+function sinkKindById(design: DesignState, id: string): PlacedSink["kind"] | undefined {
+    for (const side of ["left", "right"] as const) {
+        const hit = sinksForSide(design, side)?.find((sink) => sink.id === id);
+        if (hit) return hit.kind;
+    }
+    return undefined;
+}
+
+/** Linking copies the left foot's sinks onto the right, matching shoe-width link. */
+function copyLinkedSinks(design: DesignState): DesignState["sinks"] {
+    const left = sinksForSide(design, "left");
+    if (!left) return undefined;
+    return { left, right: left.map((sink) => ({ ...sink })) };
+}
+
 function defaultShapeFinishModifiers(method: ProductionMethod = "printing_solid"): ShapeFinishModifiers {
     const side = defaultSideShapeFinish(method);
     return { left: side, right: { ...side }, linked: true };
@@ -161,6 +221,11 @@ export function defaultDesign(): DesignState {
         method: "printing_solid",
         printRecipe: migratePrintRecipe(undefined),
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
+        shellThicknessMode: "zonal",
+        shellThicknessRfMm: 3,
+        shellThicknessMfMm: 2.5,
+        shellThicknessFfMm: 2,
+        shellThicknessBlendMm: 12,
         sizeSystem: DEFAULT_SHOE_SIZE_SYSTEM,
         usMenSize: DEFAULT_US_MEN_SIZE,
         shoeWidth: "medium",
@@ -415,6 +480,10 @@ export type StockBaseResolutionState = "idle" | "loading" | "resolved" | "failed
 
 export interface DesignStore {
     design: DesignState;
+    /** Browser draft held aside until the user explicitly resumes it. */
+    pendingSessionDesign: DesignState | null;
+    resumeSession: () => void;
+    startFreshSession: () => void;
     /** Set when the mandatory default stock base cannot be loaded from the server. */
     stockBaseError: string | null;
     /** True while fetching the default stock base from the server. */
@@ -438,6 +507,8 @@ export interface DesignStore {
     setMethod: (method: ProductionMethod) => void;
     /** Named whole-device hardness (Phase A PrintRecipe). */
     setPrintHardness: (hardness: HardnessName) => void;
+    setSplitElements: (on: boolean) => void;
+    setSmoothElements: (on: boolean) => void;
     setThickness: (mm: number) => void;
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
@@ -456,6 +527,7 @@ export interface DesignStore {
 
     updateShapeFinish: (side: Side, patch: Partial<SideShapeFinish>) => void;
     setShapeFinishLinked: (linked: boolean) => void;
+    setTextMarking: (patch: Partial<TextMarking>) => void;
 
     /** Live production constraint violations for the current design (derived). */
     getActiveViolations: () => ConstraintViolation[];
@@ -463,7 +535,16 @@ export interface DesignStore {
     addElement: (kind: ElementKind, side: Side) => void;
     addCustomElement: (customElementId: string, customName: string, side: Side) => void;
     updateElement: (id: string, patch: Partial<PlacedElement>) => void;
+    setElementHardness: (id: string, hardness: NamedHardnessClass) => void;
     removeElement: (id: string) => void;
+    addSink: (kind: SinkKind, side: Side) => void;
+    updateSink: (
+        id: string,
+        patch: Partial<Pick<PlacedSink, "depthMm" | "u" | "v" | "markerId">>,
+        side: Side,
+    ) => void;
+    removeSink: (id: string, side: Side) => void;
+    setSinkStyloidThicken: (on: boolean, side: Side) => void;
     selectElement: (id: string | null) => void;
     setTransformMode: (mode: TransformMode) => void;
     setCustomPrefab: (customPrefabId: string, customPrefabName: string) => void;
@@ -499,8 +580,13 @@ export interface DesignStore {
     applyCorrectionPreset: (
         payload: CorrectionPresetPayload,
         mode: CorrectionPresetApplyMode,
-        options?: { includeElements?: boolean; activeSide?: Side; label?: string },
+        options?: { activeSide?: Side; label?: string },
     ) => void;
+
+    setPressureMap: (side: Side, foot: PressureMapFoot) => void;
+    removePressureMap: (side: Side) => void;
+    setPressureMapVisible: (side: Side, visible: boolean) => void;
+    patchPressureMapAlignment: (side: Side, patch: Partial<PressureMapAlignment>) => void;
 
     setViewer: (patch: Partial<ViewerSettings>) => void;
     setExportSide: (side: Side) => void;
@@ -529,6 +615,15 @@ export const useDesignStore = create<DesignStore>()(
     persist(
         (set, get) => ({
             design: createDesignWithStockPlaceholder(),
+            pendingSessionDesign: null,
+            resumeSession: () => {
+                const draft = get().pendingSessionDesign;
+                if (draft) get().loadDesign({ ...draft, corrections: migrateCorrections(draft.corrections) });
+            },
+            startFreshSession: () => {
+                useClientStore.getState().setActiveDesign(null);
+                get().reset();
+            },
             stockBaseError: null,
             stockBaseLoading: false,
             stockBaseResolutionState: "resolved",
@@ -572,6 +667,16 @@ export const useDesignStore = create<DesignStore>()(
                     };
                 });
             },
+            setSplitElements: (on) => {
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        splitElements: on,
+                        elements: on ? applyDefaultSplitHardness(s.design.elements) : s.design.elements,
+                    },
+                }));
+            },
+            setSmoothElements: (on) => set((s) => ({ design: { ...s.design, smoothElements: on } })),
             setThickness: (thicknessMm) =>
                 set((s) => {
                     const isPaired = !!s.design.paired;
@@ -639,6 +744,14 @@ export const useDesignStore = create<DesignStore>()(
                                 : s.design.shoeWidthBySide,
                             corrections: { ...s.design.corrections, linked },
                             paired: s.design.paired ? { ...s.design.paired, linked } : undefined,
+                            ...(linked
+                                ? {
+                                      sinks: copyLinkedSinks(s.design),
+                                      sinkStyloidThicken: sinkStyloidThickenForSide(s.design, "left")
+                                          ? { left: true, right: true }
+                                          : undefined,
+                                  }
+                                : {}),
                         },
                     };
                 }),
@@ -738,6 +851,17 @@ export const useDesignStore = create<DesignStore>()(
                         design: {
                             ...s.design,
                             shapeFinish: { ...current, left, right },
+                        },
+                    };
+                }),
+
+            setTextMarking: (patch) =>
+                set((s) => {
+                    const current = s.design.textMarking ?? defaultTextMarking(patch.surface ?? "bottom");
+                    return {
+                        design: {
+                            ...s.design,
+                            textMarking: normalizeTextMarking({ ...current, ...patch }),
                         },
                     };
                 }),
@@ -881,11 +1005,13 @@ export const useDesignStore = create<DesignStore>()(
                 set((s) => {
                     const layout = insoleLayoutFromDesign(s.design);
                     const pose = defaultElementPose(kind, side, layout.lengthMm, layout.widthMm);
+                    const id = crypto.randomUUID();
                     const el: PlacedElement = {
-                        id: crypto.randomUUID(),
+                        id,
                         kind,
                         side,
                         ...pose,
+                        ...(s.design.splitElements ? defaultSplitHardnessPatch(id) : {}),
                     };
                     const next = { ...s.design, elements: [...s.design.elements, el] };
                     const eff = buildEffectiveTrimlines(next);
@@ -897,8 +1023,9 @@ export const useDesignStore = create<DesignStore>()(
             addCustomElement: (customElementId, customName, side) => {
                 get().checkpoint("add-custom-element");
                 set((s) => {
+                    const id = crypto.randomUUID();
                     const el: PlacedElement = {
-                        id: crypto.randomUUID(),
+                        id,
                         kind: "custom",
                         customElementId,
                         customName,
@@ -907,6 +1034,7 @@ export const useDesignStore = create<DesignStore>()(
                         rotationDeg: 0,
                         scale: { x: 1, y: 1 },
                         heightMm: 4,
+                        ...(s.design.splitElements ? defaultSplitHardnessPatch(id) : {}),
                     };
                     const next = { ...s.design, elements: [...s.design.elements, el] };
                     const eff = buildEffectiveTrimlines(next);
@@ -1024,6 +1152,32 @@ export const useDesignStore = create<DesignStore>()(
 
             clearStockBaseError: () => set({ stockBaseError: null }),
 
+            setElementHardness: (id, hardness) => {
+                const element = get().design.elements.find((e) => e.id === id);
+                if (!element) return;
+                if (element.hardnessClass === hardness && !element.overrides && get().design.splitElements)
+                    return;
+                get().checkpoint("element-hardness");
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        splitElements: true,
+                        elements: s.design.elements.map((e) =>
+                            e.id === id
+                                ? {
+                                      ...e,
+                                      regionId: e.regionId ?? e.id,
+                                      hardnessClass: hardness,
+                                      priority: e.priority ?? 1,
+                                      depth: e.depth ?? { type: "full" },
+                                      overrides: undefined,
+                                  }
+                                : e,
+                        ),
+                    },
+                }));
+            },
+
             updateElement: (id, patch) =>
                 set((s) => {
                     const nextElements = s.design.elements.map((e) => (e.id === id ? { ...e, ...patch } : e));
@@ -1048,6 +1202,68 @@ export const useDesignStore = create<DesignStore>()(
                 });
             },
 
+            addSink: (kind, side) => {
+                const current = sinksForSide(get().design, side) ?? [];
+                if (current.some((s) => s.kind === kind)) return;
+                get().checkpoint("add-sink");
+                set((s) => {
+                    const list = sinksForSide(s.design, side) ?? [];
+                    if (list.some((sink) => sink.kind === kind)) return {};
+                    const sink: PlacedSink = {
+                        id: crypto.randomUUID(),
+                        kind,
+                        depthMm: SINK_DEFAULT_DEPTH_MM,
+                    };
+                    const next = { ...s.design, sinks: writeSideSinks(s.design, side, [...list, sink]) };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next };
+                });
+            },
+
+            updateSink: (id, patch, side) => {
+                get().checkpoint("update-sink");
+                set((s) => {
+                    const kind = sinkKindById(s.design, id);
+                    const list = (sinksForSide(s.design, side) ?? []).map((sink) =>
+                        sink.id === id || (kind !== undefined && sink.kind === kind)
+                            ? { ...sink, ...patch }
+                            : sink,
+                    );
+                    const next = { ...s.design, sinks: writeSideSinks(s.design, side, list) };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next };
+                });
+            },
+
+            removeSink: (id, side) => {
+                get().checkpoint("remove-sink");
+                set((s) => {
+                    const kind = sinkKindById(s.design, id);
+                    const list = (sinksForSide(s.design, side) ?? []).filter((sink) =>
+                        kind !== undefined ? sink.kind !== kind : sink.id !== id,
+                    );
+                    const next = { ...s.design, sinks: writeSideSinks(s.design, side, list) };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next };
+                });
+            },
+
+            setSinkStyloidThicken: (on, side) => {
+                get().checkpoint("sink-styloid-thicken");
+                set((s) => {
+                    const next = {
+                        ...s.design,
+                        sinkStyloidThicken: writeSideThicken(s.design, side, on),
+                    };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    return { design: next };
+                });
+            },
+
             selectElement: (selectedElementId) => set({ selectedElementId }),
             setTransformMode: (transformMode) => set({ transformMode }),
 
@@ -1066,13 +1282,6 @@ export const useDesignStore = create<DesignStore>()(
                         left: r1.constrained,
                         right: s.design.corrections.linked ? r1.constrained : r2.constrained,
                     };
-                    const layout = insoleLayoutFromDesign(s.design);
-                    const elements: PlacedElement[] = result.elements.map((e) => ({
-                        id: crypto.randomUUID(),
-                        kind: e.kind,
-                        side: e.side,
-                        ...defaultElementPose(e.kind, e.side, layout.lengthMm, layout.widthMm),
-                    }));
                     return {
                         design: {
                             ...s.design,
@@ -1080,7 +1289,8 @@ export const useDesignStore = create<DesignStore>()(
                             method: result.method ?? s.design.method,
                             thicknessMm: r1.thicknessMm,
                             corrections,
-                            elements: [...s.design.elements, ...elements],
+                            // Element suggestions are added explicitly in the Elements library.
+                            elements: s.design.elements,
                         },
                     };
                 });
@@ -1095,7 +1305,7 @@ export const useDesignStore = create<DesignStore>()(
                 // Sanitize on load so persisted or imported designs are always valid.
                 const r = constrainSideCorrections(incoming.corrections.left, incoming.thicknessMm);
                 const r2 = constrainSideCorrections(incoming.corrections.right, r.thicknessMm);
-                let safeDesign: DesignState = {
+                let safeDesign: DesignState = migrateDesignSinks({
                     ...incoming,
                     printRecipe: migratePrintRecipe(incoming.printRecipe),
                     thicknessMm: r.thicknessMm,
@@ -1104,7 +1314,7 @@ export const useDesignStore = create<DesignStore>()(
                         left: r.constrained,
                         right: incoming.corrections.linked ? r.constrained : r2.constrained,
                     },
-                };
+                });
                 // Legacy or parametric-only saved designs: inject SAMPLE_Top.
                 const hadBase = designHasBase(safeDesign);
                 if (!hadBase) {
@@ -1117,6 +1327,7 @@ export const useDesignStore = create<DesignStore>()(
                 stockBaseAutoRetryBlocked = false;
                 set({
                     design: safeDesign,
+                    pendingSessionDesign: null,
                     selectedElementId: null,
                     stockBaseError: null,
                     stockBaseLoading: false,
@@ -1184,13 +1395,82 @@ export const useDesignStore = create<DesignStore>()(
                 set((s) => {
                     const next = applyCorrectionPresetToDesign(s.design, payload, {
                         mode,
-                        includeElements: options?.includeElements ?? true,
                         activeSide: options?.activeSide ?? s.exportSide,
-                        placementSides: elementPlacementSides(),
                     });
                     const eff = buildEffectiveTrimlines(next);
                     useIssuesStore.getState().recompute(next, eff);
                     return { design: next };
+                });
+            },
+
+            setPressureMap: (side, foot) => {
+                get().checkpoint("pressure-map");
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        pressureMaps: { ...s.design.pressureMaps, [side]: foot },
+                    },
+                }));
+            },
+
+            removePressureMap: (side) => {
+                if (!get().design.pressureMaps?.[side]) return;
+                get().checkpoint("pressure-map-remove");
+                set((s) => {
+                    const pressureMaps = { ...s.design.pressureMaps };
+                    delete pressureMaps[side];
+                    return {
+                        design: {
+                            ...s.design,
+                            pressureMaps: Object.keys(pressureMaps).length ? pressureMaps : undefined,
+                        },
+                    };
+                });
+            },
+
+            setPressureMapVisible: (side, visible) => {
+                const cur = get().design.pressureMaps?.[side];
+                if (!cur || cur.visible === visible) return;
+                set((s) => {
+                    const foot = s.design.pressureMaps?.[side];
+                    if (!foot) return s;
+                    return {
+                        design: {
+                            ...s.design,
+                            pressureMaps: {
+                                ...s.design.pressureMaps,
+                                [side]: { ...foot, visible },
+                            },
+                        },
+                    };
+                });
+            },
+
+            patchPressureMapAlignment: (side, patch) => {
+                const cur = get().design.pressureMaps?.[side];
+                if (!cur) return;
+                get().checkpoint("pressure-map-align");
+                set((s) => {
+                    const foot = s.design.pressureMaps?.[side];
+                    if (!foot) return s;
+                    return {
+                        design: {
+                            ...s.design,
+                            pressureMaps: {
+                                ...s.design.pressureMaps,
+                                [side]: {
+                                    ...foot,
+                                    alignment: {
+                                        ...foot.alignment,
+                                        ...patch,
+                                        offsetMm: patch.offsetMm
+                                            ? { ...foot.alignment.offsetMm, ...patch.offsetMm }
+                                            : foot.alignment.offsetMm,
+                                    },
+                                },
+                            },
+                        },
+                    };
                 });
             },
 
@@ -1209,6 +1489,7 @@ export const useDesignStore = create<DesignStore>()(
                 stockBaseAutoRetryBlocked = false;
                 set({
                     design: withStock,
+                    pendingSessionDesign: null,
                     selectedElementId: null,
                     stockBaseError: null,
                     stockBaseLoading: false,
@@ -1302,8 +1583,31 @@ export const useDesignStore = create<DesignStore>()(
         }),
         {
             name: "vertex-design-session",
-            /** Keep live design (incl. trimlines) across page refresh before explicit Save. */
-            partialize: (state) => ({ design: state.design }),
+            /** Keep both the active work and an unclaimed draft across repeated reloads. */
+            partialize: (state) => ({
+                design: state.design,
+                pendingSessionDesign: state.pendingSessionDesign,
+            }),
+            merge: (persisted, current) => {
+                const saved = persisted as
+                    | {
+                          design?: DesignState;
+                          pendingSessionDesign?: DesignState | null;
+                      }
+                    | undefined;
+                if (!saved?.design) return current;
+                // Never put a previous session's elements into a new viewport implicitly.
+                // Intercept before hydration publishes any state, avoiding a flash of pads.
+                const draft = saved.design.elements?.length
+                    ? saved.design
+                    : (saved.pendingSessionDesign ?? null);
+                return {
+                    ...current,
+                    design: draft ? createDesignWithStockPlaceholder() : saved.design,
+                    pendingSessionDesign: draft,
+                    selectedElementId: null,
+                };
+            },
             onRehydrateStorage: () => (state) => {
                 if (!state?.design) return;
                 if (state.design.productType === "afo") {
@@ -1319,7 +1623,9 @@ export const useDesignStore = create<DesignStore>()(
                     });
                     return;
                 }
-                let design = replaceBuiltinDefaultWithSampleTop(sanitizeDesignStockBases(state.design));
+                let design = migrateDesignSinks(
+                    replaceBuiltinDefaultWithSampleTop(sanitizeDesignStockBases(state.design)),
+                );
                 design = { ...design, corrections: migrateCorrections(design.corrections) };
                 if (!designHasBase(design)) {
                     design = createDesignWithStockPlaceholder(design);

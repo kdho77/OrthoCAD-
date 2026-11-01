@@ -12,16 +12,16 @@ production readiness requirements. ✅ = implemented, ◑ = partial / documented
 | 3D scan / prefab import (STL/OBJ) | ✅ | `lib/geometry/import`, `features/scans` |
 | Pattern selection | ✅ | `LeftSidebar` (full contact, prefab 3D, flat, custom) |
 | Custom GLB library | ✅ | `features/library`, Supabase Storage, token-gated save |
-| Custom GLB → OCCT booleans | ✅ | `custom-element-bounds` + oriented box fuse in `occt-insole` |
+| Custom GLB → mesh export | ✅ | `custom-element-bounds` + height-field / rim-close |
 | Custom prefab export (STL/G-code) | ✅ | `export-geometry.ts` loads saved GLB |
 | Trim / vertex mesh editing | ✅ | `MeshEditTools`, `mesh-edit-store` |
-| Performance (60fps CAD) | ✅ | Worker preview, OCCT worker, instanced markers, FPS toggle |
+| Performance (60fps CAD) | ✅ | Worker preview, procedural-wall worker, instanced markers, FPS toggle |
 | Production methods | ✅ | printing solid / shell, 3-axis milling |
-| Parametric corrections | ✅ | `features/corrections`, height-field + OCCT loft |
+| Parametric corrections | ✅ | `features/corrections`, height-field + procedural loft |
 | Elements library | ✅ | stock + custom elements, 3D gizmos |
 | Real-time 3D updates | ✅ | `useInsoleGeometry`, preview/commit pipeline |
-| Solid / shell generation | ✅ | OCCT loft + booleans + `makeThickSolidByJoin` |
-| Watertight validation | ✅ | OCCT `isClosed()` + mesh edge analysis |
+| Solid / shell generation | ✅ | procedural loft + mesh-close + shell helpers |
+| Watertight validation | ✅ | `analyzeManifold` + mesh edge analysis |
 | TPU printing incl. 45° belt | ✅ | `lib/kiri` slicer + belt transform |
 | 3-axis CNC toolpaths + G-code | ✅ | `lib/kiri/cnc` |
 | AI prescription upload | ✅ | `server/routers/ai`, rate-limited |
@@ -44,25 +44,24 @@ production readiness requirements. ✅ = implemented, ◑ = partial / documented
 
 | Platform | Status | Notes |
 | --- | --- | --- |
-| Vercel SPA + self-contained tRPC | ✅ | `vertex/vercel.json` (rootDirectory=vertex), single self-contained `api/trpc/[[...trpc]].ts` function (no `functions` config), WASM headers |
+| Vercel SPA + self-contained tRPC | ✅ | `vertex/vercel.json` (rootDirectory=vertex), single self-contained `api/trpc/[[...trpc]].ts` function |
 | Render Blueprint | ✅ | `render.yaml` web + API, `prisma migrate deploy` |
-| OCCT WASM bundle | ✅ | ~16 MB, lazy-loaded, worker offload |
 
 ## Performance targets
 
 | Metric | Target | Implementation |
 | --- | --- | --- |
-| Interactive slider/gizmo | 60 fps | Preview mesh (48×24) in geometry worker |
-| Idle full-quality rebuild | < 2 s typical | OCCT worker + rAF main-thread fallback |
+| Interactive slider/gizmo | 60 fps | Preview mesh in geometry worker |
+| Idle full-quality rebuild | < 2 s typical | procedural-wall worker + rAF main-thread fallback |
 | First paint | Code-split | Vite manual chunks (three/r3f/trpc) |
 | GPU memory | No leaks | Geometry dispose on rebuild |
 
 ## Manual smoke test (clinical workflow)
 
 1. `npm run dev` (+ optional `npm run dev:server`).
-2. Wait for OCCT banner → status bar shows `opencascade wasm`.
-3. Adjust corrections → preview updates smoothly; release → full OCCT mesh.
-4. Add met pad + custom library element → drag/scale; OCCT fuse on idle.
+2. Status bar shows `three procedural` kernel name.
+3. Adjust corrections → preview updates smoothly; release → idle export-quality mesh.
+4. Add met pad + custom library element → drag/scale; export mesh updates on idle.
 5. AI Rx: ⌘P → paste prescription → Apply → corrections populate.
 6. Import STL scan → renders with manifold badge.
 7. Export STL (⌘E) → watertight check green; tokens decrement.
@@ -74,21 +73,19 @@ production readiness requirements. ✅ = implemented, ◑ = partial / documented
 
 | Area | Web Vertex | Notes |
 | --- | --- | --- |
-| Correction accuracy | Height-field parity | Same parametric model; OCCT loft vs Rhino NURBS — validate against reference STLs per clinic |
-| Boolean elements | OCCT BRep | Custom GLB uses bounds-approximated box tool; full mesh BRep import is future work |
-| Shell printing | OCCT thick solid | Falls back to solid if shell offset fails |
+| Correction accuracy | Height-field parity | Same parametric model; procedural loft vs Rhino NURBS — validate against reference STLs per clinic |
+| Boolean elements | Mesh / height-field | Custom GLB uses bounds-approximated tools; full mesh BRep import is future work |
+| Shell printing | Procedural thick solid | Falls back to solid if shell offset fails |
 | Export formats | STL + G-code | STEP/3MF future |
 
 ## Automated tests
 
 ```bash
-npm run test:wasm -- packages/wasm/test/vertex-insole.wasm.test.ts
-npx rstest vertex/server/src/lib/glb-validation.test.ts vertex/server/src/lib/rate-limit.test.ts
+npx rstest vertex/
 cd vertex && npm run typecheck && npm run build
 ```
 
 ## Known limitations
 
-- Custom GLB elements use oriented bounding-box OCCT tools (not full mesh BRep) — sufficient for pad-like elements; complex meshes may differ from Rhino.
-- OCCT worker duplicates WASM memory (~16 MB per worker tab) — acceptable for clinical single-design sessions.
+- Custom GLB elements use oriented bounding-box mesh tools (not full mesh BRep) — sufficient for pad-like elements; complex meshes may differ from Rhino.
 - Client/design sync remains local-first unless `VITE_API_URL` is configured.

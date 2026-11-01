@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { canSaveCustom, SAVE_CUSTOM_TOKEN_COST } from "@/features/licensing/license";
-import { getKernel } from "@/lib/chili3d/kernel";
 import {
     baseModifierField,
     getDesignBase,
@@ -9,6 +8,7 @@ import {
 } from "@/lib/geometry/base-asset";
 import { applyBaseModifiers, BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { boundsFromObject, registerCustomElementBounds } from "@/lib/geometry/custom-element-bounds";
+import { getKernel } from "@/lib/geometry/geometry-kernel";
 import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
@@ -161,7 +161,7 @@ async function buildBasePrefabMesh(side: Side): Promise<THREE.Mesh | null> {
         const stored = useBottomPatternStore.getState().getPattern(side);
         const layout = insoleLayoutFromDesign(design);
         const widthId = shoeWidthForSide(design, side);
-        const preview = reconstructProceduralPreview(raw, {
+        const preview = await reconstructProceduralPreview(raw, {
             corrections: field.corrections,
             thicknessMm: thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
             stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,

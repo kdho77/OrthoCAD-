@@ -1,9 +1,9 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import type { Side, SideCorrections, WedgeCorrection } from "@/types";
-import { getRearfootFactor, wedgeDeltaAt } from "@/lib/geometry/wedge";
+import { fullLengthDeltaFromField, fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
+import { getRearfootFactor, wedgeDeltaAt } from "@/lib/geometry/wedge";
+import type { Side, SideCorrections, WedgeCorrection } from "@/types";
 
 /** Local bump (duplicated to avoid circular import with height-field.ts). */
 function bump(t: number, c: number, r: number): number {
@@ -117,11 +117,7 @@ function smoothstep(e0: number, e1: number, x: number): number {
  * rotation); at u_ref the rearfoot zone factor is ≈1 so the edge-to-edge
  * gradient equals the delivered frontal tilt.
  */
-export function seatTiltRadFromEdges(
-    zMedial: number,
-    zLateral: number,
-    heelWidthMm: number,
-): number {
+export function seatTiltRadFromEdges(zMedial: number, zLateral: number, heelWidthMm: number): number {
     if (!(heelWidthMm > 1e-6)) return 0;
     return Math.atan((zMedial - zLateral) / heelWidthMm);
 }
@@ -161,7 +157,17 @@ function sampleSeatDelta(
     const post = vSigned * medialSign * (params.widthMm / 2);
     const heel = bump(u, 0.1, 0.18);
     const posting = Math.tan((corrections.rearfootPostingDeg || 0) * DEG) * post * heel;
-    return wedge + posting;
+    const fullLength = fullLengthWedgeActive(corrections)
+        ? fullLengthDeltaFromField(
+              u,
+              vSigned,
+              { side, lengthMm: params.lengthMm, widthMm: params.widthMm, corrections },
+              (uu) =>
+                  effectiveOutlineHalfWidth(uu, params.lengthMm, params.widthMm, params.trimline ?? null) *
+                  (params.widthMm / 2),
+          )
+        : 0;
+    return wedge + posting + fullLength;
 }
 
 /** Width-coordinate of the one-third line from the skived edge toward the opposite edge. */
@@ -207,8 +213,7 @@ export function resolveSkivePlane(input: SkiveSolveInput): SkivePlane | null {
         // Flat-seat prediction of zero-crossing; live measurement may refine.
         const tanA = Math.tan(angleDeg * DEG);
         const run = tanA > 1e-9 ? depthMm / tanA : W;
-        const fromMedial =
-            input.edge === "medial" ? W / 3 + run : W - (W / 3 + run);
+        const fromMedial = input.edge === "medial" ? W / 3 + run : W - (W / 3 + run);
         locationPct = Math.max(0, Math.min(100, (fromMedial / W) * 100));
         if (input.locationPct == null) {
             // keep derived
@@ -219,8 +224,7 @@ export function resolveSkivePlane(input: SkiveSolveInput): SkivePlane | null {
 
     const skiveTilt = angleDeg * DEG;
     // Positive world tilt = medial higher. Medial skive adds; lateral subtracts.
-    const worldTiltRad =
-        input.edge === "medial" ? seatTilt + skiveTilt : seatTilt - skiveTilt;
+    const worldTiltRad = input.edge === "medial" ? seatTilt + skiveTilt : seatTilt - skiveTilt;
 
     const medDir = Math.sign(yMedial - yLateral) || 1;
     const dzdy = Math.tan(worldTiltRad) * medDir;
@@ -273,12 +277,8 @@ export function kirbySkiveRaiseAt(
     if (!(corrections.medialSkiveMm > 0 || corrections.lateralSkiveMm > 0)) return 0;
 
     const halfWRef =
-        effectiveOutlineHalfWidth(
-            SKIVE_U_REF,
-            params.lengthMm,
-            params.widthMm,
-            params.trimline ?? null,
-        ) * (params.widthMm / 2);
+        effectiveOutlineHalfWidth(SKIVE_U_REF, params.lengthMm, params.widthMm, params.trimline ?? null) *
+        (params.widthMm / 2);
     if (!(halfWRef > 1e-6)) return 0;
 
     const halfW =
@@ -299,7 +299,7 @@ export function kirbySkiveRaiseAt(
         const depthMm = edge === "medial" ? corrections.medialSkiveMm : corrections.lateralSkiveMm;
         if (!(depthMm > 0)) continue;
         const yThird = oneThirdLineY(yMedial, yLateral, edge);
-        const vThird = (yThird / halfWRef) ; // parametric y = v * halfWRef at u_ref
+        const vThird = yThird / halfWRef; // parametric y = v * halfWRef at u_ref
         const zSeatAtThird = params.zBowl(SKIVE_U_REF, Math.max(-1, Math.min(1, vThird)));
         const plane = resolveSkivePlane({
             side,
@@ -372,10 +372,7 @@ export function applyHeelSkiveToTopMesh(
         seatTiltDeg: 0,
         measuredLocationPct: null,
     };
-    if (
-        !(corrections.medialSkiveMm > 0 || corrections.lateralSkiveMm > 0) ||
-        topVertexCount <= 0
-    ) {
+    if (!(corrections.medialSkiveMm > 0 || corrections.lateralSkiveMm > 0) || topVertexCount <= 0) {
         return empty;
     }
 
@@ -461,12 +458,8 @@ interface HeelBand {
     samples: { y: number; z: number }[];
 }
 
-function collectHeelBand(
-    positions: Float32Array,
-    params: ApplyHeelSkiveMeshParams,
-): HeelBand | null {
-    const { lengthAxis, widthAxis, thickAxis, lenMin, lenSize, topVertexCount, side, widthSign } =
-        params;
+function collectHeelBand(positions: Float32Array, params: ApplyHeelSkiveMeshParams): HeelBand | null {
+    const { lengthAxis, widthAxis, thickAxis, lenMin, lenSize, topVertexCount, side, widthSign } = params;
     const u0 = SKIVE_U_REF;
     const uTol = 0.025;
     const samples: { y: number; z: number; m: number }[] = [];
@@ -565,8 +558,7 @@ function measureZeroCrossingPct(
         }
         yCross = y;
     }
-    const pct =
-        (Math.abs(yCross - plane.yMedial) / (band.heelWidthMm || 1)) * 100;
+    const pct = (Math.abs(yCross - plane.yMedial) / (band.heelWidthMm || 1)) * 100;
     return Math.max(0, Math.min(100, pct));
 }
 
@@ -592,9 +584,7 @@ export function solveSkiveDerived(args: {
     const locDist = (locationPct / 100) * W;
     const dist = Math.abs(locDist - W / 3);
     const angleDeg =
-        dist > 1e-6
-            ? clampSkiveAngleDeg((Math.atan(depth / dist) * 180) / Math.PI)
-            : SKIVE_DEFAULT_ANGLE_DEG;
+        dist > 1e-6 ? clampSkiveAngleDeg((Math.atan(depth / dist) * 180) / Math.PI) : SKIVE_DEFAULT_ANGLE_DEG;
     return { angleDeg, locationPct };
 }
 

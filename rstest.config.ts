@@ -4,10 +4,17 @@ import { defineConfig } from "@rstest/core";
 import packages from "./package.json";
 
 export default defineConfig({
-    exclude: ["**/cpp/**", "**/*.wasm.test.ts", "**/*.optional.test.ts", "**/dump-*.test.ts"],
+    // pressure-map.webgl.test.ts needs a Playwright browser. Run it with
+    // `npm run test:pressure-map-webgl`, not in the required unit job.
+    exclude: [
+        "**/cpp/**",
+        "**/*.wasm.test.ts",
+        "**/*.optional.test.ts",
+        "**/dump-*.test.ts",
+        "**/pressure-map.webgl.test.ts",
+    ],
     globals: true,
     testEnvironment: "happy-dom",
-    setupFiles: ["./rstest-setup.ts"],
     tools: {
         rspack: {
             resolve: {
@@ -26,7 +33,6 @@ export default defineConfig({
     },
     resolve: {
         alias: {
-            "./viewGizmo": "./packages/three/test/viewGizmo.ts",
             // Vertex app uses the "@/" path alias (see vertex/tsconfig.json) so
             // its unit tests resolve internal imports under the monorepo runner.
             "@": resolve("vertex/src"),

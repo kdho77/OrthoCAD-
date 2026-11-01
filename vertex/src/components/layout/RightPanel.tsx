@@ -26,6 +26,7 @@ export function RightPanel() {
     const productType = useClinicalWorkflowStore((s) => s.productType);
     const scanPattern = useDesignStore((s) => s.design.pattern);
     const isAfo = productType === "afo";
+    const method = useDesignStore((s) => s.design.method);
 
     return (
         <aside className="flex h-full w-full flex-col border-l border-border bg-panel lg:w-80 lg:shrink-0">
@@ -75,18 +76,11 @@ export function RightPanel() {
                             <CorrectionsPanel />
                         </div>
                     ) : null}
-                    {!isAfo && step === "elements" ? (
-                        <div className="space-y-3">
-                            <ElementsPanel />
-                            <p className="rounded-md border border-dashed border-border px-2 py-3 text-center text-[11px] text-muted-foreground">
-                                Element library coming soon — met bars and pads stay on this step.
-                            </p>
-                        </div>
-                    ) : null}
+                    {!isAfo && step === "elements" ? <ElementsPanel /> : null}
                     {!isAfo && step === "print" ? (
                         <div className="space-y-3">
                             <ClinicalPrintStepPanel />
-                            <HardnessStepPanel />
+                            {method === "milling_3axis" ? null : <HardnessStepPanel />}
                         </div>
                     ) : null}
                     {!isAfo && step === "export" ? <ExportPanel /> : null}

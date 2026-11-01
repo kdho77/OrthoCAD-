@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { ElementKind, PlacedElement, Side } from "@/types";
 
@@ -8,7 +7,7 @@ import type { ElementKind, PlacedElement, Side } from "@/types";
  *
  * Stock shapes are procedural clinical footprints (not imported meshes):
  * they stay parametric under scale/rotation and share one definition between
- * the interactive height field and the OCCT boolean tool outline.
+ * the interactive height field and the export boolean tool outline.
  *
  * Local frame (+x distal / toe, −x proximal / heel, +y = left-foot medial
  * when rotation = 0). Medial-biased shapes (reverse Morton's notch, Cluffy,
@@ -56,9 +55,9 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         ryMm: 12,
         sign: 1,
         shape: "teardrop",
-        defaultHeightMm: 3,
-        defaultU: 0.68,
-        defaultMedial: 0.05,
+        defaultHeightMm: 5,
+        defaultU: 0.5473,
+        defaultMedial: 0.0722,
     },
     // Transverse metatarsal bar: short AP, long ML, gentle anterior bow
     // following the metatarsal parabola. ~20 × 64 mm.
@@ -67,20 +66,38 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         ryMm: 32,
         sign: 1,
         shape: "met_bar",
-        defaultHeightMm: 3,
-        defaultU: 0.66,
-        defaultMedial: 0,
+        defaultHeightMm: 3.47,
+        defaultU: 0.5162,
+        defaultMedial: -0.0387,
+    },
+    toe_crest: {
+        rxMm: 12,
+        ryMm: 18,
+        sign: 1,
+        shape: "teardrop",
+        defaultHeightMm: 2.47,
+        defaultU: 0.7802,
+        defaultMedial: -0.2859,
+    },
+    cuboid_pad: {
+        rxMm: 16,
+        ryMm: 10,
+        sign: 1,
+        shape: "teardrop",
+        defaultHeightMm: 6.37,
+        defaultU: 0.3448,
+        defaultMedial: -0.6865,
     },
     // Cluffy wedge under the hallux — raises the distal phalanx to promote
-    // 1st MPJ dorsiflexion. Apex distal, base at IPJ. ~22 × 14 mm.
+    // 1st MPJ dorsiflexion. Apex distal, base at IPJ. Library GLB (29 × 26 mm).
     cluffy_wedge: {
-        rxMm: 11,
-        ryMm: 7,
+        rxMm: 15,
+        ryMm: 13,
         sign: 1,
         shape: "hallux_wedge",
-        defaultHeightMm: 2.5,
-        defaultU: 0.9,
-        defaultMedial: 0.55,
+        defaultHeightMm: 2.4,
+        defaultU: 0.7744,
+        defaultMedial: 0.6413,
     },
     // Morton's extension: rigid strip under 1st ray from met neck through
     // hallux. Long AP, narrow ML. ~56 × 18 mm.
@@ -154,15 +171,15 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultU: 0.14,
         defaultMedial: 0,
     },
-    // Dancer's pad — lateral forefoot / sulcus relief, 0–6 mm.
+    // Dancer's pad — 1st MPJ relief (mitten + sesamoid notch), 0–6 mm.
     dancers_pad: {
-        rxMm: 18,
-        ryMm: 10,
+        rxMm: 34,
+        ryMm: 27,
         sign: 1,
         shape: "dancers_pad",
         defaultHeightMm: 2.5,
-        defaultU: 0.7,
-        defaultMedial: -0.55,
+        defaultU: 0.6496,
+        defaultMedial: -0.0196,
     },
 };
 
@@ -323,7 +340,9 @@ export function elementFootprintT(
     ry: number,
     side: Side = "left",
 ): number {
-    const medial = medialYSign(side);
+    // Match the GLB dancer-pad contour orientation in the displayed pair.
+    // Reflect only the local shape; default/saved placement anchors stay fixed.
+    const medial = side === "left" ? -1 : 1;
     const profile = ELEMENT_PROFILES[kind];
 
     switch (profile.shape) {
@@ -356,7 +375,7 @@ export function elementFootprintT(
 
 /**
  * Sample the clinical outline in element-local mm (closed ring, CCW).
- * Used to extrude the OCCT boolean tool so preview and export share topology.
+ * Used to extrude the export boolean tool so preview and export share topology.
  */
 export function elementOutlineLocalMm(
     kind: ElementKind,
@@ -406,9 +425,11 @@ export function defaultElementPose(
     side: Side,
     lengthMm = 260,
     widthMm = 95,
-): Pick<PlacedElement, "position" | "rotationDeg" | "scale" | "heightMm"> {
+): Pick<PlacedElement, "position" | "rotationDeg" | "scale" | "heightMm" | "placementMode"> {
     const p = ELEMENT_PROFILES[kind];
-    const medial = medialYSign(side);
+    // Cluffy belongs under the hallux: inward is -Y on left, +Y on right.
+    // Keep the other library anchors unchanged; their positions are already approved.
+    const medial = medialYSign(side) * (kind === "cluffy_wedge" ? -1 : 1);
     return {
         position: {
             x: p.defaultU * lengthMm - lengthMm / 2,
@@ -417,6 +438,15 @@ export function defaultElementPose(
         rotationDeg: 0,
         scale: { x: 1, y: 1 },
         heightMm: p.defaultHeightMm,
+        placementMode:
+            kind === "met_pad" ||
+            kind === "met_bar" ||
+            kind === "toe_crest" ||
+            kind === "cuboid_pad" ||
+            kind === "dancers_pad" ||
+            kind === "cluffy_wedge"
+                ? "flow"
+                : undefined,
     };
 }
 

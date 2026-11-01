@@ -1,10 +1,9 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { describe, expect, test } from "@rstest/core";
 import { BufferAttribute, BufferGeometry } from "three";
 import { countJunctionBandSlivers } from "./metrics";
-import { splitAcuteTriangles } from "./reconstruct";
+import { repairInvertedBottomFaces, splitAcuteTriangles } from "./reconstruct";
 
 function edgeUses(indices: number[]): Map<string, number> {
     const use = new Map<string, number>();
@@ -54,5 +53,87 @@ describe("splitAcuteTriangles", () => {
         }
         before.dispose();
         after.dispose();
+    });
+});
+
+describe("repairInvertedBottomFaces", () => {
+    test("retiles an upward bottom ear with its neighbor and leaves a clean disk alone", () => {
+        // A(0,0) B(1,0) C(0.5,0.05) is a thin CCW ear. Neighbor B-A-S points down.
+        const positions = [0, 0, 0, 1, 0, 0, 0.5, 0.05, 0, 0.5, 1, 0];
+        const indices = [0, 1, 2, 1, 0, 3];
+        const before = indices.slice();
+        const n = repairInvertedBottomFaces(positions, indices);
+        expect(n).toBe(1);
+        expect(indices).not.toEqual(before);
+        for (let t = 0; t < indices.length; t += 3) {
+            const a = indices[t]!;
+            const b = indices[t + 1]!;
+            const c = indices[t + 2]!;
+            const nz =
+                (positions[b * 3]! - positions[a * 3]!) * (positions[c * 3 + 1]! - positions[a * 3 + 1]!) -
+                (positions[b * 3 + 1]! - positions[a * 3 + 1]!) * (positions[c * 3]! - positions[a * 3]!);
+            expect(nz).toBeLessThan(0);
+        }
+        const use = edgeUses(indices);
+        let twice = 0;
+        let once = 0;
+        for (const nUse of use.values()) {
+            expect(nUse).toBeLessThanOrEqual(2);
+            if (nUse === 2) twice++;
+            if (nUse === 1) once++;
+        }
+        expect(twice).toBe(1);
+        expect(once).toBe(4);
+
+        const clean = [0, 3, 1, 3, 2, 1];
+        const cleanPos = [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0];
+        const copy = clean.slice();
+        expect(repairInvertedBottomFaces(cleanPos, copy)).toBe(0);
+        expect(copy).toEqual(clean);
+    });
+
+    test("replaces an inverted three-face cap with its downward base", () => {
+        // C sits on the wrong side of triangle A-B-S2. The star A-B-C, B-S2-C, C-S2-A
+        // sums to the base, and every single-edge flip leaves one upward triangle.
+        // Neighbor B-A-S of edge A-B must stay.
+        const A = [266.955658, -19.797298, 0];
+        const B = [266.921661, -19.735203, 0];
+        const C = [266.862488, -19.760811, 0];
+        const S = [266.595398, -19.599426, 0];
+        const S2 = [266.977631, -19.741913, 0];
+        const positions = [...A, ...B, ...C, ...S, ...S2];
+        const indices = [
+            1,
+            0,
+            3, // B A S
+            1,
+            4,
+            2, // B S2 C
+            2,
+            4,
+            0, // C S2 A
+            0,
+            1,
+            2, // A B C upward
+        ];
+        const n = repairInvertedBottomFaces(positions, indices);
+        expect(n).toBe(1);
+        expect(indices.length).toBe(6);
+        const nzOf = (t: number) => {
+            const a = indices[t]!;
+            const b = indices[t + 1]!;
+            const c = indices[t + 2]!;
+            return (
+                (positions[b * 3]! - positions[a * 3]!) * (positions[c * 3 + 1]! - positions[a * 3 + 1]!) -
+                (positions[b * 3 + 1]! - positions[a * 3 + 1]!) * (positions[c * 3]! - positions[a * 3]!)
+            );
+        };
+        expect(nzOf(0)).toBeLessThan(0);
+        expect(nzOf(3)).toBeLessThan(0);
+        const used = new Set(indices);
+        expect(used.has(2)).toBe(false);
+        const use = edgeUses(indices);
+        expect(use.get("0,1")).toBe(2);
+        for (const nUse of use.values()) expect(nUse).toBeLessThanOrEqual(2);
     });
 });

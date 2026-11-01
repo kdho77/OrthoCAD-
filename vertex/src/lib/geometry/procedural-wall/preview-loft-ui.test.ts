@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { describe, expect, test } from "@rstest/core";
 import {
@@ -115,12 +114,25 @@ describe("preview loft overlay", () => {
         );
     });
 
-    test("viewer lofts only on the Print step", () => {
-        expect(shouldLoftProceduralViewer("scan", "procedural")).toBe(false);
-        expect(shouldLoftProceduralViewer("base", "procedural")).toBe(false);
-        expect(shouldLoftProceduralViewer("corrections", "procedural")).toBe(false);
+    test("Print and Export both request a solid, including direct entry to Export", () => {
+        expect(shouldLoftProceduralViewer("export", "procedural")).toBe(true);
         expect(shouldLoftProceduralViewer("print", "procedural")).toBe(true);
         expect(shouldLoftProceduralViewer("print", "legacy")).toBe(false);
+        expect(shouldLoftProceduralViewer("export", "legacy")).toBe(false);
+    });
+
+    test("Print to Export and back stays solid; returning to Design uses the top surface", () => {
+        const steps = ["elements", "print", "export", "print", "elements"] as const;
+        expect(steps.map((step) => shouldLoftProceduralViewer(step, "procedural"))).toEqual([
+            false,
+            true,
+            true,
+            true,
+            false,
+        ]);
+        for (const step of ["scan", "setup", "base", "corrections", "elements"] as const) {
+            expect(shouldLoftProceduralViewer(step, "procedural")).toBe(false);
+        }
     });
 
     test("export lofts SAMPLE_Top and never Default.glb", () => {

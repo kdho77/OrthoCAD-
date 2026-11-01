@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { mapClientRpcError } from "@/lib/trpc-errors";
 
@@ -13,6 +12,9 @@ const HEEL_CUP_STL_BLOCKED_MSG = "Heel cup depth correction can't be exported ri
  */
 export function stlExportUserMessage(reason: string | undefined): string {
     if (!reason) return "Export failed";
+    if (reason.includes("[TEXT]")) {
+        return reason.replace(/^\[TEXT\]\s*/, "") || "Custom text could not be applied";
+    }
     if (
         reason.includes("[MESH-CLOSE]") ||
         reason.includes("heelBridgeSelfIntersections") ||

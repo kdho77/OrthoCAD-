@@ -1,11 +1,12 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
 import { StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
-import { heelCupWidthLongitudinalEnvelope, heelCupWidthScaleFactor } from "@/lib/geometry/height-field";
+import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
+import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
     extractMergedGeometry,
@@ -13,11 +14,12 @@ import {
     mirrorGeometry,
     reorientToFootprintFrame,
 } from "@/lib/library/loaders";
-import type { ScanPattern, SideCorrections } from "@/types";
+import type { PlacedSink, ScanPattern, Side, SideCorrections, TextMarking } from "@/types";
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
-import { composePrintSolidTop, type PrintSolidShoeWidth } from "./print-solid-compose";
+import { FOREFOOT_SHIFT_U_HOLD, forefootFeatureBoxes, offsetPlanLoopForefootWidthMm } from "./modifiers";
+import { composePrintSolidTop, fieldWithoutSinks, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
 import { shiftPatternByRimFollow } from "./station-gates";
@@ -93,7 +95,8 @@ export function followViewerPattern(
     corrections?: Partial<SideCorrections>,
 ): PolyPoint[] {
     const heel = corrections?.heelCupWidthMm ?? 0;
-    if (!heel || pattern.length < 3) return pattern;
+    const fore = corrections?.forefootWidthMm ?? 0;
+    if ((!heel && !fore) || pattern.length < 3) return pattern;
     const pos = model.top.meshPositions;
     const rimLocal = model.top.rimLocal ?? [];
     if (!pos || rimLocal.length < 8) return pattern;
@@ -104,14 +107,19 @@ export function followViewerPattern(
     }));
     const yMid = rim.reduce((s, p) => s + p.y, 0) / rim.length;
     const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
-    const live = rim.map((p) => {
+    const scaled = rim.map((p) => {
         const u = Math.max(0, Math.min(1, (p.x - model.bounds.minX) / length));
-        const s = heelCupWidthScaleFactor(u, heel);
-        return { x: p.x, y: yMid + (p.y - yMid) * s, z: 0 };
+        let y = p.y;
+        if (heel) {
+            const s = heelCupWidthScaleFactor(u, heel);
+            y = yMid + (y - yMid) * s;
+        }
+        return { x: p.x, y, z: 0 };
     });
+    const live = fore ? offsetPlanLoopForefootWidthMm(scaled, model.bounds, fore) : scaled;
     return shiftPatternByRimFollow(pattern, rim, live, (p) => {
         const u = Math.max(0, Math.min(1, (p.x - model.bounds.minX) / length));
-        return heelCupWidthLongitudinalEnvelope(u);
+        return widthCorrectionFollowEnvelope(u, heel, fore);
     });
 }
 
@@ -126,7 +134,25 @@ export async function buildProceduralExportSolid(
         raw = mirrored;
     }
     try {
-        return reconstructProceduralPreview(raw, options);
+        const preview = await reconstructProceduralPreview(raw, options);
+        if (!hasActiveTextMarking(options.textMarking)) return preview;
+        const { applyTextMarkingToPrintSolid } = await import("@/lib/geometry/text-marking/apply");
+        const { TextMarkingError } = await import("@/lib/geometry/text-marking/errors");
+        const { buildTextGuide } = await import("@/lib/geometry/text-marking/place");
+        const textGuide = buildTextGuide(preview.geometry);
+        let geometry = preview.geometry;
+        try {
+            geometry = await applyTextMarkingToPrintSolid(preview.geometry, options.textMarking, {
+                side: options.side ?? (options.mirrored ? "left" : "right"),
+            });
+        } catch (e) {
+            if (!(e instanceof TextMarkingError)) throw e;
+            geometry.userData = { ...geometry.userData, textFitError: e.message, textGuide };
+            return { ...preview, geometry };
+        }
+        if (geometry !== preview.geometry) preview.geometry.dispose();
+        geometry.userData = { ...geometry.userData, textGuide };
+        return { ...preview, geometry };
     } finally {
         raw.dispose();
     }
@@ -170,6 +196,16 @@ export interface ProceduralPreviewOptions {
     trimline?: TrimlineCurve | null;
     /** Force the composed-top loft path (skip analytic deltas). */
     composedTop?: boolean;
+    /** Print-step custom text. Applied after loft; empty is a no-op. */
+    textMarking?: TextMarking | null;
+    /** Foot side for left/right placement (wall text is never glyph-mirrored). */
+    side?: Side;
+    /**
+     * Analytic-top sinks. Passed through without sourceField so a sink-free
+     * export stays on the same loft path as main.
+     */
+    sinks?: PlacedSink[];
+    sinkStyloidThicken?: boolean;
 }
 
 /**
@@ -178,10 +214,10 @@ export interface ProceduralPreviewOptions {
  * loft without applyAnalyticTopDeltas. Do not pass raw+sourceGeometry into
  * the Default extractTopSheet steal — that yields a 0-station ring.
  */
-export function reconstructProceduralPreview(
+export async function reconstructProceduralPreview(
     topGeo: BufferGeometry,
     options: ProceduralPreviewOptions = {},
-): { model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry } {
+): Promise<{ model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry }> {
     if (isCombinedStockGeometry(topGeo)) {
         throw new Error("[S1-PROCEDURAL] combined/stock GLB is not a procedural input — use legacy");
     }
@@ -189,8 +225,24 @@ export function reconstructProceduralPreview(
     let source = topGeo;
     let owned = false;
     if (options.sourceField) {
-        source = composePrintSolidTop(topGeo, {
-            sourceField: options.sourceField,
+        const fore = options.sourceField.corrections?.forefootWidthMm ?? 0;
+        // Pair and loft the zero-forefoot sheet. The wall applies one lateral
+        // normal offset after main's stations exist. A full-length wedge samples
+        // the same held u as that offset, so the toe rim does not keep tilting.
+        const widthFree =
+            fore !== 0
+                ? {
+                      ...options.sourceField,
+                      corrections: { ...options.sourceField.corrections, forefootWidthMm: 0 },
+                      ...(fullLengthWedgeActive(options.sourceField.corrections)
+                          ? { fullLengthToeHoldU: FOREFOOT_SHIFT_U_HOLD }
+                          : {}),
+                  }
+                : options.sourceField;
+        // The loft pairs the unsunk sheet. T and S are applied to the wall after.
+        const sourceField = fieldWithoutSinks(widthFree);
+        source = await composePrintSolidTop(topGeo, {
+            sourceField,
             shoeWidth: options.shoeWidth,
             trimline: options.trimline,
         });
@@ -220,6 +272,15 @@ export function reconstructProceduralPreview(
             archGrindDepthMm: options.archGrindDepthMm,
             sourceField: options.sourceField,
             composedTop: useComposed,
+            forefootRigidBoxes: forefootFeatureBoxes(model.bounds, {
+                lengthMm: model.bounds.maxX - model.bounds.minX,
+                elements: options.sourceField?.elements,
+                text: options.textMarking,
+            }),
+            // Do not set sourceField just to carry sinks — that flips composedTop.
+            ...(options.sinks && options.sinks.length > 0
+                ? { sinks: options.sinks, sinkStyloidThicken: options.sinkStyloidThicken }
+                : {}),
         });
         return { model, pattern, geometry };
     };

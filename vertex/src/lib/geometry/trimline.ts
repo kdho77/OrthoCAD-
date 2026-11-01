@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import * as THREE from "three";
 import { outlineHalfWidth } from "@/lib/geometry/height-field";
@@ -21,11 +20,7 @@ export function cloneTrimline(curve: TrimlineCurve): TrimlineCurve {
 }
 
 /** Sample the parametric insole outline as a closed polyline suitable for editing. */
-export function sampleDefaultOutline(
-    lengthMm: number,
-    widthMm: number,
-    segmentsPerEdge = 20,
-): TrimlineCurve {
+export function sampleDefaultOutline(lengthMm: number, widthMm: number, segmentsPerEdge = 20): TrimlineCurve {
     const nx = segmentsPerEdge;
     const ny = segmentsPerEdge;
     const halfW = widthMm / 2;
@@ -209,8 +204,7 @@ export function clipGeometryToOutline(
     const index = geometry.getIndex();
     const triCount = index ? index.count / 3 : pos.count / 3;
     const kept: number[] = [];
-    const triIndex = (t: number, c: number): number =>
-        index ? index.getX(t * 3 + c) : t * 3 + c;
+    const triIndex = (t: number, c: number): number => (index ? index.getX(t * 3 + c) : t * 3 + c);
 
     for (let t = 0; t < triCount; t++) {
         const a = triIndex(t, 0);
@@ -233,6 +227,20 @@ export function clipGeometryToOutline(
     }
     const out = new THREE.BufferGeometry();
     out.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    // Preserve per-vertex element displacement/ownership (and any other attributes)
+    // when expanding kept triangles. Recomputing a footprint after clipping loses
+    // the actual GLB shape and placement semantics.
+    for (const [name, attribute] of Object.entries(geometry.attributes)) {
+        if (name === "position" || name === "normal") continue;
+        const values = new Float32Array(kept.length * attribute.itemSize);
+        for (let i = 0; i < kept.length; i++) {
+            for (let c = 0; c < attribute.itemSize; c++) {
+                values[i * attribute.itemSize + c] = attribute.getComponent(kept[i]!, c);
+            }
+        }
+        out.setAttribute(name, new THREE.BufferAttribute(values, attribute.itemSize));
+    }
+    out.userData = { ...geometry.userData };
     out.computeVertexNormals();
     out.computeBoundingBox();
     out.computeBoundingSphere();
@@ -310,11 +318,7 @@ export function deformTrimlineSection(
         const direct = Math.abs(i - anchorIndex);
         const wrapped = Math.min(direct, n - direct);
         const weight = Math.exp(-(wrapped * wrapped) / (2 * influenceRadius * influenceRadius));
-        return new THREE.Vector3(
-            p.x + delta.x * weight,
-            p.y + delta.y * weight,
-            p.z,
-        );
+        return new THREE.Vector3(p.x + delta.x * weight, p.y + delta.y * weight, p.z);
     });
 }
 
@@ -340,7 +344,13 @@ export function pickTrimlineWithRaycaster(
     if (curve.points.length < 2) return null;
 
     const catmull = trimlineToCurve(curve.points, true);
-    const tubeGeo = new THREE.TubeGeometry(catmull, Math.max(48, curve.points.length * 2), tubeRadius, 8, true);
+    const tubeGeo = new THREE.TubeGeometry(
+        catmull,
+        Math.max(48, curve.points.length * 2),
+        tubeRadius,
+        8,
+        true,
+    );
     const pickMesh = new THREE.Mesh(tubeGeo);
     pickMesh.applyMatrix4(matrixWorld);
 

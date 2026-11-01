@@ -4,26 +4,57 @@ import * as THREE from "three";
 import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
+import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
+import { ElementScaleControls } from "@/features/elements/ElementScaleControls";
+import { HardnessPicker } from "@/features/elements/HardnessPicker";
+import { TextMarkingPanel } from "@/features/exports/TextMarkingPanel";
 import {
     deleteCustomAsset,
     placeCustomElement,
     refreshCustomLibrary,
 } from "@/features/library/custom-library-service";
 import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
-import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
+import { evaluateSinkConstraints } from "@/lib/geometry/clinical-constraints";
+import { loadElementManifest } from "@/lib/geometry/element-assets/element-asset";
+import type { ElementManifestEntry } from "@/lib/geometry/element-assets/types";
 import { ELEMENT_HEIGHT_LIMITS } from "@/lib/geometry/elements";
-import { elementDisplayName, STOCK_ELEMENTS } from "@/lib/library/manifest";
+import { sinkStyloidThickenForSide, sinksForSide } from "@/lib/geometry/migrate-corrections";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import { SINK_KIND_ORDER, SINK_PROFILES } from "@/lib/geometry/sink";
+import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
+import { DESIGN_ELEMENT_COLORS } from "@/lib/hardness/split-overlay";
+import { elementDisplayName, STOCK_ELEMENT_LABELS, STOCK_ELEMENTS } from "@/lib/library/manifest";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { cn } from "@/lib/utils";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
-import type { ElementKind, Side } from "@/types";
+import type { ElementKind, PlacedElement, PlacedSink, Side, SinkKind, TextMarking } from "@/types";
 
 export function ElementsPanel() {
-    const { design, addElement, updateElement, removeElement, selectElement, selectedElementId } =
-        useDesignStore();
+    const {
+        design,
+        addElement,
+        updateElement,
+        removeElement,
+        selectElement,
+        selectedElementId,
+        addSink,
+        updateSink,
+        removeSink,
+        setSinkStyloidThicken,
+        exportSide,
+    } = useDesignStore();
+    const layout = insoleLayoutFromDesign(design);
+    const layoutLength = layout.lengthMm;
+    const layoutWidth = layout.widthMm;
+    const placementFoot = useClinicalWorkflowStore((s) => s.elementPlacementFoot);
+    const sinksLinked = design.corrections.linked;
+    const sinkSide: Side = placementFoot === "left" || placementFoot === "right" ? placementFoot : exportSide;
+    const sideSinks = sinksForSide(design, sinkSide) ?? [];
+    const sideThicken = sinkStyloidThickenForSide(design, sinkSide);
     const customElements = useCustomLibraryStore((s) => s.customElements);
     const libraryLoading = useCustomLibraryStore((s) => s.loading);
     const editMode = useMeshEditStore((s) => s.editMode);
@@ -59,6 +90,24 @@ export function ElementsPanel() {
     });
 
     const [saveOpen, setSaveOpen] = useState(false);
+    const textFocusNonce = useClinicalWorkflowStore((s) => s.textFocusNonce);
+    const [textOpen, setTextOpen] = useState(false);
+    const setTextMarking = useDesignStore((s) => s.setTextMarking);
+    const textMarking = useDesignStore((s) => s.design.textMarking);
+
+    useEffect(() => {
+        if (textFocusNonce > 0) setTextOpen(true);
+    }, [textFocusNonce]);
+
+    const [libraryEntries, setLibraryEntries] = useState<ElementManifestEntry[]>([]);
+
+    useEffect(() => {
+        void loadElementManifest()
+            .then((m) => setLibraryEntries(m.elements))
+            .catch(() => setLibraryEntries([]));
+    }, []);
+
+    const libraryKinds = useMemo(() => new Set(libraryEntries.map((e) => e.kind)), [libraryEntries]);
 
     const placeStockElement = (kind: ElementKind) => {
         for (const side of elementPlacementSides()) {
@@ -88,12 +137,97 @@ export function ElementsPanel() {
 
     return (
         <div className="space-y-3">
+            {design.elements.length > 0 ? (
+                <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-2 py-1.5 text-[10px] text-muted-foreground">
+                    <span className="flex shrink-0 items-center gap-0.5" aria-hidden="true">
+                        {DESIGN_ELEMENT_COLORS.map((color) => (
+                            <span
+                                key={color}
+                                className="h-2.5 w-2.5 rounded-sm"
+                                style={{ backgroundColor: color }}
+                            />
+                        ))}
+                    </span>
+                    Added elements are color-coded in the viewer; the selected element turns green.
+                </div>
+            ) : null}
+            <div>
+                <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Text
+                </div>
+                <button
+                    type="button"
+                    onClick={() => {
+                        setTextOpen(true);
+                        if (!textMarking) setTextMarking(defaultTextMarking("bottom"));
+                    }}
+                    className="flex w-full items-center justify-between rounded-md border border-border bg-background px-2 py-2 text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground"
+                >
+                    Text
+                    <PenTool className="h-3 w-3" />
+                </button>
+                {textOpen ? (
+                    <div className="mt-1.5">
+                        <TextMarkingPanel />
+                    </div>
+                ) : null}
+            </div>
+            <SinkGroup
+                sinks={sideSinks}
+                thicken={sideThicken}
+                side={sinkSide}
+                linked={sinksLinked || placementFoot === "both"}
+                lengthMm={layoutLength}
+                widthMm={layoutWidth}
+                elements={design.elements}
+                text={design.textMarking}
+                onAdd={(kind) => {
+                    for (const side of sinksLinked ? [sinkSide] : elementPlacementSides())
+                        addSink(kind, side);
+                }}
+                onDepth={(id, depthMm) => {
+                    for (const side of sinksLinked ? [sinkSide] : elementPlacementSides()) {
+                        updateSink(id, { depthMm }, side);
+                    }
+                }}
+                onRemove={(id) => {
+                    for (const side of sinksLinked ? [sinkSide] : elementPlacementSides())
+                        removeSink(id, side);
+                }}
+                onThicken={(on) => {
+                    for (const side of sinksLinked ? [sinkSide] : elementPlacementSides()) {
+                        setSinkStyloidThicken(on, side);
+                    }
+                }}
+            />
             <div>
                 <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     Stock Library
                 </div>
                 <div className="grid grid-cols-2 gap-1.5">
-                    {STOCK_ELEMENTS.map((item) => (
+                    {libraryEntries.map((item) => (
+                        <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => placeStockElement(item.kind)}
+                            className="flex flex-col items-stretch gap-1 rounded-md border border-border bg-background p-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+                        >
+                            {item.thumb ? (
+                                <img
+                                    src={`/elements/${item.thumb}`}
+                                    alt={item.label ?? STOCK_ELEMENT_LABELS[item.kind] ?? item.id}
+                                    className="h-24 w-full object-contain"
+                                />
+                            ) : null}
+                            <span className="flex items-center justify-between px-0.5">
+                                <span className="truncate">
+                                    {item.label ?? STOCK_ELEMENT_LABELS[item.kind] ?? item.id}
+                                </span>
+                                <Plus className="h-3 w-3 shrink-0" />
+                            </span>
+                        </button>
+                    ))}
+                    {STOCK_ELEMENTS.filter((item) => !libraryKinds.has(item.id)).map((item) => (
                         <button
                             key={item.id}
                             type="button"
@@ -149,7 +283,9 @@ export function ElementsPanel() {
             </div>
 
             <div className="space-y-1">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Placed</div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Placed
+                </div>
                 {design.elements.length === 0 ? (
                     <p className="rounded-md border border-dashed border-border px-2 py-3 text-center text-xs text-muted-foreground">
                         No elements added
@@ -189,7 +325,7 @@ export function ElementsPanel() {
                 )}
             </div>
 
-            {displaySelected ? (
+            {displaySelected && selected ? (
                 <div className="space-y-2 rounded-md border border-border bg-background/50 p-2">
                     <div className="flex items-center justify-between">
                         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -339,37 +475,48 @@ export function ElementsPanel() {
                         }}
                         unit="°"
                     />
-                    <SliderField
-                        label="Scale X"
-                        value={displaySelected.scale.x}
-                        min={0.25}
-                        max={3}
-                        step={0.05}
-                        onPreview={(v) =>
-                            previewElementPatch(displaySelected.id, {
-                                id: displaySelected.id,
-                                scale: { ...displaySelected.scale, x: v },
-                            })
-                        }
-                        onChange={(v) => {
-                            updateElement(displaySelected.id, { scale: { ...displaySelected.scale, x: v } });
-                            clearElementPreview(displaySelected.id);
+                    {displaySelected.kind === "met_pad" ||
+                    displaySelected.kind === "met_bar" ||
+                    displaySelected.kind === "toe_crest" ||
+                    displaySelected.kind === "cuboid_pad" ||
+                    displaySelected.kind === "dancers_pad" ||
+                    displaySelected.kind === "cluffy_wedge" ? (
+                        <div className="space-y-1">
+                            <div className="text-[11px] text-muted-foreground">Edge</div>
+                            <div className="flex gap-1">
+                                {(["flow", "noFlow"] as const).map((mode) => (
+                                    <Button
+                                        key={mode}
+                                        size="sm"
+                                        variant={
+                                            (displaySelected.placementMode ?? "flow") === mode
+                                                ? "default"
+                                                : "secondary"
+                                        }
+                                        className="h-7 flex-1"
+                                        onClick={() => {
+                                            updateElement(displaySelected.id, { placementMode: mode });
+                                            clearElementPreview(displaySelected.id);
+                                        }}
+                                    >
+                                        {mode === "flow" ? "Flow" : "No-flow"}
+                                    </Button>
+                                ))}
+                            </div>
+                        </div>
+                    ) : null}
+                    <ElementScaleControls key={selected.id} element={selected} />
+                    <HardnessPicker
+                        id={displaySelected.id}
+                        value={{
+                            regionId: displaySelected.regionId,
+                            hardnessClass: displaySelected.hardnessClass,
+                            priority: displaySelected.priority,
+                            depth: displaySelected.depth,
+                            overrides: displaySelected.overrides,
                         }}
-                    />
-                    <SliderField
-                        label="Scale Y"
-                        value={displaySelected.scale.y}
-                        min={0.25}
-                        max={3}
-                        step={0.05}
-                        onPreview={(v) =>
-                            previewElementPatch(displaySelected.id, {
-                                id: displaySelected.id,
-                                scale: { ...displaySelected.scale, y: v },
-                            })
-                        }
-                        onChange={(v) => {
-                            updateElement(displaySelected.id, { scale: { ...displaySelected.scale, y: v } });
+                        onChange={(patch) => {
+                            updateElement(displaySelected.id, patch);
                             clearElementPreview(displaySelected.id);
                         }}
                     />
@@ -414,6 +561,150 @@ export function ElementsPanel() {
                 sourceId={displaySelected?.id}
                 side={displaySelected?.side}
             />
+        </div>
+    );
+}
+
+function SinkGroup(props: {
+    sinks: PlacedSink[];
+    thicken: boolean;
+    side: Side;
+    linked: boolean;
+    lengthMm: number;
+    widthMm: number;
+    elements: PlacedElement[];
+    text?: TextMarking;
+    onAdd: (kind: SinkKind) => void;
+    onDepth: (id: string, depthMm: number) => void;
+    onRemove: (id: string) => void;
+    onThicken: (on: boolean) => void;
+}) {
+    const byKind = new Map(props.sinks.map((s) => [s.kind, s]));
+    const warnings =
+        props.sinks.length === 0
+            ? []
+            : evaluateSinkConstraints(
+                  {
+                      side: props.side,
+                      lengthMm: props.lengthMm,
+                      widthMm: props.widthMm,
+                      sinks: props.sinks,
+                      sinkStyloidThicken: props.thicken,
+                  },
+                  props.elements,
+                  props.text,
+              );
+    return (
+        <div data-testid="sink-panel">
+            <div className="mb-1.5 flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                <span>Sink</span>
+                <span className="text-[10px] font-normal normal-case tracking-normal">
+                    {props.linked ? "Left + Right" : props.side === "left" ? "Left" : "Right"}
+                </span>
+            </div>
+            <div className="space-y-1.5">
+                {SINK_KIND_ORDER.map((kind) => {
+                    const profile = SINK_PROFILES[kind];
+                    const placed = byKind.get(kind);
+                    return (
+                        <div key={kind} className="rounded-md border border-border bg-background px-2 py-1.5">
+                            <div className="flex items-center justify-between gap-2 text-xs">
+                                <span className="truncate text-foreground">{profile.label}</span>
+                                {placed ? (
+                                    <button
+                                        type="button"
+                                        className="text-[10px] text-muted-foreground hover:text-foreground"
+                                        data-testid={`sink-remove-${kind}`}
+                                        onClick={() => props.onRemove(placed.id)}
+                                    >
+                                        Remove
+                                    </button>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        data-testid={`sink-add-${kind}`}
+                                        className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+                                        onClick={() => props.onAdd(kind)}
+                                    >
+                                        <Plus className="h-3 w-3" />
+                                        Add
+                                    </button>
+                                )}
+                            </div>
+                            {placed ? (
+                                <div className="mt-1 space-y-1">
+                                    <label className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                                        Depth
+                                        <input
+                                            type="number"
+                                            data-testid={`sink-depth-${kind}`}
+                                            min={0}
+                                            step={0.1}
+                                            value={placed.depthMm}
+                                            className="w-16 rounded border border-border bg-background px-1 py-0.5 text-right text-xs text-foreground"
+                                            onChange={(e) => {
+                                                const n = Number(e.target.value);
+                                                if (Number.isFinite(n))
+                                                    props.onDepth(placed.id, Math.max(0, n));
+                                            }}
+                                        />
+                                    </label>
+                                    <SliderField
+                                        label="Depth"
+                                        value={Math.min(profile.maxDepthMm, Math.max(0, placed.depthMm))}
+                                        min={0}
+                                        max={profile.maxDepthMm}
+                                        step={0.1}
+                                        unit="mm"
+                                        defaultValue={profile.defaultDepthMm}
+                                        displayText={Math.min(
+                                            profile.maxDepthMm,
+                                            Math.max(0, placed.depthMm),
+                                        ).toFixed(1)}
+                                        onChange={(v) => {
+                                            const clamped = Math.min(profile.maxDepthMm, Math.max(0, v));
+                                            // The slider is capped at max, so a commit at the cap must
+                                            // not replace a requested depth stored above max.
+                                            if (
+                                                placed.depthMm > profile.maxDepthMm &&
+                                                clamped >= profile.maxDepthMm
+                                            ) {
+                                                return;
+                                            }
+                                            props.onDepth(placed.id, clamped);
+                                        }}
+                                    />
+                                    {placed.depthMm > profile.maxDepthMm ? (
+                                        <p className="text-[10px] text-amber-600">
+                                            Above max {profile.maxDepthMm} mm — cut clamped to max.
+                                        </p>
+                                    ) : null}
+                                </div>
+                            ) : null}
+                        </div>
+                    );
+                })}
+            </div>
+            <label className="mt-2 flex items-start gap-2 text-[10px] text-muted-foreground">
+                <input
+                    type="checkbox"
+                    data-testid="sink-styloid-thicken"
+                    className="mt-0.5"
+                    checked={props.thicken}
+                    onChange={(e) => props.onThicken(e.target.checked)}
+                />
+                <span>
+                    Styloid thickening (off by default). Forefoot thickness is the deepest sink plus 0.5 mm.
+                    The styloid is midfoot and stays unthickened until this is on.
+                </span>
+            </label>
+            {warnings.length > 0 ? (
+                <ul className="mt-1 space-y-0.5 text-[10px] text-amber-600">
+                    {warnings.map((w) => (
+                        <li key={`${w.code}-${w.sinkId}-${w.message}`}>{w.message}</li>
+                    ))}
+                </ul>
+            ) : null}
         </div>
     );
 }

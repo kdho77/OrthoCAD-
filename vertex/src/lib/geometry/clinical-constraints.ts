@@ -1,8 +1,16 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
-import type { SideCorrections, WedgeCorrection } from "@/types";
+import {
+    FLOOR_MIN_MM,
+    LATERAL_WALL_MIN_MM,
+    mergeSinkWarnings,
+    type SinkSurfaceContext,
+    type SinkWarning,
+    sinkDepthWarnings,
+    sinkOverlapWarnings,
+} from "@/lib/geometry/sink";
+import type { PlacedElement, SideCorrections, TextMarking, WedgeCorrection } from "@/types";
 
 /**
  * ClinicalSpec for structured clinical rules (added for wedge system completeness).
@@ -63,6 +71,8 @@ export const CLINICAL_LIMITS = {
     heelCupDepthMm: { min: 12, max: 18.0 },
     /** Signed: + widens heel cup, − narrows (same |scale| budget as widen). */
     heelCupWidthMm: { min: -10.0, max: 10.0 },
+    /** Signed per-side forefoot outline offset (mm at full envelope, each side). */
+    forefootWidthMm: { min: -10.0, max: 10.0 },
     // Heel lift raises the heel region; Biomechanics hard cap 12 mm (2026-09-20).
     heelLiftMm: { min: 0, max: 12.0 },
     apexMoveMm: { min: -12, max: 12 },
@@ -156,6 +166,7 @@ export function constrainSideCorrections(corrections: SideCorrections, thickness
         ["archEaseMm", CLINICAL_LIMITS.archEaseMm],
         ["heelCupHeightMm", CLINICAL_LIMITS.heelCupHeightMm],
         ["heelCupWidthMm", CLINICAL_LIMITS.heelCupWidthMm],
+        ["forefootWidthMm", CLINICAL_LIMITS.forefootWidthMm],
         ["heelLiftMm", CLINICAL_LIMITS.heelLiftMm],
         ["apexMoveMm", CLINICAL_LIMITS.apexMoveMm],
         ["medialFlangeMm", CLINICAL_LIMITS.medialFlangeMm],
@@ -289,6 +300,28 @@ export function constrainSideCorrections(corrections: SideCorrections, thickness
         }
     }
 
+    // Full-length wedge: 0 is off. Degrees clamp to 1–10. Millimetres stay as a
+    // heel rise; the angle clamp (1–10°) is applied when the rim width is known.
+    {
+        const w = c.fullLengthWedge;
+        if (w && w.value != null && Number.isFinite(w.value)) {
+            if (w.value <= 0) {
+                c.fullLengthWedge = { ...w, value: 0 };
+            } else if ((w.unit ?? "mm") === "deg") {
+                const res = clamp(w.value, 1, 10, "fullLengthWedge");
+                if (res.value !== w.value) {
+                    c.fullLengthWedge = { ...w, value: res.value, unit: "deg" };
+                    v.push({
+                        field: "fullLengthWedge",
+                        message: `Clamped full-length wedge angle to ${res.value}° (1–10°)`,
+                        requested: w.value,
+                        applied: res.value,
+                    });
+                }
+            }
+        }
+    }
+
     return { constrained: c, thicknessMm: t, violations: v };
 }
 
@@ -318,6 +351,7 @@ export function constrainDesignCorrections(
                 // Mirror wedges for linked symmetry (do not average objects)
                 rearfootWedge: leftWedge,
                 forefootWedge: rightWedge,
+                fullLengthWedge: r1.constrained.fullLengthWedge,
             },
             r2.thicknessMm,
         );
@@ -344,13 +378,59 @@ export function hasCriticalViolations(violations: ConstraintViolation[]): boolea
 
 /** Soft warnings for wedge values approaching limits (non-blocking but shown in UI). */
 export function hasWedgeViolations(violations: ConstraintViolation[]): boolean {
-    return violations.some((vi) => vi.field === "rearfootWedge" || vi.field === "forefootWedge");
+    return violations.some(
+        (vi) =>
+            vi.field === "rearfootWedge" || vi.field === "forefootWedge" || vi.field === "fullLengthWedge",
+    );
 }
 
-/** Soft UI warning when posting wedge angle exceeds 8° (still allowed up to 10°). */
-export function hasPostingAngleWarning(c: SideCorrections): boolean {
-    for (const w of [c.rearfootWedge, c.forefootWedge]) {
+/**
+ * Sink depth, element overlap, and text overlap. Floor and lateral-wall limits
+ * are the named constants the mesh guards use; those warnings are attached on
+ * the geometry when a guard actually reduces a cut.
+ */
+export function evaluateSinkConstraints(
+    ctx: SinkSurfaceContext,
+    elements?: PlacedElement[] | null,
+    text?: TextMarking | null,
+): SinkWarning[] {
+    return mergeSinkWarnings(sinkDepthWarnings(ctx.sinks), sinkOverlapWarnings(ctx, elements, text));
+}
+
+export const SINK_CLINICAL_FLOORS = {
+    floorMinMm: FLOOR_MIN_MM,
+    lateralWallMinMm: LATERAL_WALL_MIN_MM,
+} as const;
+
+/** Warn when the full-length high-edge rise exceeds this (mm), any station. */
+export const MAX_RISE_WARN_MM = 12;
+
+/**
+ * Baseline heel-cup wall above the seat (mm) plus the high-side rise.
+ * The shoe counter warning uses this outside height; cup height itself stays put.
+ */
+export const STOCK_HEEL_CUP_MM = 12;
+export const SHOE_COUNTER_HEIGHT_WARN_MM = 20;
+
+/**
+ * Soft UI warning when a posting angle exceeds 8° (still allowed up to 10°).
+ * `resolvedFullLengthDeg` is the angle an mm full-length entry works out to.
+ */
+export function hasPostingAngleWarning(c: SideCorrections, resolvedFullLengthDeg = 0): boolean {
+    if (resolvedFullLengthDeg > 8) return true;
+    for (const w of [c.rearfootWedge, c.forefootWedge, c.fullLengthWedge]) {
         if (w?.unit === "deg" && (w.value ?? 0) > 8) return true;
     }
     return false;
+}
+
+export function hasMaxRiseWarning(riseMm: number): boolean {
+    return riseMm > MAX_RISE_WARN_MM;
+}
+
+/** High-side outside heel height (stock cup + extra cup + rise) vs the shoe counter. */
+export function hasShoeCounterHeightWarning(c: SideCorrections, heelRiseMm: number): boolean {
+    if (!(heelRiseMm > 0) && !(c.fullLengthWedge && (c.fullLengthWedge.value ?? 0) > 0)) return false;
+    const outside = STOCK_HEEL_CUP_MM + Math.max(0, c.heelCupHeightMm ?? 0) + Math.max(0, heelRiseMm);
+    return outside > SHOE_COUNTER_HEIGHT_WARN_MM;
 }

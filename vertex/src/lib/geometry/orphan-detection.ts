@@ -1,7 +1,6 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import * as THREE from "three";
+import type * as THREE from "three";
 import { getCustomElementBounds } from "@/lib/geometry/custom-element-bounds";
 import type { PlacedElement, Side } from "@/types";
 import type { TrimlineCurve } from "./trimline";
@@ -82,7 +81,9 @@ function aabbCompletelyOutside(
 }
 
 /** Build a world-space AABB for a placed element using its registered bounds + transform. */
-function getElementFootprintAABB(el: PlacedElement): { minX: number; maxX: number; minY: number; maxY: number } | null {
+function getElementFootprintAABB(
+    el: PlacedElement,
+): { minX: number; maxX: number; minY: number; maxY: number } | null {
     const b = getCustomElementBounds(el.customElementId);
     if (!b) return null;
     // Element "position" is center in footprint (x=length, y=width). Scale/rotation around that center.

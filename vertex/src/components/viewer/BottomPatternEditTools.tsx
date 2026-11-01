@@ -1,10 +1,10 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { type ThreeEvent, useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { sideOffsetX } from "@/lib/geometry/layout";
+import { shiftClosedLoopForefoot } from "@/lib/geometry/procedural-wall/modifiers";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import {
@@ -86,6 +86,8 @@ function BottomPatternOverlay({
     const offsetY = sideOffsetX(side, layout.widthMm);
     const widthId = shoeWidthForSide(design, side);
     const heelW = design.corrections[side].heelCupWidthMm ?? 0;
+    const forePreview = usePerformanceStore((s) => s.correctionPreview[side]?.forefootWidthMm);
+    const forefootMm = isEditing ? 0 : (forePreview ?? design.corrections[side].forefootWidthMm ?? 0);
     const setDraft = useMeshEditStore((s) => s.setBottomPatternDraft);
     const setDragAnchor = useMeshEditStore((s) => s.setBottomPatternDragAnchor);
     const setDragging = useMeshEditStore((s) => s.setBottomPatternDragging);
@@ -116,19 +118,20 @@ function BottomPatternOverlay({
             lengthMm: Math.max(1e-3, maxX - minX),
             heelOverrideMm: heelW,
         });
-        return sized.map((p) => new THREE.Vector3(p.x, p.y, p.z + 0.8));
-    }, [curve.points, widthId, layout.widthMm, heelW]);
+        const shifted = shiftClosedLoopForefoot(sized, forefootMm);
+        return shifted.map((p) => new THREE.Vector3(p.x, p.y, (p.z ?? 0) + 0.8));
+    }, [curve.points, widthId, layout.widthMm, heelW, forefootMm]);
     const outlineColor = isEditing ? (isDragging ? "#ef4444" : "#22d3ee") : "#0EA5E9";
     const fillShape = useMemo(() => {
-        if (curve.points.length < 3) return null;
+        if (displayPoints.length < 3) return null;
         const shape = new THREE.Shape();
-        shape.moveTo(curve.points[0].x, curve.points[0].y);
-        for (let i = 1; i < curve.points.length; i++) {
-            shape.lineTo(curve.points[i].x, curve.points[i].y);
+        shape.moveTo(displayPoints[0].x, displayPoints[0].y);
+        for (let i = 1; i < displayPoints.length; i++) {
+            shape.lineTo(displayPoints[i].x, displayPoints[i].y);
         }
         shape.closePath();
         return shape;
-    }, [curve.points]);
+    }, [displayPoints]);
 
     const getWorldMatrix = useCallback((): THREE.Matrix4 => {
         if (groupRef.current) {

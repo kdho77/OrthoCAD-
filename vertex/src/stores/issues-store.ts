@@ -1,13 +1,11 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { create } from "zustand";
+import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import { detectAllOrphans, type Orphan } from "@/lib/geometry/orphan-detection";
 import { getDesignTrimline, type TrimlineCurve } from "@/lib/geometry/trimline";
-import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
-import type { Side } from "@/types";
-import type { DesignState, PlacedElement, Side } from "@/types";
+import type { DesignState, Side } from "@/types";
 
 export interface IssuesStore {
     orphans: Orphan[];
@@ -40,7 +38,10 @@ export const useIssuesStore = create<IssuesStore>((set) => ({
 }));
 
 /** Convenience: build effective trimlines map preferring any live draft the mesh-edit store would have. */
-export function buildEffectiveTrimlines(design: DesignState, getDraft?: (side: Side) => TrimlineCurve | null): Partial<Record<Side, TrimlineCurve>> {
+export function buildEffectiveTrimlines(
+    design: DesignState,
+    getDraft?: (side: Side) => TrimlineCurve | null,
+): Partial<Record<Side, TrimlineCurve>> {
     const out: Partial<Record<Side, TrimlineCurve>> = {};
     for (const side of ["left", "right"] as Side[]) {
         const draft = getDraft ? getDraft(side) : null;

@@ -1,0 +1,37 @@
+{
+  "kind": "cluffy_wedge",
+  "label": "Cluffy wedge 1",
+  "nominalPeakMm": 2.4,
+  "refSizeMm": 260,
+  "refMeasuredLengthMm": 271.93,
+  "refNote": "u=(y+1)/260 (length-only 260 basis); v=(x-mid)/halfwidth of unscaled SAMPLE_Top at anchor y, medial +",
+  "anchor": {
+    "u": 0.7744,
+    "v": 0.6413
+  },
+  "anchorConvention": "v=(x-mid)/halfwidth, medial +",
+  "authoredSide": "left",
+  "footprintMm": {
+    "w": 29.25,
+    "l": 26.25,
+    "area": 643.6
+  },
+  "featherMm": 0,
+  "rotationDeg": 0,
+  "category": "add",
+  "frame": "repo-right (+X medial, +Y toe, Z up)",
+  "origin": "footprint centroid, z>=0",
+  "anchorMm": {
+    "x": 70.25,
+    "y": 200.35
+  },
+  "source": {
+    "file": "cluffy_wedge_1.glb",
+    "sha256": "79df16cb6a8b93afa69843690ff1f0eceed19117c8e8bc243860b794c0fd977d",
+    "fixedFile": "cluffy_wedge_1.fixed.glb",
+    "fixedSha256": "efe52a56e93e6ec04ab75cedc1ac7a8b6970518d49b01dd60c8f8068d8baf044"
+  },
+  "widthBasis": "SAMPLE_Top unscaled",
+  "fixApplied": "Full rebuild of envelope inside Kendon footprint (cl3.py): z=2.40*L(y)*M(x,y)*g(d). L: C2 quartic rise from 0 at y=186.5 to peak y=199, quadratic convex fall to 0.48 at y=214.35; M: super-Gaussian plateau, crest x=64, medial edge factor 0.62, lateral 0.12; g: 3.5 mm C1 smoothstep feather on medial and distal edges (1 mm roll lateral/proximal, blended), rescaled to peak 2.40; distal edge 0. Removes flat 1.20 mm overlapping patch (x78-86,y189-201) and proximal 0.5-1.2 mm step. No lift y<186.",
+  "featherNote": "fixed envelope feathers to z=0 at footprint edge (3.5 mm smoothstep medial/distal)"
+}

@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -318,8 +317,8 @@ async function runForefootTearChecks(
     rampU1 = 0.58,
 ): Promise<number> {
     const neutralField = baseParams(side, zeroCorrections());
-    const composed = composePrintSolidTop(raw, { sourceField: field });
-    const neutral = composePrintSolidTop(raw, { sourceField: neutralField });
+    const composed = await composePrintSolidTop(raw, { sourceField: field });
+    const neutral = await composePrintSolidTop(raw, { sourceField: neutralField });
     const fw = field.corrections.forefootWedge;
     let borderLiftDeg = 0;
     if (fw && fw.unit === "deg" && fw.value > 0) {
@@ -489,8 +488,10 @@ describe("posting wedge (design viewer height field)", () => {
             buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
         );
         const field = baseParams("right", { ...zeroCorrections(), archEaseMm: 3 });
-        const composed = composePrintSolidTop(raw, { sourceField: field });
-        const neutral = composePrintSolidTop(raw, { sourceField: baseParams("right", zeroCorrections()) });
+        const composed = await composePrintSolidTop(raw, { sourceField: field });
+        const neutral = await composePrintSolidTop(raw, {
+            sourceField: baseParams("right", zeroCorrections()),
+        });
         const pos = composed.getAttribute("position");
         const neuPos = neutral.getAttribute("position");
         let maxDrop = 0;
@@ -516,8 +517,8 @@ describe("posting wedge (design viewer height field)", () => {
         const frame = getBaseFootprintFrame(raw, "right");
         raw.computeBoundingBox();
         const bb = raw.boundingBox!;
-        const composed = composePrintSolidTop(raw, { sourceField: field });
-        const neutralGeo = composePrintSolidTop(raw, { sourceField: neutralFieldParams });
+        const composed = await composePrintSolidTop(raw, { sourceField: field });
+        const neutralGeo = await composePrintSolidTop(raw, { sourceField: neutralFieldParams });
         const basePos = raw.getAttribute("position")?.array as Float32Array;
         const pos = composed.getAttribute("position")?.array as Float32Array;
         const neu = neutralGeo.getAttribute("position")?.array as Float32Array;
@@ -558,8 +559,8 @@ describe("posting wedge (design viewer height field)", () => {
             "right",
             design.thicknessMm,
         );
-        const composed = composePrintSolidTop(raw, { sourceField: field });
-        const neutral = composePrintSolidTop(raw, { sourceField: neutralField });
+        const composed = await composePrintSolidTop(raw, { sourceField: field });
+        const neutral = await composePrintSolidTop(raw, { sourceField: neutralField });
         const frame = getBaseFootprintFrame(raw, "right");
         const basePos = raw.getAttribute("position")?.array as Float32Array;
         const pos = composed.getAttribute("position")?.array as Float32Array;
@@ -589,7 +590,7 @@ describe("posting wedge (design viewer height field)", () => {
             archHeightMm: -10,
             archEaseMm: 6,
         });
-        const preview = reconstructProceduralPreview(raw, {
+        const preview = await reconstructProceduralPreview(raw, {
             sourceField: field,
             composedTop: true,
             corrections: field.corrections,

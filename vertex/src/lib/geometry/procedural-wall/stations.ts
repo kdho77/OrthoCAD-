@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import {
     fitClosedC2Spline,
@@ -11,6 +10,11 @@ import {
     startAtLowCurvature,
 } from "./curves";
 import { outwardNormal } from "./measure";
+
+export interface ForefootSkewExempt {
+    forefootWidthMm?: number;
+    bounds?: { minX: number; maxX: number };
+}
 
 /** ±25° applies only to per-station deviation from the region default. */
 export const FLARE_DEV_CAP_DEG = 25;
@@ -581,7 +585,11 @@ export function pairAtNativeTop(plantarLoop: PolyPoint[], topLoop: PolyPoint[]):
 /** Slide B onto the pairing normal through R so |skew| ≤ min(2 mm, 0.5 × plan inset).
  * Keep a candidate only when it does not add plan-view chord crossings.
  */
-export function limitPairingSkew(pairing: StationPairing, loop: PolyPoint[]): StationPairing {
+export function limitPairingSkew(
+    pairing: StationPairing,
+    loop: PolyPoint[],
+    opts?: ForefootSkewExempt,
+): StationPairing {
     const n = Math.min(pairing.top.length, pairing.plantar.length, pairing.normals.length);
     if (n < 3 || loop.length < 3) return pairing;
     const plantar = pairing.plantar.map((p) => ({ ...p }));

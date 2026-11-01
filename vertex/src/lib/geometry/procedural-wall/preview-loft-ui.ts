@@ -1,13 +1,12 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { ClinicalStepId } from "@/stores/clinical-workflow-store";
 import type { Side } from "@/types";
 import { sha256Hex } from "./sha256";
 
-/** Procedural print step shows the walled solid; earlier steps use composed top + pattern only. */
+/** Print and Export share the walled solid; earlier steps use composed top + pattern only. */
 export function shouldLoftProceduralViewer(step: ClinicalStepId, wallModel: string): boolean {
-    return wallModel === "procedural" && step === "print";
+    return wallModel === "procedural" && (step === "print" || step === "export");
 }
 
 export function wantsProceduralExportSolid(
@@ -45,25 +44,27 @@ export function proceduralLoftReuseKey(input: {
     elementsJson?: string;
     trimlineHash?: string;
     shoeWidth?: string;
+    /** Empty when text is inactive so reuse keys stay identical. */
+    textMarkingHash?: string;
 }): string {
-    return sha256Hex(
-        [
-            input.side,
-            input.wallStyle,
-            input.deviceType,
-            input.thicknessMm.toFixed(3),
-            input.correctionsJson,
-            input.scanPattern,
-            input.patternKind,
-            input.patternHash,
-            input.flanges,
-            input.sourceFieldJson ?? "",
-            input.shapeFinishJson ?? "",
-            input.elementsJson ?? "",
-            input.trimlineHash ?? "",
-            input.shoeWidth ?? "medium",
-        ].join("|"),
-    );
+    const parts = [
+        input.side,
+        input.wallStyle,
+        input.deviceType,
+        input.thicknessMm.toFixed(3),
+        input.correctionsJson,
+        input.scanPattern,
+        input.patternKind,
+        input.patternHash,
+        input.flanges,
+        input.sourceFieldJson ?? "",
+        input.shapeFinishJson ?? "",
+        input.elementsJson ?? "",
+        input.trimlineHash ?? "",
+        input.shoeWidth ?? "medium",
+    ];
+    if (input.textMarkingHash) parts.push(input.textMarkingHash);
+    return sha256Hex(parts.join("|"));
 }
 
 export function hashPatternPoints(points: ReadonlyArray<{ x: number; y: number; z?: number }>): string {

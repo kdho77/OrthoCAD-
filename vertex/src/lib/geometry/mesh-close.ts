@@ -1,14 +1,13 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 // EXPORT PIPELINE MAP (discovered 2026-06-13)
 // Step 1: [client trigger] exportDesign / generateHybridGcode → vertex/src/features/exports/export-service.ts
 // Step 2: [server receives] trpc.export.authorize (tokens only) → vertex/server/src/routers/export.ts
 // Step 3: [GLB loaded via] GLTFLoader + extractMergedGeometry → vertex/src/lib/library/loaders.ts
 // Step 4: [meshes merged via] concatGeometries + mergeVertices (Top/Bottom concatenation, no side wall) → loaders.ts
-// Step 5: [watertight check via] analyzeManifold / validateSolid — false positive when OCCT isClosed() passes on
+// Step 5: [watertight check via] analyzeManifold / validateSolid — false positive when legacy isClosed() checks pass on
 //         tessellation with seam edges, or when trimline-mesh claims watertight-by-construction but base path skips it
-// Step 6: [STL written via] kernel.exportSTL → shapesToStl (OCCT) or geometryToBinarySTL → vertex/src/lib/geometry/stl.ts
+// Step 6: [STL written via] kernel.exportSTL → kernel.exportSTL or geometryToBinarySTL → vertex/src/lib/geometry/stl.ts
 
 import { Box3, BufferAttribute, BufferGeometry, ShapeUtils, Vector2, Vector3 } from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";

@@ -1,5 +1,4 @@
-// Part of the Chili3d Project, under the AGPL-3.0 License.
-// See LICENSE file in the project root for full license information.
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -92,8 +91,8 @@ describe("posted SAMPLE_Top golden (composed top — Corrections viewer path)", 
             ...field,
             corrections: neutralCorrections(field.corrections),
         };
-        const posted = composePrintSolidTop(raw, { sourceField: field });
-        const neutral = composePrintSolidTop(raw, { sourceField: neutralField });
+        const posted = await composePrintSolidTop(raw, { sourceField: field });
+        const neutral = await composePrintSolidTop(raw, { sourceField: neutralField });
         const md5 = stlMd5(posted);
         const neutralMd5 = stlMd5(neutral);
         if (process.env.REGEN_POSTING_GOLDEN === "1") {
@@ -122,14 +121,14 @@ describe("posted SAMPLE_Top WALLED posting-4 S1 parity", () => {
         test(`${wallStyle} — left vs right md5 and mirror symmetry`, async () => {
             const rawRight = await sampleTopForSide("right");
             const rawLeft = await sampleTopForSide("left");
-            const postedRight = reconstructProceduralPreview(rawRight, {
+            const postedRight = await reconstructProceduralPreview(rawRight, {
                 sourceField: fieldFor("right"),
                 composedTop: true,
                 corrections: fieldFor("right").corrections,
                 wallStyle,
                 scanPattern: "full_contact",
             });
-            const postedLeft = reconstructProceduralPreview(rawLeft, {
+            const postedLeft = await reconstructProceduralPreview(rawLeft, {
                 sourceField: fieldFor("left"),
                 composedTop: true,
                 corrections: fieldFor("left").corrections,
@@ -156,14 +155,14 @@ describe("posted SAMPLE_Top WALLED posting-4 S1 parity", () => {
                     ...sourceField,
                     corrections: neutralCorrections(sourceField.corrections),
                 };
-                const postedPreview = reconstructProceduralPreview(raw, {
+                const postedPreview = await reconstructProceduralPreview(raw, {
                     sourceField,
                     composedTop: true,
                     corrections: sourceField.corrections,
                     wallStyle,
                     scanPattern: "full_contact",
                 });
-                const neutralPreview = reconstructProceduralPreview(raw, {
+                const neutralPreview = await reconstructProceduralPreview(raw, {
                     sourceField: neutralField,
                     composedTop: true,
                     corrections: neutralField.corrections,

@@ -1,4 +1,4 @@
-import { Grid, OrbitControls } from "@react-three/drei";
+import { OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import {
     Activity,
@@ -19,6 +19,7 @@ import {
 import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
+import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -26,8 +27,8 @@ import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
 import { cn } from "@/lib/utils";
 import { useAfoStore } from "@/stores/afo-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/design-store";
-import { useKernelStore } from "@/stores/kernel-store";
 import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
@@ -41,12 +42,14 @@ import { ElementMarkers } from "./ElementMarkers";
 import { InsoleMesh } from "./InsoleMesh";
 import { MeshEditTools } from "./MeshEditTools";
 import { PerformanceMonitorOverlay } from "./PerformanceMonitor";
+import { PressureMapOverlayPair } from "./PressureMapOverlay";
 import { PrintLoftSplash } from "./PrintLoftSplash";
 import { ScanMarkerPlacement } from "./ScanMarkerPlacement";
 import { ScanMeshes } from "./ScanMeshes";
 import { ScanPlaneSliceTool } from "./ScanPlaneSliceTool";
 import { ScanRotateTool } from "./ScanRotateTool";
 import { consumeScanMissDeselectSuppression, ScanTransformTool } from "./ScanTransformTool";
+import { SplitElementOverlays } from "./SplitElementOverlays";
 import { TrimlineEditTools } from "./TrimlineEditTools";
 
 /** Cross-pad anatomical views (Left / Top / Bottom / Right / Front / Back). */
@@ -79,7 +82,6 @@ function resolveDefaultEditSide(viewer: ViewerSettings, target: MeshEditTarget |
 
 export function Viewer3D() {
     const controls = useRef<OrbitControlsImpl>(null);
-    const kernelName = useKernelStore((s) => s.name);
     const {
         design,
         viewer,
@@ -99,6 +101,8 @@ export function Viewer3D() {
         setRegistrationTargetLayout({ lengthMm: layoutLengthMm, widthMm: layoutWidthMm });
     }, [layoutLengthMm, layoutWidthMm, setRegistrationTargetLayout]);
     const editMode = useMeshEditStore((s) => s.editMode);
+    const workflowStep = useClinicalWorkflowStore((s) => s.step);
+    const printPreview = workflowStep === "print" || workflowStep === "export";
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
     const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
@@ -187,6 +191,14 @@ export function Viewer3D() {
         setViewer({ view: name });
     };
 
+    useEffect(() => {
+        if (!import.meta.env.DEV) return;
+        if (!new URLSearchParams(window.location.search).has("pressureMapE2E")) return;
+        (
+            window as unknown as { __orthocadApplyCameraView?: (name: CameraView) => void }
+        ).__orthocadApplyCameraView = (name) => setView(name);
+    }, [setViewer]);
+
     return (
         <div className="relative h-full w-full bg-[hsl(222_28%_7%)]">
             <Canvas
@@ -201,9 +213,11 @@ export function Viewer3D() {
                 onPointerMissed={() => {
                     selectElement(null);
                     if (!consumeScanMissDeselectSuppression()) selectScan(null);
-                    setTarget({ type: "insole", side: editSide });
+                    if (!printPreview) setTarget({ type: "insole", side: editSide });
                 }}
-                onClick={() => setTarget({ type: "insole", side: editSide })}
+                onClick={() => {
+                    if (!printPreview) setTarget({ type: "insole", side: editSide });
+                }}
             >
                 <color attach="background" args={["#0c111b"]} />
                 <ambientLight intensity={0.6} />
@@ -211,6 +225,7 @@ export function Viewer3D() {
                 <directionalLight position={[-150, 100, -100]} intensity={0.4} />
 
                 <Suspense fallback={null}>
+                    <PressureMapOverlayPair showLeft={showLeftInsole} showRight={showRightInsole} />
                     {showLeftInsole ? (
                         <>
                             {!showBase ? (
@@ -258,26 +273,19 @@ export function Viewer3D() {
                             <ScanRotateTool />
                             <ScanTransformTool />
                             {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
-                            <MeshEditTools />
-                            {!loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
-                            {!loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
+                            {workflowStep === "print" && !hideInsoleForMarkers && !loftOverlay.blockViewport ? (
+                                <SplitElementOverlays />
+                            ) : null}
+                            {!printPreview ? <MeshEditTools /> : null}
+                            {!printPreview && !loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
+                            {!printPreview && !loftOverlay.blockViewport ? (
+                                <BottomPatternEditTools />
+                            ) : null}
                         </>
                     )}
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
-                <Grid
-                    args={[1000, 1000]}
-                    cellSize={10}
-                    cellThickness={0.5}
-                    cellColor="#1e293b"
-                    sectionSize={50}
-                    sectionThickness={1}
-                    sectionColor="#334155"
-                    fadeDistance={900}
-                    infiniteGrid
-                    position={[0, -0.1, 0]}
-                />
                 <OrbitControls
                     ref={controls}
                     makeDefault
@@ -449,7 +457,7 @@ export function Viewer3D() {
                     label="Scan"
                 />
                 {typeof window !== "undefined" &&
-                (window.localStorage.getItem("chili3d:dev") === "1" ||
+                (window.localStorage.getItem("vertex:dev") === "1" ||
                     new URLSearchParams(window.location.search).has("dev")) ? (
                     <ToggleButton
                         active={showPerf}
@@ -459,6 +467,12 @@ export function Viewer3D() {
                     />
                 ) : null}
             </div>
+
+            {workflowStep === "print" && design.splitElements ? (
+                <div className="absolute bottom-3 left-3 rounded-md border border-border bg-panel/90 px-2 py-1.5 shadow-lg backdrop-blur">
+                    <HardnessLegend compact />
+                </div>
+            ) : null}
 
             {/* Scan selection toolbar — rotate appears only while a scan is selected */}
             {selectedScanId ? (
@@ -486,8 +500,8 @@ export function Viewer3D() {
                 </div>
             ) : null}
 
-            {/* Element / mesh edit toolbar */}
-            {selectedElementId ? (
+            {/* Print selection edits hardness; placement tools remain in Design. */}
+            {printPreview ? null : selectedElementId ? (
                 <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-panel/90 p-1 shadow-lg backdrop-blur">
                     <ModeButton
                         active={editMode === "transform" && transformMode === "translate"}
@@ -618,7 +632,7 @@ export function Viewer3D() {
             <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="h-3.5 w-3.5" />
                 {interacting ? "Preview mesh · " : ""}
-                {kernelName === "opencascade-wasm" ? "OpenCascade WASM" : "Procedural worker"} kernel · ⌘P Rx
+                Procedural geometry kernel · ⌘P Rx
                 · ⌘E export · T transparent · Esc deselect
                 {selectedScanId ? " · arrows nudge scan" : ""}
             </div>
