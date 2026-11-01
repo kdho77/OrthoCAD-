@@ -6,11 +6,36 @@ import type { CameraView } from "@/stores/design-store";
 import { useDesignStore } from "@/stores/design-store";
 import type { Side } from "@/types";
 
+export interface PressureMapAabb {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+    minZ: number;
+    maxZ: number;
+}
+
+export interface PressureMapFootMeasure {
+    plane: PressureMapAabb;
+    insole: PressureMapAabb;
+    halluxWorld: { x: number; y: number; z: number };
+    insoleCenter: { x: number; y: number; z: number };
+    /** Footprint-Y sign of medial (`left` −1, `right` +1). */
+    medialSign: 1 | -1;
+}
+
 export interface PressureMapE2EApi {
     prepareScene: () => void;
     importFixture: (side: Side, fileName: string) => Promise<void>;
     setCameraView: (view: CameraView) => void;
     setFootVisibility: (showLeft: boolean, showRight: boolean) => void;
+    setTransparent: (on: boolean) => void;
+    /** True once both insole meshes and both pressure planes are in the scene and the load splash is gone. */
+    meshesReady?: () => boolean;
+    /** World bounds of the rendered plane and insole, plus the hallux sample transformed by the live mesh matrix. */
+    measure?: (
+        hallux: Record<Side, { u: number; v: number }>,
+    ) => { feet: Record<Side, PressureMapFootMeasure> } | null;
 }
 
 async function fetchFixtureFile(fileName: string): Promise<File> {
@@ -45,7 +70,10 @@ export function installPressureMapE2E(): void {
             else useDesignStore.getState().setViewer({ view });
         },
         setFootVisibility(showLeft, showRight) {
-            useDesignStore.getState().setViewer({ showLeft, showRight, transparent: true });
+            useDesignStore.getState().setViewer({ showLeft, showRight });
+        },
+        setTransparent(on) {
+            useDesignStore.getState().setViewer({ transparent: on });
         },
     };
     (window as unknown as { __orthocadPressureMapE2E: PressureMapE2EApi }).__orthocadPressureMapE2E = api;

@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { imageUvToFootprintMm } from "@/lib/pressure-map/orientation";
 import {
     autoPressureMapPlacement,
     footprintMedialY,

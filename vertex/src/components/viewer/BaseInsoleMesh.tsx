@@ -152,6 +152,7 @@ export function BaseInsoleMesh({
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             <mesh
+                name={`insole-${side}`}
                 geometry={geometry}
                 material={material}
                 position={[-layout.lengthMm / 2, offsetX, 0]}
