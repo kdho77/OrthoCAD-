@@ -726,7 +726,11 @@ export function extractTopOnlyModel(geo: BufferGeometry, meta: { id: string; nam
             y: pos[i * 3 + 1]!,
             z: 0,
         }));
-        const spline = fitClosedC2Spline(rim);
+        const preserved = (geo.userData as { mortonsPatternRim?: { x: number; y: number }[] }).mortonsPatternRim;
+        if (preserved && preserved.length >= 8) {
+            model.mortonsPatternRim = preserved.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+        }
+        const spline = fitClosedC2Spline(model.mortonsPatternRim?.length ? model.mortonsPatternRim : rim);
         model.outline.spline = spline;
         model.outline.sourceCount = rim.length;
         model.outline.meshPositions = undefined;

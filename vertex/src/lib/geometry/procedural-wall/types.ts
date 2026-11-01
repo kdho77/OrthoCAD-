@@ -149,6 +149,12 @@ export interface StockWallModel {
     columns?: ColumnProfile[];
     /** Footprint AABB after `reorientToFootprintFrame`. */
     bounds: { minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number };
+    /**
+     * Pre-split foot outline (XY). Morton's splits rim edges only where the
+     * raise changes so the wall crown can follow the blend. The plantar
+     * pattern keeps this outline.
+     */
+    mortonsPatternRim?: { x: number; y: number; z?: number }[];
     /** Measured vs bound table (Default.glb rule). */
     measuredVsBound?: import("./defaults").MeasuredVsBoundRow[];
     /** Lower-vs-upper-third flare (curved bowl vs sculpted kink/lip). */

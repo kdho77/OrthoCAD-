@@ -19,7 +19,7 @@ const MORTONS_FOOTPRINT = "#22d3ee";
 function spanFromOutline(
     outline: { x: number; y: number }[],
 ): (u: number) => { lo: number; hi: number } | null {
-    const n = 64;
+    const n = 256;
     const lo = new Array<number>(n).fill(Number.POSITIVE_INFINITY);
     const hi = new Array<number>(n).fill(Number.NEGATIVE_INFINITY);
     let minX = Infinity;
@@ -36,10 +36,29 @@ function spanFromOutline(
         if (p.y < lo[s]!) lo[s] = p.y;
         if (p.y > hi[s]!) hi[s] = p.y;
     }
+    const known: number[] = [];
+    for (let s = 0; s < n; s++) {
+        if (lo[s]! < hi[s]!) known.push(s);
+    }
+    if (known.length === 0) return () => null;
     return (u) => {
-        const s = Math.max(0, Math.min(n - 1, Math.round(Math.max(0, Math.min(1, u)) * (n - 1))));
-        if (!(lo[s]! < hi[s]!)) return null;
-        return { lo: lo[s]!, hi: hi[s]! };
+        const f = Math.max(0, Math.min(1, u)) * (n - 1);
+        let loS = known[0]!;
+        let hiS = known[known.length - 1]!;
+        for (let k = 0; k < known.length; k++) {
+            const s = known[k]!;
+            if (s <= f) loS = s;
+            if (s >= f) {
+                hiS = s;
+                break;
+            }
+        }
+        if (loS === hiS) return { lo: lo[loS]!, hi: hi[loS]! };
+        const t = (f - loS) / (hiS - loS);
+        return {
+            lo: lo[loS]! + (lo[hiS]! - lo[loS]!) * t,
+            hi: hi[loS]! + (hi[hiS]! - hi[loS]!) * t,
+        };
     };
 }
 

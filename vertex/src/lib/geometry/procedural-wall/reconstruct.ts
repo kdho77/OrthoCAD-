@@ -72,6 +72,7 @@ import {
     limitStationSkew,
     minInsetForLeanMm,
     PATTERN_SOURCE_FAIRED_STOCK,
+    reseatDenseOutlineHeadings,
     scalePatternWidth,
     shiftPatternByRimFollow,
     smoothMovedStationOutline,
@@ -1266,7 +1267,8 @@ export function reconstructProceduralWalls(
                   z: 0,
               }))
             : liveRimPlan;
-    const patternRim = stockRimPlan.length >= 3 ? stockRimPlan : liveRimPlan;
+    const denseRim = stockRimPlan.length >= 3 ? stockRimPlan : liveRimPlan;
+    const patternRim = denseRim;
     const legacyFaired = !patternPts?.length;
     const rawOutline = patternPts?.length
         ? startAtLowCurvature(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))), model.bounds)
@@ -1473,10 +1475,12 @@ export function reconstructProceduralWalls(
     }
     applyOutlineClean(stations, rimLocal, indices, true);
     rotateStationRing(stations, rimLocal, model.bounds);
+    const mortonsDense = Boolean(model.mortonsPatternRim && model.mortonsPatternRim.length >= 8);
     const spreadB = spreadClosedOnLoop(
         stations.map((s) => s.outline),
         hygiened.loop,
         0.4,
+        { denseRim: mortonsDense },
     );
     for (let i = 0; i < stations.length; i++) stations[i]!.outline = spreadB[i]!;
     stampMonotonicTB(stations, hygiened.loop);
@@ -1505,17 +1509,26 @@ export function reconstructProceduralWalls(
         forefootWidthMm: foreW,
         minX: model.bounds.minX,
         lengthMm: Math.max(1e-3, model.bounds.maxX - model.bounds.minX),
+        denseRim: mortonsDense,
     };
     stampMonotonicTB(stations, hygiened.loop);
     applyStoredTB(stations, hygiened.loop);
     applySmoothedB();
-    reparameterizeBArcLength(stations, hygiened.loop);
+    reparameterizeBArcLength(stations, hygiened.loop, { denseRim: mortonsDense });
     limitStationSkew(stations, hygiened.loop, r1, r2, stationSkewOpts);
-    reparameterizeBArcLength(stations, hygiened.loop);
+    reparameterizeBArcLength(stations, hygiened.loop, { denseRim: mortonsDense });
     if (patternMoved) {
         smoothMovedStationOutline(stations, hygiened.loop);
         limitStationSkew(stations, hygiened.loop, r1, r2, stationSkewOpts);
-        reparameterizeBArcLength(stations, hygiened.loop);
+        reparameterizeBArcLength(stations, hygiened.loop, { denseRim: mortonsDense });
+    }
+    if (mortonsDense) {
+        // Skew pull squares the columns. On the dense medial blend that
+        // slide walks the outline ahead of the rim and the heading exceeds
+        // 15°. Seat that run back on the rim normal. The lip is not moved.
+        // Uniform rims never set this outline.
+        limitStationSkew(stations, hygiened.loop, r1, r2, stationSkewOpts);
+        reseatDenseOutlineHeadings(stations, hygiened.loop);
     }
     assertClosedStationRing(stations, rimLocal);
     {
@@ -1630,6 +1643,7 @@ export function reconstructProceduralWalls(
         fairRoundTangent:
             (options.wallStyle ?? "straight") === "round" && fullLengthWedgeActive(options.corrections),
         wallStyle,
+        denseRim: mortonsDense,
     });
     const indexGridStyle = (options.wallStyle ?? "straight") !== "straight";
     if (wholeWidth) {

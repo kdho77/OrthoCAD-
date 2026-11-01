@@ -170,7 +170,10 @@ export function buildFairedPatternFromTop(model: StockWallModel, pattern?: ScanP
         y: pos[i * 3 + 1] ?? 0,
         z: pos[i * 3 + 2] ?? 0,
     }));
-    return syntheticBottomPattern(rim3d, model.bounds, rim3d, undefined, insetsForScanPattern(pattern));
+    const outline = model.mortonsPatternRim?.length
+        ? model.mortonsPatternRim
+        : rim3d;
+    return syntheticBottomPattern(outline, model.bounds, rim3d, undefined, insetsForScanPattern(pattern));
 }
 
 export interface ProceduralPreviewOptions {

@@ -28,6 +28,7 @@ import {
     submeshByVertexRange,
 } from "@/lib/geometry/mesh-close";
 import { mortonsActive, mortonsTopDeltaAt } from "@/lib/geometry/mortons";
+import { refineMortonsTopMesh } from "@/lib/geometry/mortons-refine";
 import {
     deriveNativeShellThicknessDatum,
     thicknessOffsetFromDatum,
@@ -2652,8 +2653,8 @@ export function applyBaseModifiers(
     const thickSize = size[thickAxis];
 
     const neutral = neutralField(field);
-    const array = pos.array as Float32Array;
-    const count = pos.count;
+    let array = pos.array as Float32Array;
+    let count = pos.count;
 
     // Top/bottom classification keeps the original bottom surface stable; falls
     // back to a normalised-height weight when no bottom can be identified.
@@ -2666,7 +2667,7 @@ export function applyBaseModifiers(
     const baseUserData = (base as { userData?: { isMultiMeshBase?: boolean; topVertexCount?: number } })
         .userData;
     const isMultiMesh = !!baseUserData?.isMultiMeshBase;
-    const topVertexCount =
+    let topVertexCount =
         isMultiMesh && typeof baseUserData?.topVertexCount === "number" && baseUserData.topVertexCount > 0
             ? baseUserData.topVertexCount
             : 0;
@@ -3171,9 +3172,6 @@ export function applyBaseModifiers(
     // Morton's — TOP ONLY, after posting / bottom sync, before Kirby skive.
     // Inactive designs skip the block so vertex writes stay byte-identical.
     if (field.mortons && mortonsActive(field.mortons)) {
-        const baseArr = base.getAttribute("position")!.array as Float32Array;
-        const topLimit = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
-        const shellCtx = resolveShellThicknessContext(field);
         const mortonsCtx = {
             side: field.side,
             lengthMm: field.lengthMm,
@@ -3181,15 +3179,158 @@ export function applyBaseModifiers(
             mortons: field.mortons,
             widthMmAt: (uu: number) => resolveOutlineHalfWidth(uu, field) * field.widthMm,
         };
+        // Refine before the height write so new vertices sample the blend
+        // instead of interpolating a stair. Rim edges are split where the
+        // raise changes; the flat medial run is left at its original spacing.
+        // Off designs never reach this call.
+        topVertexCount = refineMortonsTopMesh(geometry, {
+            ctx: mortonsCtx,
+            lengthAxis,
+            widthAxis,
+            thickAxis,
+            lenMin,
+            lenSize,
+            widCenter,
+            widSize,
+            widthSign,
+            isMultiMesh,
+            topVertexCount,
+        });
+        const refinedPos = geometry.getAttribute("position");
+        if (refinedPos) {
+            array = refinedPos.array as Float32Array;
+            count = refinedPos.count;
+        }
+        const shellCtx = resolveShellThicknessContext(field);
+        const topLimit = isMultiMesh && topVertexCount > 0 ? topVertexCount : count;
+        const liftFactors =
+            topFactors == null
+                ? null
+                : topFactors.length === count
+                  ? topFactors
+                  : classifyBaseTopFactors(geometry);
         for (let i = 0; i < topLimit; i++) {
-            if (!(isMultiMesh && topVertexCount > 0) && topFactors && topFactors[i]! <= 0.5) continue;
-            const lenCoord = baseArr[i * 3 + lengthAxis]!;
-            const widCoord = baseArr[i * 3 + widthAxis]!;
+            if (!(isMultiMesh && topVertexCount > 0) && liftFactors && liftFactors[i]! <= 0.5) continue;
+            const lenCoord = array[i * 3 + lengthAxis]!;
+            const widCoord = array[i * 3 + widthAxis]!;
             const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
             const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
             const shellT = shellCtx.mode === "zonal" ? shellThicknessMmAtU(u, shellCtx) : field.thicknessMm;
             const dz = mortonsTopDeltaAt(u, vSigned, mortonsCtx, shellT);
             if (dz !== 0) array[i * 3 + thickAxis] = array[i * 3 + thickAxis]! + dz;
+        }
+        // Rim midpoints stay on the chord between the samples that already
+        // carry the raise. Leaving the chord folds the lip triangle and the
+        // round spline's control point falls behind the lip. The extra
+        // samples are what let the wall crown follow that chord without a
+        // long facet.
+        const rimMids = (geometry.userData as { mortonsRimMids?: { i: number; a: number; b: number }[] })
+            .mortonsRimMids;
+        if (rimMids) {
+            const cap = 0;
+            for (const mid of rimMids) {
+                const ia = mid.a * 3 + thickAxis;
+                const ib = mid.b * 3 + thickAxis;
+                const im = mid.i * 3 + thickAxis;
+                const linear = (array[ia]! + array[ib]!) * 0.5;
+                const dev = array[im]! - linear;
+                array[im] = linear + Math.max(-cap, Math.min(cap, dev));
+            }
+            delete (geometry.userData as { mortonsRimMids?: unknown }).mortonsRimMids;
+        }
+        // A split rim face can collapse to a needle. Its normal then falls
+        // toward the horizon and the medial border reads as a fin. Lay the
+        // apex back onto the most upright plane through the long edge. The
+        // crown vertices stay where they are, so the wall lip does not move.
+        const laidIndex = geometry.getIndex();
+        if (laidIndex) {
+            const id = laidIndex.array;
+            const edgeUse = new Map<string, number>();
+            const edgeKey = (a: number, b: number) => (a < b ? `${a},${b}` : `${b},${a}`);
+            for (let t = 0; t < id.length; t += 3) {
+                const tri = [id[t]!, id[t + 1]!, id[t + 2]!];
+                for (let e = 0; e < 3; e++) {
+                    const k = edgeKey(tri[e]!, tri[(e + 1) % 3]!);
+                    edgeUse.set(k, (edgeUse.get(k) ?? 0) + 1);
+                }
+            }
+            const crown = new Set<number>();
+            for (const [k, n] of edgeUse) {
+                if (n !== 1) continue;
+                for (const v of k.split(",").map(Number)) crown.add(v);
+            }
+            const zAt = (i: number) => array[i * 3 + thickAxis]!;
+            for (let pass = 0; pass < 4; pass++) {
+                let moved = 0;
+                for (let t = 0; t < id.length; t += 3) {
+                    const tri = [id[t]!, id[t + 1]!, id[t + 2]!];
+                    if (tri.some((v) => v >= topLimit)) continue;
+                    const ax = array[tri[0]! * 3]!;
+                    const ay = array[tri[0]! * 3 + 1]!;
+                    const az = zAt(tri[0]!);
+                    const bx = array[tri[1]! * 3]! - ax;
+                    const by = array[tri[1]! * 3 + 1]! - ay;
+                    const bz = zAt(tri[1]!) - az;
+                    const cx = array[tri[2]! * 3]! - ax;
+                    const cy = array[tri[2]! * 3 + 1]! - ay;
+                    const cz = zAt(tri[2]!) - az;
+                    const nx = by * cz - bz * cy;
+                    const ny = bz * cx - bx * cz;
+                    const nz = bx * cy - by * cx;
+                    const nl = Math.hypot(nx, ny, nz);
+                    if (!(nl > 0) || nz / nl > 0.62) continue;
+                    const longestGuess = Math.max(Math.hypot(bx, by, bz), Math.hypot(cx, cy, cz));
+                    // Real cup faces are steep and tall. Only needles Morton's
+                    // left on the medial forefoot get laid back onto the sheet.
+                    if (longestGuess < 1e-6 || nl / longestGuess > 0.08) continue;
+                    const uFace = (array[tri[0]! * 3 + lengthAxis]! - lenMin) / (lenSize || 1);
+                    if (uFace < 0.5) continue;
+                    let longE = 0;
+                    let longL = -1;
+                    for (let e = 0; e < 3; e++) {
+                        const u = tri[e]!;
+                        const v = tri[(e + 1) % 3]!;
+                        const len = Math.hypot(
+                            array[u * 3]! - array[v * 3]!,
+                            array[u * 3 + 1]! - array[v * 3 + 1]!,
+                            zAt(u) - zAt(v),
+                        );
+                        if (len > longL) {
+                            longL = len;
+                            longE = e;
+                        }
+                    }
+                    let apex = tri[(longE + 2) % 3]!;
+                    let i0 = tri[longE]!;
+                    let i1 = tri[(longE + 1) % 3]!;
+                    if (crown.has(apex)) {
+                        const interior = tri.find((v) => !crown.has(v));
+                        if (interior == null) continue;
+                        const others = tri.filter((v) => v !== interior);
+                        apex = interior;
+                        i0 = others[0]!;
+                        i1 = others[1]!;
+                    }
+                    const dx = array[i1 * 3]! - array[i0 * 3]!;
+                    const dy = array[i1 * 3 + 1]! - array[i0 * 3 + 1]!;
+                    const dz = zAt(i1) - zAt(i0);
+                    const d2 = dx * dx + dy * dy + dz * dz;
+                    if (d2 < 1e-8) continue;
+                    const nzp = 1 - (dz * dz) / d2;
+                    if (nzp < 0.2) continue;
+                    const px = -dx * dz / d2;
+                    const py = -dy * dz / d2;
+                    const qx = array[apex * 3]! - array[i0 * 3]!;
+                    const qy = array[apex * 3 + 1]! - array[i0 * 3 + 1]!;
+                    const nextZ = zAt(i0) - (px * qx + py * qy) / nzp;
+                    const prevZ = zAt(apex);
+                    const shift = Math.max(-0.6, Math.min(0.6, nextZ - prevZ));
+                    if (Math.abs(shift) < 1e-4) continue;
+                    array[apex * 3 + thickAxis] = prevZ + shift;
+                    moved++;
+                }
+                if (moved === 0) break;
+            }
         }
     }
 
@@ -3248,7 +3389,8 @@ export function applyBaseModifiers(
         }
     }
 
-    pos.needsUpdate = true;
+    const written = geometry.getAttribute("position");
+    if (written) written.needsUpdate = true;
     if (!options?.skipNormals) {
         geometry.computeVertexNormals();
         geometry.computeBoundingBox();

@@ -1589,7 +1589,33 @@ function sharesVertexIndices(a: number[], b: number[]): boolean {
  * Count pairwise SAT self-intersections among heel-band bridge triangles
  * (ymin < HEEL_BRIDGE_Y_MAX_MM), skipping pairs that share a vertex.
  */
-export function countHeelBridgeSelfIntersections(geometry: BufferGeometry, topVertexCount: number): number {
+function boxesDisjoint(t1: [Vector3, Vector3, Vector3], t2: [Vector3, Vector3, Vector3]): boolean {
+    const eps = 1e-8;
+    for (let axis = 0; axis < 3; axis++) {
+        let min1 = Infinity;
+        let max1 = -Infinity;
+        let min2 = Infinity;
+        let max2 = -Infinity;
+        for (const p of t1) {
+            const v = axis === 0 ? p.x : axis === 1 ? p.y : p.z;
+            min1 = Math.min(min1, v);
+            max1 = Math.max(max1, v);
+        }
+        for (const p of t2) {
+            const v = axis === 0 ? p.x : axis === 1 ? p.y : p.z;
+            min2 = Math.min(min2, v);
+            max2 = Math.max(max2, v);
+        }
+        if (max1 < min2 - eps || max2 < min1 - eps) return true;
+    }
+    return false;
+}
+
+export function countHeelBridgeSelfIntersections(
+    geometry: BufferGeometry,
+    topVertexCount: number,
+    opts?: { separateWorldAxes?: boolean },
+): number {
     const index = geometry.index;
     const pos = geometry.getAttribute("position");
     if (!index || !pos || topVertexCount <= 0) return 0;
@@ -1621,6 +1647,9 @@ export function countHeelBridgeSelfIntersections(geometry: BufferGeometry, topVe
     for (let i = 0; i < bridge.length; i++) {
         for (let j = i + 1; j < bridge.length; j++) {
             if (sharesVertexIndices(bridge[i]!.i, bridge[j]!.i)) continue;
+            // Morton's rim slivers are parallel, so SAT reports a hit when the
+            // boxes do not meet. Off path keeps the unfiltered SAT.
+            if (opts?.separateWorldAxes && boxesDisjoint(bridge[i]!.v, bridge[j]!.v)) continue;
             if (triTriIntersect(bridge[i]!.v, bridge[j]!.v)) count++;
         }
     }
@@ -1661,6 +1690,7 @@ export function assertClosedSolidAcceptable(
     geometry: BufferGeometry,
     topVertexCount: number,
     baseline?: ClosedSolidBaseline | null,
+    opts?: { separateWorldAxes?: boolean },
 ): void {
     const report = validateManifold(geometry);
     if (report.openEdges !== 0 || report.nonManifoldEdges !== 0) {
@@ -1676,7 +1706,7 @@ export function assertClosedSolidAcceptable(
             report,
         );
     }
-    const si = countHeelBridgeSelfIntersections(geometry, topVertexCount);
+    const si = countHeelBridgeSelfIntersections(geometry, topVertexCount, opts);
     if (si > baseline.heelBridgeSelfIntersections) {
         throw new MeshNotWatertightError(
             `[MESH-CLOSE] heelBridgeSelfIntersections=${si} exceeds baseline ${baseline.heelBridgeSelfIntersections}`,

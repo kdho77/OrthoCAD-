@@ -15,7 +15,15 @@ import type { MortonsMode, MortonsSide, Side } from "@/types";
  * toe back to u = 0.63, proximal border a shallow arc through (0.62, 0.20)
  * with an 8 mm fillet at the (0.63, 0.40) corner. Kendon's taper: 3 mm C1
  * smoothstep centered on the lateral border (so it sits between met 1 and met
- * 2) and 3 mm outside the proximal border. No taper on the medial or toe edges.
+ * 2). The proximal border blends into the arch over 12 mm with a C1 smoothstep
+ * that is flat at both ends. That length is inside the 10–15 mm window. Its
+ * peak slope is amount/8 per mm, which is the lowest peak a flat-ended blend
+ * of 12 mm can have. No taper on the medial or toe edges: the raise meets the
+ * perimeter at full height. Rim edges are split where that height changes,
+ * so the wall crown follows the blend. The flat medial run (no height
+ * change) keeps its spacing. Blend edges are refined so adjacent vertices
+ * stay within 0.05 mm. Midpoint splits stay on the parent triangle so the
+ * lip winding does not flip.
  *
  * Absent / inactive specs are not evaluated. Callers must skip the call so an
  * insole with Morton's off stays byte-identical.
@@ -29,8 +37,12 @@ export const MORTONS_ARC_DIP_V = 0.2;
 export const MORTONS_FILLET_RADIUS_MM = 8;
 /** Centered on v = 0.40. Half sits on met 1, half on met 2. */
 export const MORTONS_LATERAL_TAPER_MM = 3;
-/** Outside the proximal border only. */
-export const MORTONS_PROXIMAL_TAPER_MM = 3;
+/**
+ * Outside the proximal border only. 12 mm C1 smoothstep, flat at both ends.
+ * Peak derivative of the cubic is 1.5 / 12, so the height slope peaks at
+ * amount/8 per mm.
+ */
+export const MORTONS_PROXIMAL_TAPER_MM = 12;
 export const MORTONS_THICKNESS_BLEND_MM = 10;
 export const MORTONS_MIN_MATERIAL_MM = 0.5;
 
@@ -440,7 +452,7 @@ export function mortonsFilletRadiusMm(ctx: MortonsSampleContext): number {
 
 /**
  * Closed outline of the full raised/lowered region, including the fillet and
- * the 3 mm taper, in insole mesh millimetres (same frame as {@link mortonsMeshPoint}).
+ * both tapers, in insole mesh millimetres (same frame as {@link mortonsMeshPoint}).
  * The ring runs the outer taper, crosses the toe, and returns along the medial edge.
  */
 export function mortonsRegionOutlineMm(ctx: MortonsSampleContext): { x: number; y: number }[] {
@@ -452,7 +464,8 @@ export function mortonsRegionOutlineMm(ctx: MortonsSampleContext): { x: number; 
         outer.push({ u, specV });
     };
     for (const s of boundary.segs) {
-        const steps = s.kind === "fillet" ? 4 : 3;
+        const segLen = Math.hypot(s.bx - s.ax, s.by - s.ay);
+        const steps = Math.max(s.kind === "fillet" ? 6 : 4, Math.ceil(segLen / 1.25));
         for (let i = 0; i <= steps; i++) {
             const t = i / steps;
             const x = s.ax + (s.bx - s.ax) * t;
@@ -469,11 +482,14 @@ export function mortonsRegionOutlineMm(ctx: MortonsSampleContext): { x: number; 
     const start = outer[0]!;
     const end = outer[outer.length - 1]!;
     const medialSpec = (_u: number) => 0;
-    for (let i = 1; i <= 8; i++) {
-        const specV = end.specV + (medialSpec(end.u) - end.specV) * (i / 8);
+    const toeMm = Math.abs(medialSpec(end.u) - end.specV) * Math.max(1, ctx.widthMmAt(end.u));
+    const toeSteps = Math.max(8, Math.ceil(toeMm / 1.25));
+    for (let i = 1; i <= toeSteps; i++) {
+        const specV = end.specV + (medialSpec(end.u) - end.specV) * (i / toeSteps);
         push(end.u, specV);
     }
-    const back = 18;
+    const backMm = Math.abs(start.u - end.u) * Math.max(1, ctx.lengthMm);
+    const back = Math.max(24, Math.ceil(backMm / 1.25));
     for (let i = 1; i <= back; i++) {
         const u = end.u + (start.u - end.u) * (i / back);
         push(u, medialSpec(u));

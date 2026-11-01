@@ -3,13 +3,13 @@
 import { beforeEach, describe, expect, test } from "@rstest/core";
 import { BufferAttribute, BufferGeometry } from "three";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
-import { heightAt, outlineHalfWidth } from "@/lib/geometry/height-field";
+import { heightAt, outlineHalfWidth, resolveOutlineHalfWidth } from "@/lib/geometry/height-field";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { defaultDesign, useDesignStore } from "@/stores/design-store";
 import type { Side, SideCorrections } from "@/types";
 import { designStateSchema } from "../../../server/src/lib/design-schema";
 import { baseModifierField } from "./base-asset";
-import { applyBaseModifiers, detectArchSideSign } from "./base-modifier";
+import { applyBaseModifiers, detectArchSideSign, getBaseFootprintFrame } from "./base-modifier";
 import {
     clampMortonsAmount,
     MORTONS_EXTENSION_DEFAULT_MM,
@@ -120,16 +120,29 @@ describe("Morton's region and Kendon's taper", () => {
         expect(at("left", 0.88, MORTONS_LATERAL_V).weight).toBeCloseTo(border.weight, 4);
     });
 
-    test("proximal taper is 3 mm outside the border, not 2 mm", () => {
-        expect(MORTONS_PROXIMAL_TAPER_MM).toBe(3);
+    test("proximal taper blends 12 mm into the arch with a flat-ended C1 slope", () => {
+        expect(MORTONS_PROXIMAL_TAPER_MM).toBe(12);
         const specV = 0.08;
         const uBorder = mortonsProximalBorderU(specV);
         expect(at("right", uBorder, specV).weight).toBeGreaterThan(0.97);
         expect(at("right", uBorder + 2 / layout.lengthMm, specV).weight).toBeCloseTo(1, 2);
-        const twoMmOut = at("right", uBorder - 2 / layout.lengthMm, specV).weight;
-        expect(twoMmOut).toBeGreaterThan(0.15);
-        expect(twoMmOut).toBeLessThan(0.45);
-        expect(at("right", uBorder - 3 / layout.lengthMm, specV).weight).toBeLessThan(0.05);
+        expect(at("right", uBorder - 6 / layout.lengthMm, specV).weight).toBeCloseTo(0.5, 1);
+        expect(at("right", uBorder - 12 / layout.lengthMm, specV).weight).toBeLessThan(0.05);
+        const amount = 3;
+        const sample = ctx("right", "extension", amount);
+        const v = mortonsVSigned(specV, "right");
+        const stepMm = 0.05;
+        let prev = mortonsTopDeltaAt(uBorder - 14 / layout.lengthMm, v, sample, 2);
+        let maxSlope = 0;
+        for (let s = -14 + stepMm; s <= 1.001; s += stepMm) {
+            const delta = mortonsTopDeltaAt(uBorder + s / layout.lengthMm, v, sample, 2);
+            maxSlope = Math.max(maxSlope, Math.abs(delta - prev) / stepMm);
+            prev = delta;
+        }
+        // Cubic smoothstep peaks at 1.5/distance. Over 12 mm that is amount/8,
+        // the lowest peak a blend that is flat at both ends can have.
+        expect(maxSlope).toBeLessThanOrEqual((amount * 1.5) / MORTONS_PROXIMAL_TAPER_MM + 1e-4);
+        expect(maxSlope).toBeGreaterThan(amount / 10);
     });
 
     test("medial and toe edges stay at full height", () => {
@@ -328,6 +341,113 @@ describe("Morton's is top-only on the base mesh", () => {
         expect(center.specV).toBeGreaterThan(0.08);
         expect(center.specV).toBeLessThan(0.25);
         expect(onPos[best * 3 + 2]! - offPos[best * 3 + 2]!).toBeCloseTo(3, 2);
+        geometry.dispose();
+        off.dispose();
+        on.dispose();
+    });
+
+    test("proximal band and medial rim have no step above 0.05 mm", () => {
+        const lengthMm = layout.lengthMm;
+        const widthMm = layout.widthMm;
+        const nu = 26;
+        const nv = 12;
+        const positions: number[] = [];
+        const uAt = (i: number) => i / nu;
+        const yAt = (j: number) => (j / nv - 0.5) * widthMm;
+        for (let i = 0; i <= nu; i++) {
+            for (let j = 0; j <= nv; j++) positions.push(uAt(i) * lengthMm, yAt(j), 2);
+        }
+        const indices: number[] = [];
+        const atIJ = (i: number, j: number) => i * (nv + 1) + j;
+        for (let i = 0; i < nu; i++) {
+            for (let j = 0; j < nv; j++) {
+                const a = atIJ(i, j);
+                const b = atIJ(i + 1, j);
+                const d = atIJ(i + 1, j + 1);
+                const c = atIJ(i, j + 1);
+                indices.push(a, b, d, a, d, c);
+            }
+        }
+        const geometry = new BufferGeometry();
+        geometry.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
+        geometry.setIndex(indices);
+        const baseField = field("right", 2);
+        const off = applyBaseModifiers(geometry, baseField, 0, { skipNormals: true });
+        const on = applyBaseModifiers(
+            geometry,
+            { ...baseField, mortons: { mode: "extension", amountMm: 3 } },
+            0,
+            { skipNormals: true },
+        );
+        expect(off.getAttribute("position")!.count).toBe(geometry.getAttribute("position")!.count);
+        expect(on.getAttribute("position")!.count).toBeGreaterThan(geometry.getAttribute("position")!.count);
+        const pos = on.getAttribute("position")!.array as Float32Array;
+        const index = on.getIndex()!.array as ArrayLike<number>;
+        const onField = { ...baseField, mortons: { mode: "extension" as const, amountMm: 3 } };
+        const sampleCtx = {
+            ...ctx("right", "extension", 3),
+            widthMmAt: (u: number) => resolveOutlineHalfWidth(u, onField) * layout.widthMm,
+        };
+        const frame = getBaseFootprintFrame(geometry, "right");
+        const specOf = (i: number) => {
+            const u = Math.max(
+                0,
+                Math.min(1, (pos[i * 3 + frame.lengthAxis]! - frame.lenMin) / frame.lenSize),
+            );
+            const vSigned = Math.max(
+                -1,
+                Math.min(
+                    1,
+                    (frame.widthSign * (pos[i * 3 + frame.widthAxis]! - frame.widCenter)) / (frame.widSize / 2),
+                ),
+            );
+            return { u, specV: mortonsSpecV(vSigned, "right"), vSigned };
+        };
+        const deltaOf = (i: number) => {
+            const s = specOf(i);
+            return mortonsTopDeltaAt(s.u, s.vSigned, sampleCtx, 2);
+        };
+        let proximalEdges = 0;
+        let rimEdges = 0;
+        const edgeUse = new Map<string, number>();
+        const edgeKey = (a: number, b: number) => (a < b ? `${a}:${b}` : `${b}:${a}`);
+        for (let t = 0; t < index.length; t += 3) {
+            const tri = [index[t]!, index[t + 1]!, index[t + 2]!];
+            const area =
+                (pos[tri[1]! * 3]! - pos[tri[0]! * 3]!) * (pos[tri[2]! * 3 + 1]! - pos[tri[0]! * 3 + 1]!) -
+                (pos[tri[1]! * 3 + 1]! - pos[tri[0]! * 3 + 1]!) * (pos[tri[2]! * 3]! - pos[tri[0]! * 3]!);
+            expect(area).toBeGreaterThan(1e-6);
+            for (let e = 0; e < 3; e++) {
+                const a = tri[e]!;
+                const b = tri[(e + 1) % 3]!;
+                edgeUse.set(edgeKey(a, b), (edgeUse.get(edgeKey(a, b)) ?? 0) + 1);
+            }
+        }
+        for (const [k, n] of edgeUse) {
+            const [as, bs] = k.split(":");
+            const a = Number(as);
+            const b = Number(bs);
+            const sa = specOf(a);
+            const sb = specOf(b);
+            const dA = deltaOf(a);
+            const dB = deltaOf(b);
+            const jump = Math.abs(dA - dB);
+            const midU = (sa.u + sb.u) * 0.5;
+            const midV = (sa.specV + sb.specV) * 0.5;
+            // The lip row (specV < 0.08) is checked on its rim edges below.
+            // Its radial edges stay coarse so the wall lip tangent does not flip.
+            const proximal = midV >= 0.08 && midV < 0.22 && midU < 0.72 && midU > 0.5 && Math.min(dA, dB) < 2.9;
+            if (proximal) {
+                proximalEdges++;
+                expect(jump).toBeLessThanOrEqual(0.05 + 1e-4);
+            }
+            if (n === 1 && midV < 0.08 && midU > 0.7) {
+                rimEdges++;
+                expect(jump).toBeLessThanOrEqual(0.05 + 1e-4);
+            }
+        }
+        expect(proximalEdges).toBeGreaterThan(8);
+        expect(rimEdges).toBeGreaterThan(4);
         geometry.dispose();
         off.dispose();
         on.dispose();

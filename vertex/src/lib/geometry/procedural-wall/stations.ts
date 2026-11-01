@@ -806,8 +806,17 @@ export function retargetPlantarFromE(E: PolyPoint[], plantarLoop: PolyPoint[]): 
     return spreadClosedOnLoop(out, plantarLoop, 0.4);
 }
 
-/** Keep closed B samples strictly increasing on `loop` with a minimum arc gap. */
-export function spreadClosedOnLoop(pts: PolyPoint[], loop: PolyPoint[], minMm: number): PolyPoint[] {
+/**
+ * Keep closed B samples strictly increasing. Collapsed hits fan out to `minMm`.
+ * `denseRim` (Morton's only) leaves real gaps above 0.05 mm alone. Without it,
+ * every gap under `minMm` is inflated — the pre-Morton's bytes.
+ */
+export function spreadClosedOnLoop(
+    pts: PolyPoint[],
+    loop: PolyPoint[],
+    minMm: number,
+    opts?: { denseRim?: boolean },
+): PolyPoint[] {
     const n = pts.length;
     if (n < 3 || loop.length < 3) return pts.map((p) => ({ ...p }));
     const { cum, total } = polylineArcLengths(loop);
@@ -815,8 +824,11 @@ export function spreadClosedOnLoop(pts: PolyPoint[], loop: PolyPoint[], minMm: n
     const s01 = pts.map((p) => nearestS01(p, loop, cum, total));
     const outS = unwrapAllowPlateau(s01);
     const minS = minMm / total;
+    // Off path: inflate every gap under minMm. Morton's: only collapsed gaps
+    // under 0.05 mm. Inflating a real medial blend walks B ahead of R.
+    const collapseS = opts?.denseRim ? 0.05 / total : minS;
     for (let i = 1; i < n; i++) {
-        if (outS[i]! < outS[i - 1]! + minS) outS[i] = outS[i - 1]! + minS;
+        if (outS[i]! - outS[i - 1]! < collapseS) outS[i] = outS[i - 1]! + minS;
     }
     const span = outS[n - 1]! - outS[0]!;
     const room = 1 - minS;
@@ -971,12 +983,15 @@ export function stampMonotonicTB(
 
 /**
  * After t_B smooth, remap B on the pattern while keeping t order.
- * Prefer a neighbour-Δt clamp to 1.5 (small moves). Fall back to equal
- * arc-length only if the clamp still crosses.
+ * Neighbour Δt stays within 1.49. `denseRim` (Morton's only) widens that to
+ * the rim-gap ratio and, if the clamp still crosses, follows the rim arc
+ * instead of equal spacing. Uniform rims keep the 1.49 clamp and the equal
+ * fallback so Morton's-off bytes do not move.
  */
 export function reparameterizeBArcLength(
     stations: Array<{ outline: PolyPoint; rim: PolyPoint; tB?: number }>,
     loop: PolyPoint[],
+    opts?: { denseRim?: boolean },
 ): boolean {
     const n = stations.length;
     if (n < 3 || loop.length < 3) return false;
@@ -984,10 +999,14 @@ export function reparameterizeBArcLength(
     const unwrapped = unwrapAllowPlateau(raw);
     const t0 = unwrapped[0]!;
     const deltas: number[] = [];
+    const rimD: number[] = [];
     for (let i = 0; i < n; i++) {
         const a = unwrapped[i]!;
         const b = i + 1 < n ? unwrapped[i + 1]! : unwrapped[0]! + 1;
         deltas.push(Math.max(1e-6, b - a));
+        const ra = stations[i]!.rim;
+        const rb = stations[(i + 1) % n]!.rim;
+        rimD.push(Math.max(1e-6, Math.hypot(rb.x - ra.x, rb.y - ra.y)));
     }
     const ratio = 1.49;
     for (let pass = 0; pass < 8; pass++) {
@@ -995,9 +1014,11 @@ export function reparameterizeBArcLength(
             const j = (i + 1) % n;
             const a = deltas[i]!;
             const b = deltas[j]!;
-            if (b > a * ratio + 1e-12 || a > b * ratio + 1e-12) {
+            const rimRatio = Math.max(rimD[i]!, rimD[j]!) / Math.min(rimD[i]!, rimD[j]!);
+            const allow = opts?.denseRim ? Math.max(ratio, rimRatio) : ratio;
+            if (b > a * allow + 1e-12 || a > b * allow + 1e-12) {
                 const s = a + b;
-                const lo = s / (1 + ratio);
+                const lo = s / (1 + allow);
                 const hi = s - lo;
                 if (b > a) {
                     deltas[i] = lo;
@@ -1012,9 +1033,21 @@ export function reparameterizeBArcLength(
     const next: number[] = [t0];
     for (let i = 0; i < n - 1; i++) next.push(next[i]! + deltas[i]!);
     if (commitTB(stations, loop, next)) return true;
-    const equal: number[] = [];
-    for (let i = 0; i < n; i++) equal.push(t0 + i / n);
-    return commitTB(stations, loop, equal);
+    if (!opts?.denseRim) {
+        const equal: number[] = [];
+        for (let i = 0; i < n; i++) equal.push(t0 + i / n);
+        return commitTB(stations, loop, equal);
+    }
+    // Index-uniform B leaves a dense rim (medial blend) with columns that
+    // fan. Follow the rim's own arc length so B stays opposite R.
+    let acc = 0;
+    const rimTotal = rimD.reduce((s, d) => s + d, 0) || 1;
+    const along: number[] = [];
+    for (let i = 0; i < n; i++) {
+        along.push(t0 + acc / rimTotal);
+        acc += rimD[i]!;
+    }
+    return commitTB(stations, loop, along);
 }
 
 function commitTB(

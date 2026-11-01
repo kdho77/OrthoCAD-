@@ -115,12 +115,18 @@ describe("Morton's region is on the medial side of both feet", () => {
             const on = applyBaseModifiers(geo, field, 0, { skipNormals: true });
             const offP = off.getAttribute("position")!.array as Float32Array;
             const onP = on.getAttribute("position")!.array as Float32Array;
+            const q = (v: number) => Math.round(v * 20);
+            const offZ = new Map<string, number>();
+            for (let i = 0; i < offP.length; i += 3) {
+                offZ.set(`${q(offP[i]!)}:${q(offP[i + 1]!)}`, offP[i + 2]!);
+            }
             let sy = 0;
             let n = 0;
-            for (let i = 0; i < onP.length / 3; i++) {
-                const dz = onP[i * 3 + 2]! - offP[i * 3 + 2]!;
-                if (dz > 1.5) {
-                    sy += onP[i * 3 + 1]!;
+            for (let i = 0; i < onP.length; i += 3) {
+                const base = offZ.get(`${q(onP[i]!)}:${q(onP[i + 1]!)}`);
+                if (base == null) continue;
+                if (onP[i + 2]! - base > 1.5) {
+                    sy += onP[i + 1]!;
                     n++;
                 }
             }
