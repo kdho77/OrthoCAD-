@@ -26,7 +26,7 @@ beforeAll(async () => {
 });
 
 function scanBundle(side: "left" | "right" = "left") {
-    const scan = buildDefaultGlbRegisteredScan(SOURCE);
+    const scan = buildDefaultGlbRegisteredScan(SOURCE, rawBase);
     if (!scan) throw new Error("Default.glb registered scan fixture unavailable");
     return {
         side,

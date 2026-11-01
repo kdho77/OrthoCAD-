@@ -7,6 +7,7 @@ import {
     correctionDeltaAt,
 } from "@/lib/geometry/base-modifier";
 import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
+import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
     forefootWidthLongitudinalEnvelope,
     type HeightFieldParams,
@@ -286,6 +287,24 @@ function applyAnalyticTopDeltas(
         if (Number.isFinite(whole) && Math.abs(whole - 1) > 1e-12) {
             pos[i * 3 + 1] = widCenter + ((pos[i * 3 + 1] ?? y) - widCenter) * whole;
         }
+    }
+    // Kirby skive is a top-only raise (R11). Analytic loft used to drop it
+    // (includeSkives stays false inside correctionDeltaAt). No-op at 0 mm,
+    // so a stock export is unchanged.
+    if ((c.medialSkiveMm ?? 0) > 0 || (c.lateralSkiveMm ?? 0) > 0) {
+        applyHeelSkiveToTopMesh(pos, {
+            side,
+            corrections: c,
+            lengthAxis: 0,
+            widthAxis: 1,
+            thickAxis: 2,
+            lenMin: minX,
+            lenSize: length,
+            topVertexCount: count,
+            // Paired with the side inferred from medialYSign (see postingZDelta):
+            // left shell medial is −Y, mirrored right shell medial is +Y.
+            widthSign: 1,
+        });
     }
 }
 

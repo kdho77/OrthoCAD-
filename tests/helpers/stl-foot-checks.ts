@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import type { BufferGeometry } from "three";
-import { medialWidthSignForSide } from "@/lib/clinical/medial-sign";
+import { medialSign } from "@/lib/clinical/medial-sign";
 import { binaryStlToGeometry } from "@/lib/geometry/stl";
 import type { Side } from "@/types";
 
@@ -10,15 +9,15 @@ export type StlArchMedialCheck = {
     apexY: number;
     apexX: number;
     apexZ: number;
-    medialWidthSign: number;
+    medialSign: number;
     reason?: string;
 };
 
-/** Top-view medial check: arch apex sample in midfoot band should lie on medial half (+Y for left). */
+/** Top-view medial check. Export frame: left medial is −Y, right medial is +Y. */
 export function checkStlArchApexMedial(stl: ArrayBuffer, side: Side): StlArchMedialCheck {
     const geo = binaryStlToGeometry(stl);
     const pos = geo.getAttribute("position");
-    const medialSign = medialWidthSignForSide(side);
+    const sign = medialSign(side);
     let bestZ = -Infinity;
     let apexX = 0;
     let apexY = 0;
@@ -36,13 +35,13 @@ export function checkStlArchApexMedial(stl: ArrayBuffer, side: Side): StlArchMed
         }
     }
     geo.dispose();
-    const onMedial = apexY * medialSign > 0;
+    const onMedial = apexY * sign > 0;
     return {
         ok: onMedial && Number.isFinite(bestZ),
         apexX,
         apexY,
         apexZ,
-        medialWidthSign: medialSign,
+        medialSign: sign,
         reason: onMedial ? undefined : `arch apex Y=${apexY.toFixed(2)} wrong side for ${side}`,
     };
 }
@@ -66,7 +65,7 @@ export function stlBoundingBox(stl: ArrayBuffer): {
 export function meanPlantarZInHeel(stl: ArrayBuffer, medial: boolean, side: Side): number {
     const geo = binaryStlToGeometry(stl);
     const pos = geo.getAttribute("position");
-    const medialSign = medialWidthSignForSide(side);
+    const sign = medialSign(side);
     let sum = 0;
     let n = 0;
     for (let i = 0; i < pos.count; i++) {
@@ -74,10 +73,33 @@ export function meanPlantarZInHeel(stl: ArrayBuffer, medial: boolean, side: Side
         const y = pos.getY(i);
         const z = pos.getZ(i);
         if (x > 55) continue;
-        if (medial ? y * medialSign <= 0 : y * medialSign >= 0) continue;
+        if (medial ? y * sign <= 0 : y * sign >= 0) continue;
         sum += z;
         n++;
     }
     geo.dispose();
     return n > 0 ? sum / n : NaN;
+}
+
+/** Mean Z of the upper quartile in the heel half (top sheet, not the plantar bed). */
+export function meanTopHeelZ(stl: ArrayBuffer, medial: boolean, side: Side): number {
+    const geo = binaryStlToGeometry(stl);
+    const pos = geo.getAttribute("position");
+    const sign = medialSign(side);
+    const zs: number[] = [];
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        const z = pos.getZ(i);
+        if (x > 55) continue;
+        if (medial ? y * sign <= 0 : y * sign >= 0) continue;
+        zs.push(z);
+    }
+    geo.dispose();
+    if (zs.length < 8) return NaN;
+    zs.sort((a, b) => a - b);
+    const start = Math.floor(zs.length * 0.75);
+    let sum = 0;
+    for (let i = start; i < zs.length; i++) sum += zs[i]!;
+    return sum / (zs.length - start);
 }

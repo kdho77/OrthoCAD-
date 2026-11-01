@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "@rstest/core";
@@ -19,7 +20,7 @@ import { createDesignWithStockPlaceholder, defaultDesign, useDesignStore } from 
 import { buildDefaultGlbRegisteredScan, registerDefaultGlbBaseAsync } from "./helpers/clinical-scan-fixtures";
 import { DEFAULT_GLB_FIXTURE_PATH, loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
 import { encodePng, renderMesh } from "./helpers/render-png";
-import { checkStlArchApexMedial, meanPlantarZInHeel, stlBoundingBox } from "./helpers/stl-foot-checks";
+import { checkStlArchApexMedial, meanTopHeelZ, stlBoundingBox } from "./helpers/stl-foot-checks";
 
 const SAMPLE_TOP_FIXTURE_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
 const SOURCE = "artifact-default-glb";
@@ -103,8 +104,29 @@ describe("one-click export artifacts (real export path)", () => {
 
     afterEach(() => rs.restoreAllMocks());
 
-    test("Default.glb scan + Rx → export L/R STL + top view; medial arch + skive side", async () => {
-        const scan = buildDefaultGlbRegisteredScan(SOURCE);
+    test("Default.glb scan + Rx exports gen.design (no template fallback)", async () => {
+        const { buildExportStl } = await import("@/lib/geometry/export-geometry");
+        const { binaryStlToGeometry } = await import("@/lib/geometry/stl");
+
+        const install = (design: ReturnType<typeof defaultDesign>) => {
+            useDesignStore.getState().loadDesign(design);
+            useDesignStore.setState({
+                viewer: {
+                    ...useDesignStore.getState().viewer,
+                    wallModel: "procedural",
+                    wallStyle: "straight",
+                },
+            });
+        };
+
+        install(createDesignWithStockPlaceholder(defaultDesign()));
+        const defaultLeft = await buildExportStl("left", { exportMode: "manufacturing" });
+        const defaultRight = await buildExportStl("right", { exportMode: "manufacturing" });
+        const defaultRightHash = createHash("sha256").update(Buffer.from(defaultRight)).digest("hex");
+        const defaultLeftMedial = meanTopHeelZ(defaultLeft, true, "left");
+        const defaultLeftLateral = meanTopHeelZ(defaultLeft, false, "left");
+
+        const scan = buildDefaultGlbRegisteredScan(SOURCE, rawBase);
         expect(scan).not.toBeNull();
         if (!scan) throw new Error("Default.glb registered scan unavailable");
         const gen = generateOrthoticFromScanAndRx({
@@ -126,28 +148,18 @@ describe("one-click export artifacts (real export path)", () => {
         expect(gen.ok).toBe(true);
         if (!gen.ok) throw new Error(gen.reason);
 
-        const exportDesign = createDesignWithStockPlaceholder({
-            ...defaultDesign(),
-            corrections: {
-                ...defaultDesign().corrections,
-                left: {
-                    ...defaultDesign().corrections.left,
-                    medialSkiveMm: gen.design.corrections.left.medialSkiveMm,
-                },
-            },
-        });
-        useDesignStore.getState().loadDesign(exportDesign);
-        useDesignStore.setState({
-            viewer: {
-                ...useDesignStore.getState().viewer,
-                wallModel: "procedural",
-                wallStyle: "straight",
-            },
-        });
+        const leftCorr = gen.design.corrections.left;
+        const rightCorr = gen.design.corrections.right;
+        expect(Math.abs(leftCorr.archHeightMm)).toBeLessThanOrEqual(1);
+        expect(Math.abs(leftCorr.apexMoveMm)).toBeLessThanOrEqual(5);
+        expect(leftCorr.heelCupWidthMm).toBe(0);
+        expect(leftCorr.medialSkiveMm).toBe(4);
+        expect(leftCorr.rearfootWedge).toEqual({ side: "medial", value: 4, unit: "deg" });
+        expect(rightCorr.medialSkiveMm).toBe(0);
+        expect(rightCorr.archHeightMm).toBe(0);
+        expect(rightCorr.rearfootWedge).toBeUndefined();
 
-        const layout = insoleLayoutFromDesign(exportDesign);
-
-        const { buildExportStl } = await import("@/lib/geometry/export-geometry");
+        install(gen.design);
         const leftStl = await buildExportStl("left", { exportMode: "manufacturing" });
         const rightStl = await buildExportStl("right", { exportMode: "manufacturing" });
         writeArtifact("generated-left.stl", Buffer.from(leftStl));
@@ -155,60 +167,116 @@ describe("one-click export artifacts (real export path)", () => {
 
         const leftMedial = checkStlArchApexMedial(leftStl, "left");
         const rightMedial = checkStlArchApexMedial(rightStl, "right");
+        expect(leftMedial.ok, leftMedial.reason).toBe(true);
+        expect(rightMedial.ok, rightMedial.reason).toBe(true);
+        expect(leftMedial.medialSign).toBe(-1);
+        expect(rightMedial.medialSign).toBe(1);
 
-        expect(exportDesign.corrections.left.medialSkiveMm).toBeGreaterThan(0);
-        const medHeelZ = meanPlantarZInHeel(leftStl, true, "left");
-        const latHeelZ = meanPlantarZInHeel(leftStl, false, "left");
-        expect(Number.isFinite(medHeelZ)).toBe(true);
-        expect(Number.isFinite(latHeelZ)).toBe(true);
+        const medHeelZ = meanTopHeelZ(leftStl, true, "left");
+        const latHeelZ = meanTopHeelZ(leftStl, false, "left");
+        const medialRaise = medHeelZ - defaultLeftMedial;
+        const lateralRaise = latHeelZ - defaultLeftLateral;
+        // 4 mm medial skive plus a 4° medial (varus) wedge, at the medial heel.
+        expect(medialRaise).toBeGreaterThan(3);
+        expect(medialRaise).toBeLessThan(12);
+        expect(lateralRaise).toBeLessThan(medialRaise - 2);
+
+        const rightHash = createHash("sha256").update(Buffer.from(rightStl)).digest("hex");
+        expect(rightHash).toBe(defaultRightHash);
+
+        // Same Rx on the right shell. medialSign is +Y; the left shell stays the unilateral case above.
+        const defaultRightMedial = meanTopHeelZ(defaultRight, true, "right");
+        const defaultRightLateral = meanTopHeelZ(defaultRight, false, "right");
+        const rightDesign = {
+            ...gen.design,
+            corrections: {
+                ...gen.design.corrections,
+                linked: false,
+                right: {
+                    ...gen.design.corrections.right,
+                    medialSkiveMm: 4,
+                    rearfootWedge: { side: "medial" as const, value: 4, unit: "deg" as const },
+                },
+            },
+        };
+        resetSampleTopGeometryCache();
+        install(rightDesign);
+        const rightSkived = await buildExportStl("right", { exportMode: "manufacturing" });
+        const rightSkiveMedial = checkStlArchApexMedial(rightSkived, "right");
+        expect(rightSkiveMedial.ok, rightSkiveMedial.reason).toBe(true);
+        expect(rightSkiveMedial.medialSign).toBe(1);
+        const rightMedialRaise = meanTopHeelZ(rightSkived, true, "right") - defaultRightMedial;
+        const rightLateralRaise = meanTopHeelZ(rightSkived, false, "right") - defaultRightLateral;
+        expect(rightMedialRaise).toBeGreaterThan(3);
+        expect(rightMedialRaise).toBeLessThan(12);
+        expect(rightLateralRaise).toBeLessThan(rightMedialRaise - 2);
 
         const leftBox = stlBoundingBox(leftStl);
         const rightBox = stlBoundingBox(rightStl);
+        const layout = insoleLayoutFromDesign(gen.design);
         const metrics = {
             layoutLengthMm: layout.lengthMm,
             layoutWidthMm: layout.widthMm,
-            leftArchHeightMm: gen.design.corrections.left.archHeightMm,
-            leftMedialSkiveMm: gen.design.corrections.left.medialSkiveMm,
+            leftArchHeightMm: leftCorr.archHeightMm,
+            leftApexMoveMm: leftCorr.apexMoveMm,
+            leftMedialSkiveMm: leftCorr.medialSkiveMm,
+            leftRearfootWedge: leftCorr.rearfootWedge,
+            rightMedialSkiveMm: rightCorr.medialSkiveMm,
             generatedUsMenSize: gen.design.usMenSize,
-            exportUsMenSize: exportDesign.usMenSize,
+            exportedDesignIsGenDesign: true,
             baselineDefaultArchHeightMm: 0,
-            deltaArchVsDefault: gen.design.corrections.left.archHeightMm,
             exportedLeftBboxMm: leftBox,
             exportedRightBboxMm: rightBox,
             leftArchApexMedialCheck: leftMedial,
             rightArchApexMedialCheck: rightMedial,
             medialHeelZ: medHeelZ,
             lateralHeelZ: latHeelZ,
+            defaultMedialHeelZ: defaultLeftMedial,
+            defaultLateralHeelZ: defaultLeftLateral,
+            medialHeelRaiseMm: medialRaise,
+            lateralHeelRaiseMm: lateralRaise,
+            rightMatchesDefault: true,
+            rightPrescribedMedialHeelRaiseMm: rightMedialRaise,
+            rightPrescribedLateralHeelRaiseMm: rightLateralRaise,
         };
         writeArtifact("validation-metrics.json", Buffer.from(JSON.stringify(metrics, null, 2)));
 
-        const { binaryStlToGeometry } = await import("@/lib/geometry/stl");
-        const leftGeo = binaryStlToGeometry(leftStl);
-        const lpos = leftGeo.getAttribute("position").array as Float32Array;
-        const lidx = leftGeo.getIndex()?.array ?? [];
+        const paint = (
+            stl: ArrayBuffer,
+            view: {
+                right: [number, number, number];
+                up: [number, number, number];
+                light: [number, number, number];
+            },
+        ) => {
+            const geo = binaryStlToGeometry(stl);
+            const pos = geo.getAttribute("position").array as Float32Array;
+            const existing = geo.getIndex()?.array;
+            const index = existing ?? Uint32Array.from({ length: pos.length / 3 }, (_, i) => i);
+            const rgb = renderMesh(pos, index, view, 960, 720);
+            geo.dispose();
+            let painted = 0;
+            const pixels = rgb.length / 3;
+            for (let i = 0; i < rgb.length; i += 3) {
+                if (rgb[i] !== 140 || rgb[i + 1] !== 140 || rgb[i + 2] !== 140) painted++;
+            }
+            // Top view fills much of the frame; a medial side view is a thin profile.
+            expect(painted / pixels).toBeGreaterThan(0.03);
+            return encodePng(960, 720, rgb);
+        };
+        const light: [number, number, number] = [0.2, 0.3, 0.9];
+        writeArtifact("generated-left-top.png", paint(leftStl, { right: [1, 0, 0], up: [0, 1, 0], light }));
+        writeArtifact("generated-right-top.png", paint(rightStl, { right: [1, 0, 0], up: [0, 1, 0], light }));
+        // Medial side: left looks along −Y, right along +Y.
         writeArtifact(
-            "generated-left-top.png",
-            encodePng(
-                960,
-                720,
-                renderMesh(lpos, lidx, { right: [1, 0, 0], up: [0, 1, 0], light: [0.2, 0.3, 0.9] }, 960, 720),
-            ),
+            "generated-left-medial.png",
+            paint(leftStl, { right: [1, 0, 0], up: [0, 0, 1], light: [0.2, -0.6, 0.4] }),
         );
-        leftGeo.dispose();
-
-        const rightGeo = binaryStlToGeometry(rightStl);
-        const rpos = rightGeo.getAttribute("position").array as Float32Array;
-        const ridx = rightGeo.getIndex()?.array ?? [];
         writeArtifact(
-            "generated-right-top.png",
-            encodePng(
-                960,
-                720,
-                renderMesh(rpos, ridx, { right: [1, 0, 0], up: [0, 1, 0], light: [0.2, 0.3, 0.9] }, 960, 720),
-            ),
+            "generated-right-medial.png",
+            paint(rightStl, { right: [-1, 0, 0], up: [0, 0, 1], light: [0.2, 0.6, 0.4] }),
         );
-        rightGeo.dispose();
 
         scan.geometry.dispose();
-    }, 240000);
+    }, 420000);
 });

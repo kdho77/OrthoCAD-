@@ -219,6 +219,12 @@ export function generateOrthoticFromScanAndRx(input: GenerateOrthoticInput): Gen
     const reviewItems: string[] = [];
     const perFoot: FootGenerationSummary[] = [];
     let design: DesignState = cloneDesignState(input.baselineDesign);
+    // One-click feet are independent. A linked baseline must not copy the
+    // scanned foot's arch fit or Rx onto the other foot.
+    design = {
+        ...design,
+        corrections: { ...design.corrections, linked: false },
+    };
 
     if (input.scans.length === 0) {
         return { ok: false, reason: "Import at least one foot scan", failedStep: "scan", warnings };

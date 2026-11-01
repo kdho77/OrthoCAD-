@@ -24,6 +24,7 @@ import {
 } from "@/lib/geometry/fit-arch-from-scan";
 import {
     type ArchMarkerFitResult,
+    acceptHeelCupFit,
     archMarkerFitToCorrectionPatch,
     DEFAULT_STOCK_ARCH_APEX_HEIGHT_MM,
     fitArchParamsFromApexMarker,
@@ -337,10 +338,12 @@ export function matchClinicalParamsFromRegisteredScan(args: {
         heelSeatX,
     );
     if (scanHeel != null && baseHeel != null) {
-        heel = heelCupWidthParamForTarget({
-            scanHeelWidthMm: scanHeel,
-            baseHeelWidthMm: baseHeel,
-        });
+        heel = acceptHeelCupFit(
+            heelCupWidthParamForTarget({
+                scanHeelWidthMm: scanHeel,
+                baseHeelWidthMm: baseHeel,
+            }),
+        );
     }
 
     const correction: Partial<SideCorrections> = {
@@ -386,10 +389,12 @@ function measureHeelCupFromScan(args: {
         heelSeatX,
     );
     if (scanHeel != null && baseHeel != null) {
-        return heelCupWidthParamForTarget({
-            scanHeelWidthMm: scanHeel,
-            baseHeelWidthMm: baseHeel,
-        });
+        return acceptHeelCupFit(
+            heelCupWidthParamForTarget({
+                scanHeelWidthMm: scanHeel,
+                baseHeelWidthMm: baseHeel,
+            }),
+        );
     }
     return null;
 }

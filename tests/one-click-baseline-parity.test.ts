@@ -16,6 +16,7 @@ import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { createDesignWithStockPlaceholder, defaultDesign, useDesignStore } from "@/stores/design-store";
 import type { DesignState, Side } from "@/types";
 import { DEFAULT_GLB_FIXTURE_PATH, loadProductionDefaultGlb } from "./helpers/load-production-default-glb";
+import { stlBoundingBox } from "./helpers/stl-foot-checks";
 
 const SAMPLE_TOP_FIXTURE_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
 const HASH_FIXTURE_PATH = resolve(process.cwd(), "tests/fixtures/baseline-default-export-hashes.json");
@@ -143,6 +144,7 @@ describe("one-click baseline STL parity (default design, no generation)", () => 
         const pinned = JSON.parse(readFileSync(HASH_FIXTURE_PATH, "utf8")) as HashFixture;
         const sizes = [8, 9, 10, 11] as const;
         const computed: HashFixture["sizesUsMen"] = {};
+        const leftSpan: Record<string, number> = {};
 
         for (const us of sizes) {
             installDesign(designAtUsMenSize(us));
@@ -152,7 +154,17 @@ describe("one-click baseline STL parity (default design, no generation)", () => 
                 left: sha256Stl(leftBuf),
                 right: sha256Stl(rightBuf),
             };
+            const box = stlBoundingBox(leftBuf);
+            leftSpan[String(us)] = box.maxX - box.minX;
         }
+
+        expect(new Set(sizes.map((us) => computed[String(us)]!.left)).size).toBe(4);
+        expect(new Set(sizes.map((us) => computed[String(us)]!.right)).size).toBe(4);
+        expect(leftSpan["8"]!).toBeLessThan(leftSpan["9"]! - 1);
+        expect(leftSpan["9"]!).toBeLessThan(leftSpan["10"]! - 1);
+        expect(leftSpan["10"]!).toBeLessThan(leftSpan["11"]! - 1);
+        // Uniform scale vs Men's 9: US 8 is 30/31 of the reference length.
+        expect(leftSpan["8"]! / leftSpan["9"]!).toBeCloseTo(30 / 31, 2);
 
         if (process.env.UPDATE_BASELINE === "1") {
             writeFileSync(

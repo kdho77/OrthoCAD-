@@ -161,8 +161,58 @@ function mergeScanGeometries(geos: THREE.BufferGeometry[]): THREE.BufferGeometry
     return out;
 }
 
+/**
+ * Shell top vertex at the stock medial arch (u ≈ 0.42).
+ * The Default.glb dome sits ~9 mm above the B1–B3 chord; a marker left on that
+ * chord is not the shell and fits a false archHeightMm of about −8.
+ */
+function shellMedialArchSeat(rawBase: BufferGeometry, medialHintY: number): THREE.Vector3 | null {
+    const pos = rawBase.getAttribute("position");
+    if (!pos || pos.count < 8) return null;
+    const ud = rawBase.userData as { topVertexCount?: number };
+    const topN =
+        typeof ud.topVertexCount === "number" && ud.topVertexCount > 0 ? ud.topVertexCount : pos.count;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < topN; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+    }
+    const length = Math.max(1e-6, maxX - minX);
+    const widthCenter = (minY + maxY) / 2;
+    const halfW = Math.max(1e-6, (maxY - minY) / 2);
+    const medialNeg = medialHintY < widthCenter;
+    const vTarget = medialNeg ? -0.55 : 0.55;
+    let bestI = -1;
+    let bestScore = Infinity;
+    for (let i = 0; i < topN; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        const u = (x - minX) / length;
+        if (Math.abs(u - 0.42) > 0.004) continue;
+        const v = (y - widthCenter) / halfW;
+        if (medialNeg ? v >= 0 : v <= 0) continue;
+        const score = Math.abs(u - 0.42) * 400 + Math.abs(v - vTarget);
+        if (score < bestScore) {
+            bestScore = score;
+            bestI = i;
+        }
+    }
+    if (bestI < 0) return null;
+    return new THREE.Vector3(pos.getX(bestI), pos.getY(bestI), pos.getZ(bestI));
+}
+
 /** Default.glb landmark-driven scan + markers (scan-registration-phase2 T9 pattern). */
-export function buildDefaultGlbRegisteredScan(sourceAssetId: string): {
+export function buildDefaultGlbRegisteredScan(
+    sourceAssetId: string,
+    rawBase?: BufferGeometry,
+): {
     geometry: BufferGeometry;
     display: ReturnType<typeof buildScanDisplayInfo>;
     markers: ScanMarkers;
@@ -182,10 +232,16 @@ export function buildDefaultGlbRegisteredScan(sourceAssetId: string): {
     ];
     const plantarOutward = new THREE.Vector3(0, 0, -1);
     const patches = markersScan.map((m) => makePlantarPatch(m, plantarOutward, 5));
-    const arch = markersScan[0]!
-        .clone()
-        .lerp(markersScan[2]!, 0.42)
-        .add(new THREE.Vector3(0, 8, 0));
+    const markerOffset = new THREE.Vector3(0.4, -0.2, 0.1);
+    const seated = rawBase ? shellMedialArchSeat(rawBase, basePts[0]!.y) : null;
+    // Seat ARCH on the stock top (plus the same marker offset Kabsch removes)
+    // so a scan of the default shell fits archHeightMm ≈ 0, not the chord-to-dome gap.
+    const arch = seated
+        ? seated.add(markerOffset)
+        : markersScan[0]!
+              .clone()
+              .lerp(markersScan[2]!, 0.42)
+              .add(new THREE.Vector3(0, 8, 0));
     for (let i = 0; i < 8; i++) {
         for (let j = 0; j < 4; j++) {
             const c = arch.clone().add(new THREE.Vector3(i * 3 - 10, j * 2 - 3, 0));
