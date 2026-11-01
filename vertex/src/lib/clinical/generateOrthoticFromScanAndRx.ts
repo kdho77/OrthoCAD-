@@ -344,7 +344,7 @@ export function generateOrthoticFromScanAndRx(input: GenerateOrthoticInput): Gen
                 layout,
                 archMarkerLocal: markers.ARCH,
                 heelMarkerLocal: markers.M3,
-                allowGapFit: filled.review.includes("ARCH"),
+                allowGapFit: true,
             });
         } catch (e) {
             const msg =
