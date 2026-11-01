@@ -30,15 +30,16 @@ if (!local && !previewOk) {
     process.exit(1);
 }
 
-const file = fileURLToPath(
-    new URL("../prisma/migrations/20261101120000_client_list_workflow/migration.sql", import.meta.url),
-);
-const result = spawnSync(
-    "npx",
-    ["prisma", "db", "execute", "--file", file, "--schema", "prisma/schema.prisma"],
-    {
-        stdio: "inherit",
-        env: process.env,
-    },
-);
-process.exit(result.status ?? 1);
+const files = [
+    "../prisma/migrations/20261101120000_client_list_workflow/migration.sql",
+    "../prisma/migrations/20261101143000_phi_minimal_client/migration.sql",
+];
+for (const relative of files) {
+    const file = fileURLToPath(new URL(relative, import.meta.url));
+    const result = spawnSync(
+        "npx",
+        ["prisma", "db", "execute", "--file", file, "--schema", "prisma/schema.prisma"],
+        { stdio: "inherit", env: process.env },
+    );
+    if (result.status) process.exit(result.status);
+}

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { storePhiEnabled } from "@/lib/phi-policy";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { type ClientInput, useClientStore } from "@/stores/client-store";
 import { createDesignWithStockPlaceholder } from "@/stores/design-store";
@@ -9,14 +10,17 @@ import { type DesignKind, defaultDesignName } from "../../../shared/client-files
 export async function createClientRecord(input: ClientInput): Promise<string> {
     if (isApiConfigured()) {
         try {
+            const phi = storePhiEnabled();
             const result = await trpc.client.create.mutate({
+                displayName: input.displayName,
                 firstName: input.firstName,
                 lastName: input.lastName,
-                dateOfBirth: input.dateOfBirth || null,
-                reference: input.reference || null,
-                email: input.email || null,
-                phone: input.phone || null,
-                notes: input.notes || null,
+                reference: input.reference || "",
+                dateOfBirth: phi ? input.dateOfBirth || null : null,
+                mrn: phi ? input.mrn || null : null,
+                email: phi ? input.email || null : null,
+                phone: phi ? input.phone || null : null,
+                notes: phi ? input.notes || null : null,
             });
             useClientStore.setState((s) => ({
                 clients: [result.client, ...s.clients.filter((client) => client.id !== result.client.id)],
@@ -34,7 +38,19 @@ export async function saveClientRecord(id: string, input: ClientInput): Promise<
     useClientStore.getState().updateClient(id, input);
     if (!isApiConfigured()) return;
     try {
-        const saved = await trpc.client.update.mutate({ id, ...input, email: input.email || null });
+        const phi = storePhiEnabled();
+        const saved = await trpc.client.update.mutate({
+            id,
+            displayName: input.displayName,
+            firstName: input.firstName,
+            lastName: input.lastName,
+            reference: input.reference || "",
+            dateOfBirth: phi ? input.dateOfBirth || null : null,
+            mrn: phi ? input.mrn || null : null,
+            email: phi ? input.email || null : null,
+            phone: phi ? input.phone || null : null,
+            notes: phi ? input.notes || null : null,
+        });
         useClientStore.setState((s) => ({
             clients: s.clients.map((client) => (client.id === id ? saved : client)),
         }));
@@ -113,6 +129,7 @@ export async function createDesignRecord(clientId: string, kind: DesignKind): Pr
 }
 
 export async function saveDesignNotes(id: string, notes: string): Promise<void> {
+    if (!storePhiEnabled()) return;
     useClientStore.getState().updateDesignNotes(id, notes);
     if (!isApiConfigured()) return;
     try {

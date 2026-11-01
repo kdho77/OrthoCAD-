@@ -5,39 +5,40 @@ import {
     hardDeleteClientFile,
     listClientFiles,
     previewDuplicates,
+    redactClientRow,
     restoreClientFile,
     updateClientFile,
 } from "../../../shared/client-files.js";
-import { actorFor, rethrowClientFile, supabaseClientFileRepo } from "../lib/client-file-repo.js";
-import { requireSupabaseAdmin } from "../lib/supabase-db.js";
+import { openClientFiles, rethrowClientFile, storePhiEnabled } from "../lib/client-file-access.js";
 import { protectedProcedure, router } from "../trpc.js";
 
 const clientInput = z.object({
-    firstName: z.string().min(1).max(100),
-    lastName: z.string().min(1).max(100),
+    displayName: z.string().max(120).nullable().optional(),
+    firstName: z.string().max(100).optional().default(""),
+    lastName: z.string().max(100).optional().default(""),
+    reference: z.string().min(1).max(60),
     dateOfBirth: z
         .string()
         .regex(/^\d{4}-\d{2}-\d{2}$/)
         .nullable()
         .optional(),
-    reference: z.string().max(60).nullable().optional(),
+    mrn: z.string().max(60).nullable().optional(),
     email: z.string().email().nullable().optional().or(z.literal("")),
     phone: z.string().max(40).nullable().optional(),
     notes: z.string().max(2000).nullable().optional(),
 });
 
 async function scope(ctx: { user: { id: string; email: string; role: string } }) {
-    const supabase = requireSupabaseAdmin();
-    const repo = supabaseClientFileRepo(supabase);
-    const actor = await actorFor(ctx.user, supabase);
-    return { repo, actor };
+    return openClientFiles(ctx.user);
 }
 
 export const clientRouter = router({
+    policy: protectedProcedure.query(() => ({ storePhi: storePhiEnabled() })),
+
     list: protectedProcedure.query(async ({ ctx }) => {
         try {
-            const { repo, actor } = await scope(ctx);
-            return await listClientFiles(repo, actor);
+            const { repo, actor, storePhi } = await scope(ctx);
+            return await listClientFiles(repo, actor, { storePhi });
         } catch (error) {
             rethrowClientFile(error);
         }
@@ -45,8 +46,8 @@ export const clientRouter = router({
 
     duplicates: protectedProcedure.input(clientInput).query(async ({ ctx, input }) => {
         try {
-            const { repo, actor } = await scope(ctx);
-            return await previewDuplicates(repo, actor, input);
+            const { repo, actor, storePhi } = await scope(ctx);
+            return await previewDuplicates(repo, actor, input, undefined, storePhi);
         } catch (error) {
             rethrowClientFile(error);
         }
@@ -54,8 +55,8 @@ export const clientRouter = router({
 
     create: protectedProcedure.input(clientInput).mutation(async ({ ctx, input }) => {
         try {
-            const { repo, actor } = await scope(ctx);
-            return await createClientFile(repo, actor, input);
+            const { repo, actor, storePhi } = await scope(ctx);
+            return await createClientFile(repo, actor, input, { storePhi });
         } catch (error) {
             rethrowClientFile(error);
         }
@@ -66,8 +67,8 @@ export const clientRouter = router({
         .mutation(async ({ ctx, input }) => {
             try {
                 const { id, ...patch } = input;
-                const { repo, actor } = await scope(ctx);
-                return await updateClientFile(repo, actor, id, patch);
+                const { repo, actor, storePhi } = await scope(ctx);
+                return await updateClientFile(repo, actor, id, patch, { storePhi });
             } catch (error) {
                 rethrowClientFile(error);
             }
@@ -77,8 +78,8 @@ export const clientRouter = router({
         .input(z.object({ id: z.string().uuid() }))
         .mutation(async ({ ctx, input }) => {
             try {
-                const { repo, actor } = await scope(ctx);
-                return await archiveClientFile(repo, actor, input.id);
+                const { repo, actor, storePhi } = await scope(ctx);
+                return redactClientRow(await archiveClientFile(repo, actor, input.id), storePhi);
             } catch (error) {
                 rethrowClientFile(error);
             }
@@ -88,8 +89,8 @@ export const clientRouter = router({
         .input(z.object({ id: z.string().uuid() }))
         .mutation(async ({ ctx, input }) => {
             try {
-                const { repo, actor } = await scope(ctx);
-                return await restoreClientFile(repo, actor, input.id);
+                const { repo, actor, storePhi } = await scope(ctx);
+                return redactClientRow(await restoreClientFile(repo, actor, input.id), storePhi);
             } catch (error) {
                 rethrowClientFile(error);
             }

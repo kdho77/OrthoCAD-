@@ -1,12 +1,12 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { TRPCError } from "@trpc/server";
 import {
     type Actor,
     ClientFileError,
     type ClientFileRepo,
     type ClientRow,
+    type DesignGeometryWrite,
     type DesignKind,
     type DesignRow,
     type DuplicateCopy,
@@ -30,10 +30,12 @@ function mapClient(row: Row): ClientRow {
         id: String(row.id),
         ownerId: String(row.ownerId),
         tenantId: asString(row.tenantId),
+        displayName: asString(row.displayName) ?? "",
         firstName: String(row.firstName ?? ""),
         lastName: String(row.lastName ?? ""),
         dateOfBirth: dob ? dob.slice(0, 10) : null,
         reference: asString(row.reference),
+        mrn: asString(row.mrn),
         email: asString(row.email),
         phone: asString(row.phone),
         notes: asString(row.notes),
@@ -144,9 +146,10 @@ export function supabaseClientFileRepo(supabase: SupabaseClient): ClientFileRepo
             if (error) throw new ClientFileError("BAD_REQUEST", error.message);
         },
         async patchDesign(id, patch) {
+            const { hasExport: _hasExport, id: _id, ...columnPatch } = patch;
             const { data, error } = await supabase
                 .from("designs")
-                .update(patch)
+                .update(columnPatch)
                 .eq("id", id)
                 .select(
                     "id, clientId, ownerId, name, kind, notes, createdAt, updatedAt, archivedAt, deletedAt",
@@ -188,6 +191,32 @@ export function supabaseClientFileRepo(supabase: SupabaseClient): ClientFileRepo
             await copyChildren(supabase, "corrections", sourceId, copy.id);
             await copyChildren(supabase, "elements", sourceId, copy.id);
             return mapDesign(insert, false);
+        },
+        async loadDesignDocument(id) {
+            const { data, error } = await supabase
+                .from("designs")
+                .select("*, corrections(*), elements(*)")
+                .eq("id", id)
+                .maybeSingle();
+            if (error) throw new ClientFileError("BAD_REQUEST", error.message);
+            return data ?? null;
+        },
+        async saveDesignGeometry(input: DesignGeometryWrite) {
+            const { data, error } = await supabase.rpc("vertex_save_design", {
+                p_user_id: input.userId,
+                p_design_id: input.designId,
+                p_name: input.name,
+                p_pattern: input.pattern,
+                p_method: input.method,
+                p_thickness_mm: input.thicknessMm,
+                p_unit: input.unit,
+                p_linked: input.linked,
+                p_corrections: input.corrections,
+                p_elements: input.elements,
+                p_ip: input.ip,
+            });
+            if (error) throw new ClientFileError("BAD_REQUEST", `Design save failed: ${error.message}`);
+            return (data as { ok: true } | null) ?? { ok: true as const };
         },
         async audit(entry) {
             try {
@@ -232,18 +261,4 @@ export async function actorFor(
         role: resolveDevRole(user.email, user.role || row?.role),
         tenantId: row?.tenantId ?? null,
     };
-}
-
-export function rethrowClientFile(error: unknown): never {
-    if (error instanceof ClientFileError) {
-        const code =
-            error.code === "NOT_FOUND"
-                ? "NOT_FOUND"
-                : error.code === "FORBIDDEN"
-                  ? "FORBIDDEN"
-                  : "BAD_REQUEST";
-        throw new TRPCError({ code, message: error.message });
-    }
-    const message = error instanceof Error ? error.message : "Client file request failed";
-    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message });
 }

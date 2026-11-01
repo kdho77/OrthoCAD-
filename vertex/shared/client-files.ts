@@ -32,10 +32,15 @@ export interface ClientRow {
     id: string;
     ownerId: string;
     tenantId: string | null;
+    /** Name or initials shown in the app. This is the non-PHI label. */
+    displayName: string;
     firstName: string;
     lastName: string;
-    dateOfBirth: string | null;
+    /** Internal client reference. Not a medical record number. */
     reference: string | null;
+    dateOfBirth: string | null;
+    /** Medical record number. Stored only when STORE_PHI is on. */
+    mrn: string | null;
     email: string | null;
     phone: string | null;
     notes: string | null;
@@ -59,13 +64,31 @@ export interface DesignRow {
 }
 
 export interface ClientInput {
+    displayName?: string | null;
     firstName: string;
     lastName: string;
-    dateOfBirth?: string | null;
+    /** Internal reference. Required on create. */
     reference?: string | null;
+    dateOfBirth?: string | null;
+    mrn?: string | null;
     email?: string | null;
     phone?: string | null;
     notes?: string | null;
+}
+
+/** Same argument object the Postgres function `vertex_save_design` already accepts. */
+export interface DesignGeometryWrite {
+    userId: string;
+    designId: string;
+    name: string;
+    pattern: string;
+    method: string;
+    thicknessMm: number;
+    unit: string;
+    linked: boolean;
+    corrections: { left: unknown; right: unknown };
+    elements: unknown;
+    ip: string | null;
 }
 
 export interface ClientListItem {
@@ -117,6 +140,10 @@ export interface ClientFileRepo {
     patchDesign(id: string, patch: Partial<DesignRow>): Promise<DesignRow>;
     countExports(designId: string): Promise<number>;
     duplicateDesign(sourceId: string, copy: DuplicateCopy): Promise<DesignRow>;
+    /** Full design row plus corrections and elements. Geometry columns are not rewritten here. */
+    loadDesignDocument(id: string): Promise<unknown | null>;
+    /** Calls `vertex_save_design`. Adapters must not reshape corrections or elements. */
+    saveDesignGeometry(input: DesignGeometryWrite): Promise<{ ok: true }>;
     audit(entry: { userId: string; action: string; targetId: string }): Promise<void>;
 }
 
@@ -190,6 +217,12 @@ export function createMemoryClientFileRepo(db: MemoryDb): ClientFileRepo {
             db.designs.push(row);
             return { ...row };
         },
+        async loadDesignDocument() {
+            return null;
+        },
+        async saveDesignGeometry() {
+            return { ok: true as const };
+        },
         async audit(entry) {
             db.audits.push(entry);
         },
@@ -212,13 +245,119 @@ export function canAccessOrg(actor: Actor, record: { ownerId: string; tenantId: 
     return false;
 }
 
-export function formatClientName(client: { firstName: string; lastName: string }): string {
+export function formatClientName(client: {
+    firstName: string;
+    lastName: string;
+    displayName?: string | null;
+}): string {
+    const named = client.displayName?.trim();
+    if (named) return named;
     const last = client.lastName.trim();
     const first = client.firstName.trim();
     if (last === "Unassigned" && !first) return "Unassigned";
     if (!first) return last;
     if (!last) return first;
     return `${last}, ${first}`;
+}
+
+/** STORE_PHI defaults off. Only 1 / true / yes / on turn it on. */
+export function parseStorePhiFlag(value: string | undefined | null): boolean {
+    const raw = (value ?? "").trim().toLowerCase();
+    return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+export interface WriteOptions {
+    now?: Date;
+    storePhi?: boolean;
+}
+
+export function writeOptions(value?: Date | WriteOptions): { now?: Date; storePhi: boolean } {
+    if (value instanceof Date) return { now: value, storePhi: false };
+    return { now: value?.now, storePhi: value?.storePhi === true };
+}
+
+export function resolveClientIdentity(input: ClientInput): {
+    displayName: string;
+    firstName: string;
+    lastName: string;
+    reference: string;
+} {
+    const explicit = input.displayName?.trim() ?? "";
+    const first = input.firstName.trim();
+    const last = input.lastName.trim();
+    const displayName = explicit || formatClientName({ firstName: first, lastName: last });
+    if (!displayName) throw new ClientFileError("BAD_REQUEST", "Display name or initials are required");
+    const reference = (input.reference ?? "").trim();
+    if (!reference) throw new ClientFileError("BAD_REQUEST", "Client reference is required");
+    if (explicit && !first && !last) {
+        const comma = explicit.indexOf(",");
+        if (comma >= 0) {
+            return {
+                displayName: explicit,
+                lastName: explicit.slice(0, comma).trim(),
+                firstName: explicit.slice(comma + 1).trim(),
+                reference,
+            };
+        }
+        const bits = explicit.split(/\s+/).filter(Boolean);
+        if (bits.length >= 2) {
+            return {
+                displayName: explicit,
+                firstName: bits[0] ?? "",
+                lastName: bits.slice(1).join(" "),
+                reference,
+            };
+        }
+        return { displayName: explicit, firstName: explicit, lastName: "", reference };
+    }
+    return { displayName, firstName: first || displayName, lastName: last, reference };
+}
+
+export function phiClientFields(
+    input: ClientInput,
+    storePhi: boolean,
+): Pick<ClientRow, "dateOfBirth" | "mrn" | "email" | "phone" | "notes"> {
+    if (!storePhi) return { dateOfBirth: null, mrn: null, email: null, phone: null, notes: null };
+    return {
+        dateOfBirth: blankToNull(input.dateOfBirth),
+        mrn: blankToNull(input.mrn),
+        email: blankToNull(input.email),
+        phone: blankToNull(input.phone),
+        notes: blankToNull(input.notes)?.slice(0, CLIENT_NOTES_MAX) ?? null,
+    };
+}
+
+export function redactClientRow<T extends ClientRow>(client: T, storePhi: boolean): T {
+    if (storePhi) return client;
+    return { ...client, dateOfBirth: null, mrn: null, email: null, phone: null, notes: null };
+}
+
+export function redactDesignRow<T extends DesignRow>(design: T, storePhi: boolean): T {
+    if (storePhi) return design;
+    return { ...design, notes: "" };
+}
+
+export function prepareClientRecord(
+    input: ClientInput,
+    actor: { id: string; tenantId: string | null },
+    options?: WriteOptions & { id?: string },
+): ClientRow {
+    const { now, storePhi } = writeOptions(options);
+    const identity = resolveClientIdentity(input);
+    const createdAt = stamp(now);
+    return {
+        id: options?.id ?? crypto.randomUUID(),
+        ownerId: actor.id,
+        tenantId: actor.tenantId,
+        displayName: identity.displayName,
+        firstName: identity.firstName,
+        lastName: identity.lastName,
+        reference: identity.reference,
+        ...phiClientFields(input, storePhi),
+        archivedAt: null,
+        createdAt,
+        updatedAt: createdAt,
+    };
 }
 
 export function defaultDesignName(kind: DesignKind, date = new Date()): string {
@@ -286,9 +425,27 @@ export function normalizePerson(value: string): string {
 
 export function findDuplicateClients(
     clients: ClientRow[],
-    input: { firstName: string; lastName: string; dateOfBirth?: string | null },
+    input: ClientInput,
     exceptId?: string,
+    storePhi = false,
 ): ClientRow[] {
+    if (!storePhi) {
+        let display = "";
+        let reference = "";
+        try {
+            const identity = resolveClientIdentity(input);
+            display = normalizePerson(identity.displayName);
+            reference = normalizePerson(identity.reference);
+        } catch {
+            return [];
+        }
+        return clients.filter((client) => {
+            if (client.archivedAt) return false;
+            if (exceptId && client.id === exceptId) return false;
+            const name = normalizePerson(client.displayName || formatClientName(client));
+            return name === display && normalizePerson(client.reference ?? "") === reference;
+        });
+    }
     const first = normalizePerson(input.firstName);
     const last = normalizePerson(input.lastName);
     const dob = (input.dateOfBirth ?? "").trim();
@@ -347,8 +504,12 @@ export function clientMatchesQuery(item: ClientListItem, rawQuery: string): bool
     const client = item.client;
     const name = `${client.lastName} ${client.firstName} ${formatClientName(client)}`.toLowerCase();
     const reference = (client.reference ?? "").toLowerCase();
+    const mrn = (client.mrn ?? "").toLowerCase();
     return (
-        name.includes(query) || reference.includes(query) || dobSearchText(client.dateOfBirth).includes(query)
+        name.includes(query) ||
+        reference.includes(query) ||
+        mrn.includes(query) ||
+        dobSearchText(client.dateOfBirth).includes(query)
     );
 }
 
@@ -488,11 +649,21 @@ async function requireDesign(
     return { design, client };
 }
 
-export async function listClientFiles(repo: ClientFileRepo, actor: Actor): Promise<ClientListItem[]> {
+export async function listClientFiles(
+    repo: ClientFileRepo,
+    actor: Actor,
+    options?: { storePhi?: boolean },
+): Promise<ClientListItem[]> {
+    const storePhi = options?.storePhi === true;
     const [clients, designs] = await Promise.all([repo.listClients(), repo.listDesigns()]);
     return clients
         .filter((client) => canAccessOrg(actor, client))
-        .map((client) => ({ client, designs: designs.filter((design) => design.clientId === client.id) }));
+        .map((client) => ({
+            client: redactClientRow(client, storePhi),
+            designs: designs
+                .filter((design) => design.clientId === client.id)
+                .map((design) => redactDesignRow(design, storePhi)),
+        }));
 }
 
 export async function previewDuplicates(
@@ -500,12 +671,14 @@ export async function previewDuplicates(
     actor: Actor,
     input: ClientInput,
     exceptId?: string,
+    storePhi = false,
 ): Promise<ClientRow[]> {
-    const items = await listClientFiles(repo, actor);
+    const items = await listClientFiles(repo, actor, { storePhi });
     return findDuplicateClients(
         items.map((item) => item.client),
         input,
         exceptId,
+        storePhi,
     );
 }
 
@@ -513,28 +686,11 @@ export async function createClientFile(
     repo: ClientFileRepo,
     actor: Actor,
     input: ClientInput,
-    now?: Date,
+    options?: Date | WriteOptions,
 ): Promise<{ client: ClientRow; duplicates: ClientRow[] }> {
-    const firstName = input.firstName.trim();
-    const lastName = input.lastName.trim();
-    if (!firstName || !lastName) throw new ClientFileError("BAD_REQUEST", "First and last name are required");
-    const duplicates = await previewDuplicates(repo, actor, { ...input, firstName, lastName });
-    const createdAt = stamp(now);
-    const client: ClientRow = {
-        id: crypto.randomUUID(),
-        ownerId: actor.id,
-        tenantId: actor.tenantId,
-        firstName,
-        lastName,
-        dateOfBirth: blankToNull(input.dateOfBirth),
-        reference: blankToNull(input.reference),
-        email: blankToNull(input.email),
-        phone: blankToNull(input.phone),
-        notes: blankToNull(input.notes)?.slice(0, CLIENT_NOTES_MAX) ?? null,
-        archivedAt: null,
-        createdAt,
-        updatedAt: createdAt,
-    };
+    const opts = writeOptions(options);
+    const client = prepareClientRecord(input, actor, opts);
+    const duplicates = await previewDuplicates(repo, actor, client, undefined, opts.storePhi);
     await repo.insertClient(client);
     await repo.audit({ userId: actor.id, action: "client_created", targetId: client.id });
     return { client, duplicates };
@@ -545,28 +701,44 @@ export async function updateClientFile(
     actor: Actor,
     id: string,
     patch: Partial<ClientInput>,
-    now?: Date,
+    options?: Date | WriteOptions,
 ): Promise<ClientRow> {
-    await requireClient(repo, actor, id);
+    const current = await requireClient(repo, actor, id);
+    const { now, storePhi } = writeOptions(options);
     const next: Partial<ClientRow> = { updatedAt: stamp(now) };
-    if (patch.firstName !== undefined) {
-        const firstName = patch.firstName.trim();
-        if (!firstName) throw new ClientFileError("BAD_REQUEST", "First name is required");
-        next.firstName = firstName;
+    if (patch.displayName !== undefined || patch.firstName !== undefined || patch.lastName !== undefined) {
+        const identity = resolveClientIdentity({
+            displayName: patch.displayName ?? current.displayName,
+            firstName: patch.firstName ?? current.firstName,
+            lastName: patch.lastName ?? current.lastName,
+            reference: patch.reference ?? current.reference ?? "",
+        });
+        next.displayName = identity.displayName;
+        next.firstName = identity.firstName;
+        next.lastName = identity.lastName;
     }
-    if (patch.lastName !== undefined) {
-        const lastName = patch.lastName.trim();
-        if (!lastName) throw new ClientFileError("BAD_REQUEST", "Last name is required");
-        next.lastName = lastName;
+    if (patch.reference !== undefined) {
+        const reference = (patch.reference ?? "").trim();
+        if (!reference) throw new ClientFileError("BAD_REQUEST", "Client reference is required");
+        next.reference = reference;
     }
-    if (patch.dateOfBirth !== undefined) next.dateOfBirth = blankToNull(patch.dateOfBirth);
-    if (patch.reference !== undefined) next.reference = blankToNull(patch.reference);
-    if (patch.email !== undefined) next.email = blankToNull(patch.email);
-    if (patch.phone !== undefined) next.phone = blankToNull(patch.phone);
-    if (patch.notes !== undefined) next.notes = blankToNull(patch.notes)?.slice(0, CLIENT_NOTES_MAX) ?? null;
+    if (!storePhi) {
+        next.dateOfBirth = null;
+        next.mrn = null;
+        next.email = null;
+        next.phone = null;
+        next.notes = null;
+    } else {
+        if (patch.dateOfBirth !== undefined) next.dateOfBirth = blankToNull(patch.dateOfBirth);
+        if (patch.mrn !== undefined) next.mrn = blankToNull(patch.mrn);
+        if (patch.email !== undefined) next.email = blankToNull(patch.email);
+        if (patch.phone !== undefined) next.phone = blankToNull(patch.phone);
+        if (patch.notes !== undefined)
+            next.notes = blankToNull(patch.notes)?.slice(0, CLIENT_NOTES_MAX) ?? null;
+    }
     const saved = await repo.patchClient(id, next);
     await repo.audit({ userId: actor.id, action: "client_updated", targetId: id });
-    return saved;
+    return redactClientRow(saved, storePhi);
 }
 
 export async function archiveClientFile(
@@ -616,17 +788,26 @@ export async function listDesignFiles(
     repo: ClientFileRepo,
     actor: Actor,
     clientId: string,
-    options?: { includeDeleted?: boolean },
+    options?: { includeDeleted?: boolean; storePhi?: boolean },
 ): Promise<DesignRow[]> {
+    const storePhi = options?.storePhi === true;
     await requireClient(repo, actor, clientId);
     const designs = (await repo.listDesigns()).filter((design) => design.clientId === clientId);
-    if (options?.includeDeleted && isOrgAdmin(actor)) return designs;
-    return designs.filter((design) => !design.deletedAt);
+    const visible =
+        options?.includeDeleted && isOrgAdmin(actor)
+            ? designs
+            : designs.filter((design) => !design.deletedAt);
+    return visible.map((design) => redactDesignRow(design, storePhi));
 }
 
-export async function getDesignFile(repo: ClientFileRepo, actor: Actor, id: string): Promise<DesignRow> {
+export async function getDesignFile(
+    repo: ClientFileRepo,
+    actor: Actor,
+    id: string,
+    storePhi = false,
+): Promise<DesignRow> {
     const { design } = await requireDesign(repo, actor, id);
-    return design;
+    return redactDesignRow(design, storePhi);
 }
 
 export async function createDesignFile(
@@ -661,8 +842,9 @@ export async function updateDesignMeta(
     actor: Actor,
     id: string,
     patch: { name?: string; notes?: string },
-    now?: Date,
+    options?: Date | WriteOptions,
 ): Promise<DesignRow> {
+    const { now, storePhi } = writeOptions(options);
     const { design } = await requireDesign(repo, actor, id);
     if (design.deletedAt) throw new ClientFileError("BAD_REQUEST", "Design is deleted");
     const next: Partial<DesignRow> = { updatedAt: stamp(now) };
@@ -671,28 +853,31 @@ export async function updateDesignMeta(
         if (!name) throw new ClientFileError("BAD_REQUEST", "Name is required");
         next.name = name;
     }
-    if (patch.notes !== undefined) next.notes = patch.notes.slice(0, DESIGN_NOTES_MAX);
+    if (!storePhi) next.notes = "";
+    else if (patch.notes !== undefined) next.notes = patch.notes.slice(0, DESIGN_NOTES_MAX);
     const saved = await repo.patchDesign(id, next);
     await repo.audit({ userId: actor.id, action: "design_updated", targetId: id });
-    return saved;
+    return redactDesignRow(saved, storePhi);
 }
 
 export async function duplicateDesignFile(
     repo: ClientFileRepo,
     actor: Actor,
     id: string,
-    now?: Date,
+    options?: Date | WriteOptions,
 ): Promise<DesignRow> {
     const { design } = await requireDesign(repo, actor, id);
     if (design.deletedAt) throw new ClientFileError("BAD_REQUEST", "Design is deleted");
-    const copy = await repo.duplicateDesign(id, {
+    const { now, storePhi } = writeOptions(options);
+    let copy = await repo.duplicateDesign(id, {
         id: crypto.randomUUID(),
         name: `Copy of ${design.name}`,
         ownerId: actor.id,
         now: stamp(now),
     });
+    if (!storePhi && copy.notes) copy = await repo.patchDesign(copy.id, { notes: "" });
     await repo.audit({ userId: actor.id, action: "design_duplicated", targetId: copy.id });
-    return copy;
+    return redactDesignRow(copy, storePhi);
 }
 
 export async function archiveDesignFile(
@@ -814,10 +999,12 @@ export function planOrphanAttachment(args: {
         id: bucket.clientId,
         ownerId: bucket.ownerId,
         tenantId: bucket.tenantId,
+        displayName: "Unassigned",
         firstName: "",
         lastName: "Unassigned",
         dateOfBirth: null,
         reference: null,
+        mrn: null,
         email: null,
         phone: null,
         notes: "Designs that had no client file were attached here. Their created and modified dates were not changed.",

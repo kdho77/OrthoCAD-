@@ -1,5 +1,5 @@
 // Vertex Orthopedic — Insole CAD
-// Prisma schema (PostgreSQL / Supabase). Phase 0: complete data model for
+// Prisma schema (PostgreSQL). Phase 0: complete data model for
 // users, licensing, tokens, clients, designs, scans, corrections, elements,
 // productions and audit logs.
 
@@ -297,9 +297,11 @@ model TokenTransaction {
 model Client {
     id          String    @id @default(uuid()) @db.Uuid
     reference   String?
+    displayName String?
     firstName   String
     lastName    String
     dateOfBirth DateTime? @db.Date
+    mrn         String?
     email       String?
     phone       String?
     notes       String?

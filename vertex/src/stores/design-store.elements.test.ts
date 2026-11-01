@@ -109,7 +109,9 @@ describe("elements require explicit library placement", () => {
     test("starting fresh clears the browser draft and active save target, not saved projects", async () => {
         useDesignStore.getState().addElement("dancers_pad", "left");
         const saved = JSON.parse(JSON.stringify(useDesignStore.getState().design));
-        const client = useClientStore.getState().addClient({ firstName: "Test", lastName: "Client" });
+        const client = useClientStore
+            .getState()
+            .addClient({ firstName: "Test", lastName: "Client", reference: "T-1" });
         const project = useClientStore.getState().addDesign(client, "Saved design", saved);
         await useDesignStore.persist.rehydrate();
         expect(useDesignStore.getState().pendingSessionDesign).not.toBeNull();

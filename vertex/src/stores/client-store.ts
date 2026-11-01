@@ -1,7 +1,13 @@
 import { create } from "zustand";
+import { storePhiEnabled } from "@/lib/phi-policy";
 import { useAuthStore } from "@/stores/auth-store";
 import type { DesignState } from "@/types";
-import type { DesignKind } from "../../shared/client-files";
+import {
+    type ClientInput,
+    type ClientRow,
+    type DesignKind,
+    prepareClientRecord,
+} from "../../shared/client-files";
 
 // Client and design records stay in memory for the session. Names, dates of
 // birth, contact details, and notes are not written to localStorage.
@@ -12,21 +18,8 @@ try {
     // Storage can be blocked; the in-memory store still works.
 }
 
-export interface ClientRecord {
-    id: string;
-    ownerId: string;
-    tenantId: string | null;
-    firstName: string;
-    lastName: string;
-    dateOfBirth: string | null;
-    reference: string | null;
-    email: string | null;
-    phone: string | null;
-    notes: string | null;
-    archivedAt: string | null;
-    createdAt: string;
-    updatedAt: string;
-}
+export type ClientRecord = ClientRow;
+export type { ClientInput };
 
 export interface DesignRecord {
     id: string;
@@ -41,16 +34,6 @@ export interface DesignRecord {
     deletedAt: string | null;
     hasExport: boolean;
     state: DesignState;
-}
-
-export interface ClientInput {
-    firstName: string;
-    lastName: string;
-    dateOfBirth?: string | null;
-    reference?: string | null;
-    email?: string | null;
-    phone?: string | null;
-    notes?: string | null;
 }
 
 interface ClientStore {
@@ -85,9 +68,17 @@ function actorIds(): { ownerId: string; tenantId: string | null } {
     return { ownerId: user?.id ?? "local", tenantId: null };
 }
 
-function blank(value: string | null | undefined): string | null {
-    const trimmed = value?.trim() ?? "";
-    return trimmed ? trimmed : null;
+function withoutPhi<
+    T extends {
+        dateOfBirth: string | null;
+        mrn: string | null;
+        email: string | null;
+        phone: string | null;
+        notes: string | null;
+    },
+>(row: T): T {
+    if (storePhiEnabled()) return row;
+    return { ...row, dateOfBirth: null, mrn: null, email: null, phone: null, notes: null };
 }
 
 export const useClientStore = create<ClientStore>()((set, get) => ({
@@ -97,47 +88,36 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
     activeDesignId: null,
 
     addClient: (input) => {
-        const id = crypto.randomUUID();
-        const now = new Date().toISOString();
-        const { ownerId, tenantId } = actorIds();
-        const record: ClientRecord = {
-            id,
-            ownerId,
-            tenantId,
-            firstName: input.firstName.trim(),
-            lastName: input.lastName.trim(),
-            dateOfBirth: blank(input.dateOfBirth),
-            reference: blank(input.reference),
-            email: blank(input.email),
-            phone: blank(input.phone),
-            notes: blank(input.notes),
-            archivedAt: null,
-            createdAt: now,
-            updatedAt: now,
-        };
-        set((s) => ({ clients: [record, ...s.clients], activeClientId: id }));
-        return id;
+        const record = prepareClientRecord(input, actorIds(), { storePhi: storePhiEnabled() });
+        set((s) => ({ clients: [record, ...s.clients], activeClientId: record.id }));
+        return record.id;
     },
     updateClient: (id, patch) =>
         set((s) => ({
-            clients: s.clients.map((client) =>
-                client.id === id
-                    ? {
-                          ...client,
-                          ...patch,
-                          firstName: patch.firstName?.trim() ?? client.firstName,
-                          lastName: patch.lastName?.trim() ?? client.lastName,
-                          dateOfBirth:
-                              patch.dateOfBirth !== undefined ? blank(patch.dateOfBirth) : client.dateOfBirth,
-                          reference:
-                              patch.reference !== undefined ? blank(patch.reference) : client.reference,
-                          email: patch.email !== undefined ? blank(patch.email) : client.email,
-                          phone: patch.phone !== undefined ? blank(patch.phone) : client.phone,
-                          notes: patch.notes !== undefined ? blank(patch.notes) : client.notes,
-                          updatedAt: new Date().toISOString(),
-                      }
-                    : client,
-            ),
+            clients: s.clients.map((client) => {
+                if (client.id !== id) return client;
+                const prepared = prepareClientRecord(
+                    {
+                        displayName: patch.displayName ?? client.displayName,
+                        firstName: patch.firstName ?? client.firstName,
+                        lastName: patch.lastName ?? client.lastName,
+                        reference: patch.reference ?? client.reference ?? "",
+                        dateOfBirth: patch.dateOfBirth !== undefined ? patch.dateOfBirth : client.dateOfBirth,
+                        mrn: patch.mrn !== undefined ? patch.mrn : client.mrn,
+                        email: patch.email !== undefined ? patch.email : client.email,
+                        phone: patch.phone !== undefined ? patch.phone : client.phone,
+                        notes: patch.notes !== undefined ? patch.notes : client.notes,
+                    },
+                    { id: client.ownerId, tenantId: client.tenantId },
+                    { storePhi: storePhiEnabled(), id: client.id },
+                );
+                return {
+                    ...prepared,
+                    archivedAt: client.archivedAt,
+                    createdAt: client.createdAt,
+                    updatedAt: new Date().toISOString(),
+                };
+            }),
         })),
     archiveClient: (id) =>
         set((s) => ({
@@ -198,14 +178,16 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
                 design.id === id ? { ...design, name, updatedAt: new Date().toISOString() } : design,
             ),
         })),
-    updateDesignNotes: (id, notes) =>
+    updateDesignNotes: (id, notes) => {
+        if (!storePhiEnabled()) return;
         set((s) => ({
             designs: s.designs.map((design) =>
                 design.id === id
                     ? { ...design, notes: notes.slice(0, 500), updatedAt: new Date().toISOString() }
                     : design,
             ),
-        })),
+        }));
+    },
     duplicateDesign: (id) => {
         const source = get().designs.find((design) => design.id === id);
         if (!source || source.deletedAt) return null;
@@ -219,6 +201,7 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
             updatedAt: now,
             archivedAt: null,
             deletedAt: null,
+            notes: storePhiEnabled() ? source.notes : "",
             hasExport: false,
             state: JSON.parse(JSON.stringify(source.state)) as DesignState,
         };
@@ -264,5 +247,9 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
             designs: s.designs.map((design) => (design.id === id ? { ...design, hasExport: true } : design)),
         })),
     setActiveDesign: (activeDesignId) => set({ activeDesignId }),
-    replaceDirectory: (clients, designs) => set({ clients, designs }),
+    replaceDirectory: (clients, designs) =>
+        set({
+            clients: clients.map(withoutPhi),
+            designs: designs.map((design) => (storePhiEnabled() ? design : { ...design, notes: "" })),
+        }),
 }));

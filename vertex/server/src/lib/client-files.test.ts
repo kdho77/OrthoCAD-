@@ -22,6 +22,7 @@ import {
     listClientFiles,
     type MemoryDb,
     parseClientListQuery,
+    parseStorePhiFlag,
     planOrphanAttachment,
     queryClientList,
     restoreClientFile,
@@ -46,10 +47,12 @@ function emptyDb(): MemoryDb {
 
 function client(partial: Partial<ClientRow> & Pick<ClientRow, "id" | "ownerId" | "tenantId">): ClientRow {
     return {
+        displayName: "",
         firstName: "Ada",
         lastName: "Lovelace",
         dateOfBirth: "1990-01-02",
         reference: null,
+        mrn: null,
         email: null,
         phone: null,
         notes: null,
@@ -84,16 +87,27 @@ describe("client file API", () => {
         const db = emptyDb();
         const repo = createMemoryClientFileRepo(db);
         const me = actor("clinician", ORG);
-        const { client: created, duplicates } = await createClientFile(repo, me, {
-            firstName: "Jane",
-            lastName: "Doe",
-            dateOfBirth: "1980-05-04",
-            reference: "MRN-1",
-        });
+        const { client: created, duplicates } = await createClientFile(
+            repo,
+            me,
+            {
+                firstName: "Jane",
+                lastName: "Doe",
+                dateOfBirth: "1980-05-04",
+                reference: "MRN-1",
+            },
+            { storePhi: true },
+        );
         expect(duplicates).toHaveLength(0);
         expect(created.tenantId).toBe(ORG);
         expect(created.ownerId).toBe(me.id);
-        const updated = await updateClientFile(repo, me, created.id, { reference: "MRN-2" });
+        const updated = await updateClientFile(
+            repo,
+            me,
+            created.id,
+            { reference: "MRN-2" },
+            { storePhi: true },
+        );
         expect(updated.reference).toBe("MRN-2");
         const archived = await archiveClientFile(repo, me, created.id);
         expect(archived.archivedAt).toBeTruthy();
@@ -111,12 +125,23 @@ describe("client file API", () => {
         const db = emptyDb();
         const repo = createMemoryClientFileRepo(db);
         const me = actor("clinician", ORG);
-        await createClientFile(repo, me, { firstName: "Jane", lastName: "Doe", dateOfBirth: "1980-05-04" });
-        const again = await createClientFile(repo, me, {
-            firstName: " jane ",
-            lastName: "DOE",
-            dateOfBirth: "1980-05-04",
-        });
+        await createClientFile(
+            repo,
+            me,
+            { firstName: "Jane", lastName: "Doe", dateOfBirth: "1980-05-04", reference: "A-1" },
+            { storePhi: true },
+        );
+        const again = await createClientFile(
+            repo,
+            me,
+            {
+                firstName: " jane ",
+                lastName: "DOE",
+                dateOfBirth: "1980-05-04",
+                reference: "A-2",
+            },
+            { storePhi: true },
+        );
         expect(again.duplicates).toHaveLength(1);
         expect(db.clients).toHaveLength(2);
         expect(
@@ -132,6 +157,7 @@ describe("client file API", () => {
         const { client: created } = await createClientFile(repo, clinician, {
             firstName: "Jane",
             lastName: "Doe",
+            reference: "REF-1",
         });
         await expect(hardDeleteClientFile(repo, clinician, created.id)).rejects.toMatchObject({
             code: "FORBIDDEN",
@@ -154,7 +180,11 @@ describe("client file API", () => {
         const db = emptyDb();
         const repo = createMemoryClientFileRepo(db);
         const me = actor("admin", ORG);
-        const { client: created } = await createClientFile(repo, me, { firstName: "Jane", lastName: "Doe" });
+        const { client: created } = await createClientFile(repo, me, {
+            firstName: "Jane",
+            lastName: "Doe",
+            reference: "REF-1",
+        });
         const design = await createDesignFile(repo, me, {
             clientId: created.id,
             name: "Insole · L/R · Oct 31",
@@ -195,7 +225,11 @@ describe("client file API", () => {
         const db = emptyDb();
         const repo = createMemoryClientFileRepo(db);
         const me = actor("clinician", ORG);
-        const { client: created } = await createClientFile(repo, me, { firstName: "Jane", lastName: "Doe" });
+        const { client: created } = await createClientFile(repo, me, {
+            firstName: "Jane",
+            lastName: "Doe",
+            reference: "REF-1",
+        });
         const design = await createDesignFile(repo, me, {
             clientId: created.id,
             name: "Insole",
@@ -208,16 +242,60 @@ describe("client file API", () => {
         draft = editNotes(draft, `${"x".repeat(600)}`);
         expect(draft.draft).toHaveLength(500);
         draft = commitNotes(draft);
-        const saved = await updateDesignMeta(repo, me, design.id, { notes: draft.saved });
+        const saved = await updateDesignMeta(repo, me, design.id, { notes: draft.saved }, { storePhi: true });
         expect(saved.notes).toHaveLength(500);
         expect(db.audits.some((entry) => entry.action === "design_updated")).toBe(true);
+    });
+
+    test("STORE_PHI defaults off and drops DOB, MRN, contact, and clinical notes", async () => {
+        expect(parseStorePhiFlag(undefined)).toBe(false);
+        expect(parseStorePhiFlag("true")).toBe(true);
+        const db = emptyDb();
+        const repo = createMemoryClientFileRepo(db);
+        const me = actor("clinician", ORG);
+        const { client: created } = await createClientFile(repo, me, {
+            displayName: "JD",
+            firstName: "",
+            lastName: "",
+            reference: "C-1",
+            dateOfBirth: "1980-05-04",
+            mrn: "MRN-9",
+            email: "a@example.com",
+            phone: "555",
+            notes: "heel pain",
+        });
+        expect(created.displayName).toBe("JD");
+        expect(created.reference).toBe("C-1");
+        expect(created.dateOfBirth).toBeNull();
+        expect(created.mrn).toBeNull();
+        expect(created.email).toBeNull();
+        expect(created.phone).toBeNull();
+        expect(created.notes).toBeNull();
+        const listed = await listClientFiles(repo, me);
+        expect(listed[0]?.client.dateOfBirth).toBeNull();
+        const design = await createDesignFile(repo, me, {
+            clientId: created.id,
+            name: "Insole",
+            kind: "insole",
+        });
+        const saved = await updateDesignMeta(repo, me, design.id, { notes: "heel pain" });
+        expect(saved.notes).toBe("");
+        await expect(
+            createClientFile(repo, me, { displayName: "JD", firstName: "", lastName: "", reference: "" }),
+        ).rejects.toMatchObject({
+            code: "BAD_REQUEST",
+        });
     });
 
     test("duplicate design is named Copy of and does not block", async () => {
         const db = emptyDb();
         const repo = createMemoryClientFileRepo(db);
         const me = actor("clinician", ORG);
-        const { client: created } = await createClientFile(repo, me, { firstName: "Jane", lastName: "Doe" });
+        const { client: created } = await createClientFile(repo, me, {
+            firstName: "Jane",
+            lastName: "Doe",
+            reference: "REF-1",
+        });
         const design = await createDesignFile(repo, me, {
             clientId: created.id,
             name: "Insole · L/R · Oct 31",

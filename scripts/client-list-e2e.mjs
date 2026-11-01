@@ -38,8 +38,8 @@ async function pass(width, height, tag) {
     await shot("02-client-list");
 
     await page.getByRole("button", { name: "New client" }).click();
-    await page.getByLabel("First name").fill("Jane");
-    await page.getByLabel("Last name").fill("Doe");
+    await page.getByLabel("Display name or initials").fill("Doe, Jane");
+    await page.getByLabel("Client reference").fill("C-1001");
     await page.getByTestId("create-and-design").click();
     await page.getByTestId("type-insole").click();
     await page.waitForURL(/\/clients\/[0-9a-f-]{36}\/designs\/[0-9a-f-]{36}/i);
@@ -62,16 +62,20 @@ async function pass(width, height, tag) {
     await shot("04-breadcrumb-back");
 
     const notes = page.getByTestId("design-notes");
-    await notes.click();
-    await notes.fill("Heel pain note");
-    await notes.blur();
-    await page.getByText("Saved", { exact: true }).waitFor();
-    await shot("05-notes-saved");
-    await notes.fill("temporary");
-    await notes.press("Escape");
-    if ((await notes.inputValue()) !== "Heel pain note") {
-        throw new Error(`escape did not revert notes: ${await notes.inputValue()}`);
+    if ((await notes.count()) > 0) {
+        await notes.click();
+        await notes.fill("Heel pain note");
+        await notes.blur();
+        await page.getByText("Saved", { exact: true }).waitFor();
+        await notes.fill("temporary");
+        await notes.press("Escape");
+        if ((await notes.inputValue()) !== "Heel pain note") {
+            throw new Error(`escape did not revert notes: ${await notes.inputValue()}`);
+        }
+    } else {
+        await page.getByText("C-1001").waitFor();
     }
+    await shot("05-notes-saved");
 
     await page.getByRole("button", { name: "Design actions" }).click();
     await page.getByRole("menuitem", { name: "Delete" }).click();
