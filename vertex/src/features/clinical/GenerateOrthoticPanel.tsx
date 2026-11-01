@@ -106,9 +106,9 @@ export function GenerateOrthoticPanel() {
                 <p className="text-[11px] font-semibold text-foreground">Generate Orthotic</p>
             </div>
             <p className="text-[10px] text-muted-foreground leading-relaxed">
-                Shoe size scales the default SAMPLE_Top. The scan sets arch height only (Low −3.5 mm, Standard
-                unchanged, High +3 mm). Flexible foot moves the apex 4 mm forward. Explicit Rx wins. Review
-                warnings before manufacturing.
+                Shoe size scales the default SAMPLE_Top. The scan sets the Arch height slider (Low −3.5 mm,
+                Standard 0, High +3 mm). Flexible sets the Apex shift slider to +4 mm. An explicit Rx value
+                replaces that slider. It is not added. Review warnings before manufacturing.
             </p>
             <label className="block text-[10px] font-medium text-muted-foreground" htmlFor="shoe-size-system">
                 Shoe size (required)
@@ -149,7 +149,7 @@ export function GenerateOrthoticPanel() {
                         checked={flexible[side]}
                         onChange={(e) => setFlexible((prev) => ({ ...prev, [side]: e.target.checked }))}
                     />
-                    Flexible foot ({side}) — apex 4 mm forward
+                    Flexible foot ({side}) — set apex shift to +4 mm
                 </label>
             ))}
             <label className="block text-[10px] font-medium text-muted-foreground" htmlFor="rx-text">
@@ -193,10 +193,10 @@ export function GenerateOrthoticPanel() {
                     <ul className="list-inside list-disc text-muted-foreground">
                         {lastResult.perFoot.map((f) => (
                             <li key={f.side}>
-                                {f.side}: {f.sizeLabel} · arch {f.archHeightMeasuredMm.toFixed(1)} mm{" "}
+                                {f.side}: {f.sizeLabel} · measured {f.archHeightMeasuredMm.toFixed(1)} mm{" "}
                                 {f.archBand}
-                                {f.archReviewBelow18 ? " (review)" : ""} · correction {f.archHeightMm} mm
-                                {f.flexible ? " · flexible apex +4 mm" : ""}
+                                {f.archReviewBelow18 ? " (review)" : ""} · Arch height {f.archHeightMm} mm ·
+                                Apex shift {f.apexMoveMm} mm
                             </li>
                         ))}
                     </ul>

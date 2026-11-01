@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
-import { type ArchBand, classifyArchHeightMm, combineFlexibleApex } from "@/lib/clinical/arch-class";
+import { type ArchBand, classifyArchHeightMm, FLEXIBLE_APEX_ANTERIOR_MM } from "@/lib/clinical/arch-class";
 import { measureScanArchHeightMm } from "@/lib/clinical/measure-scan-arch";
 import { interpretOneClickRx } from "@/lib/clinical/one-click-rx";
 import {
@@ -20,7 +20,7 @@ import {
     ukToUsMen,
     usMenToUk,
 } from "@/lib/geometry/shoe-size";
-import { SINK_PROFILES } from "@/lib/geometry/sink";
+import { SINK_DEFAULT_DEPTH_MM } from "@/lib/geometry/sink";
 import type { ScanMarkers } from "@/stores/scan-store";
 import type {
     DesignState,
@@ -52,7 +52,7 @@ export type GenerateOrthoticInput = {
     scans: FootScanBundle[];
     /** Required. Generation fails when this is missing. */
     shoeSize: RequiredShoeSize | null;
-    /** Per foot. Checked → add +4 mm to the apex control (anterior). */
+    /** Per foot. Checked → set the apex slider to +4 mm toward the toe. */
     flexibleBySide?: Partial<Record<Side, boolean>>;
     prescriptionText?: string;
     pathologyDesigner?: PathologyDesigner;
@@ -170,6 +170,7 @@ function writeSide(design: DesignState, side: Side, patch: SideCorrections): Des
     };
 }
 
+/** Same object the Elements library writes in `addElement`, apart from the id. */
 function placeElement(
     kind: ElementKind,
     side: Side,
@@ -182,23 +183,16 @@ function placeElement(
         id: `one-click-${side}-${kind}-${n}`,
         kind,
         side,
-        position: pose.position,
-        rotationDeg: pose.rotationDeg,
-        scale: pose.scale,
-        scaleLocked: true,
-        heightMm: pose.heightMm,
-        placementMode: pose.placementMode,
+        ...pose,
     };
 }
 
+/** Same object `addSink` writes. Depth is the library default unless the Rx names one. */
 function placeSink(kind: SinkKind, depthMm: number | undefined, n: number): PlacedSink {
-    const profile = SINK_PROFILES[kind];
     return {
         id: `one-click-${kind}-${n}`,
         kind,
-        depthMm: depthMm ?? profile.defaultDepthMm,
-        u: profile.u,
-        v: profile.v,
+        depthMm: depthMm ?? SINK_DEFAULT_DEPTH_MM,
     };
 }
 
@@ -291,19 +285,21 @@ export function generateOrthoticFromScanAndRx(input: GenerateOrthoticInput): Gen
         const rxArchOverride = Object.hasOwn(explicit, "archHeightMm");
         const rxApexOverride = Object.hasOwn(explicit, "apexMoveMm");
         const flexible = input.flexibleBySide?.[scan.side] === true;
+        // Slider values, not offsets. An explicit Rx number replaces the
+        // scan class or the Flexible +4. Nothing is added on top.
         const archHeightMm = rxArchOverride ? (explicit.archHeightMm as number) : classified.archHeightMm;
-        const combinedApex = combineFlexibleApex(
-            rxApexOverride ? (explicit.apexMoveMm as number) : 0,
-            flexible,
-        );
-        const apexMoveMm = combinedApex.apexMoveMm;
-        if (combinedApex.clamped) {
-            const note = `${scan.side}: flexible apex plus the Rx apex clamped to ${apexMoveMm} mm`;
-            warnings.push(note);
-            reviewItems.push(note);
-        }
+        const apexMoveMm = rxApexOverride
+            ? (explicit.apexMoveMm as number)
+            : flexible
+              ? FLEXIBLE_APEX_ANTERIOR_MM
+              : 0;
         if (rxArchOverride) {
             warnings.push(`${scan.side}: Rx arch height overrides the ${classified.band} scan class`);
+        }
+        if (rxApexOverride && flexible) {
+            warnings.push(
+                `${scan.side}: Rx apex replaces the flexible apex. The slider is ${apexMoveMm} mm, not a sum.`,
+            );
         }
 
         const sidePatch: SideCorrections = {
@@ -323,6 +319,7 @@ export function generateOrthoticFromScanAndRx(input: GenerateOrthoticInput): Gen
         }
         for (const sink of rx.sinks) {
             if (sink.side !== scan.side) continue;
+            if (sinks[sink.side].some((placed) => placed.kind === sink.kind)) continue;
             sinks[sink.side].push(placeSink(sink.kind, sink.depthMm, seq++));
         }
 
@@ -341,13 +338,16 @@ export function generateOrthoticFromScanAndRx(input: GenerateOrthoticInput): Gen
 
     if (rx.elements.length > 0 || rx.sinks.length > 0) {
         const touched = new Set(present);
+        const kept = (side: Side): PlacedSink[] | undefined => {
+            const list = present.includes(side) ? sinks[side] : (design.sinks?.[side] ?? []);
+            return list.length > 0 ? list : undefined;
+        };
+        const left = kept("left");
+        const right = kept("right");
         design = {
             ...design,
             elements: [...design.elements.filter((e) => !touched.has(e.side)), ...rxElements],
-            sinks: {
-                left: present.includes("left") ? sinks.left : (design.sinks?.left ?? []),
-                right: present.includes("right") ? sinks.right : (design.sinks?.right ?? []),
-            },
+            sinks: left || right ? { ...(left ? { left } : {}), ...(right ? { right } : {}) } : undefined,
         };
     }
 
