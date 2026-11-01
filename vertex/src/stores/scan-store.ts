@@ -26,6 +26,7 @@ import { ScanDorsalError } from "@/lib/geometry/scan-dorsal";
 import type { SuggestedScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
 import { applyScanSlicePlanes, type ScanSlicePlane } from "@/lib/geometry/scan-plane-slice";
 import { runScanRegistration, ScanRegistrationWireError } from "@/lib/geometry/scan-registration-wire";
+import { isAfoProduct } from "@/stores/afo-store";
 import type { Side } from "@/types";
 
 export interface ImportedScan {
@@ -680,17 +681,19 @@ export const useScanStore = create<ScanStore>((set, get) => ({
             ...(get().markersByScanId[scanId] ?? { ...EMPTY_MARKERS }),
             [id]: point.clone(),
         };
-        const complete = placementComplete(markers);
-        // Keep the scan provisional until all four markers are set, then register once.
+        // Insole: keep the scan provisional until all four markers are set, then register once.
         // After M1–M3, open ARCH placement if nothing else is active so the insole
         // stays hidden and the user is prompted for the fourth marker.
+        // AFO orient uses heel / medial mal / lateral mal only — finish after M3.
+        const afo = isAfoProduct();
+        const complete = afo ? Boolean(markers.M1 && markers.M2 && markers.M3) : placementComplete(markers);
         set((s) => {
             let placementMode = s.placementMode;
             if (complete) {
                 placementMode = null;
             } else if (placementMode?.scanId === scanId) {
                 placementMode = { scanId, next: nextMarker(markers) };
-            } else if (!placementMode && awaitingArchMarker(markers)) {
+            } else if (!afo && !placementMode && awaitingArchMarker(markers)) {
                 placementMode = { scanId, next: "ARCH" };
             }
             return {

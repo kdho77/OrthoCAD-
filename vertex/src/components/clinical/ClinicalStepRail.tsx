@@ -6,6 +6,7 @@ import {
     clinicalRailBannerReason,
     evaluateNextGate,
     evaluateStepComplete,
+    selectScanGateRevision,
 } from "@/lib/clinical/clinical-step-gates";
 import { cn } from "@/lib/utils";
 import { useAppNavStore } from "@/stores/app-nav-store";
@@ -16,6 +17,7 @@ import {
     useClinicalWorkflowStore,
 } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
+import { useScanStore } from "@/stores/scan-store";
 
 export function ClinicalStepRail() {
     const productType = useClinicalWorkflowStore((s) => s.productType);
@@ -28,6 +30,8 @@ export function ClinicalStepRail() {
     void footSideExplicitlyChosen;
     const setStep = useClinicalWorkflowStore((s) => s.setStep);
     const method = useDesignStore((s) => s.design.method);
+    const scanGateRevision = useScanStore(selectScanGateRevision);
+    const stockGate = useDesignStore((s) => `${s.stockBaseLoading ? 1 : 0}:${s.stockBaseError ?? ""}`);
 
     const stepState = (id: ClinicalStepId) => {
         if (step === id) return "current";
@@ -48,7 +52,11 @@ export function ClinicalStepRail() {
     void nextBlockReason;
 
     return (
-        <div className="border-b border-border bg-panel px-3 py-2">
+        <div
+            className="border-b border-border bg-panel px-3 py-2"
+            data-scan-gate={scanGateRevision}
+            data-stock-gate={stockGate}
+        >
             <nav aria-label="Clinical workflow" className="flex flex-wrap items-center gap-1">
                 {steps.map((s, i) => {
                     const state = stepState(s.id);
@@ -107,6 +115,8 @@ export function ClinicalStepFooter() {
     const goNext = useClinicalWorkflowStore((s) => s.goNext);
     const goBack = useClinicalWorkflowStore((s) => s.goBack);
     const productType = useClinicalWorkflowStore((s) => s.productType);
+    const scanGateRevision = useScanStore(selectScanGateRevision);
+    const stockGate = useDesignStore((s) => `${s.stockBaseLoading ? 1 : 0}:${s.stockBaseError ?? ""}`);
     const steps = stepsForProduct(productType);
     const atFirst = step === steps[0]?.id;
     const atLast = step === steps[steps.length - 1]?.id;
@@ -118,7 +128,11 @@ export function ClinicalStepFooter() {
     }
 
     return (
-        <div className="sticky bottom-0 z-10 border-t border-border bg-panel px-3 py-2">
+        <div
+            className="sticky bottom-0 z-10 border-t border-border bg-panel px-3 py-2"
+            data-scan-gate={scanGateRevision}
+            data-stock-gate={stockGate}
+        >
             <div className="flex gap-2">
                 <button
                     type="button"

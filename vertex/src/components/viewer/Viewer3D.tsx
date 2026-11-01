@@ -19,6 +19,7 @@ import {
 import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
+import { activeMarkerPlacementLayer } from "@/features/afo/afo-scan-markers";
 import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
@@ -153,12 +154,15 @@ export function Viewer3D() {
     const hasScans = useScanStore((s) => s.scans.length > 0);
     const showScans = viewer.showScans ?? true;
     const isAfo = design.productType === "afo";
+    const placingScanMarkers = useScanStore((s) => s.placementMode != null);
+    const markerLayer = activeMarkerPlacementLayer(isAfo, placingScanMarkers);
     const showLeftInsole = !isAfo && viewer.showLeft && !hideInsoleForMarkers;
     const showRightInsole = !isAfo && viewer.showRight && !hideInsoleForMarkers;
     const loftPhaseBySide = usePreviewLoftStatusStore((s) => s.phaseBySide);
     const loftError = usePreviewLoftStatusStore((s) => s.error);
     const loftOverlay = viewerLoftOverlayState({
-        showBase,
+        // AFO does not show the insole, so a stuck top-mesh load must not cover the scan.
+        showBase: isAfo ? false : showBase,
         showLeft: viewer.showLeft,
         showRight: viewer.showRight,
         stockBaseLoading,
@@ -266,7 +270,7 @@ export function Viewer3D() {
                         <ScanMeshes transparent={viewer.transparent} heightmap={viewer.heightmap} />
                     ) : null}
                     {isAfo ? <AfoMeshes /> : null}
-                    {isAfo ? <AfoMarkerPlacement /> : <ScanMarkerPlacement />}
+                    {markerLayer === "afo-design" ? <AfoMarkerPlacement /> : <ScanMarkerPlacement />}
                     {isAfo ? null : (
                         <>
                             <ScanPlaneSliceTool />
@@ -278,9 +282,7 @@ export function Viewer3D() {
                             ) : null}
                             {!printPreview ? <MeshEditTools /> : null}
                             {!printPreview && !loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
-                            {!printPreview && !loftOverlay.blockViewport ? (
-                                <BottomPatternEditTools />
-                            ) : null}
+                            {!printPreview && !loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
                         </>
                     )}
                     <PerformanceMonitorOverlay />
@@ -377,12 +379,12 @@ export function Viewer3D() {
                         Editing bottom pattern · {bottomPatternEdit.side}
                     </span>
                 ) : null}
-                {hideInsoleForMarkers && !placingArchOnly ? (
+                {!isAfo && hideInsoleForMarkers && !placingArchOnly ? (
                     <span className="w-fit rounded bg-amber-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         Placing M1–M3 · insole hidden until all 4 markers
                     </span>
                 ) : null}
-                {placingArchOnly ? (
+                {!isAfo && placingArchOnly ? (
                     <span className="w-fit rounded bg-fuchsia-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         Place ARCH apex on medial arch · insole stays hidden until ARCH
                     </span>
@@ -632,8 +634,7 @@ export function Viewer3D() {
             <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="h-3.5 w-3.5" />
                 {interacting ? "Preview mesh · " : ""}
-                Procedural geometry kernel · ⌘P Rx
-                · ⌘E export · T transparent · Esc deselect
+                Procedural geometry kernel · ⌘P Rx · ⌘E export · T transparent · Esc deselect
                 {selectedScanId ? " · arrows nudge scan" : ""}
             </div>
         </div>

@@ -138,6 +138,29 @@ export function scanGateBlocksLaterSteps(): StepGateResult {
 }
 
 /**
+ * Revision string for components that render {@link evaluateScanStepGate}.
+ * The gate reads the stores directly; this selector is what makes the UI update.
+ */
+export function selectScanGateRevision(s: {
+    scans: { id: string }[];
+    markersByScanId: Record<string, { M1?: unknown; M2?: unknown; M3?: unknown; ARCH?: unknown } | undefined>;
+    registrationByScanId: Record<
+        string,
+        { matrixElements: number[] | null; incomplete: boolean; error: unknown } | undefined
+    >;
+}): string {
+    return s.scans
+        .map((scan) => {
+            const m = s.markersByScanId[scan.id];
+            const reg = s.registrationByScanId[scan.id];
+            const placed = `${m?.M1 ? 1 : 0}${m?.M2 ? 1 : 0}${m?.M3 ? 1 : 0}${m?.ARCH ? 1 : 0}`;
+            const aligned = reg?.matrixElements && !reg.incomplete && !reg.error ? 1 : 0;
+            return `${scan.id}:${placed}:${aligned}`;
+        })
+        .join("|");
+}
+
+/**
  * Banner copy for the clinical rail. Always uses the live gate so choosing
  * Left / Right / Pair (or mill-selecting a side) clears the stale "select a
  * side" message even if a jump-ahead sticky reason is still stored.

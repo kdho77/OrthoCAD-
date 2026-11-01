@@ -38,7 +38,7 @@ export function orientScanThreePoint(
     return {
         mesh: out,
         matrixElements: kabsch.matrix.elements.slice(),
-        residualRmsMm: kabsch.rmsMm,
+        residualRmsMm: kabsch.residualRmsMm,
     };
 }
 

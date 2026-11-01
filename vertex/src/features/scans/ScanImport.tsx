@@ -15,6 +15,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
+import { AFO_MARKER_LABELS, markerPlaceControl } from "@/features/afo/afo-scan-markers";
 import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
 import { ArchFitError } from "@/lib/geometry/fit-arch-from-scan";
 import { importScanFile } from "@/lib/geometry/import";
@@ -70,6 +71,8 @@ function ScanMarkersSection({
     placed,
     placing,
     baseReady,
+    isAfo,
+    blockedTitle,
     nextLabel,
     onConfirm,
     onDismiss,
@@ -82,6 +85,8 @@ function ScanMarkersSection({
     placed: number;
     placing: boolean;
     baseReady: boolean;
+    isAfo: boolean;
+    blockedTitle: string | null;
     nextLabel: string | null;
     onConfirm: (id: MarkerId) => void;
     onDismiss: () => void;
@@ -131,14 +136,17 @@ function ScanMarkersSection({
                         ? "All markers placed — expand to edit"
                         : sug
                           ? "Confirm or place markers to register"
-                          : "Expand to place M1 → M2 → M3 (+ optional ARCH)"}
+                          : isAfo
+                            ? "Expand to place heel, medial mal, lateral mal"
+                            : "Expand to place M1 → M2 → M3 (+ optional ARCH)"}
                 </p>
             ) : (
                 <div className="space-y-1">
                     {placing ? (
                         <p className="text-[10px] leading-snug text-cyan-200/90">
-                            Depth shading is on while placing. Amber = M1–M3. Magenta = optional ARCH apex.
-                            Light cyan = suggested spots. Insole B1–B3 targets are hidden until you finish.
+                            {isAfo
+                                ? "Click the scan: heel, then medial malleolus, then lateral malleolus."
+                                : "Depth shading is on while placing. Amber = M1–M3. Magenta = optional ARCH apex. Light cyan = suggested spots. Insole B1–B3 targets are hidden until you finish."}
                         </p>
                     ) : null}
                     {sug ? (
@@ -184,10 +192,12 @@ function ScanMarkersSection({
                             disabled={!baseReady}
                             title={
                                 baseReady
-                                    ? placing && nextLabel?.startsWith("ARCH")
-                                        ? "Skip optional ARCH apex"
-                                        : "Place M1→M2→M3, then optional ARCH apex"
-                                    : "Base geometry not loaded"
+                                    ? isAfo
+                                        ? "Place heel, medial malleolus, and lateral malleolus"
+                                        : placing && nextLabel?.startsWith("ARCH")
+                                          ? "Skip optional ARCH apex"
+                                          : "Place M1→M2→M3, then optional ARCH apex"
+                                    : (blockedTitle ?? "Base geometry not loaded")
                             }
                             onClick={onTogglePlacement}
                             className={cn(
@@ -205,7 +215,7 @@ function ScanMarkersSection({
                                 ? nextLabel?.startsWith("ARCH")
                                     ? "Skip ARCH"
                                     : "Done placing"
-                                : placed >= 3 && !markers?.ARCH
+                                : !isAfo && placed >= 3 && !markers?.ARCH
                                   ? "Place ARCH (optional)"
                                   : "Place markers"}
                         </button>
@@ -286,6 +296,9 @@ export function ScanImport() {
     const [sizeAcceptedByScanId, setSizeAcceptedByScanId] = useState<Record<string, boolean>>({});
     const [matchBusyId, setMatchBusyId] = useState<string | null>(null);
     const [importSideChoice, setImportSideChoice] = useState<ImportSideChoice | null>(null);
+    const workflowProduct = useClinicalWorkflowStore((s) => s.productType);
+    const designProduct = useDesignStore((s) => s.design.productType ?? "insole");
+    const isAfo = workflowProduct === "afo" || designProduct === "afo";
     const acknowledgeExplicitFootSide = useClinicalWorkflowStore((s) => s.acknowledgeExplicitFootSide);
     const acknowledgePairAssignment = useClinicalWorkflowStore((s) => s.acknowledgePairAssignment);
     const setLinked = useDesignStore((s) => s.setLinked);
@@ -578,8 +591,13 @@ export function ScanImport() {
                 const markers = markersByScanId[s.id];
                 const placed = [markers?.M1, markers?.M2, markers?.M3].filter(Boolean).length;
                 const placing = placementMode?.scanId === s.id;
-                const baseReady = Boolean(landmarkSourceAssetId);
+                const placeControl = markerPlaceControl({
+                    isAfo,
+                    hasLandmarkBase: Boolean(landmarkSourceAssetId),
+                });
+                const baseReady = placeControl.enabled;
                 const sug = s.suggestedLandmarks;
+                const markerLabels = isAfo ? AFO_MARKER_LABELS : MARKER_LABELS;
 
                 return (
                     <div
@@ -684,7 +702,9 @@ export function ScanImport() {
                             placed={placed}
                             placing={placing}
                             baseReady={baseReady}
-                            nextLabel={placing ? MARKER_LABELS[placementMode!.next] : null}
+                            isAfo={isAfo}
+                            blockedTitle={placeControl.blockedTitle}
+                            nextLabel={placing && placementMode ? markerLabels[placementMode.next] : null}
                             onConfirm={(id) => {
                                 if (!sug || id === "ARCH") return;
                                 setMarker(s.id, id, sug[id]);
@@ -696,7 +716,9 @@ export function ScanImport() {
 
                         {/* Readout */}
                         <div className="space-y-0.5 rounded border border-border/60 bg-muted/30 px-1.5 py-1 text-[11px] text-muted-foreground">
-                            {reg?.incomplete || placed < 3 ? (
+                            {isAfo && placed >= 3 ? (
+                                <p className="text-emerald-400">3-point markers placed — apply orient</p>
+                            ) : reg?.incomplete || placed < 3 ? (
                                 <p>Registration: waiting for 3 markers ({placed}/3)</p>
                             ) : reg?.error ? (
                                 <p className="text-destructive">
