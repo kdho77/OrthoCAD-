@@ -5,7 +5,6 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { ExportOutputTarget } from "@/features/exports/export-target";
 import { exportTargetLabel } from "@/features/exports/export-target";
-import { TOKEN_COST } from "@/features/licensing/license";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
@@ -23,6 +22,10 @@ export interface PrintFooterProps {
     showTargetPulse?: boolean;
     busy?: boolean;
     focusPrimary?: boolean;
+    /** Hide the one-line machine summary (Export footer). */
+    hideSummary?: boolean;
+    /** Hide the output hint under the primary button. */
+    hideOutputHint?: boolean;
 }
 
 export function PrintFooter({
@@ -37,6 +40,8 @@ export function PrintFooter({
     showTargetPulse,
     busy,
     focusPrimary,
+    hideSummary,
+    hideOutputHint,
 }: PrintFooterProps) {
     const exportTarget = useDesignStore((s) => s.exportTarget);
     const setExportTarget = useDesignStore((s) => s.setExportTarget);
@@ -101,7 +106,9 @@ export function PrintFooter({
                 {cncLocked ? (
                     <p className="text-[10px] text-muted-foreground">{cncLockReason}</p>
                 ) : null}
-                <p className="truncate text-[11px] text-muted-foreground">{machineSummary}</p>
+                {hideSummary ? null : (
+                    <p className="truncate text-[11px] text-muted-foreground">{machineSummary}</p>
+                )}
                 <div className="flex flex-col gap-1.5">
                     <Button
                         ref={primaryRef}
@@ -123,9 +130,9 @@ export function PrintFooter({
                         </Button>
                     ) : null}
                 </div>
-                {exportTarget ? (
+                {exportTarget && !hideOutputHint ? (
                     <p className="text-[10px] text-muted-foreground">
-                        Output: {exportTargetLabel(exportTarget)} · G-code {TOKEN_COST.gcode} token
+                        Output: {exportTargetLabel(exportTarget)}
                     </p>
                 ) : null}
             </div>

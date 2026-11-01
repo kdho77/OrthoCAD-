@@ -91,7 +91,7 @@ export function ResultCard({
             data-testid="export-result-card"
         >
             {outOfDate ? (
-                <p className="text-[11px] font-medium text-amber-400">Out of date · Regenerate</p>
+                <p className="text-[11px] font-medium text-amber-400">Out of date · Re-export</p>
             ) : null}
             <div className="flex justify-between gap-2">
                 <span className="text-muted-foreground">File</span>

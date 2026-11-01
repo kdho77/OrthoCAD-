@@ -1,32 +1,28 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { ChevronRight, Cpu, Download, Lock, Play, Printer } from "lucide-react";
+import { ChevronRight, Cpu, Play, Printer } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
 import { CncMillingPanel } from "@/features/exports/CncMillingPanel";
-import { buildExportFilename } from "@/features/exports/export-filename";
-import {
-    exportCncGcode,
-    exportGcode,
-    exportPrintGcode,
-    type GrindingStyleInput,
-} from "@/features/exports/export-service";
-import { designRevisionFingerprint, useExportSessionStore } from "@/features/exports/export-session-store";
-import { stlExportUserMessage } from "@/features/exports/export-user-message";
+import { type GrindingStyleInput } from "@/features/exports/export-service";
+import { useExportSessionStore } from "@/features/exports/export-session-store";
 import { MachineSegment, PrintFooter, useMachineSummaryLine } from "@/features/exports/PrintFooter";
 import { PrintProgressCard } from "@/features/exports/PrintProgressCard";
 import {
     ProceduralWallPreviewControls,
     type ProceduralWallStyleChoice,
 } from "@/features/exports/procedural-wall-preview-controls";
-import { canExport, TOKEN_COST } from "@/features/licensing/license";
+import { canExport } from "@/features/licensing/license";
 import { getKernel } from "@/lib/geometry/geometry-kernel";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { type CamOverrides, type CamResult, generateGcode, presetsForMethod } from "@/lib/kiri";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
+import { useExportFileTypeStore } from "@/features/exports/export-file-type-store";
+import { usePrintExportSettingsStore } from "@/features/exports/print-export-settings-store";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { SIDE_LABELS, type Side } from "@/types";
@@ -58,7 +54,6 @@ export function PrintingPanel({
     const { design, exportSide, exportTarget, setExportTarget, setViewer } = useDesignStore();
     const machine = useMillingProfileStore((s) => s.machine);
     const setMachine = useMillingProfileStore((s) => s.setMachine);
-    const profile = useMillingProfileStore((s) => s.profile);
     const cncSelected = machine === "cnc";
     const printRecipe = migratePrintRecipe(design.printRecipe);
     const recipeInfillPct = Math.round(infillFractionFromRecipe(printRecipe) * 100);
@@ -69,10 +64,10 @@ export function PrintingPanel({
     const [busy, setBusy] = useState(false);
     const [pulseTarget, setPulseTarget] = useState(false);
     const [advancedOpen, setAdvancedOpen] = useState(false);
-    const [genError, setGenError] = useState<string | null>(null);
+    const setStep = useClinicalWorkflowStore((s) => s.setStep);
+    const preselectGcode = useExportFileTypeStore((s) => s.preselectGcode);
 
     const session = useExportSessionStore();
-    const revision = designRevisionFingerprint(design);
     const machineSummary = useMachineSummaryLine();
     const loftPhases = usePreviewLoftStatusStore((s) => s.phaseBySide);
 
@@ -90,8 +85,13 @@ export function PrintingPanel({
     const gcodeCheck = canExport(user, license, "gcode");
 
     useEffect(() => {
-        useExportSessionStore.getState().setDesignRevision(revision);
-    }, [revision]);
+        if (!preset) return;
+        usePrintExportSettingsStore.getState().setPrintExportSettings({
+            presetId: preset.id,
+            grindingStyle,
+            overrides,
+        });
+    }, [preset?.id, grindingStyle, overrides.layerHeightMm, overrides.infillDensity, overrides.toolDiameterMm]);
 
     useEffect(() => {
         if (cncSelected) setExportTarget("pair");
@@ -121,68 +121,20 @@ export function PrintingPanel({
         try {
             setResult(generateGcode(buildGeom(), preset, overrides));
         } catch (e) {
-            setGenError(e instanceof Error ? e.message : "Toolpath generation failed");
+            /* preview only */
         } finally {
             setBusy(false);
         }
     };
 
-    const recordGcode = (res: { ok: boolean; filename?: string; blob?: Blob; stats?: CamResult["stats"] }) => {
-        if (!res.ok || !res.blob) return;
-        session.recordSuccess({
-            id: `gcode-${Date.now()}`,
-            kind: "gcode",
-            target: exportTarget ?? exportSide,
-            filename: res.filename ?? buildExportFilename("gcode", exportTarget ?? exportSide),
-            sizeBytes: res.blob.size,
-            blob: res.blob,
-            tokensCharged: TOKEN_COST.gcode,
-            designRevision: revision,
-            createdAt: Date.now(),
-            estimatedTimeSec: res.stats?.estimatedTimeSec,
-            materialLabel: res.stats
-                ? `${(res.stats.estimatedMaterialMm3 / 1000).toFixed(1)} cm³`
-                : undefined,
-        });
-    };
-
-    const runGenerate = async (download: boolean) => {
-        if (!preset) return;
+    const continueToExport = () => {
         if (!exportTarget && !cncSelected) {
             setPulseTarget(true);
             return;
         }
-        setBusy(true);
-        setGenError(null);
-        session.setProgress({ phase: "exporting", message: "Exporting solid…" });
-        try {
-            if (cncSelected) {
-                session.setProgress({ phase: "slicing", message: "Generating mill G-code…" });
-                const res = await exportCncGcode(["left", "right"], profile);
-                if (res.ok) recordGcode(res);
-                else setGenError(res.reason ?? "CNC export failed");
-            } else if (isBeltPreset) {
-                session.setProgress({ phase: "slicing", message: "Slicing G-code…" });
-                const target = exportTarget ?? exportSide;
-                const res = await exportPrintGcode(target, preset, grindingStyle, overrides, { download });
-                if (res.ok) recordGcode(res);
-                else setGenError(stlExportUserMessage(res.reason ?? "G-code generation failed"));
-            } else {
-                const side = exportTarget === "pair" ? exportSide : (exportTarget ?? exportSide);
-                const res = await exportGcode(side, preset, overrides, { download });
-                if (res.ok) recordGcode(res);
-                else setGenError(res.reason ?? "Export failed");
-            }
-        } catch (e) {
-            setGenError(stlExportUserMessage(e instanceof Error ? e.message : undefined));
-            session.setProgress({ phase: "error", message: "Generation failed" });
-        } finally {
-            setBusy(false);
-        }
+        preselectGcode();
+        setStep("export");
     };
-
-    const gcodeRecord = session.byKind.gcode;
-    const hasCurrentFile = Boolean(gcodeRecord && !session.isOutOfDate("gcode"));
 
     const showPrimaryOnly = clinicalMode && primaryOnly;
     const showProceduralWallControls = !cncSelected && (showWallPreview ?? !showPrimaryOnly);
@@ -197,15 +149,7 @@ export function PrintingPanel({
     const recommendedHint =
         machine === "cnc"
             ? "CNC export reads the finished design; walls stay straight on the Idaho table."
-            : "Build the procedural solid here, then generate G-code (server gyroid may differ from preview).";
-
-    const primaryLabel = cncSelected
-        ? hasCurrentFile
-            ? "Download G-code"
-            : `Generate mill G-code · ${TOKEN_COST.gcode} token`
-        : hasCurrentFile
-          ? "Download G-code"
-          : `Generate G-code · ${TOKEN_COST.gcode} token`;
+            : "Build the procedural solid here, then continue to Export for downloadable files.";
 
     if (clinicalMode) {
         return (
@@ -300,43 +244,15 @@ export function PrintingPanel({
 
                 <PrintProgressCard />
 
-                {gcodeRecord ? (
-                    <div data-testid="print-gcode-result">
-                        <ResultSummary
-                            record={gcodeRecord}
-                            outOfDate={session.isOutOfDate("gcode")}
-                            onDownload={() => {
-                                const url = URL.createObjectURL(gcodeRecord.blob);
-                                const a = document.createElement("a");
-                                a.href = url;
-                                a.download = gcodeRecord.filename;
-                                a.click();
-                                URL.revokeObjectURL(url);
-                            }}
-                        />
-                    </div>
-                ) : null}
-
-                {genError ? (
-                    <p className="text-xs text-destructive">
-                        {genError}
-                        <span className="block text-[11px] text-muted-foreground">No tokens charged</span>
-                    </p>
-                ) : null}
-
                 {!gcodeCheck.ok ? <p className="text-xs text-amber-400">{gcodeCheck.reason}</p> : null}
 
                 <PrintFooter
                     machineSummary={machineSummary}
                     cncLocked={cncSelected}
                     cncLockReason="Left + Right in one file"
-                    primaryLabel={primaryLabel}
-                    secondaryLabel={hasCurrentFile ? "Regenerate" : undefined}
-                    onPrimary={() => runGenerate(true)}
-                    onSecondary={hasCurrentFile ? () => runGenerate(true) : undefined}
-                    busy={busy}
+                    primaryLabel="Continue to Export"
+                    onPrimary={continueToExport}
                     showTargetPulse={pulseTarget}
-                    primaryDisabled={!gcodeCheck.ok}
                 />
             </div>
         );
@@ -396,49 +312,18 @@ export function PrintingPanel({
                 </div>
             ) : null}
             {!clinicalMode ? (
-                <Button className="w-full" disabled={busy || !preset || !gcodeCheck.ok} onClick={() => runGenerate(true)}>
-                    {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
-                    Export G-code · {TOKEN_COST.gcode} token
+                <Button
+                    variant="secondary"
+                    className="w-full"
+                    disabled={busy || !preset}
+                    onClick={() => {
+                        preselectGcode();
+                        setStep("export");
+                    }}
+                >
+                    Continue to Export
                 </Button>
             ) : null}
-        </div>
-    );
-}
-
-function ResultSummary({
-    record,
-    outOfDate,
-    onDownload,
-}: {
-    record: NonNullable<ReturnType<typeof useExportSessionStore.getState>["byKind"]["gcode"]>;
-    outOfDate: boolean;
-    onDownload: () => void;
-}) {
-    if (!record) return null;
-    return (
-        <div className="space-y-2 rounded-md border border-border bg-background/50 p-2 text-xs">
-            {outOfDate ? (
-                <p className="text-[11px] font-medium text-amber-400">Out of date · Regenerate</p>
-            ) : null}
-            <Row label="File" value={record.filename} />
-            <Row label="Size" value={`${(record.sizeBytes / 1024).toFixed(1)} KB`} />
-            {record.estimatedTimeSec != null ? (
-                <Row label="Est. time" value={fmtTime(record.estimatedTimeSec)} />
-            ) : null}
-            {record.materialLabel ? <Row label="Material" value={record.materialLabel} /> : null}
-            <Row label="Tokens" value={`−${record.tokensCharged}`} />
-            <Button size="sm" className="h-8 w-full" onClick={onDownload}>
-                <Download className="h-3.5 w-3.5" /> Download
-            </Button>
-        </div>
-    );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-    return (
-        <div className="flex justify-between gap-2">
-            <span className="text-muted-foreground">{label}</span>
-            <span className="truncate text-right capitalize tabular-nums">{value}</span>
         </div>
     );
 }

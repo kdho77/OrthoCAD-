@@ -1,17 +1,22 @@
 import { ChevronRight } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CaseOrderSummary } from "@/components/clinical/CaseOrderSummary";
-import { ExportTile } from "@/features/exports/ExportTile";
-import { buildExportFilename } from "@/features/exports/export-filename";
-import { exportDesign } from "@/features/exports/export-service";
-import { designRevisionFingerprint, useExportSessionStore } from "@/features/exports/export-session-store";
-import { stlExportUserMessage } from "@/features/exports/export-user-message";
-import { PrintFooter, useMachineSummaryLine } from "@/features/exports/PrintFooter";
-import { PrintProgressCard } from "@/features/exports/PrintProgressCard";
-import { TextSummary } from "@/features/exports/TextSummary";
 import { showSuperAdminLink } from "@/features/admin/admin-nav";
-import { canExport, TOKEN_COST } from "@/features/licensing/license";
-import { useSolidValidation } from "@/hooks/useSolidValidation";
+import { ExportFileTypePicker } from "@/features/exports/ExportFileTypePicker";
+import {
+    exportPrimaryButtonLabel,
+    useExportFileTypeStore,
+} from "@/features/exports/export-file-type-store";
+import { designRevisionFingerprint, useExportSessionStore } from "@/features/exports/export-session-store";
+import { exportDesign } from "@/features/exports/export-service";
+import { PrintFooter, useMachineSummaryLine } from "@/features/exports/PrintFooter";
+import { usePrintExportSettingsStore } from "@/features/exports/print-export-settings-store";
+import { PrintProgressCard } from "@/features/exports/PrintProgressCard";
+import { ResultCard } from "@/features/exports/ResultCard";
+import { runExportForChoice } from "@/features/exports/run-export-action";
+import { TextSummary } from "@/features/exports/TextSummary";
+import { canExport } from "@/features/licensing/license";
+import { presetsForMethod } from "@/lib/kiri";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
@@ -26,110 +31,89 @@ export function ExportPanel() {
     const { user, license } = useAuthStore();
     const { design, exportTarget } = useDesignStore();
     const machine = useMillingProfileStore((s) => s.machine);
+    const millingProfile = useMillingProfileStore((s) => s.profile);
     const setStep = useClinicalWorkflowStore((s) => s.setStep);
+    const fileType = useExportFileTypeStore((s) => s.exportFileType);
+    const hydrateFileType = useExportFileTypeStore((s) => s.hydrateForCurrentUser);
+    const printSettings = usePrintExportSettingsStore();
     const [devOpen, setDevOpen] = useState(false);
-    const [focusPrint, setFocusPrint] = useState(false);
-    const [busy, setBusy] = useState<"stl" | "3mf" | "glb" | null>(null);
-    const [errors, setErrors] = useState<Partial<Record<"stl" | "3mf" | "glb", string>>>({});
+    const [busy, setBusy] = useState(false);
+    const [pulseType, setPulseType] = useState(false);
+    const [pulseTarget, setPulseTarget] = useState(false);
+    const [error, setError] = useState<{ message: string; noTokens?: boolean } | null>(null);
 
-    const validationSide = exportTarget === "right" ? "right" : "left";
-    const validation = useSolidValidation(design, validationSide);
-    const stlCheck = canExport(user, license, "stl");
-    const threeMfCheck = canExport(user, license, "3mf");
-    const glbCheck = canExport(user, license, "glb");
-
-    const session = useExportSessionStore();
     const revision = designRevisionFingerprint(design);
     const machineSummary = useMachineSummaryLine();
+    const cncLocked = machine === "cnc";
+    const session = useExportSessionStore();
+    const activeRecord = fileType ? session.byKind[fileType] : undefined;
+    const outOfDate = fileType ? session.isOutOfDate(fileType) : false;
+
+    const presets = useMemo(() => presetsForMethod(design.method), [design.method]);
+    const preset = presets.find((p) => p.id === printSettings.presetId) ?? presets[0];
+
+    const licenseOk =
+        fileType === "gcode"
+            ? canExport(user, license, "gcode").ok
+            : fileType === "stl"
+              ? canExport(user, license, "stl").ok
+              : fileType === "3mf"
+                ? canExport(user, license, "3mf").ok
+                : true;
+
+    useEffect(() => {
+        hydrateFileType();
+    }, [hydrateFileType]);
 
     useEffect(() => {
         useExportSessionStore.getState().setDesignRevision(revision);
     }, [revision]);
 
-    const requireTarget = (): boolean => {
-        if (exportTarget) return true;
-        return false;
-    };
-
-    const runStl = async () => {
-        if (!exportTarget) return;
-        setBusy("stl");
-        setErrors((e) => ({ ...e, stl: undefined }));
-        session.setProgress({ phase: "exporting", message: "Exporting STL…" });
-        try {
-            const res = await exportDesign("stl", exportTarget);
-            if (res.ok && res.blob) {
-                session.recordSuccess({
-                    id: `stl-${Date.now()}`,
-                    kind: "stl",
-                    target: exportTarget,
-                    filename: res.filename ?? buildExportFilename("stl", exportTarget),
-                    sizeBytes: res.blob.size,
-                    blob: res.blob,
-                    tokensCharged: TOKEN_COST.stl,
-                    designRevision: revision,
-                    createdAt: Date.now(),
-                });
-            } else {
-                setErrors((e) => ({ ...e, stl: stlExportUserMessage(res.reason) }));
-                session.setProgress({ phase: "idle" });
-            }
-        } catch (err) {
-            setErrors((e) => ({
-                ...e,
-                stl: stlExportUserMessage(err instanceof Error ? err.message : undefined),
-            }));
-            session.setProgress({ phase: "idle" });
-        } finally {
-            setBusy(null);
+    const onExport = async () => {
+        if (!fileType) {
+            setPulseType(true);
+            window.setTimeout(() => setPulseType(false), 1200);
+            return;
         }
-    };
+        if (!exportTarget) {
+            setPulseTarget(true);
+            window.setTimeout(() => setPulseTarget(false), 1200);
+            return;
+        }
+        if (!licenseOk) return;
 
-    const run3mf = async () => {
-        if (!exportTarget) return;
-        setBusy("3mf");
-        setErrors((e) => ({ ...e, "3mf": undefined }));
-        session.setProgress({ phase: "exporting", message: "Building 3MF…" });
+        setBusy(true);
+        setError(null);
+        session.setProgress({
+            phase: fileType === "gcode" ? "slicing" : "exporting",
+            message: fileType === "gcode" ? "Generating G-code…" : `Exporting ${fileType.toUpperCase()}…`,
+        });
         try {
-            const res = await exportDesign("3mf", exportTarget);
-            if (res.ok && res.blob) {
-                session.recordSuccess({
-                    id: `3mf-${Date.now()}`,
-                    kind: "3mf",
-                    target: exportTarget,
-                    filename: res.filename ?? buildExportFilename("3mf", exportTarget),
-                    sizeBytes: res.blob.size,
-                    blob: res.blob,
-                    tokensCharged: TOKEN_COST["3mf"],
-                    designRevision: revision,
-                    createdAt: Date.now(),
-                });
+            const outcome = await runExportForChoice({
+                choice: fileType,
+                target: exportTarget,
+                cnc: cncLocked,
+                preset,
+                grindingStyle: printSettings.grindingStyle,
+                overrides: printSettings.overrides,
+                millingProfile,
+                designRevision: revision,
+            });
+            if (outcome.ok) {
+                session.recordSuccess(outcome.record);
             } else {
-                setErrors((e) => ({ ...e, "3mf": res.reason ?? "3MF export failed" }));
+                setError({ message: outcome.reason, noTokens: outcome.noTokens });
                 session.setProgress({ phase: "idle" });
             }
-        } catch (err) {
-            setErrors((e) => ({ ...e, "3mf": err instanceof Error ? err.message : "3MF export failed" }));
-            session.setProgress({ phase: "idle" });
         } finally {
-            setBusy(null);
+            setBusy(false);
         }
     };
 
     const runGlb = async () => {
         if (!exportTarget || exportTarget === "pair") return;
-        setBusy("glb");
-        try {
-            await exportDesign("glb", exportTarget);
-        } finally {
-            setBusy(null);
-        }
+        await exportDesign("glb", exportTarget);
     };
-
-    const stlRecord = session.byKind.stl;
-    const mfRecord = session.byKind["3mf"];
-    const gcodeRecord = session.byKind.gcode;
-    const cncLocked = machine === "cnc";
 
     return (
         <div className="relative flex min-h-0 flex-col gap-3 pb-36">
@@ -137,124 +121,47 @@ export function ExportPanel() {
             <TextSummary />
             <p className="text-[11px] text-muted-foreground">{tokenLine(user?.tokenBalance, license?.status)}</p>
 
-            {validation.error ? (
-                <p className="text-xs text-amber-400">{validation.error}</p>
+            <ExportFileTypePicker pulse={pulseType} />
+
+            {fileType === "gcode" ? (
+                <div className="rounded-md border border-border bg-background/40 px-2 py-2 text-[11px]">
+                    <p className="text-muted-foreground">{machineSummary}</p>
+                    <button
+                        type="button"
+                        className="mt-1 text-primary hover:underline"
+                        onClick={() => setStep("print")}
+                    >
+                        Edit in Print
+                    </button>
+                </div>
             ) : null}
 
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                <ExportTile
-                    testId="export-tile-gcode"
-                    title="G-code"
-                    purpose="Prepared print file from the Print step"
-                    costLabel={`${TOKEN_COST.gcode} token`}
-                    buttonLabel={
-                        gcodeRecord && !session.isOutOfDate("gcode")
-                            ? "Download G-code"
-                            : "Open Print step"
-                    }
-                    busy={false}
-                    onAction={() => {
-                        if (gcodeRecord && !session.isOutOfDate("gcode") && gcodeRecord.blob) {
-                            const url = URL.createObjectURL(gcodeRecord.blob);
-                            const a = document.createElement("a");
-                            a.href = url;
-                            a.download = gcodeRecord.filename;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                            return;
-                        }
-                        setFocusPrint(true);
-                        setStep("print");
+            {activeRecord ? (
+                <ResultCard
+                    filename={activeRecord.filename}
+                    sizeBytes={activeRecord.sizeBytes}
+                    estimatedTimeSec={activeRecord.estimatedTimeSec}
+                    materialLabel={activeRecord.materialLabel}
+                    tokensCharged={activeRecord.tokensCharged}
+                    outOfDate={outOfDate}
+                    onDownload={() => {
+                        const url = URL.createObjectURL(activeRecord.blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = activeRecord.filename;
+                        a.click();
+                        URL.revokeObjectURL(url);
                     }}
-                    outOfDate={session.isOutOfDate("gcode")}
-                    result={
-                        gcodeRecord
-                            ? {
-                                  filename: gcodeRecord.filename,
-                                  sizeBytes: gcodeRecord.sizeBytes,
-                                  tokensCharged: gcodeRecord.tokensCharged,
-                                  onDownload: () => {
-                                      const url = URL.createObjectURL(gcodeRecord.blob);
-                                      const a = document.createElement("a");
-                                      a.href = url;
-                                      a.download = gcodeRecord.filename;
-                                      a.click();
-                                      URL.revokeObjectURL(url);
-                                  },
-                              }
-                            : undefined
-                    }
                 />
-                <ExportTile
-                    testId="export-tile-stl"
-                    title="STL"
-                    purpose="Mesh for other slicers or CAM"
-                    costLabel={`${TOKEN_COST.stl} token`}
-                    buttonLabel={`Export STL · ${TOKEN_COST.stl} token`}
-                    busy={busy === "stl"}
-                    disabled={!stlCheck.ok || !exportTarget}
-                    locked={!stlCheck.ok}
-                    onAction={() => (requireTarget() ? runStl() : undefined)}
-                    outOfDate={session.isOutOfDate("stl")}
-                    error={
-                        errors.stl
-                            ? { message: errors.stl, noTokens: true, onRetry: runStl }
-                            : undefined
-                    }
-                    result={
-                        stlRecord
-                            ? {
-                                  filename: stlRecord.filename,
-                                  sizeBytes: stlRecord.sizeBytes,
-                                  tokensCharged: stlRecord.tokensCharged,
-                                  onDownload: () => {
-                                      const url = URL.createObjectURL(stlRecord.blob);
-                                      const a = document.createElement("a");
-                                      a.href = url;
-                                      a.download = stlRecord.filename;
-                                      a.click();
-                                      URL.revokeObjectURL(url);
-                                  },
-                              }
-                            : undefined
-                    }
+            ) : null}
+
+            {error ? (
+                <ResultCard
+                    error={error.message}
+                    noTokensCharged={error.noTokens}
+                    onRetry={onExport}
                 />
-                <ExportTile
-                    testId="export-tile-3mf"
-                    title="3MF"
-                    purpose="Hardness-aware pack for Bambu / Prusa slicers"
-                    badge="Recommended"
-                    costLabel={`${TOKEN_COST["3mf"]} token`}
-                    buttonLabel={`Export 3MF · ${TOKEN_COST["3mf"]} token`}
-                    busy={busy === "3mf"}
-                    disabled={!threeMfCheck.ok || !exportTarget}
-                    locked={!threeMfCheck.ok}
-                    onAction={() => (requireTarget() ? run3mf() : undefined)}
-                    outOfDate={session.isOutOfDate("3mf")}
-                    error={
-                        errors["3mf"]
-                            ? { message: errors["3mf"], noTokens: true, onRetry: run3mf }
-                            : undefined
-                    }
-                    result={
-                        mfRecord
-                            ? {
-                                  filename: mfRecord.filename,
-                                  sizeBytes: mfRecord.sizeBytes,
-                                  tokensCharged: mfRecord.tokensCharged,
-                                  onDownload: () => {
-                                      const url = URL.createObjectURL(mfRecord.blob);
-                                      const a = document.createElement("a");
-                                      a.href = url;
-                                      a.download = mfRecord.filename;
-                                      a.click();
-                                      URL.revokeObjectURL(url);
-                                  },
-                              }
-                            : undefined
-                    }
-                />
-            </div>
+            ) : null}
 
             {showSuperAdminLink(user?.role) ? (
                 <div>
@@ -267,16 +174,14 @@ export function ExportPanel() {
                         Developer
                     </button>
                     {devOpen ? (
-                        <ExportTile
-                            testId="export-tile-glb"
-                            title="GLB"
-                            purpose="Watertight preview solid (super admin)"
-                            costLabel="0 tokens"
-                            buttonLabel="Download GLB"
-                            busy={busy === "glb"}
-                            disabled={!glbCheck.ok || !exportTarget || exportTarget === "pair"}
-                            onAction={runGlb}
-                        />
+                        <button
+                            type="button"
+                            data-testid="export-dev-glb"
+                            className="mt-2 w-full rounded-md border border-border px-2 py-2 text-left text-xs hover:bg-muted/40"
+                            onClick={runGlb}
+                        >
+                            Download GLB (0 tokens)
+                        </button>
                     ) : null}
                 </div>
             ) : null}
@@ -314,14 +219,27 @@ export function ExportPanel() {
 
             <PrintFooter
                 machineSummary={machineSummary}
+                hideSummary
+                hideOutputHint
                 cncLocked={cncLocked}
                 cncLockReason="Left + Right in one file"
-                primaryLabel="Export uses target above"
-                primaryDisabled
-                focusPrimary={focusPrint}
-                showTargetPulse={!exportTarget}
-                onPrimary={() => undefined}
+                primaryLabel={exportPrimaryButtonLabel(fileType, cncLocked)}
+                onPrimary={onExport}
+                busy={busy}
+                showTargetPulse={pulseTarget}
+                primaryDisabled={fileType ? !licenseOk : false}
             />
+            {!fileType && pulseType ? (
+                <p className="text-[10px] text-amber-400">Pick a file type</p>
+            ) : null}
+            {!exportTarget && pulseTarget ? (
+                <p className="text-[10px] text-amber-400">Pick Left, Right, or Pair</p>
+            ) : null}
+            {fileType && !licenseOk ? (
+                <p className="text-xs text-amber-400">
+                    {canExport(user, license, fileType === "gcode" ? "gcode" : fileType).reason}
+                </p>
+            ) : null}
         </div>
     );
 }

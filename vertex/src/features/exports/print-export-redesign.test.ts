@@ -5,6 +5,7 @@ import * as React from "react";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ExportPanel } from "@/features/exports/ExportPanel";
+import { exportPrimaryButtonLabel, useExportFileTypeStore } from "@/features/exports/export-file-type-store";
 import {
     export3mfPair,
     exportStlPairZip,
@@ -31,8 +32,31 @@ describe("print + export redesign", () => {
         useDesignStore.setState({ exportTarget: null, exportSide: "left" });
         useDesignStore.getState().setExportTarget("pair");
         expect(useDesignStore.getState().exportTarget).toBe("pair");
-        expect(useExportSessionStore.getState().byKind).toEqual({});
-        expect(useDesignStore.getState().exportTarget).toBe("pair");
+    });
+
+    test("export file type is remembered per user", () => {
+        useAuthStore.setState({
+            user: {
+                id: "u1",
+                email: "a@b.com",
+                fullName: "A",
+                role: "clinician",
+                tokenBalance: 3,
+            },
+            license: { status: "active" } as never,
+            loading: false,
+        });
+        useExportFileTypeStore.setState({ exportFileType: null, lastByUserId: {} });
+        useExportFileTypeStore.getState().setExportFileType("3mf");
+        useExportFileTypeStore.setState({ exportFileType: null });
+        useExportFileTypeStore.getState().hydrateForCurrentUser();
+        expect(useExportFileTypeStore.getState().exportFileType).toBe("3mf");
+    });
+
+    test("Continue from Print preselects G-code on Export", () => {
+        useExportFileTypeStore.setState({ exportFileType: null, lastByUserId: {} });
+        useExportFileTypeStore.getState().preselectGcode();
+        expect(useExportFileTypeStore.getState().exportFileType).toBe("gcode");
     });
 
     test("CNC machine locks footer target to Pair", () => {
@@ -42,9 +66,11 @@ describe("print + export redesign", () => {
         expect(useDesignStore.getState().exportTarget).toBe("pair");
     });
 
-    test("Generate G-code button labels", () => {
-        expect(`Generate G-code · ${TOKEN_COST.gcode} token`).toBe("Generate G-code · 1 token");
-        expect(`Generate mill G-code · ${TOKEN_COST.gcode} token`).toBe("Generate mill G-code · 1 token");
+    test("Export footer primary labels follow file type", () => {
+        expect(exportPrimaryButtonLabel("gcode", false)).toBe("Export G-code · 1 token");
+        expect(exportPrimaryButtonLabel("gcode", true)).toBe("Export mill G-code · 1 token");
+        expect(exportPrimaryButtonLabel("stl", false)).toBe("Export STL · 1");
+        expect(exportPrimaryButtonLabel("3mf", false)).toBe("Export 3MF · 1");
     });
 
     test("out-of-date after design revision changes", () => {
@@ -99,6 +125,7 @@ describe("print + export redesign", () => {
                 loading: false,
             });
             useDesignStore.setState({ exportTarget: "left" });
+            useExportFileTypeStore.setState({ exportFileType: "stl", lastByUserId: {} });
         });
 
         afterEach(() => {
@@ -107,13 +134,14 @@ describe("print + export redesign", () => {
             container.remove();
         });
 
-        test("Export panel omits developer GLB tile", async () => {
+        test("Export uses file type picker not tile grid", async () => {
             await act(async () => {
                 root = createRoot(container);
                 root.render(createElement(ExportPanel));
             });
+            expect(container.querySelector('[data-testid="export-file-type-picker"]')).not.toBeNull();
+            expect(container.querySelector('[data-testid="export-tile-stl"]')).toBeNull();
             expect(container.textContent).not.toMatch(/Developer/i);
-            expect(container.querySelector('[data-testid="export-tile-glb"]')).toBeNull();
         });
     });
 });
@@ -138,7 +166,7 @@ describe("PrintFooter CNC lock UI", () => {
                     machineSummary: "Idaho CNC",
                     cncLocked: true,
                     cncLockReason: "Left + Right in one file",
-                    primaryLabel: "Generate mill G-code · 1 token",
+                    primaryLabel: "Export mill G-code · 1 token",
                     onPrimary: () => {},
                 }),
             );
