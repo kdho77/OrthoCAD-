@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { smoothstep } from "@/lib/geometry/height-field";
+import type { ProceduralWallStyle } from "./modifiers";
 
 /**
  * Biomechanics Expert bounds for the parametric wall (S1).
@@ -343,4 +344,15 @@ export function lateralFlangeEnvelope(
 export function snapToStep(value: number, spec: BoundSpec): number {
     const stepped = spec.step ? Math.round(value / spec.step) * spec.step : value;
     return Math.max(spec.min, Math.min(spec.max, stepped));
+}
+
+/**
+ * Default grinding / wall mid-style for new procedural sessions.
+ * Kendon rule: Hybrid when crease gates pass on Default; otherwise Round.
+ */
+export const DEFAULT_PROCEDURAL_WALL_STYLE: ProceduralWallStyle = "hybrid";
+
+/** Session viewer fallback when {@link ViewerSettings.wallStyle} is unset. */
+export function viewerWallStyleOrDefault(style?: ProceduralWallStyle | null): ProceduralWallStyle {
+    return style ?? DEFAULT_PROCEDURAL_WALL_STYLE;
 }

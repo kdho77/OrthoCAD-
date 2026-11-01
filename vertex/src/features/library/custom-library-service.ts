@@ -13,6 +13,7 @@ import { exportObjectToGlb, meshFromGeometry } from "@/lib/geometry/glb-export";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { applyTrimLines, applyVertexOverrides } from "@/lib/geometry/mesh-edit";
 import { reconstructProceduralPreview } from "@/lib/geometry/procedural-wall";
+import { viewerWallStyleOrDefault } from "@/lib/geometry/procedural-wall/defaults";
 import { loadSampleTopGeometry } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
@@ -165,7 +166,7 @@ async function buildBasePrefabMesh(side: Side): Promise<THREE.Mesh | null> {
             corrections: field.corrections,
             thicknessMm: thicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
             stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
-            wallStyle: viewer.wallStyle ?? "straight",
+            wallStyle: viewerWallStyleOrDefault(viewer.wallStyle),
             scanPattern: design.pattern,
             sourceField: field,
             composedTop: true,

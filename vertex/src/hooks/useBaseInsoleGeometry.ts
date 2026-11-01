@@ -22,6 +22,7 @@ import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
 import { elementGeometryKey } from "@/lib/geometry/element-geometry-key";
 import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import { type HeightFieldParams, heightAt } from "@/lib/geometry/height-field";
+import { viewerWallStyleOrDefault } from "@/lib/geometry/procedural-wall/defaults";
 import {
     hashLiveBottomPattern,
     resolveLiveBottomPattern,
@@ -138,7 +139,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const stockBaseResolutionState = useDesignStore((s) => s.stockBaseResolutionState);
     const setBaseMeshLoading = useDesignStore((s) => s.setBaseMeshLoading);
     const wallModel = useDesignStore((s) => s.viewer.wallModel ?? "procedural");
-    const wallStyle = useDesignStore((s) => s.viewer.wallStyle ?? "straight");
+    const wallStyle = useDesignStore((s) => viewerWallStyleOrDefault(s.viewer.wallStyle));
     const deviceType = useDesignStore((s) => s.viewer.deviceType ?? "functional");
     const lateralFlangeHeightMm = useDesignStore((s) => s.viewer.lateralFlangeHeightMm ?? 0);
     const lateralFlangeLengthMm = useDesignStore((s) => s.viewer.lateralFlangeLengthMm ?? 40);

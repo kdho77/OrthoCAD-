@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
 import { CncMillingPanel } from "@/features/exports/CncMillingPanel";
+import { DEFAULT_PROCEDURAL_WALL_STYLE } from "@/lib/geometry/procedural-wall/defaults";
 import { exportGcode, type GrindingStyleInput, generateHybridGcode } from "@/features/exports/export-service";
 import { stlExportUserMessage } from "@/features/exports/export-user-message";
 import {
@@ -60,10 +61,11 @@ export function PrintingPanel({
     const [busy, setBusy] = useState(false);
 
     // Hybrid manufacturing (server-side solid + G-code) controls
-    const [grindingStyle, setGrindingStyle] = useState<GrindingStyleInput>({
-        type: "straight",
-        angle_degrees: 8,
-    });
+    const [grindingStyle, setGrindingStyle] = useState<GrindingStyleInput>(() =>
+        (useDesignStore.getState().viewer.wallStyle ?? DEFAULT_PROCEDURAL_WALL_STYLE) === "straight"
+            ? { type: "straight", angle_degrees: 8 }
+            : { type: "rounded", radius_mm: 3 },
+    );
 
     const presets = useMemo(() => presetsForMethod(design.method), [design.method]);
     const defaultPreset = useMemo(() => presets.find((p) => p.beltAngleDeg) ?? presets[0], [presets]);

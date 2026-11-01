@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { DEFAULT_PROCEDURAL_WALL_STYLE, viewerWallStyleOrDefault } from "@/lib/geometry/procedural-wall/defaults";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
 
@@ -14,10 +15,10 @@ interface ProceduralWallPreviewControlsProps {
 
 /**
  * Print-step grinding dropdown. Procedural walls are on by default (SAMPLE_Top +
- * faired pattern, Grinding Straight). Legacy Default.glb is not a selectable stock.
+ * faired pattern, default grinding {@link DEFAULT_PROCEDURAL_WALL_STYLE}). Legacy Default.glb is not a selectable stock.
  */
 export function ProceduralWallPreviewControls({ onWallStyle }: ProceduralWallPreviewControlsProps) {
-    const wallStyle = useDesignStore((s) => s.viewer.wallStyle ?? "straight");
+    const wallStyle = useDesignStore((s) => viewerWallStyleOrDefault(s.viewer.wallStyle));
     const setViewer = useDesignStore((s) => s.setViewer);
 
     return (
@@ -47,7 +48,10 @@ export function ProceduralWallPreviewControls({ onWallStyle }: ProceduralWallPre
             </div>
             <div className="text-[10px] text-muted-foreground">
                 SAMPLE_Top + faired bottom pattern (heel ~8 mm, ~0 toe inset). Overlay is independent of the
-                top trimline. Grinding default is Straight.
+                top trimline. Grinding default is{" "}
+                {DEFAULT_PROCEDURAL_WALL_STYLE.charAt(0).toUpperCase() +
+                    DEFAULT_PROCEDURAL_WALL_STYLE.slice(1)}
+                .
             </div>
         </div>
     );

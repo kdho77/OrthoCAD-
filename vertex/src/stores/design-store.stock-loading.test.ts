@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, test } from "@rstest/core";
 import { stockBaseDisplayName } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
+import { DEFAULT_PROCEDURAL_WALL_STYLE } from "@/lib/geometry/procedural-wall/defaults";
 import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
 import type { DesignBase, DesignState } from "@/types";
 
@@ -137,7 +138,7 @@ describe("stock base loading state", () => {
     test("store initializer is SAMPLE_Top + procedural Straight, not Default Stock Base", () => {
         const initial = useDesignStore.getInitialState();
         expect(initial.viewer.wallModel).toBe("procedural");
-        expect(initial.viewer.wallStyle).toBe("straight");
+        expect(initial.viewer.wallStyle).toBe(DEFAULT_PROCEDURAL_WALL_STYLE);
         expect(initial.design.paired?.leftBase?.glbPath).toMatch(/SAMPLE_Top\.glb$/);
         expect(initial.design.paired?.rightBase?.mirrored).toBe(true);
         expect(initial.design.base?.name).not.toMatch(/Default Stock Base/i);

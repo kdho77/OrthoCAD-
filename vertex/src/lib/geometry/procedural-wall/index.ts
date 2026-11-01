@@ -222,6 +222,7 @@ export {
     blendedFlareDeg,
     CUP_BOWL,
     clampToBound,
+    DEFAULT_PROCEDURAL_WALL_STYLE,
     type DeviceTypePreset,
     FILLET_BOUNDS,
     FLARE_BOUNDS,
@@ -230,6 +231,7 @@ export {
     LATERAL_FLANGE_BOUNDS,
     type MeasuredVsBoundRow,
     resolveWallDefaults,
+    viewerWallStyleOrDefault,
     type WallRegionDefaults,
 } from "./defaults";
 export {
