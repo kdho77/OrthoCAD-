@@ -1,4 +1,9 @@
-import type { ApexPrintMaterialId } from "@/features/exports/apex-print-material";
+import {
+    type ApexPrintMaterialId,
+    lockedProfileIdForApexMaterial,
+    type VertexSliceMaterialId,
+    vertexSliceMaterialForApexMaterial,
+} from "@/features/exports/apex-print-material";
 import { downloadBlob, downloadSequential } from "@/features/exports/export-download";
 import { buildExportFilename } from "@/features/exports/export-filename";
 import { export3mfPairSeparate, exportStlPairSeparate } from "@/features/exports/export-pair";
@@ -111,6 +116,22 @@ async function authorize(
     if (!check.ok) return { ok: false, reason: check.reason };
     deductTokens(TOKEN_COST[format]);
     return { ok: true };
+}
+
+/** Wire fields for one VertexSlice printer G-code job. Profile id stays the material's locked profile. */
+export function printerGcodeSliceFields(apexMaterialId: ApexPrintMaterialId): {
+    presetId: string;
+    material: VertexSliceMaterialId;
+} {
+    return {
+        presetId: lockedProfileIdForApexMaterial(apexMaterialId),
+        material: vertexSliceMaterialForApexMaterial(apexMaterialId),
+    };
+}
+
+/** Pair is two slice calls (left, then right). Single side is one call. */
+export function printGcodeSides(target: ExportOutputTarget): readonly Side[] {
+    return target === "pair" ? ["left", "right"] : [target];
 }
 
 export interface ExportRunOptions {
@@ -297,7 +318,8 @@ export async function generateHybridGcode(
 ): Promise<ExportOutcome> {
     const download = options.download ?? true;
     const activeDesignId = useClientStore.getState().activeDesignId;
-    const outputType = preset.beltAngleDeg ? "gcode" : "stl";
+    const sliceFields = options.apexMaterialId ? printerGcodeSliceFields(options.apexMaterialId) : null;
+    const outputType = sliceFields || preset.beltAngleDeg ? "gcode" : "stl";
     const ext = outputType === "gcode" ? "gcode" : "stl";
     const filename = buildExportFilename(ext, side, { apexMaterialId: options.apexMaterialId });
 
@@ -307,18 +329,20 @@ export async function generateHybridGcode(
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 
             const design = useDesignStore.getState().design;
-            const printRecipe = bindPrintRecipeProfile(design.printRecipe, preset.id);
+            const presetId = sliceFields?.presetId ?? preset.id;
+            const printRecipe = bindPrintRecipeProfile(design.printRecipe, presetId);
 
             const res = await trpc.manufacturing.generateSolid.mutate({
                 designId: activeDesignId || undefined,
                 side,
-                presetId: preset.id,
+                presetId,
+                material: sliceFields?.material,
                 stlStorageKey,
                 outputType,
                 beltAngleDeg: preset.beltAngleDeg ?? 45,
-                layerHeightMm: overrides.layerHeightMm,
+                layerHeightMm: outputType === "gcode" ? undefined : overrides.layerHeightMm,
                 printRecipe,
-                perimeters: overrides.perimeters,
+                perimeters: outputType === "gcode" ? undefined : overrides.perimeters,
                 grindingStyle,
                 fileName: filename,
             });
@@ -382,51 +406,45 @@ export async function exportPrintGcode(
 ): Promise<ExportOutcome> {
     const download = options.download ?? true;
     if (target === "pair") {
-        const left = await generateHybridGcode("left", preset, grindingStyle, overrides, {
-            download: false,
-            apexMaterialId: options.apexMaterialId,
-        });
-        if (!left.ok || !left.blob) return left;
-        const right = await generateHybridGcode("right", preset, grindingStyle, overrides, {
-            download: false,
-            skipAuthorize: true,
-            apexMaterialId: options.apexMaterialId,
-        });
-        if (!right.ok || !right.blob) return right;
-        const leftName = left.filename ?? buildExportFilename("gcode", "left");
-        const rightName = right.filename ?? buildExportFilename("gcode", "right");
-        const files: ExportedFilePart[] = [
-            {
-                side: "left",
-                filename: leftName,
-                blob: left.blob,
-                sizeBytes: left.blob.size,
-                stats: left.stats,
-                productionId: left.productionId,
-            },
-            {
-                side: "right",
-                filename: rightName,
-                blob: right.blob,
-                sizeBytes: right.blob.size,
-                stats: right.stats,
-                productionId: right.productionId,
-            },
-        ];
+        const sides = printGcodeSides("pair");
+        const files: ExportedFilePart[] = [];
+        for (const side of sides) {
+            const part = await generateHybridGcode(side, preset, grindingStyle, overrides, {
+                download: false,
+                skipAuthorize: side !== sides[0],
+                apexMaterialId: options.apexMaterialId,
+            });
+            if (!part.ok || !part.blob) return part;
+            files.push({
+                side,
+                filename:
+                    part.filename ??
+                    buildExportFilename("gcode", side, { apexMaterialId: options.apexMaterialId }),
+                blob: part.blob,
+                sizeBytes: part.blob.size,
+                stats: part.stats,
+                productionId: part.productionId,
+            });
+        }
         if (download) await downloadSequential(files);
         useAuditStore
             .getState()
             .record("export_generated", `G-code pair L+R · ${preset.name} (-${TOKEN_COST.gcode})`);
+        const first = files[0];
         return {
             ok: true,
             files,
-            filename: leftName,
-            blob: left.blob,
-            stats: left.stats,
+            filename: first?.filename,
+            blob: first?.blob,
+            stats: first?.stats,
         };
     }
     const side = target;
-    return generateHybridGcode(side, preset, grindingStyle, overrides, { download });
+    return generateHybridGcode(side, preset, grindingStyle, overrides, {
+        download,
+        skipAuthorize: options.skipAuthorize,
+        apexMaterialId: options.apexMaterialId,
+    });
 }
 
 export async function downloadGcodeByProductionId(productionId: string): Promise<ExportOutcome> {

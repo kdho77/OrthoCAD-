@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { TRPCError } from "@trpc/server";
+import { readUpstreamErrorText } from "./upstream-error.js";
 
 export interface GrindingStylePayload {
     type: "straight" | "rounded";
@@ -99,8 +100,7 @@ export async function callManufacture(payload: ManufacturePayload): Promise<Manu
     }
 
     if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-        const detail = body?.detail || (await response.text().catch(() => "")) || response.statusText;
+        const detail = await readUpstreamErrorText(response);
         console.error("[manufacturing] Python service returned error", {
             endpoint,
             status: response.status,
