@@ -110,7 +110,7 @@ function field(ctx: SinkSurfaceContext, sinks: PlacedSink[] | undefined): Height
 describe("sink scalar field", () => {
     test("named profile table matches the clinical spec", () => {
         expect(SINK_PROFILES.mpj1).toMatchObject({
-            u: 0.69,
+            u: 0.665,
             v: 0.145,
             lengthMm: 22,
             widthMm: 22,
@@ -121,7 +121,7 @@ describe("sink scalar field", () => {
             deepestLateralMm: 0,
         });
         expect(SINK_PROFILES.mpj2).toMatchObject({
-            u: 0.71,
+            u: 0.685,
             v: 0.365,
             lengthMm: 16,
             widthMm: 16,
@@ -129,21 +129,21 @@ describe("sink scalar field", () => {
             maxDepthMm: 3,
         });
         expect(SINK_PROFILES.mpj3).toMatchObject({
-            u: 0.705,
+            u: 0.68,
             v: 0.55,
             lengthMm: 15,
             widthMm: 15,
             blendMm: 5,
         });
         expect(SINK_PROFILES.mpj4).toMatchObject({
-            u: 0.69,
+            u: 0.665,
             v: 0.715,
             lengthMm: 13,
             widthMm: 13,
             blendMm: 5,
         });
         expect(SINK_PROFILES.mpj5).toMatchObject({
-            u: 0.665,
+            u: 0.64,
             v: 0.88,
             lengthMm: 13,
             widthMm: 13,
@@ -357,11 +357,11 @@ describe("sink scalar field", () => {
 
     test("centres sit on both feet at two lengths, and the 1st MPJ is medial", () => {
         const centres = [
-            ["mpj1", 0.69, 0.145],
-            ["mpj2", 0.71, 0.365],
-            ["mpj3", 0.705, 0.55],
-            ["mpj4", 0.69, 0.715],
-            ["mpj5", 0.665, 0.88],
+            ["mpj1", 0.665, 0.145],
+            ["mpj2", 0.685, 0.365],
+            ["mpj3", 0.68, 0.55],
+            ["mpj4", 0.665, 0.715],
+            ["mpj5", 0.64, 0.88],
         ] as const;
         const widthMm = 95;
         for (const lengthMm of [247, 297]) {

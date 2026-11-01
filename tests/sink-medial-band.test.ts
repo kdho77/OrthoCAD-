@@ -337,7 +337,7 @@ function paintSection(shots: Shot[], path: string): void {
             minX = Math.min(minX, s.x[i]!);
             maxX = Math.max(maxX, s.x[i]!);
         }
-        const targetU = s.name === "mpj5-4" ? 0.66 : 0.69;
+        const targetU = s.name === "mpj5-4" ? 0.64 : 0.665;
         const xTarget = minX + targetU * (maxX - minX);
         let station = xTarget;
         let best = Infinity;

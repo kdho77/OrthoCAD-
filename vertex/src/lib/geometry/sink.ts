@@ -135,7 +135,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
     mpj1: {
         kind: "mpj1",
         label: "1st MPJ",
-        u: 0.69,
+        u: 0.665,
         v: 0.145,
         lengthMm: 22,
         widthMm: 22,
@@ -152,7 +152,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
     mpj2: {
         kind: "mpj2",
         label: "2nd MPJ",
-        u: 0.71,
+        u: 0.685,
         v: 0.365,
         lengthMm: 16,
         widthMm: 16,
@@ -169,7 +169,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
     mpj3: {
         kind: "mpj3",
         label: "3rd MPJ",
-        u: 0.705,
+        u: 0.68,
         v: 0.55,
         lengthMm: 15,
         widthMm: 15,
@@ -186,7 +186,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
     mpj4: {
         kind: "mpj4",
         label: "4th MPJ",
-        u: 0.69,
+        u: 0.665,
         v: 0.715,
         lengthMm: 13,
         widthMm: 13,
@@ -203,7 +203,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
     mpj5: {
         kind: "mpj5",
         label: "5th MPJ",
-        u: 0.665,
+        u: 0.64,
         v: 0.88,
         lengthMm: 13,
         widthMm: 13,
@@ -1078,13 +1078,21 @@ export function sinkCutMm(
     return { mm: best, sinkId, weight };
 }
 
-/** True where two tapers both still cut, so a hard max would crease the loft. */
+/**
+ * True where two cuts, or two forefoot thickness mounds, both still rise.
+ * A hard max of those shoulders creases a short loft edge. The slope relax
+ * lowers only that overlap, and it leaves each plateau at depth + 0.5 mm.
+ */
 function taperOverlap(x: number, yLateral: number, ctx: SinkSurfaceContext): boolean {
-    let n = 0;
+    let cuts = 0;
+    let mounds = 0;
     for (const p of prepare(ctx)) {
-        const w = eggWeight(p.frame, x, yLateral, p.frame.blendMm);
-        if (p.frame.depthMm * w > 0.4) n++;
-        if (n >= 2) return true;
+        const cutW = eggWeight(p.frame, x, yLateral, p.frame.blendMm);
+        if (p.frame.depthMm * cutW > 0.4) cuts++;
+        if (!p.frame.forefoot) continue;
+        const mound = eggWeight(p.frame, x, yLateral, BLEND_LEN_MM) * (p.frame.depthMm + FOREFOOT_THICKNESS_CLEARANCE_MM);
+        if (mound > 0.4) mounds++;
+        if (cuts >= 2 || mounds >= 2) return true;
     }
     return false;
 }
@@ -1621,9 +1629,10 @@ function raiseInboardOfGuardedRim(
 }
 
 /**
- * Where two tapers cross, the hard max is a valley. One loft triangle on each
- * wall can fold past 60°. Lower only the shoulder, and leave plateau vertices
- * alone so the floor stays at depth + 0.5 mm.
+ * Where two tapers cross, the hard max is a ridge. Lower only the shoulder,
+ * in passes, so a vertex cannot fall away from a neighbour that stays put.
+ * Plateau and rim vertices stay, which keeps the floor at depth + 0.5 mm
+ * and keeps the crest on the inside top.
  */
 function relaxOverlapShoulder(
     positions: number[],
@@ -1635,41 +1644,58 @@ function relaxOverlapShoulder(
     const slope = Math.tan((28 * Math.PI) / 180);
     const cell = 2.5;
     const buckets = new Map<string, number[]>();
+    const z = new Float64Array(topCount);
+    const movable = new Uint8Array(topCount);
     for (let i = 0; i < topCount; i++) {
-        if (rim.has(i)) continue;
-        const key = `${Math.floor(positions[i * 3]! / cell)},${Math.floor(positions[i * 3 + 1]! / cell)}`;
+        z[i] = positions[i * 3 + 2]!;
+        const x = positions[i * 3]!;
+        const y = positions[i * 3 + 1]!;
+        const key = `${Math.floor(x / cell)},${Math.floor(y / cell)}`;
         const bucket = buckets.get(key);
         if (bucket) bucket.push(i);
         else buckets.set(key, [i]);
+        if (rim.has(i) || onPlateau(x, y) || !inOverlap(x, y)) continue;
+        movable[i] = 1;
     }
     const next = new Float64Array(topCount);
-    for (let i = 0; i < topCount; i++) next[i] = positions[i * 3 + 2]!;
-    for (let i = 0; i < topCount; i++) {
-        if (rim.has(i)) continue;
-        const x = positions[i * 3]!;
-        const y = positions[i * 3 + 1]!;
-        if (onPlateau(x, y) || !inOverlap(x, y)) continue;
-        const cx = Math.floor(x / cell);
-        const cy = Math.floor(y / cell);
-        let cap = next[i]!;
-        for (let dx = -1; dx <= 1; dx++) {
-            for (let dy = -1; dy <= 1; dy++) {
-                const bucket = buckets.get(`${cx + dx},${cy + dy}`);
-                if (!bucket) continue;
-                for (const j of bucket) {
-                    if (j === i) continue;
-                    const dist = Math.hypot(x - positions[j * 3]!, y - positions[j * 3 + 1]!);
-                    if (dist < 0.25 || dist > cell) continue;
-                    const allowed = positions[j * 3 + 2]! + dist * slope;
-                    if (allowed < cap) cap = allowed;
+    for (let iter = 0; iter < 16; iter++) {
+        let moved = false;
+        for (let i = 0; i < topCount; i++) next[i] = z[i]!;
+        for (let i = 0; i < topCount; i++) {
+            if (!movable[i]) continue;
+            const x = positions[i * 3]!;
+            const y = positions[i * 3 + 1]!;
+            const cx = Math.floor(x / cell);
+            const cy = Math.floor(y / cell);
+            let cap = z[i]!;
+            let floor = Number.NEGATIVE_INFINITY;
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    const bucket = buckets.get(`${cx + dx},${cy + dy}`);
+                    if (!bucket) continue;
+                    for (const j of bucket) {
+                        if (j === i) continue;
+                        const dist = Math.hypot(x - positions[j * 3]!, y - positions[j * 3 + 1]!);
+                        if (dist < 0.15 || dist > cell) continue;
+                        const allowed = z[j]! + dist * slope;
+                        if (allowed < cap) cap = allowed;
+                        if (!movable[j]) {
+                            const support = z[j]! - dist * slope;
+                            if (support > floor) floor = support;
+                        }
+                    }
                 }
             }
+            if (cap < floor) cap = floor;
+            if (cap < z[i]! - 1e-4) {
+                next[i] = cap;
+                moved = true;
+            }
         }
-        const floor = next[i]! - 1.4;
-        if (cap < floor) cap = floor;
-        if (cap < next[i]!) next[i] = cap;
+        if (!moved) break;
+        for (let i = 0; i < topCount; i++) z[i] = next[i]!;
     }
-    for (let i = 0; i < topCount; i++) positions[i * 3 + 2] = next[i]!;
+    for (let i = 0; i < topCount; i++) positions[i * 3 + 2] = z[i]!;
 }
 
 /**
@@ -1713,6 +1739,8 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
     const rimT = new Float64Array(input.nS);
     const rimR = new Float64Array(input.nS);
     const rimCut = new Float64Array(input.nS);
+    const rimIsStyloid = new Uint8Array(input.nS);
+    const styloidId = input.sinks!.find((s) => s.kind === "styloid")?.id;
     const rimXY: Array<{ x: number; y: number; z: number }> = [];
     for (let s = 0; s < input.nS; s++) {
         const vi = input.vertAt(0, s);
@@ -1771,6 +1799,7 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
         }
         rimR[s] = lowering;
         rimCut[s] = floor.cutMm;
+        rimIsStyloid[s] = styloidId !== undefined && cut.sinkId === styloidId ? 1 : 0;
     }
     const warnings: SinkWarning[] = [];
     const seen = new Set<string>();
@@ -1824,10 +1853,10 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
         const R = rimR[s]!;
         if (T <= 1e-8 && R <= 1e-8) continue;
         const H = rimH[s]!;
-        const notch = depth > 0 && R > 1e-8;
-        // Styloid keeps its notch against the thickened crest. Every other
-        // station stretches the wall onto the written rim so the crest and
-        // the first wall edge share one z, with the bottom staying at 0.
+        // The styloid notch is only the styloid's own station. Every other
+        // cut stretches onto the written rim, so a met-head taper cannot
+        // crush the sole.
+        const notch = rimIsStyloid[s] === 1 && depth > 0 && R > 1e-8;
         const crest = notch ? H + T : H + T - R;
         for (let row = 1; row < input.nJ; row++) {
             const vi = input.vertAt(row, s);
