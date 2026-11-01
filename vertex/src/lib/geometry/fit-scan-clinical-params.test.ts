@@ -3,6 +3,7 @@
 import { describe, expect, test } from "@rstest/core";
 import * as THREE from "three";
 import {
+    acceptHeelCupFit,
     DEFAULT_STOCK_ARCH_APEX_HEIGHT_MM,
     fitArchParamsFromApexMarker,
     HEEL_CUP_WIDTH_CLEARANCE_MM,
@@ -53,6 +54,15 @@ describe("heelCupWidthParamForTarget", () => {
         // scale = 65/55 ≈ 1.182 → param = 0.182/0.25 * 10 ≈ 7.3
         const expected = ((65 / 55 - 1) / HEEL_CUP_WIDTH_MAX_LATERAL_SCALE) * 10;
         expect(fit.heelCupWidthMm).toBeCloseTo(Math.round(expected * 10) / 10, 5);
+    });
+
+    test("rejects a landmark-patch heel against the stock shell", () => {
+        const fit = heelCupWidthParamForTarget({
+            scanHeelWidthMm: 10,
+            baseHeelWidthMm: 67,
+        });
+        expect(fit.heelCupWidthMm).toBe(-10);
+        expect(acceptHeelCupFit(fit)).toBeNull();
     });
 
     test("narrows when scan+clearance < base", () => {

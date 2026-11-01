@@ -1,0 +1,23 @@
+{
+    "gitMainRef": "53ebd8e5",
+    "wallModel": "procedural",
+    "wallStyle": "straight",
+    "sizesUsMen": {
+        "8": {
+            "left": "aa037800cd35a39ba429c58241925ee6f27211a73c2b1e4c0cc8e493a23b0916",
+            "right": "135e684d940292d57e9bd6deb637ae0de46d60798972c46fa3be2996f00a82b3"
+        },
+        "9": {
+            "left": "6c67e279aa33ea15bd6ffb0c9ba8feecee907d73dfdc5eacadda24e09052df14",
+            "right": "cd57887c45189bce39b0ead2fbcc959e1bdfebe12a11256f05751ff670d76c99"
+        },
+        "10": {
+            "left": "020e4ebc1aa1f4f509143f27f4b2eb010649934eb0be3e0cfa4fd5fee0df35e3",
+            "right": "9fe60a3c834a4abec5e6a2980bee82479e7b197b6dc7a333dba5276894118d6f"
+        },
+        "11": {
+            "left": "cc685b26cdba5b2db924dbce7e05a15eac489ee8bee3ee13a9eaf98a07cbcf0b",
+            "right": "7d0effbc8005308d8b25efca4a63aab6e0bef09912e6e46a056b8f1e12e2f3b8"
+        }
+    }
+}

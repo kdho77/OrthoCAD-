@@ -20,7 +20,11 @@ import {
 import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { assertShapeFinishExportAllowed } from "@/lib/geometry/shape-finish-gates";
-import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
+import {
+    insoleLayoutFromDesign,
+    scaleFootprintUniform,
+    scaleGeometryToInsoleSize,
+} from "@/lib/geometry/shoe-size";
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
@@ -141,6 +145,9 @@ export async function buildExportStl(side: Side, _options: BuildExportStlOptions
         const solid = closeGlbInsoleToSolid(geometry);
         const topN = (solid.userData as { topVertexCount?: number }).topVertexCount ?? 0;
         assertClosedSolidAcceptable(solid, topN, topN > 0 ? DEFAULT_GLB_CLOSED_BASELINE : null);
+        // Men's 9 is scale 1 (no vertex writes). Other sizes scale the closed
+        // solid in XY so the native loft and seam close stay on the approved sheet.
+        scaleFootprintUniform(solid, insoleLayoutFromDesign(design).scale);
         try {
             return geometryToBinarySTL(solid);
         } finally {

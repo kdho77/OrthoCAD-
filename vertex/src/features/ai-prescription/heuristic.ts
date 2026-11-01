@@ -35,9 +35,13 @@ export function heuristicParse(text: string): PrescriptionParseResult {
 
     const rearfoot = firstNumber(lower, /rear\s*foot[^.]*?-?\d+(\.\d+)?\s*(deg|°)/);
     if (rearfoot !== undefined) {
+        const rearClause = lower.match(/rear\s*foot[^.]*/)?.[0] ?? "";
+        let side: "medial" | "lateral" = rearfoot > 0 ? "lateral" : "medial";
+        if (/\bvarus\b/.test(rearClause)) side = "medial";
+        else if (/\bvalgus\b/.test(rearClause)) side = "lateral";
         apply({
             rearfootWedge: {
-                side: rearfoot > 0 ? "lateral" : "medial",
+                side,
                 value: Math.abs(rearfoot),
                 unit: "deg",
             },
