@@ -582,6 +582,7 @@ function refineMinAngle(
         sliverMaxAspect: number;
     },
     wantSteiner: boolean,
+    denseRim = false,
 ): {
     points: PolyPoint[];
     faces: Array<[number, number, number]>;
@@ -599,7 +600,7 @@ function refineMinAngle(
         refine.push(...filled.extra);
         const steiner = [...baseSteiner, ...refine];
         const points = [...loop, ...extra, ...steiner];
-        nudgeInteriorDuplicates(points, loop.length, loop, keep, minLoopEdge(loop) < 0.25 ? 0.12 : 0.045);
+        nudgeInteriorDuplicates(points, loop.length, loop, keep, denseRim ? 0.12 : 0.045);
         const faces = libraryCdtInterior(points, loop.length, extraEdges);
         assertIEdges(faces, loop.length);
         assertLibraryDisk(faces, loop.length);
@@ -615,7 +616,7 @@ function cdtDiskOf(
     extra: PolyPoint[],
     extraEdges: Array<[number, number]>,
     margin: number,
-    opts?: { steiner?: boolean },
+    opts?: { steiner?: boolean; denseRim?: boolean },
 ): {
     points: PolyPoint[];
     faces: Array<[number, number, number]>;
@@ -648,9 +649,9 @@ function cdtDiskOf(
     for (let pass = 0; pass < 10; pass++) {
         const steiner = wantSteiner ? [...collar, ...inward, ...hex, ...refine] : [];
         points = [...loop, ...extra, ...steiner];
-        // Morton's rims are finer than ~0.2 mm. Stock outlines on this solid
-        // sit at ~0.34 mm and must keep the 0.045 mm nudge (byte pin).
-        nudgeInteriorDuplicates(points, loop.length, loop, keep, minEdge < 0.25 ? 0.12 : 0.045);
+        // Morton's packs collar samples closer than 0.045 mm. Stock outlines
+        // keep that nudge so the no-Morton's solid stays byte-identical.
+        nudgeInteriorDuplicates(points, loop.length, loop, keep, opts?.denseRim ? 0.12 : 0.045);
         faces = libraryCdtInterior(points, loop.length, extraEdges);
         assertIEdges(faces, loop.length);
         assertLibraryDisk(faces, loop.length);
@@ -693,6 +694,7 @@ function cdtDiskOf(
                 [...collar, ...inward, ...hex, ...refine],
                 { points, faces, steinerCount: steiner.length, sliverMaxAspect },
                 wantSteiner,
+                opts?.denseRim === true,
             );
             return angled;
         }
@@ -713,6 +715,7 @@ function cdtDiskOf(
             [...collar, ...inward, ...hex, ...refine],
             best,
             wantSteiner,
+            opts?.denseRim === true,
         );
     }
     const steiner = wantSteiner ? [...collar, ...inward, ...hex, ...refine] : [];
@@ -739,6 +742,7 @@ function tryInsetStrip(
     loop: PolyPoint[],
     margin: number,
     insetMm: number,
+    denseRim = false,
 ): {
     points: PolyPoint[];
     faces: Array<[number, number, number]>;
@@ -751,12 +755,13 @@ function tryInsetStrip(
     const extraEdges: Array<[number, number]> = [];
     const nB = loop.length;
     for (let i = 0; i < extra.length; i++) extraEdges.push([nB + i, nB + ((i + 1) % extra.length)]);
-    return { ...cdtDiskOf(loop, extra, extraEdges, margin), usedSliverFallback: true };
+    return { ...cdtDiskOf(loop, extra, extraEdges, margin, { denseRim }), usedSliverFallback: true };
 }
 
 function triangulateWithOffsetFallback(
     loop: PolyPoint[],
     margin: number,
+    denseRim = false,
 ): {
     points: PolyPoint[];
     faces: Array<[number, number, number]>;
@@ -765,7 +770,7 @@ function triangulateWithOffsetFallback(
     usedSliverFallback: boolean;
 } {
     try {
-        return { ...cdtDiskOf(loop, [], [], margin), usedSliverFallback: false };
+        return { ...cdtDiskOf(loop, [], [], margin, { denseRim }), usedSliverFallback: false };
     } catch (err) {
         const msg = String(err);
         if (!msg.includes("[S1-CDT]") && !msg.includes("[S1-I]")) {
@@ -775,7 +780,7 @@ function triangulateWithOffsetFallback(
         let last: unknown = err;
         for (const insetMm of insets) {
             try {
-                return tryInsetStrip(loop, margin, insetMm);
+                return tryInsetStrip(loop, margin, insetMm, denseRim);
             } catch (next) {
                 last = next;
             }
@@ -792,6 +797,7 @@ function triangulateWithOffsetFallback(
 export function triangulatePlantarXY(
     boundary: PolyPoint[],
     margin = PLANTAR_MARGIN_MM,
+    denseRim = false,
 ): {
     points: PolyPoint[];
     faces: Array<[number, number, number]>;
@@ -803,7 +809,7 @@ export function triangulatePlantarXY(
     usedSliverFallback: boolean;
 } {
     const loop = boundary.map((p) => ({ ...p, z: 0 }));
-    const mesh = triangulateWithOffsetFallback(loop, margin);
+    const mesh = triangulateWithOffsetFallback(loop, margin, denseRim);
     return {
         points: mesh.points,
         faces: mesh.faces,
@@ -825,9 +831,11 @@ export function buildGeneratedPlantar(input: {
     marginMm?: number;
     sampler?: PlantarSampler;
     flat?: boolean;
+    /** Morton's rim. Widens the interior duplicate nudge from 0.045 mm to 0.12 mm. */
+    denseRim?: boolean;
 }): GeneratedPlantar {
     const boundary = input.boundary.map((p) => ({ ...p }));
-    const mesh = triangulatePlantarXY(boundary, input.marginMm ?? PLANTAR_MARGIN_MM);
+    const mesh = triangulatePlantarXY(boundary, input.marginMm ?? PLANTAR_MARGIN_MM, input.denseRim === true);
     const sampler = input.sampler;
     let extraLift = 0;
     if (sampler) {

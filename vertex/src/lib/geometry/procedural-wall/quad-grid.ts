@@ -317,6 +317,8 @@ export interface BuildQuadGridInput {
     wallStyle?: WallStyleParams;
     /** Smooth Round rim tangents. Set only while a full-length wedge is active. */
     fairRoundTangent?: boolean;
+    /** Morton's dense rim. Widens the plantar duplicate nudge. Off leaves 0.045 mm. */
+    denseRim?: boolean;
 }
 
 function headingOfStation(st: HermiteStation): { h: { x: number; y: number }; planLen: number } {
@@ -689,6 +691,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
         marginMm: PLANTAR_MARGIN_MM,
         sampler,
         flat: true,
+        denseRim: input.denseRim,
     });
     let fieldLift = plantar.extraLift;
     let soleZ = (x: number, y: number, fallback = 0): number => sampler.z(x, y, fallback) + fieldLift;
@@ -906,6 +909,7 @@ export function buildQuadGrid(input: BuildQuadGridInput): QuadGrid {
             marginMm: PLANTAR_MARGIN_MM,
             sampler,
             flat: true,
+            denseRim: input.denseRim,
         });
         fieldLift = plantar.extraLift;
         soleZ = (x, y, fallback = 0) => sampler.z(x, y, fallback) + fieldLift;

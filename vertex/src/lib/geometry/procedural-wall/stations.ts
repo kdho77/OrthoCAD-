@@ -806,19 +806,27 @@ export function retargetPlantarFromE(E: PolyPoint[], plantarLoop: PolyPoint[]): 
     return spreadClosedOnLoop(out, plantarLoop, 0.4);
 }
 
-/** Keep closed B samples strictly increasing. Collapsed hits fan out to `minMm`; real gaps already above 0.05 mm stay put. */
-export function spreadClosedOnLoop(pts: PolyPoint[], loop: PolyPoint[], minMm: number): PolyPoint[] {
+/**
+ * Keep closed B samples strictly increasing. Collapsed hits fan out to `minMm`.
+ * `denseRim` (Morton's only) leaves real gaps above 0.05 mm alone. Without it,
+ * every gap under `minMm` is inflated — the pre-Morton's bytes.
+ */
+export function spreadClosedOnLoop(
+    pts: PolyPoint[],
+    loop: PolyPoint[],
+    minMm: number,
+    opts?: { denseRim?: boolean },
+): PolyPoint[] {
     const n = pts.length;
     if (n < 3 || loop.length < 3) return pts.map((p) => ({ ...p }));
     const { cum, total } = polylineArcLengths(loop);
     if (total < 1e-6) return pts.map((p) => ({ ...p }));
     const s01 = pts.map((p) => nearestS01(p, loop, cum, total));
     const outS = unwrapAllowPlateau(s01);
-    // Plateaus (collapsed heel hits) still fan out to minMm. A dense run whose
-    // gaps are already real — the medial blend sampled under 0.05 mm — is left
-    // alone. Inflating those gaps walks B ahead of R and fans every heading.
     const minS = minMm / total;
-    const collapseS = 0.05 / total;
+    // Off path: inflate every gap under minMm. Morton's: only collapsed gaps
+    // under 0.05 mm. Inflating a real medial blend walks B ahead of R.
+    const collapseS = opts?.denseRim ? 0.05 / total : minS;
     for (let i = 1; i < n; i++) {
         if (outS[i]! - outS[i - 1]! < collapseS) outS[i] = outS[i - 1]! + minS;
     }
@@ -975,13 +983,15 @@ export function stampMonotonicTB(
 
 /**
  * After t_B smooth, remap B on the pattern while keeping t order.
- * Neighbour Δt stays within 1.49, or within the rim-gap ratio when the rim
- * itself is denser than that (medial blend). Fall back to equal arc-length
- * only if the clamp still crosses.
+ * Neighbour Δt stays within 1.49. `denseRim` (Morton's only) widens that to
+ * the rim-gap ratio and, if the clamp still crosses, follows the rim arc
+ * instead of equal spacing. Uniform rims keep the 1.49 clamp and the equal
+ * fallback so Morton's-off bytes do not move.
  */
 export function reparameterizeBArcLength(
     stations: Array<{ outline: PolyPoint; rim: PolyPoint; tB?: number }>,
     loop: PolyPoint[],
+    opts?: { denseRim?: boolean },
 ): boolean {
     const n = stations.length;
     if (n < 3 || loop.length < 3) return false;
@@ -1004,11 +1014,8 @@ export function reparameterizeBArcLength(
             const j = (i + 1) % n;
             const a = deltas[i]!;
             const b = deltas[j]!;
-            // A dense medial blend is a real rim-gap ratio. Clamping B tighter
-            // than that walks the outline off the rim and fans headings around
-            // the foot. Uniform rims stay on the 1.49 clamp.
             const rimRatio = Math.max(rimD[i]!, rimD[j]!) / Math.min(rimD[i]!, rimD[j]!);
-            const allow = Math.max(ratio, rimRatio);
+            const allow = opts?.denseRim ? Math.max(ratio, rimRatio) : ratio;
             if (b > a * allow + 1e-12 || a > b * allow + 1e-12) {
                 const s = a + b;
                 const lo = s / (1 + allow);
@@ -1026,6 +1033,11 @@ export function reparameterizeBArcLength(
     const next: number[] = [t0];
     for (let i = 0; i < n - 1; i++) next.push(next[i]! + deltas[i]!);
     if (commitTB(stations, loop, next)) return true;
+    if (!opts?.denseRim) {
+        const equal: number[] = [];
+        for (let i = 0; i < n; i++) equal.push(t0 + i / n);
+        return commitTB(stations, loop, equal);
+    }
     // Index-uniform B leaves a dense rim (medial blend) with columns that
     // fan. Follow the rim's own arc length so B stays opposite R.
     let acc = 0;

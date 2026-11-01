@@ -1212,11 +1212,11 @@ export function limitStationSkew(
     loop: PolyPoint[],
     r1: number,
     r2: number,
-    opts?: ForefootSkewExempt & { minX?: number; lengthMm?: number },
+    opts?: ForefootSkewExempt & { minX?: number; lengthMm?: number; denseRim?: boolean },
 ): void {
     if (stations.length < 3 || loop.length < 3) return;
     slideSkewStations(stations, loop, r1, r2, opts);
-    repairNeighbourHeading(stations, loop, r1, r2);
+    repairNeighbourHeading(stations, loop, r1, r2, opts?.denseRim);
     // spreadClosedOnLoop can put skew back over 0.5 inset; slide once more.
     slideSkewStations(stations, loop, r1, r2, opts);
 }
@@ -1249,7 +1249,13 @@ function pullHeading(st: HermiteStation, ref: HermiteStation, loop: PolyPoint[])
     return true;
 }
 
-function repairNeighbourHeading(stations: HermiteStation[], loop: PolyPoint[], r1: number, r2: number): void {
+function repairNeighbourHeading(
+    stations: HermiteStation[],
+    loop: PolyPoint[],
+    r1: number,
+    r2: number,
+    denseRim?: boolean,
+): void {
     void r1;
     void r2;
     for (let pass = 0; pass < 8; pass++) {
@@ -1267,6 +1273,7 @@ function repairNeighbourHeading(stations: HermiteStation[], loop: PolyPoint[], r
         stations.map((s) => s.outline),
         loop,
         0.4,
+        { denseRim },
     );
     for (let i = 0; i < stations.length; i++) {
         const p = spread[i]!;

@@ -155,7 +155,9 @@ export async function buildExportStl(side: Side, _options: BuildExportStlOptions
                     ? { eulerCharacteristic: 2, heelBridgeSelfIntersections: 0 }
                     : DEFAULT_GLB_CLOSED_BASELINE
                 : null;
-        assertClosedSolidAcceptable(solid, topN, baseline);
+        assertClosedSolidAcceptable(solid, topN, baseline, {
+            separateWorldAxes: mortonsOn,
+        });
         try {
             return geometryToBinarySTL(solid);
         } finally {
