@@ -3,7 +3,6 @@ import { LeftSidebar } from "@/components/layout/LeftSidebar";
 import { ActiveFootSideBar } from "@/features/clinical/ActiveFootSideBar";
 import { ClinicalPrintStepPanel } from "@/features/clinical/ClinicalPrintStepPanel";
 import { ClinicalScanStepPanel } from "@/features/clinical/ClinicalScanStepPanel";
-import { HardnessStepPanel } from "@/features/clinical/HardnessStepPanel";
 import { CorrectionsPanel } from "@/features/corrections/CorrectionsPanel";
 import { ElementsPanel } from "@/features/elements/ElementsPanel";
 import { ExportPanel } from "@/features/exports/ExportPanel";
@@ -18,7 +17,6 @@ import { useDesignStore } from "@/stores/design-store";
 export function RightPanel() {
     const step = useClinicalWorkflowStore((s) => s.step);
     const scanPattern = useDesignStore((s) => s.design.pattern);
-    const method = useDesignStore((s) => s.design.method);
 
     return (
         <aside className="flex h-full w-full flex-col border-l border-border bg-panel lg:w-80 lg:shrink-0">
@@ -64,7 +62,6 @@ export function RightPanel() {
                     {step === "print" ? (
                         <div className="space-y-3">
                             <ClinicalPrintStepPanel />
-                            {method === "milling_3axis" ? null : <HardnessStepPanel />}
                         </div>
                     ) : null}
                     {step === "export" ? <ExportPanel /> : null}

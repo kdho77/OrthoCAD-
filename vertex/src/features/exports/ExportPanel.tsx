@@ -1,252 +1,327 @@
-import { Boxes, CheckCircle2, Download, FileCode2, Loader2, Lock, TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import { ChevronRight } from "lucide-react";
+import { useEffect, useState } from "react";
 import { CaseOrderSummary } from "@/components/clinical/CaseOrderSummary";
-import { Button } from "@/components/ui/button";
-import { HardnessRegionList } from "@/features/clinical/HardnessRegionList";
+import { ExportTile } from "@/features/exports/ExportTile";
+import { buildExportFilename } from "@/features/exports/export-filename";
 import { exportDesign } from "@/features/exports/export-service";
+import { designRevisionFingerprint, useExportSessionStore } from "@/features/exports/export-session-store";
 import { stlExportUserMessage } from "@/features/exports/export-user-message";
+import { PrintFooter, useMachineSummaryLine } from "@/features/exports/PrintFooter";
+import { PrintProgressCard } from "@/features/exports/PrintProgressCard";
 import { TextSummary } from "@/features/exports/TextSummary";
+import { showSuperAdminLink } from "@/features/admin/admin-nav";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { useSolidValidation } from "@/hooks/useSolidValidation";
-import type { HardnessExportReport } from "@/lib/hardness/report";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
-import { useKernelStore } from "@/stores/kernel-store";
-import { SIDE_LABELS, type Side } from "@/types";
+import { useMillingProfileStore } from "@/stores/milling-profile-store";
 
-type ExportKind = "stl" | "glb" | "3mf" | null;
+function tokenLine(userBalance: number | undefined, licenseStatus: string | undefined): string {
+    return `${userBalance ?? 0} tokens · License ${licenseStatus ?? "none"}`;
+}
 
 export function ExportPanel() {
     const { user, license } = useAuthStore();
-    const { design, exportSide, setExportSide } = useDesignStore();
-    const kernelName = useKernelStore((s) => s.name);
-    const [status, setStatus] = useState<string | null>(null);
-    const [busyKind, setBusyKind] = useState<ExportKind>(null);
+    const { design, exportTarget } = useDesignStore();
+    const machine = useMillingProfileStore((s) => s.machine);
+    const setStep = useClinicalWorkflowStore((s) => s.setStep);
+    const [devOpen, setDevOpen] = useState(false);
+    const [focusPrint, setFocusPrint] = useState(false);
+    const [busy, setBusy] = useState<"stl" | "3mf" | "glb" | null>(null);
+    const [errors, setErrors] = useState<Partial<Record<"stl" | "3mf" | "glb", string>>>({});
 
+    const validationSide = exportTarget === "right" ? "right" : "left";
+    const validation = useSolidValidation(design, validationSide);
     const stlCheck = canExport(user, license, "stl");
-    const glbCheck = canExport(user, license, "glb");
     const threeMfCheck = canExport(user, license, "3mf");
-    const validation = useSolidValidation(design, exportSide);
-    const busy = busyKind !== null;
-    const [report, setReport] = useState<HardnessExportReport | null>(null);
-    const [warning, setWarning] = useState<string | null>(null);
+    const glbCheck = canExport(user, license, "glb");
 
-    const handleStl = async () => {
-        setBusyKind("stl");
+    const session = useExportSessionStore();
+    const revision = designRevisionFingerprint(design);
+    const machineSummary = useMachineSummaryLine();
+
+    useEffect(() => {
+        useExportSessionStore.getState().setDesignRevision(revision);
+    }, [revision]);
+
+    const requireTarget = (): boolean => {
+        if (exportTarget) return true;
+        return false;
+    };
+
+    const runStl = async () => {
+        if (!exportTarget) return;
+        setBusy("stl");
+        setErrors((e) => ({ ...e, stl: undefined }));
+        session.setProgress({ phase: "exporting", message: "Exporting STL…" });
         try {
-            const res = await exportDesign("stl", exportSide);
-            setStatus(
-                res.ok
-                    ? `Exported ${res.filename} (-${TOKEN_COST.stl} token)`
-                    : stlExportUserMessage(res.reason),
-            );
-            setWarning(res.warning ?? null);
-        } catch (e) {
-            setStatus(stlExportUserMessage(e instanceof Error ? e.message : undefined));
+            const res = await exportDesign("stl", exportTarget);
+            if (res.ok && res.blob) {
+                session.recordSuccess({
+                    id: `stl-${Date.now()}`,
+                    kind: "stl",
+                    target: exportTarget,
+                    filename: res.filename ?? buildExportFilename("stl", exportTarget),
+                    sizeBytes: res.blob.size,
+                    blob: res.blob,
+                    tokensCharged: TOKEN_COST.stl,
+                    designRevision: revision,
+                    createdAt: Date.now(),
+                });
+            } else {
+                setErrors((e) => ({ ...e, stl: stlExportUserMessage(res.reason) }));
+                session.setProgress({ phase: "idle" });
+            }
+        } catch (err) {
+            setErrors((e) => ({
+                ...e,
+                stl: stlExportUserMessage(err instanceof Error ? err.message : undefined),
+            }));
+            session.setProgress({ phase: "idle" });
         } finally {
-            setBusyKind(null);
+            setBusy(null);
         }
     };
 
-    const handle3mf = async () => {
-        setBusyKind("3mf");
-        setStatus("Building 3MF with hardness modifiers…");
+    const run3mf = async () => {
+        if (!exportTarget) return;
+        setBusy("3mf");
+        setErrors((e) => ({ ...e, "3mf": undefined }));
+        session.setProgress({ phase: "exporting", message: "Building 3MF…" });
         try {
-            const res = await exportDesign("3mf", exportSide);
-            setStatus(
-                res.ok
-                    ? `Exported ${res.filename} (-${TOKEN_COST["3mf"]} token)`
-                    : (res.reason ?? "3MF export failed"),
-            );
-            setReport(res.report ?? null);
-            setWarning(res.warning ?? null);
-        } catch (e) {
-            setStatus(e instanceof Error ? e.message : "3MF export failed");
+            const res = await exportDesign("3mf", exportTarget);
+            if (res.ok && res.blob) {
+                session.recordSuccess({
+                    id: `3mf-${Date.now()}`,
+                    kind: "3mf",
+                    target: exportTarget,
+                    filename: res.filename ?? buildExportFilename("3mf", exportTarget),
+                    sizeBytes: res.blob.size,
+                    blob: res.blob,
+                    tokensCharged: TOKEN_COST["3mf"],
+                    designRevision: revision,
+                    createdAt: Date.now(),
+                });
+            } else {
+                setErrors((e) => ({ ...e, "3mf": res.reason ?? "3MF export failed" }));
+                session.setProgress({ phase: "idle" });
+            }
+        } catch (err) {
+            setErrors((e) => ({ ...e, "3mf": err instanceof Error ? err.message : "3MF export failed" }));
+            session.setProgress({ phase: "idle" });
         } finally {
-            setBusyKind(null);
+            setBusy(null);
         }
     };
 
-    const handleGlb = async () => {
-        setBusyKind("glb");
-        setStatus("Generating GLB…");
+    const runGlb = async () => {
+        if (!exportTarget || exportTarget === "pair") return;
+        setBusy("glb");
         try {
-            const res = await exportDesign("glb", exportSide);
-            setStatus(
-                res.ok
-                    ? `Exported ${res.filename} (-${TOKEN_COST.glb} token)`
-                    : (res.reason ?? "GLB export failed"),
-            );
+            await exportDesign("glb", exportTarget);
         } finally {
-            setBusyKind(null);
+            setBusy(null);
         }
     };
 
-    const watertightLabel = validation.error
-        ? "Export geometry invalid"
-        : validation.isWatertight
-          ? "Watertight solid"
-          : validation.triangleCount > 0
-            ? `${validation.openEdges} open edges`
-            : "Analyzing…";
+    const stlRecord = session.byKind.stl;
+    const mfRecord = session.byKind["3mf"];
+    const gcodeRecord = session.byKind.gcode;
+    const cncLocked = machine === "cnc";
 
     return (
-        <div className="space-y-3">
+        <div className="relative flex min-h-0 flex-col gap-3 pb-36">
             <CaseOrderSummary />
             <TextSummary />
-            <div className="rounded-md border border-border bg-background/50 p-2 text-xs">
-                <div className="flex justify-between">
-                    <span className="text-muted-foreground">Token balance</span>
-                    <span className="tabular-nums">{user?.tokenBalance ?? 0}</span>
-                </div>
-                <div className="mt-1 flex justify-between">
-                    <span className="text-muted-foreground">License</span>
-                    <span>{license?.status ?? "none"}</span>
-                </div>
-                <div className="mt-1 flex justify-between">
-                    <span className="text-muted-foreground">Kernel</span>
-                    <span className="capitalize">{kernelName.replace(/-/g, " ")}</span>
-                </div>
-            </div>
+            <p className="text-[11px] text-muted-foreground">{tokenLine(user?.tokenBalance, license?.status)}</p>
 
-            <div className="flex gap-1">
-                {(["left", "right"] as Side[]).map((s) => (
-                    <Button
-                        key={s}
-                        size="sm"
-                        variant={exportSide === s ? "default" : "secondary"}
-                        className="h-8 flex-1"
-                        onClick={() => setExportSide(s)}
-                    >
-                        {SIDE_LABELS[s]} insole
-                    </Button>
-                ))}
-            </div>
-
-            <div
-                className={cn(
-                    "flex items-center justify-between rounded-md border px-2 py-1.5 text-xs",
-                    validation.isWatertight
-                        ? "border-emerald-500/40 text-emerald-400"
-                        : "border-amber-500/40 text-amber-400",
-                )}
-            >
-                <span className="flex items-center gap-1.5">
-                    {validation.isWatertight ? (
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                    ) : (
-                        <TriangleAlert className="h-3.5 w-3.5" />
-                    )}
-                    {watertightLabel}
-                </span>
-                <span className="tabular-nums text-muted-foreground">
-                    {validation.triangleCount > 0 ? `${validation.triangleCount.toLocaleString()} tris` : "—"}
-                </span>
-            </div>
-
-            {validation.error ? <p className="text-xs text-amber-400">{validation.error}</p> : null}
-            <HardnessRegionList />
-
-            <Button className="w-full" disabled={!stlCheck.ok || busy} onClick={handleStl}>
-                {busyKind === "stl" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                ) : stlCheck.ok ? (
-                    <Download className="h-4 w-4" />
-                ) : (
-                    <Lock className="h-4 w-4" />
-                )}
-                {busyKind === "stl" ? "Exporting STL…" : `Export STL · ${TOKEN_COST.stl} token`}
-            </Button>
-            {!stlCheck.ok ? <p className="text-xs text-amber-400">{stlCheck.reason}</p> : null}
-
-            <Button className="w-full" disabled={!threeMfCheck.ok || busy} onClick={handle3mf}>
-                {busyKind === "3mf" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                ) : threeMfCheck.ok ? (
-                    <Download className="h-4 w-4" />
-                ) : (
-                    <Lock className="h-4 w-4" />
-                )}
-                {busyKind === "3mf" ? "Exporting 3MF…" : `Export 3MF · ${TOKEN_COST["3mf"]} token`}
-            </Button>
-            {!threeMfCheck.ok ? <p className="text-xs text-amber-400">{threeMfCheck.reason}</p> : null}
-
-            <Button
-                variant="secondary"
-                className="w-full"
-                disabled={!glbCheck.ok || busy}
-                onClick={handleGlb}
-                title="Download a watertight, print-ready GLB (top + tapered side walls + bottom) of the current trimline."
-            >
-                {busyKind === "glb" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                ) : glbCheck.ok ? (
-                    <Boxes className="h-4 w-4" />
-                ) : (
-                    <Lock className="h-4 w-4" />
-                )}
-                {busyKind === "glb"
-                    ? "Generating GLB…"
-                    : TOKEN_COST.glb > 0
-                      ? `Download GLB · ${TOKEN_COST.glb} token`
-                      : "Download GLB"}
-            </Button>
-            {!glbCheck.ok ? <p className="text-xs text-amber-400">{glbCheck.reason}</p> : null}
-
-            <div className="flex items-center gap-2 rounded-md border border-border px-2 py-2 text-xs text-muted-foreground">
-                <FileCode2 className="h-4 w-4" />
-                {design.method === "milling_3axis" ? (
-                    <>
-                        3-axis CNC G-code is in the <span className="text-foreground">Mill</span> step ·{" "}
-                        {TOKEN_COST.gcode} tokens
-                    </>
-                ) : (
-                    <>
-                        3D-printer and 3-axis CNC G-code are in the{" "}
-                        <span className="text-foreground">Print</span> step · {TOKEN_COST.gcode} tokens
-                    </>
-                )}
-            </div>
-
-            {status ? <p className="rounded-md bg-muted px-2 py-1.5 text-xs">{status}</p> : null}
-            {warning ? (
-                <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-100/90">
-                    {warning}
-                </p>
+            {validation.error ? (
+                <p className="text-xs text-amber-400">{validation.error}</p>
             ) : null}
-            {report ? (
-                <div
-                    data-testid="hardness-export-report"
-                    className="space-y-1 rounded-md border border-border bg-background/50 p-2 text-[11px]"
-                >
-                    <div className="font-semibold uppercase tracking-wide text-muted-foreground">
-                        Export report {report.ok ? "· ok" : "· failed"}
+
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                <ExportTile
+                    testId="export-tile-gcode"
+                    title="G-code"
+                    purpose="Prepared print file from the Print step"
+                    costLabel={`${TOKEN_COST.gcode} token`}
+                    buttonLabel={
+                        gcodeRecord && !session.isOutOfDate("gcode")
+                            ? "Download G-code"
+                            : "Open Print step"
+                    }
+                    busy={false}
+                    onAction={() => {
+                        if (gcodeRecord && !session.isOutOfDate("gcode") && gcodeRecord.blob) {
+                            const url = URL.createObjectURL(gcodeRecord.blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = gcodeRecord.filename;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                            return;
+                        }
+                        setFocusPrint(true);
+                        setStep("print");
+                    }}
+                    outOfDate={session.isOutOfDate("gcode")}
+                    result={
+                        gcodeRecord
+                            ? {
+                                  filename: gcodeRecord.filename,
+                                  sizeBytes: gcodeRecord.sizeBytes,
+                                  tokensCharged: gcodeRecord.tokensCharged,
+                                  onDownload: () => {
+                                      const url = URL.createObjectURL(gcodeRecord.blob);
+                                      const a = document.createElement("a");
+                                      a.href = url;
+                                      a.download = gcodeRecord.filename;
+                                      a.click();
+                                      URL.revokeObjectURL(url);
+                                  },
+                              }
+                            : undefined
+                    }
+                />
+                <ExportTile
+                    testId="export-tile-stl"
+                    title="STL"
+                    purpose="Mesh for other slicers or CAM"
+                    costLabel={`${TOKEN_COST.stl} token`}
+                    buttonLabel={`Export STL · ${TOKEN_COST.stl} token`}
+                    busy={busy === "stl"}
+                    disabled={!stlCheck.ok || !exportTarget}
+                    locked={!stlCheck.ok}
+                    onAction={() => (requireTarget() ? runStl() : undefined)}
+                    outOfDate={session.isOutOfDate("stl")}
+                    error={
+                        errors.stl
+                            ? { message: errors.stl, noTokens: true, onRetry: runStl }
+                            : undefined
+                    }
+                    result={
+                        stlRecord
+                            ? {
+                                  filename: stlRecord.filename,
+                                  sizeBytes: stlRecord.sizeBytes,
+                                  tokensCharged: stlRecord.tokensCharged,
+                                  onDownload: () => {
+                                      const url = URL.createObjectURL(stlRecord.blob);
+                                      const a = document.createElement("a");
+                                      a.href = url;
+                                      a.download = stlRecord.filename;
+                                      a.click();
+                                      URL.revokeObjectURL(url);
+                                  },
+                              }
+                            : undefined
+                    }
+                />
+                <ExportTile
+                    testId="export-tile-3mf"
+                    title="3MF"
+                    purpose="Hardness-aware pack for Bambu / Prusa slicers"
+                    badge="Recommended"
+                    costLabel={`${TOKEN_COST["3mf"]} token`}
+                    buttonLabel={`Export 3MF · ${TOKEN_COST["3mf"]} token`}
+                    busy={busy === "3mf"}
+                    disabled={!threeMfCheck.ok || !exportTarget}
+                    locked={!threeMfCheck.ok}
+                    onAction={() => (requireTarget() ? run3mf() : undefined)}
+                    outOfDate={session.isOutOfDate("3mf")}
+                    error={
+                        errors["3mf"]
+                            ? { message: errors["3mf"], noTokens: true, onRetry: run3mf }
+                            : undefined
+                    }
+                    result={
+                        mfRecord
+                            ? {
+                                  filename: mfRecord.filename,
+                                  sizeBytes: mfRecord.sizeBytes,
+                                  tokensCharged: mfRecord.tokensCharged,
+                                  onDownload: () => {
+                                      const url = URL.createObjectURL(mfRecord.blob);
+                                      const a = document.createElement("a");
+                                      a.href = url;
+                                      a.download = mfRecord.filename;
+                                      a.click();
+                                      URL.revokeObjectURL(url);
+                                  },
+                              }
+                            : undefined
+                    }
+                />
+            </div>
+
+            {showSuperAdminLink(user?.role) ? (
+                <div>
+                    <button
+                        type="button"
+                        onClick={() => setDevOpen((v) => !v)}
+                        className="flex w-full items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                    >
+                        <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", devOpen && "rotate-90")} />
+                        Developer
+                    </button>
+                    {devOpen ? (
+                        <ExportTile
+                            testId="export-tile-glb"
+                            title="GLB"
+                            purpose="Watertight preview solid (super admin)"
+                            costLabel="0 tokens"
+                            buttonLabel="Download GLB"
+                            busy={busy === "glb"}
+                            disabled={!glbCheck.ok || !exportTarget || exportTarget === "pair"}
+                            onAction={runGlb}
+                        />
+                    ) : null}
+                </div>
+            ) : null}
+
+            {session.sessionFiles.length > 0 ? (
+                <div className="space-y-1" data-testid="session-export-files">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Files this session
                     </div>
-                    {report.errors.map((e) => (
-                        <p key={e} className="text-destructive">
-                            {e}
-                        </p>
-                    ))}
-                    {report.warnings.map((w) => (
-                        <p key={w} className="text-amber-200">
-                            {w}
-                        </p>
-                    ))}
-                    <ul className="space-y-0.5">
-                        {report.regions.map((r) => (
-                            <li key={r.regionId} className="flex justify-between gap-2">
-                                <span>
-                                    {r.regionId} · {r.kind} · {r.hardnessClass} · {r.status}
-                                </span>
-                                <span className="tabular-nums text-muted-foreground">
-                                    {r.volumeMm3.toFixed(1)} mm³
-                                </span>
+                    <ul className="space-y-1 text-[11px]">
+                        {session.sessionFiles.map((file) => (
+                            <li key={file.id} className="flex items-center justify-between gap-2">
+                                <span className="truncate">{file.filename}</span>
+                                <button
+                                    type="button"
+                                    className="shrink-0 text-primary hover:underline"
+                                    onClick={() => {
+                                        const url = URL.createObjectURL(file.blob);
+                                        const a = document.createElement("a");
+                                        a.href = url;
+                                        a.download = file.filename;
+                                        a.click();
+                                        URL.revokeObjectURL(url);
+                                    }}
+                                >
+                                    Re-download
+                                </button>
                             </li>
                         ))}
                     </ul>
                 </div>
             ) : null}
+
+            <PrintProgressCard />
+
+            <PrintFooter
+                machineSummary={machineSummary}
+                cncLocked={cncLocked}
+                cncLockReason="Left + Right in one file"
+                primaryLabel="Export uses target above"
+                primaryDisabled
+                focusPrimary={focusPrint}
+                showTargetPulse={!exportTarget}
+                onPrimary={() => undefined}
+            />
         </div>
     );
 }

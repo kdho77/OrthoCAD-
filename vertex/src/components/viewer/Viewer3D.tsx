@@ -159,6 +159,7 @@ export function Viewer3D() {
         loadingBySide: baseMeshLoadingBySide,
         phaseBySide: loftPhaseBySide,
         error: loftError,
+        progressInPanel: printPreview,
     });
     // Select primitives only — returning a fresh object from a zustand selector
     // causes an infinite re-render loop (React #185) once registration completes.

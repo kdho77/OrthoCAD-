@@ -22,7 +22,7 @@ export function isLicenseValid(license: License | null): LicenseCheck {
  */
 export const TOKEN_COST: Record<"stl" | "gcode" | "glb" | "3mf", number> = {
     stl: 1,
-    gcode: 2,
+    gcode: 1,
     glb: 0,
     "3mf": 1,
 };
