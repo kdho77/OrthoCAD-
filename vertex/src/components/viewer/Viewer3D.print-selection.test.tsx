@@ -11,12 +11,22 @@ import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { Viewer3D } from "./Viewer3D";
 
 const canvasEvents = rs.hoisted(() => ({ click: () => {}, miss: () => {} }));
+const fiberState = rs.hoisted(() => ({
+    scene: { getObjectByName: () => undefined },
+    invalidate: () => {},
+    camera: {},
+    gl: {},
+}));
 rs.mock("@react-three/fiber", () => ({
     Canvas: (props: { children: React.ReactNode; onClick: () => void; onPointerMissed: () => void }) => {
         canvasEvents.click = props.onClick;
         canvasEvents.miss = props.onPointerMissed;
         return props.children;
     },
+    // Viewer3D renders PressureMapOverlay, which calls useThree. The mock used
+    // to export only Canvas, so those renders threw "useThree is not a function".
+    useThree: (selector?: (state: typeof fiberState) => unknown) =>
+        typeof selector === "function" ? selector(fiberState) : fiberState,
 }));
 rs.mock("@react-three/drei", () => ({ OrbitControls: () => null }));
 rs.mock("./BaseInsoleMesh", () => ({ BaseInsoleMesh: () => null }));
