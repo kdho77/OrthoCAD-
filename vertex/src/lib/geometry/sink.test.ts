@@ -564,8 +564,34 @@ describe("sink scalar field", () => {
         const frame = sinkFrame(first, ctx)!;
         expect(sinkCutMm(frame.dx, frame.dy, ctx).mm).toBeGreaterThan(3.9);
         expect(sinkCutMm(frame.cx, frame.cy, ctx, 0).mm).toBe(0);
-        expect(sinkCutMm(frame.cx, frame.cy, ctx, 0.04).mm).toBeGreaterThan(3.9);
-        expect(sinkCutMm(frame.cx, frame.cy, ctx, 0.1).mm).toBeGreaterThan(3.9);
+        const half = effectiveOutlineHalfWidth(frame.u, ctx.lengthMm, ctx.widthMm, null) * (ctx.widthMm / 2);
+        const span = half * 2;
+        let fadeStart = 0.04;
+        const wide = 12 / span;
+        const cap = Math.max(fadeStart, frame.v * 0.8);
+        fadeStart = Math.min(Math.max(fadeStart, wide), cap);
+        const yAt = (v: number) => -half + v * span;
+        for (const v of [0, 0.02, 0.04, fadeStart]) {
+            const cut = sinkCutMm(frame.cx, yAt(v), ctx).mm;
+            const thick = sinkThicknessMm(frame.cx, yAt(v), ctx);
+            expect(cut, `cut <= added thickness at v=${v}`).toBeLessThanOrEqual(thick + 1e-6);
+        }
+        expect(sinkCutMm(frame.cx, frame.cy, ctx).mm).toBeGreaterThan(3.9);
+    });
+
+    test("reverse kinetic wedge cut still fades out to the medial outline", () => {
+        const wedge = placed("rkw", 4);
+        const ctx = surface(9, "left", [wedge]);
+        const frame = sinkFrame(wedge, ctx)!;
+        const half = effectiveOutlineHalfWidth(frame.u, ctx.lengthMm, ctx.widthMm, null) * (ctx.widthMm / 2);
+        const oneMm = sinkCutMm(frame.cx, -half + 1, ctx).mm;
+        expect(oneMm).toBeGreaterThan(0);
+        const first = placed("mpj1", 4);
+        const mpjCtx = surface(9, "left", [first]);
+        const mpj = sinkFrame(first, mpjCtx)!;
+        const mpjHalf =
+            effectiveOutlineHalfWidth(mpj.u, mpjCtx.lengthMm, mpjCtx.widthMm, null) * (mpjCtx.widthMm / 2);
+        expect(sinkCutMm(mpj.cx, -mpjHalf + 1, mpjCtx).mm).toBe(0);
     });
 
     test("heightAt adds T and leaves the wedge term unchanged", () => {

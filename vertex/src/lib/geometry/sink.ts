@@ -975,12 +975,13 @@ function wallFade(
             frame.medialFadeMm > 0 && spanMm > 1e-6
                 ? Math.min(0.49, frame.medialFadeMm / spanMm)
                 : MPJ1_V_FADE_START;
-        // The cut stays off the rim in a short band. Thickness is a wider
-        // addition, so the same band leaves a ridge on the mesh. Spread the
-        // thickness fade, keep the sink centre full, and reach zero a few
-        // millimetres inside the outline so the loft wall is not crossed.
+        // Thickness fades over about 12 mm. A met-head sink cut has to use
+        // that same band: a cut that stays full until 4 mm from the medial
+        // edge bottoms out on the 2 mm floor and leaves a trench. The reverse
+        // kinetic wedge keeps its own fade, which runs out to the outline.
         let endV = 0;
-        if (forThickness && spanMm > 1e-6) {
+        const isSinkCut = frame.kind !== "rkw";
+        if ((forThickness || isSinkCut) && spanMm > 1e-6) {
             if (!(frame.medialFadeMm > 0)) {
                 const wide = 12 / spanMm;
                 const cap = Math.max(startV, frame.v * 0.8);
