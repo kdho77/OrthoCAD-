@@ -2,8 +2,8 @@
 // Client scan blobs. Bytes stay behind this repository. No Supabase client.
 // The scan is PHI and is never the manufacturing mesh.
 
-import { type Actor, ClientFileError, canAccessOrg } from "./client-files";
-import { isScanRetained, scanRetentionLabel } from "./retention";
+import { type Actor, ClientFileError, canAccessOrg } from "./client-files.js";
+import { isScanRetained, scanRetentionLabel } from "./retention.js";
 
 export const SCAN_SIDES = ["left", "right"] as const;
 export type ScanSide = (typeof SCAN_SIDES)[number];

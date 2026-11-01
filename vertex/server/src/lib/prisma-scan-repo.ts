@@ -2,12 +2,8 @@
 // Postgres adapter for client scan blobs. Prisma only. No Supabase client.
 
 import type { PrismaClient } from "@prisma/client";
-import {
-    ClientFileError,
-    type ScanMeta,
-    type ScanRepo,
-    type ScanSide,
-} from "../../../shared/client-scans.js";
+import { ClientFileError } from "../../../shared/client-files.js";
+import type { ScanMeta, ScanRepo, ScanSide } from "../../../shared/client-scans.js";
 
 function mapScan(row: {
     id: string;

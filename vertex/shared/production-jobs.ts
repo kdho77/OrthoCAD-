@@ -3,7 +3,7 @@
 // the exact bytes already saved. This module does not slice, does not talk to
 // a printer or a mill, and does not create customer orders.
 
-import { type Actor, canAccessOrg } from "./client-files";
+import { type Actor, canAccessOrg } from "./client-files.js";
 
 export const GCODE_RETAIN_MS = 90 * 24 * 60 * 60 * 1000;
 

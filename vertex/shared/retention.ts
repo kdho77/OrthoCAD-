@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 // Retention labels for scans and stored G-code. No storage client.
 
-import { GCODE_RETAIN_MS } from "./production-jobs";
+import { GCODE_RETAIN_MS } from "./production-jobs.js";
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 /** Three 365-day years from upload. Not a calendar-year boundary. */

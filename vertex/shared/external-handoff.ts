@@ -6,8 +6,8 @@
 // before it is allowed to issue or consume a token. VO2 and OrthoCloud are not
 // implemented here.
 
-import type { ChartShoeWidth } from "./client-files";
-import type { ScanSide } from "./client-scans";
+import type { ChartShoeWidth } from "./client-files.js";
+import type { ScanSide } from "./client-scans.js";
 
 export interface ExternalOrderHandoff {
     externalOrderId: string;
