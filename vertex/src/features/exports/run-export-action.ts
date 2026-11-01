@@ -17,6 +17,7 @@ import {
     type GrindingStyleInput,
 } from "@/features/exports/export-service";
 import type { SessionExportRecord } from "@/features/exports/export-session-store";
+import { useExportSessionStore } from "@/features/exports/export-session-store";
 import type { ExportOutputTarget } from "@/features/exports/export-target";
 import { stlExportUserMessage } from "@/features/exports/export-user-message";
 import { TOKEN_COST } from "@/features/licensing/license";
@@ -105,7 +106,9 @@ export async function runExportForChoice(options: {
     } = options;
 
     if (choice === "stl") {
-        const res = await exportDesign("stl", target);
+        const onProgress = (patch: { phase: "exporting" | "slicing"; message: string }) =>
+            useExportSessionStore.getState().setProgress(patch);
+        const res = await exportDesign("stl", target, { onProgress });
         const record = sessionFilesFromOutcome(res, "stl", target, designRevision, TOKEN_COST.stl);
         if (!record) {
             return { ok: false, reason: stlExportUserMessage(res.reason), noTokens: true };
@@ -114,7 +117,9 @@ export async function runExportForChoice(options: {
     }
 
     if (choice === "3mf") {
-        const res = await exportDesign("3mf", target);
+        const onProgress = (patch: { phase: "exporting" | "slicing"; message: string }) =>
+            useExportSessionStore.getState().setProgress(patch);
+        const res = await exportDesign("3mf", target, { onProgress });
         const record = sessionFilesFromOutcome(res, "3mf", target, designRevision, TOKEN_COST["3mf"]);
         if (!record) {
             return { ok: false, reason: res.reason ?? "3MF export failed", noTokens: true };
@@ -133,7 +138,12 @@ export async function runExportForChoice(options: {
     if (!preset) return { ok: false, reason: "Choose a printer preset in Print", noTokens: true };
 
     let res: Awaited<ReturnType<typeof exportPrintGcode>>;
-    const gcodeOptions = { download: true, apexMaterialId: apexMaterialId ?? undefined };
+    const gcodeOptions = {
+        download: true,
+        apexMaterialId: apexMaterialId ?? undefined,
+        onProgress: (patch: { phase: "exporting" | "slicing"; message: string }) =>
+            useExportSessionStore.getState().setProgress(patch),
+    };
     if (cnc) {
         res = await exportCncGcode(["left", "right"], millingProfile);
     } else if (target === "pair" || preset.beltAngleDeg) {

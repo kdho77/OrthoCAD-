@@ -31,18 +31,22 @@ export interface SessionExportRecord {
     files?: SessionExportFilePart[];
 }
 
+export type ExportJobPhase = "idle" | "building" | "exporting" | "slicing" | "ready" | "error";
+
 export interface ExportJobProgress {
-    phase: "idle" | "building" | "exporting" | "slicing" | "ready" | "error";
+    phase: ExportJobPhase;
     message?: string;
 }
 
 interface ExportSessionStore {
     designRevision: string;
     progress: ExportJobProgress;
+    progressStartedAtMs: number | null;
     byKind: Partial<Record<SessionExportKind, SessionExportRecord>>;
     sessionFiles: SessionExportRecord[];
     setDesignRevision: (revision: string) => void;
     setProgress: (progress: ExportJobProgress) => void;
+    setProgressError: (message: string) => void;
     recordSuccess: (record: SessionExportRecord) => void;
     clearKind: (kind: SessionExportKind) => void;
     isOutOfDate: (kind: SessionExportKind) => boolean;
@@ -53,15 +57,43 @@ export function designRevisionFingerprint(design: unknown): string {
     return JSON.stringify(design);
 }
 
+const BUSY_PHASES: ExportJobPhase[] = ["building", "exporting", "slicing", "error"];
+
+export function exportBusyPercent(phase: ExportJobPhase, elapsedMs: number): number {
+    const stepIndex = ["building", "exporting", "slicing", "ready"].indexOf(phase);
+    if (phase === "idle") return 0;
+    if (phase === "error") return 0;
+    if (phase === "ready") return 100;
+    const base = stepIndex >= 0 ? (stepIndex / 4) * 100 : 0;
+    const budget = phase === "building" ? 90_000 : phase === "exporting" ? 45_000 : 120_000;
+    const within = Math.min(0.92, Math.max(0.04, elapsedMs / budget)) * (100 / 4);
+    return Math.min(99, Math.round(base + within));
+}
+
 export const useExportSessionStore = create<ExportSessionStore>((set, get) => ({
     designRevision: "",
     progress: { phase: "idle" },
+    progressStartedAtMs: null,
     byKind: {},
     sessionFiles: [],
 
     setDesignRevision: (designRevision) => set({ designRevision }),
 
-    setProgress: (progress) => set({ progress }),
+    setProgress: (progress) =>
+        set((s) => {
+            const wasBusy = BUSY_PHASES.includes(s.progress.phase);
+            const isBusy = BUSY_PHASES.includes(progress.phase);
+            let progressStartedAtMs = s.progressStartedAtMs;
+            if (isBusy && (!wasBusy || progress.phase !== s.progress.phase)) {
+                progressStartedAtMs = Date.now();
+            }
+            if (progress.phase === "idle" || progress.phase === "ready") {
+                progressStartedAtMs = null;
+            }
+            return { progress, progressStartedAtMs };
+        }),
+
+    setProgressError: (message) => get().setProgress({ phase: "error", message }),
 
     recordSuccess: (record) =>
         set((s) => {
@@ -84,7 +116,8 @@ export const useExportSessionStore = create<ExportSessionStore>((set, get) => ({
                     ...sessionEntries,
                     ...s.sessionFiles.filter((f) => !sessionEntries.some((e) => e.id === f.id)),
                 ].slice(0, 12),
-                progress: { phase: "ready" },
+                progress: { phase: "idle" },
+                progressStartedAtMs: null,
             };
         }),
 

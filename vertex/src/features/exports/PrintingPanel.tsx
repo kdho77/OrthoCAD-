@@ -9,7 +9,6 @@ import { ApexPrintMaterialPicker } from "@/features/exports/ApexPrintMaterialPic
 import { type GrindingStyleInput } from "@/features/exports/export-service";
 import { useExportSessionStore } from "@/features/exports/export-session-store";
 import { MachineSegment, PrintFooter, useMachineSummaryLine } from "@/features/exports/PrintFooter";
-import { PrintProgressCard } from "@/features/exports/PrintProgressCard";
 import {
     ProceduralWallPreviewControls,
     type ProceduralWallStyleChoice,
@@ -24,6 +23,11 @@ import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useExportFileTypeStore } from "@/features/exports/export-file-type-store";
 import { usePrintExportSettingsStore } from "@/features/exports/print-export-settings-store";
+import {
+    defaultPrinterPresetForUi,
+    printerPresetsForUi,
+    resolveUiPrinterPresetId,
+} from "@/features/exports/printer-preset-ui";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { SIDE_LABELS, type Side } from "@/types";
@@ -63,7 +67,6 @@ export function PrintingPanel({
     const [toolDia, setToolDia] = useState(6);
     const [result, setResult] = useState<CamResult | null>(null);
     const [busy, setBusy] = useState(false);
-    const [pulseTarget, setPulseTarget] = useState(false);
     const [advancedOpen, setAdvancedOpen] = useState(false);
     const setStep = useClinicalWorkflowStore((s) => s.setStep);
     const preselectGcode = useExportFileTypeStore((s) => s.preselectGcode);
@@ -80,9 +83,11 @@ export function PrintingPanel({
     });
 
     const presets = useMemo(() => presetsForMethod(design.method), [design.method]);
-    const defaultPreset = useMemo(() => presets.find((p) => p.beltAngleDeg) ?? presets[0], [presets]);
-    const [presetId, setPresetId] = useState(defaultPreset?.id ?? "");
-    const preset = presets.find((p) => p.id === presetId) ?? defaultPreset;
+    const uiPresets = useMemo(() => printerPresetsForUi(presets), [presets]);
+    const defaultPreset = useMemo(() => defaultPrinterPresetForUi(presets), [presets]);
+    const [presetId, setPresetId] = useState(() => resolveUiPrinterPresetId(defaultPreset?.id ?? ""));
+    const resolvedPresetId = resolveUiPrinterPresetId(presetId);
+    const preset = presets.find((p) => p.id === resolvedPresetId) ?? defaultPreset;
     const isBeltPreset = !!preset?.beltAngleDeg;
     const isCnc = design.method === "milling_3axis";
     const gcodeCheck = canExport(user, license, "gcode");
@@ -131,10 +136,6 @@ export function PrintingPanel({
     };
 
     const continueToExport = () => {
-        if (!exportTarget && !cncSelected) {
-            setPulseTarget(true);
-            return;
-        }
         preselectGcode();
         setStep("export");
     };
@@ -156,42 +157,34 @@ export function PrintingPanel({
 
     if (clinicalMode) {
         return (
-            <div className="relative flex flex-col gap-3 pb-40">
-                <MachineSegment machine={machine} setMachine={setMachine} hint={recommendedHint} />
+            <div className="relative flex min-h-0 flex-1 flex-col gap-2">
+                <MachineSegment machine={machine} setMachine={setMachine} />
 
                 {cncSelected ? <CncMillingPanel /> : null}
 
                 {!cncSelected ? (
-                    <div className="space-y-1.5">
+                    <div className="space-y-1">
                         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                             Preset
                         </div>
-                        {presets.map((p) => (
-                            <button
-                                key={p.id}
-                                type="button"
-                                onClick={() => setPresetId(p.id)}
-                                className={cn(
-                                    "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left text-xs",
-                                    presetId === p.id
-                                        ? "border-primary bg-primary/10 text-foreground"
-                                        : "border-border bg-background text-muted-foreground",
-                                )}
-                            >
-                                <Printer className="h-3.5 w-3.5" />
-                                {p.name}
-                                {p.beltAngleDeg ? (
-                                    <span className="ml-auto rounded bg-muted px-1 text-[10px]">
-                                        belt {p.beltAngleDeg}°
-                                    </span>
-                                ) : null}
-                            </button>
-                        ))}
+                        <select
+                            className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
+                            value={resolvedPresetId}
+                            onChange={(e) => setPresetId(e.target.value)}
+                            data-testid="printer-preset-select"
+                        >
+                            {uiPresets.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                    {p.name}
+                                </option>
+                            ))}
+                        </select>
                     </div>
                 ) : null}
 
                 {!cncSelected ? (
                     <ApexPrintMaterialPicker
+                        compact
                         value={apexMaterialId}
                         onChange={(id) => setPrintExportSettings({ apexMaterialId: id })}
                     />
@@ -199,12 +192,12 @@ export function PrintingPanel({
 
                 {materialSection}
 
-                <div className="space-y-1.5">
+                <div className="space-y-1">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                         Grinding
                     </div>
                     {showProceduralWallControls ? (
-                        <ProceduralWallPreviewControls onWallStyle={onWallStyle} />
+                        <ProceduralWallPreviewControls compact onWallStyle={onWallStyle} />
                     ) : (
                         <p className="text-[10px] text-muted-foreground">Straight walls (CNC)</p>
                     )}
@@ -252,18 +245,18 @@ export function PrintingPanel({
                     </div>
                 ) : null}
 
-                <PrintProgressCard />
+                {!gcodeCheck.ok ? <p className="text-xs text-muted-foreground">{gcodeCheck.reason}</p> : null}
 
-                {!gcodeCheck.ok ? <p className="text-xs text-amber-400">{gcodeCheck.reason}</p> : null}
-
-                <PrintFooter
-                    machineSummary={machineSummary}
-                    cncLocked={cncSelected}
-                    cncLockReason="Left + Right in one file"
-                    primaryLabel="Continue to Export"
-                    onPrimary={continueToExport}
-                    showTargetPulse={pulseTarget}
-                />
+                <div className="mt-auto pt-2">
+                    <PrintFooter
+                        machineSummary={machineSummary}
+                        cncLocked={cncSelected}
+                        cncLockReason="Left + Right in one file"
+                        primaryLabel="Continue to Export"
+                        onPrimary={continueToExport}
+                        showBackLink
+                    />
+                </div>
             </div>
         );
     }

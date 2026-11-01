@@ -1,11 +1,14 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { Cpu, Printer } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Cpu, Loader2, Printer } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
+import { effectiveExportTarget } from "@/features/exports/export-target-default";
 import type { ExportOutputTarget } from "@/features/exports/export-target";
-import { exportTargetLabel } from "@/features/exports/export-target";
+import { usePrintExportSettingsStore } from "@/features/exports/print-export-settings-store";
+import { useExportPrimaryBusyLabel } from "@/features/exports/viewport-busy-overlay";
 import { cn } from "@/lib/utils";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
 import { SIDE_LABELS, type Side } from "@/types";
@@ -17,19 +20,12 @@ export interface PrintFooterProps {
     cncLocked?: boolean;
     cncLockReason?: string;
     primaryLabel: string;
-    secondaryLabel?: string;
     onPrimary: () => void;
-    onSecondary?: () => void;
     primaryDisabled?: boolean;
-    showTargetPulse?: boolean;
     busy?: boolean;
     focusPrimary?: boolean;
-    /** Hide the one-line machine summary (Export footer). */
-    hideSummary?: boolean;
-    /** Hide the output hint under the primary button. */
-    hideOutputHint?: boolean;
-    /** Export footer: disabled Apex direct-send placeholder (G-code + 3D printer only). */
     sendToPrinterPlaceholder?: boolean;
+    showBackLink?: boolean;
 }
 
 export function PrintFooter({
@@ -37,33 +33,27 @@ export function PrintFooter({
     cncLocked,
     cncLockReason,
     primaryLabel,
-    secondaryLabel,
     onPrimary,
-    onSecondary,
     primaryDisabled,
-    showTargetPulse,
     busy,
     focusPrimary,
-    hideSummary,
-    hideOutputHint,
     sendToPrinterPlaceholder,
+    showBackLink,
 }: PrintFooterProps) {
     const exportTarget = useDesignStore((s) => s.exportTarget);
     const setExportTarget = useDesignStore((s) => s.setExportTarget);
+    const goBack = useClinicalWorkflowStore((s) => s.goBack);
     const primaryRef = useRef<HTMLButtonElement>(null);
-    const [pulseTarget, setPulseTarget] = useState(false);
+    const effectiveTarget = effectiveExportTarget(exportTarget, cncLocked);
+    const busyLabel = useExportPrimaryBusyLabel(primaryLabel);
+
+    useEffect(() => {
+        if (!cncLocked && exportTarget == null) setExportTarget("pair");
+    }, [cncLocked, exportTarget, setExportTarget]);
 
     useEffect(() => {
         if (focusPrimary) primaryRef.current?.focus();
     }, [focusPrimary]);
-
-    useEffect(() => {
-        if (showTargetPulse) {
-            setPulseTarget(true);
-            const id = window.setTimeout(() => setPulseTarget(false), 1200);
-            return () => window.clearTimeout(id);
-        }
-    }, [showTargetPulse]);
 
     const pick = (target: ExportOutputTarget) => {
         if (cncLocked) return;
@@ -79,15 +69,12 @@ export function PrintFooter({
         >
             <div className="space-y-2">
                 <div
-                    className={cn(
-                        "grid grid-cols-3 gap-1 rounded-md border p-0.5",
-                        pulseTarget ? "animate-pulse border-amber-400" : "border-border",
-                    )}
+                    className="grid grid-cols-3 gap-1 rounded-md border border-border p-0.5"
                     data-testid="export-target-selector"
                 >
                     {choices.map((choice) => {
                         const locked = cncLocked && choice !== "pair";
-                        const active = exportTarget === choice || (cncLocked && choice === "pair");
+                        const active = effectiveTarget === choice;
                         return (
                             <button
                                 key={choice}
@@ -111,62 +98,44 @@ export function PrintFooter({
                 {cncLocked ? (
                     <p className="text-[10px] text-muted-foreground">{cncLockReason}</p>
                 ) : null}
-                {hideSummary ? null : (
-                    <p className="truncate text-[11px] text-muted-foreground">{machineSummary}</p>
-                )}
+                <p className="truncate text-[11px] text-muted-foreground" data-testid="print-export-summary">
+                    {machineSummary}
+                </p>
                 <div className="flex flex-col gap-1.5">
-                    <div
-                        className={cn(
-                            "flex gap-1.5",
-                            sendToPrinterPlaceholder ? "flex-row items-stretch" : "flex-col",
-                        )}
+                    <Button
+                        ref={primaryRef}
+                        className="h-9 w-full gap-2"
+                        disabled={primaryDisabled || busy}
+                        onClick={onPrimary}
+                        data-testid="print-export-primary"
                     >
+                        {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
+                        {busy ? busyLabel : primaryLabel}
+                    </Button>
+                    {sendToPrinterPlaceholder ? (
                         <Button
-                            ref={primaryRef}
-                            className={cn("h-9", sendToPrinterPlaceholder ? "min-w-0 flex-1" : "w-full")}
-                            disabled={primaryDisabled || busy}
-                            onClick={onPrimary}
-                            data-testid="print-export-primary"
+                            type="button"
+                            variant="outline"
+                            className="h-9 w-full opacity-60"
+                            disabled
+                            aria-disabled="true"
+                            title={SEND_TO_PRINTER_TOOLTIP}
+                            data-testid="export-send-to-printer"
+                            onClick={(event) => event.preventDefault()}
                         >
-                            {primaryLabel}
-                        </Button>
-                        {sendToPrinterPlaceholder ? (
-                            <Button
-                                type="button"
-                                variant="outline"
-                                className="h-9 shrink-0 gap-1.5 px-2.5 opacity-60"
-                                disabled
-                                aria-disabled="true"
-                                title={SEND_TO_PRINTER_TOOLTIP}
-                                data-testid="export-send-to-printer"
-                                onClick={(event) => event.preventDefault()}
-                            >
-                                <Printer className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                                <span className="whitespace-nowrap">Send to printer</span>
-                                <span
-                                    className="rounded bg-muted px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground"
-                                    data-testid="export-send-to-printer-tag"
-                                >
-                                    Coming soon
-                                </span>
-                            </Button>
-                        ) : null}
-                    </div>
-                    {secondaryLabel && onSecondary ? (
-                        <Button
-                            variant="secondary"
-                            className="h-8 w-full"
-                            disabled={busy}
-                            onClick={onSecondary}
-                        >
-                            {secondaryLabel}
+                            <Printer className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                            Send to printer — coming soon
                         </Button>
                     ) : null}
                 </div>
-                {exportTarget && !hideOutputHint ? (
-                    <p className="text-[10px] text-muted-foreground">
-                        Output: {exportTargetLabel(exportTarget)}
-                    </p>
+                {showBackLink ? (
+                    <button
+                        type="button"
+                        className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                        onClick={() => goBack()}
+                    >
+                        Back
+                    </button>
                 ) : null}
             </div>
         </div>
@@ -176,39 +145,34 @@ export function PrintFooter({
 export function MachineSegment({
     machine,
     setMachine,
-    hint,
 }: {
     machine: "printer" | "cnc";
     setMachine: (m: "printer" | "cnc") => void;
-    hint: string;
+    hint?: string;
 }) {
     return (
-        <div className="space-y-1.5">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Machine</div>
-            <div className="flex gap-1">
-                {(
-                    [
-                        { id: "printer" as const, label: "3D printer", icon: Printer },
-                        { id: "cnc" as const, label: "3-axis CNC", icon: Cpu },
-                    ] as const
-                ).map((m) => (
-                    <button
-                        key={m.id}
-                        type="button"
-                        onClick={() => setMachine(m.id)}
-                        className={cn(
-                            "flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border px-2 text-xs",
-                            machine === m.id
-                                ? "border-primary bg-primary/10 text-foreground"
-                                : "border-border bg-background text-muted-foreground",
-                        )}
-                    >
-                        <m.icon className="h-3.5 w-3.5" />
-                        {m.label}
-                    </button>
-                ))}
-            </div>
-            <p className="text-[10px] leading-snug text-muted-foreground">{hint}</p>
+        <div className="flex gap-1 rounded-md border border-border p-0.5" data-testid="machine-segment">
+            {(
+                [
+                    { id: "printer" as const, label: "3D printer", icon: Printer },
+                    { id: "cnc" as const, label: "CNC", icon: Cpu },
+                ] as const
+            ).map((m) => (
+                <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setMachine(m.id)}
+                    className={cn(
+                        "flex h-8 flex-1 items-center justify-center gap-1 rounded-sm px-2 text-[11px] font-medium",
+                        machine === m.id
+                            ? "bg-primary text-primary-foreground"
+                            : "text-muted-foreground hover:bg-muted/60",
+                    )}
+                >
+                    <m.icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    {m.label}
+                </button>
+            ))}
         </div>
     );
 }
@@ -216,6 +180,18 @@ export function MachineSegment({
 export function useMachineSummaryLine(): string {
     const machine = useMillingProfileStore((s) => s.machine);
     const design = useDesignStore((s) => s.design);
+    const materialId = usePrintExportSettingsStore((s) => s.apexMaterialId);
     const hardness = design.printRecipe?.defaultHardness ?? "Medium";
-    return machine === "cnc" ? "Idaho CNC · straight walls" : `Apex Belt V2 · TPU · 45° · ${hardness}`;
+    if (machine === "cnc") return "Idaho CNC · straight walls";
+    const material =
+        materialId === "ApexLight"
+            ? "Light"
+            : materialId === "ApexCore"
+              ? "Core"
+              : materialId === "ApexBounce"
+                ? "Bounce"
+                : materialId === "ApexForge"
+                  ? "Forge"
+                  : "TPU";
+    return `Apex V2 · TPU · ${material} · ${hardness}`;
 }

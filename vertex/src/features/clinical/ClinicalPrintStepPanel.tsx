@@ -6,7 +6,6 @@ import { HardnessStepPanel } from "@/features/clinical/HardnessStepPanel";
 import { SplitSettingsPanel } from "@/features/clinical/SplitSettingsPanel";
 import { ExportPanel } from "@/features/exports/ExportPanel";
 import { PrintingPanel } from "@/features/exports/PrintingPanel";
-import { TextSummary } from "@/features/exports/TextSummary";
 import { MillStepPanel } from "@/features/mill/MillStepPanel";
 import { ShapeFinishPanel } from "@/features/shape-finish/ShapeFinishPanel";
 import { shouldShowShapeFinishInPrintAdvanced } from "@/features/shape-finish/shape-finish-mount";
@@ -43,7 +42,7 @@ export function ClinicalPrintStepPanel() {
     }
 
     return (
-        <div className="space-y-3">
+        <div className="flex min-h-0 flex-1 flex-col">
             <PrintingPanel
                 clinicalMode
                 primaryOnly
@@ -56,26 +55,6 @@ export function ClinicalPrintStepPanel() {
                     </>
                 }
             />
-            <TextSummary />
-
-            <button
-                type="button"
-                onClick={() => setAdvancedOpen((v) => !v)}
-                className="flex w-full items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground"
-                aria-expanded={advancedOpen}
-            >
-                <ChevronRight
-                    className={cn("h-3.5 w-3.5 transition-transform", advancedOpen && "rotate-90")}
-                />
-                Advanced (alternate G-code path, presets, manifold / STL / GLB)
-            </button>
-
-            {advancedOpen ? (
-                <div className="space-y-3 rounded-md border border-border bg-background/40 p-2">
-                    <PrintingPanel showWallPreview={false} />
-                    <ExportPanel />
-                </div>
-            ) : null}
         </div>
     );
 }

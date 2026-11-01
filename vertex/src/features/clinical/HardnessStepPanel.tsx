@@ -29,30 +29,50 @@ export function HardnessStepPanel({ compact = false }: { compact?: boolean }) {
                 </p>
             )}
 
-            <div className="space-y-1.5">
+            <div className="space-y-1">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Material / hardness
+                    Hardness
                 </div>
-                <div className="flex flex-col gap-1">
-                    {HARDNESS_NAMES.map((name) => (
-                        <button
-                            key={name}
-                            type="button"
-                            onClick={() => setPrintHardness(name as HardnessName)}
-                            className={cn(
-                                "flex items-center justify-between rounded-md border px-2 py-2 text-left text-xs",
-                                active === name
-                                    ? "border-primary bg-primary/10 text-foreground"
-                                    : "border-border bg-background text-muted-foreground hover:border-primary/40",
-                            )}
-                        >
-                            <span>{name}</span>
-                            <span className="text-[10px] tabular-nums text-muted-foreground">
-                                gyroid {gyroidInfillPctForHardness(name, recipe.hardnessToInfillPct)}%
-                            </span>
-                        </button>
-                    ))}
-                </div>
+                {compact ? (
+                    <div className="flex flex-wrap gap-1">
+                        {HARDNESS_NAMES.map((name) => (
+                            <button
+                                key={name}
+                                type="button"
+                                onClick={() => setPrintHardness(name as HardnessName)}
+                                className={cn(
+                                    "h-8 rounded-md border px-2 text-[10px] font-medium",
+                                    active === name
+                                        ? "border-primary bg-primary/10 text-foreground"
+                                        : "border-border bg-background text-muted-foreground",
+                                )}
+                            >
+                                {name}
+                            </button>
+                        ))}
+                    </div>
+                ) : (
+                    <div className="flex flex-col gap-1">
+                        {HARDNESS_NAMES.map((name) => (
+                            <button
+                                key={name}
+                                type="button"
+                                onClick={() => setPrintHardness(name as HardnessName)}
+                                className={cn(
+                                    "flex items-center justify-between rounded-md border px-2 py-2 text-left text-xs",
+                                    active === name
+                                        ? "border-primary bg-primary/10 text-foreground"
+                                        : "border-border bg-background text-muted-foreground hover:border-primary/40",
+                                )}
+                            >
+                                <span>{name}</span>
+                                <span className="text-[10px] tabular-nums text-muted-foreground">
+                                    gyroid {gyroidInfillPctForHardness(name, recipe.hardnessToInfillPct)}%
+                                </span>
+                            </button>
+                        ))}
+                    </div>
+                )}
             </div>
 
             {compact ? null : (

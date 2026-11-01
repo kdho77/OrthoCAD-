@@ -118,6 +118,7 @@ export interface ExportRunOptions {
     /** Pair second side — skip duplicate token charge (offline client path). */
     skipAuthorize?: boolean;
     apexMaterialId?: ApexPrintMaterialId;
+    onProgress?: (patch: { phase: "exporting" | "slicing"; message: string }) => void;
 }
 
 export async function exportDesign(
@@ -134,9 +135,11 @@ export async function exportDesign(
         return exportGlb(side, download);
     }
     if (format === "3mf") {
+        options.onProgress?.({ phase: "exporting", message: "Exporting 3MF…" });
         if (target === "pair") return export3mfPairForTarget(download);
         return export3mf(target, download);
     }
+    options.onProgress?.({ phase: "exporting", message: "Exporting STL…" });
     if (target === "pair") return exportStlPairForTarget(download);
     return exportStlSingle(target, download);
 }
@@ -303,6 +306,11 @@ export async function generateHybridGcode(
 
     if (isApiConfigured()) {
         try {
+            options.onProgress?.({
+                phase: "slicing",
+                message: "Server is generating G-code…",
+            });
+
             const stlBuffer = await buildManufacturingStl(side);
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 

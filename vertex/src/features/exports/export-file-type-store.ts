@@ -53,9 +53,8 @@ export const useExportFileTypeStore = create<ExportFileTypeStore>()(
 export function exportPrimaryButtonLabel(choice: ExportFileTypeChoice | null, cnc: boolean): string {
     if (!choice) return "Export";
     if (choice === "gcode") {
-        const n = TOKEN_COST.gcode;
-        return cnc ? `Export mill G-code · ${n} token` : `Export G-code · ${n} token`;
+        return cnc ? "Download mill G-code" : "Download G-code";
     }
-    if (choice === "stl") return `Export STL · ${TOKEN_COST.stl}`;
-    return `Export 3MF · ${TOKEN_COST["3mf"]}`;
+    if (choice === "stl") return "Download STL";
+    return "Download 3MF";
 }

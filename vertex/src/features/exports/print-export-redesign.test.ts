@@ -72,10 +72,10 @@ describe("print + export redesign", () => {
     });
 
     test("Export footer primary labels follow file type", () => {
-        expect(exportPrimaryButtonLabel("gcode", false)).toBe("Export G-code · 1 token");
-        expect(exportPrimaryButtonLabel("gcode", true)).toBe("Export mill G-code · 1 token");
-        expect(exportPrimaryButtonLabel("stl", false)).toBe("Export STL · 1");
-        expect(exportPrimaryButtonLabel("3mf", false)).toBe("Export 3MF · 1");
+        expect(exportPrimaryButtonLabel("gcode", false)).toBe("Download G-code");
+        expect(exportPrimaryButtonLabel("gcode", true)).toBe("Download mill G-code");
+        expect(exportPrimaryButtonLabel("stl", false)).toBe("Download STL");
+        expect(exportPrimaryButtonLabel("3mf", false)).toBe("Download 3MF");
     });
 
     test("out-of-date after design revision changes", () => {
@@ -295,9 +295,8 @@ describe("PrintFooter Send to printer placeholder", () => {
         expect(sendBtn).not.toBeNull();
         expect(sendBtn?.getAttribute("aria-disabled")).toBe("true");
         expect(sendBtn?.getAttribute("title")).toBe(SEND_TO_PRINTER_TOOLTIP);
-        expect(container.querySelector('[data-testid="export-send-to-printer-tag"]')?.textContent).toMatch(
-            /Coming soon/i,
-        );
+        expect(sendBtn?.textContent).toMatch(/Send to printer/i);
+        expect(sendBtn?.textContent).toMatch(/coming soon/i);
 
         const tokensBefore = useAuthStore.getState().user?.tokenBalance;
         await act(async () => {
@@ -340,7 +339,7 @@ describe("PrintFooter CNC lock UI", () => {
                     machineSummary: "Idaho CNC",
                     cncLocked: true,
                     cncLockReason: "Left + Right in one file",
-                    primaryLabel: "Export mill G-code · 1 token",
+                    primaryLabel: "Download mill G-code",
                     onPrimary: () => {},
                 }),
             );
