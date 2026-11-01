@@ -6,6 +6,15 @@ import type { ExportFormat } from "@/types";
 
 export type SessionExportKind = "gcode" | "stl" | "3mf";
 
+export interface SessionExportFilePart {
+    side?: "left" | "right";
+    filename: string;
+    sizeBytes: number;
+    blob: Blob;
+    estimatedTimeSec?: number;
+    materialLabel?: string;
+}
+
 export interface SessionExportRecord {
     id: string;
     kind: SessionExportKind;
@@ -18,6 +27,8 @@ export interface SessionExportRecord {
     createdAt: number;
     estimatedTimeSec?: number;
     materialLabel?: string;
+    /** Pair STL / 3MF / printer G-code — two separate downloads. */
+    files?: SessionExportFilePart[];
 }
 
 export interface ExportJobProgress {
@@ -53,11 +64,29 @@ export const useExportSessionStore = create<ExportSessionStore>((set, get) => ({
     setProgress: (progress) => set({ progress }),
 
     recordSuccess: (record) =>
-        set((s) => ({
-            byKind: { ...s.byKind, [record.kind]: record },
-            sessionFiles: [record, ...s.sessionFiles.filter((f) => f.id !== record.id)].slice(0, 12),
-            progress: { phase: "ready" },
-        })),
+        set((s) => {
+            const sessionEntries: SessionExportRecord[] =
+                record.files && record.files.length > 0
+                    ? record.files.map((part, index) => ({
+                          ...record,
+                          id: `${record.id}-${part.side ?? index}`,
+                          filename: part.filename,
+                          sizeBytes: part.sizeBytes,
+                          blob: part.blob,
+                          estimatedTimeSec: part.estimatedTimeSec ?? record.estimatedTimeSec,
+                          materialLabel: part.materialLabel ?? record.materialLabel,
+                          files: undefined,
+                      }))
+                    : [record];
+            return {
+                byKind: { ...s.byKind, [record.kind]: record },
+                sessionFiles: [
+                    ...sessionEntries,
+                    ...s.sessionFiles.filter((f) => !sessionEntries.some((e) => e.id === f.id)),
+                ].slice(0, 12),
+                progress: { phase: "ready" },
+            };
+        }),
 
     clearKind: (kind) =>
         set((s) => {

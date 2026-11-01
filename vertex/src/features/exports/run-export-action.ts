@@ -16,6 +16,55 @@ import { TOKEN_COST } from "@/features/licensing/license";
 import type { MillingProfile } from "@/lib/cnc/types";
 import type { CamOverrides, CamResult, PrinterPreset } from "@/lib/kiri";
 
+function sessionFilesFromOutcome(
+    res: Awaited<ReturnType<typeof exportDesign>>,
+    kind: SessionExportRecord["kind"],
+    target: ExportOutputTarget,
+    designRevision: string,
+    tokensCharged: number,
+): SessionExportRecord | null {
+    if (!res.ok) return null;
+    const id = `${kind}-${Date.now()}`;
+    if (res.files?.length) {
+        const parts = res.files.map((f) => ({
+            side: f.side,
+            filename: f.filename,
+            sizeBytes: f.sizeBytes,
+            blob: f.blob,
+            estimatedTimeSec: f.stats?.estimatedTimeSec,
+            materialLabel: f.stats ? `${(f.stats.estimatedMaterialMm3 / 1000).toFixed(1)} cm³` : undefined,
+        }));
+        const totalBytes = parts.reduce((n, p) => n + p.sizeBytes, 0);
+        return {
+            id,
+            kind,
+            target,
+            filename: parts.map((p) => p.filename).join(" · "),
+            sizeBytes: totalBytes,
+            blob: parts[0]!.blob,
+            tokensCharged,
+            designRevision,
+            createdAt: Date.now(),
+            files: parts,
+        };
+    }
+    if (!res.blob) return null;
+    const stats = res.stats as CamResult["stats"] | undefined;
+    return {
+        id,
+        kind,
+        target,
+        filename: res.filename ?? buildExportFilename(kind, target),
+        sizeBytes: res.blob.size,
+        blob: res.blob,
+        tokensCharged,
+        designRevision,
+        createdAt: Date.now(),
+        estimatedTimeSec: stats?.estimatedTimeSec,
+        materialLabel: stats ? `${(stats.estimatedMaterialMm3 / 1000).toFixed(1)} cm³` : undefined,
+    };
+}
+
 export async function runExportForChoice(options: {
     choice: ExportFileTypeChoice;
     target: ExportOutputTarget;
@@ -30,44 +79,20 @@ export async function runExportForChoice(options: {
 
     if (choice === "stl") {
         const res = await exportDesign("stl", target);
-        if (!res.ok || !res.blob) {
+        const record = sessionFilesFromOutcome(res, "stl", target, designRevision, TOKEN_COST.stl);
+        if (!record) {
             return { ok: false, reason: stlExportUserMessage(res.reason), noTokens: true };
         }
-        return {
-            ok: true,
-            record: {
-                id: `stl-${Date.now()}`,
-                kind: "stl",
-                target,
-                filename: res.filename ?? buildExportFilename("stl", target),
-                sizeBytes: res.blob.size,
-                blob: res.blob,
-                tokensCharged: TOKEN_COST.stl,
-                designRevision,
-                createdAt: Date.now(),
-            },
-        };
+        return { ok: true, record };
     }
 
     if (choice === "3mf") {
         const res = await exportDesign("3mf", target);
-        if (!res.ok || !res.blob) {
+        const record = sessionFilesFromOutcome(res, "3mf", target, designRevision, TOKEN_COST["3mf"]);
+        if (!record) {
             return { ok: false, reason: res.reason ?? "3MF export failed", noTokens: true };
         }
-        return {
-            ok: true,
-            record: {
-                id: `3mf-${Date.now()}`,
-                kind: "3mf",
-                target,
-                filename: res.filename ?? buildExportFilename("3mf", target),
-                sizeBytes: res.blob.size,
-                blob: res.blob,
-                tokensCharged: TOKEN_COST["3mf"],
-                designRevision,
-                createdAt: Date.now(),
-            },
-        };
+        return { ok: true, record };
     }
 
     if (!preset) return { ok: false, reason: "Choose a printer preset in Print", noTokens: true };
@@ -81,29 +106,13 @@ export async function runExportForChoice(options: {
         res = await exportGcode(target, preset, overrides, { download: true });
     }
 
-    if (!res.ok || !res.blob) {
+    const record = sessionFilesFromOutcome(res, "gcode", target, designRevision, TOKEN_COST.gcode);
+    if (!record) {
         return {
             ok: false,
             reason: stlExportUserMessage(res.reason ?? "G-code export failed"),
             noTokens: true,
         };
     }
-
-    const stats = res.stats as CamResult["stats"] | undefined;
-    return {
-        ok: true,
-        record: {
-            id: `gcode-${Date.now()}`,
-            kind: "gcode",
-            target,
-            filename: res.filename ?? buildExportFilename("gcode", target),
-            sizeBytes: res.blob.size,
-            blob: res.blob,
-            tokensCharged: TOKEN_COST.gcode,
-            designRevision,
-            createdAt: Date.now(),
-            estimatedTimeSec: stats?.estimatedTimeSec,
-            materialLabel: stats ? `${(stats.estimatedMaterialMm3 / 1000).toFixed(1)} cm³` : undefined,
-        },
-    };
+    return { ok: true, record };
 }

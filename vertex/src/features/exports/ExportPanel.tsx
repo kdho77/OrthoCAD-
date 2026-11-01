@@ -3,11 +3,13 @@ import { useEffect, useMemo, useState } from "react";
 import { CaseOrderSummary } from "@/components/clinical/CaseOrderSummary";
 import { showSuperAdminLink } from "@/features/admin/admin-nav";
 import { ExportFileTypePicker } from "@/features/exports/ExportFileTypePicker";
+import { PAIR_MULTI_DOWNLOAD_HINT } from "@/features/exports/export-download";
 import {
     exportPrimaryButtonLabel,
     useExportFileTypeStore,
 } from "@/features/exports/export-file-type-store";
 import { designRevisionFingerprint, useExportSessionStore } from "@/features/exports/export-session-store";
+import { downloadBlob } from "@/features/exports/export-download";
 import { exportDesign } from "@/features/exports/export-service";
 import { PrintFooter, useMachineSummaryLine } from "@/features/exports/PrintFooter";
 import { usePrintExportSettingsStore } from "@/features/exports/print-export-settings-store";
@@ -138,20 +140,32 @@ export function ExportPanel() {
 
             {activeRecord ? (
                 <ResultCard
-                    filename={activeRecord.filename}
-                    sizeBytes={activeRecord.sizeBytes}
-                    estimatedTimeSec={activeRecord.estimatedTimeSec}
-                    materialLabel={activeRecord.materialLabel}
+                    filename={activeRecord.files?.length ? undefined : activeRecord.filename}
+                    sizeBytes={activeRecord.files?.length ? undefined : activeRecord.sizeBytes}
+                    estimatedTimeSec={
+                        activeRecord.files?.length ? undefined : activeRecord.estimatedTimeSec
+                    }
+                    materialLabel={
+                        activeRecord.files?.length ? undefined : activeRecord.materialLabel
+                    }
                     tokensCharged={activeRecord.tokensCharged}
                     outOfDate={outOfDate}
-                    onDownload={() => {
-                        const url = URL.createObjectURL(activeRecord.blob);
-                        const a = document.createElement("a");
-                        a.href = url;
-                        a.download = activeRecord.filename;
-                        a.click();
-                        URL.revokeObjectURL(url);
-                    }}
+                    multiDownloadHint={PAIR_MULTI_DOWNLOAD_HINT}
+                    files={
+                        activeRecord.files?.map((part) => ({
+                            label: part.side === "left" ? "Left" : part.side === "right" ? "Right" : undefined,
+                            filename: part.filename,
+                            sizeBytes: part.sizeBytes,
+                            estimatedTimeSec: part.estimatedTimeSec,
+                            materialLabel: part.materialLabel,
+                            onDownload: () => downloadBlob(part.blob, part.filename),
+                        })) ?? undefined
+                    }
+                    onDownload={
+                        activeRecord.files?.length
+                            ? undefined
+                            : () => downloadBlob(activeRecord.blob, activeRecord.filename)
+                    }
                 />
             ) : null}
 

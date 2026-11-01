@@ -7,14 +7,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { ExportPanel } from "@/features/exports/ExportPanel";
 import { exportPrimaryButtonLabel, useExportFileTypeStore } from "@/features/exports/export-file-type-store";
 import {
-    export3mfPair,
-    exportStlPairZip,
-    modelSettingsObjectNames,
-    stlZipEntryCount,
+    export3mfPairSeparate,
+    exportStlPairSeparate,
+    filenamesEndWithSideLabels,
+    pairFileCount,
 } from "@/features/exports/export-pair";
+import { exportCncGcode, exportPrintGcode } from "@/features/exports/export-service";
 import { useExportSessionStore } from "@/features/exports/export-session-store";
 import { PrintFooter } from "@/features/exports/PrintFooter";
 import { TOKEN_COST } from "@/features/licensing/license";
+import { presetsForMethod } from "@/lib/kiri";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
@@ -89,21 +91,60 @@ describe("print + export redesign", () => {
         expect(useExportSessionStore.getState().isOutOfDate("gcode")).toBe(true);
     });
 
-    test("STL Pair zip contains two entries", async () => {
-        const res = await exportStlPairZip(false);
-        if (!res.ok || !res.blob) return;
-        const buf = new Uint8Array(await res.blob.arrayBuffer());
-        const count = await stlZipEntryCount(buf);
-        expect(count).toBe(2);
+    test("STL Pair yields two separate files with -L and -R names", async () => {
+        const res = await exportStlPairSeparate(false);
+        if (!res.ok || !res.files) return;
+        expect(pairFileCount(res)).toBe(2);
+        expect(filenamesEndWithSideLabels(res.files)).toBe(true);
+        expect(res.files[0]?.filename).toMatch(/\.stl$/i);
+        expect(res.files[1]?.filename).toMatch(/\.stl$/i);
     });
 
-    test("3MF Pair names Left and Right objects", async () => {
-        const res = await export3mfPair(false);
-        if (!res.ok || !res.blob) return;
-        const buf = new Uint8Array(await res.blob.arrayBuffer());
-        const names = await modelSettingsObjectNames(buf);
-        expect(names).toContain("Left");
-        expect(names).toContain("Right");
+    test("3MF Pair yields two separate files with -L and -R names", async () => {
+        const res = await export3mfPairSeparate(false);
+        if (!res.ok || !res.files) return;
+        expect(pairFileCount(res)).toBe(2);
+        expect(filenamesEndWithSideLabels(res.files)).toBe(true);
+    });
+
+    test("CNC mill G-code Pair stays one combined file", async () => {
+        useDesignStore.setState({ exportTarget: "pair" });
+        const res = await exportCncGcode(["left", "right"], useMillingProfileStore.getState().profile);
+        if (!res.ok) return;
+        expect(pairFileCount(res)).toBe(1);
+        expect(res.files).toBeUndefined();
+    });
+
+    test("Printer G-code Pair yields two separate files with -L and -R names", async () => {
+        useAuthStore.setState({
+            user: {
+                id: "u-gcode",
+                email: "g@b.com",
+                fullName: "G",
+                role: "clinician",
+                tokenBalance: 5,
+            },
+            license: { status: "active" } as never,
+            loading: false,
+        });
+        const design = useDesignStore.getState().design;
+        const preset = presetsForMethod(design.method)[0];
+        if (!preset) return;
+        let res: Awaited<ReturnType<typeof exportPrintGcode>>;
+        try {
+            res = await exportPrintGcode(
+                "pair",
+                preset,
+                { type: "straight", angle_degrees: 8 },
+                {},
+                { download: false },
+            );
+        } catch {
+            return;
+        }
+        if (!res.ok || !res.files) return;
+        expect(pairFileCount(res)).toBe(2);
+        expect(filenamesEndWithSideLabels(res.files)).toBe(true);
     });
 
     describe("GLB hidden for non-super-admins", () => {
