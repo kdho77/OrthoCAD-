@@ -7,7 +7,7 @@ import { deflateSync } from "node:zlib";
 import { afterAll, describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import { evaluateSinkConstraints } from "@/lib/geometry/clinical-constraints";
-import { medialSign } from "@/lib/geometry/handedness";
+import { medialSign, meshYFromAnatomicalLateral } from "@/lib/geometry/handedness";
 import {
     reconstructProceduralPreview,
     sampleTopFromArrayBuffer,
@@ -41,8 +41,58 @@ import type { PlacedSink, Side, SinkKind } from "@/types";
  * baked SAMPLE_Top sulcus, not the centre-line ray.
  */
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
-const ARTIFACT = "/opt/cursor/artifacts/sink-pediatric-us1-top.png";
+const ARTIFACT_US1 = "/opt/cursor/artifacts/sink-us1-top.png";
+const ARTIFACT_US9 = "/opt/cursor/artifacts/sink-us9-top.png";
 const REPORT = "/tmp/sink-pediatric-report.json";
+
+/** 5×7 glyphs. The preview labels the medial edge so a mirrored foot is obvious. */
+const LABEL_GLYPH: Record<string, string[]> = {
+    M: ["10001", "11011", "10101", "10001", "10001", "10001", "10001"],
+    E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
+    D: ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
+    I: ["11111", "00100", "00100", "00100", "00100", "00100", "11111"],
+    A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
+    L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+    U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
+    S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
+    "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+    "9": ["01110", "10001", "10001", "01111", "00001", "00001", "01110"],
+};
+
+function stampLabel(
+    rgb: Uint8Array,
+    width: number,
+    height: number,
+    text: string,
+    x: number,
+    y: number,
+): void {
+    const scale = 2;
+    let cursor = x;
+    for (const ch of text) {
+        const rows = LABEL_GLYPH[ch];
+        const advance = rows?.[0]?.length;
+        if (!rows || !advance) continue;
+        for (let row = 0; row < rows.length; row++) {
+            const bits = rows[row] ?? "";
+            for (let col = 0; col < bits.length; col++) {
+                if (bits[col] !== "1") continue;
+                for (let sy = 0; sy < scale; sy++) {
+                    for (let sx = 0; sx < scale; sx++) {
+                        const px = cursor + col * scale + sx;
+                        const py = y + row * scale + sy;
+                        if (px < 0 || py < 0 || px >= width || py >= height) continue;
+                        const o = (py * width + px) * 3;
+                        rgb[o] = 20;
+                        rgb[o + 1] = 52;
+                        rgb[o + 2] = 120;
+                    }
+                }
+            }
+        }
+        cursor += (advance + 1) * scale;
+    }
+}
 
 /** Straight Men's 9 SAMPLE_Top with every sink at max depth, captured at 96e732fb. */
 const US9_SINK_SHA256: Record<string, string> = {
@@ -144,8 +194,8 @@ function writePng(path: string, width: number, height: number, rgb: Uint8Array):
     writeFileSync(path, png);
 }
 
-function paintUs1(left: BufferGeometry, right: BufferGeometry): void {
-    const layout = insoleLayoutForUsMenSize(1);
+function paintPair(left: BufferGeometry, right: BufferGeometry, usSize: number, path: string): void {
+    const layout = insoleLayoutForUsMenSize(usSize);
     const feet = [
         { side: "left" as const, geo: scaleGeometryToInsoleSize(left, layout.lengthMm, layout.widthMm) },
         { side: "right" as const, geo: scaleGeometryToInsoleSize(right, layout.lengthMm, layout.widthMm) },
@@ -153,7 +203,7 @@ function paintUs1(left: BufferGeometry, right: BufferGeometry): void {
     const panelW = 440;
     const panelH = 560;
     const width = panelW * 2 + 24;
-    const height = panelH + 28;
+    const height = panelH + 36;
     const rgb = new Uint8Array(width * height * 3);
     rgb.fill(244);
     const ppm = (panelH - 56) / layout.lengthMm;
@@ -171,16 +221,20 @@ function paintUs1(left: BufferGeometry, right: BufferGeometry): void {
         const pos = foot.geo.getAttribute("position");
         let minX = Infinity;
         let maxX = -Infinity;
+        let minY = Infinity;
         let maxY = -Infinity;
         for (let i = 0; i < pos.count; i++) {
             minX = Math.min(minX, pos.getX(i));
             maxX = Math.max(maxX, pos.getX(i));
+            minY = Math.min(minY, pos.getY(i));
             maxY = Math.max(maxY, pos.getY(i));
         }
         const ox = 8 + fi * (panelW + 8);
-        const oy = 24;
-        const toPx = (x: number, y: number) => ({
-            px: Math.round(ox + (maxY - y) * ppm + 16),
+        const oy = 28;
+        // Screen X is mesh Y, toes up. frame.cy is anatomical +lateral, which
+        // equals mesh Y only on the left. The right foot is the Y mirror.
+        const toPx = (x: number, yMesh: number) => ({
+            px: Math.round(ox + (maxY - yMesh) * ppm + 16),
             py: Math.round(oy + (maxX - x) * ppm),
         });
         for (let i = 0; i < pos.count; i += 2) {
@@ -194,7 +248,8 @@ function paintUs1(left: BufferGeometry, right: BufferGeometry): void {
         for (const sink of sinks) {
             const frame = sinkFrame(sink, ctx);
             if (!frame) continue;
-            const { px: cx, py: cy } = toPx(frame.cx, frame.cy);
+            const yMesh = meshYFromAnatomicalLateral(frame.cy, foot.side);
+            const { px: cx, py: cy } = toPx(frame.cx, yMesh);
             const reach =
                 Math.ceil((Math.max(frame.aDist, frame.bLat, frame.bMed) + frame.blendMm + 2) * ppm) + 2;
             const rad = (frame.rotationDeg * Math.PI) / 180;
@@ -203,10 +258,11 @@ function paintUs1(left: BufferGeometry, right: BufferGeometry): void {
             for (let py = cy - reach; py <= cy + reach; py++) {
                 for (let px = cx - reach; px <= cx + reach; px++) {
                     if (px < 0 || py < 0 || px >= width || py >= height) continue;
-                    const dx = (px - cx) / ppm;
-                    const dy = -(py - cy) / ppm;
-                    const mx = dy;
-                    const my = -dx;
+                    const x = maxX - (py - oy) / ppm;
+                    const yAt = maxY - (px - (ox + 16)) / ppm;
+                    const yLat = meshYToAnatomical(yAt, foot.side, medialSign(foot.side));
+                    const mx = x - frame.cx;
+                    const my = yLat - frame.cy;
                     const lx = cos * mx + sin * my;
                     const ly = -sin * mx + cos * my;
                     const a = lx >= 0 ? frame.aDist : frame.aProx;
@@ -227,10 +283,17 @@ function paintUs1(left: BufferGeometry, right: BufferGeometry): void {
                 }
             }
         }
+        const medialY = medialSign(foot.side) < 0 ? minY : maxY;
+        const anchor = toPx((minX + maxX) / 2, medialY);
+        const towardMedial = -medialSign(foot.side);
+        const labelW = "MEDIAL".length * 12;
+        const labelX = Math.round(anchor.px + towardMedial * 8 - (towardMedial < 0 ? labelW : 0));
+        stampLabel(rgb, width, height, "MEDIAL", labelX, Math.max(8, anchor.py - 8));
         foot.geo.dispose();
     });
+    stampLabel(rgb, width, height, `US${usSize}`, 8, 4);
     try {
-        writePng(ARTIFACT, width, height, rgb);
+        writePng(path, width, height, rgb);
     } catch {
         // The preview is an agent artifact. The assertions do not depend on the file.
     }
@@ -337,19 +400,21 @@ describe("pediatric sink scale and sulcus clearance", () => {
                         const frame = sinkFrame(sink, ctx)!;
                         if (item.adult) {
                             expect(frame.fallbackStep, `${item.label} ${side} ${sink.kind}`).toBe(0);
+                            expect(hit.fallbackStep, `${item.label} ${side} ${sink.kind}`).toBe(0);
+                            expect(hit.warning, `${item.label} ${side} ${sink.kind}`).toBe(false);
                             expect(frame.blendMm).toBe(SINK_PROFILES[sink.kind].blendMm);
                             expect(frame.u).toBeCloseTo(SINK_PROFILES[sink.kind].u, 6);
+                        } else if (hit.marginMm + 1e-6 < SULCUS_CLEARANCE_MM) {
+                            expect(hit.fallbackStep, `${item.label} ${side} ${sink.kind}`).toBeGreaterThan(0);
+                            expect(hit.warning, `${item.label} ${side} ${sink.kind}`).toBe(true);
+                        } else {
+                            expect(hit.warning, `${item.label} ${side} ${sink.kind}`).toBe(false);
                         }
-                        const warned = hit.warning || hit.marginMm + 1e-6 >= SULCUS_CLEARANCE_MM;
-                        expect(warned, `${item.label} ${side} ${sink.kind} margin ${hit.marginMm}`).toBe(
-                            true,
-                        );
-                        if (hit.warning) {
-                            const warnings = evaluateSinkConstraints(ctx);
-                            expect(warnings.some((w) => w.code === "sulcus" && w.sinkId === sink.id)).toBe(
-                                true,
-                            );
-                        }
+                        const warnings = evaluateSinkConstraints(ctx);
+                        expect(
+                            warnings.some((w) => w.code === "sulcus" && w.sinkId === sink.id),
+                            `${item.label} ${side} ${sink.kind}`,
+                        ).toBe(hit.warning && hit.fallbackStep > 0);
                         rows.push({
                             label: item.label,
                             side,
@@ -367,7 +432,8 @@ describe("pediatric sink scale and sulcus clearance", () => {
                     geo.dispose();
                 }
             }
-            paintUs1(left, right);
+            paintPair(left, right, 1, ARTIFACT_US1);
+            paintPair(left, right, 9, ARTIFACT_US9);
         } finally {
             left.dispose();
             right.dispose();
@@ -390,6 +456,7 @@ describe("pediatric sink scale and sulcus clearance", () => {
         for (const row of rows) {
             if (String(row.label) === "US 9" || String(row.label) === "L 208.26") {
                 expect(row.fallbackStep, `${row.label} ${row.kind}`).toBe(0);
+                expect(row.warning, `${row.label} ${row.kind}`).toBe(false);
             }
         }
         writeFileSync(REPORT, JSON.stringify(report, null, 2));
@@ -423,6 +490,66 @@ describe("pediatric sink scale and sulcus clearance", () => {
             geo.dispose();
         } finally {
             left.dispose();
+        }
+    });
+
+    test("right MPJ1 is the medial mirror of the left, and MPJ5 and the styloid stay lateral", async () => {
+        const buf = readFileSync(SAMPLE_TOP_PATH);
+        const leftNative = await sampleTopFromArrayBuffer(
+            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        );
+        const rightNative = mirrorGeometry(leftNative);
+        const kinds = ["mpj1", "mpj5", "styloid"] as const;
+        try {
+            for (const size of [1, 9]) {
+                const layout = insoleLayoutForUsMenSize(size);
+                const sinks = maxSinks();
+                const placed: Record<string, { u: number; v: number; yMesh: number }> = {};
+                for (const side of ["left", "right"] as const) {
+                    const geo = scaleGeometryToInsoleSize(
+                        side === "left" ? leftNative : rightNative,
+                        layout.lengthMm,
+                        layout.widthMm,
+                    );
+                    const ctx: SinkSurfaceContext = {
+                        side,
+                        lengthMm: layout.lengthMm,
+                        widthMm: layout.widthMm,
+                        sinks,
+                        footOutline: footOutlineFromGeometry(geo) ?? undefined,
+                        medialYSign: medialSign(side),
+                    };
+                    for (const kind of kinds) {
+                        const frame = sinkFrame(sinks.find((sink) => sink.kind === kind)!, ctx)!;
+                        const yMesh = meshYFromAnatomicalLateral(frame.cy, side);
+                        const medial = kind === "mpj1";
+                        expect(Math.sign(yMesh), `US ${size} ${side} ${kind}`).toBe(
+                            medial ? medialSign(side) : -medialSign(side),
+                        );
+                        expect(frame.v, `US ${size} ${side} ${kind}`).toBeLessThan(medial ? 0.5 : 1);
+                        expect(frame.v, `US ${size} ${side} ${kind}`).toBeGreaterThan(medial ? 0 : 0.5);
+                        placed[`${side}-${kind}`] = { u: frame.u, v: frame.v, yMesh };
+                    }
+                    if (size === 9) {
+                        const warnings = evaluateSinkConstraints(ctx);
+                        expect(
+                            warnings.some((w) => w.code === "sulcus"),
+                            `US 9 ${side}`,
+                        ).toBe(false);
+                    }
+                    geo.dispose();
+                }
+                for (const kind of kinds) {
+                    const left = placed[`left-${kind}`]!;
+                    const right = placed[`right-${kind}`]!;
+                    expect(right.u, `US ${size} ${kind} u`).toBeCloseTo(left.u, 4);
+                    expect(right.v, `US ${size} ${kind} v`).toBeCloseTo(left.v, 4);
+                    expect(Math.abs(right.yMesh + left.yMesh), `US ${size} ${kind} mirror`).toBeLessThan(1.5);
+                }
+            }
+        } finally {
+            leftNative.dispose();
+            rightNative.dispose();
         }
     });
 

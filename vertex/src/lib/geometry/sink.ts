@@ -653,8 +653,8 @@ export interface SinkOvalFrame {
     rimWarning?: SinkWarning;
     /**
      * 0 untouched, 1 taper, 2 diameter, 3 proximal shift, 4 still under the
-     * sulcus margin so a warning is raised and the footprint is not clipped.
-     * Adult scales stay at 0.
+     * sulcus margin. The panel warns only for a step above 0 that is still
+     * short. Adult scales stay at 0 and do not warn.
      */
     fallbackStep: number;
 }
@@ -1011,7 +1011,8 @@ function resolveSulcusFallback(
     ): SulcusFallback => ({ marginMm, fallbackStep, diameterScale, blendMm, proximalShiftMm, warning });
     const base = at(blend0, 1, 0);
     if (!(scale < SULCUS_ADULT_SCALE)) {
-        return pack(base.marginMm, 0, 1, blend0, 0, !sulcusClears(base.marginMm));
+        // s >= 0.80 does not move the frame. A short margin stays a measurement.
+        return pack(base.marginMm, 0, 1, blend0, 0, false);
     }
     if (sulcusClears(base.marginMm)) return pack(base.marginMm, 0, 1, blend0, 0, false);
     const specFloor = Math.max(3, 1.1 * depthMm);
@@ -1089,7 +1090,8 @@ export function sulcusClearanceWarnings(ctx: SinkSurfaceContext): SinkWarning[] 
     const out: SinkWarning[] = [];
     for (const sink of ctx.sinks!) {
         const hit = sulcusClearanceFor(sink, ctx);
-        if (!hit.warning) continue;
+        // Unchanged geometry stays quiet, including every adult size.
+        if (hit.fallbackStep <= 0 || !hit.warning) continue;
         out.push({
             sinkId: sink.id,
             code: "sulcus",
