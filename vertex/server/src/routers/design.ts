@@ -1,37 +1,55 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import {
+    archiveDesignFile,
+    createDesignFile,
+    duplicateDesignFile,
+    getDesignFile,
+    listDesignFiles,
+    restoreArchivedDesign,
+    restoreDeletedDesign,
+    softDeleteDesignFile,
+    updateDesignMeta,
+} from "../../../shared/client-files.js";
 import { getSupabaseAdmin } from "../context.js";
+import { actorFor, rethrowClientFile, supabaseClientFileRepo } from "../lib/client-file-repo.js";
 import { designStateSchema } from "../lib/design-schema.js";
-import { requireSupabaseAdmin, writeAuditLogBestEffort } from "../lib/supabase-db.js";
+import { requireSupabaseAdmin } from "../lib/supabase-db.js";
 import { protectedProcedure, router } from "../trpc.js";
 
+const designKind = z.enum(["insole", "afo"]);
+
+async function scope(ctx: { user: { id: string; email: string; role: string } }) {
+    const supabase = requireSupabaseAdmin();
+    return { supabase, repo: supabaseClientFileRepo(supabase), actor: await actorFor(ctx.user, supabase) };
+}
+
 export const designRouter = router({
-    list: protectedProcedure.input(z.object({ clientId: z.string().uuid() })).query(async ({ ctx, input }) => {
-        const supabase = requireSupabaseAdmin();
-        const { data, error } = await supabase
-            .from("designs")
-            .select("id, name, pattern, method, updatedAt")
-            .eq("clientId", input.clientId)
-            .eq("ownerId", ctx.user.id)
-            .order("updatedAt", { ascending: false });
-
-        if (error) {
-            throw new TRPCError({
-                code: "INTERNAL_SERVER_ERROR",
-                message: `Failed to list designs: ${error.message}`,
-            });
-        }
-
-        return data ?? [];
-    }),
+    list: protectedProcedure
+        .input(z.object({ clientId: z.string().uuid(), includeDeleted: z.boolean().optional() }))
+        .query(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                const rows = await listDesignFiles(repo, actor, input.clientId, {
+                    includeDeleted: input.includeDeleted,
+                });
+                return rows.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+            } catch (error) {
+                rethrowClientFile(error);
+            }
+        }),
 
     get: protectedProcedure.input(z.object({ id: z.string().uuid() })).query(async ({ ctx, input }) => {
-        const supabase = requireSupabaseAdmin();
+        const { supabase, repo, actor } = await scope(ctx);
+        try {
+            await getDesignFile(repo, actor, input.id);
+        } catch (error) {
+            rethrowClientFile(error);
+        }
         const { data: design, error } = await supabase
             .from("designs")
             .select("*, corrections(*), elements(*)")
             .eq("id", input.id)
-            .eq("ownerId", ctx.user.id)
             .maybeSingle();
 
         if (error) {
@@ -45,49 +63,88 @@ export const designRouter = router({
     }),
 
     create: protectedProcedure
-        .input(z.object({ clientId: z.string().uuid(), name: z.string().min(1).max(120) }))
+        .input(
+            z.object({
+                clientId: z.string().uuid(),
+                name: z.string().min(1).max(120),
+                kind: designKind.optional(),
+            }),
+        )
         .mutation(async ({ ctx, input }) => {
-            const supabase = requireSupabaseAdmin();
-            const { data: client, error: clientError } = await supabase
-                .from("clients")
-                .select("id")
-                .eq("id", input.clientId)
-                .eq("ownerId", ctx.user.id)
-                .maybeSingle();
-
-            if (clientError) {
-                throw new TRPCError({
-                    code: "INTERNAL_SERVER_ERROR",
-                    message: `Failed to verify client: ${clientError.message}`,
-                });
-            }
-            if (!client) throw new TRPCError({ code: "NOT_FOUND", message: "Client not found" });
-
-            const { data: design, error } = await supabase
-                .from("designs")
-                .insert({
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await createDesignFile(repo, actor, {
                     clientId: input.clientId,
-                    ownerId: ctx.user.id,
                     name: input.name,
-                })
-                .select()
-                .single();
-
-            if (error || !design) {
-                throw new TRPCError({
-                    code: "INTERNAL_SERVER_ERROR",
-                    message: `Failed to create design: ${error?.message ?? "unknown error"}`,
+                    kind: input.kind ?? "insole",
                 });
+            } catch (error) {
+                rethrowClientFile(error);
             }
+        }),
 
-            await writeAuditLogBestEffort(supabase, {
-                userId: ctx.user.id,
-                action: "design_created",
-                targetId: design.id,
-                ipAddress: ctx.ip,
-            });
+    updateMeta: protectedProcedure
+        .input(
+            z.object({
+                id: z.string().uuid(),
+                name: z.string().min(1).max(120).optional(),
+                notes: z.string().max(500).optional(),
+            }),
+        )
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await updateDesignMeta(repo, actor, input.id, {
+                    name: input.name,
+                    notes: input.notes,
+                });
+            } catch (error) {
+                rethrowClientFile(error);
+            }
+        }),
 
-            return design;
+    duplicate: protectedProcedure
+        .input(z.object({ id: z.string().uuid() }))
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await duplicateDesignFile(repo, actor, input.id);
+            } catch (error) {
+                rethrowClientFile(error);
+            }
+        }),
+
+    archive: protectedProcedure
+        .input(z.object({ id: z.string().uuid() }))
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await archiveDesignFile(repo, actor, input.id);
+            } catch (error) {
+                rethrowClientFile(error);
+            }
+        }),
+
+    restoreArchive: protectedProcedure
+        .input(z.object({ id: z.string().uuid() }))
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await restoreArchivedDesign(repo, actor, input.id);
+            } catch (error) {
+                rethrowClientFile(error);
+            }
+        }),
+
+    restore: protectedProcedure
+        .input(z.object({ id: z.string().uuid() }))
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await restoreDeletedDesign(repo, actor, input.id);
+            } catch (error) {
+                rethrowClientFile(error);
+            }
         }),
 
     // Persists the full design: header fields + relational corrections + elements.
@@ -96,21 +153,12 @@ export const designRouter = router({
             z.object({ id: z.string().uuid(), name: z.string().min(1).max(120), state: designStateSchema }),
         )
         .mutation(async ({ ctx, input }) => {
-            const supabase = requireSupabaseAdmin();
-            const { data: owned, error: ownedError } = await supabase
-                .from("designs")
-                .select("id")
-                .eq("id", input.id)
-                .eq("ownerId", ctx.user.id)
-                .maybeSingle();
-
-            if (ownedError) {
-                throw new TRPCError({
-                    code: "INTERNAL_SERVER_ERROR",
-                    message: `Failed to verify design ownership: ${ownedError.message}`,
-                });
+            try {
+                const { repo, actor } = await scope(ctx);
+                await getDesignFile(repo, actor, input.id);
+            } catch (error) {
+                rethrowClientFile(error);
             }
-            if (!owned) throw new TRPCError({ code: "NOT_FOUND" });
             const { state } = input;
 
             const adminClient = getSupabaseAdmin();
@@ -149,30 +197,12 @@ export const designRouter = router({
         }),
 
     delete: protectedProcedure.input(z.object({ id: z.string().uuid() })).mutation(async ({ ctx, input }) => {
-        const supabase = requireSupabaseAdmin();
-        const { data: owned, error: ownedError } = await supabase
-            .from("designs")
-            .select("id")
-            .eq("id", input.id)
-            .eq("ownerId", ctx.user.id)
-            .maybeSingle();
-
-        if (ownedError) {
-            throw new TRPCError({
-                code: "INTERNAL_SERVER_ERROR",
-                message: `Failed to verify design ownership: ${ownedError.message}`,
-            });
+        try {
+            const { repo, actor } = await scope(ctx);
+            await softDeleteDesignFile(repo, actor, input.id);
+            return { ok: true as const };
+        } catch (error) {
+            rethrowClientFile(error);
         }
-        if (!owned) throw new TRPCError({ code: "NOT_FOUND" });
-
-        const { error } = await supabase.from("designs").delete().eq("id", input.id);
-        if (error) {
-            throw new TRPCError({
-                code: "INTERNAL_SERVER_ERROR",
-                message: `Failed to delete design: ${error.message}`,
-            });
-        }
-
-        return { ok: true };
     }),
 });

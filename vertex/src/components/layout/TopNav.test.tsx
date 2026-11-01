@@ -53,7 +53,7 @@ describe("TopNav super-admin link", () => {
             root = createRoot(container);
             root.render(
                 createElement(TopNav, {
-                    active: "Production",
+                    active: "Clients",
                     onNavigate: () => {},
                     onOpenPrescription: () => {},
                 }),
@@ -68,7 +68,7 @@ describe("TopNav super-admin link", () => {
             root = createRoot(container);
             root.render(
                 createElement(TopNav, {
-                    active: "Production",
+                    active: "Clients",
                     onNavigate: () => {},
                     onOpenPrescription: () => {},
                 }),

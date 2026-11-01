@@ -1,6 +1,9 @@
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { useId, useRef, useState } from "react";
+import { navigate } from "@/features/admin/admin-nav";
+import { offlineLicense, offlineUserProfile } from "@/lib/dev-auth";
 import { getSupabase } from "@/lib/supabase";
+import { useAuthStore } from "@/stores/auth-store";
 
 const HEX_GRID =
     "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='49' viewBox='0 0 28 49'%3E%3Cg fill-rule='evenodd' stroke='%2322D3EE' stroke-width='0.35' fill='none' opacity='1'%3E%3Cpath d='M13.99 9.25l13 7.5v15l-13 7.5-13-7.5v-15l13-7.5z'/%3E%3C/g%3E%3C/svg%3E\")";
@@ -37,7 +40,13 @@ export function LoginScreen() {
         }
 
         const supabase = getSupabase();
-        if (!supabase) return;
+        if (!supabase) {
+            useAuthStore.getState().setUser(offlineUserProfile());
+            useAuthStore.getState().setLicense(offlineLicense());
+            useAuthStore.getState().setLoading(false);
+            navigate("/clients");
+            return;
+        }
         setBusy(true);
         setFieldError(null);
         setError(null);
@@ -46,6 +55,7 @@ export function LoginScreen() {
             password,
         });
         if (signInError) setError(signInError.message);
+        else navigate("/clients");
         setBusy(false);
     };
 
@@ -148,6 +158,7 @@ export function LoginScreen() {
 
                         <button
                             type="submit"
+                            data-testid="login-submit"
                             className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-[10px] bg-[#22D3EE] text-[15px] font-medium text-[#04212B] transition-colors hover:bg-[#06B6D4] active:bg-[#0891B2] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[rgba(34,211,238,0.35)] disabled:cursor-default"
                             aria-busy={busy}
                         >

@@ -118,6 +118,20 @@ enum AuditAction {
     stock_base_updated
     stock_base_deleted
     stock_base_resolved
+    client_created
+    client_updated
+    client_archived
+    client_restored
+    client_deleted
+    design_archived
+    design_restored
+    design_deleted
+    design_duplicated
+}
+
+enum DesignKind {
+    insole
+    afo
 }
 
 // --- Identity & Access ------------------------------------------------------
@@ -212,6 +226,7 @@ model Tenant {
     members User[]
     ledger  TenantTokenLedger[]
     audits  AdminAuditLog[]
+    clients Client[]
 
     @@index([status])
     @@index([plan])
@@ -280,32 +295,42 @@ model TokenTransaction {
 // --- Clinical data ----------------------------------------------------------
 
 model Client {
-    id        String   @id @default(uuid()) @db.Uuid
-    reference String?
-    firstName String
-    lastName  String
-    email     String?
-    phone     String?
-    notes     String?
-    createdAt DateTime @default(now())
-    updatedAt DateTime @updatedAt
+    id          String    @id @default(uuid()) @db.Uuid
+    reference   String?
+    firstName   String
+    lastName    String
+    dateOfBirth DateTime? @db.Date
+    email       String?
+    phone       String?
+    notes       String?
+    archivedAt  DateTime?
+    createdAt   DateTime  @default(now())
+    updatedAt   DateTime  @updatedAt
 
-    ownerId String   @db.Uuid
-    owner   User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-    designs Design[]
+    ownerId  String  @db.Uuid
+    owner    User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+    tenantId String? @db.Uuid
+    tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+    designs  Design[]
 
     @@index([ownerId])
+    @@index([tenantId])
+    @@index([archivedAt])
     @@map("clients")
 }
 
 model Design {
     id          String           @id @default(uuid()) @db.Uuid
     name        String
+    kind        DesignKind       @default(insole)
+    notes       String?          @db.VarChar(500)
     pattern     ScanPattern      @default(full_contact)
     method      ProductionMethod @default(printing_solid)
     thicknessMm Float            @default(2)
     linked      Boolean          @default(true)
     unit        Unit             @default(mm)
+    archivedAt  DateTime?
+    deletedAt   DateTime?
     createdAt   DateTime         @default(now())
     updatedAt   DateTime         @updatedAt
 
@@ -323,6 +348,7 @@ model Design {
 
     @@index([clientId])
     @@index([ownerId])
+    @@index([deletedAt])
     @@map("designs")
 }
 
