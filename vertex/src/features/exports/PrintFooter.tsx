@@ -27,6 +27,7 @@ export interface PrintFooterProps {
     /** Hide the one-line machine summary (Export footer). */
     hideSummary?: boolean;
     /** Hide the output hint under the primary button. */
+    hideOutputHint?: boolean;
     /** Export footer: disabled Apex direct-send placeholder (G-code + 3D printer only). */
     sendToPrinterPlaceholder?: boolean;
 }

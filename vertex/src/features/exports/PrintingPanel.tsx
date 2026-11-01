@@ -84,6 +84,13 @@ export function PrintingPanel({
     const isCnc = design.method === "milling_3axis";
     const gcodeCheck = canExport(user, license, "gcode");
 
+    const overrides: CamOverrides = isCnc
+        ? { toolDiameterMm: toolDia }
+        : {
+              layerHeightMm: layerHeight,
+              infillDensity: (clinicalMode ? recipeInfillPct : infill) / 100,
+          };
+
     useEffect(() => {
         if (!preset) return;
         usePrintExportSettingsStore.getState().setPrintExportSettings({
@@ -105,13 +112,6 @@ export function PrintingPanel({
         if (working) store.setProgress({ phase: "building", message: "Building walls…" });
         else if (store.progress.phase === "building") store.setProgress({ phase: "idle" });
     }, [loftPhases]);
-
-    const overrides: CamOverrides = isCnc
-        ? { toolDiameterMm: toolDia }
-        : {
-              layerHeightMm: layerHeight,
-              infillDensity: (clinicalMode ? recipeInfillPct : infill) / 100,
-          };
 
     const buildGeom = () => getKernel().buildInsole(insoleParamsFromDesign(design, exportSide, "full"));
 

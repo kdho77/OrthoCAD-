@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test } from "@rstest/core";
 import * as React from "react";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { ClinicalPrintStepPanel } from "@/features/clinical/ClinicalPrintStepPanel";
 import { ExportPanel } from "@/features/exports/ExportPanel";
 import { exportPrimaryButtonLabel, useExportFileTypeStore } from "@/features/exports/export-file-type-store";
 import {
@@ -15,6 +16,7 @@ import {
 import { exportCncGcode, exportPrintGcode } from "@/features/exports/export-service";
 import { useExportSessionStore } from "@/features/exports/export-session-store";
 import { PrintFooter, SEND_TO_PRINTER_TOOLTIP } from "@/features/exports/PrintFooter";
+import { PrintingPanel } from "@/features/exports/PrintingPanel";
 import { TOKEN_COST } from "@/features/licensing/license";
 import { presetsForMethod } from "@/lib/kiri";
 import { useAuthStore } from "@/stores/auth-store";
@@ -184,6 +186,66 @@ describe("print + export redesign", () => {
             expect(container.querySelector('[data-testid="export-tile-stl"]')).toBeNull();
             expect(container.textContent).not.toMatch(/Developer/i);
         });
+    });
+});
+
+describe("Print step panels mount without TDZ errors", () => {
+    let container: HTMLDivElement;
+    let root: Root | null = null;
+
+    afterEach(() => {
+        root?.unmount();
+        root = null;
+        container?.remove();
+    });
+
+    const setupStores = () => {
+        container = document.createElement("div");
+        document.body.appendChild(container);
+        useAuthStore.setState({
+            user: {
+                id: "c-print",
+                email: "clinician@example.com",
+                fullName: "Clinician",
+                role: "clinician",
+                tokenBalance: 5,
+            },
+            license: { status: "active" } as never,
+            loading: false,
+        });
+        useMillingProfileStore.setState({ machine: "printer" });
+        useDesignStore.setState({ exportTarget: "left", exportSide: "left" });
+        useExportFileTypeStore.setState({ exportFileType: "gcode", lastByUserId: {} });
+    };
+
+    test("PrintingPanel clinical primary layout renders", async () => {
+        setupStores();
+        await act(async () => {
+            root = createRoot(container);
+            root.render(createElement(PrintingPanel, { clinicalMode: true, primaryOnly: true }));
+        });
+        expect(container.querySelector('[data-testid="print-export-footer"]')).not.toBeNull();
+        expect(container.textContent).toMatch(/Continue to Export/);
+    });
+
+    test("ClinicalPrintStepPanel renders Print workflow", async () => {
+        setupStores();
+        const design = useDesignStore.getState().design;
+        if (design.method === "milling_3axis") return;
+        await act(async () => {
+            root = createRoot(container);
+            root.render(createElement(ClinicalPrintStepPanel));
+        });
+        expect(container.querySelector('[data-testid="print-export-footer"]')).not.toBeNull();
+    });
+
+    test("ExportPanel renders file type picker", async () => {
+        setupStores();
+        await act(async () => {
+            root = createRoot(container);
+            root.render(createElement(ExportPanel));
+        });
+        expect(container.querySelector('[data-testid="export-file-type-picker"]')).not.toBeNull();
     });
 });
 
