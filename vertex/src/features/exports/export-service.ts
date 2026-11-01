@@ -1,3 +1,4 @@
+import type { ApexPrintMaterialId } from "@/features/exports/apex-print-material";
 import { downloadBlob, downloadSequential } from "@/features/exports/export-download";
 import { buildExportFilename } from "@/features/exports/export-filename";
 import { export3mfPairSeparate, exportStlPairSeparate } from "@/features/exports/export-pair";
@@ -116,6 +117,7 @@ export interface ExportRunOptions {
     download?: boolean;
     /** Pair second side — skip duplicate token charge (offline client path). */
     skipAuthorize?: boolean;
+    apexMaterialId?: ApexPrintMaterialId;
 }
 
 export async function exportDesign(
@@ -264,7 +266,7 @@ export async function exportGcode(
     options: ExportRunOptions = {},
 ): Promise<ExportOutcome> {
     const download = options.download ?? true;
-    const filename = buildExportFilename("gcode", side);
+    const filename = buildExportFilename("gcode", side, { apexMaterialId: options.apexMaterialId });
     if (!options.skipAuthorize) {
         const auth = await authorize("gcode", side, filename);
         if (!auth.ok) return { ok: false, reason: auth.reason };
@@ -297,7 +299,7 @@ export async function generateHybridGcode(
     const activeDesignId = useClientStore.getState().activeDesignId;
     const outputType = preset.beltAngleDeg ? "gcode" : "stl";
     const ext = outputType === "gcode" ? "gcode" : "stl";
-    const filename = buildExportFilename(ext, side);
+    const filename = buildExportFilename(ext, side, { apexMaterialId: options.apexMaterialId });
 
     if (isApiConfigured()) {
         try {
@@ -382,11 +384,13 @@ export async function exportPrintGcode(
     if (target === "pair") {
         const left = await generateHybridGcode("left", preset, grindingStyle, overrides, {
             download: false,
+            apexMaterialId: options.apexMaterialId,
         });
         if (!left.ok || !left.blob) return left;
         const right = await generateHybridGcode("right", preset, grindingStyle, overrides, {
             download: false,
             skipAuthorize: true,
+            apexMaterialId: options.apexMaterialId,
         });
         if (!right.ok || !right.blob) return right;
         const leftName = left.filename ?? buildExportFilename("gcode", "left");

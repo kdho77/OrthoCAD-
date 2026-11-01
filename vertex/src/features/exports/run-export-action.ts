@@ -1,5 +1,12 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import {
+    APEX_PRINT_MATERIAL_PICK_HINT,
+    type ApexPrintMaterialId,
+    formatResultMaterialLine,
+    isApexPrintMaterialExportReady,
+    printerPresetForApexMaterial,
+} from "@/features/exports/apex-print-material";
 import type { ExportFileTypeChoice } from "@/features/exports/export-file-type-store";
 import { buildExportFilename } from "@/features/exports/export-filename";
 import {
@@ -22,9 +29,18 @@ function sessionFilesFromOutcome(
     target: ExportOutputTarget,
     designRevision: string,
     tokensCharged: number,
+    apexMaterialId?: ApexPrintMaterialId,
 ): SessionExportRecord | null {
     if (!res.ok) return null;
     const id = `${kind}-${Date.now()}`;
+    const volumeCm3 = (stats?: CamResult["stats"]) =>
+        stats ? `${(stats.estimatedMaterialMm3 / 1000).toFixed(1)}` : undefined;
+    const materialLabelForGcode = (stats?: CamResult["stats"]) =>
+        apexMaterialId
+            ? formatResultMaterialLine(apexMaterialId, volumeCm3(stats))
+            : volumeCm3(stats)
+              ? `${volumeCm3(stats)} cm³`
+              : undefined;
     if (res.files?.length) {
         const parts = res.files.map((f) => ({
             side: f.side,
@@ -32,7 +48,7 @@ function sessionFilesFromOutcome(
             sizeBytes: f.sizeBytes,
             blob: f.blob,
             estimatedTimeSec: f.stats?.estimatedTimeSec,
-            materialLabel: f.stats ? `${(f.stats.estimatedMaterialMm3 / 1000).toFixed(1)} cm³` : undefined,
+            materialLabel: materialLabelForGcode(f.stats),
         }));
         const totalBytes = parts.reduce((n, p) => n + p.sizeBytes, 0);
         return {
@@ -61,7 +77,7 @@ function sessionFilesFromOutcome(
         designRevision,
         createdAt: Date.now(),
         estimatedTimeSec: stats?.estimatedTimeSec,
-        materialLabel: stats ? `${(stats.estimatedMaterialMm3 / 1000).toFixed(1)} cm³` : undefined,
+        materialLabel: materialLabelForGcode(stats),
     };
 }
 
@@ -70,12 +86,23 @@ export async function runExportForChoice(options: {
     target: ExportOutputTarget;
     cnc: boolean;
     preset: PrinterPreset | undefined;
+    apexMaterialId: ApexPrintMaterialId | null;
     grindingStyle: GrindingStyleInput;
     overrides: CamOverrides;
     millingProfile: MillingProfile;
     designRevision: string;
 }): Promise<{ ok: true; record: SessionExportRecord } | { ok: false; reason: string; noTokens?: boolean }> {
-    const { choice, target, cnc, preset, grindingStyle, overrides, millingProfile, designRevision } = options;
+    const {
+        choice,
+        target,
+        cnc,
+        preset: uiPreset,
+        apexMaterialId,
+        grindingStyle,
+        overrides,
+        millingProfile,
+        designRevision,
+    } = options;
 
     if (choice === "stl") {
         const res = await exportDesign("stl", target);
@@ -95,18 +122,34 @@ export async function runExportForChoice(options: {
         return { ok: true, record };
     }
 
+    let preset = uiPreset;
+    if (!cnc) {
+        if (!isApexPrintMaterialExportReady(apexMaterialId)) {
+            return { ok: false, reason: APEX_PRINT_MATERIAL_PICK_HINT, noTokens: true };
+        }
+        preset = printerPresetForApexMaterial(apexMaterialId);
+    }
+
     if (!preset) return { ok: false, reason: "Choose a printer preset in Print", noTokens: true };
 
     let res: Awaited<ReturnType<typeof exportPrintGcode>>;
+    const gcodeOptions = { download: true, apexMaterialId: apexMaterialId ?? undefined };
     if (cnc) {
         res = await exportCncGcode(["left", "right"], millingProfile);
     } else if (target === "pair" || preset.beltAngleDeg) {
-        res = await exportPrintGcode(target, preset, grindingStyle, overrides, { download: true });
+        res = await exportPrintGcode(target, preset, grindingStyle, overrides, gcodeOptions);
     } else {
-        res = await exportGcode(target, preset, overrides, { download: true });
+        res = await exportGcode(target, preset, overrides, gcodeOptions);
     }
 
-    const record = sessionFilesFromOutcome(res, "gcode", target, designRevision, TOKEN_COST.gcode);
+    const record = sessionFilesFromOutcome(
+        res,
+        "gcode",
+        target,
+        designRevision,
+        TOKEN_COST.gcode,
+        apexMaterialId ?? undefined,
+    );
     if (!record) {
         return {
             ok: false,

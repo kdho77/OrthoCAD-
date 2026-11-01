@@ -2,6 +2,8 @@ import { ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { CaseOrderSummary } from "@/components/clinical/CaseOrderSummary";
 import { showSuperAdminLink } from "@/features/admin/admin-nav";
+import { ApexPrintMaterialPicker } from "@/features/exports/ApexPrintMaterialPicker";
+import { APEX_PRINT_MATERIAL_PICK_HINT } from "@/features/exports/apex-print-material";
 import { ExportFileTypePicker } from "@/features/exports/ExportFileTypePicker";
 import { PAIR_MULTI_DOWNLOAD_HINT } from "@/features/exports/export-download";
 import {
@@ -38,10 +40,12 @@ export function ExportPanel() {
     const fileType = useExportFileTypeStore((s) => s.exportFileType);
     const hydrateFileType = useExportFileTypeStore((s) => s.hydrateForCurrentUser);
     const printSettings = usePrintExportSettingsStore();
+    const setPrintExportSettings = usePrintExportSettingsStore((s) => s.setPrintExportSettings);
     const [devOpen, setDevOpen] = useState(false);
     const [busy, setBusy] = useState(false);
     const [pulseType, setPulseType] = useState(false);
     const [pulseTarget, setPulseTarget] = useState(false);
+    const [pulseMaterial, setPulseMaterial] = useState(false);
     const [error, setError] = useState<{ message: string; noTokens?: boolean } | null>(null);
 
     const revision = designRevisionFingerprint(design);
@@ -82,6 +86,11 @@ export function ExportPanel() {
             window.setTimeout(() => setPulseTarget(false), 1200);
             return;
         }
+        if (fileType === "gcode" && !cncLocked && !printSettings.apexMaterialId) {
+            setPulseMaterial(true);
+            window.setTimeout(() => setPulseMaterial(false), 1200);
+            return;
+        }
         if (!licenseOk) return;
 
         setBusy(true);
@@ -96,6 +105,7 @@ export function ExportPanel() {
                 target: exportTarget,
                 cnc: cncLocked,
                 preset,
+                apexMaterialId: printSettings.apexMaterialId,
                 grindingStyle: printSettings.grindingStyle,
                 overrides: printSettings.overrides,
                 millingProfile,
@@ -125,7 +135,23 @@ export function ExportPanel() {
 
             <ExportFileTypePicker pulse={pulseType} />
 
-            {fileType === "gcode" ? (
+            {fileType === "gcode" && !cncLocked ? (
+                <div className="space-y-2 rounded-md border border-border bg-background/40 px-2 py-2 text-[11px]">
+                    <p className="text-muted-foreground">{machineSummary}</p>
+                    <ApexPrintMaterialPicker
+                        value={printSettings.apexMaterialId}
+                        onChange={(id) => setPrintExportSettings({ apexMaterialId: id })}
+                        pulse={pulseMaterial}
+                    />
+                    <button
+                        type="button"
+                        className="text-primary hover:underline"
+                        onClick={() => setStep("print")}
+                    >
+                        Edit in Print
+                    </button>
+                </div>
+            ) : fileType === "gcode" ? (
                 <div className="rounded-md border border-border bg-background/40 px-2 py-2 text-[11px]">
                     <p className="text-muted-foreground">{machineSummary}</p>
                     <button
@@ -249,6 +275,9 @@ export function ExportPanel() {
             ) : null}
             {!exportTarget && pulseTarget ? (
                 <p className="text-[10px] text-amber-400">Pick Left, Right, or Pair</p>
+            ) : null}
+            {fileType === "gcode" && !cncLocked && !printSettings.apexMaterialId && pulseMaterial ? (
+                <p className="text-[10px] text-amber-400">{APEX_PRINT_MATERIAL_PICK_HINT}</p>
             ) : null}
             {fileType && !licenseOk ? (
                 <p className="text-xs text-amber-400">

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import type { ApexPrintMaterialId } from "@/features/exports/apex-print-material";
 import type { ExportOutputTarget } from "@/features/exports/export-target";
 import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -18,7 +19,11 @@ export function targetSuffix(target: ExportOutputTarget): "L" | "R" | "LR" {
     return "LR";
 }
 
-export function buildExportFilename(ext: string, target: ExportOutputTarget): string {
+export function buildExportFilename(
+    ext: string,
+    target: ExportOutputTarget,
+    options?: { apexMaterialId?: ApexPrintMaterialId },
+): string {
     const { activeDesignId, designs, activeClientId, clients } = useClientStore.getState();
     const design = useDesignStore.getState().design;
     const record = activeDesignId ? designs.find((d) => d.id === activeDesignId) : null;
@@ -30,7 +35,8 @@ export function buildExportFilename(ext: string, target: ExportOutputTarget): st
         .replace(/-+/g, "-")
         .slice(0, 48);
     const suffix = targetSuffix(target);
-    const base = `${clientPart}-${namePart}-${suffix}-${yyyymmdd()}`;
+    const materialPart = options?.apexMaterialId ? `-${options.apexMaterialId}` : "";
+    const base = `${clientPart}-${namePart}${materialPart}-${suffix}-${yyyymmdd()}`;
     return ext.startsWith(".") ? `${base}${ext}` : `${base}.${ext}`;
 }
 

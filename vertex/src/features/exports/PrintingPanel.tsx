@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
 import { CncMillingPanel } from "@/features/exports/CncMillingPanel";
+import { ApexPrintMaterialPicker } from "@/features/exports/ApexPrintMaterialPicker";
 import { type GrindingStyleInput } from "@/features/exports/export-service";
 import { useExportSessionStore } from "@/features/exports/export-session-store";
 import { MachineSegment, PrintFooter, useMachineSummaryLine } from "@/features/exports/PrintFooter";
@@ -69,6 +70,8 @@ export function PrintingPanel({
 
     const session = useExportSessionStore();
     const machineSummary = useMachineSummaryLine();
+    const apexMaterialId = usePrintExportSettingsStore((s) => s.apexMaterialId);
+    const setPrintExportSettings = usePrintExportSettingsStore((s) => s.setPrintExportSettings);
     const loftPhases = usePreviewLoftStatusStore((s) => s.phaseBySide);
 
     const [grindingStyle, setGrindingStyle] = useState<GrindingStyleInput>({
@@ -187,6 +190,13 @@ export function PrintingPanel({
                     </div>
                 ) : null}
 
+                {!cncSelected ? (
+                    <ApexPrintMaterialPicker
+                        value={apexMaterialId}
+                        onChange={(id) => setPrintExportSettings({ apexMaterialId: id })}
+                    />
+                ) : null}
+
                 {materialSection}
 
                 <div className="space-y-1.5">
@@ -299,6 +309,12 @@ export function PrintingPanel({
                         </button>
                     ))}
                 </div>
+            ) : null}
+            {!cncSelected ? (
+                <ApexPrintMaterialPicker
+                    value={apexMaterialId}
+                    onChange={(id) => setPrintExportSettings({ apexMaterialId: id })}
+                />
             ) : null}
             {showProceduralWallControls ? <ProceduralWallPreviewControls onWallStyle={onWallStyle} /> : null}
             {!clinicalMode ? (

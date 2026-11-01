@@ -17,6 +17,7 @@ import { exportCncGcode, exportPrintGcode } from "@/features/exports/export-serv
 import { useExportSessionStore } from "@/features/exports/export-session-store";
 import { PrintFooter, SEND_TO_PRINTER_TOOLTIP } from "@/features/exports/PrintFooter";
 import { PrintingPanel } from "@/features/exports/PrintingPanel";
+import { usePrintExportSettingsStore } from "@/features/exports/print-export-settings-store";
 import { TOKEN_COST } from "@/features/licensing/license";
 import { presetsForMethod } from "@/lib/kiri";
 import { useAuthStore } from "@/stores/auth-store";
@@ -216,6 +217,7 @@ describe("Print step panels mount without TDZ errors", () => {
         useMillingProfileStore.setState({ machine: "printer" });
         useDesignStore.setState({ exportTarget: "left", exportSide: "left" });
         useExportFileTypeStore.setState({ exportFileType: "gcode", lastByUserId: {} });
+        usePrintExportSettingsStore.setState({ apexMaterialId: null });
     };
 
     test("PrintingPanel clinical primary layout renders", async () => {
@@ -225,7 +227,7 @@ describe("Print step panels mount without TDZ errors", () => {
             root.render(createElement(PrintingPanel, { clinicalMode: true, primaryOnly: true }));
         });
         expect(container.querySelector('[data-testid="print-export-footer"]')).not.toBeNull();
-        expect(container.textContent).toMatch(/Continue to Export/);
+        expect(container.querySelector('[data-testid="apex-print-material-picker"]')).not.toBeNull();
     });
 
     test("ClinicalPrintStepPanel renders Print workflow", async () => {
