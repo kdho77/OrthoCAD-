@@ -1,5 +1,5 @@
 // Vertex Orthopedic — Insole CAD
-// Prisma schema (PostgreSQL / Supabase). Phase 0: complete data model for
+// Prisma schema (PostgreSQL). Phase 0: complete data model for
 // users, licensing, tokens, clients, designs, scans, corrections, elements,
 // productions and audit logs.
 
@@ -118,6 +118,51 @@ enum AuditAction {
     stock_base_updated
     stock_base_deleted
     stock_base_resolved
+    client_created
+    client_updated
+    client_archived
+    client_restored
+    client_deleted
+    design_archived
+    design_restored
+    design_deleted
+    design_duplicated
+    job_queued
+    job_assigned
+    job_held
+    job_cancelled
+    job_retried
+    job_completed
+    job_requeued
+}
+
+enum DesignKind {
+    insole
+    afo
+}
+
+enum ShopProcess {
+    print
+    mill
+}
+
+enum ShopJobStatus {
+    waiting
+    assigned
+    running
+    paused
+    held
+    failed
+    done
+    cancelled
+}
+
+enum PrinterState {
+    idle
+    running
+    paused
+    error
+    offline
 }
 
 // --- Identity & Access ------------------------------------------------------
@@ -148,6 +193,9 @@ model User {
     customPrefabs   CustomPrefab[]
     tenantLedger    TenantTokenLedger[] @relation("LedgerActor")
     adminAudits     AdminAuditLog[]     @relation("AuditActor")
+    shopJobs        ShopJob[]
+    shopPrinters    ShopPrinter[]
+    clientScans     ClientScan[]
 
     @@index([role])
     @@index([tenantId])
@@ -209,9 +257,13 @@ model Tenant {
     createdAt      DateTime     @default(now())
     updatedAt      DateTime     @updatedAt
 
-    members User[]
-    ledger  TenantTokenLedger[]
-    audits  AdminAuditLog[]
+    members      User[]
+    ledger       TenantTokenLedger[]
+    audits       AdminAuditLog[]
+    clients      Client[]
+    shopPrinters ShopPrinter[]
+    shopJobs     ShopJob[]
+    clientScans  ClientScan[]
 
     @@index([status])
     @@index([plan])
@@ -280,32 +332,52 @@ model TokenTransaction {
 // --- Clinical data ----------------------------------------------------------
 
 model Client {
-    id        String   @id @default(uuid()) @db.Uuid
-    reference String?
-    firstName String
-    lastName  String
-    email     String?
-    phone     String?
-    notes     String?
-    createdAt DateTime @default(now())
-    updatedAt DateTime @updatedAt
+    id          String    @id @default(uuid()) @db.Uuid
+    reference   String?
+    displayName String?
+    firstName   String
+    lastName    String
+    dateOfBirth DateTime? @db.Date
+    mrn         String?
+    email       String?
+    phone       String?
+    notes       String?
+    orderedBy   String?
+    shoeSizeUs      Float    @default(9)
+    shoeSizesSplit  Boolean  @default(false)
+    shoeSizeLeftUs  Float    @default(9)
+    shoeSizeRightUs Float    @default(9)
+    shoeWidth       String   @default("medium")
+    archivedAt  DateTime?
+    createdAt   DateTime  @default(now())
+    updatedAt   DateTime  @updatedAt
 
-    ownerId String   @db.Uuid
-    owner   User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-    designs Design[]
+    ownerId  String  @db.Uuid
+    owner    User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+    tenantId String? @db.Uuid
+    tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+    designs     Design[]
+    shopJobs    ShopJob[]
+    clientScans ClientScan[]
 
     @@index([ownerId])
+    @@index([tenantId])
+    @@index([archivedAt])
     @@map("clients")
 }
 
 model Design {
     id          String           @id @default(uuid()) @db.Uuid
     name        String
+    kind        DesignKind       @default(insole)
+    notes       String?          @db.VarChar(500)
     pattern     ScanPattern      @default(full_contact)
     method      ProductionMethod @default(printing_solid)
     thicknessMm Float            @default(2)
     linked      Boolean          @default(true)
     unit        Unit             @default(mm)
+    archivedAt  DateTime?
+    deletedAt   DateTime?
     createdAt   DateTime         @default(now())
     updatedAt   DateTime         @updatedAt
 
@@ -320,9 +392,11 @@ model Design {
     productions   Production[]
     exports       Export[]
     prescriptions Prescription[]
+    shopJobs      ShopJob[]
 
     @@index([clientId])
     @@index([ownerId])
+    @@index([deletedAt])
     @@map("designs")
 }
 
@@ -341,6 +415,39 @@ model Scan {
 
     @@index([designId])
     @@map("scans")
+}
+
+// Uploaded foot scan for a client chart. Bytes live in client_scan_blobs.
+// This is PHI. It is not the manufacturing mesh and it is not `scans`.
+model ClientScan {
+    id          String   @id @default(uuid()) @db.Uuid
+    clientId    String   @db.Uuid
+    ownerId     String   @db.Uuid
+    tenantId    String?  @db.Uuid
+    side        Side
+    fileName    String
+    contentType String
+    byteLength  Int
+    sha256      String
+    uploadedAt  DateTime @default(now())
+
+    client Client          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+    owner  User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+    tenant Tenant?         @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+    blob   ClientScanBlob?
+
+    @@index([clientId])
+    @@index([tenantId])
+    @@map("client_scans")
+}
+
+model ClientScanBlob {
+    scanId String @id @db.Uuid
+    body   Bytes
+
+    scan ClientScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+    @@map("client_scan_blobs")
 }
 
 // Parametric corrections, one row per side per design.
@@ -403,6 +510,76 @@ model Production {
 
     @@index([designId])
     @@map("productions")
+}
+
+// Shop-floor queue. Separate from `productions`, which stores slice settings.
+// G-code bytes live in JobGcode. The design row is not deleted when G-code expires.
+model ShopPrinter {
+    id        String       @id @default(uuid()) @db.Uuid
+    name      String
+    state     PrinterState @default(idle)
+    ownerId   String       @db.Uuid
+    tenantId  String?      @db.Uuid
+    createdAt DateTime     @default(now())
+    updatedAt DateTime     @updatedAt
+
+    owner  User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+    tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+    @@index([tenantId])
+    @@map("shop_printers")
+}
+
+model ShopJob {
+    id            String        @id @default(uuid()) @db.Uuid
+    designId      String        @db.Uuid
+    designName    String
+    designKind    DesignKind    @default(insole)
+    clientId      String        @db.Uuid
+    clientLabel   String
+    ownerId       String        @db.Uuid
+    tenantId      String?       @db.Uuid
+    process       ShopProcess
+    status        ShopJobStatus @default(waiting)
+    orderNumber   String?
+    orderUrl      String?
+    orderOpen     Boolean       @default(false)
+    printerId     String?       @db.Uuid
+    printerName   String?
+    dueAt         DateTime?
+    startedAt     DateTime?
+    finishedAt    DateTime?
+    durationMs    Int?
+    operatorName  String?
+    failureReason String?
+    progress      Int?
+    gcodeSha256   String?
+    gcodeStoredAt DateTime?
+    createdAt     DateTime      @default(now())
+    updatedAt     DateTime      @updatedAt
+
+    design Design    @relation(fields: [designId], references: [id], onDelete: Cascade)
+    client Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+    owner  User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+    tenant Tenant?   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+    gcode  JobGcode?
+
+    @@index([tenantId])
+    @@index([status])
+    @@index([dueAt])
+    @@index([designId])
+    @@map("shop_jobs")
+}
+
+model JobGcode {
+    jobId    String   @id @db.Uuid
+    sha256   String
+    body     String   @db.Text
+    storedAt DateTime
+
+    job ShopJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+    @@map("job_gcode")
 }
 
 // A token-consuming export of an STL or G-code artifact.

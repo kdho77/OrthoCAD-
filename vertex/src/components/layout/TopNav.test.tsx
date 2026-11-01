@@ -53,7 +53,7 @@ describe("TopNav super-admin link", () => {
             root = createRoot(container);
             root.render(
                 createElement(TopNav, {
-                    active: "Production",
+                    active: "Clients",
                     onNavigate: () => {},
                     onOpenPrescription: () => {},
                 }),
@@ -68,12 +68,14 @@ describe("TopNav super-admin link", () => {
             root = createRoot(container);
             root.render(
                 createElement(TopNav, {
-                    active: "Production",
+                    active: "Clients",
                     onNavigate: () => {},
                     onOpenPrescription: () => {},
                 }),
             );
         });
         expect(container.textContent).toContain("Super admin");
+        expect(container.textContent).toContain("Production");
+        expect(container.textContent).not.toContain("Orders");
     });
 });
