@@ -137,7 +137,15 @@ export async function buildValidatedExportGeometry(side: Side): Promise<BufferGe
     try {
         solid = closeGlbInsoleToSolid(geometry);
         const topN = (solid.userData as { topVertexCount?: number }).topVertexCount ?? 0;
-        assertClosedSolidAcceptable(solid, topN, topN > 0 ? DEFAULT_GLB_CLOSED_BASELINE : null);
+        // topVertexCount is also set by SAMPLE_Top lofts; it is not evidence
+        // that this mesh came from the legacy Default.glb bridge pipeline.
+        const baseline =
+            solid.userData.wallModel === "procedural"
+                ? { eulerCharacteristic: 2, heelBridgeSelfIntersections: 0 }
+                : topN > 0
+                  ? DEFAULT_GLB_CLOSED_BASELINE
+                  : null;
+        assertClosedSolidAcceptable(solid, topN, baseline);
         scaleFootprintUniform(solid, insoleLayoutFromDesign(design).scale);
         return solid;
     } catch (error) {

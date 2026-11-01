@@ -13,6 +13,7 @@ const mockBuildFromBase = rs.fn<() => { geometry: BufferGeometry; manifold: { is
 const mockGetDesignBase = rs.fn<() => unknown>();
 const mockBaseModifierField = rs.fn<() => object>();
 
+const mockAssertClosed = rs.fn();
 const mockProcedural = rs.fn<() => boolean>();
 const mockProceduralBuild = rs.fn<(options: unknown) => Promise<{ geometry: BufferGeometry }>>();
 const mockDraftPattern = rs.fn();
@@ -70,7 +71,7 @@ rs.mock("@/lib/geometry/geometry-kernel", () => ({
 
 rs.mock("@/lib/geometry/mesh-close", () => ({
     closeGlbInsoleToSolid: (geometry: BufferGeometry) => mockCloseGlbInsoleToSolid(geometry),
-    assertClosedSolidAcceptable: () => undefined,
+    assertClosedSolidAcceptable: (...args: unknown[]) => mockAssertClosed(...args),
     DEFAULT_GLB_CLOSED_BASELINE: { eulerCharacteristic: 3, heelBridgeSelfIntersections: 0 },
     MeshNotWatertightError: class MeshNotWatertightError extends Error {},
 }));
@@ -122,6 +123,7 @@ function makeTestGeometry(): BufferGeometry {
 
 describe("export-geometry routing", () => {
     beforeEach(() => {
+        mockAssertClosed.mockReset();
         mockProcedural.mockReturnValue(false);
         mockProceduralBuild.mockImplementation(async () => ({ geometry: makeTestGeometry() }));
         mockDraftPattern.mockReturnValue(null);
@@ -219,6 +221,25 @@ describe("export-geometry routing", () => {
         await expect(buildValidatedExportGeometry("left")).rejects.toThrow("outside the TopSheet rim");
         await expect(buildExportStl("left")).rejects.toThrow("outside the TopSheet rim");
         expect(mockGeometryToBinarySTL).not.toHaveBeenCalled();
+    });
+
+    test("procedural top metadata uses Euler 2 while legacy Default retains Euler 3", async () => {
+        const { buildExportStl } = await import("@/lib/geometry/export-geometry");
+        const procedural = makeTestGeometry();
+        procedural.userData.wallModel = "procedural";
+        mockCloseGlbInsoleToSolid.mockReturnValue(procedural);
+        await buildExportStl("left");
+        expect(mockAssertClosed).toHaveBeenLastCalledWith(procedural, 3, {
+            eulerCharacteristic: 2,
+            heelBridgeSelfIntersections: 0,
+        });
+        const legacy = makeTestGeometry();
+        mockCloseGlbInsoleToSolid.mockReturnValue(legacy);
+        await buildExportStl("left");
+        expect(mockAssertClosed).toHaveBeenLastCalledWith(legacy, 3, {
+            eulerCharacteristic: 3,
+            heelBridgeSelfIntersections: 0,
+        });
     });
 
     test("GLB download path does not call closeGlbInsoleToSolid", async () => {
