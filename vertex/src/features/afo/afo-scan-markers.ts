@@ -4,12 +4,18 @@ import type { BufferGeometry } from "three";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
 import {
     AFO_LANDMARK_STEPS,
+    AFO_OPTIONAL_LANDMARK_COUNT,
     AFO_PLANTAR_STEPS,
+    AFO_REQUIRED_LANDMARK_COUNT,
     alignScanToPlantarFrame,
     anatomicalPlacementAllowed,
     deriveAfoMeasurements,
     firstMissingStep,
+    isOptionalLandmark,
+    nextLandmarkStep,
     type OrientedLandmarks,
+    requiredLandmarkCount,
+    skippedLandmarkIds,
     transformAfoPoint,
 } from "@/lib/geometry/afo/landmark-frame";
 import { geometryToAfoMesh } from "@/lib/geometry/afo/mesh-ops";
@@ -28,9 +34,11 @@ import type { Side } from "@/types";
 export {
     AFO_FOREFOOT_WARN_DEG,
     AFO_LANDMARK_STEPS,
+    AFO_OPTIONAL_LANDMARK_COUNT,
     AFO_PLANNED_RELIEFS_MM,
     AFO_PLANTAR_STEPS,
     AFO_PROXIMAL_TRIM_OFFSET_MM,
+    AFO_REQUIRED_LANDMARK_COUNT,
 } from "@/lib/geometry/afo/landmark-frame";
 
 const PLANTAR_IDS = new Set<string>(AFO_PLANTAR_STEPS.map((step) => step.id));
@@ -155,9 +163,16 @@ export function commitAfoScanPoint(pointMm: AfoVec3, scanId: string, displayScal
     if (redo && LANDMARK_IDS.has(redo)) {
         if (!wf.alignmentApplied) return "Apply alignment before anatomical landmarks.";
         const id = redo as AfoAnatomicalLandmarkId;
-        const allowed = anatomicalPlacementAllowed(id, wf.landmarks);
+        const allowed = anatomicalPlacementAllowed(id, wf.landmarks, skippedLandmarkIds(wf));
         if (!allowed.ok) return allowed.message;
-        wf = withDerived({ ...wf, landmarks: { ...wf.landmarks, [id]: pointMm } }, side);
+        wf = withDerived(
+            {
+                ...wf,
+                skippedLandmarks: skippedLandmarkIds(wf).filter((skipped) => skipped !== id),
+                landmarks: { ...wf.landmarks, [id]: pointMm },
+            },
+            side,
+        );
         writeWorkflow(wf, "afo-landmark");
         useAfoStore.getState().setScanPlacement({ redo: null });
         useAfoStore.getState().setScanLandmarkError(null);
@@ -174,11 +189,18 @@ export function commitAfoScanPoint(pointMm: AfoVec3, scanId: string, displayScal
 
     if (!wf.alignmentApplied) return "Apply alignment before anatomical landmarks.";
 
-    const nextLandmark = firstMissingStep(AFO_LANDMARK_STEPS, wf.landmarks);
-    if (!nextLandmark) return "All 8 landmarks are placed. Redo one to move it.";
-    const allowed = anatomicalPlacementAllowed(nextLandmark.id, wf.landmarks);
+    const nextLandmark = nextLandmarkStep(wf);
+    if (!nextLandmark) return "All landmarks are placed. Redo one to move it.";
+    const allowed = anatomicalPlacementAllowed(nextLandmark.id, wf.landmarks, skippedLandmarkIds(wf));
     if (!allowed.ok) return allowed.message;
-    wf = withDerived({ ...wf, landmarks: { ...wf.landmarks, [nextLandmark.id]: pointMm } }, side);
+    wf = withDerived(
+        {
+            ...wf,
+            skippedLandmarks: skippedLandmarkIds(wf).filter((skipped) => skipped !== nextLandmark.id),
+            landmarks: { ...wf.landmarks, [nextLandmark.id]: pointMm },
+        },
+        side,
+    );
     writeWorkflow(wf, "afo-landmark");
     useAfoStore.getState().setScanLandmarkError(null);
     return null;
@@ -205,9 +227,37 @@ export function undoAfoMarker(id: string): void {
         return;
     }
     if (!LANDMARK_IDS.has(id)) return;
+    const landmarkId = id as AfoAnatomicalLandmarkId;
     const landmarks = { ...wf.landmarks };
-    delete landmarks[id as AfoAnatomicalLandmarkId];
-    writeWorkflow(withDerived({ ...wf, landmarks }, side), "afo-landmark-undo");
+    delete landmarks[landmarkId];
+    writeWorkflow(
+        withDerived(
+            {
+                ...wf,
+                landmarks,
+                skippedLandmarks: skippedLandmarkIds(wf).filter((skipped) => skipped !== landmarkId),
+            },
+            side,
+        ),
+        "afo-landmark-undo",
+    );
+}
+
+/** Skip an optional landmark. Earlier markers must already be placed or skipped. */
+export function skipAfoLandmark(id: string): string | null {
+    if (!isOptionalLandmark(id)) return "That landmark is required.";
+    const scan = scanForAfoWorkflow();
+    const side = afoFrameSide(scan?.side ?? "left");
+    const wf = getAfoState().scanWorkflow;
+    if (!wf.alignmentApplied) return "Apply alignment before anatomical landmarks.";
+    if (wf.landmarks[id]) return "Undo the marker before skipping it.";
+    const skipped = skippedLandmarkIds(wf);
+    if (skipped.includes(id)) return null;
+    const allowed = anatomicalPlacementAllowed(id, wf.landmarks, skipped);
+    if (!allowed.ok) return allowed.message;
+    writeWorkflow(withDerived({ ...wf, skippedLandmarks: [...skipped, id] }, side), "afo-landmark-skip");
+    useAfoStore.getState().setScanLandmarkError(null);
+    return null;
 }
 
 export function redoAfoMarker(id: string): void {
@@ -254,7 +304,7 @@ export function applyAfoAlignment(levelToRearfoot = false): void {
         derived: {
             forefootToRearfootDeg: aligned.forefootToRearfootDeg,
             ankleAxis: null,
-            plannedReliefsMm: { malleoli: -3, navicular: -2, styloid: -2 },
+            plannedReliefsMm: { malleoli: -3, navicular: null, styloid: null },
             proximalTrimCap: null,
             heelCupCenter: null,
             mpjBreak: null,
@@ -274,7 +324,7 @@ export function afoStageSnapshot(wf: AfoScanWorkflow): {
     nextLabel: string | null;
     landmarkCount: number;
 } {
-    const landmarkCount = AFO_LANDMARK_STEPS.filter((step) => wf.landmarks[step.id]).length;
+    const landmarkCount = requiredLandmarkCount(wf);
     if (!wf.alignmentApplied) {
         const next = firstMissingStep(AFO_PLANTAR_STEPS, wf.plantar);
         return {
@@ -284,11 +334,11 @@ export function afoStageSnapshot(wf: AfoScanWorkflow): {
             landmarkCount,
         };
     }
-    const next = firstMissingStep(AFO_LANDMARK_STEPS, wf.landmarks);
+    const next = nextLandmarkStep(wf);
     return {
         stage: 2,
-        title: `Step 2 of 2: Landmarks ${landmarkCount}/8`,
-        nextLabel: next?.label ?? null,
+        title: `Step 2 of 2: Landmarks ${landmarkCount}/${AFO_REQUIRED_LANDMARK_COUNT} required (+${AFO_OPTIONAL_LANDMARK_COUNT} optional)`,
+        nextLabel: next ? (next.optional ? `${next.label} (optional)` : next.label) : null,
         landmarkCount,
     };
 }

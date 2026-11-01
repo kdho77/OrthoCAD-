@@ -162,6 +162,7 @@ export function selectAfoLandmarkRevision(s: {
                 levelToRearfoot: boolean;
                 plantar: { heel?: unknown; m1p?: unknown; m5p?: unknown };
                 landmarks: Record<string, unknown>;
+                skippedLandmarks?: readonly string[];
             };
         } | null;
     };
@@ -169,7 +170,8 @@ export function selectAfoLandmarkRevision(s: {
     const workflow = s.design.afo?.scanWorkflow;
     if (!workflow) return "";
     const plantar = `${workflow.plantar.heel ? 1 : 0}${workflow.plantar.m1p ? 1 : 0}${workflow.plantar.m5p ? 1 : 0}`;
-    return `${workflow.alignmentApplied ? 1 : 0}:${workflow.levelToRearfoot ? 1 : 0}:${plantar}:${Object.keys(workflow.landmarks).length}`;
+    const skipped = workflow.skippedLandmarks?.length ?? 0;
+    return `${workflow.alignmentApplied ? 1 : 0}:${workflow.levelToRearfoot ? 1 : 0}:${plantar}:${Object.keys(workflow.landmarks).length}:${skipped}`;
 }
 
 /**

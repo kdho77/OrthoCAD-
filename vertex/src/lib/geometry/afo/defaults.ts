@@ -155,6 +155,7 @@ export function defaultAfoScanWorkflow(): AfoScanWorkflow {
         levelToRearfoot: false,
         matrixElements: null,
         landmarks: {},
+        skippedLandmarks: [],
         derived: null,
     };
 }

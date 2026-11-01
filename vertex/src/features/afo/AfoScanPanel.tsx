@@ -7,12 +7,14 @@ import {
     AFO_PLANNED_RELIEFS_MM,
     AFO_PLANTAR_STEPS,
     AFO_PROXIMAL_TRIM_OFFSET_MM,
+    AFO_REQUIRED_LANDMARK_COUNT,
     afoFrameSide,
     afoStageSnapshot,
     applyAfoAlignment,
     commitAfoScanPoint,
     redoAfoMarker,
     scanForAfoWorkflow,
+    skipAfoLandmark,
     undoAfoMarker,
 } from "@/features/afo/afo-scan-markers";
 import { ScanImport } from "@/features/scans/ScanImport";
@@ -196,14 +198,34 @@ export function AfoScanPanel() {
                 <div className="space-y-1" data-testid="afo-landmark-list">
                     {AFO_LANDMARK_STEPS.map((step, index) => {
                         const point = workflow.landmarks[step.id];
+                        const skipped = (workflow.skippedLandmarks ?? []).includes(step.id);
+                        const settled = Boolean(point) || skipped;
                         return (
                             <div key={step.id} className="flex items-center gap-1 text-[11px]">
-                                <span className={point ? "text-emerald-300" : "text-muted-foreground"}>
+                                <span
+                                    className={
+                                        settled && !skipped ? "text-emerald-300" : "text-muted-foreground"
+                                    }
+                                >
                                     {index + 1}. {step.label}
-                                    {point ? "" : " — waiting"}
+                                    {step.optional ? " (optional)" : ""}
+                                    {point ? "" : skipped ? " — skipped" : " — waiting"}
                                 </span>
-                                {point ? (
-                                    <span className="ml-auto flex gap-1">
+                                <span className="ml-auto flex gap-1">
+                                    {step.optional && !point && !skipped ? (
+                                        <button
+                                            type="button"
+                                            className="underline"
+                                            data-testid={`afo-skip-${step.id}`}
+                                            onClick={() => {
+                                                const message = skipAfoLandmark(step.id);
+                                                useAfoStore.getState().setScanLandmarkError(message);
+                                            }}
+                                        >
+                                            Skip
+                                        </button>
+                                    ) : null}
+                                    {settled ? (
                                         <button
                                             type="button"
                                             className="underline"
@@ -211,6 +233,8 @@ export function AfoScanPanel() {
                                         >
                                             Undo
                                         </button>
+                                    ) : null}
+                                    {point ? (
                                         <button
                                             type="button"
                                             className="underline"
@@ -218,8 +242,8 @@ export function AfoScanPanel() {
                                         >
                                             Redo
                                         </button>
-                                    </span>
-                                ) : null}
+                                    ) : null}
+                                </span>
                             </div>
                         );
                     })}
@@ -262,6 +286,12 @@ function DerivedReadout({ workflow }: { workflow: AfoScanWorkflow }) {
     const derived = workflow.derived;
     if (!workflow.alignmentApplied || !derived) return null;
     const relief = AFO_PLANNED_RELIEFS_MM;
+    const requiredDone = AFO_LANDMARK_STEPS.filter(
+        (step) => !step.optional && workflow.landmarks[step.id],
+    ).length;
+    const fibularSkipped = (workflow.skippedLandmarks ?? []).includes("fibular_head");
+    const showTrimUnchecked =
+        !workflow.landmarks.fibular_head && (fibularSkipped || requiredDone === AFO_REQUIRED_LANDMARK_COUNT);
     return (
         <div
             className="space-y-1 rounded-md border border-border bg-background px-2 py-2 text-[11px] leading-snug"
@@ -275,13 +305,22 @@ function DerivedReadout({ workflow }: { workflow: AfoScanWorkflow }) {
                 </p>
             ) : null}
             <p>
-                Planned reliefs: malleoli {relief.malleoli} mm, navicular {relief.navicular} mm, styloid{" "}
-                {relief.styloid} mm
+                Planned reliefs: malleoli {relief.malleoli} mm
+                {derived.plannedReliefsMm.navicular != null
+                    ? `, navicular ${derived.plannedReliefsMm.navicular} mm`
+                    : ""}
+                {derived.plannedReliefsMm.styloid != null
+                    ? `, styloid ${derived.plannedReliefsMm.styloid} mm`
+                    : ""}
             </p>
-            <p>
-                Proximal trim cap: fibular head − {AFO_PROXIMAL_TRIM_OFFSET_MM} mm
-                {derived.proximalTrimCap ? ` (${fmt(derived.proximalTrimCap.point)})` : ""}
-            </p>
+            {showTrimUnchecked ? (
+                <p data-testid="afo-trim-unchecked">Proximal trim cap is unchecked.</p>
+            ) : (
+                <p>
+                    Proximal trim cap: fibular head − {AFO_PROXIMAL_TRIM_OFFSET_MM} mm
+                    {derived.proximalTrimCap ? ` (${fmt(derived.proximalTrimCap.point)})` : ""}
+                </p>
+            )}
             <p>Heel cup center: {fmt(derived.heelCupCenter)}</p>
             <p>
                 MPJ break:{" "}

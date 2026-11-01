@@ -136,7 +136,8 @@ export interface AfoScanDerived {
     forefootToRearfootDeg: number | null;
     /** Malleolar apices in the oriented frame. The future Cast-tab DF/PF pivot. */
     ankleAxis: { medial: AfoVec3; lateral: AfoVec3 } | null;
-    plannedReliefsMm: { malleoli: number; navicular: number; styloid: number };
+    /** Null when that optional marker was not placed. */
+    plannedReliefsMm: { malleoli: number; navicular: number | null; styloid: number | null };
     /** Fibular head minus the proximal-trim offset, in the oriented frame. */
     proximalTrimCap: { offsetMm: number; point: AfoVec3 } | null;
     heelCupCenter: AfoVec3 | null;
@@ -158,6 +159,8 @@ export interface AfoScanWorkflow {
     /** Column-major 4×4. Unoriented millimetres → oriented millimetres. Null before Apply. */
     matrixElements: number[] | null;
     landmarks: Partial<Record<AfoAnatomicalLandmarkId, AfoVec3>>;
+    /** Optional landmarks the user skipped. They advance the order and store no point. */
+    skippedLandmarks: AfoAnatomicalLandmarkId[];
     derived: AfoScanDerived | null;
 }
 

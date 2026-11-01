@@ -83,13 +83,22 @@ describe("AFO plantar frame", () => {
     test("order enforcement places anatomical landmarks one at a time and allows redo", () => {
         const none = {};
         expect(anatomicalPlacementAllowed("posterior_calcaneus", none).ok).toBe(true);
-        const skipped = anatomicalPlacementAllowed("m1_mpj", none);
-        expect(skipped.ok).toBe(false);
-        if (!skipped.ok) expect(skipped.message).toMatch(/Posterior calcaneus center before M1/);
+        const blocked = anatomicalPlacementAllowed("m1_mpj", none);
+        expect(blocked.ok).toBe(false);
+        if (!blocked.ok) expect(blocked.message).toMatch(/Posterior calcaneus center before M1/);
 
         const afterHeel = { posterior_calcaneus: heel };
         expect(anatomicalPlacementAllowed("m1_mpj", afterHeel).ok).toBe(true);
         expect(anatomicalPlacementAllowed("navicular", afterHeel).ok).toBe(false);
+
+        const throughM5 = { posterior_calcaneus: heel, m1_mpj: leftM1, m5_mpj: leftM5 };
+        expect(anatomicalPlacementAllowed("medial_malleolus", throughM5).ok).toBe(false);
+        expect(
+            anatomicalPlacementAllowed("medial_malleolus", throughM5, ["navicular", "fifth_met_base"]).ok,
+        ).toBe(true);
+        expect(
+            anatomicalPlacementAllowed("fibular_head", throughM5, ["navicular", "fifth_met_base"]).ok,
+        ).toBe(false);
 
         const placed = { posterior_calcaneus: heel, m1_mpj: leftM1, navicular: heel };
         expect(anatomicalPlacementAllowed("posterior_calcaneus", placed).ok).toBe(true);
@@ -104,6 +113,7 @@ describe("AFO plantar frame", () => {
             navicular: { x: 60, y: -10, z: 20 },
             m1_mpj: { x: 110, y: -25, z: 5 },
             m5_mpj: { x: 100, y: 20, z: 4 },
+            fifth_met_base: { x: 80, y: 18, z: 12 },
             posterior_calcaneus: { x: -5, y: 0, z: 15 },
             fibular_head: { x: 10, y: 25, z: 220 },
         };
@@ -145,6 +155,23 @@ describe("AFO plantar frame", () => {
         expect(bad.warnings.find((warning) => warning.id === "shank-sagittal")?.message).toMatch(
             /not re-posed/,
         );
+
+        const withoutOptional = deriveAfoMeasurements(
+            {
+                posterior_calcaneus: { x: -5, y: 0, z: 15 },
+                m1_mpj: { x: 110, y: -25, z: 5 },
+                m5_mpj: { x: 100, y: 20, z: 4 },
+                medial_malleolus: { x: 40, y: -20, z: 80 },
+                lateral_malleolus: { x: 20, y: 15, z: 70 },
+            },
+            side,
+            mesh,
+            2,
+        );
+        expect(withoutOptional.plannedReliefsMm).toEqual({ malleoli: -3, navicular: null, styloid: null });
+        expect(withoutOptional.proximalTrimCap).toBeNull();
+        expect(withoutOptional.shankTiltDeg).toBeNull();
+        expect(withoutOptional.warnings.map((warning) => warning.id)).toEqual([]);
     });
 });
 
@@ -165,7 +192,7 @@ describe("AFO scan gate", () => {
         });
     });
 
-    test("Next waits for alignment and all 8 landmarks", () => {
+    test("Next waits for alignment and the 5 required landmarks", () => {
         useScanStore.setState({
             scans: [{ id: "leg" } as never],
         });
@@ -181,26 +208,37 @@ describe("AFO scan gate", () => {
         };
         const mid = evaluateAfoScanProgress(aligned);
         expect(mid.ok).toBe(false);
-        if (!mid.ok) expect(mid.reason).toMatch(/Posterior calcaneus center \(0\/8\)/);
+        if (!mid.ok) expect(mid.reason).toMatch(/Posterior calcaneus center \(0\/5 required\)/);
 
-        const landmarks = Object.fromEntries(
-            [
-                "posterior_calcaneus",
-                "m1_mpj",
-                "m5_mpj",
-                "navicular",
-                "fifth_met_base",
-                "medial_malleolus",
-                "lateral_malleolus",
-                "fibular_head",
-            ].map((id) => [id, heel]),
-        );
+        const required = {
+            posterior_calcaneus: heel,
+            m1_mpj: heel,
+            m5_mpj: heel,
+            medial_malleolus: heel,
+            lateral_malleolus: heel,
+        };
+        const skippedOptionals: AfoScanWorkflow = {
+            ...aligned,
+            landmarks: required,
+            skippedLandmarks: ["navicular", "fifth_met_base"],
+        };
+        expect(evaluateAfoScanProgress(skippedOptionals).ok).toBe(true);
+
+        const missingMalleolus: AfoScanWorkflow = {
+            ...skippedOptionals,
+            landmarks: { ...required, lateral_malleolus: undefined },
+        };
+        delete missingMalleolus.landmarks.lateral_malleolus;
+        const blocked = evaluateAfoScanProgress(missingMalleolus);
+        expect(blocked.ok).toBe(false);
+        if (!blocked.ok) expect(blocked.reason).toMatch(/Lateral malleolus \(4\/5 required\)/);
+
         useDesignStore.setState({
             design: {
                 ...useDesignStore.getState().design,
                 afo: {
                     ...defaultAfoDesignState("left"),
-                    scanWorkflow: { ...aligned, landmarks },
+                    scanWorkflow: skippedOptionals,
                 },
             },
         });

@@ -74,6 +74,7 @@ function mergeScanWorkflow(base: AfoScanWorkflow, extra?: AfoScanWorkflow): AfoS
         ...extra,
         plantar: { ...base.plantar, ...(extra.plantar ?? {}) },
         landmarks: { ...base.landmarks, ...(extra.landmarks ?? {}) },
+        skippedLandmarks: extra.skippedLandmarks ?? base.skippedLandmarks ?? [],
         derived: extra.derived === undefined ? base.derived : extra.derived,
     };
 }

@@ -29,16 +29,53 @@ export const AFO_PLANTAR_STEPS: readonly { id: AfoPlantarPointId; label: string 
     { id: "m5p", label: "Plantar 5th met head" },
 ];
 
-export const AFO_LANDMARK_STEPS: readonly { id: AfoAnatomicalLandmarkId; label: string }[] = [
-    { id: "posterior_calcaneus", label: "Posterior calcaneus center" },
-    { id: "m1_mpj", label: "M1 medial 1st MPJ prominence" },
-    { id: "m5_mpj", label: "M5 lateral 5th MPJ prominence" },
-    { id: "navicular", label: "Navicular tuberosity" },
-    { id: "fifth_met_base", label: "5th met base (styloid)" },
-    { id: "medial_malleolus", label: "Medial malleolus" },
-    { id: "lateral_malleolus", label: "Lateral malleolus" },
-    { id: "fibular_head", label: "Fibular head" },
+export const AFO_LANDMARK_STEPS: readonly {
+    id: AfoAnatomicalLandmarkId;
+    label: string;
+    optional: boolean;
+}[] = [
+    { id: "posterior_calcaneus", label: "Posterior calcaneus center", optional: false },
+    { id: "m1_mpj", label: "M1 medial 1st MPJ prominence", optional: false },
+    { id: "m5_mpj", label: "M5 lateral 5th MPJ prominence", optional: false },
+    { id: "navicular", label: "Navicular tuberosity", optional: true },
+    { id: "fifth_met_base", label: "5th met base (styloid)", optional: true },
+    { id: "medial_malleolus", label: "Medial malleolus", optional: false },
+    { id: "lateral_malleolus", label: "Lateral malleolus", optional: false },
+    { id: "fibular_head", label: "Fibular head", optional: true },
 ];
+
+export const AFO_REQUIRED_LANDMARK_COUNT = AFO_LANDMARK_STEPS.filter((step) => !step.optional).length;
+export const AFO_OPTIONAL_LANDMARK_COUNT = AFO_LANDMARK_STEPS.filter((step) => step.optional).length;
+
+const OPTIONAL_LANDMARK_IDS = new Set<AfoAnatomicalLandmarkId>(
+    AFO_LANDMARK_STEPS.filter((step) => step.optional).map((step) => step.id),
+);
+
+export function isOptionalLandmark(id: string): id is AfoAnatomicalLandmarkId {
+    return OPTIONAL_LANDMARK_IDS.has(id as AfoAnatomicalLandmarkId);
+}
+
+export function skippedLandmarkIds(wf: AfoScanWorkflow): AfoAnatomicalLandmarkId[] {
+    return wf.skippedLandmarks ?? [];
+}
+
+export function landmarkSettled(
+    id: AfoAnatomicalLandmarkId,
+    landmarks: Partial<Record<AfoAnatomicalLandmarkId, unknown>>,
+    skipped: readonly AfoAnatomicalLandmarkId[],
+): boolean {
+    return Boolean(landmarks[id]) || skipped.includes(id);
+}
+
+/** Next anatomical marker that is neither placed nor skipped. */
+export function nextLandmarkStep(wf: AfoScanWorkflow): (typeof AFO_LANDMARK_STEPS)[number] | null {
+    const skipped = skippedLandmarkIds(wf);
+    return AFO_LANDMARK_STEPS.find((step) => !landmarkSettled(step.id, wf.landmarks, skipped)) ?? null;
+}
+
+export function requiredLandmarkCount(wf: AfoScanWorkflow): number {
+    return AFO_LANDMARK_STEPS.filter((step) => !step.optional && wf.landmarks[step.id]).length;
+}
 
 export const AFO_PLANNED_RELIEFS_MM = { malleoli: -3, navicular: -2, styloid: -2 } as const;
 
@@ -262,6 +299,7 @@ export function firstMissingStep<T extends string>(
 export function anatomicalPlacementAllowed(
     id: AfoAnatomicalLandmarkId,
     have: Partial<Record<AfoAnatomicalLandmarkId, unknown>>,
+    skipped: readonly AfoAnatomicalLandmarkId[] = [],
 ): { ok: true } | { ok: false; message: string } {
     const idx = AFO_LANDMARK_STEPS.findIndex((step) => step.id === id);
     const current = AFO_LANDMARK_STEPS[idx];
@@ -269,8 +307,9 @@ export function anatomicalPlacementAllowed(
     if (have[id]) return { ok: true };
     for (let i = 0; i < idx; i++) {
         const prev = AFO_LANDMARK_STEPS[i];
-        if (prev && !have[prev.id]) {
-            return { ok: false, message: `Place ${prev.label} before ${current.label}.` };
+        if (prev && !landmarkSettled(prev.id, have, skipped)) {
+            const verb = prev.optional ? "Place or skip" : "Place";
+            return { ok: false, message: `${verb} ${prev.label} before ${current.label}.` };
         }
     }
     return { ok: true };
@@ -283,10 +322,15 @@ export function evaluateAfoScanProgress(wf: AfoScanWorkflow): { ok: true } | { o
             reason: "Step 1 of 2: place the plantar heel, 1st met head, and 5th met head, then apply alignment.",
         };
     }
-    const missing = firstMissingStep(AFO_LANDMARK_STEPS, wf.landmarks);
-    if (missing) {
-        const placed = AFO_LANDMARK_STEPS.filter((step) => wf.landmarks[step.id]).length;
-        return { ok: false, reason: `Step 2 of 2: place ${missing.label} (${placed}/8).` };
+    const placed = requiredLandmarkCount(wf);
+    if (placed < AFO_REQUIRED_LANDMARK_COUNT) {
+        const next = nextLandmarkStep(wf);
+        const name = next?.label ?? "the remaining landmarks";
+        const verb = next?.optional ? "place or skip" : "place";
+        return {
+            ok: false,
+            reason: `Step 2 of 2: ${verb} ${name} (${placed}/${AFO_REQUIRED_LANDMARK_COUNT} required).`,
+        };
     }
     return { ok: true };
 }
@@ -425,7 +469,11 @@ export function deriveAfoMeasurements(
     return {
         forefootToRearfootDeg,
         ankleAxis,
-        plannedReliefsMm: { ...AFO_PLANNED_RELIEFS_MM },
+        plannedReliefsMm: {
+            malleoli: AFO_PLANNED_RELIEFS_MM.malleoli,
+            navicular: oriented.navicular ? AFO_PLANNED_RELIEFS_MM.navicular : null,
+            styloid: oriented.fifth_met_base ? AFO_PLANNED_RELIEFS_MM.styloid : null,
+        },
         proximalTrimCap,
         heelCupCenter: oriented.posterior_calcaneus ? { ...oriented.posterior_calcaneus } : null,
         mpjBreak: m1 && oriented.m5_mpj ? { m1: { ...m1 }, m5: { ...oriented.m5_mpj } } : null,

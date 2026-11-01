@@ -17,6 +17,7 @@ import {
     applyAfoAlignment,
     commitAfoScanPoint,
     markerPlaceControl,
+    skipAfoLandmark,
     undoAfoMarker,
 } from "./afo-scan-markers";
 
@@ -128,7 +129,7 @@ describe("AFO scan marker placement", () => {
             buttonByText(container, "Apply alignment").click();
         });
         expect(useAfoStore.getState().sourceMesh?.positions.length ?? 0).toBeGreaterThan(0);
-        expect(container.textContent).toMatch(/Step 2 of 2: Landmarks 0\/8/);
+        expect(container.textContent).toMatch(/Step 2 of 2: Landmarks 0\/5 required \(\+3 optional\)/);
         expect(container.textContent).toMatch(/Next: Posterior calcaneus center/);
         expect(evaluateScanStepGate().ok).toBe(false);
 
@@ -145,12 +146,49 @@ describe("AFO scan marker placement", () => {
         await act(async () => {
             for (const point of landmarks) commitAfoScanPoint(point, "leg", 1);
         });
-        expect(container.textContent).toMatch(/Step 2 of 2: Landmarks 8\/8/);
+        expect(container.textContent).toMatch(/Step 2 of 2: Landmarks 5\/5 required \(\+3 optional\)/);
         expect(evaluateScanStepGate().ok).toBe(true);
         const workflow = useDesignStore.getState().design.afo?.scanWorkflow;
         expect(workflow?.landmarks.medial_malleolus).toBeTruthy();
         expect(workflow?.landmarks.fibular_head).toBeTruthy();
         expect(workflow?.derived?.plannedReliefsMm).toEqual({ malleoli: -3, navicular: -2, styloid: -2 });
+    });
+
+    test("skipping the three optional markers opens Next after the five required", async () => {
+        armAfo("left");
+        addBox("leg", "left");
+        await renderPanel();
+        await act(async () => {
+            commitAfoScanPoint(HEEL, "leg", 1);
+            commitAfoScanPoint(M1P, "leg", 1);
+            commitAfoScanPoint(M5P, "leg", 1);
+            applyAfoAlignment(false);
+        });
+        expect(container.querySelector("[data-testid=afo-skip-navicular]")).toBeTruthy();
+        expect(container.textContent).toMatch(/Navicular tuberosity \(optional\)/);
+
+        await act(async () => {
+            commitAfoScanPoint({ x: -4, y: 0, z: 12 }, "leg", 1);
+            commitAfoScanPoint({ x: 110, y: -30, z: 8 }, "leg", 1);
+            commitAfoScanPoint({ x: 100, y: 28, z: 8 }, "leg", 1);
+            expect(skipAfoLandmark("navicular")).toBeNull();
+            expect(skipAfoLandmark("fifth_met_base")).toBeNull();
+            commitAfoScanPoint({ x: 30, y: -16, z: 80 }, "leg", 1);
+            commitAfoScanPoint({ x: 18, y: 14, z: 70 }, "leg", 1);
+        });
+
+        expect(container.textContent).toMatch(/Landmarks 5\/5 required \(\+3 optional\)/);
+        expect(container.textContent).toMatch(/Proximal trim cap is unchecked/);
+        expect(evaluateScanStepGate().ok).toBe(true);
+        const workflow = useDesignStore.getState().design.afo?.scanWorkflow;
+        expect(workflow?.landmarks.navicular).toBeUndefined();
+        expect(workflow?.landmarks.fifth_met_base).toBeUndefined();
+        expect(workflow?.landmarks.fibular_head).toBeUndefined();
+        expect(workflow?.skippedLandmarks).toEqual(["navicular", "fifth_met_base"]);
+        expect(workflow?.derived?.plannedReliefsMm).toEqual({ malleoli: -3, navicular: null, styloid: null });
+        expect(workflow?.derived?.proximalTrimCap).toBeNull();
+        expect(workflow?.derived?.shankTiltDeg).toBeNull();
+        expect(container.textContent).not.toMatch(/Alignment failed|That landmark is required/);
     });
 
     test("left, right, and both keep Place alignment enabled", async () => {
@@ -219,5 +257,6 @@ describe("AFO marker placement helpers", () => {
         expect(workflow?.landmarks.posterior_calcaneus?.x).toBe(-2);
         expect(workflow?.landmarks.m1_mpj).toBeTruthy();
         expect(workflow?.landmarks.m5_mpj).toBeFalsy();
+        expect(skipAfoLandmark("navicular")).toMatch(/before/);
     });
 });
