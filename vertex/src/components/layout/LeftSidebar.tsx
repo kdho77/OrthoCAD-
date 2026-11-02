@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
+import { PanelHeading } from "@/components/clinical/PanelHeading";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -234,7 +235,11 @@ export function LeftSidebar({
             ) : null}
 
             {show("library") ? (
-                <Section icon={<BookmarkPlus className="h-3.5 w-3.5" />} title="My library">
+                <div className="space-y-2">
+                    <PanelHeading
+                        title="My library"
+                        info="Upload a .glb base, or save a modified insole or shell to reuse it here."
+                    />
                     <input
                         ref={uploadRef}
                         type="file"
@@ -257,9 +262,7 @@ export function LeftSidebar({
                     {libraryLoading || baseMeshLoading ? (
                         <p className="mt-2 text-[11px] text-muted-foreground">Loading…</p>
                     ) : customPrefabs.length === 0 ? (
-                        <p className="mt-2 text-[11px] text-muted-foreground">
-                            Upload a `.glb` base, or save a modified insole/shell to reuse it here.
-                        </p>
+                        <p className="mt-2 text-center text-[10px] text-muted-foreground">No custom bases</p>
                     ) : (
                         <div className="mt-2 space-y-1">
                             {customPrefabs.map((p) =>
@@ -347,7 +350,7 @@ export function LeftSidebar({
                             )}
                         </div>
                     )}
-                </Section>
+                </div>
             ) : null}
 
             {show("production") ? (

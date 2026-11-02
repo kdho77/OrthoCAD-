@@ -19,7 +19,13 @@ import { SIDE_LABELS, type Side } from "@/types";
 
 type ExportKind = "stl" | "glb" | "3mf" | null;
 
-export function ExportPanel({ clinicalExportStep = false }: { clinicalExportStep?: boolean }) {
+export function ExportPanel({
+    clinicalExportStep = false,
+    hideOutputSide = false,
+}: {
+    clinicalExportStep?: boolean;
+    hideOutputSide?: boolean;
+}) {
     const { user, license } = useAuthStore();
     const { exportSide } = useDesignStore();
     const [status, setStatus] = useState<string | null>(null);
@@ -122,12 +128,12 @@ export function ExportPanel({ clinicalExportStep = false }: { clinicalExportStep
     }
 
     return (
-        <LegacyExportPanel />
+        <LegacyExportPanel hideOutputSide={hideOutputSide} />
     );
 }
 
 /** Full export panel for Print advanced and legacy paths. */
-function LegacyExportPanel() {
+function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolean }) {
     const { user, license } = useAuthStore();
     const { design, exportSide, setExportSide } = useDesignStore();
     const kernelName = useKernelStore((s) => s.name);
@@ -218,19 +224,21 @@ function LegacyExportPanel() {
                 </div>
             </div>
 
-            <div className="flex gap-1">
-                {(["left", "right"] as Side[]).map((s) => (
-                    <Button
-                        key={s}
-                        size="sm"
-                        variant={exportSide === s ? "default" : "secondary"}
-                        className="h-8 flex-1"
-                        onClick={() => setExportSide(s)}
-                    >
-                        {SIDE_LABELS[s]} insole
-                    </Button>
-                ))}
-            </div>
+            {hideOutputSide ? null : (
+                <div className="flex gap-1">
+                    {(["left", "right"] as Side[]).map((s) => (
+                        <Button
+                            key={s}
+                            size="sm"
+                            variant={exportSide === s ? "default" : "secondary"}
+                            className="h-8 flex-1"
+                            onClick={() => setExportSide(s)}
+                        >
+                            {SIDE_LABELS[s]} insole
+                        </Button>
+                    ))}
+                </div>
+            )}
 
             <div
                 className={cn(

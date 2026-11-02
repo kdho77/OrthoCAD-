@@ -1,8 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { ScanImport } from "@/features/scans/ScanImport";
-import { FootSideGateHint } from "@/components/clinical/FootSideGateHint";
 import { PanelHeading } from "@/components/clinical/PanelHeading";
+import { ScanImport } from "@/features/scans/ScanImport";
 import { evaluateScanStepGate } from "@/lib/clinical/clinical-step-gates";
 import { useScanStore } from "@/stores/scan-store";
 
@@ -12,9 +11,11 @@ export function ClinicalScanStepPanel() {
 
     return (
         <div className="space-y-3 text-xs">
-            <PanelHeading title="Upload" info="Import STL or OBJ. Pick Left, Right, or Pair before upload." />
+            <PanelHeading
+                title="Upload"
+                info="Import STL or OBJ. Pick Left, Right, or Pair before upload. Register scans on the Scan tab only."
+            />
             <ScanImport />
-            <FootSideGateHint />
             {!scanGate.ok && scanGate.reason.includes("Register") ? (
                 <p className="text-[10px] text-amber-300/95" role="status">
                     Register scan or remove

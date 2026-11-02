@@ -37,7 +37,7 @@ export function ClinicalPrintStepPanel() {
                 </button>
                 {advancedOpen ? (
                     <div className="space-y-3 rounded-md border border-border bg-background/40 p-2">
-                        <ExportPanel />
+                        <ExportPanel hideOutputSide />
                     </div>
                 ) : null}
                 <OutputSideBar continueLabel="Continue to Export" onContinue={() => goNext()} />
@@ -67,8 +67,8 @@ export function ClinicalPrintStepPanel() {
             {advancedOpen ? (
                 <div className="space-y-3 rounded-md border border-border bg-background/40 p-2">
                     {shouldShowShapeFinishInPrintAdvanced() ? <ShapeFinishPanel /> : null}
-                    <PrintingPanel showWallPreview={false} />
-                    <ExportPanel />
+                    <PrintingPanel clinicalMode showWallPreview={false} />
+                    <ExportPanel hideOutputSide />
                 </div>
             ) : null}
             <OutputSideBar continueLabel="Continue to Export" onContinue={() => goNext()} showPair />
