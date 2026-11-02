@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
-import { StockGlbLoadError } from "@/lib/geometry/base-asset";
+import { baseModifierField, StockGlbLoadError } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
@@ -20,7 +20,7 @@ import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
 import { FOREFOOT_SHIFT_U_HOLD, forefootFeatureBoxes, offsetPlanLoopForefootWidthMm } from "./modifiers";
 import { composePrintSolidTop, fieldWithoutSinks, type PrintSolidShoeWidth } from "./print-solid-compose";
-import { reconstructProceduralWalls } from "./reconstruct";
+import { hasCurveOrTopModifiers, reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
 import { shiftPatternByRimFollow } from "./station-gates";
 import type { StockWallModel } from "./types";
@@ -213,7 +213,42 @@ export interface ProceduralPreviewOptions {
  * With sourceField: compose once, extractTopOnlyModel on the composed top,
  * loft without applyAnalyticTopDeltas. Do not pass raw+sourceGeometry into
  * the Default extractTopSheet steal — that yields a 0-station ring.
+ *
+ * Identity preview (wall style / side / sinks only) uses that same
+ * composePrintSolidTop → applyBaseModifiers path as manufacturing export,
+ * including the default zonal shell. An explicit corrections object stays
+ * analytic so a delta is not mixed with a pre-composed sheet.
  */
+async function withDefaultPrintCompose(options: ProceduralPreviewOptions): Promise<ProceduralPreviewOptions> {
+    if (options.sourceField || options.composedTop === true) return options;
+    if (options.corrections) return options;
+    if ((options.archGrindDepthMm ?? 0) !== 0) return options;
+    if ((options.lateralFlange?.heightMm ?? 0) !== 0) return options;
+    if (
+        hasCurveOrTopModifiers({
+            composedTop: false,
+            thicknessMm: options.thicknessMm,
+            stockThicknessMm: options.stockThicknessMm,
+        })
+    ) {
+        return options;
+    }
+    const { defaultDesign } = await import("@/stores/design-store");
+    const design = defaultDesign();
+    const side = options.side ?? "left";
+    const thicknessMm = options.thicknessMm ?? design.thicknessMm;
+    return {
+        ...options,
+        side,
+        sourceField: baseModifierField(design, side, thicknessMm),
+        composedTop: true,
+        thicknessMm,
+        stockThicknessMm: options.stockThicknessMm ?? BASE_REFERENCE_THICKNESS_MM,
+        scanPattern: options.scanPattern ?? design.pattern,
+        deviceType: options.deviceType ?? "functional",
+    };
+}
+
 export async function reconstructProceduralPreview(
     topGeo: BufferGeometry,
     options: ProceduralPreviewOptions = {},
@@ -221,6 +256,7 @@ export async function reconstructProceduralPreview(
     if (isCombinedStockGeometry(topGeo)) {
         throw new Error("[S1-PROCEDURAL] combined/stock GLB is not a procedural input — use legacy");
     }
+    options = await withDefaultPrintCompose(options);
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
     let source = topGeo;
     let owned = false;
