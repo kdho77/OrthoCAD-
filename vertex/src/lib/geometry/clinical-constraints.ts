@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
+import { REGIONAL_POSTING_WARN_DEG } from "@/lib/geometry/posting-degrees";
 import {
     FLOOR_MIN_MM,
     LATERAL_WALL_MIN_MM,
@@ -269,6 +270,7 @@ export function constrainSideCorrections(corrections: SideCorrections, thickness
     // Wedges are {side, value, unit}. We clamp the .value using unit-specific limits from CLINICAL_LIMITS.
     // mm = absolute edge raise on the chosen side (tapers linearly to 0 opposite).
     // deg = angle; maxRaise computed at runtime in wedgeDeltaAt using current local width.
+    // Station-mode degrees clamp to 0–8° rearfoot and 0–10° forefoot in postingMmAtStation.
     // We clamp the input 'value' here (deg value or mm value).
     // No combined wall adjustment for wedges (they raise one side and taper to 0; they do not "eat" material).
     // Uses ClinicalSpec for documentation and future hard/soft classification.
@@ -420,15 +422,32 @@ export const STOCK_HEEL_CUP_MM = 12;
 export const SHOE_COUNTER_HEIGHT_WARN_MM = 20;
 
 /**
- * Soft UI warning when a posting angle exceeds 8° (still allowed up to 10°).
- * `resolvedFullLengthDeg` is the angle an mm full-length entry works out to.
+ * Soft UI warning. Station-mode rearfoot and forefoot degree entries warn
+ * above 6° (still allowed up to 8° rearfoot and 10° forefoot). Older degree
+ * entries and full-length keep the 8° threshold. `resolvedFullLengthDeg` is
+ * the angle an mm full-length entry works out to.
  */
-export function hasPostingAngleWarning(c: SideCorrections, resolvedFullLengthDeg = 0): boolean {
-    if (resolvedFullLengthDeg > 8) return true;
-    for (const w of [c.rearfootWedge, c.forefootWedge, c.fullLengthWedge]) {
-        if (w?.unit === "deg" && (w.value ?? 0) > 8) return true;
+export function regionalPostingDegAboveWarn(c: SideCorrections): boolean {
+    for (const w of [c.rearfootWedge, c.forefootWedge]) {
+        if (w?.unit === "deg" && w.degreeMode === "station" && (w.value ?? 0) > REGIONAL_POSTING_WARN_DEG) {
+            return true;
+        }
     }
     return false;
+}
+
+function legacyRegionalDegAbove8(c: SideCorrections): boolean {
+    for (const w of [c.rearfootWedge, c.forefootWedge]) {
+        if (w?.unit === "deg" && w.degreeMode !== "station" && (w.value ?? 0) > 8) return true;
+    }
+    return false;
+}
+
+export function hasPostingAngleWarning(c: SideCorrections, resolvedFullLengthDeg = 0): boolean {
+    if (resolvedFullLengthDeg > 8) return true;
+    if (c.fullLengthWedge?.unit === "deg" && (c.fullLengthWedge.value ?? 0) > 8) return true;
+    if (legacyRegionalDegAbove8(c)) return true;
+    return regionalPostingDegAboveWarn(c);
 }
 
 export function hasMaxRiseWarning(riseMm: number): boolean {

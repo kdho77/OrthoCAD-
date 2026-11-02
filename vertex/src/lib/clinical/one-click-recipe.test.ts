@@ -115,7 +115,12 @@ describe("one-click recipe", () => {
         expect(out.design.corrections.left.archHeightMm).toBe(-3.5);
         expect(out.design.corrections.left.apexMoveMm).toBe(4);
         expect(out.design.corrections.left.medialSkiveMm).toBe(4);
-        expect(out.design.corrections.left.rearfootWedge).toEqual({ side: "medial", value: 4, unit: "deg" });
+        expect(out.design.corrections.left.rearfootWedge).toEqual({
+            side: "medial",
+            value: 4,
+            unit: "deg",
+            degreeMode: "station",
+        });
         expect(out.design.corrections.right.archHeightMm).toBe(0);
         expect(out.design.corrections.right.apexMoveMm).toBe(0);
         expect(out.design.corrections.right.medialSkiveMm).toBe(0);
