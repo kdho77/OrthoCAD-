@@ -1,11 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { AlertCircle, Check, CircleDot } from "lucide-react";
-import {
-    clinicalRailBannerReason,
-    evaluateNextGate,
-    evaluateStepComplete,
-} from "@/lib/clinical/clinical-step-gates";
+import { evaluateNextGate, evaluateStepComplete } from "@/lib/clinical/clinical-step-gates";
 import { cn } from "@/lib/utils";
 import {
     CLINICAL_STEPS,
@@ -35,7 +31,6 @@ export function ClinicalStepRail() {
         return "upcoming";
     };
 
-    const bannerReason = clinicalRailBannerReason(step);
     void scanGateStickyReason;
     void nextBlockReason;
 
@@ -76,12 +71,6 @@ export function ClinicalStepRail() {
                     );
                 })}
             </nav>
-
-            {bannerReason && typeof bannerReason === "string" ? (
-                <p className="mt-2 text-[11px] leading-snug text-amber-300/95" role="status">
-                    {bannerReason}
-                </p>
-            ) : null}
         </div>
     );
 }
@@ -100,7 +89,6 @@ export function ClinicalStepFooter() {
     const goBack = useClinicalWorkflowStore((s) => s.goBack);
     const atFirst = step === "scan";
     const atLast = step === "export";
-    const gate = evaluateNextGate(step);
 
     return (
         <div className="sticky bottom-0 z-10 border-t border-border bg-panel px-3 py-2">
@@ -123,11 +111,6 @@ export function ClinicalStepFooter() {
                     </button>
                 ) : null}
             </div>
-            {!gate.ok ? (
-                <p className="mt-1.5 text-[11px] leading-snug text-amber-300/95" role="status">
-                    {gate.reason} Next jumps to what’s missing.
-                </p>
-            ) : null}
         </div>
     );
 }

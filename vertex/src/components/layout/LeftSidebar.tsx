@@ -56,6 +56,7 @@ import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { ProductionMethod, ScanPattern, Side } from "@/types";
+import { productionMethodDisabledInUi } from "@/components/layout/production-method-ui";
 
 const METHODS: { id: ProductionMethod; label: string }[] = [
     { id: "printing_solid", label: "Printing — Solid" },
@@ -66,9 +67,11 @@ const METHODS: { id: ProductionMethod; label: string }[] = [
 export function LeftSidebar({
     sections,
     embedded,
+    clinicalDeclutter,
 }: {
     sections?: Array<"pattern" | "library" | "production" | "size" | "import">;
     embedded?: boolean;
+    clinicalDeclutter?: "setup" | "base";
 } = {}) {
     const {
         design,
@@ -348,29 +351,59 @@ export function LeftSidebar({
             ) : null}
 
             {show("production") ? (
-                <Section icon={<Layers3 className="h-3.5 w-3.5" />} title="Production">
+                <Section
+                    icon={<Layers3 className="h-3.5 w-3.5" />}
+                    title={clinicalDeclutter === "setup" ? "Shell" : "Production"}
+                >
                     <div className="flex flex-col gap-1.5">
-                        {METHODS.map((m) => (
-                            <button
-                                key={m.id}
-                                type="button"
-                                onClick={() => setMethod(m.id)}
-                                className={cn(
-                                    "rounded-md border px-2 py-2 text-left text-xs transition-colors",
-                                    design.method === m.id
-                                        ? "border-primary bg-primary/10 text-foreground"
-                                        : "border-border bg-background text-muted-foreground hover:border-primary/50",
-                                )}
-                            >
-                                {m.label}
-                            </button>
-                        ))}
+                        {METHODS.map((m) => {
+                            const shellUiLocked = productionMethodDisabledInUi(m.id);
+                            const selected = design.method === m.id;
+                            return (
+                                <button
+                                    key={m.id}
+                                    type="button"
+                                    disabled={shellUiLocked}
+                                    data-testid={`production-method-${m.id}`}
+                                    onClick={() => {
+                                        if (shellUiLocked) return;
+                                        setMethod(m.id);
+                                    }}
+                                    className={cn(
+                                        "rounded-md border px-2 py-2 text-left text-xs transition-colors",
+                                        shellUiLocked &&
+                                            "cursor-not-allowed border-border/60 bg-muted/30 text-muted-foreground/70 opacity-60",
+                                        !shellUiLocked &&
+                                            selected &&
+                                            "border-primary bg-primary/10 text-foreground",
+                                        !shellUiLocked &&
+                                            !selected &&
+                                            "border-border bg-background text-muted-foreground hover:border-primary/50",
+                                        shellUiLocked &&
+                                            selected &&
+                                            "border-border/60 bg-muted/20 text-muted-foreground/80",
+                                    )}
+                                >
+                                    <span className="flex items-center justify-between gap-2">
+                                        <span>{clinicalDeclutter === "setup" && m.id === "printing_solid" ? "Solid print" : m.label}</span>
+                                        {shellUiLocked ? (
+                                            <span className="shrink-0 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                                                Coming soon
+                                            </span>
+                                        ) : null}
+                                    </span>
+                                </button>
+                            );
+                        })}
                     </div>
                 </Section>
             ) : null}
 
             {show("size") ? (
-                <Section icon={<Footprints className="h-3.5 w-3.5" />} title="Size">
+                <Section
+                    icon={<Footprints className="h-3.5 w-3.5" />}
+                    title={clinicalDeclutter === "setup" ? "Shoe size" : "Size"}
+                >
                     <ShoeSizeSelect
                         system={normalizeShoeSizeSystem(design.sizeSystem)}
                         usMenSize={design.usMenSize ?? DEFAULT_US_MEN_SIZE}

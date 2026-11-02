@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { HardnessRegionList } from "@/features/clinical/HardnessRegionList";
+import { PanelHeading } from "@/components/clinical/PanelHeading";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
 import {
@@ -19,17 +20,15 @@ export function HardnessStepPanel() {
     const setPrintHardness = useDesignStore((s) => s.setPrintHardness);
     const recipe = migratePrintRecipe(design.printRecipe);
     const active = recipe.defaultHardness;
-    const pct = gyroidInfillPctForHardness(active, recipe.hardnessToInfillPct);
+    void gyroidInfillPctForHardness(active, recipe.hardnessToInfillPct);
 
     return (
         <div className="space-y-3">
-            <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-2 text-[11px] leading-snug text-amber-100/90">
-                {HARDNESS_NON_SHORE_DISCLAIMER}
-            </p>
+            <PanelHeading title="Hardness" info={HARDNESS_NON_SHORE_DISCLAIMER} />
 
             <div className="space-y-1.5">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Device hardness
+                    Device
                 </div>
                 <div className="flex flex-col gap-1">
                     {HARDNESS_NAMES.map((name) => (
@@ -52,12 +51,6 @@ export function HardnessStepPanel() {
                     ))}
                 </div>
             </div>
-
-            <p className="text-[11px] text-muted-foreground">
-                Selected: <span className="font-medium text-foreground">{active}</span> ({pct}% gyroid infill
-                for the untagged shell). Split regions use the same Extra soft → Extra hard table — walls and
-                skins stay global at 1.0 mm (pending coupon validation).
-            </p>
 
             <HardnessRegionList />
         </div>
