@@ -450,6 +450,7 @@ export function wedgeMmAtBaseVertex(
         lengthMm: field.lengthMm,
         widthMm: field.widthMm,
         trimline: field.trimline ?? null,
+        shoeWidth: field.shoeWidth,
     });
     if (!fullLengthWedgeActive(field.corrections)) return regional;
     const withRim: HeightFieldParams = field.fullLengthRim
@@ -597,6 +598,7 @@ function sampleFieldDeltaAtXY(
             lengthMm: fieldForDelta.lengthMm,
             widthMm: fieldForDelta.widthMm,
             trimline: fieldForDelta.trimline ?? null,
+            shoeWidth: fieldForDelta.shoeWidth,
         });
     }
     if (skipWedge && fullLengthWedgeActive(fieldForDelta.corrections)) {
@@ -2799,6 +2801,7 @@ export function applyBaseModifiers(
         lengthMm: field.lengthMm,
         widthMm: field.widthMm,
         trimline: field.trimline ?? null,
+        shoeWidth: field.shoeWidth,
     };
 
     // 1) Sample the pure modifier delta. Multi-mesh top range only when shell

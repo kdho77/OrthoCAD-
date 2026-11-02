@@ -2,6 +2,11 @@
 
 import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
 import {
+    FOREFOOT_POST_DEG_MAX,
+    REARFOOT_POST_DEG_MAX,
+    REGIONAL_POSTING_WARN_DEG,
+} from "@/lib/geometry/posting-degrees";
+import {
     FLOOR_MIN_MM,
     LATERAL_WALL_MIN_MM,
     mergeSinkWarnings,
@@ -83,9 +88,9 @@ export const CLINICAL_LIMITS = {
     // Wedge limits (per the wedge design). Applied to the .value inside the wedge object.
     // mm: absolute raise on the edge. deg: angle (converted internally for clamping).
     rearfootWedgeMm: { min: 0, max: 10 },
-    rearfootWedgeDeg: { min: 0, max: 10 },
+    rearfootWedgeDeg: { min: 0, max: REARFOOT_POST_DEG_MAX },
     forefootWedgeMm: { min: 0, max: 10 },
-    forefootWedgeDeg: { min: 0, max: 10 },
+    forefootWedgeDeg: { min: 0, max: FOREFOOT_POST_DEG_MAX },
 } as const;
 
 /** Product default when a heel cup depth is suggested without an explicit value (Biomechanics lock 2026-09-20). */
@@ -268,7 +273,7 @@ export function constrainSideCorrections(corrections: SideCorrections, thickness
     // --- Wedge clamps (object fields per design) ---
     // Wedges are {side, value, unit}. We clamp the .value using unit-specific limits from CLINICAL_LIMITS.
     // mm = absolute edge raise on the chosen side (tapers linearly to 0 opposite).
-    // deg = angle; maxRaise computed at runtime in wedgeDeltaAt using current local width.
+    // deg = angle; one h = W·tan(θ) at the zone station, then the same taper as mm.
     // We clamp the input 'value' here (deg value or mm value).
     // No combined wall adjustment for wedges (they raise one side and taper to 0; they do not "eat" material).
     // Uses ClinicalSpec for documentation and future hard/soft classification.
@@ -420,15 +425,22 @@ export const STOCK_HEEL_CUP_MM = 12;
 export const SHOE_COUNTER_HEIGHT_WARN_MM = 20;
 
 /**
- * Soft UI warning when a posting angle exceeds 8° (still allowed up to 10°).
- * `resolvedFullLengthDeg` is the angle an mm full-length entry works out to.
+ * Soft UI warning. Rearfoot and forefoot degree entries warn above 6°
+ * (still allowed up to 8° rearfoot and 10° forefoot). Full-length keeps the
+ * existing 8° threshold. `resolvedFullLengthDeg` is the angle an mm
+ * full-length entry works out to.
  */
-export function hasPostingAngleWarning(c: SideCorrections, resolvedFullLengthDeg = 0): boolean {
-    if (resolvedFullLengthDeg > 8) return true;
-    for (const w of [c.rearfootWedge, c.forefootWedge, c.fullLengthWedge]) {
-        if (w?.unit === "deg" && (w.value ?? 0) > 8) return true;
+export function regionalPostingDegAboveWarn(c: SideCorrections): boolean {
+    for (const w of [c.rearfootWedge, c.forefootWedge]) {
+        if (w?.unit === "deg" && (w.value ?? 0) > REGIONAL_POSTING_WARN_DEG) return true;
     }
     return false;
+}
+
+export function hasPostingAngleWarning(c: SideCorrections, resolvedFullLengthDeg = 0): boolean {
+    if (resolvedFullLengthDeg > 8) return true;
+    if (c.fullLengthWedge?.unit === "deg" && (c.fullLengthWedge.value ?? 0) > 8) return true;
+    return regionalPostingDegAboveWarn(c);
 }
 
 export function hasMaxRiseWarning(riseMm: number): boolean {

@@ -110,7 +110,7 @@ export interface WedgeCorrection {
     side: "medial" | "lateral";
     /** Positive user-entered value. */
     value: number;
-    /** Raw unit. Degrees are resolved against current local width at eval time. */
+    /** Raw unit. Degrees convert once at the zone station: h = W·tan(θ). */
     unit: "mm" | "deg";
 }
 
@@ -201,7 +201,7 @@ export interface SideCorrections {
     /**
      * New medial/lateral wedge system (surface modifications on the plantar/top).
      * Only one wedge (medial or lateral) per zone is allowed (enforced by UI + single object).
-     * Stored as raw user input; resolution (esp. for degrees) happens at evaluation time.
+     * Stored as raw user input. Degrees convert once at the zone station at evaluation time.
      */
     rearfootWedge?: WedgeCorrection;
     forefootWedge?: WedgeCorrection;

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { clampPostingDegrees, postingEdgeForAngle } from "@/lib/geometry/posting-degrees";
 import type { ElementKind, Side, SideCorrections, SinkKind } from "@/types";
 
 const PATHOLOGY =
@@ -243,11 +244,17 @@ export function interpretOneClickRx(text: string, present: Side[]): ExplicitRx {
 
             const rear = wedgeDegrees(text, "rear");
             if (rear !== undefined) {
+                // Rx degrees are the final frontal-plane angle. Varus raises
+                // medial; valgus raises lateral. No rearfoot-motion allowance.
                 let wedgeSide: "medial" | "lateral" = rear > 0 ? "lateral" : "medial";
-                if (/\bvarus\b/i.test(text)) wedgeSide = "medial";
-                else if (/\bvalgus\b/i.test(text)) wedgeSide = "lateral";
+                if (/\bvarus\b/i.test(text)) wedgeSide = postingEdgeForAngle("varus");
+                else if (/\bvalgus\b/i.test(text)) wedgeSide = postingEdgeForAngle("valgus");
                 addPatch(out, presentSides, {
-                    rearfootWedge: { side: wedgeSide, value: Math.abs(rear), unit: "deg" },
+                    rearfootWedge: {
+                        side: wedgeSide,
+                        value: clampPostingDegrees("rearfoot", Math.abs(rear)),
+                        unit: "deg",
+                    },
                 });
             }
             const fore = wedgeDegrees(text, "fore");
@@ -255,7 +262,11 @@ export function interpretOneClickRx(text: string, present: Side[]): ExplicitRx {
                 const wedgeSide: "medial" | "lateral" =
                     /\bvarus\b/i.test(text) || fore < 0 ? "medial" : "lateral";
                 addPatch(out, presentSides, {
-                    forefootWedge: { side: wedgeSide, value: Math.abs(fore), unit: "deg" },
+                    forefootWedge: {
+                        side: wedgeSide,
+                        value: clampPostingDegrees("forefoot", Math.abs(fore)),
+                        unit: "deg",
+                    },
                 });
             }
 

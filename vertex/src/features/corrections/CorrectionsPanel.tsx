@@ -12,6 +12,7 @@ import {
     hasShoeCounterHeightWarning,
     hasWedgeViolations,
     MAX_RISE_WARN_MM,
+    regionalPostingDegAboveWarn,
     SHOE_COUNTER_HEIGHT_WARN_MM,
 } from "@/lib/geometry/clinical-constraints";
 import {
@@ -28,7 +29,15 @@ import {
     solveSkiveDerived,
 } from "@/lib/geometry/heel-skive";
 import { outlineHalfWidth } from "@/lib/geometry/height-field";
+import {
+    convertedPostingMm,
+    FOREFOOT_POST_DEG_MAX,
+    type PostingOutline,
+    postingEquivalenceLabel,
+    REARFOOT_POST_DEG_MAX,
+} from "@/lib/geometry/posting-degrees";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { cn } from "@/lib/utils";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
@@ -381,6 +390,8 @@ interface WedgeSideControlProps {
     defaultUnit?: WedgeUnit;
     maxMm?: number;
     maxDeg?: number;
+    /** Degree entries: "2.0° = 2.1 mm". Omitted for millimetre entries. */
+    equivalence?: string;
 }
 
 function wedgeFromState(edge: WedgeEdge, value: number, unit: WedgeUnit): WedgeCorrection | undefined {
@@ -394,8 +405,14 @@ function wedgeMaxForUnit(unit: WedgeUnit, maxMm?: number, maxDeg?: number): numb
 }
 
 /** Heel high-edge rise and the station where the ruled posting peaks. */
-function fullLengthRiseReadout(side: Side, corrections: SideCorrections, lengthMm: number, widthMm: number) {
-    if (!fullLengthWedgeActive(corrections)) return { heel: 0, max: 0, u: 0, thetaDeg: 0 };
+function fullLengthRiseReadout(
+    side: Side,
+    corrections: SideCorrections,
+    lengthMm: number,
+    widthMm: number,
+    outline: PostingOutline,
+) {
+    if (!fullLengthWedgeActive(corrections)) return { heel: 0, max: 0, u: 0, thetaDeg: 0, warnMm: 0 };
     const rim = fallbackRimXY(lengthMm, (u) => outlineHalfWidth(u) * (widthMm / 2));
     const stations = buildWedgeStations(rim, side, corrections.fullLengthWedge, {
         originX: 0,
@@ -404,11 +421,15 @@ function fullLengthRiseReadout(side: Side, corrections: SideCorrections, lengthM
         ordered: true,
     });
     const thetaDeg = stations ? (stations.theta * 180) / Math.PI : 0;
+    const max = stations?.maxRiseMm ?? 0;
+    const converted = convertedPostingMm("full", corrections.fullLengthWedge, outline);
     return {
         heel: highEdgeRiseAt(stations, FULL_LENGTH_HEEL_U),
-        max: stations?.maxRiseMm ?? 0,
+        max,
         u: stations?.maxRiseU ?? 0,
         thetaDeg,
+        // Degree entries warn on the one station conversion. Millimetres keep the peak rise.
+        warnMm: converted ?? max,
     };
 }
 
@@ -423,6 +444,7 @@ function WedgeSideControl({
     defaultUnit = "deg",
     maxMm,
     maxDeg,
+    equivalence,
 }: WedgeSideControlProps) {
     const [draftEdge, setDraftEdge] = useState<WedgeEdge>(defaultEdge);
     const [draftUnit, setDraftUnit] = useState<WedgeUnit>(defaultUnit);
@@ -486,6 +508,7 @@ function WedgeSideControl({
                     )
                 }
             />
+            {equivalence ? <p className="text-[10px] text-muted-foreground">{equivalence}</p> : null}
         </div>
     );
 }
@@ -536,24 +559,62 @@ export function CorrectionsPanel() {
     }, [corrections, design.thicknessMm]);
 
     const layout = useMemo(() => insoleLayoutFromDesign(design), [design]);
+    const postingOutlines = useMemo(() => {
+        const make = (side: Side): PostingOutline => ({
+            lengthMm: layout.lengthMm,
+            widthMm: layout.widthMm,
+            shoeWidth: {
+                id: shoeWidthForSide(design, side),
+                ballWidthMm: layout.widthMm,
+                heelWidthMm: layout.widthMm * 0.62,
+            },
+        });
+        return { left: make("left"), right: make("right") };
+    }, [design, layout.lengthMm, layout.widthMm]);
     const fullLengthRise = useMemo(
         () => ({
-            left: fullLengthRiseReadout("left", sideValues.left, layout.lengthMm, layout.widthMm),
-            right: fullLengthRiseReadout("right", sideValues.right, layout.lengthMm, layout.widthMm),
+            left: fullLengthRiseReadout(
+                "left",
+                sideValues.left,
+                layout.lengthMm,
+                layout.widthMm,
+                postingOutlines.left,
+            ),
+            right: fullLengthRiseReadout(
+                "right",
+                sideValues.right,
+                layout.lengthMm,
+                layout.widthMm,
+                postingOutlines.right,
+            ),
         }),
-        [sideValues, layout.lengthMm, layout.widthMm],
+        [sideValues, layout.lengthMm, layout.widthMm, postingOutlines],
     );
 
+    const showRegionalAngleWarning = useMemo(
+        () => regionalPostingDegAboveWarn(sideValues.left) || regionalPostingDegAboveWarn(sideValues.right),
+        [sideValues],
+    );
     const showPostingAngleWarning = useMemo(
         () =>
             hasPostingAngleWarning(sideValues.left, fullLengthRise.left.thetaDeg) ||
             hasPostingAngleWarning(sideValues.right, fullLengthRise.right.thetaDeg),
         [sideValues, fullLengthRise],
     );
-    const showMaxRiseWarning = useMemo(
-        () => hasMaxRiseWarning(fullLengthRise.left.max) || hasMaxRiseWarning(fullLengthRise.right.max),
-        [fullLengthRise],
-    );
+    const maxRiseWarning = useMemo(() => {
+        let regionalMm = 0;
+        for (const side of ["left", "right"] as Side[]) {
+            const outline = postingOutlines[side];
+            regionalMm = Math.max(
+                regionalMm,
+                convertedPostingMm("rearfoot", sideValues[side].rearfootWedge, outline) ?? 0,
+                convertedPostingMm("forefoot", sideValues[side].forefootWedge, outline) ?? 0,
+            );
+        }
+        const fullOver =
+            hasMaxRiseWarning(fullLengthRise.left.warnMm) || hasMaxRiseWarning(fullLengthRise.right.warnMm);
+        return { regionalMm, fullOver, show: hasMaxRiseWarning(regionalMm) || fullOver };
+    }, [sideValues, fullLengthRise, postingOutlines]);
     const showShoeCounterWarning = useMemo(
         () =>
             hasShoeCounterHeightWarning(sideValues.left, fullLengthRise.left.heel) ||
@@ -646,10 +707,17 @@ export function CorrectionsPanel() {
                     {group === "Posting" &&
                     (showWedgeWarning ||
                         showPostingAngleWarning ||
-                        showMaxRiseWarning ||
+                        maxRiseWarning.show ||
                         showShoeCounterWarning) ? (
                         <div className="mb-2 space-y-1">
-                            {showPostingAngleWarning ? (
+                            {showRegionalAngleWarning ? (
+                                <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1.5 text-[10px] text-amber-600">
+                                    <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                                    <span>
+                                        Posting angle above 6° — verify wall thickness and clinical intent.
+                                    </span>
+                                </div>
+                            ) : showPostingAngleWarning ? (
                                 <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1.5 text-[10px] text-amber-600">
                                     <AlertTriangle className="h-3 w-3 flex-shrink-0" />
                                     <span>
@@ -657,15 +725,32 @@ export function CorrectionsPanel() {
                                     </span>
                                 </div>
                             ) : null}
-                            {showMaxRiseWarning ? (
+                            {maxRiseWarning.fullOver ? (
                                 <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1.5 text-[10px] text-amber-600">
                                     <AlertTriangle className="h-3 w-3 flex-shrink-0" />
                                     <span>
                                         Full-length rise above {MAX_RISE_WARN_MM} mm
-                                        {fullLengthRise.left.max >= fullLengthRise.right.max
-                                            ? ` (left ${fullLengthRise.left.max.toFixed(1)} mm at u ${fullLengthRise.left.u.toFixed(2)})`
-                                            : ` (right ${fullLengthRise.right.max.toFixed(1)} mm at u ${fullLengthRise.right.u.toFixed(2)})`}
+                                        {fullLengthRise.left.warnMm >= fullLengthRise.right.warnMm
+                                            ? ` (left ${fullLengthRise.left.warnMm.toFixed(1)} mm${
+                                                  sideValues.left.fullLengthWedge?.unit === "deg"
+                                                      ? ""
+                                                      : ` at u ${fullLengthRise.left.u.toFixed(2)}`
+                                              })`
+                                            : ` (right ${fullLengthRise.right.warnMm.toFixed(1)} mm${
+                                                  sideValues.right.fullLengthWedge?.unit === "deg"
+                                                      ? ""
+                                                      : ` at u ${fullLengthRise.right.u.toFixed(2)}`
+                                              })`}
                                         .
+                                    </span>
+                                </div>
+                            ) : null}
+                            {hasMaxRiseWarning(maxRiseWarning.regionalMm) ? (
+                                <div className="flex items-center gap-1.5 rounded bg-amber-500/10 p-1.5 text-[10px] text-amber-600">
+                                    <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                                    <span>
+                                        Posting rise above {MAX_RISE_WARN_MM} mm (
+                                        {maxRiseWarning.regionalMm.toFixed(1)} mm at the station).
                                     </span>
                                 </div>
                             ) : null}
@@ -701,6 +786,18 @@ export function CorrectionsPanel() {
                                                   key={side}
                                                   side={side}
                                                   zoneLabel={label}
+                                                  maxDeg={
+                                                      zone === "rearfoot"
+                                                          ? REARFOOT_POST_DEG_MAX
+                                                          : FOREFOOT_POST_DEG_MAX
+                                                  }
+                                                  equivalence={postingEquivalenceLabel(
+                                                      zone,
+                                                      sideValues[side][wedgeKey] as
+                                                          | WedgeCorrection
+                                                          | undefined,
+                                                      postingOutlines[side],
+                                                  )}
                                                   wedge={
                                                       sideValues[side][wedgeKey] as
                                                           | WedgeCorrection
@@ -736,6 +833,11 @@ export function CorrectionsPanel() {
                                                 defaultUnit="mm"
                                                 maxMm={20}
                                                 maxDeg={10}
+                                                equivalence={postingEquivalenceLabel(
+                                                    "full",
+                                                    sideValues[side].fullLengthWedge,
+                                                    postingOutlines[side],
+                                                )}
                                                 wedge={sideValues[side].fullLengthWedge}
                                                 onPreview={(newW) =>
                                                     previewCorrection(side, { fullLengthWedge: newW })
