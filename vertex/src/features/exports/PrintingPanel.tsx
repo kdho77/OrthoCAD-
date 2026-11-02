@@ -189,7 +189,7 @@ export function PrintingPanel({
 
             {cncSelected ? <CncMillingPanel /> : null}
 
-            {!cncSelected && !showPrimaryOnly ? (
+            {!cncSelected && !showPrimaryOnly && !clinicalMode ? (
                 <div className="flex gap-1">
                     {(["left", "right"] as Side[]).map((s) => (
                         <Button
