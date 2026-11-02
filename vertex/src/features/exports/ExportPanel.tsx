@@ -1,6 +1,8 @@
 import { Boxes, CheckCircle2, Download, FileCode2, Loader2, Lock, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { CaseOrderSummary } from "@/components/clinical/CaseOrderSummary";
+import { OutputSideBar } from "@/components/clinical/OutputSideBar";
+import { PanelHeading } from "@/components/clinical/PanelHeading";
 import { Button } from "@/components/ui/button";
 import { HardnessRegionList } from "@/features/clinical/HardnessRegionList";
 import { exportDesign } from "@/features/exports/export-service";
@@ -17,20 +19,134 @@ import { SIDE_LABELS, type Side } from "@/types";
 
 type ExportKind = "stl" | "glb" | "3mf" | null;
 
-export function ExportPanel() {
+export function ExportPanel({
+    clinicalExportStep = false,
+    hideOutputSide = false,
+}: {
+    clinicalExportStep?: boolean;
+    hideOutputSide?: boolean;
+}) {
+    const { user, license } = useAuthStore();
+    const { exportSide } = useDesignStore();
+    const [status, setStatus] = useState<string | null>(null);
+    const [busyKind, setBusyKind] = useState<ExportKind>(null);
+    const [exportKind, setExportKind] = useState<ExportKind>("stl");
+
+    const stlCheck = canExport(user, license, "stl");
+    const glbCheck = canExport(user, license, "glb");
+    const threeMfCheck = canExport(user, license, "3mf");
+    const busy = busyKind !== null;
+
+    const activeCheck =
+        exportKind === "stl" ? stlCheck : exportKind === "glb" ? glbCheck : threeMfCheck;
+    const tokenCost =
+        exportKind === "stl"
+            ? TOKEN_COST.stl
+            : exportKind === "glb"
+              ? TOKEN_COST.glb
+              : TOKEN_COST["3mf"];
+
+    const runExport = async () => {
+        if (!exportKind) return;
+        setBusyKind(exportKind);
+        try {
+            if (exportKind === "stl") {
+                const res = await exportDesign("stl", exportSide);
+                setStatus(
+                    res.ok
+                        ? `Exported ${res.filename} (-${TOKEN_COST.stl} token)`
+                        : stlExportUserMessage(res.reason),
+                );
+            } else if (exportKind === "3mf") {
+                const res = await exportDesign("3mf", exportSide);
+                setStatus(
+                    res.ok
+                        ? `Exported ${res.filename} (-${TOKEN_COST["3mf"]} token)`
+                        : (res.reason ?? "3MF export failed"),
+                );
+            } else {
+                const res = await exportDesign("glb", exportSide);
+                setStatus(
+                    res.ok
+                        ? `Exported ${res.filename} (-${TOKEN_COST.glb} token)`
+                        : (res.reason ?? "GLB export failed"),
+                );
+            }
+        } catch (e) {
+            setStatus(stlExportUserMessage(e instanceof Error ? e.message : undefined));
+        } finally {
+            setBusyKind(null);
+        }
+    };
+
+    if (clinicalExportStep) {
+        return (
+            <div className="space-y-3">
+                <PanelHeading
+                    title="Export"
+                    info="Pick a file type, output foot, then download. G-code is prepared on the Print step."
+                    trailing={
+                        <span className="text-[10px] tabular-nums text-muted-foreground">
+                            {user?.tokenBalance ?? 0} tokens
+                        </span>
+                    }
+                />
+                <div className="flex gap-1">
+                    {(
+                        [
+                            { id: "stl" as const, label: "STL" },
+                            { id: "3mf" as const, label: "3MF" },
+                            { id: "glb" as const, label: "GLB" },
+                        ] as const
+                    ).map((k) => (
+                        <Button
+                            key={k.id}
+                            size="sm"
+                            variant={exportKind === k.id ? "default" : "secondary"}
+                            className="h-8 flex-1 text-[11px]"
+                            onClick={() => setExportKind(k.id)}
+                        >
+                            {k.label}
+                        </Button>
+                    ))}
+                </div>
+                <OutputSideBar />
+                <Button className="w-full" disabled={!activeCheck.ok || busy} onClick={() => void runExport()}>
+                    {busyKind ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : activeCheck.ok ? (
+                        <Download className="h-4 w-4" />
+                    ) : (
+                        <Lock className="h-4 w-4" />
+                    )}
+                    {busyKind ? "Exporting…" : `Download · ${tokenCost} token`}
+                </Button>
+                {!activeCheck.ok ? <p className="text-[10px] text-amber-400">{activeCheck.reason}</p> : null}
+                {status ? <p className="rounded-md bg-muted px-2 py-1 text-[11px]">{status}</p> : null}
+            </div>
+        );
+    }
+
+    return (
+        <LegacyExportPanel hideOutputSide={hideOutputSide} />
+    );
+}
+
+/** Full export panel for Print advanced and legacy paths. */
+function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolean }) {
     const { user, license } = useAuthStore();
     const { design, exportSide, setExportSide } = useDesignStore();
     const kernelName = useKernelStore((s) => s.name);
     const [status, setStatus] = useState<string | null>(null);
     const [busyKind, setBusyKind] = useState<ExportKind>(null);
+    const validation = useSolidValidation(design, exportSide);
+    const [report, setReport] = useState<HardnessExportReport | null>(null);
+    const [warning, setWarning] = useState<string | null>(null);
 
     const stlCheck = canExport(user, license, "stl");
     const glbCheck = canExport(user, license, "glb");
     const threeMfCheck = canExport(user, license, "3mf");
-    const validation = useSolidValidation(design, exportSide);
     const busy = busyKind !== null;
-    const [report, setReport] = useState<HardnessExportReport | null>(null);
-    const [warning, setWarning] = useState<string | null>(null);
 
     const handleStl = async () => {
         setBusyKind("stl");
@@ -108,19 +224,21 @@ export function ExportPanel() {
                 </div>
             </div>
 
-            <div className="flex gap-1">
-                {(["left", "right"] as Side[]).map((s) => (
-                    <Button
-                        key={s}
-                        size="sm"
-                        variant={exportSide === s ? "default" : "secondary"}
-                        className="h-8 flex-1"
-                        onClick={() => setExportSide(s)}
-                    >
-                        {SIDE_LABELS[s]} insole
-                    </Button>
-                ))}
-            </div>
+            {hideOutputSide ? null : (
+                <div className="flex gap-1">
+                    {(["left", "right"] as Side[]).map((s) => (
+                        <Button
+                            key={s}
+                            size="sm"
+                            variant={exportSide === s ? "default" : "secondary"}
+                            className="h-8 flex-1"
+                            onClick={() => setExportSide(s)}
+                        >
+                            {SIDE_LABELS[s]} insole
+                        </Button>
+                    ))}
+                </div>
+            )}
 
             <div
                 className={cn(

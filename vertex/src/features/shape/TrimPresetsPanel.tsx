@@ -1,4 +1,5 @@
 import { Check, X } from "lucide-react";
+import { PanelHeading } from "@/components/clinical/PanelHeading";
 import { Button } from "@/components/ui/button";
 import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
@@ -9,6 +10,10 @@ import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { TrimPresetId } from "@/types";
 
 const PRESETS: Exclude<TrimPresetId, "custom">[] = ["full", "sulcus", "met_head"];
+
+const TRIM_INFO =
+    "Distal AP cut at clinical landmark (±3 mm). Preview in the viewer, then confirm or cancel. " +
+    "When L+R are linked, confirming applies the same outline to both feet.";
 
 export function TrimPresetsPanel() {
     const design = useDesignStore((s) => s.design);
@@ -38,21 +43,11 @@ export function TrimPresetsPanel() {
 
     return (
         <div className="mb-3 space-y-2 rounded-md border border-border bg-background/40 p-2">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Top trim presets
-            </div>
-            <p className="text-[10px] text-muted-foreground">
-                Distal AP cut at clinical landmark (±3 mm). Preview, then confirm or cancel.
-            </p>
+            <PanelHeading title="Top trim" info={TRIM_INFO} />
 
-            {linked ? (
-                <p className="text-[10px] text-primary/80">Linked L+R — confirm applies the same outline to both feet.</p>
-            ) : (
-                <p className="text-[10px] text-muted-foreground">
-                    Active foot: <span className="text-foreground">{activeFoot}</span>
-                    {activePreset ? ` · ${TRIM_PRESET_LABELS[activePreset] ?? "Custom"}` : ""}
-                </p>
-            )}
+            {!linked && activePreset ? (
+                <p className="text-[10px] text-muted-foreground">{TRIM_PRESET_LABELS[activePreset] ?? "Custom"}</p>
+            ) : null}
 
             <div className="grid grid-cols-3 gap-1.5">
                 {PRESETS.map((id) => (
@@ -73,9 +68,7 @@ export function TrimPresetsPanel() {
             </div>
 
             {activePreset === "custom" || (!activePreset && design.trimlines?.[activeFoot]) ? (
-                <p className="text-[10px] text-amber-600">
-                    Custom outline — preset label cleared until you confirm a named preset.
-                </p>
+                <p className="text-[10px] text-amber-600">Custom outline</p>
             ) : null}
 
             {trimlineEdit && sessionForFoot ? (
