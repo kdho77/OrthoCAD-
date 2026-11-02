@@ -407,6 +407,39 @@ export function scaleFootprintUniform(geometry: THREE.BufferGeometry, scale: num
     return geometry;
 }
 
+/**
+ * Size a top sheet to its footprint before compose and loft.
+ *
+ * XY uses the same center as {@link scaleFootprintUniform}. Z relief above
+ * `floorMm` (the 2 mm reference floor) uses that same scale. The floor stays
+ * in absolute millimetres, and this pass does not touch a shell that compose
+ * adds afterwards. Scale 1 does not write vertices.
+ */
+export function scaleSourceShapeToFootprint(
+    geometry: THREE.BufferGeometry,
+    scale: number,
+    floorMm = 2,
+): THREE.BufferGeometry {
+    if (!Number.isFinite(scale) || Math.abs(scale - 1) <= 1e-9) return geometry;
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    const pos = geometry.getAttribute("position");
+    if (!box || !pos) return geometry;
+    const cx = (box.min.x + box.max.x) / 2;
+    const cy = (box.min.y + box.max.y) / 2;
+    for (let i = 0; i < pos.count; i++) {
+        pos.setX(i, cx + (pos.getX(i) - cx) * scale);
+        pos.setY(i, cy + (pos.getY(i) - cy) * scale);
+        const z = pos.getZ(i);
+        pos.setZ(i, floorMm + (z - floorMm) * scale);
+    }
+    pos.needsUpdate = true;
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    geometry.computeVertexNormals();
+    return geometry;
+}
+
 export function scaleGeometryToInsoleSize(
     geometry: THREE.BufferGeometry,
     lengthMm: number,

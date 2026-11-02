@@ -28,12 +28,13 @@ import type { PlacedSink, SideCorrections } from "@/types";
 
 /**
  * SHA-256 of geometryToBinarySTL(reconstructProceduralPreview(native SAMPLE_Top)).
- * Straight is the 37472-vertex solid. These pins are the no-sink bytes of this tree.
+ * Straight is the 37924-vertex solid (zonal shell adds one floor-fillet ring).
+ * These pins are the no-sink bytes of this tree.
  */
 const STL_SHA256 = {
-    straight: "6c67e279aa33ea15bd6ffb0c9ba8feecee907d73dfdc5eacadda24e09052df14",
-    round: "19e7ad197d94d6c63268052c33fe4640e793acdc09bf712077e3cf10e2c621b7",
-    hybrid: "159832145396adcd8a90bbda16abf2abd4d7a20d05c06c9de86868a098519cad",
+    straight: "4c0e3fa857504ddf81f2722737c83f47b20eac9b642e406656e06ed3deab13e1",
+    round: "ad742f2e7e6f2ad36053de3a1713237b60fff21bf84ebad5a15d854050bbe85f",
+    hybrid: "c19a58cdd99387eb6a2eb4b34f8442eb8317ce1779583c4f8734a9d64d1b383f",
 } as const;
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
@@ -107,7 +108,7 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
             plains[wallStyle] = preview.geometry;
             if (wallStyle === "straight") plain = preview.geometry;
         }
-        expect(hashes.straight?.count).toBe(37472);
+        expect(hashes.straight?.count).toBe(37924);
         expect(hashes.straight?.stl).toBe(STL_SHA256.straight);
         expect(hashes.round?.stl).toBe(STL_SHA256.round);
         expect(hashes.hybrid?.stl).toBe(STL_SHA256.hybrid);
@@ -132,7 +133,7 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         const analytic = compareSolids(plain!, sunk.geometry);
         const composed = compareSolids(composedPlain.geometry, composedSunk.geometry);
         console.log("[SINK-F1]", JSON.stringify({ analytic, composed, hashes }));
-        expect(analytic.baseVertexCount).toBe(37472);
+        expect(analytic.baseVertexCount).toBe(37924);
         expect(analytic.vertexCount).toBe(analytic.baseVertexCount);
         expect(analytic.outlineMm).toBeLessThanOrEqual(0.02);
         expect(analytic.rearfootDzMm).toBeLessThanOrEqual(1e-6);

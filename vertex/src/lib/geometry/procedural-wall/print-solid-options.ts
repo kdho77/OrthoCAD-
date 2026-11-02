@@ -45,6 +45,8 @@ export function printSolidOptions(input: {
         trimline,
         textMarking: design.textMarking,
         side,
+        // Loft at the target footprint. Export must not scale the finished solid.
+        footprintScale: layout.scale,
         ...(bottomPattern ? { bottomPattern } : {}),
     };
 }
