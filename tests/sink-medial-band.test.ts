@@ -33,16 +33,16 @@ import { mirrorGeometry } from "@/lib/library/loaders";
 import type { PlacedElement, PlacedSink, Side, SideCorrections, SinkKind } from "@/types";
 
 /**
- * SHA-256 of geometryToBinarySTL(reconstructProceduralPreview) on the rebased
- * head before the medial-fade change. Straight Men's 9, left foot.
+ * SHA-256 of geometryToBinarySTL(reconstructProceduralPreview).
+ * Re-recorded for the zonal shell. Straight Men's 9, left foot.
  */
 const PARITY_SHA256: Record<string, string> = {
-    "no-sink": "22e79065d8ddfcea62036660ef9272d33aa018f03915365ffeeb6fe395c28cae",
-    wedges: "25b16994ed440fe176efda099829ec9b28d33f1f7e3ca1b4eef070c1eb50f98d",
-    "regional-wedge": "cc2c14d7dced00b9c459c1d03172f65942e3e18de4ccc1b4e0366ac8623e6622",
-    "met-pad": "4bfbef1bb093d56d015408b73a16f75fd0a5f1584918caf690160c5d2c15ba14",
-    width: "890b39682b193a2750c521c7084cf1e1aa72b13d0fb928a0743732c35965736c",
-    "full-length-wedge": "b217e3b6a099beff8c1fdec69722459a9122d6bb81a9804c478b9637ee652056",
+    "no-sink": "4c0e3fa857504ddf81f2722737c83f47b20eac9b642e406656e06ed3deab13e1",
+    wedges: "5318b1222e1f82ef876c84f814d0c4e16ca8a7e230b455478fd4cdc1410e7e7a",
+    "regional-wedge": "be07ace9ba002920665c1763638c4cd0132728f8fd45c8d1bab67591d1b7001e",
+    "met-pad": "d7489b3b3405cf04fe978a4041f53c09199c6aeb3df292ae4654ea7db1057084",
+    width: "0f63337703e2f3195896fbe369e249bb4e42d034644589d862171a1a64d9c698",
+    "full-length-wedge": "1daf1782d447106ec71e757c3aa8daa3492f13670c622b4d98eb6f61d69abc2f",
 };
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
@@ -883,7 +883,7 @@ describe("sink taper reaches the medial and lateral outline", () => {
 });
 
 describe("sink-free export hash parity", () => {
-    test("no-sink, wedges, regional wedge, met pad, width, and full-length wedge match the pre-change head", async () => {
+    test("no-sink, wedges, regional wedge, met pad, width, and full-length wedge match the re-recorded pins", async () => {
         const buf = readFileSync(SAMPLE_TOP_PATH);
         const raw = await sampleTopFromArrayBuffer(
             buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),

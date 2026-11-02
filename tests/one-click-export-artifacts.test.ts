@@ -117,8 +117,8 @@ describe("one-click export artifacts (real export path)", () => {
         const defaultLeftApex = checkStlArchApexMedial(defaultLeft, "left");
         const defaultRightApex = checkStlArchApexMedial(defaultRight, "right");
 
-        expect(defaultLeftHash).toBe("6c67e279aa33ea15bd6ffb0c9ba8feecee907d73dfdc5eacadda24e09052df14");
-        expect(defaultRightHash).toBe("cd57887c45189bce39b0ead2fbcc959e1bdfebe12a11256f05751ff670d76c99");
+        expect(defaultLeftHash).toBe("4c0e3fa857504ddf81f2722737c83f47b20eac9b642e406656e06ed3deab13e1");
+        expect(defaultRightHash).toBe("ccd6fd7f92b381334c1fd7f90bd62869884ae58c38bafb539806ccbd832dada1");
 
         const leftScan = archHeightScan(24, "left");
         const rightScan = archHeightScan(24, "right");
