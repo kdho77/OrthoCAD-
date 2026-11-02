@@ -7,6 +7,7 @@ import {
 import { type HeelLiftTaperOptions, heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { kirbySkiveRaiseAt } from "@/lib/geometry/heel-skive";
 import { evaluateGraph, type OperatorGraph } from "@/lib/geometry/operator-graph";
+import type { PostingShoeWidth } from "@/lib/geometry/posting-degrees";
 import {
     type ShellThicknessContext,
     shellThicknessContextFromDesign,
@@ -78,6 +79,11 @@ export interface HeightFieldParams {
      * the same u after this height is baked. Absent leaves the toe stations live.
      */
     fullLengthToeHoldU?: number;
+    /**
+     * Shoe-width class for degree posting. Absent or medium leaves W on the
+     * unscaled code outline. Millimetre wedges ignore it.
+     */
+    shoeWidth?: PostingShoeWidth | null;
 }
 
 export function resolveShellThicknessContext(params: HeightFieldParams): ShellThicknessContext {
@@ -475,6 +481,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
         lengthMm,
         widthMm,
         trimline: params.trimline,
+        shoeWidth: params.shoeWidth,
     });
 
     // --- Heel lift (longitudinal ramp) ----------------------------------------

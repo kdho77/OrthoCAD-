@@ -12,6 +12,7 @@ import {
     SAMPLE_TOP_PUBLIC_PATH,
 } from "@/lib/geometry/procedural-wall/sample-top-id";
 import { getSideShapeFinish } from "@/lib/geometry/shape-finish-modifiers";
+import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import {
     classifyStockUrl,
     formatStockUrlLog,
@@ -924,6 +925,11 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         shellThicknessBlendMm: design.shellThicknessBlendMm,
         method: params.method,
         shapeFinish: getSideShapeFinish(design, side),
+        shoeWidth: {
+            id: shoeWidthForSide(design, side),
+            ballWidthMm: params.widthMm,
+            heelWidthMm: params.widthMm * 0.62,
+        },
         // Omit the keys when this foot has no sink so the field shape matches main.
         ...(sinks ? { sinks, sinkStyloidThicken: sinkStyloidThickenForSide(design, side) } : {}),
     };

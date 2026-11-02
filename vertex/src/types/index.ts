@@ -110,8 +110,18 @@ export interface WedgeCorrection {
     side: "medial" | "lateral";
     /** Positive user-entered value. */
     value: number;
-    /** Raw unit. Degrees are resolved against current local width at eval time. */
+    /**
+     * Raw unit. Millimetres are an absolute edge raise.
+     * Degrees without `degreeMode: "station"` use the local-width angle.
+     * Station mode converts once: h = W·tan(θ).
+     */
     unit: "mm" | "deg";
+    /**
+     * Degree evaluation. Omitted or `"local"` keeps the original per-u width.
+     * `"station"` measures the bottom-outline chord once at the zone station.
+     * Ignored for millimetre entries.
+     */
+    degreeMode?: "local" | "station";
 }
 
 export interface UserProfile {
@@ -201,7 +211,7 @@ export interface SideCorrections {
     /**
      * New medial/lateral wedge system (surface modifications on the plantar/top).
      * Only one wedge (medial or lateral) per zone is allowed (enforced by UI + single object).
-     * Stored as raw user input; resolution (esp. for degrees) happens at evaluation time.
+     * Stored as raw user input. Station-mode degrees convert once at the zone station.
      */
     rearfootWedge?: WedgeCorrection;
     forefootWedge?: WedgeCorrection;
