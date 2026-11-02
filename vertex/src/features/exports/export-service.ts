@@ -26,6 +26,12 @@ import { bindPrintRecipeProfile } from "../../../shared/print-recipe/print-recip
 // Re-export for convenience in UI components
 export type GrindingStyleInput = GrindingStyle;
 
+function recordExport(detail: string) {
+    useAuditStore.getState().record("export_generated", detail);
+    const designId = useClientStore.getState().activeDesignId;
+    if (designId) useClientStore.getState().markExported(designId);
+}
+
 export interface ExportOutcome {
     ok: boolean;
     reason?: string;
@@ -128,7 +134,7 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
         console.log("[EXPORT] token deducted after download");
         const auth = await authorize("stl", side, filename);
         if (!auth.ok) return { ok: false, reason: auth.reason };
-        useAuditStore.getState().record("export_generated", `STL ${side} (-${TOKEN_COST.stl})`);
+        recordExport(`STL ${side} (-${TOKEN_COST.stl})`);
         const warning = collectHardnessRegions(design, side).length > 0 ? STL_SHELL_ONLY_WARNING : undefined;
         return { ok: true, filename, blob, warning };
     } catch (e) {
@@ -150,7 +156,7 @@ export async function export3mf(side: Side): Promise<ExportOutcome> {
         const blob = new Blob([packed.bytes], { type: "model/3mf" });
         downloadBlob(blob, filename);
         deductTokens(TOKEN_COST["3mf"]);
-        useAuditStore.getState().record("export_generated", `3MF ${side} (-${TOKEN_COST["3mf"]})`);
+        recordExport(`3MF ${side} (-${TOKEN_COST["3mf"]})`);
         return { ok: true, filename, blob, report: packed.report };
     } catch (e) {
         return { ok: false, reason: e instanceof Error ? e.message : "3MF export failed" };
@@ -166,7 +172,7 @@ export async function exportGlb(side: Side): Promise<ExportOutcome> {
         const arrayBuffer = await buildExportGlb(side);
         const blob = new Blob([arrayBuffer], { type: "model/gltf-binary" });
         downloadBlob(blob, filename);
-        useAuditStore.getState().record("export_generated", `GLB ${side}`);
+        recordExport(`GLB ${side}`);
         return { ok: true, filename, blob };
     } catch (e) {
         return { ok: false, reason: e instanceof Error ? e.message : "GLB export failed" };
@@ -192,9 +198,7 @@ export async function exportCncGcode(sides: Side[], profile: MillingProfile): Pr
         downloadBlob(blob, filename);
         const auth = await authorize("gcode", sides[0] ?? "left", filename);
         if (!auth.ok) return { ok: false, reason: auth.reason };
-        useAuditStore
-            .getState()
-            .record("export_generated", `CNC G-code ${sides.join("+")} · ${profile.name}`);
+        recordExport(`CNC G-code ${sides.join("+")} · ${profile.name}`);
         return {
             ok: true,
             filename,
@@ -225,9 +229,7 @@ export async function exportGcode(
     geometry.dispose();
     const blob = new Blob([gcode], { type: "text/plain" });
     downloadBlob(blob, filename);
-    useAuditStore
-        .getState()
-        .record("export_generated", `G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
+    recordExport(`G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
     return { ok: true, filename, blob, stats };
 }
 
@@ -294,12 +296,9 @@ export async function generateHybridGcode(
                 return { ok: false, reason: "Server did not return a downloadable output file" };
             }
 
-            useAuditStore
-                .getState()
-                .record(
-                    "export_generated",
-                    `Hybrid ${outputType.toUpperCase()} ${side} · ${preset.name} (${grindingStyle.type}) (productionId=${res.productionId || "n/a"})`,
-                );
+            recordExport(
+                `Hybrid ${outputType.toUpperCase()} ${side} · ${preset.name} (${grindingStyle.type}) (productionId=${res.productionId || "n/a"})`,
+            );
 
             return { ok: true, filename, blob, productionId: res.productionId ?? undefined };
         } catch (e) {
@@ -335,9 +334,7 @@ export async function downloadGcodeByProductionId(productionId: string): Promise
         const filename = `hybrid-${productionId}.gcode`;
         const blob = new Blob([gcodeText], { type: "text/plain" });
         downloadBlob(blob, filename);
-        useAuditStore
-            .getState()
-            .record("export_generated", `Hybrid G-code re-download via productionId ${productionId}`);
+        recordExport(`Hybrid G-code re-download via productionId ${productionId}`);
         return { ok: true, filename, blob, productionId };
     } catch (e) {
         return {

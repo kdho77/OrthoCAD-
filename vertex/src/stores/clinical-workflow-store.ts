@@ -65,8 +65,13 @@ export interface CorrectionPresetOrigin {
     keys: { left: string[]; right: string[] };
 }
 
+/** How this design was started (client file → editor); drives Setup-first vs Scan-first. */
+export type InsoleDesignStartPath = "scan" | "template" | "ai";
+
 interface ClinicalWorkflowStore {
     step: ClinicalStepId;
+    /** Set when opening a new design from the client file start flow (`?entry=`). */
+    designStartPath: InsoleDesignStartPath | null;
     /** Steps the user advanced past via successful Next (no environment auto-complete). */
     completedSteps: ClinicalStepId[];
     /** User clicked Left or Right on the clinical foot bar (scan gate). */
@@ -130,6 +135,7 @@ function applyScanStickyReason(step: ClinicalStepId): string | null {
 
 export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get) => ({
     step: "scan",
+    designStartPath: null,
     completedSteps: [],
     footSideExplicitlyChosen: false,
     scanGateStickyReason: null,

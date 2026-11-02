@@ -75,9 +75,12 @@ export function useAuthBootstrap() {
         let authSubscription: { unsubscribe: () => void } | undefined;
 
         async function bootstrap() {
+            const forceLogin = new URLSearchParams(window.location.search).has("e2eLogin");
             if (!isSupabaseConfigured()) {
-                setUser(offlineUserProfile());
-                setLicense(offlineLicense());
+                if (!forceLogin) {
+                    setUser(offlineUserProfile());
+                    setLicense(offlineLicense());
+                }
                 setLoading(false);
                 return;
             }
@@ -93,7 +96,7 @@ export function useAuthBootstrap() {
             if (data.session?.user) {
                 applyIdentity(data.session.user);
                 void loadAuthoritativeProfile();
-            } else if (isLocalDevServer()) {
+            } else if (isLocalDevServer() && !new URLSearchParams(window.location.search).has("e2eLogin")) {
                 await supabase.auth.signInWithPassword({
                     email: DEV_SUPER_ADMIN.email,
                     password: DEV_SUPER_ADMIN.password,

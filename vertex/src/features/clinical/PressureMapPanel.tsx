@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { ImagePlus, RotateCw, Trash2 } from "lucide-react";
+import { ChevronDown, ImagePlus, RotateCw, Trash2 } from "lucide-react";
 import { useRef, useState } from "react";
+import { PanelHeading } from "@/components/clinical/PanelHeading";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { loadPressureMapFromFile } from "@/lib/pressure-map/import";
@@ -16,9 +17,12 @@ import type { Side } from "@/types";
 
 const ACCEPT = "image/png,image/jpeg,.jpg,.jpeg,.png";
 
-export function PressureMapPanel() {
+const PRESSURE_MAP_INFO = `Import a plantar image (PNG/JPEG). Stored maps are downscaled to max ${PRESSURE_MAP_MAX_EDGE_PX}px and about ${Math.round(PRESSURE_MAP_MAX_DATA_URL_CHARS / 1000)} KB. Auto-align uses rotation only; a mirror is applied only when the image looks like the opposite foot.`;
+
+export function PressureMapPanel({ scanStepCompact = false }: { scanStepCompact?: boolean }) {
     const side = useActiveFootSide();
     const inputRef = useRef<HTMLInputElement>(null);
+    const [expanded, setExpanded] = useState(!scanStepCompact);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [adjustOpen, setAdjustOpen] = useState(false);
@@ -48,19 +52,48 @@ export function PressureMapPanel() {
 
     const sideLabel = side === "left" ? "Left" : "Right";
 
+    if (scanStepCompact && !expanded) {
+        return (
+            <div className="rounded-md border border-border bg-background/40 p-2">
+                <button
+                    type="button"
+                    className="flex w-full items-center gap-1 text-left"
+                    onClick={() => setExpanded(true)}
+                    aria-expanded={false}
+                >
+                    <PanelHeading title={`Pressure map · ${sideLabel}`} info={PRESSURE_MAP_INFO} className="flex-1" />
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                </button>
+            </div>
+        );
+    }
+
     return (
         <div className="space-y-2 rounded-md border border-border bg-background/40 p-2">
-            <div className="flex items-center justify-between gap-2">
-                <p className="text-[11px] font-medium text-foreground">Pressure map · {sideLabel}</p>
-                {foot ? (
-                    <span className="truncate text-[10px] text-muted-foreground">{foot.fileName ?? "Imported"}</span>
-                ) : null}
-            </div>
-            <p className="text-[10px] leading-relaxed text-muted-foreground">
-                Import a plantar image (PNG/JPEG). Stored maps are downscaled to max {PRESSURE_MAP_MAX_EDGE_PX}px and
-                about {Math.round(PRESSURE_MAP_MAX_DATA_URL_CHARS / 1000)} KB. Auto-align uses rotation only; a mirror
-                is applied only when the image looks like the opposite foot.
-            </p>
+            {scanStepCompact ? (
+                <button
+                    type="button"
+                    className="flex w-full items-center gap-1 text-left"
+                    onClick={() => setExpanded(false)}
+                    aria-expanded
+                >
+                    <PanelHeading title={`Pressure map · ${sideLabel}`} info={PRESSURE_MAP_INFO} className="flex-1" />
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 rotate-180 text-muted-foreground" aria-hidden />
+                </button>
+            ) : (
+                <div className="flex items-center justify-between gap-2">
+                    <p className="text-[11px] font-medium text-foreground">Pressure map · {sideLabel}</p>
+                    {foot ? (
+                        <span className="truncate text-[10px] text-muted-foreground">{foot.fileName ?? "Imported"}</span>
+                    ) : null}
+                </div>
+            )}
+            {!scanStepCompact ? (
+                <p className="text-[10px] leading-relaxed text-muted-foreground">{PRESSURE_MAP_INFO}</p>
+            ) : null}
+            {foot && scanStepCompact ? (
+                <span className="block truncate text-[10px] text-muted-foreground">{foot.fileName ?? "Imported"}</span>
+            ) : null}
             {foot?.orientation?.oppositeFootMirror ? (
                 <p className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-100/90">
                     This image appears to be a{" "}
