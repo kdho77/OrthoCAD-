@@ -33,6 +33,8 @@ export function clientFilePath(clientId: string): string {
     return `/clients/${clientId}`;
 }
 
-export function designPath(clientId: string, designId: string): string {
-    return `/clients/${clientId}/designs/${designId}`;
+export function designPath(clientId: string, designId: string, entry?: "scan" | "template" | "ai"): string {
+    const base = `/clients/${clientId}/designs/${designId}`;
+    if (!entry) return base;
+    return `${base}?entry=${entry}`;
 }

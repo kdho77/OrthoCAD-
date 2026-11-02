@@ -2,7 +2,6 @@ import { BookmarkPlus, PenTool, Plus, Save, Scissors, Trash2 } from "lucide-reac
 import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
-import { ElementsAiGenerate } from "@/components/clinical/ElementsAiGenerate";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
 import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
@@ -138,7 +137,6 @@ export function ElementsPanel() {
 
     return (
         <div className="space-y-3">
-            <ElementsAiGenerate />
             {design.elements.length > 0 ? (
                 <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-2 py-1.5 text-[10px] text-muted-foreground">
                     <span className="flex shrink-0 items-center gap-0.5" aria-hidden="true">

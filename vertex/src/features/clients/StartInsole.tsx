@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 // First screen of a new insole: template or scan. The scan never becomes the mesh.
 
+import { Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { designFromScan } from "@/lib/clinical/chart-design";
@@ -142,27 +143,60 @@ function SizeField({
     );
 }
 
+export type StartPathChoice = "scan" | "template" | "ai";
+
 export function StartChoice({
     onTemplate,
     onScan,
+    onAiGenerate,
     onBack,
 }: {
     onTemplate: () => void;
     onScan: () => void;
+    onAiGenerate: (text: string) => void | Promise<void>;
     onBack: () => void;
 }) {
+    const [selected, setSelected] = useState<StartPathChoice | null>(null);
+    const [aiText, setAiText] = useState("");
+    const [aiBusy, setAiBusy] = useState(false);
+    const [aiError, setAiError] = useState<string | null>(null);
+
+    const continueDisabled = useMemo(() => selected === null || selected === "ai", [selected]);
+
+    const runAi = async () => {
+        setAiBusy(true);
+        setAiError(null);
+        try {
+            await onAiGenerate(aiText);
+            setAiText("");
+        } catch (reason) {
+            setAiError(reason instanceof Error ? reason.message : "Generate failed");
+        } finally {
+            setAiBusy(false);
+        }
+    };
+
+    const cardClass = (path: StartPathChoice) =>
+        [
+            "min-h-28 rounded-xl border p-4 text-left transition-colors",
+            selected === path
+                ? "border-primary bg-primary/5 ring-1 ring-primary/40"
+                : "border-border bg-panel hover:border-primary",
+        ].join(" ");
+
     return (
         <section className="flex flex-col gap-4" data-testid="start-choice">
             <div>
                 <h1 className="text-lg font-semibold">New insole</h1>
                 <p className="text-sm text-muted-foreground">Choose how this design starts.</p>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 lg:grid-cols-3 sm:grid-cols-2">
                 <button
                     type="button"
                     data-testid="start-from-scan"
-                    className="min-h-28 rounded-xl border border-border bg-panel p-4 text-left hover:border-primary"
-                    onClick={onScan}
+                    aria-pressed={selected === "scan"}
+                    className={cardClass("scan")}
+                    onClick={() => setSelected("scan")}
                 >
                     <div className="text-sm font-semibold text-primary">Start from 3D scan</div>
                     <p className="mt-1 text-xs text-muted-foreground">
@@ -172,18 +206,68 @@ export function StartChoice({
                 <button
                     type="button"
                     data-testid="start-from-template"
-                    className="min-h-28 rounded-xl border border-border bg-panel p-4 text-left hover:border-primary"
-                    onClick={onTemplate}
+                    aria-pressed={selected === "template"}
+                    className={cardClass("template")}
+                    onClick={() => setSelected("template")}
                 >
                     <div className="text-sm font-semibold text-primary">Start from 3D template</div>
                     <p className="mt-1 text-xs text-muted-foreground">
-                        Load the default mesh at this client's shoe size and width.
+                        Load the default mesh at this client&apos;s shoe size and width.
                     </p>
                 </button>
+                <button
+                    type="button"
+                    data-testid="start-from-ai"
+                    aria-pressed={selected === "ai"}
+                    className={cardClass("ai")}
+                    onClick={() => setSelected("ai")}
+                >
+                    <div className="text-sm font-semibold text-primary">AI Generate from text</div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                        Paste a short prescription; corrections apply to the stock mesh at chart size.
+                    </p>
+                    {selected === "ai" ? (
+                        <div className="mt-3 space-y-2" onClick={(e) => e.stopPropagation()}>
+                            <textarea
+                                data-testid="start-ai-text"
+                                value={aiText}
+                                onChange={(e) => setAiText(e.target.value)}
+                                rows={3}
+                                aria-label="Prescription text"
+                                className="w-full resize-none rounded-md border border-input bg-background p-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                            />
+                            <Button
+                                type="button"
+                                className="h-8 w-full text-[12px]"
+                                disabled={aiBusy || !aiText.trim()}
+                                data-testid="start-ai-generate"
+                                onClick={() => void runAi()}
+                            >
+                                <Sparkles className="h-3.5 w-3.5" />
+                                {aiBusy ? "Working…" : "Generate"}
+                            </Button>
+                            {aiError ? <p className="text-[10px] text-destructive">{aiError}</p> : null}
+                        </div>
+                    ) : null}
+                </button>
             </div>
-            <Button type="button" variant="outline" className="min-h-11 w-fit" onClick={onBack}>
-                Back
-            </Button>
+            <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" className="min-h-11 w-fit" onClick={onBack}>
+                    Back
+                </Button>
+                <Button
+                    type="button"
+                    className="min-h-11 w-fit"
+                    data-testid="start-continue"
+                    disabled={continueDisabled}
+                    onClick={() => {
+                        if (selected === "scan") onScan();
+                        else if (selected === "template") onTemplate();
+                    }}
+                >
+                    Continue
+                </Button>
+            </div>
         </section>
     );
 }

@@ -2,6 +2,7 @@
 
 import { LeftSidebar } from "@/components/layout/LeftSidebar";
 import { PanelHeading } from "@/components/clinical/PanelHeading";
+import { SetupAiGenerateButton } from "@/features/clinical/SetupAiGenerateButton";
 import { useClientStore } from "@/stores/client-store";
 import { formatClientShoeSummary, shoeChartFromInput } from "../../../shared/client-files";
 
@@ -14,6 +15,10 @@ export function SetupStepPanel() {
 
     return (
         <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-foreground">Setup</span>
+                <SetupAiGenerateButton />
+            </div>
             {clientTag ? (
                 <div className="flex flex-wrap items-center gap-2">
                     <PanelHeading title="Shoe size" info="Chart size from the client file. Adjust below if needed." />

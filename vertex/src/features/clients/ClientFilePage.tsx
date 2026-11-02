@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { navigate } from "@/features/admin/admin-nav";
+import { applyAiGenerateFromText } from "@/features/clinical/ai-generate-from-text";
 import { storePhiEnabled } from "@/lib/phi-policy";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -36,6 +37,7 @@ import { DirectoryHeader } from "./DirectoryHeader";
 import { NewClientDialog } from "./NewClientDialog";
 import { RowMenu } from "./RowMenu";
 import { designPath } from "./routes";
+import type { InsoleDesignStartPath } from "./start-path";
 import { ScanStart, ShoeChartPanel, StartChoice } from "./StartInsole";
 import { TypePickerDialog } from "./TypePickerDialog";
 
@@ -114,9 +116,13 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
             ...next,
         });
     };
-    const openDesign = async (kind: DesignKind, state = designStateForKind(kind, chart)) => {
+    const openDesign = async (
+        kind: DesignKind,
+        state = designStateForKind(kind, chart),
+        entry?: InsoleDesignStartPath,
+    ) => {
         const designId = await createDesignRecord(client.id, kind, state);
-        navigate(designPath(client.id, designId));
+        navigate(designPath(client.id, designId, entry));
     };
     const pick = async (kind: DesignKind) => {
         setPicker(false);
@@ -188,8 +194,13 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                 </section>
                 {flow === "choice" ? (
                     <StartChoice
-                        onTemplate={() => void openDesign("insole")}
+                        onTemplate={() => void openDesign("insole", designStateForKind("insole", chart), "template")}
                         onScan={() => setFlow("scan")}
+                        onAiGenerate={async (text) => {
+                            const base = designStateForKind("insole", chart);
+                            const state = await applyAiGenerateFromText(text, base);
+                            await openDesign("insole", state, "ai");
+                        }}
                         onBack={() => setFlow(null)}
                     />
                 ) : null}
@@ -199,7 +210,7 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                         chart={chart}
                         onChart={saveChart}
                         onBack={() => setFlow("choice")}
-                        onCreate={(state) => void openDesign("insole", state)}
+                        onCreate={(state) => void openDesign("insole", state, "scan")}
                     />
                 ) : null}
                 {flow === null ? <ShoeChartPanel chart={chart} onChange={saveChart} /> : null}

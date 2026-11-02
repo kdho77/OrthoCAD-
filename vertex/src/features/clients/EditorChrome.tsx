@@ -6,9 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { navigate } from "@/features/admin/admin-nav";
 import { useClientStore } from "@/stores/client-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { formatClientName } from "../../../shared/client-files";
 import { clientFilePath } from "./routes";
+import { beginInsoleDesignSession, parseDesignEntryParam } from "./start-path";
 
 export function useDesignRoute(clientId: string, designId: string) {
     const record = useClientStore(
@@ -28,6 +30,24 @@ export function useDesignRoute(clientId: string, designId: string) {
             useClientStore.getState().setActiveClient(clientId);
             useClientStore.getState().setActiveDesign(designId);
             if (current && current.kind !== "afo") useDesignStore.getState().loadDesign(current.state);
+            const params = new URLSearchParams(window.location.search);
+            const entry = parseDesignEntryParam(params.get("entry"));
+            if (entry) {
+                beginInsoleDesignSession(entry);
+                params.delete("entry");
+                const rest = params.toString();
+                const nextUrl = `${window.location.pathname}${rest ? `?${rest}` : ""}`;
+                window.history.replaceState(null, "", nextUrl);
+            } else {
+                useClinicalWorkflowStore.setState({
+                    step: "scan",
+                    designStartPath: null,
+                    completedSteps: [],
+                    footSideExplicitlyChosen: false,
+                    scanGateStickyReason: null,
+                    nextBlockReason: null,
+                });
+            }
             setReady(true);
         };
         void open();
