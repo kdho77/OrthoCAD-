@@ -357,7 +357,7 @@ describe("posting degrees → mm", () => {
         expect(postingEquivalenceLabel("forefoot", fore, outline)).toBe("2.0° at met-head width = 3.1 mm");
         expect(postingEquivalenceLabel("rearfoot", rear, outline)).toBe("2.0° = 1.9 mm");
         expect(
-            postingEquivalenceLabel("forefoot", { side: "medial", value: 2, unit: "deg" }, outline),
+            postingEquivalenceLabel("forefoot", { value: 2, unit: "deg" }, outline),
         ).toBeUndefined();
         expect(wedgeFromUiEntry("medial", 2, "deg", true)).toEqual(fore);
 
