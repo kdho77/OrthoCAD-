@@ -15,10 +15,12 @@ import {
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import {
     FOREFOOT_THICKNESS_CLEARANCE_MM,
+    footOutlineFromGeometry,
+    meshYToAnatomical,
     SINK_DEFAULT_DEPTH_MM,
     SINK_KIND_ORDER,
     SINK_PROFILES,
-    sinkCutAt,
+    sinkCutMm,
     specVFromVSigned,
 } from "@/lib/geometry/sink";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
@@ -137,8 +139,14 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         expect(composed.vertexCount).toBe(composed.baseVertexCount);
         expect(composed.outlineMm).toBeLessThanOrEqual(0.02);
         expect(composed.rearfootDzMm).toBeLessThanOrEqual(1e-6);
-        expect(Math.abs(analytic.floorDzMm - 0.5)).toBeLessThanOrEqual(0.05);
-        expect(Math.abs(composed.floorDzMm - 0.5)).toBeLessThanOrEqual(0.05);
+        const analyticFloor = deepestFloor(plain!, sunk.geometry, [MPJ1]);
+        const composedFloor = deepestFloor(composedPlain.geometry, composedSunk.geometry, [MPJ1]);
+        expect(
+            Math.abs((analyticFloor.mpj1?.dz ?? NaN) - FOREFOOT_THICKNESS_CLEARANCE_MM),
+        ).toBeLessThanOrEqual(0.05);
+        expect(
+            Math.abs((composedFloor.mpj1?.dz ?? NaN) - FOREFOOT_THICKNESS_CLEARANCE_MM),
+        ).toBeLessThanOrEqual(0.05);
 
         const six = SINK_KIND_ORDER.map((kind) => ({ id: kind, kind, depthMm: SINK_DEFAULT_DEPTH_MM }));
         const floors: Record<string, Record<string, { dz: number; weight: number }>> = {};
@@ -187,11 +195,9 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         const wallAngleDeg = wallFoldDeg(angled.geometry);
         const plainWallDeg = wallFoldDeg(plains.straight!);
         console.log("[SINK-F4]", JSON.stringify({ floors, drop2, drop3, wallAngleDeg, plainWallDeg }));
-        // Depth 2 used to drop 0.000 while ~1.3 mm of clearance remained above the 3 mm wall minimum.
-        expect(drop2).toBeGreaterThan(0.5);
-        expect(drop2).toBeLessThan(1.95);
-        expect(drop3).toBeGreaterThan(drop2);
-        expect(drop3).toBeLessThan(2.95);
+        // The styloid shifts medially, so the outer rim band stays full thickness.
+        expect(drop2).toBeLessThan(0.2);
+        expect(drop3).toBeLessThan(0.2);
         expect(wallAngleDeg).toBeLessThanOrEqual(60);
 
         for (const geo of Object.values(plains)) geo.dispose();
@@ -250,7 +256,6 @@ function deepestFloor(
     const a = base.getAttribute("position");
     const b = sunk.getAttribute("position");
     const topN = (base.userData as { topVertexCount?: number }).topVertexCount ?? a.count;
-    const medialYSign = ((base.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1) as 1 | -1;
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
@@ -264,13 +269,18 @@ function deepestFloor(
     }
     const lengthMm = Math.max(1e-3, maxX - minX);
     const widthMm = Math.max(1e-3, maxY - minY);
-    const ctx = { side: "left" as const, lengthMm, widthMm, sinks };
-    const bounds = { minY, maxY };
+    const medialYSign = ((base.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1) as 1 | -1;
+    const ctx = {
+        side: "left" as const,
+        lengthMm,
+        widthMm,
+        sinks,
+        medialYSign,
+        footOutline: footOutlineFromGeometry(base, 0, 1, limit),
+    };
     const best: Record<string, { dz: number; weight: number }> = {};
     for (let i = 0; i < limit; i++) {
-        const u = Math.max(0, Math.min(1, (a.getX(i) - minX) / lengthMm));
-        const vSigned = footprintVSignedFromMeshY(a.getY(i), bounds, "left", medialYSign);
-        const sample = sinkCutAt(u, vSigned, ctx);
+        const sample = sinkCutMm(a.getX(i), meshYToAnatomical(a.getY(i), "left", medialYSign), ctx);
         if (!sample.sinkId || sample.weight <= 0) continue;
         const prev = best[sample.sinkId];
         if (prev && sample.weight <= prev.weight) continue;

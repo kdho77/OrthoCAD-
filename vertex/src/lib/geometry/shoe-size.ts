@@ -384,6 +384,29 @@ export function scalePointToInsoleSize(p: THREE.Vector3, scale: FootprintScale):
  * Scale a footprint-frame geometry (X = length 0..L, Y = width centered) so its
  * bounding box matches the target insole length/width. Z (height) is unchanged.
  */
+/**
+ * Uniform XY scale about the footprint center. Scale 1 does not write vertices,
+ * so the Men's 9 SAMPLE_Top export stays byte-identical.
+ */
+export function scaleFootprintUniform(geometry: THREE.BufferGeometry, scale: number): THREE.BufferGeometry {
+    if (!Number.isFinite(scale) || Math.abs(scale - 1) <= 1e-9) return geometry;
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    const pos = geometry.getAttribute("position");
+    if (!box || !pos) return geometry;
+    const cx = (box.min.x + box.max.x) / 2;
+    const cy = (box.min.y + box.max.y) / 2;
+    for (let i = 0; i < pos.count; i++) {
+        pos.setX(i, cx + (pos.getX(i) - cx) * scale);
+        pos.setY(i, cy + (pos.getY(i) - cy) * scale);
+    }
+    pos.needsUpdate = true;
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    geometry.computeVertexNormals();
+    return geometry;
+}
+
 export function scaleGeometryToInsoleSize(
     geometry: THREE.BufferGeometry,
     lengthMm: number,

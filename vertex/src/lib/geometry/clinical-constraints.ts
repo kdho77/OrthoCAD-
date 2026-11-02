@@ -9,6 +9,8 @@ import {
     type SinkWarning,
     sinkDepthWarnings,
     sinkOverlapWarnings,
+    sinkRimWarnings,
+    sulcusClearanceWarnings,
 } from "@/lib/geometry/sink";
 import type { PlacedElement, SideCorrections, TextMarking, WedgeCorrection } from "@/types";
 
@@ -394,7 +396,12 @@ export function evaluateSinkConstraints(
     elements?: PlacedElement[] | null,
     text?: TextMarking | null,
 ): SinkWarning[] {
-    return mergeSinkWarnings(sinkDepthWarnings(ctx.sinks), sinkOverlapWarnings(ctx, elements, text));
+    return mergeSinkWarnings(
+        sinkDepthWarnings(ctx.sinks),
+        sinkRimWarnings(ctx),
+        sinkOverlapWarnings(ctx, elements, text),
+        sulcusClearanceWarnings(ctx),
+    );
 }
 
 export const SINK_CLINICAL_FLOORS = {

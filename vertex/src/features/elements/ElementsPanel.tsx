@@ -199,6 +199,11 @@ export function ElementsPanel() {
                         setSinkStyloidThicken(on, side);
                     }
                 }}
+                onRimOverride={(id, on) => {
+                    for (const side of sinksLinked ? [sinkSide] : elementPlacementSides()) {
+                        updateSink(id, { rimOverride: on }, side);
+                    }
+                }}
             />
             <div>
                 <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -578,6 +583,7 @@ function SinkGroup(props: {
     onDepth: (id: string, depthMm: number) => void;
     onRemove: (id: string) => void;
     onThicken: (on: boolean) => void;
+    onRimOverride: (id: string, on: boolean) => void;
 }) {
     const byKind = new Map(props.sinks.map((s) => [s.kind, s]));
     const warnings =
@@ -608,29 +614,20 @@ function SinkGroup(props: {
                     const placed = byKind.get(kind);
                     return (
                         <div key={kind} className="rounded-md border border-border bg-background px-2 py-1.5">
-                            <div className="flex items-center justify-between gap-2 text-xs">
+                            <label className="flex items-center justify-between gap-2 text-xs">
                                 <span className="truncate text-foreground">{profile.label}</span>
-                                {placed ? (
-                                    <button
-                                        type="button"
-                                        className="text-[10px] text-muted-foreground hover:text-foreground"
-                                        data-testid={`sink-remove-${kind}`}
-                                        onClick={() => props.onRemove(placed.id)}
-                                    >
-                                        Remove
-                                    </button>
-                                ) : (
-                                    <button
-                                        type="button"
-                                        data-testid={`sink-add-${kind}`}
-                                        className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
-                                        onClick={() => props.onAdd(kind)}
-                                    >
-                                        <Plus className="h-3 w-3" />
-                                        Add
-                                    </button>
-                                )}
-                            </div>
+                                <input
+                                    type="checkbox"
+                                    data-testid={`sink-toggle-${kind}`}
+                                    className="h-3.5 w-3.5"
+                                    checked={!!placed}
+                                    aria-label={`${profile.label} sink`}
+                                    onChange={(e) => {
+                                        if (e.target.checked) props.onAdd(kind);
+                                        else if (placed) props.onRemove(placed.id);
+                                    }}
+                                />
+                            </label>
                             {placed ? (
                                 <div className="mt-1 space-y-1">
                                     <label className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
@@ -679,6 +676,23 @@ function SinkGroup(props: {
                                             Above max {profile.maxDepthMm} mm — cut clamped to max.
                                         </p>
                                     ) : null}
+                                    {kind === "styloid" ? (
+                                        <label className="flex items-start gap-2 text-[10px] text-muted-foreground">
+                                            <input
+                                                type="checkbox"
+                                                data-testid="sink-styloid-rim-override"
+                                                className="mt-0.5"
+                                                checked={!!placed.rimOverride}
+                                                onChange={(e) =>
+                                                    props.onRimOverride(placed.id, e.target.checked)
+                                                }
+                                            />
+                                            <span>
+                                                Rim override. Hard-stop under 3 mm moves to a 2 mm floor. The
+                                                sink shifts medially instead of clipping.
+                                            </span>
+                                        </label>
+                                    ) : null}
                                 </div>
                             ) : null}
                         </div>
@@ -694,8 +708,9 @@ function SinkGroup(props: {
                     onChange={(e) => props.onThicken(e.target.checked)}
                 />
                 <span>
-                    Styloid thickening (off by default). Forefoot thickness is the deepest sink plus 0.5 mm.
-                    The styloid is midfoot and stays unthickened until this is on.
+                    Styloid thickening (off by default). Each forefoot sink thickens locally by its depth plus
+                    0.5 mm, blended over 25 mm. The 5th IPJ is the styloid and stays unthickened until this is
+                    on.
                 </span>
             </label>
             {warnings.length > 0 ? (

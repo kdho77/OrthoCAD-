@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
+import { apexWarpShiftMm, applyDefaultArchApexWarp } from "@/lib/geometry/apex-move-warp";
 import { applyArchSkiveToTopMesh } from "@/lib/geometry/arch-skive";
 import { getDesignBase } from "@/lib/geometry/base-asset";
 import {
@@ -37,7 +38,13 @@ import {
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
 import { neutralShellThicknessContext } from "@/lib/geometry/shell-thickness-zonal";
-import { sinksActive, sinkThicknessAt } from "@/lib/geometry/sink";
+import {
+    meshYToAnatomical,
+    sinkContextForMesh,
+    sinksActive,
+    sinkThicknessAt,
+    sinkThicknessMm,
+} from "@/lib/geometry/sink";
 import { wedgeCorrectionActive, wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
@@ -1728,6 +1735,31 @@ function getShellFieldSyncFrame(
     return frame;
 }
 
+/**
+ * The stock-arch apex slide writes the top sheet after shell sync has already
+ * copied the analytic field onto the wall. Wall-top seeds then miss that Z.
+ * Add the paired rim's slide, scaled by the same rim blend the sync used, so
+ * Δ_wall tracks Δ_rim. Plantar verts have blend 0 and stay put.
+ */
+function followShellWallToApexWarp(
+    array: Float32Array,
+    frame: ShellFieldSyncFrame,
+    thickAxis: AxisIndex,
+    rimZBefore: Float64Array,
+): void {
+    const rimDz = new Float64Array(frame.rimIndices.length);
+    for (let s = 0; s < frame.rimIndices.length; s++) {
+        const j = frame.rimIndices[s]!;
+        rimDz[s] = array[j * 3 + thickAxis]! - rimZBefore[s]!;
+    }
+    for (const bv of frame.bottomVerts) {
+        if (bv.rimBlend <= 0 || bv.bestSeed < 0) continue;
+        const dz = rimDz[bv.bestSeed]!;
+        if (dz === 0) continue;
+        array[bv.index * 3 + thickAxis] += dz * bv.rimBlend;
+    }
+}
+
 function buildRimConformityFrame(
     base: BufferGeometry,
     topVertexCount: number,
@@ -2778,6 +2810,23 @@ export function applyBaseModifiers(
     const wedgeAt = wedgeActive ? new Float32Array(count) : null;
     const sinkTActive = sinksActive(field.sinks);
     const sinkTAt = sinkTActive ? new Float32Array(count) : null;
+    const sinkMeshCtx = sinkTActive
+        ? sinkContextForMesh(
+              {
+                  side: field.side,
+                  lengthMm: field.lengthMm,
+                  widthMm: field.widthMm,
+                  trimline: field.trimline,
+                  sinks: field.sinks,
+                  sinkStyloidThicken: field.sinkStyloidThicken,
+                  sinkMarkers: field.sinkMarkers,
+              },
+              array,
+              topVertexCount > 0 ? topVertexCount : count,
+              lengthAxis,
+              widthAxis,
+          )
+        : null;
     const sampleEnd = useShellFieldSync && topVertexCount > 0 ? topVertexCount : count;
     for (let i = 0; i < sampleEnd; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
@@ -2798,8 +2847,14 @@ export function applyBaseModifiers(
                 d -= postD;
             }
         }
-        if (sinkTAt && !(isMultiMesh && topVertexCount > 0 && i >= topVertexCount)) {
-            sinkTAt[i] = sinkThicknessAt(u, vSigned, field);
+        if (sinkTAt && sinkMeshCtx && !(isMultiMesh && topVertexCount > 0 && i >= topVertexCount)) {
+            sinkTAt[i] = sinkMeshCtx.footOutline
+                ? sinkThicknessMm(
+                      lenCoord,
+                      meshYToAnatomical(widCoord, field.side, sinkMeshCtx.medialYSign),
+                      sinkMeshCtx,
+                  )
+                : sinkThicknessAt(u, vSigned, field);
         }
         delta[i] = d;
     }
@@ -3214,6 +3269,77 @@ export function applyBaseModifiers(
         }
         if (maxDrift > BASE_BOTTOM_DELTA_TOLERANCE_MM) {
             console.warn(`[WEDGE] Bottom mesh Z drift ${maxDrift.toFixed(3)}mm — HC-1 VIOLATION`);
+        }
+    }
+
+    // Apex move on a zero arch delta slides the stock crest. Non-zero arch
+    // height already recenters that crest, so this shift is 0 and the mesh
+    // is left byte-for-byte alone.
+    const apexShift = apexWarpShiftMm(field.corrections);
+    const warpIndex = geometry.index?.array;
+    if (apexShift !== 0 && warpIndex) {
+        const shellFrame =
+            useShellFieldSync && !options?.skipBottomSync
+                ? getShellFieldSyncFrame(
+                      base,
+                      topVertexCount,
+                      lengthAxis,
+                      widthAxis,
+                      thickAxis,
+                      lenMin,
+                      lenSize,
+                      widCenter,
+                      widSize,
+                      edgeProfile,
+                  )
+                : null;
+        const rimZBefore = shellFrame ? new Float64Array(shellFrame.rimIndices.length) : null;
+        if (shellFrame && rimZBefore) {
+            for (let s = 0; s < shellFrame.rimIndices.length; s++) {
+                const j = shellFrame.rimIndices[s]!;
+                rimZBefore[s] = array[j * 3 + thickAxis]!;
+            }
+        }
+        applyDefaultArchApexWarp({
+            positions: array,
+            original: srcPos.array as ArrayLike<number>,
+            index: warpIndex,
+            lengthAxis,
+            widthAxis,
+            thickAxis,
+            lenMin,
+            lenSize,
+            topVertexCount,
+            shiftMm: apexShift,
+        });
+        if (shellFrame && rimZBefore) {
+            followShellWallToApexWarp(array, shellFrame, thickAxis, rimZBefore);
+        } else if (isMultiMesh && topVertexCount > 0 && !useShellFieldSync) {
+            // Width path already transferred the pre-slide rim. Transfer again
+            // so the wall includes the slide. Arch raises never reach here:
+            // a non-zero arch delta makes apexShift 0.
+            const rimFrame = getRimConformityFrame(
+                base,
+                topVertexCount,
+                lengthAxis,
+                widthAxis,
+                thickAxis,
+                lenMin,
+                lenSize,
+            );
+            if (rimFrame && rimFrame.seeds.length > 0) {
+                transferRimConformityDeltas(
+                    base,
+                    array,
+                    rimFrame,
+                    delta,
+                    heelCupNarrowing ? lateralDelta : null,
+                );
+                const wallFrame = getBottomWallSmoothFrame(base, topVertexCount, thickAxis, rimFrame);
+                if (wallFrame) {
+                    smoothBottomWallDisplacements(base, array, wallFrame, WALL_DISPLACEMENT_SMOOTH_ITERS);
+                }
+            }
         }
     }
 

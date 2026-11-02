@@ -9,6 +9,11 @@
 
 import type { BufferGeometry } from "three";
 import * as THREE from "three";
+import { medialWidthSignForSide } from "@/lib/clinical/medial-sign";
+import {
+    ARCH_FIT_U_MAX,
+    ARCH_FIT_U_MIN,
+} from "@/lib/geometry/fit-arch-from-scan";
 import type { Side } from "@/types";
 
 const FOREFOOT_U_MIN = 0.55;
@@ -19,15 +24,22 @@ const CREST_BAND_MM = 0.5;
 const CREST_BAND_WIDE_MM = 1.0;
 const CREST_BAND_MIN_COUNT = 15;
 
+export type LandmarkConfidence = "high" | "medium" | "low";
+
 export type SuggestedScanLandmarks = {
     M1: THREE.Vector3;
     M2: THREE.Vector3;
     M3: THREE.Vector3;
+    /** Medial arch apex on plantar surface (scan-local). */
+    ARCH?: THREE.Vector3;
+    archConfidence?: LandmarkConfidence;
     footLengthMm: number;
     /** Signed (u_M1 − u_M2) × 100; positive when M2 proximal to M1. */
     m1m2SeparationPct: number;
     medialWidthSign: number;
 };
+
+export { medialWidthSignForSide };
 
 function collectPositions(geometry: BufferGeometry): Float32Array | null {
     const pos = geometry.getAttribute("position");
@@ -64,15 +76,6 @@ function bounds(arr: Float32Array): {
         if (z > maxZ) maxZ = z;
     }
     return { minX, maxX, minY, maxY, minZ, maxZ, lengthMm: maxX - minX || 1, n };
-}
-
-/**
- * Medial width-axis sign from assigned clinical side.
- * Convention matches marker-frame / viewer: left arch on +Y → medialWidthSign = +1;
- * right foot mirrors → medialWidthSign = −1.
- */
-export function medialWidthSignForSide(side: Side): number {
-    return side === "left" ? 1 : -1;
 }
 
 function crestCentroid(
@@ -222,10 +225,47 @@ export function suggestScanLandmarks(geometry: BufferGeometry, side: Side): Sugg
             return new THREE.Vector3(x, y, z);
         };
 
+        // ARCH apex — highest plantar Z in medial midfoot band (same u window as arch gap-fit).
+        let archBestZ = -Infinity;
+        let archSx = 0;
+        let archSy = 0;
+        let archSz = 0;
+        let archCount = 0;
+        for (let i = 0; i < n; i++) {
+            const x = arr[i * 3]!;
+            const y = arr[i * 3 + 1]!;
+            const z = arr[i * 3 + 2]!;
+            const u = (x - minX) / lengthMm;
+            if (u < ARCH_FIT_U_MIN || u > ARCH_FIT_U_MAX) continue;
+            if (y * medialWidthSign <= 0) continue;
+            if (z >= archBestZ - 0.05) {
+                if (z > archBestZ) {
+                    archBestZ = z;
+                    archSx = x;
+                    archSy = y;
+                    archSz = z;
+                    archCount = 1;
+                } else if (Math.abs(z - archBestZ) < 0.05) {
+                    archSx += x;
+                    archSy += y;
+                    archSz += z;
+                    archCount++;
+                }
+            }
+        }
+        let ARCH: THREE.Vector3 | undefined;
+        let archConfidence: LandmarkConfidence | undefined;
+        if (archCount >= 8 && Number.isFinite(archBestZ)) {
+            ARCH = toLocal(new THREE.Vector3(archSx / archCount, archSy / archCount, archSz / archCount));
+            archConfidence = archCount >= 24 ? "high" : archCount >= 12 ? "medium" : "low";
+        }
+
         return {
             M1: toLocal(M1r),
             M2: toLocal(M2r),
             M3: toLocal(M3r),
+            ARCH,
+            archConfidence,
             footLengthMm: lengthMm,
             m1m2SeparationPct,
             medialWidthSign,

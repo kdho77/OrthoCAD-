@@ -199,11 +199,13 @@ function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolea
         }
     };
 
-    const watertightLabel = validation.isWatertight
-        ? "Watertight solid"
-        : validation.triangleCount > 0
-          ? `${validation.openEdges} open edges`
-          : "Analyzing…";
+    const watertightLabel = validation.error
+        ? "Export geometry invalid"
+        : validation.isWatertight
+          ? "Watertight solid"
+          : validation.triangleCount > 0
+            ? `${validation.openEdges} open edges`
+            : "Analyzing…";
 
     return (
         <div className="space-y-3">
@@ -261,6 +263,7 @@ function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolea
                 </span>
             </div>
 
+            {validation.error ? <p className="text-xs text-amber-400">{validation.error}</p> : null}
             <HardnessRegionList />
 
             <Button className="w-full" disabled={!stlCheck.ok || busy} onClick={handleStl}>

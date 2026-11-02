@@ -207,6 +207,17 @@ export function measureBaseHeelWidthMm(
 }
 
 /**
+ * Drop heel-cup fits from a failed width sample (landmark patches, not a heel).
+ * A real narrow heel stays; a ~10 mm patch against a ~67 mm shell does not.
+ */
+export function acceptHeelCupFit(fit: HeelCupWidthFitResult | null): HeelCupWidthFitResult | null {
+    if (!fit) return null;
+    if (fit.scanHeelWidthMm < 35) return null;
+    if (fit.scanHeelWidthMm < fit.baseHeelWidthMm * 0.5) return null;
+    return fit;
+}
+
+/**
  * Convert desired absolute cup width into signed heelCupWidthMm (−10…+10).
  * Positive widens; negative narrows relative to the stock base heel width.
  */
