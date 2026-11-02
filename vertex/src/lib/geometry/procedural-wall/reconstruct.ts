@@ -137,6 +137,11 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * centroid instead of the per-vertex midline taper.
      */
     forefootRigidBoxes?: ReadonlyArray<{ minX: number; maxX: number; minY: number; maxY: number }>;
+    /**
+     * Retile a z=0 ear that winds upward. Set when the outline was scaled
+     * before the loft. Native lofts leave posting triangulation alone.
+     */
+    repairUpwardBottom?: boolean;
 }
 
 function zeroCorrections(): SideCorrections {
@@ -739,7 +744,8 @@ function assertGeneratedEdgesUsedTwice(
  *   points down and its signed area matches the star.
  *
  * Meshes with no upward or degenerate bottom face are left byte-for-byte alone.
- * The forefoot-shift caller skips this when the width is 0.
+ * The forefoot-shift caller calls this again only when the width is not 0,
+ * because that shift can create a new ear.
  */
 export function repairInvertedBottomFaces(positions: number[], indices: number[]): number {
     const zEps = 1e-4;
@@ -1941,9 +1947,10 @@ export function reconstructProceduralWalls(
     const bandVerts = new Set<number>();
     for (let i = 0; i < (indexGrid ? nS : refinedB.length); i++) bandVerts.add(refinedVert(i));
     const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ, bandVerts, indexGrid);
-    // The upward ear is a full-length straight-wall artifact. Regional posting
-    // and wedge-off stay on main's triangulation.
-    if (fullLengthWedgeActive(options.corrections)) {
+    // A scaled outline can leave one z=0 ear wound upward. Native lofts,
+    // including posting goldens, keep their triangulation. A full-length
+    // wedge already repairs here. No upward face means no index writes.
+    if (options.repairUpwardBottom || fullLengthWedgeActive(options.corrections)) {
         repairInvertedBottomFaces(positions, indices);
     }
     assertGeneratedEdgesUsedTwice(indices, generatedStart, positions);

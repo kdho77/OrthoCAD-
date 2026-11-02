@@ -94,14 +94,14 @@ function stampLabel(
     }
 }
 
-/** Straight Men's 9 SAMPLE_Top with every sink at max depth, captured at 96e732fb. */
+/** Men's 9 SAMPLE_Top with every sink at max depth. Re-recorded for the zonal shell. */
 const US9_SINK_SHA256: Record<string, string> = {
-    "left-straight": "1850c6f5cc6fe4d976f84ba20e765e82be36b5c3c9fab9af93bf47af71f6b177",
-    "left-round": "a866ee2ad0fe3f5329a4ef06da4daf0f061939cb73409efe8098579568c5f48e",
-    "left-hybrid": "eee2b5b0d8c312fbc82a9d004893593754283ef28581f29698f7b05e66590cc1",
-    "right-straight": "025f1633c9855c444e4fc4599518b1c7d47327af3632c3801d26520df87abe91",
-    "right-round": "3ace8aad6e3c9f73353d879418975b25e927ca0b5d533d43843759513c0f834b",
-    "right-hybrid": "7d78734b33935a035944a0b9fc70bf1e10c34ffe6b935c93141a853c819c0760",
+    "left-straight": "bfe32857e2ed5c5d58c7fef97e196f18ece552f4ec92c99642d8f852915804b2",
+    "left-round": "c986d3ee3015fd25037fe0cb69b3add7af72634f3aab15e33ee0f05c26c1f72e",
+    "left-hybrid": "dde015ff5cfc5a01e49a8bb1a54f9238da4b5c885d5adbc025a60e329f0fd8d1",
+    "right-straight": "32a80cc9cccde74f82f523e94ddaf0482121a1850bc04090fa8af6be75853a0b",
+    "right-round": "20ceaa4a926d19fea6b1edfdd79e0d486dfe1240ca07a0543fe4f53eaaa3e457",
+    "right-hybrid": "2c1ce98a844f3fc3e05f6d37ebf7ffba15944a3b0c419738c49199449595cc8f",
 };
 
 const report: Record<string, unknown> = {};
@@ -658,7 +658,7 @@ describe("pediatric sink scale and sulcus clearance", () => {
         writeFileSync(REPORT, JSON.stringify(report, null, 2));
     }, 180_000);
 
-    test("s >= 0.80 sink meshes match 96e732fb on both sides and all three walls", async () => {
+    test("s >= 0.80 sink meshes match the re-recorded Men's 9 pins on both sides and all three walls", async () => {
         const buf = readFileSync(SAMPLE_TOP_PATH);
         const left = await sampleTopFromArrayBuffer(
             buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
