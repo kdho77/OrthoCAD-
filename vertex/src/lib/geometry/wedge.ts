@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { type PostingShoeWidth, postingMmAtStation } from "@/lib/geometry/posting-degrees";
-import type { TrimlineCurve } from "@/lib/geometry/trimline";
+import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import type { Side, SideCorrections } from "@/types";
 
 /**
@@ -12,11 +12,13 @@ import type { Side, SideCorrections } from "@/types";
  *
  * Per-zone (rearfoot/forefoot) the user may specify either a medial or lateral
  * wedge (mutually exclusive). Input may be absolute millimeters or an angle
- * (degrees). A degree entry converts once at that zone's full-height station
- * (heel for rearfoot, met-head line for forefoot): h = W·tan(θ), with W the
- * code-outline width. The two zones are not added as angles. The existing
- * midfoot blend still fades each zone. Millimetre entries are an absolute
- * edge raise and are not converted.
+ * (degrees). Millimetre entries are an absolute edge raise and are not converted.
+ *
+ * A degree entry without `degreeMode: "station"` keeps the original constant
+ * angle: h at each u is the local outline width times tan(θ). Station mode
+ * converts once, h = W·tan(θ), with W the full bottom-outline chord at that
+ * zone's station. The two zones are not added as angles. The existing midfoot
+ * blend still fades each zone.
  *
  * The effect tapers linearly from the raised edge (full raise) to zero on the
  * opposite edge, modulated by a smooth zone factor so the wedge fades in the
@@ -89,19 +91,43 @@ function zoneWedgeDelta(
     const zoneFactor = zone === "rearfoot" ? getRearfootFactor(u) : getForefootFactor(u);
     if (zoneFactor <= 0) return 0;
 
-    // Resolve the physical raise height at the raised edge.
-    // mm: absolute lift on the chosen edge (unchanged path).
-    // deg: one conversion at this zone's station, h = W·tan(θ). 0° is exact 0.
+    // Station mode converts once. Every other degree input keeps the original
+    // local-width angle so existing meshes stay byte-identical.
+    const stationMode = wedge.unit === "deg" && wedge.degreeMode === "station";
+
     let maxRaise: number;
-    if (wedge.unit === "mm") {
-        maxRaise = Math.max(0, wedge.value);
+    if (!stationMode) {
+        // Current effective full width at station u (respects active trimline)
+        const halfWidthFactor = effectiveOutlineHalfWidth(
+            u,
+            params.lengthMm,
+            params.widthMm,
+            params.trimline,
+        );
+        const localFullWidth = 2 * halfWidthFactor * (params.widthMm / 2);
+
+        // Edge case: zero or negative width (extreme trimline) -> no raise for degrees; mm still applies absolute but taper will be narrow
+        if (localFullWidth <= 0) {
+            if (wedge.unit === "deg") return 0;
+            // For mm we still allow the value (steep ramp on remaining sliver)
+        }
+
+        // mm: absolute lift on the chosen edge.
+        // deg: angle -> height using current local width (constant angle behavior).
+        if (wedge.unit === "mm") {
+            maxRaise = Math.max(0, wedge.value);
+        } else {
+            // Clamp radians to sensible range to avoid NaN/Inf on extreme input (UI should prevent)
+            const deg = Math.max(0, Math.min(wedge.value, 45)); // clinical soft cap inside logic
+            const radians = (deg * Math.PI) / 180;
+            maxRaise = localFullWidth * Math.tan(radians);
+        }
     } else {
         // 0° (and anything that clamps to 0) adds nothing — exact no-op.
         if (!(wedge.value > 0)) return 0;
         maxRaise = postingMmAtStation(zone, wedge.value, {
             lengthMm: params.lengthMm,
             widthMm: params.widthMm,
-            trimline: params.trimline,
             shoeWidth: params.shoeWidth,
         });
         if (maxRaise === 0) return 0;

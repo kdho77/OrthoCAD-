@@ -254,6 +254,7 @@ export function interpretOneClickRx(text: string, present: Side[]): ExplicitRx {
                         side: wedgeSide,
                         value: clampPostingDegrees("rearfoot", Math.abs(rear)),
                         unit: "deg",
+                        degreeMode: "station",
                     },
                 });
             }
@@ -266,6 +267,7 @@ export function interpretOneClickRx(text: string, present: Side[]): ExplicitRx {
                         side: wedgeSide,
                         value: clampPostingDegrees("forefoot", Math.abs(fore)),
                         unit: "deg",
+                        degreeMode: "station",
                     },
                 });
             }

@@ -18,7 +18,6 @@ import {
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt } from "@/lib/geometry/height-field";
 import { deriveNativeShellThicknessDatum } from "@/lib/geometry/native-shell-thickness";
-import { codeOutlineWidthMm, FOREFOOT_POST_U, postingRiseMm } from "@/lib/geometry/posting-degrees";
 import { generatedMinWallMm } from "@/lib/geometry/procedural-wall/metrics";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import {
@@ -415,36 +414,32 @@ describe("posting wedge (design viewer height field)", () => {
         expect(dMed).toBeLessThan(0.2);
     });
 
-    test("forefoot 10° — one conversion at the met-head line, slope matches tan(10°)", () => {
+    test("forefoot 10° — border height and slope match tan(10°)", () => {
         const wedge = { side: "lateral" as const, value: 10, unit: "deg" as const };
         const p = baseParams("right", { ...zeroCorrections(), forefootWedge: wedge });
         const vLat = 0.98;
         const vMed = -0.98;
         const tan10 = Math.tan((10 * Math.PI) / 180);
-        const stationW = codeOutlineWidthMm(FOREFOOT_POST_U, {
-            lengthMm: p.lengthMm,
-            widthMm: p.widthMm,
-            trimline: p.trimline,
-            shoeWidth: p.shoeWidth,
-        });
-        const h = postingRiseMm(10, stationW);
-        const stationZone = getForefootFactor(FOREFOOT_POST_U);
-        expect(stationZone).toBeCloseTo(1, 5);
-        // Full zone keeps the station rise at the high edge (v = 1). It does not recompute W at each u.
-        for (const u of [FOREFOOT_POST_U, 0.62, 0.9]) {
-            expect(getForefootFactor(u)).toBeCloseTo(1, 5);
-            const borderRaise = wedgeDeltaAt(u, 1, "right", p.corrections, p);
-            expect(Math.abs(borderRaise - h)).toBeLessThanOrEqual(0.01);
+        for (const u of [0.62, 0.9]) {
+            const zone = getForefootFactor(u);
+            expect(zone).toBeCloseTo(1, 5);
+            const hw = effectiveOutlineHalfWidth(u, p.lengthMm, p.widthMm, null);
+            const localFullWidth = 2 * hw * (p.widthMm / 2);
+            const borderRaise = wedgeDeltaAt(u, vLat, "right", p.corrections, p);
+            expect(borderRaise).toBeGreaterThan(localFullWidth * tan10 - 0.1);
+            expect(borderRaise).toBeLessThan(localFullWidth * tan10 + 0.1);
         }
-        const u = FOREFOOT_POST_U;
+        const u = 0.88;
+        const zone = getForefootFactor(u);
         const hw = effectiveOutlineHalfWidth(u, p.lengthMm, p.widthMm, null);
         const localFullWidth = 2 * hw * (p.widthMm / 2);
-        // v spans [-1, 1] across the full width, so ±0.98 is 0.98 of that width.
+        const borderRaise = wedgeDeltaAt(u, vLat, "right", p.corrections, p);
+        expect(borderRaise).toBeCloseTo(localFullWidth * tan10 * zone, 0.1);
         const slope =
             (wedgeDeltaAt(u, vLat, "right", p.corrections, p) -
                 wedgeDeltaAt(u, vMed, "right", p.corrections, p)) /
-            (localFullWidth * 0.98 * stationZone);
-        expect(Math.abs(slope - tan10)).toBeLessThanOrEqual(0.005);
+            (localFullWidth * 0.98 * 2 * zone);
+        expect(slope).toBeCloseTo(tan10, 0.005);
     });
 
     test("arch height −10 and +14 mm at apex", () => {

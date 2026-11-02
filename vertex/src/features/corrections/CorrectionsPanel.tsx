@@ -392,10 +392,21 @@ interface WedgeSideControlProps {
     maxDeg?: number;
     /** Degree entries: "2.0° = 2.1 mm". Omitted for millimetre entries. */
     equivalence?: string;
+    /**
+     * Regional posting writes station-mode degrees (one h = W·tanθ).
+     * Full-length leaves this off so its degree objects stay unchanged.
+     */
+    stationDegrees?: boolean;
 }
 
-function wedgeFromState(edge: WedgeEdge, value: number, unit: WedgeUnit): WedgeCorrection | undefined {
+function wedgeFromState(
+    edge: WedgeEdge,
+    value: number,
+    unit: WedgeUnit,
+    stationDegrees?: boolean,
+): WedgeCorrection | undefined {
     if (value <= 0) return undefined;
+    if (unit === "deg" && stationDegrees) return { side: edge, value, unit, degreeMode: "station" };
     return { side: edge, value, unit };
 }
 
@@ -445,6 +456,7 @@ function WedgeSideControl({
     maxMm,
     maxDeg,
     equivalence,
+    stationDegrees,
 }: WedgeSideControlProps) {
     const [draftEdge, setDraftEdge] = useState<WedgeEdge>(defaultEdge);
     const [draftUnit, setDraftUnit] = useState<WedgeUnit>(defaultUnit);
@@ -460,7 +472,7 @@ function WedgeSideControl({
         setDraftEdge(edge);
         setDraftUnit(unit);
         setDraftValue(value);
-        const next = wedgeFromState(edge, value, unit);
+        const next = wedgeFromState(edge, value, unit, stationDegrees);
         if (commit) {
             onCommit(next);
         } else {
@@ -791,6 +803,7 @@ export function CorrectionsPanel() {
                                                           ? REARFOOT_POST_DEG_MAX
                                                           : FOREFOOT_POST_DEG_MAX
                                                   }
+                                                  stationDegrees
                                                   equivalence={postingEquivalenceLabel(
                                                       zone,
                                                       sideValues[side][wedgeKey] as

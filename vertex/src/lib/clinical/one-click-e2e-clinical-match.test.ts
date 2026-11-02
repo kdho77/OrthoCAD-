@@ -52,7 +52,12 @@ describe("one-click E2E — arch class and explicit Rx, no scan fit", () => {
             flexible: false,
         });
         expect(out.design.corrections.left.medialSkiveMm).toBe(4);
-        expect(out.design.corrections.left.rearfootWedge).toEqual({ side: "medial", value: 4, unit: "deg" });
+        expect(out.design.corrections.left.rearfootWedge).toEqual({
+            side: "medial",
+            value: 4,
+            unit: "deg",
+            degreeMode: "station",
+        });
         expect(out.design.corrections.right.medialSkiveMm).toBe(0);
         expect(out.design.corrections.right.rearfootWedge).toBeUndefined();
         expect(out.pathology).toBeNull();
