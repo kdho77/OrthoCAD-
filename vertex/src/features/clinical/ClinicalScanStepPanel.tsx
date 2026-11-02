@@ -1,13 +1,22 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { PanelHeading } from "@/components/clinical/PanelHeading";
-import { GenerateOrthoticPanel } from "@/features/clinical/GenerateOrthoticPanel";
+import { InfoPopover } from "@/components/ui/info-popover";
 import { PressureMapPanel } from "@/features/clinical/PressureMapPanel";
 import { isOptionalScanWorkflow } from "@/features/clients/start-path";
 import { ScanImport } from "@/features/scans/ScanImport";
 import { evaluateScanStepGate } from "@/lib/clinical/clinical-step-gates";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useScanStore } from "@/stores/scan-store";
+
+function scanGateShortMessage(reason: string): string {
+    if (reason.includes("Register")) return "Register scan or remove";
+    if (reason.includes("Left, Right, or Pair")) return "Pick foot side first";
+    if (/loading/i.test(reason)) return "Base still loading";
+    if (/not ready/i.test(reason)) return "Base not ready yet";
+    const words = reason.split(/\s+/).filter(Boolean);
+    return words.slice(0, 6).join(" ");
+}
 
 export function ClinicalScanStepPanel() {
     const scans = useScanStore((s) => s.scans);
@@ -40,15 +49,11 @@ export function ClinicalScanStepPanel() {
                 info="Import STL or OBJ. Pick Left, Right, or Pair before upload. Register scans on the Scan tab only."
             />
             <ScanImport />
-            <PressureMapPanel />
-            <GenerateOrthoticPanel />
-            {!scanGate.ok && scanGate.reason.includes("Register") ? (
-                <p className="text-[10px] text-amber-300/95" role="status">
-                    Register scan or remove
-                </p>
-            ) : !scanGate.ok ? (
-                <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-2 text-[11px] text-amber-100/90">
-                    {scanGate.reason}
+            <PressureMapPanel scanStepCompact />
+            {!scanGate.ok ? (
+                <p className="flex items-center gap-1 text-[10px] text-amber-300/95" role="status">
+                    <span>{scanGateShortMessage(scanGate.reason)}</span>
+                    <InfoPopover label="Scan step requirement">{scanGate.reason}</InfoPopover>
                 </p>
             ) : null}
             {scans.length === 0 ? (
