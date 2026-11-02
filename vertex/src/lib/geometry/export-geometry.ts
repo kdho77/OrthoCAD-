@@ -146,7 +146,12 @@ export async function buildValidatedExportGeometry(side: Side): Promise<BufferGe
                   ? DEFAULT_GLB_CLOSED_BASELINE
                   : null;
         assertClosedSolidAcceptable(solid, topN, baseline);
-        scaleFootprintUniform(solid, insoleLayoutFromDesign(design).scale);
+        // Procedural solids are lofted on the already-scaled outline
+        // (printSolidOptions.footprintScale). Scaling the finished mesh in XY
+        // only steepens every wall. Legacy Default.glb still scales here.
+        if (solid.userData.wallModel !== "procedural") {
+            scaleFootprintUniform(solid, insoleLayoutFromDesign(design).scale);
+        }
         return solid;
     } catch (error) {
         if (solid && solid !== geometry) solid.dispose();

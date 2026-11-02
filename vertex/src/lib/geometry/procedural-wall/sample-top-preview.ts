@@ -6,6 +6,7 @@ import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
+import { scaleSourceShapeToFootprint } from "@/lib/geometry/shoe-size";
 import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -158,6 +159,15 @@ export async function buildProceduralExportSolid(
     }
 }
 
+/** Same XY map as the top sheet. The Men's 9 pattern is scaled, not re-fit. */
+function scalePlanLoop(points: PolyPoint[], scale: number, center: { x: number; y: number }): PolyPoint[] {
+    return points.map((p) => ({
+        x: center.x + (p.x - center.x) * scale,
+        y: center.y + (p.y - center.y) * scale,
+        z: 0,
+    }));
+}
+
 /** Fair the SAMPLE_Top rim: ~0 toe inset, heel ~8 mm, medial arch cut-in. */
 export function buildFairedPatternFromTop(model: StockWallModel, pattern?: ScanPattern): PolyPoint[] {
     const pos = model.top.meshPositions;
@@ -206,6 +216,12 @@ export interface ProceduralPreviewOptions {
      */
     sinks?: PlacedSink[];
     sinkStyloidThicken?: boolean;
+    /**
+     * Uniform scale vs Men's 9, applied to this top sheet before compose and
+     * loft. XY about the bbox center; Z relief above the 2 mm floor by the
+     * same factor. Omitted or 1 leaves every vertex unwritten.
+     */
+    footprintScale?: number;
 }
 
 /**
@@ -257,8 +273,36 @@ export async function reconstructProceduralPreview(
         throw new Error("[S1-PROCEDURAL] combined/stock GLB is not a procedural input — use legacy");
     }
     options = await withDefaultPrintCompose(options);
+    const footprintScale = options.footprintScale;
+    let working = topGeo;
+    let footprintClone: BufferGeometry | null = null;
+    let scaledPattern: PolyPoint[] | null = null;
+    if (footprintScale != null && Number.isFinite(footprintScale) && Math.abs(footprintScale - 1) > 1e-9) {
+        if (!topGeo.boundingBox) topGeo.computeBoundingBox();
+        const box = topGeo.boundingBox;
+        const center = box ? { x: (box.min.x + box.max.x) / 2, y: (box.min.y + box.max.y) / 2 } : null;
+        if (center && !options.bottomPattern?.length && insetsForScanPattern(options.scanPattern) == null) {
+            const native = topGeo.clone();
+            try {
+                const nativeModel = extractTopOnlyModel(native, {
+                    id: SAMPLE_TOP_ASSET_ID,
+                    name: SAMPLE_TOP_NAME,
+                });
+                scaledPattern = scalePlanLoop(
+                    buildFairedPatternFromTop(nativeModel, options.scanPattern),
+                    footprintScale,
+                    center,
+                );
+            } finally {
+                native.dispose();
+            }
+        }
+        footprintClone = topGeo.clone();
+        scaleSourceShapeToFootprint(footprintClone, footprintScale, BASE_REFERENCE_THICKNESS_MM);
+        working = footprintClone;
+    }
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
-    let source = topGeo;
+    let source = working;
     let owned = false;
     if (options.sourceField) {
         const fore = options.sourceField.corrections?.forefootWidthMm ?? 0;
@@ -277,18 +321,21 @@ export async function reconstructProceduralPreview(
                 : options.sourceField;
         // The loft pairs the unsunk sheet. T and S are applied to the wall after.
         const sourceField = fieldWithoutSinks(widthFree);
-        source = await composePrintSolidTop(topGeo, {
+        source = await composePrintSolidTop(working, {
             sourceField,
             shoeWidth: options.shoeWidth,
             trimline: options.trimline,
         });
-        owned = source !== topGeo;
+        owned = source !== working;
     }
     const model = extractTopOnlyModel(source, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME });
-    if (owned) source.dispose();
+    const discard = new Set<BufferGeometry>();
+    if (owned) discard.add(source);
+    if (footprintClone) discard.add(footprintClone);
+    for (const geo of discard) geo.dispose();
     const requested = options.bottomPattern?.length
         ? options.bottomPattern
-        : buildFairedPatternFromTop(model, options.scanPattern);
+        : (scaledPattern ?? buildFairedPatternFromTop(model, options.scanPattern));
     const loft = (pattern: PolyPoint[]) => {
         const thicknessMm =
             options.thicknessMm ?? options.sourceField?.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
@@ -317,6 +364,9 @@ export async function reconstructProceduralPreview(
             ...(options.sinks && options.sinks.length > 0
                 ? { sinks: options.sinks, sinkStyloidThicken: options.sinkStyloidThicken }
                 : {}),
+            // Scaled outlines only. Native posting and the US 9 reference
+            // stay on the triangulation those baselines already froze.
+            ...(footprintClone ? { repairUpwardBottom: true } : {}),
         });
         return { model, pattern, geometry };
     };
