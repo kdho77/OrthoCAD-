@@ -322,19 +322,41 @@ function fitsInside(flat: FlattenedText, outline: PolyPoint[], insetMm: number):
     return true;
 }
 
+function polygonAbsArea(loop: Array<{ x: number; y: number }>): number {
+    let area = 0;
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        area += a.x * b.y - b.x * a.y;
+    }
+    return Math.abs(area) * 0.5;
+}
+
+interface FlatBottomTrace {
+    loop: PolyPoint[] | null;
+    /** Flat-bottom faces exist, but no closed boundary of at least 4 vertices. */
+    untraced: boolean;
+}
+
 /**
  * Ordered CCW boundary of the actual flat plantar (z≈0, |n·Z| high).
  * This is where the wall–plantar fillet starts. Uses |n·Z| so a mirrored
  * left foot (winding flipped then restored) still finds the same loop.
+ *
+ * A pinch vertex (more than one unused outgoing boundary edge) keeps the
+ * outer boundary: the outgoing edge with the largest CCW turn, so the
+ * interior stays on the left. The returned loop is the one with the largest
+ * absolute area, not the longest vertex chain.
  */
-export function flatBottomBoundaryLoop(geo: BufferGeometry): PolyPoint[] | null {
+function traceFlatBottomBoundary(geo: BufferGeometry): FlatBottomTrace {
     const pos = geo.getAttribute("position");
     const index = geo.getIndex();
-    if (!pos || !index) return null;
+    if (!pos || !index) return { loop: null, untraced: false };
     const src = index.array as ArrayLike<number>;
     const undirected = new Map<string, number>();
     const directed: Array<[number, number]> = [];
     const edgeKey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    let flatFaces = 0;
     for (let t = 0; t + 2 < index.count; t += 3) {
         const i0 = src[t] ?? 0;
         const i1 = src[t + 1] ?? 0;
@@ -354,6 +376,7 @@ export function flatBottomBoundaryLoop(geo: BufferGeometry): PolyPoint[] | null 
         const z = (az + bz + cz) / 3;
         const nl = Math.hypot(nx, ny, nz) || 1;
         if (Math.abs(nz / nl) <= 0.85 || z >= 0.35) continue;
+        flatFaces++;
         // Orient the XY projection CCW so mirrored winding still traces the
         // interior on the left of each directed boundary edge.
         const area2 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
@@ -371,50 +394,77 @@ export function flatBottomBoundaryLoop(geo: BufferGeometry): PolyPoint[] | null 
         }
     }
     const next = new Map<number, number[]>();
+    let edgeCount = 0;
     for (const [u, v] of directed) {
         if ((undirected.get(edgeKey(u, v)) ?? 0) !== 1) continue;
+        edgeCount++;
         const list = next.get(u);
         if (list) list.push(v);
         else next.set(u, [v]);
     }
-    if (next.size < 4) return null;
-    const walk = (start: number): number[] => {
-        const path: number[] = [start];
-        const used = new Set<string>();
-        let cur = start;
-        for (let step = 0; step < next.size + 2; step++) {
-            const cands = next.get(cur) ?? [];
-            let nxt = -1;
-            for (const v of cands) {
-                const k = `${cur}>${v}`;
-                if (used.has(k)) continue;
-                nxt = v;
-                break;
-            }
-            if (nxt < 0) break;
-            used.add(`${cur}>${nxt}`);
-            if (nxt === start) return path;
-            path.push(nxt);
-            cur = nxt;
-        }
-        return [];
-    };
+    if (flatFaces === 0 || edgeCount === 0) return { loop: null, untraced: false };
+    if (next.size < 4) return { loop: null, untraced: true };
+    const used = new Set<string>();
     let best: number[] = [];
-    for (const start of next.keys()) {
-        const path = walk(start);
-        if (path.length > best.length) best = path;
-        if (best.length >= next.size) break;
+    let bestAbs = -1;
+    const limit = edgeCount + 2;
+    for (const [start, tos] of next) {
+        for (const first of tos) {
+            const startKey = `${start}>${first}`;
+            if (used.has(startKey)) continue;
+            const path: number[] = [start];
+            let prev = start;
+            let cur = first;
+            used.add(startKey);
+            let closed = false;
+            for (let step = 0; step < limit; step++) {
+                if (cur === start) {
+                    closed = true;
+                    break;
+                }
+                path.push(cur);
+                const cands = next.get(cur) ?? [];
+                let nxt = -1;
+                let bestAng = -Infinity;
+                const ix = pos.getX(cur) - pos.getX(prev);
+                const iy = pos.getY(cur) - pos.getY(prev);
+                for (const v of cands) {
+                    const k = `${cur}>${v}`;
+                    if (used.has(k)) continue;
+                    const ox = pos.getX(v) - pos.getX(cur);
+                    const oy = pos.getY(v) - pos.getY(cur);
+                    const ang = Math.atan2(ix * oy - iy * ox, ix * ox + iy * oy);
+                    if (nxt < 0 || ang > bestAng) {
+                        bestAng = ang;
+                        nxt = v;
+                    }
+                }
+                if (nxt < 0) break;
+                used.add(`${cur}>${nxt}`);
+                prev = cur;
+                cur = nxt;
+            }
+            if (!closed || path.length < 4) continue;
+            let area = 0;
+            for (let i = 0; i < path.length; i++) {
+                const a = path[i]!;
+                const b = path[(i + 1) % path.length]!;
+                area += pos.getX(a) * pos.getY(b) - pos.getX(b) * pos.getY(a);
+            }
+            const abs = Math.abs(area) * 0.5;
+            if (abs > bestAbs) {
+                bestAbs = abs;
+                best = area < 0 ? path.slice().reverse() : path.slice();
+            }
+        }
     }
-    if (best.length < 4) return null;
+    if (best.length < 4) return { loop: null, untraced: true };
     const loop: PolyPoint[] = best.map((i) => ({ x: pos.getX(i), y: pos.getY(i), z: pos.getZ(i) }));
-    let area = 0;
-    for (let i = 0; i < loop.length; i++) {
-        const a = loop[i]!;
-        const b = loop[(i + 1) % loop.length]!;
-        area += a.x * b.y - b.x * a.y;
-    }
-    if (area < 0) loop.reverse();
-    return loop;
+    return { loop, untraced: false };
+}
+
+export function flatBottomBoundaryLoop(geo: BufferGeometry): PolyPoint[] | null {
+    return traceFlatBottomBoundary(geo).loop;
 }
 
 /** Unsigned plane angle (0–90°). Flipped winding does not change the result. */
@@ -552,7 +602,20 @@ export function placeBottomText(
     let placed = applyAt(flat, 1);
     let scale = 1;
     const minScale = TEXT_CAP.bottom.min / Math.max(flat.capHeightMm, 1e-3);
-    const flatBound = flatBottomBoundaryLoop(geo);
+    const traced = traceFlatBottomBoundary(geo);
+    if (traced.untraced) {
+        // shrinkThenFlatten rethrows code "too-thin" immediately. Any other code
+        // keeps shrinking until the stroke check hides this failure.
+        throw new TextMarkingError("too-thin", "flat bottom boundary could not be traced");
+    }
+    let flatBound = traced.loop;
+    const outlineArea = polygonAbsArea(ctx.outline);
+    if (flatBound && outlineArea > 0 && polygonAbsArea(flatBound) < 0.5 * outlineArea) {
+        console.warn(
+            "[TEXT] flat-bottom boundary area is under half the foot outline; fitting against the outline only",
+        );
+        flatBound = null;
+    }
     const fitsBoth = (src: FlattenedText) =>
         fitsInside(src, ctx.outline, TEXT_BOTTOM_INSET_MM) &&
         (!flatBound || fitsInside(src, flatBound, TEXT_BOTTOM_INSET_MM));
