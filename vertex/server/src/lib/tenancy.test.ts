@@ -11,6 +11,7 @@ import {
     defaultShoeChart,
     getClientFile,
     getDesignFile,
+    listClientFiles,
     softDeleteDesignFile,
     updateClientFile,
     updateDesignMeta,
@@ -113,6 +114,36 @@ describe("tenant isolation by id", () => {
         expect((await files.getDesign(design.id))?.deletedAt).toBeNull();
         expect((await scans.getMeta(scan.id))?.fileName).toBe("left.stl");
         expect((await jobs.getJob(job.id))?.status).toBe("waiting");
+    });
+
+    test("client list for tenant A never includes tenant B clients; super admin sees across tenants", async () => {
+        const files = createMemoryClientFileRepo({ clients: [], designs: [], exports: [], audits: [] });
+        const tenantA = actor("clinician", ORG, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        const tenantB = actor("clinician", OTHER, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        const root = actor("super_admin", null, "cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+        await createClientFile(files, tenantA, {
+            displayName: "Tenant A",
+            firstName: "Ann",
+            lastName: "Alpha",
+            reference: "A-1",
+            ...defaultShoeChart(),
+        });
+        const { client: clientB } = await createClientFile(files, tenantB, {
+            displayName: "Tenant B",
+            firstName: "Bob",
+            lastName: "Beta",
+            reference: "B-1",
+            ...defaultShoeChart(),
+        });
+        const listA = await listClientFiles(files, tenantA);
+        expect(listA).toHaveLength(1);
+        expect(listA[0]?.client.reference).toBe("A-1");
+        expect(listA.some((item) => item.client.id === clientB.id)).toBe(false);
+        const listB = await listClientFiles(files, tenantB);
+        expect(listB).toHaveLength(1);
+        expect(listB[0]?.client.reference).toBe("B-1");
+        const listRoot = await listClientFiles(files, root);
+        expect(listRoot.map((item) => item.client.reference).sort()).toEqual(["A-1", "B-1"]);
     });
 
     test("super admin can fetch, update, and delete another tenant's records", async () => {

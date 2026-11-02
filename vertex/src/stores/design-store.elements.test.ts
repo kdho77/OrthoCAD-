@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, test } from "@rstest/core";
 import { VERTEX_STARTER_PRESETS } from "@/lib/clinical/correction-presets";
 import { ELEMENT_PROFILES } from "@/lib/geometry/elements";
 import type { DesignState, ElementKind, PrescriptionParseResult } from "@/types";
+import { defaultShoeChart } from "../../shared/client-files";
 import { useClientStore } from "./client-store";
 import { useDesignStore } from "./design-store";
 
@@ -111,7 +112,7 @@ describe("elements require explicit library placement", () => {
         const saved = JSON.parse(JSON.stringify(useDesignStore.getState().design));
         const client = useClientStore
             .getState()
-            .addClient({ firstName: "Test", lastName: "Client", reference: "T-1" });
+            .addClient({ firstName: "Test", lastName: "Client", reference: "T-1", ...defaultShoeChart() });
         const project = useClientStore.getState().addDesign(client, "Saved design", saved);
         await useDesignStore.persist.rehydrate();
         expect(useDesignStore.getState().pendingSessionDesign).not.toBeNull();
