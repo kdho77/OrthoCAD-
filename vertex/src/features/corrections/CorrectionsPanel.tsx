@@ -35,6 +35,8 @@ import {
     type PostingOutline,
     postingEquivalenceLabel,
     REARFOOT_POST_DEG_MAX,
+    stationPostingRiseMm,
+    wedgeFromUiEntry,
 } from "@/lib/geometry/posting-degrees";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
@@ -405,9 +407,7 @@ function wedgeFromState(
     unit: WedgeUnit,
     stationDegrees?: boolean,
 ): WedgeCorrection | undefined {
-    if (value <= 0) return undefined;
-    if (unit === "deg" && stationDegrees) return { side: edge, value, unit, degreeMode: "station" };
-    return { side: edge, value, unit };
+    return wedgeFromUiEntry(edge, value, unit, stationDegrees);
 }
 
 function wedgeMaxForUnit(unit: WedgeUnit, maxMm?: number, maxDeg?: number): number {
@@ -617,11 +617,7 @@ export function CorrectionsPanel() {
         let regionalMm = 0;
         for (const side of ["left", "right"] as Side[]) {
             const outline = postingOutlines[side];
-            regionalMm = Math.max(
-                regionalMm,
-                convertedPostingMm("rearfoot", sideValues[side].rearfootWedge, outline) ?? 0,
-                convertedPostingMm("forefoot", sideValues[side].forefootWedge, outline) ?? 0,
-            );
+            regionalMm = Math.max(regionalMm, stationPostingRiseMm(sideValues[side], outline));
         }
         const fullOver =
             hasMaxRiseWarning(fullLengthRise.left.warnMm) || hasMaxRiseWarning(fullLengthRise.right.warnMm);

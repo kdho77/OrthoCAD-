@@ -234,8 +234,22 @@ export function postingEdgeForAngle(kind: "varus" | "valgus"): "medial" | "later
 }
 
 /** Display only. Geometry uses {@link postingRiseMm} unrounded. */
-export function formatPostingDegreesMm(deg: number, mm: number): string {
-    return `${deg.toFixed(1)}° = ${mm.toFixed(1)} mm`;
+export function formatPostingDegreesMm(deg: number, mm: number, place?: string): string {
+    const value = `${deg.toFixed(1)}°`;
+    const mmText = `${mm.toFixed(1)} mm`;
+    return place ? `${value} at ${place} = ${mmText}` : `${value} = ${mmText}`;
+}
+
+/** What the regional degrees toggle writes. Station mode is the new UI path. */
+export function wedgeFromUiEntry(
+    edge: "medial" | "lateral",
+    value: number,
+    unit: "mm" | "deg",
+    stationDegrees = false,
+): { side: "medial" | "lateral"; value: number; unit: "mm" | "deg"; degreeMode?: "station" } | undefined {
+    if (value <= 0) return undefined;
+    if (unit === "deg" && stationDegrees) return { side: edge, value, unit, degreeMode: "station" };
+    return { side: edge, value, unit };
 }
 
 function stationDegrees(
@@ -257,7 +271,25 @@ export function postingEquivalenceLabel(
     if (deg === undefined) return undefined;
     const postingZone: PostingZone = zone === "forefoot" ? "forefoot" : "rearfoot";
     const u = zone === "full" ? REARFOOT_POST_U : postingStationU(postingZone, outline);
-    return formatPostingDegreesMm(deg, postingRiseMm(deg, bottomOutlineChordMm(u, outline)));
+    const place = zone === "forefoot" ? "met-head width" : undefined;
+    return formatPostingDegreesMm(deg, postingRiseMm(deg, bottomOutlineChordMm(u, outline)), place);
+}
+
+/**
+ * Millimetres the max-rise warning reads for one foot.
+ * Legacy degree entries (no station flag) contribute 0 here; their angle warning is separate.
+ */
+export function stationPostingRiseMm(
+    corrections: {
+        rearfootWedge?: { value?: number; unit?: "mm" | "deg"; degreeMode?: "local" | "station" } | null;
+        forefootWedge?: { value?: number; unit?: "mm" | "deg"; degreeMode?: "local" | "station" } | null;
+    },
+    outline: PostingOutline,
+): number {
+    return Math.max(
+        convertedPostingMm("rearfoot", corrections.rearfootWedge, outline) ?? 0,
+        convertedPostingMm("forefoot", corrections.forefootWedge, outline) ?? 0,
+    );
 }
 
 /** Unrounded millimetres for a station-mode degree entry, or null otherwise. */

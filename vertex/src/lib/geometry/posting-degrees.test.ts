@@ -2,21 +2,25 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { interpretOneClickRx } from "@/lib/clinical/one-click-rx";
-import { hasPostingAngleWarning } from "@/lib/geometry/clinical-constraints";
+import { hasMaxRiseWarning, hasPostingAngleWarning } from "@/lib/geometry/clinical-constraints";
 import { type HeightFieldParams, heightAt } from "@/lib/geometry/height-field";
 import {
     bottomOutlineChordMm,
     codeOutlineWidthMm,
+    convertedPostingMm,
     FOREFOOT_POST_DEG_MAX,
     FOREFOOT_STATION_U0,
     FOREFOOT_STATION_U1,
     postingDegAboveWarn,
+    postingEquivalenceLabel,
     postingMmAtStation,
     postingRiseMm,
     postingStationU,
     REARFOOT_POST_DEG_MAX,
     REARFOOT_POST_U,
     sizedBottomOutline,
+    stationPostingRiseMm,
+    wedgeFromUiEntry,
 } from "@/lib/geometry/posting-degrees";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import type { ShoeWidthId } from "@/lib/geometry/shoe-width";
@@ -343,5 +347,41 @@ describe("posting degrees → mm", () => {
             unit: "deg",
             degreeMode: "station",
         });
+    });
+
+    test("forefoot readout says met-head width and the max-rise warning uses converted mm", () => {
+        const layout = insoleLayoutForUsMenSize(7.5);
+        const outline = outlineFor(layout.lengthMm, layout.widthMm);
+        const rear = stationWedge("medial", 2);
+        const fore = stationWedge("medial", 2);
+        expect(postingEquivalenceLabel("forefoot", fore, outline)).toBe("2.0° at met-head width = 3.1 mm");
+        expect(postingEquivalenceLabel("rearfoot", rear, outline)).toBe("2.0° = 1.9 mm");
+        expect(
+            postingEquivalenceLabel("forefoot", { side: "medial", value: 2, unit: "deg" }, outline),
+        ).toBeUndefined();
+        expect(wedgeFromUiEntry("medial", 2, "deg", true)).toEqual(fore);
+
+        const mild = blank();
+        mild.rearfootWedge = rear;
+        mild.forefootWedge = fore;
+        const mildMm = stationPostingRiseMm(mild, outline);
+        expect(mildMm).toBe(postingMmAtStation("forefoot", 2, outline));
+        expect(mildMm).toBeGreaterThan(postingMmAtStation("rearfoot", 2, outline));
+        expect(hasMaxRiseWarning(mildMm)).toBe(false);
+
+        const steep = blank();
+        steep.forefootWedge = stationWedge("medial", 8);
+        const steepMm = stationPostingRiseMm(steep, outline);
+        expect(steepMm).toBe(convertedPostingMm("forefoot", steep.forefootWedge, outline));
+        expect(steepMm).toBeGreaterThan(12);
+        expect(hasMaxRiseWarning(steepMm)).toBe(true);
+        // 8° itself is under the 12 mm threshold. The warning is the converted rise.
+        expect(hasMaxRiseWarning(8)).toBe(false);
+
+        const legacy = blank();
+        legacy.forefootWedge = { side: "lateral", value: 10, unit: "deg" };
+        expect(convertedPostingMm("forefoot", legacy.forefootWedge, outline)).toBeNull();
+        expect(stationPostingRiseMm(legacy, outline)).toBe(0);
+        expect(hasMaxRiseWarning(stationPostingRiseMm(legacy, outline))).toBe(false);
     });
 });
