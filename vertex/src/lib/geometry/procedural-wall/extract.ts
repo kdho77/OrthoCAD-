@@ -7,7 +7,6 @@ import { quinticSmoothstep } from "@/lib/geometry/height-field";
 import {
     extractBoundaryLoopsBranchedWithIndices,
     extractOrderedBoundaryLoopWithIndices,
-    repairOpenQuantBoundary,
     submeshByVertexRange,
 } from "@/lib/geometry/mesh-close";
 import {
@@ -269,17 +268,125 @@ function nearestSampleZ(field: UvHeightField, x: number, y: number): number | nu
     return Number.isFinite(z) ? z : null;
 }
 
+function rimIndexUsable(indices: number[]): boolean {
+    return indices.length >= 8 && indices.every((i) => i >= 0);
+}
+
+function toRimPoints(positions: { x: number; y: number; z: number }[]): PolyPoint[] {
+    return positions.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+}
+
+const QUANT_CELL = 1e4;
+/** Just past one quant cell. One micron is invisible on a shoe-scale shell. */
+const QUANT_SPLIT_MM = 1e-3;
+
+function quantCellKey(x: number, y: number, z: number): string {
+    return `${Math.round(x * QUANT_CELL)},${Math.round(y * QUANT_CELL)},${Math.round(z * QUANT_CELL)}`;
+}
+
+/**
+ * Two distinct vertices in one 0.0001 mm cell pinch the rim walk and the
+ * manifold Euler check. Move the extras by one micron so each owns a cell.
+ * Returns how many vertices moved. No-op when every cell holds one vertex.
+ */
+function splitSharedQuantCells(geo: BufferGeometry): number {
+    const pos = geo.getAttribute("position");
+    if (!pos) return 0;
+    const buckets = new Map<string, number[]>();
+    for (let i = 0; i < pos.count; i++) {
+        const key = quantCellKey(pos.getX(i), pos.getY(i), pos.getZ(i));
+        const list = buckets.get(key);
+        if (list) list.push(i);
+        else buckets.set(key, [i]);
+    }
+    const taken = new Set(buckets.keys());
+    const dirs: ReadonlyArray<readonly [number, number, number]> = [
+        [1, 0, 0],
+        [-1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+        [0, 0, 1],
+        [0, 0, -1],
+    ];
+    let moved = 0;
+    for (const ids of buckets.values()) {
+        if (ids.length < 2) continue;
+        for (let k = 1; k < ids.length; k++) {
+            const i = ids[k]!;
+            const x = pos.getX(i);
+            const y = pos.getY(i);
+            const z = pos.getZ(i);
+            for (const [dx, dy, dz] of dirs) {
+                const nx = x + dx * QUANT_SPLIT_MM;
+                const ny = y + dy * QUANT_SPLIT_MM;
+                const nz = z + dz * QUANT_SPLIT_MM;
+                const next = quantCellKey(nx, ny, nz);
+                if (taken.has(next)) continue;
+                pos.setXYZ(i, nx, ny, nz);
+                taken.add(next);
+                moved++;
+                break;
+            }
+        }
+    }
+    return moved;
+}
+
+/**
+ * 0.0001 mm weld plus the quant-key rim. US 7.5 and US 12 drop two rim vertices
+ * into one cell: that weld pinches the loop and the quant walk returns nothing.
+ * A 0.000001 mm weld keeps the pair, then one vertex steps out of the cell.
+ * Caller disposes `topSub`. Caller disposes the returned sheet.
+ */
+function weldedClosedRim(topSub: BufferGeometry): {
+    sheet: BufferGeometry;
+    points: PolyPoint[];
+    indices: number[];
+} | null {
+    const loose = mergeVertices(topSub, 1e-4);
+    const looseRim = extractOrderedBoundaryLoopWithIndices(loose);
+    if (rimIndexUsable(looseRim.indices)) {
+        return { sheet: loose, points: toRimPoints(looseRim.positions), indices: looseRim.indices.slice() };
+    }
+    loose.dispose();
+    const tight = mergeVertices(topSub, 1e-6);
+    splitSharedQuantCells(tight);
+    const retry = extractOrderedBoundaryLoopWithIndices(tight);
+    if (rimIndexUsable(retry.indices)) {
+        return { sheet: tight, points: toRimPoints(retry.positions), indices: retry.indices.slice() };
+    }
+    const best = extractBoundaryLoopsBranchedWithIndices(tight)[0];
+    if (!best || !rimIndexUsable(best.indices)) {
+        tight.dispose();
+        return null;
+    }
+    return { sheet: tight, points: toRimPoints(best.positions), indices: best.indices.slice() };
+}
+
 function extractTopRim(geo: BufferGeometry): { points: PolyPoint[]; indices: number[] } {
     const topN = topVertexCountOf(geo);
     if (topN < 3) return { points: [], indices: [] };
     const topSub = submeshByVertexRange(geo, 0, topN);
     try {
-        const simple = extractOrderedBoundaryLoopWithIndices(topSub);
-        const ordered = simple.indices.length >= 8 ? simple : repairOpenQuantBoundary(topSub);
-        return {
-            points: ordered.positions.map((p) => ({ x: p.x, y: p.y, z: p.z })),
-            indices: ordered.indices.slice(),
-        };
+        const ordered = extractOrderedBoundaryLoopWithIndices(topSub);
+        if (ordered.indices.length >= 8) {
+            return { points: toRimPoints(ordered.positions), indices: ordered.indices.slice() };
+        }
+        // Same cell collision as copyTopMesh. The trim spline must be this rim,
+        // not every top vertex.
+        const tight = mergeVertices(topSub, 1e-6);
+        try {
+            splitSharedQuantCells(tight);
+            const retry = extractOrderedBoundaryLoopWithIndices(tight);
+            if (retry.indices.length >= 8) {
+                return { points: toRimPoints(retry.positions), indices: retry.indices.slice() };
+            }
+            const best = extractBoundaryLoopsBranchedWithIndices(tight)[0];
+            if (!best || best.indices.length < 8) return { points: [], indices: [] };
+            return { points: toRimPoints(best.positions), indices: best.indices.slice() };
+        } finally {
+            tight.dispose();
+        }
     } finally {
         topSub.dispose();
     }
@@ -690,18 +797,20 @@ function copyTopMesh(geo: BufferGeometry):
     const topN = topVertexCountOf(geo);
     if (topN < 3) return {};
     const topSub = submeshByVertexRange(geo, 0, topN);
-    const welded = mergeVertices(topSub, 1e-4);
-    if (welded !== topSub) topSub.dispose();
     try {
-        const pos = welded.getAttribute("position");
-        const meshPositions = new Float32Array(pos.array as ArrayLike<number>);
-        const idx = welded.getIndex();
-        const meshIndices = idx ? new Uint32Array(idx.array as ArrayLike<number>) : new Uint32Array(0);
-        const simple = extractOrderedBoundaryLoopWithIndices(welded);
-        const rim = simple.indices.length >= 8 ? simple : repairOpenQuantBoundary(welded);
-        return { meshPositions, meshIndices, rimLocal: rim.indices.slice() };
+        const hit = weldedClosedRim(topSub);
+        if (!hit) return {};
+        const pos = hit.sheet.getAttribute("position");
+        const idx = hit.sheet.getIndex();
+        const packed = {
+            meshPositions: new Float32Array(pos.array as ArrayLike<number>),
+            meshIndices: idx ? new Uint32Array(idx.array as ArrayLike<number>) : new Uint32Array(0),
+            rimLocal: hit.indices,
+        };
+        hit.sheet.dispose();
+        return packed;
     } finally {
-        welded.dispose();
+        topSub.dispose();
     }
 }
 
