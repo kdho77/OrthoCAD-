@@ -741,9 +741,7 @@ function pullHeading(st: HermiteStation, ref: HermiteStation, loop: PolyPoint[])
     return true;
 }
 
-function repairNeighbourHeading(stations: HermiteStation[], loop: PolyPoint[], r1: number, r2: number): void {
-    void r1;
-    void r2;
+function pullHeadingPasses(stations: HermiteStation[], loop: PolyPoint[]): void {
     for (let pass = 0; pass < 8; pass++) {
         let moved = 0;
         for (let i = 0; i < stations.length; i++) {
@@ -755,6 +753,12 @@ function repairNeighbourHeading(stations: HermiteStation[], loop: PolyPoint[], r
         }
         if (!moved) break;
     }
+}
+
+function repairNeighbourHeading(stations: HermiteStation[], loop: PolyPoint[], r1: number, r2: number): void {
+    void r1;
+    void r2;
+    pullHeadingPasses(stations, loop);
     const spread = spreadClosedOnLoop(
         stations.map((s) => s.outline),
         loop,
@@ -768,6 +772,49 @@ function repairNeighbourHeading(stations: HermiteStation[], loop: PolyPoint[], r
         const hl = Math.hypot(dx, dy);
         if (hl > 1e-6) stations[i]!.n = { x: dx / hl, y: dy / hl };
         stations[i]!.tB = nearestS01(p, loop);
+    }
+}
+
+/**
+ * Last step before the preloft gate. Reparameterize puts outlines back on the
+ * pattern, and a shoe-width affine can leave a column pair a degree or two
+ * over the cap. Snap first; if the pattern has no legal vertex, sit on the
+ * clamped heading. Pairs already inside the cap are not moved.
+ */
+export function clampStationHeadings(stations: HermiteStation[], loop: PolyPoint[]): void {
+    const maxRad = (PRELOFT_HEADING_MAX_DEG * Math.PI) / 180;
+    for (let pass = 0; pass < 8; pass++) {
+        let moved = 0;
+        for (let i = 0; i < stations.length; i++) {
+            const a = stations[i]!;
+            const b = stations[(i + 1) % stations.length]!;
+            if (headingDeg(a, b) <= PRELOFT_HEADING_MAX_DEG + 1e-3) continue;
+            if (pullHeading(b, a, loop) && headingDeg(a, b) <= PRELOFT_HEADING_MAX_DEG + 1e-3) {
+                moved++;
+                continue;
+            }
+            const h0 = columnHeading(a).h;
+            const h1 = columnHeading(b).h;
+            const dot = Math.max(-1, Math.min(1, h0.x * h1.x + h0.y * h1.y));
+            const ang = Math.acos(dot);
+            const cap = maxRad - 1e-3;
+            const delta = Math.max(0, ang - cap);
+            const cross = h1.x * h0.y - h1.y * h0.x;
+            const sgn = cross >= 0 ? 1 : -1;
+            const ct = Math.cos(delta);
+            const st = Math.sin(delta) * sgn;
+            const hx = h1.x * ct - h1.y * st;
+            const hy = h1.x * st + h1.y * ct;
+            const len = Math.max(0.8, Math.hypot(b.outline.x - b.rim.x, b.outline.y - b.rim.y));
+            b.outline = { x: b.rim.x + hx * len, y: b.rim.y + hy * len, z: 0 };
+            const dx = b.outline.x - b.rim.x;
+            const dy = b.outline.y - b.rim.y;
+            const nl = Math.hypot(dx, dy);
+            if (nl > 1e-6) b.n = { x: dx / nl, y: dy / nl };
+            b.tB = nearestS01(b.outline, loop);
+            moved++;
+        }
+        if (!moved) break;
     }
 }
 

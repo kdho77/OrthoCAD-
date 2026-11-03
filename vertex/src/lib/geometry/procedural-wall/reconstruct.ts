@@ -66,6 +66,7 @@ import {
     adjustPatternForClearance,
     assertPostLoftGates,
     assertPreLoftStations,
+    clampStationHeadings,
     fairedPlantarFromStock,
     fairMovedPattern,
     filletRadiiFromDefaults,
@@ -1592,6 +1593,7 @@ export function reconstructProceduralWalls(
             }
         }
     }
+    clampStationHeadings(stations, hygiened.loop);
     assertPreLoftStations(stations, r1, r2, stationSkewOpts);
     {
         let minB = Infinity;

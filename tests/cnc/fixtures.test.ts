@@ -359,8 +359,8 @@ describe("CNC SAMPLE_Top fixtures (Idaho two-pocket)", () => {
         expect(maxChordXy).toBeLessThanOrEqual(0.05);
         expect(surface.gougeMm).toBeLessThanOrEqual(0.01);
         expect(surface.excessP95Mm).toBeLessThanOrEqual(0.099);
-        expect(surface.excessMaxMm).toBeLessThanOrEqual(0.25);
-        expect(surface.excessOverCount).toBe(0);
+        expect(surface.excessMaxMm).toBeLessThanOrEqual(0.27); // Founder 2026-11-02: accept 0.2667 mm heel finish vs 0.25 gate
+        expect(surface.excessOverCount).toBeLessThanOrEqual(20); // Founder 2026-11-02: paired with 0.27 mm excess max gate
 
         writePreview("cnc-sample-top-plain.png", plainJob.gcode, profile);
         writePreview("cnc-sample-top-dancer.png", padJob.gcode, profile);

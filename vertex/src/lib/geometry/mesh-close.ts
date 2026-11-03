@@ -702,6 +702,86 @@ function vertexIndexForQuantKeyInRange(
     return -1;
 }
 
+/**
+ * Shoe-size scale can quantize two corners of one boundary triangle onto one key
+ * (US M 9 / 10 / 11 on SAMPLE_Top). The closed-loop walker then finds nothing.
+ * The naked edges are still one chain; the missing edge is the quant gap.
+ * A loop the simple extractor already closed is left untouched.
+ */
+function longestOpenQuantChain(geometry: BufferGeometry): string[] {
+    const pos = geometry.getAttribute("position");
+    if (!pos) return [];
+    const triN = triangleCount(geometry);
+    const edgeCount = new Map<string, number>();
+    for (let t = 0; t < triN; t++) {
+        const keys = [0, 1, 2].map((k) => vertexKeyAt(geometry, idx(geometry, t, k)));
+        for (let i = 0; i < 3; i++) {
+            const a = keys[i]!;
+            const b = keys[(i + 1) % 3]!;
+            if (a === b) continue;
+            const ek = edgeKey(a, b);
+            edgeCount.set(ek, (edgeCount.get(ek) ?? 0) + 1);
+        }
+    }
+    const adj = new Map<string, string[]>();
+    const link = (a: string, b: string) => {
+        const list = adj.get(a);
+        if (list) {
+            if (!list.includes(b)) list.push(b);
+        } else adj.set(a, [b]);
+    };
+    for (const [ek, count] of edgeCount) {
+        if (count !== 1) continue;
+        const bar = ek.indexOf("|");
+        const a = ek.slice(0, bar);
+        const b = ek.slice(bar + 1);
+        link(a, b);
+        link(b, a);
+    }
+    if (adj.size < 3) return [];
+    const visited = new Set<string>();
+    const chains: string[][] = [];
+    const starts = [...adj.keys()].sort(
+        (a, b) => (adj.get(a)?.length ?? 0) - (adj.get(b)?.length ?? 0) || (a < b ? -1 : 1),
+    );
+    for (const start of starts) {
+        for (const next of adj.get(start) ?? []) {
+            const first = edgeKey(start, next);
+            if (visited.has(first)) continue;
+            const chain = [start];
+            let prev = start;
+            let curr = next;
+            visited.add(first);
+            for (let guard = 0; guard < adj.size + 2; guard++) {
+                chain.push(curr);
+                const nxt = (adj.get(curr) ?? []).find((n) => n !== prev && !visited.has(edgeKey(curr, n)));
+                if (!nxt) break;
+                visited.add(edgeKey(curr, nxt));
+                if (nxt === start) break;
+                prev = curr;
+                curr = nxt;
+            }
+            if (chain.length >= 3) chains.push(chain);
+        }
+    }
+    let best: string[] = [];
+    for (const chain of chains) if (chain.length > best.length) best = chain;
+    return best;
+}
+
+/** Indices for {@link longestOpenQuantChain}. Closed loops stay on the simple extractor. */
+export function repairOpenQuantBoundary(geometry: BufferGeometry): {
+    positions: Vector3[];
+    indices: number[];
+} {
+    const chain = longestOpenQuantChain(geometry);
+    if (chain.length < 8) return { positions: [], indices: [] };
+    return {
+        positions: chain.map((k) => parseKey(k)),
+        indices: chain.map((k) => vertexIndexForQuantKey(geometry, k)),
+    };
+}
+
 /** Same loop selection as extractOrderedBoundaryLoop, with mesh vertex indices per point. */
 export function extractOrderedBoundaryLoopWithIndices(geometry: BufferGeometry): {
     positions: Vector3[];
