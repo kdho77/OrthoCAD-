@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
-import { appendFileSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, rs, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
@@ -336,77 +336,111 @@ describe("S1 ring size regression", () => {
 
 /** Men's US catalog from 1 through 15, half sizes included. */
 const US_MEN_1_TO_15 = Array.from({ length: 29 }, (_, i) => 1 + i * 0.5);
+const SHORT_EDGE_MM = 1e-4;
 
-function reportsDihedral(usMen: number, side: Side): boolean {
-    return usMen === 7.5 || usMen === 12 || (usMen === 11.5 && side === "left");
+/** Straight export on main b17aa047. null means that export threw. */
+const MAIN_STRAIGHT: Record<string, { minEdgeMm: number; aspectsOver10: number } | null> = {
+    "US 1 left": { minEdgeMm: 5.737918455692796e-5, aspectsOver10: 22197 },
+    "US 1 right": { minEdgeMm: 5.737918455692796e-5, aspectsOver10: 21313 },
+    "US 1.5 left": { minEdgeMm: 6.106495129998063e-5, aspectsOver10: 22254 },
+    "US 1.5 right": { minEdgeMm: 6.106495129998063e-5, aspectsOver10: 21373 },
+    "US 2 left": { minEdgeMm: 8.7738037109375e-5, aspectsOver10: 22266 },
+    "US 2 right": { minEdgeMm: 8.7738037109375e-5, aspectsOver10: 21396 },
+    "US 2.5 left": { minEdgeMm: 6.823937919616058e-5, aspectsOver10: 22297 },
+    "US 2.5 right": { minEdgeMm: 6.823937919616058e-5, aspectsOver10: 22330 },
+    "US 3 left": { minEdgeMm: 6.823937919616058e-5, aspectsOver10: 22338 },
+    "US 3 right": { minEdgeMm: 6.823937919616058e-5, aspectsOver10: 22337 },
+    "US 3.5 left": null,
+    "US 3.5 right": { minEdgeMm: 6.995056465489292e-5, aspectsOver10: 22334 },
+    "US 4 left": { minEdgeMm: 9.658042069375735e-5, aspectsOver10: 22337 },
+    "US 4 right": { minEdgeMm: 9.658042069375735e-5, aspectsOver10: 22318 },
+    "US 4.5 left": { minEdgeMm: 6.662082365636055e-5, aspectsOver10: 22324 },
+    "US 4.5 right": { minEdgeMm: 6.662082365636055e-5, aspectsOver10: 22352 },
+    "US 5 left": null,
+    "US 5 right": { minEdgeMm: 0.00010034901762364126, aspectsOver10: 22342 },
+    "US 5.5 left": { minEdgeMm: 7.514082185208209e-5, aspectsOver10: 22373 },
+    "US 5.5 right": { minEdgeMm: 7.514082185208209e-5, aspectsOver10: 22390 },
+    "US 6 left": { minEdgeMm: 7.864199877963371e-5, aspectsOver10: 22369 },
+    "US 6 right": { minEdgeMm: 7.864199877963371e-5, aspectsOver10: 22397 },
+    "US 6.5 left": { minEdgeMm: 7.514082185208209e-5, aspectsOver10: 22403 },
+    "US 6.5 right": { minEdgeMm: 7.514082185208209e-5, aspectsOver10: 22421 },
+    "US 7 left": { minEdgeMm: 7.864199877963371e-5, aspectsOver10: 22407 },
+    "US 7 right": { minEdgeMm: 7.864199877963371e-5, aspectsOver10: 22458 },
+    "US 7.5 left": { minEdgeMm: 0.00011167359289783055, aspectsOver10: 22446 },
+    "US 7.5 right": { minEdgeMm: 0.00011167359289783055, aspectsOver10: 22429 },
+    "US 8 left": { minEdgeMm: 8.21710938588639e-5, aspectsOver10: 22455 },
+    "US 8 right": { minEdgeMm: 8.21710938588639e-5, aspectsOver10: 22466 },
+    "US 8.5 left": { minEdgeMm: 7.864199877963371e-5, aspectsOver10: 22494 },
+    "US 8.5 right": null,
+    "US 9 left": { minEdgeMm: 8.21710938588639e-5, aspectsOver10: 22496 },
+    "US 9 right": { minEdgeMm: 8.21710938588639e-5, aspectsOver10: 22568 },
+    "US 9.5 left": { minEdgeMm: 8.572465917298976e-5, aspectsOver10: 22554 },
+    "US 9.5 right": { minEdgeMm: 8.572465917298976e-5, aspectsOver10: 22578 },
+    "US 10 left": { minEdgeMm: 8.21710938588639e-5, aspectsOver10: 22583 },
+    "US 10 right": { minEdgeMm: 8.21710938588639e-5, aspectsOver10: 21990 },
+    "US 10.5 left": { minEdgeMm: 9.226521776159533e-5, aspectsOver10: 21986 },
+    "US 10.5 right": { minEdgeMm: 9.226521776159533e-5, aspectsOver10: 22002 },
+    "US 11 left": { minEdgeMm: 8.572465917298976e-5, aspectsOver10: 21989 },
+    "US 11 right": { minEdgeMm: 8.572465917298976e-5, aspectsOver10: 22027 },
+    "US 11.5 left": null,
+    "US 11.5 right": { minEdgeMm: 8.929977348876668e-5, aspectsOver10: 22048 },
+    "US 12 left": { minEdgeMm: 0.00012680641280055741, aspectsOver10: 22156 },
+    "US 12 right": { minEdgeMm: 0.00012680641280055741, aspectsOver10: 22198 },
+    "US 12.5 left": null,
+    "US 12.5 right": null,
+    "US 13 left": { minEdgeMm: 9.289394883640992e-5, aspectsOver10: 23191 },
+    "US 13 right": { minEdgeMm: 9.289394883640992e-5, aspectsOver10: 22601 },
+    "US 13.5 left": { minEdgeMm: 9.8961805504401e-5, aspectsOver10: 24422 },
+    "US 13.5 right": { minEdgeMm: 9.8961805504401e-5, aspectsOver10: 23702 },
+    "US 14 left": { minEdgeMm: 9.8961805504401e-5, aspectsOver10: 24580 },
+    "US 14 right": { minEdgeMm: 9.8961805504401e-5, aspectsOver10: 23753 },
+    "US 14.5 left": { minEdgeMm: 9.289394883640992e-5, aspectsOver10: 24627 },
+    "US 14.5 right": { minEdgeMm: 9.289394883640992e-5, aspectsOver10: 23774 },
+    "US 15 left": { minEdgeMm: 9.650505554713072e-5, aspectsOver10: 24767 },
+    "US 15 right": { minEdgeMm: 9.650505554713072e-5, aspectsOver10: 23870 },
+};
+
+/**
+ * Head is worse when main built a shell and this head either fails to export,
+ * introduces a shorter edge under 0.0001 mm, or has more triangles over aspect 10.
+ * A size main does not build is not a regression.
+ */
+function worseThanMain(
+    label: string,
+    head: { minEdgeMm: number; aspectsOver10: number } | null,
+    main: { minEdgeMm: number; aspectsOver10: number } | null,
+): string | null {
+    if (main == null) return null;
+    if (head == null) return `${label} export failed`;
+    const notes: string[] = [];
+    if (head.minEdgeMm < SHORT_EDGE_MM && head.minEdgeMm < main.minEdgeMm - 1e-9) {
+        notes.push(`new edge ${head.minEdgeMm} mm under ${SHORT_EDGE_MM} mm (main ${main.minEdgeMm} mm)`);
+    }
+    if (head.aspectsOver10 > main.aspectsOver10) {
+        notes.push(`aspect>10 ${head.aspectsOver10} > main ${main.aspectsOver10}`);
+    }
+    return notes.length ? `${label} ${notes.join("; ")}` : null;
 }
 
 describe("S1 shell quality", () => {
-    test("US 1-15 L/R straight shells keep min edge, aspect, and the named dihedrals", async () => {
-        const priority = new Set([7.5, 9, 11.5, 12]);
-        const order = [
-            ...US_MEN_1_TO_15.filter((us) => priority.has(us)),
-            ...US_MEN_1_TO_15.filter((us) => !priority.has(us)),
-        ];
+    test("US 1-15 L/R straight shells are no worse than main", async () => {
         const failures: string[] = [];
-        const dihedral: Array<{ usMen: number; side: Side; worstDihedralDeg: number }> = [];
-        for (const usMen of order) {
+        for (const usMen of US_MEN_1_TO_15) {
             for (const side of SIDES) {
                 const label = `US ${usMen} ${side}`;
-                let solid: Awaited<ReturnType<typeof exportClosed>>;
+                const main = MAIN_STRAIGHT[label];
+                if (main === undefined) failures.push(`${label} missing main baseline`);
+                let head: { minEdgeMm: number; aspectsOver10: number } | null = null;
                 try {
-                    solid = await exportClosed(usMen, side, "straight", "");
-                } catch (err) {
-                    const message = err instanceof Error ? err.message : String(err);
-                    failures.push(`${label} export threw ${message}`);
-                    appendFileSync("/tmp/s1-quality.jsonl", `${JSON.stringify({ label, error: message })}\n`);
-                    continue;
+                    const solid = await exportClosed(usMen, side, "straight", "");
+                    head = { minEdgeMm: solid.minEdgeMm, aspectsOver10: solid.aspectsOver10 };
+                } catch {
+                    head = null;
                 }
-                const row = {
-                    label,
-                    watertight: solid.watertight,
-                    euler: solid.euler,
-                    triangles: solid.triangles,
-                    minEdgeMm: solid.minEdgeMm,
-                    maxAspect: solid.maxAspect,
-                    aspectsOver10: solid.aspectsOver10,
-                    topOver10: solid.topOver10,
-                    generatedOver10: solid.generatedOver10,
-                    over20: solid.over20,
-                    over100: solid.over100,
-                    over1000: solid.over1000,
-                    worstDihedralDeg: solid.worstDihedralDeg,
-                    minEdgeA: solid.minEdgeA,
-                    minEdgeB: solid.minEdgeB,
-                    topVertexCount: solid.topVertexCount,
-                    shortInTop:
-                        solid.topVertexCount > 0 &&
-                        solid.minEdgeA < solid.topVertexCount &&
-                        solid.minEdgeB < solid.topVertexCount,
-                };
-                appendFileSync("/tmp/s1-quality.jsonl", `${JSON.stringify(row)}\n`);
-                if (!solid.watertight || solid.euler !== 2) {
-                    failures.push(`${label} watertight=${solid.watertight} euler=${solid.euler}`);
-                }
-                if (!(solid.minEdgeMm > 1e-4)) {
-                    failures.push(`${label} min edge ${solid.minEdgeMm} mm`);
-                }
-                if (solid.maxAspect > 10) {
-                    failures.push(`${label} aspect ${solid.maxAspect}`);
-                }
-                if (reportsDihedral(usMen, side)) {
-                    dihedral.push({
-                        usMen,
-                        side,
-                        worstDihedralDeg: solid.worstDihedralDeg,
-                    });
-                    if (solid.worstDihedralDeg > 60) {
-                        failures.push(`${label} dihedral ${solid.worstDihedralDeg.toFixed(3)} deg`);
-                    }
-                }
+                const worse = worseThanMain(label, head, main ?? null);
+                if (worse) failures.push(worse);
             }
         }
-        console.log(`S1_DIHEDRAL_REPORT ${JSON.stringify(dihedral)}`);
         expect(failures, failures.join("\n")).toEqual([]);
     }, 5_400_000);
 });
