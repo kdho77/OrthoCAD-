@@ -766,11 +766,26 @@ function triangulateWithOffsetFallback(
         return { ...cdtDiskOf(loop, [], [], margin), usedSliverFallback: false };
     } catch (err) {
         const msg = String(err);
-        if (!msg.includes("[S1-CDT]") && !msg.includes("[S1-I]")) {
+        // [S1-B] CDT sliver is the boundary aspect failure. The inset strip is
+        // the recovery for that ring; other [S1-B] mismatches stay fatal.
+        if (!msg.includes("[S1-CDT]") && !msg.includes("[S1-I]") && !msg.includes("CDT sliver")) {
             throw err;
         }
-        const insets = [0.8, PLANTAR_FALLBACK_INSET_MM];
         let last: unknown = err;
+        // A 0.4 mm B edge leaves a needle inside the 0.5 mm steiner keep-out.
+        // Points closer than that keep are added only after the primary disk threw.
+        for (const dist of [0.35, 0.2]) {
+            try {
+                const extra = inwardEdgeSteiner(loop, dist, Math.min(0.12, dist * 0.4));
+                return {
+                    ...cdtDiskOf(loop, extra, [], margin, { steiner: false }),
+                    usedSliverFallback: true,
+                };
+            } catch (next) {
+                last = next;
+            }
+        }
+        const insets = [0.8, PLANTAR_FALLBACK_INSET_MM];
         for (const insetMm of insets) {
             try {
                 return tryInsetStrip(loop, margin, insetMm);
