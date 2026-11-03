@@ -266,7 +266,18 @@ function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolea
             {validation.error ? <p className="text-xs text-amber-400">{validation.error}</p> : null}
             <HardnessRegionList />
 
-            <Button className="w-full" disabled={!stlCheck.ok || busy} onClick={handleStl}>
+            {design.method === "milling_3axis" ? (
+                <p className="rounded-md border border-border px-2 py-2 text-xs text-muted-foreground">
+                    This order mills an L+R CNC file. Print STL, 3MF, and print G-code are not produced. Use the
+                    Mill step.
+                </p>
+            ) : null}
+
+            <Button
+                className="w-full"
+                disabled={!stlCheck.ok || busy || design.method === "milling_3axis"}
+                onClick={handleStl}
+            >
                 {busyKind === "stl" ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                 ) : stlCheck.ok ? (
@@ -278,7 +289,11 @@ function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolea
             </Button>
             {!stlCheck.ok ? <p className="text-xs text-amber-400">{stlCheck.reason}</p> : null}
 
-            <Button className="w-full" disabled={!threeMfCheck.ok || busy} onClick={handle3mf}>
+            <Button
+                className="w-full"
+                disabled={!threeMfCheck.ok || busy || design.method === "milling_3axis"}
+                onClick={handle3mf}
+            >
                 {busyKind === "3mf" ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                 ) : threeMfCheck.ok ? (
@@ -293,7 +308,7 @@ function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolea
             <Button
                 variant="secondary"
                 className="w-full"
-                disabled={!glbCheck.ok || busy}
+                disabled={!glbCheck.ok || busy || design.method === "milling_3axis"}
                 onClick={handleGlb}
                 title="Download a watertight, print-ready GLB (top + tapered side walls + bottom) of the current trimline."
             >

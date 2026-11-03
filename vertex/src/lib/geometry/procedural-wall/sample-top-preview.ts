@@ -211,6 +211,11 @@ export interface ProceduralPreviewOptions {
     /** Foot side for left/right placement (wall text is never glyph-mirrored). */
     side?: Side;
     /**
+     * Scale the top sheet to this shoe footprint before compose. Export and CNC
+     * set it. The viewer leaves it unset so the on-screen SAMPLE_Top stays native.
+     */
+    footprintMm?: { lengthMm: number; widthMm: number } | null;
+    /**
      * Analytic-top sinks. Passed through without sourceField so a sink-free
      * export stays on the same loft path as main.
      */

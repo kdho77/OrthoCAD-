@@ -7,6 +7,7 @@ import { quinticSmoothstep } from "@/lib/geometry/height-field";
 import {
     extractBoundaryLoopsBranchedWithIndices,
     extractOrderedBoundaryLoopWithIndices,
+    repairOpenQuantBoundary,
     submeshByVertexRange,
 } from "@/lib/geometry/mesh-close";
 import {
@@ -273,7 +274,8 @@ function extractTopRim(geo: BufferGeometry): { points: PolyPoint[]; indices: num
     if (topN < 3) return { points: [], indices: [] };
     const topSub = submeshByVertexRange(geo, 0, topN);
     try {
-        const ordered = extractOrderedBoundaryLoopWithIndices(topSub);
+        const simple = extractOrderedBoundaryLoopWithIndices(topSub);
+        const ordered = simple.indices.length >= 8 ? simple : repairOpenQuantBoundary(topSub);
         return {
             points: ordered.positions.map((p) => ({ x: p.x, y: p.y, z: p.z })),
             indices: ordered.indices.slice(),
@@ -695,7 +697,8 @@ function copyTopMesh(geo: BufferGeometry):
         const meshPositions = new Float32Array(pos.array as ArrayLike<number>);
         const idx = welded.getIndex();
         const meshIndices = idx ? new Uint32Array(idx.array as ArrayLike<number>) : new Uint32Array(0);
-        const rim = extractOrderedBoundaryLoopWithIndices(welded);
+        const simple = extractOrderedBoundaryLoopWithIndices(welded);
+        const rim = simple.indices.length >= 8 ? simple : repairOpenQuantBoundary(welded);
         return { meshPositions, meshIndices, rimLocal: rim.indices.slice() };
     } finally {
         welded.dispose();
