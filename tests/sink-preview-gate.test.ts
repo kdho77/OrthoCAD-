@@ -14,6 +14,7 @@ import {
     sampleTopFromArrayBuffer,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import {
+    FOREFOOT_THICKNESS_CLEARANCE_MM,
     footOutlineFromGeometry,
     meshYToAnatomical,
     SINK_DEFAULT_DEPTH_MM,
@@ -141,10 +142,12 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         expect(composed.rearfootDzMm).toBeLessThanOrEqual(1e-6);
         const analyticFloor = deepestFloor(plain!, sunk.geometry, [MPJ1]);
         const composedFloor = deepestFloor(composedPlain.geometry, composedSunk.geometry, [MPJ1]);
-        expect(analyticFloor.mpj1?.dz ?? Number.POSITIVE_INFINITY).toBeLessThan(-1.5);
-        expect(analyticFloor.mpj1?.dz ?? Number.NEGATIVE_INFINITY).toBeGreaterThan(-4.4);
-        expect(composedFloor.mpj1?.dz ?? Number.POSITIVE_INFINITY).toBeLessThan(-1.5);
-        expect(composedFloor.mpj1?.dz ?? Number.NEGATIVE_INFINITY).toBeGreaterThan(-4.4);
+        expect(
+            Math.abs((analyticFloor.mpj1?.dz ?? NaN) - FOREFOOT_THICKNESS_CLEARANCE_MM),
+        ).toBeLessThanOrEqual(0.05);
+        expect(
+            Math.abs((composedFloor.mpj1?.dz ?? NaN) - FOREFOOT_THICKNESS_CLEARANCE_MM),
+        ).toBeLessThanOrEqual(0.05);
 
         const six = SINK_KIND_ORDER.map((kind) => ({ id: kind, kind, depthMm: SINK_DEFAULT_DEPTH_MM }));
         const floors: Record<string, Record<string, { dz: number; weight: number }>> = {};
@@ -168,10 +171,7 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
                 if (!SINK_PROFILES[kind].forefoot) continue;
                 const hit = perSink[kind];
                 expect(hit, `${wallStyle} ${kind}`).toBeTruthy();
-                expect(hit?.dz ?? Number.POSITIVE_INFINITY, `${wallStyle} ${kind}`).toBeLessThan(-1.5);
-                expect(hit?.dz ?? Number.NEGATIVE_INFINITY, `${wallStyle} ${kind}`).toBeGreaterThan(
-                    -SINK_DEFAULT_DEPTH_MM - 0.4,
-                );
+                expect(Math.abs(hit!.dz - FOREFOOT_THICKNESS_CLEARANCE_MM)).toBeLessThanOrEqual(0.05);
             }
             all.geometry.dispose();
         }

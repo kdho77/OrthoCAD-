@@ -18,10 +18,12 @@ import {
     applySinkCutToGeometry,
     applySinkThicknessToGeometry,
     BLEND_LEN_MM,
+    FLOOR_MIN_MM,
     FOREFOOT_THICKNESS_CLEARANCE_MM,
     footOutlineFromGeometry,
     SINK_KIND_ORDER,
     SINK_PROFILES,
+    SINK_WALL_MIN_MM,
     type SinkOutlinePoint,
     STYLOID_WALL_FADE_BELOW_FLOOR_MM,
     sinkPlanScale,
@@ -43,7 +45,7 @@ const MPJ: readonly SinkKind[] = ["mpj1", "mpj2", "mpj3", "mpj4", "mpj5"];
 const HYBRID_X0 = 72;
 const HYBRID_X1 = 78;
 const EDGE_LIMIT_DEG = 60;
-const WEDGE_CREST_DEG = 76;
+const WEDGE_CREST_DEG = 66;
 const SIZES = [1, 16] as const;
 
 type WallStyle = "straight" | "round" | "hybrid";
@@ -514,12 +516,8 @@ function foldAgainstPlain(
         if (allowCrest) {
             const span = ySpanAt(allowCrest.outline, edge.x);
             if (span) {
-                const medialY = medialSign(allowCrest.side) < 0 ? span.lo : span.hi;
-                const lateralY = lateralOf(span, allowCrest.side);
-                const dist = Math.min(Math.abs(edge.y - medialY), Math.abs(edge.y - lateralY));
+                const dist = Math.abs(edge.y - lateralOf(span, allowCrest.side));
                 const u = (edge.x - allowCrest.minX) / allowCrest.length;
-                // A sole-clamped pocket against the full-length wedge meets the
-                // outline at about 74°. Interior edges stay on the 60° gate.
                 crestEdge = dist <= 3 && u >= 0.02 && u <= 0.98;
             }
         }
@@ -529,11 +527,12 @@ function foldAgainstPlain(
             if (!at || edge.deg > worst) at = text;
         };
         if (prior && prior.deg > EDGE_LIMIT_DEG) {
-            const cap = prior.deg + 0.5;
+            const cap = crestEdge ? WEDGE_CREST_DEG : prior.deg + 0.5;
             if (edge.deg > cap) {
                 sharpened++;
                 note();
             }
+            if (crestEdge && edge.deg > crest) crest = edge.deg;
             continue;
         }
         if (crestEdge && edge.deg > EDGE_LIMIT_DEG) {
@@ -628,7 +627,7 @@ describe("proximal metatarsal shift", () => {
         report.tightestSize1 = tight.map((r) => `${r.side} ${r.kind} ${r.marginMm}`);
     });
 
-    test("rim and crest match, the floor holds, and the lateral crest stays above the sole", async () => {
+    test("rim and crest match, the floor holds, and the lateral wall stays at 3 mm", async () => {
         const rows: Array<Record<string, number | string>> = [];
         const worstByWall: Record<string, number> = { straight: 0, round: 0, hybrid: 0 };
         for (const side of ["left", "right"] as const) {
@@ -692,9 +691,7 @@ describe("proximal metatarsal shift", () => {
                         u <= SINK_PROFILES.mpj5.u &&
                         Math.abs(y - lateralY) <= 1.5
                     ) {
-                        // The crest recesses with the cut. Sole clearance is the
-                        // floor; holding the crest at 3 mm left a knife edge.
-                        const allowed = a.getZ(i) >= 0.4 ? 0.4 : a.getZ(i);
+                        const allowed = a.getZ(i) >= SINK_WALL_MIN_MM ? SINK_WALL_MIN_MM : a.getZ(i);
                         const deficit = allowed - z;
                         if (deficit > lateralDeficit) lateralDeficit = deficit;
                         lateralN++;
@@ -769,9 +766,9 @@ describe("proximal metatarsal shift", () => {
             expect(row.sharpened, `${label} stock`).toBe(0);
             expect(row.outsideDeg, label).toBeLessThanOrEqual(EDGE_LIMIT_DEG);
             expect(row.xy, `${label} outline`).toBeLessThan(1e-3);
-            expect(row.floor, `${label} floor`).toBeGreaterThanOrEqual(0.4 - 1e-3);
+            expect(row.floor, `${label} floor`).toBeGreaterThanOrEqual(FLOOR_MIN_MM - 1e-3);
             expect(row.insideN, `${label} inside samples`).toBeGreaterThan(20);
-            expect(row.insideGrow, `${label} rim vs inside top`).toBeLessThanOrEqual(4.5);
+            expect(row.insideGrow, `${label} rim vs inside top`).toBeLessThanOrEqual(0.35);
             expect(row.lateralN, `${label} lateral samples`).toBeGreaterThan(0);
             expect(row.lateralDeficit, `${label} lateral crest`).toBeLessThanOrEqual(0.05);
         }
@@ -955,9 +952,11 @@ describe("proximal metatarsal shift", () => {
                     cutErrMm: Number((cb.maxX - (box0.minX + landmarkU * lengthMm)).toFixed(2)),
                 });
                 console.log("[SINK-TRIM]", JSON.stringify(loftRows[loftRows.length - 1]));
-                expect(floor, `${preset} ${side} floor`).toBeGreaterThanOrEqual(0.4 - 1e-3);
+                expect(floor, `${preset} ${side} floor`).toBeGreaterThanOrEqual(FLOOR_MIN_MM - 1e-3);
                 expect(bandN, `${preset} ${side} 5 mm band`).toBeGreaterThan(10);
-                expect(bandFloor, `${preset} ${side} 5 mm band floor`).toBeGreaterThanOrEqual(0.4 - 1e-3);
+                expect(bandFloor, `${preset} ${side} 5 mm band floor`).toBeGreaterThanOrEqual(
+                    FLOOR_MIN_MM - 1e-3,
+                );
                 expect(xy, `${preset} ${side} outline`).toBeLessThan(1e-3);
                 clipped.dispose();
                 sunk.dispose();

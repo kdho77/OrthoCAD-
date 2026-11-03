@@ -683,12 +683,9 @@ describe("sink taper reaches the medial and lateral outline", () => {
                                 const z1 = b.getZ(i);
                                 const drop = z0 - z1;
                                 if (drop > worstBelow) worstBelow = drop;
+                                if (z1 < z0 - 1e-3) below++;
                                 const yAnat = meshYToAnatomical(y, side, medialYSign);
                                 const cut = sinkCutMm(x, yAnat, ctx);
-                                // A recess is the cut. A drop where the cut is off, or
-                                // deeper than the cut plus the overlap chamfer, is the
-                                // outline falling through. The chamfer measured 0.37 mm.
-                                if (drop > 1e-3 && (cut.mm <= 1e-3 || drop > cut.mm + 0.4)) below++;
                                 const thick = sinkThicknessMm(x, yAnat, ctx);
                                 const guarded = applyFloorGuard(z0 + thick, cut.mm, cut.sinkId);
                                 if (cut.mm > 1e-6 && guarded.cutMm < cut.mm - 1e-6) floorHits++;
