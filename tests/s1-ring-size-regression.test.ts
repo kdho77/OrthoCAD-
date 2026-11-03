@@ -272,6 +272,29 @@ async function exportClosed(
 }
 
 describe("S1 ring size regression", () => {
+    test("US 5 left straight exports without a boundary sliver", async () => {
+        const solid = await exportClosed(5, "left", "straight", "");
+        expect(solid.watertight).toBe(true);
+        expect(solid.euler).toBe(2);
+        expect(solid.sliverAspect).toBeGreaterThan(0);
+        expect(solid.sliverAspect).toBeLessThanOrEqual(20);
+        expect(solid.worstDihedralDeg).toBeLessThanOrEqual(60);
+    }, 600_000);
+
+    for (const [usMen, side] of [
+        [4.5, "left"],
+        [5, "right"],
+        [5.5, "left"],
+    ] as const) {
+        test(`US ${usMen} ${side} straight remains watertight beside the US 5 fix`, async () => {
+            const solid = await exportClosed(usMen, side, "straight", "");
+            expect(solid.watertight).toBe(true);
+            expect(solid.euler).toBe(2);
+            expect(solid.sliverFallback).toBe(false);
+            expect(solid.sliverAspect).toBeLessThanOrEqual(20);
+        }, 600_000);
+    }
+
     for (const usMen of [7, 7.5, 8, 12, 12.5] as const) {
         for (const side of SIDES) {
             for (const wall of WALLS) {

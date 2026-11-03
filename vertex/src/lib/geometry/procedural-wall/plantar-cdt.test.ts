@@ -2,8 +2,9 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { minDistToLoopXY } from "./cdt-band";
-import { assertIEdges } from "./cdt-lib";
+import { assertIEdges, assertLibraryDisk } from "./cdt-lib";
 import {
+    assertBoundarySlivers,
     buildGeneratedPlantar,
     collapseShortIEdges,
     collarSteiner,
@@ -15,6 +16,7 @@ import {
     maxIAspect,
     PLANTAR_STEINER_EDGE_MIN_MM,
     SLIVER_MIN_ANGLE_DEG,
+    splitBoundarySlivers,
 } from "./plantar-cdt";
 
 describe("generated plantar CDT", () => {
@@ -235,5 +237,49 @@ describe("generated plantar CDT", () => {
             const C = mesh.points[f[2]!]!;
             expect(faceMinAngleDeg(A, B, C)).toBeGreaterThanOrEqual(SLIVER_MIN_ANGLE_DEG - 0.5);
         }
+    });
+});
+
+describe("boundary sliver edge repair", () => {
+    test("bisects both incident faces without changing the boundary or area", () => {
+        const points = [
+            { x: 0, y: 0, z: 0 },
+            { x: 0.1, y: 0, z: 0 },
+            { x: 2.4, y: 0.1, z: 0 },
+            { x: 0, y: 2, z: 0 },
+        ];
+        const original = points.map((p) => ({ ...p }));
+        const faces: Array<[number, number, number]> = [
+            [0, 1, 2],
+            [0, 2, 3],
+        ];
+        const twiceArea = ([a, b, c]: [number, number, number]) =>
+            (points[b]!.x - points[a]!.x) * (points[c]!.y - points[a]!.y) -
+            (points[b]!.y - points[a]!.y) * (points[c]!.x - points[a]!.x);
+        const areaBefore = faces.reduce((sum, f) => sum + twiceArea(f), 0);
+        expect(() => assertBoundarySlivers(points, faces, original)).toThrow();
+        expect(splitBoundarySlivers(points, faces, 4)).toBe(1);
+        expect(points.slice(0, 4)).toEqual(original);
+        expect(faces.length).toBe(4);
+        for (const face of faces) expect(twiceArea(face)).toBeGreaterThan(0);
+        expect(faces.reduce((sum, f) => sum + twiceArea(f), 0)).toBeCloseTo(areaBefore, 12);
+        expect(() => assertLibraryDisk(faces, 4)).not.toThrow();
+        expect(assertBoundarySlivers(points, faces, original)).toBeLessThanOrEqual(20);
+        const saved = JSON.stringify({ points, faces });
+        expect(splitBoundarySlivers(points, faces, 4)).toBe(0);
+        expect(JSON.stringify({ points, faces })).toBe(saved);
+    });
+
+    test("leaves an unsplittable perimeter sliver rejected by the existing gate", () => {
+        const points = [
+            { x: 0, y: 0, z: 0 },
+            { x: 0.1, y: 0, z: 0 },
+            { x: 2.4, y: 0.1, z: 0 },
+        ];
+        const faces: Array<[number, number, number]> = [[0, 1, 2]];
+        const saved = JSON.stringify({ points, faces });
+        expect(splitBoundarySlivers(points, faces, 3)).toBe(0);
+        expect(JSON.stringify({ points, faces })).toBe(saved);
+        expect(() => assertBoundarySlivers(points, faces, points)).toThrow();
     });
 });
