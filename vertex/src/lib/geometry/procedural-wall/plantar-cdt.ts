@@ -599,12 +599,15 @@ function refineMinAngle(
         refine.push(...filled.extra);
         const steiner = [...baseSteiner, ...refine];
         const points = [...loop, ...extra, ...steiner];
+        // The candidate shares Steiner point objects with the last accepted disk.
+        // Nudging it must not corrupt the coordinates we return if it is rejected.
+        const acceptedPoints = good.points.map((p) => ({ ...p }));
         nudgeInteriorDuplicates(points, loop.length, loop, keep);
         const faces = libraryCdtInterior(points, loop.length, extraEdges);
         assertIEdges(faces, loop.length);
         assertLibraryDisk(faces, loop.length);
         const aspect = maxBoundaryAspect(points, faces, loop, PLANTAR_SLIVER_BAND_MM);
-        if (aspect > I_SLIVER_ASPECT) return good;
+        if (aspect > I_SLIVER_ASPECT) return { ...good, points: acceptedPoints };
         good = { points, faces, steinerCount: steiner.length, sliverMaxAspect: aspect };
     }
     return good;
