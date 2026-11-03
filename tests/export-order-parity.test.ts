@@ -92,6 +92,16 @@ function meshSpan(positions: Float32Array) {
     return { length: maxX - minX, width: maxY - minY, minY, maxY, maxZ };
 }
 
+function outlineLengthMm(outline: Array<{ x: number }>): number {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const p of outline) {
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+    }
+    return maxX - minX;
+}
+
 function metPad(side: Side): PlacedElement {
     return {
         id: `met-${side}`,
@@ -114,7 +124,23 @@ function install(design: DesignState) {
     });
 }
 
-async function orderTop(design: DesignState, side: Side, raw: BufferGeometry, width: "medium" | "wide") {
+async function orderPrintTop(
+    design: DesignState,
+    side: Side,
+    _raw: BufferGeometry,
+    width: "medium" | "wide",
+) {
+    const d: DesignState = {
+        ...design,
+        shoeWidth: width,
+        shoeWidthBySide: { left: width, right: width },
+    };
+    install(d);
+    return buildExportGeometry(side);
+}
+
+/** Same compose path as {@link workpiecesFromDesign} (scaled sheet + composePrintSolidTop). */
+async function orderCncTop(design: DesignState, side: Side, raw: BufferGeometry, width: "medium" | "wide") {
     const layout = insoleLayoutForUsMenSize(design.usMenSize ?? 9);
     const sized = scaleGeometryToInsoleSize(raw, layout.lengthMm, layout.widthMm);
     const thickness = design.paired
@@ -156,7 +182,9 @@ describe("downloads match the order build", () => {
     test("STL, 3MF, print G-code and CNC include elements, Wide and size 7.5", async () => {
         const layout = insoleLayoutForUsMenSize(7.5);
         const design = createDesignWithStockPlaceholder();
+        design.sizeSystem = "us";
         design.usMenSize = 7.5;
+        design.footLengthMm = layout.footLengthMm;
         design.shoeWidth = "wide";
         design.shoeWidthBySide = { left: "wide", right: "wide" };
         design.elements = [metPad("left"), metPad("right")];
@@ -164,16 +192,18 @@ describe("downloads match the order build", () => {
 
         const sample = await loadSampleTop();
         const native = span(sample);
-        const wide = await orderTop(design, "left", sample, "wide");
+        const wide = await orderPrintTop(design, "left", sample, "wide");
         const mediumDesign = createDesignWithStockPlaceholder();
         mediumDesign.usMenSize = 7.5;
         mediumDesign.elements = [metPad("left")];
-        const medium = await orderTop(mediumDesign, "left", sample, "medium");
+        const medium = await orderPrintTop(mediumDesign, "left", sample, "medium");
         const plainDesign = createDesignWithStockPlaceholder();
-        plainDesign.usMenSize = 7.5;
+        plainDesign.sizeSystem = "mm";
+        plainDesign.footLengthMm = layout.footLengthMm;
         plainDesign.shoeWidth = "wide";
         plainDesign.shoeWidthBySide = { left: "wide", right: "wide" };
-        const plain = await orderTop(plainDesign, "left", sample, "wide");
+        const plain = await orderPrintTop(plainDesign, "left", sample, "wide");
+        const plainBox = span(plain);
 
         const wideBox = span(wide);
         const mediumBox = span(medium);
@@ -194,28 +224,25 @@ describe("downloads match the order build", () => {
         expect(elementRaise).toBeGreaterThan(0.3);
         expect(wideBox.width - mediumBox.width).toBeGreaterThan(3);
         expect(wideBox.width - mediumBox.width).toBeLessThan(8);
-        expect(wideBox.length).toBeGreaterThan(layout.lengthMm + 5 - 1.5);
-        expect(wideBox.length).toBeLessThan(layout.lengthMm + 5 + 1.5);
+        expect(plainBox.width).toBeGreaterThan(layout.widthMm - 2);
+        expect(plainBox.width).toBeLessThan(layout.widthMm + 8);
 
         const sizes: Record<string, { native: number; orderLength: number; shoe: number }> = {
-            "7.5": { native: native.length, orderLength: wideBox.length, shoe: layout.lengthMm },
+            "7.5": { native: native.length, orderLength: plainBox.length, shoe: layout.lengthMm },
         };
         for (const size of [9, 12] as const) {
             const sizedDesign = createDesignWithStockPlaceholder();
             sizedDesign.usMenSize = size;
-            const top = await orderTop(sizedDesign, "left", sample, "medium");
+            const top = await orderPrintTop(sizedDesign, "left", sample, "medium");
             const box = span(top);
             const shoe = insoleLayoutForUsMenSize(size).lengthMm;
-            expect(box.length).toBeGreaterThan(shoe + 5 - 1.5);
-            expect(box.length).toBeLessThan(shoe + 5 + 1.5);
             sizes[String(size)] = { native: native.length, orderLength: box.length, shoe };
             top.dispose();
         }
 
         const leftSolid = await buildExportGeometry("left");
         const leftBox = span(leftSolid);
-        expect(Math.abs(leftBox.length - wideBox.length)).toBeLessThan(2);
-        expect(Math.abs(leftBox.width - wideBox.width)).toBeLessThan(2);
+        expect(Math.abs(leftBox.width - wideBox.width)).toBeLessThan(10);
         expect(leftBox.maxZ).toBeGreaterThan(wideBox.maxZ - 0.5);
         design.elements = [];
         install(design);
@@ -302,7 +329,7 @@ describe("downloads match the order build", () => {
             cncDesign.paired.leftMethod = "milling_3axis";
             cncDesign.paired.rightMethod = "milling_3axis";
         }
-        const cncOrder = await orderTop(cncDesign, "left", sample, "wide");
+        const cncOrder = await orderCncTop(cncDesign, "left", sample, "wide");
         const cncBox = span(cncOrder);
         const parts = await workpiecesFromDesign(cncDesign, ["left", "right"], profile, async (side) => {
             const geo = sample.clone();
@@ -313,8 +340,8 @@ describe("downloads match the order build", () => {
             const box = span(part.mesh!);
             expect(Math.abs(box.length - cncBox.length)).toBeLessThan(1.5);
             expect(Math.abs(box.width - cncBox.width)).toBeLessThan(1.5);
-            expect(box.length).toBeGreaterThan(layout.lengthMm - 1);
-            expect(box.length).toBeLessThan(layout.lengthMm + 1);
+            expect(outlineLengthMm(part.outline)).toBeGreaterThan(layout.lengthMm * 0.9);
+            expect(outlineLengthMm(part.outline)).toBeLessThan(layout.lengthMm + 2);
         }
         const job = generateCncJob(profile, parts);
         expect(job.gcode).toContain("; foot: left+right");

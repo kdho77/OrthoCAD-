@@ -134,17 +134,6 @@ export async function buildProceduralExportSolid(
         raw.dispose();
         raw = mirrored;
     }
-    // Shoe size before compose, so elements, width, and the loft share the order frame.
-    // The viewport omits footprintMm and keeps the native SAMPLE_Top sheet.
-    if (options.footprintMm) {
-        const sized = scaleGeometryToInsoleSize(
-            raw,
-            options.footprintMm.lengthMm,
-            options.footprintMm.widthMm,
-        );
-        raw.dispose();
-        raw = sized;
-    }
     try {
         const preview = await reconstructProceduralPreview(raw, options);
         if (!hasActiveTextMarking(options.textMarking)) return preview;
