@@ -16,7 +16,6 @@ import { insoleLayoutForUsMenSize, scaleGeometryToInsoleSize } from "@/lib/geome
 import {
     applySinkCutToGeometry,
     applySinkThicknessToGeometry,
-    FLOOR_MIN_MM,
     footOutlineFromGeometry,
     meshYToAnatomical,
     SINK_KIND_ORDER,
@@ -96,12 +95,12 @@ function stampLabel(
 
 /** Men's 9 SAMPLE_Top with every sink at max depth. Re-recorded for the zonal shell. */
 const US9_SINK_SHA256: Record<string, string> = {
-    "left-straight": "bfe32857e2ed5c5d58c7fef97e196f18ece552f4ec92c99642d8f852915804b2",
-    "left-round": "c986d3ee3015fd25037fe0cb69b3add7af72634f3aab15e33ee0f05c26c1f72e",
-    "left-hybrid": "dde015ff5cfc5a01e49a8bb1a54f9238da4b5c885d5adbc025a60e329f0fd8d1",
-    "right-straight": "32a80cc9cccde74f82f523e94ddaf0482121a1850bc04090fa8af6be75853a0b",
-    "right-round": "20ceaa4a926d19fea6b1edfdd79e0d486dfe1240ca07a0543fe4f53eaaa3e457",
-    "right-hybrid": "2c1ce98a844f3fc3e05f6d37ebf7ffba15944a3b0c419738c49199449595cc8f",
+    "left-straight": "eb87a9927a23f4a1182a201be9b2a442c867506877ac70810f9c14f6321f5f8e",
+    "left-round": "212f9eb34e543cd3c8c5522d9f233441f077edbce63cfa0fff25e86d9bbbb34a",
+    "left-hybrid": "933e5702978e53e420ed438aff5e1a68f6d19ca259f1e9207cfdf5c937ca28c7",
+    "right-straight": "395535508741833bb9ab270803cc17f414f529f260edb0e792edc073f661d1e9",
+    "right-round": "8ee871b556220594e72fbada12004fa166737f453745c8e45d49af7b10ebb9f5",
+    "right-hybrid": "6969d96eb01d25b9a30b7e321640b5a13af604d7558a7f082e8ef436c12feb37",
 };
 
 const report: Record<string, unknown> = {};
@@ -587,7 +586,7 @@ describe("pediatric sink scale and sulcus clearance", () => {
                     }
                     expect(xy, `${item.label} ${side} outline`).toBeLessThan(1e-4);
                     expect(floor, `${item.label} ${side} floor`).toBeGreaterThanOrEqual(
-                        Math.min(FLOOR_MIN_MM, minZ) - 1e-3,
+                        Math.min(0.4, minZ) - 1e-3,
                     );
                     const fold = worstNewDihedral(plain, sunk);
                     dihedral.push({ label: item.label, side, worst: Number(fold.toFixed(3)) });

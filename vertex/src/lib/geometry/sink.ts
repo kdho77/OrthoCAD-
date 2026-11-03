@@ -7,8 +7,11 @@ import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/tr
 import type { PlacedElement, PlacedSink, Side, SinkKind, SinkMarkerRef, TextMarking } from "@/types";
 
 /**
- * Elements > Sink. Two top-sheet terms, never a boolean and never the bottom:
- * local forefoot thickness T (additive) then sink cut S (subtractive, applied last).
+ * Elements > Sink. The manufactured top is the unsunk surface minus the cut S.
+ * Forefoot thickness T (depth + 0.5, blended over 25 mm) stays on the height
+ * field so a shell check can see the clearance. It is not added to the mesh:
+ * outside the 5 mm cut that blend was a dome of about depth + 0.5 mm, and a
+ * later clamp put any true recess back on the unsunk surface.
  * Empty / undefined sinks return before any work so exports stay byte-identical.
  *
  * Picked constants (Kendon brief v1) — change them here.
@@ -91,6 +94,12 @@ export const MPJ5_V_FADE_END = 0.95;
  */
 export const MPJ1_V_FADE_START = 0.04;
 export const MPJ1_V_FADE_END = 0;
+/**
+ * The cut may pass the old 2 mm absolute floor. A met head on this shell is
+ * only about 2.2 mm up, and stopping there erased a 2 mm recess. Stay this
+ * far off the sole so the pocket does not pinch shut.
+ */
+const SINK_SOLE_CLEAR_MM = 0.4;
 /** Where a wall column exists, the crest stays at least this far above z = 0. */
 export const SINK_WALL_MIN_MM = 3;
 /**
@@ -1442,23 +1451,12 @@ export function sinkCutMm(
     return { mm: best, sinkId, weight };
 }
 
-/**
- * True where two cuts, or two forefoot thickness mounds, both still rise.
- * A hard max of those shoulders creases a short loft edge. The slope relax
- * lowers only that overlap, and it leaves each plateau at depth + 0.5 mm.
- */
+/** Two cuts occupy this point. That shoulder is the crease. Thickness is not on the mesh. */
 function taperOverlap(x: number, yLateral: number, ctx: SinkSurfaceContext): boolean {
     let cuts = 0;
-    let mounds = 0;
     for (const p of prepare(ctx)) {
-        const cutW = eggWeight(p.frame, x, yLateral, p.frame.blendMm);
-        if (p.frame.depthMm * cutW > 0.4) cuts++;
-        if (!p.frame.forefoot) continue;
-        const mound =
-            eggWeight(p.frame, x, yLateral, BLEND_LEN_MM) *
-            (p.frame.depthMm + FOREFOOT_THICKNESS_CLEARANCE_MM);
-        if (mound > 0.4) mounds++;
-        if (cuts >= 2 || mounds >= 2) return true;
+        if (p.frame.depthMm * eggWeight(p.frame, x, yLateral, p.frame.blendMm) > 0.4) cuts++;
+        if (cuts >= 2) return true;
     }
     return false;
 }
@@ -1621,8 +1619,6 @@ export function applySinkCutToGeometry(
     const widthSign = frame?.widthSign ?? 1;
     const cutCtx = sinkContextForMesh(ctx, base, pos.count, lengthAxis, widthAxis);
     const useMesh = !!cutCtx.footOutline && cutCtx.footOutline.length >= 6;
-    const warnings: SinkWarning[] = [];
-    const seen = new Set<string>();
     for (let i = 0; i < pos.count; i++) {
         if (topFactors && topFactors[i]! < 0.5) continue;
         const lenCoord = base[i * 3 + lengthAxis]!;
@@ -1636,12 +1632,9 @@ export function applySinkCutToGeometry(
               );
         if (sample.mm <= 0) continue;
         const z = arr[i * 3 + thickAxis]!;
-        const guarded = applyFloorGuard(z, sample.mm, sample.sinkId);
-        if (guarded.warning && !seen.has(guarded.warning.sinkId)) {
-            seen.add(guarded.warning.sinkId);
-            warnings.push(guarded.warning);
-        }
-        arr[i * 3 + thickAxis] = z - guarded.cutMm;
+        const recessed = z - sample.mm;
+        arr[i * 3 + thickAxis] =
+            z >= SINK_SOLE_CLEAR_MM ? Math.max(SINK_SOLE_CLEAR_MM, recessed) : Math.max(0, recessed);
     }
     if (useMesh && lengthAxis === 0 && widthAxis === 1 && thickAxis === 2) {
         const count = pos.count;
@@ -1664,17 +1657,23 @@ export function applySinkCutToGeometry(
         }
     }
     pos.needsUpdate = true;
-    const merged = mergeSinkWarnings(sinkDepthWarnings(ctx.sinks), sinkRimWarnings(ctx), warnings);
+    const merged = mergeSinkWarnings(sinkDepthWarnings(ctx.sinks), sinkRimWarnings(ctx), []);
     (geometry.userData as { sinkWarnings?: SinkWarning[] }).sinkWarnings = merged;
     return { warnings: merged };
 }
 
-/** Add T to top vertices. No-op (no writes) when sinks are absent. */
+/**
+ * Mesh thickness pass. No-op, including when sinks are present.
+ * T is reported by {@link sinkThicknessMm} for the height field. Writing it
+ * onto the top, then subtracting only the shorter cut, left a raised dome
+ * where the 25 mm blend was still on and the 5 mm cut had already ended.
+ * {@link applySinkCutToGeometry} is the recess.
+ */
 export function applySinkThicknessToGeometry(
-    geometry: BufferGeometry,
+    _geometry: BufferGeometry,
     _reference: BufferGeometry,
     ctx: SinkSurfaceContext,
-    frame?: {
+    _frame?: {
         lengthAxis: 0 | 1 | 2;
         widthAxis: 0 | 1 | 2;
         thickAxis: 0 | 1 | 2;
@@ -1684,39 +1683,9 @@ export function applySinkThicknessToGeometry(
         widSize: number;
         widthSign: number;
     },
-    topFactors?: Float32Array | null,
+    _topFactors?: Float32Array | null,
 ): void {
     if (!sinksActive(ctx.sinks)) return;
-    ellipseCache.clear();
-    const pos = geometry.getAttribute("position") as BufferAttribute | undefined;
-    if (!pos) return;
-    const arr = pos.array as Float32Array;
-    const lengthAxis = frame?.lengthAxis ?? 0;
-    const widthAxis = frame?.widthAxis ?? 1;
-    const thickAxis = frame?.thickAxis ?? 2;
-    const lenMin = frame?.lenMin ?? 0;
-    const lenSize = frame?.lenSize || ctx.lengthMm || 1;
-    const widCenter = frame?.widCenter ?? 0;
-    const widSize = frame?.widSize || ctx.widthMm || 1;
-    const widthSign = frame?.widthSign ?? 1;
-    const topCount = (geometry.userData as { topVertexCount?: number }).topVertexCount;
-    const limit = topCount && topCount > 0 ? topCount : pos.count;
-    const thickCtx = sinkContextForMesh(ctx, arr, limit, lengthAxis, widthAxis);
-    const useMesh = !!thickCtx.footOutline && thickCtx.footOutline.length >= 6;
-    for (let i = 0; i < limit; i++) {
-        if (topFactors && !(topCount && topCount > 0) && topFactors[i]! < 0.5) continue;
-        const lenCoord = arr[i * 3 + lengthAxis]!;
-        const widCoord = arr[i * 3 + widthAxis]!;
-        const t = useMesh
-            ? sinkThicknessMm(lenCoord, meshYToAnatomical(widCoord, ctx.side, thickCtx.medialYSign), thickCtx)
-            : sinkThicknessAt(
-                  Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize)),
-                  Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2))),
-                  ctx,
-              );
-        if (t !== 0) arr[i * 3 + thickAxis] = arr[i * 3 + thickAxis]! + t;
-    }
-    pos.needsUpdate = true;
 }
 
 /**
@@ -1995,10 +1964,9 @@ function raiseInboardOfGuardedRim(
 }
 
 /**
- * Where two tapers cross, the hard max is a ridge. Lower only the shoulder,
- * in passes, so a vertex cannot fall away from a neighbour that stays put.
- * Plateau and rim vertices stay, which keeps the floor at depth + 0.5 mm
- * and keeps the crest on the inside top.
+ * Where tapers meet, the hard edge is a crease. Lower the shoulder, in
+ * passes, so a vertex cannot fall away from a neighbour that stays put.
+ * Plateau and rim vertices stay, so the recess stays at the cut depth.
  */
 function relaxOverlapShoulder(
     positions: number[],
@@ -2042,7 +2010,9 @@ function relaxOverlapShoulder(
                     for (const j of bucket) {
                         if (j === i) continue;
                         const dist = Math.hypot(x - positions[j * 3]!, y - positions[j * 3 + 1]!);
-                        if (dist < 0.15 || dist > cell) continue;
+                        // Skip only coincident duplicates. A 0.05 mm collar edge is a
+                        // real rim step; ignoring it let the shoulder fall off the crest.
+                        if (dist < 1e-4 || dist > cell) continue;
                         const allowed = z[j]! + dist * slope;
                         if (allowed < cap) cap = allowed;
                         if (!movable[j]) {
@@ -2065,8 +2035,10 @@ function relaxOverlapShoulder(
 }
 
 /**
- * T, then S, then a vertical wall stretch and styloid notch.
+ * Recess S, then a vertical wall stretch and styloid notch.
  * The loft has already been built from the unsunk rim, so only z is written.
+ * T is not added: depth + 0.5 over the wide blend was a dome beside the cut,
+ * and clamping back to the unsunk z erased the pocket.
  */
 export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): SinkWarning[] {
     if (!sinksActive(input.sinks)) return [];
@@ -2091,15 +2063,12 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
     const widCenter = (input.bounds.minY + input.bounds.maxY) * 0.5;
     const halfW = width / 2;
     const useMesh = !!ctx.footOutline && ctx.footOutline.length >= 6;
-    const sampleAt = (x: number, y: number): { t: number; cut: SinkCutSample } => {
-        if (useMesh) {
-            const yAnat = meshYToAnatomical(y, input.side, input.medialYSign);
-            return { t: sinkThicknessMm(x, yAnat, ctx), cut: sinkCutMm(x, yAnat, ctx) };
-        }
+    const sampleCut = (x: number, y: number): SinkCutSample => {
+        if (useMesh) return sinkCutMm(x, meshYToAnatomical(y, input.side, input.medialYSign), ctx);
         const u = Math.max(0, Math.min(1, (x - input.bounds.minX) / length));
         const mMesh = (y - widCenter) / halfW;
         const vSigned = Math.max(-1, Math.min(1, -(mMesh * input.medialYSign) * medialSign(input.side)));
-        return { t: sinkThicknessAt(u, vSigned, ctx), cut: sinkCutAt(u, vSigned, ctx) };
+        return sinkCutAt(u, vSigned, ctx);
     };
     const rimH = new Float64Array(input.nS);
     const rimT = new Float64Array(input.nS);
@@ -2107,98 +2076,49 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
     const rimCut = new Float64Array(input.nS);
     const rimIsStyloid = new Uint8Array(input.nS);
     const styloidId = input.sinks!.find((s) => s.kind === "styloid")?.id;
-    const rimXY: Array<{ x: number; y: number; z: number }> = [];
-    for (let s = 0; s < input.nS; s++) {
-        const vi = input.vertAt(0, s);
-        rimXY.push({
-            x: input.positions[vi * 3]!,
-            y: input.positions[vi * 3 + 1]!,
-            z: input.positions[vi * 3 + 2]!,
-        });
-    }
-    const hold2 = LOFT_RIM_HOLD_MM * LOFT_RIM_HOLD_MM;
-    const nearRim = (x: number, y: number, z: number): boolean => {
-        for (const p of rimXY) {
-            const dx = x - p.x;
-            const dy = y - p.y;
-            const dz = z - p.z;
-            if (dx * dx + dy * dy + dz * dz <= hold2) return true;
-        }
-        return false;
-    };
-    // A sub-0.05 mm thickness-only tail on the shared top/wall edge
-    // self-intersects. A real cut keeps its matching thickness so the taper
-    // can run out to the outline without dropping below the plain surface.
-    const loftThickness = (x: number, y: number, z: number, cutMm: number): number => {
-        const raw = sampleAt(x, y).t;
-        if (cutMm > 1e-9 || raw >= 0.05) return raw;
-        if (raw <= 0 || nearRim(x, y, z)) return 0;
-        return raw;
-    };
-    const stationHasWall = (s: number, crest: number): boolean => {
-        for (let row = 1; row < input.nJ; row++) {
-            const vi = input.vertAt(row, s);
-            const z = input.positions[vi * 3 + 2]!;
-            if (z > 0.5 && z < crest - 0.5) return true;
-        }
-        return false;
-    };
     for (let s = 0; s < input.nS; s++) {
         const vi = input.vertAt(0, s);
         const x = input.positions[vi * 3]!;
         const y = input.positions[vi * 3 + 1]!;
         rimH[s] = input.positions[vi * 3 + 2]!;
-        const cut = sampleAt(x, y).cut;
-        rimT[s] = loftThickness(x, y, rimH[s]!, cut.mm);
-        const floor = applyFloorGuard(rimH[s]! + rimT[s]!, cut.mm, cut.sinkId);
-        // Same T − S the viewport sheet applies, including on the crest, so
-        // the rim moves with the adjacent footbed. A wall that would be
-        // pulled under 3 mm is held, and that hold is the only extra lift.
-        let lowering = floor.cutMm;
-        const written = rimH[s]! + rimT[s]! - lowering;
-        if (
-            stationHasWall(s, rimH[s]!) &&
-            written < SINK_WALL_MIN_MM &&
-            rimH[s]! >= SINK_WALL_MIN_MM - 1e-6
-        ) {
-            lowering = rimH[s]! + rimT[s]! - SINK_WALL_MIN_MM;
-        }
+        const cut = sampleCut(x, y);
+        // No added thickness. The crest recesses with the footbed.
+        rimT[s] = 0;
+        // The crest follows the cut. Holding it at 3 mm while the footbed
+        // dropped made a knife edge (dihedral past 90°) along the met heads.
+        let lowering = cut.mm;
+        const floor = rimH[s]! >= SINK_SOLE_CLEAR_MM ? SINK_SOLE_CLEAR_MM : 0;
+        if (rimH[s]! - lowering < floor) lowering = Math.max(0, rimH[s]! - floor);
         rimR[s] = lowering;
-        rimCut[s] = floor.cutMm;
+        rimCut[s] = lowering;
         rimIsStyloid[s] = styloidId !== undefined && cut.sinkId === styloidId ? 1 : 0;
     }
-    const warnings: SinkWarning[] = [];
-    const seen = new Set<string>();
     const rimStation = new Map<number, number>();
     for (let s = 0; s < input.nS; s++) rimStation.set(input.vertAt(0, s), s);
-    const plainZ = new Float64Array(topCount);
-    for (let i = 0; i < topCount; i++) plainZ[i] = input.positions[i * 3 + 2]!;
     for (let i = 0; i < topCount; i++) {
         const x = input.positions[i * 3]!;
         const y = input.positions[i * 3 + 1]!;
         const z0 = input.positions[i * 3 + 2]!;
-        const sampled = sampleAt(x, y);
-        const cut = sampled.cut;
-        const t = loftThickness(x, y, z0, cut.mm);
-        const z = input.positions[i * 3 + 2]! + t;
-        const guarded = applyFloorGuard(z, cut.mm, cut.sinkId);
-        if (guarded.warning && !seen.has(guarded.warning.sinkId)) {
-            seen.add(guarded.warning.sinkId);
-            warnings.push(guarded.warning);
-        }
+        const cut = sampleCut(x, y);
         const station = rimStation.get(i);
+        let written = z0;
         if (station !== undefined) {
-            input.positions[i * 3 + 2] = rimH[station]! + rimT[station]! - rimR[station]!;
-            continue;
+            written = rimH[station]! + rimT[station]! - rimR[station]!;
+        } else if (cut.mm !== 0) {
+            const recessed = z0 - cut.mm;
+            written =
+                z0 >= SINK_SOLE_CLEAR_MM ? Math.max(SINK_SOLE_CLEAR_MM, recessed) : Math.max(0, recessed);
         }
-        if (t !== 0 || guarded.cutMm !== 0) input.positions[i * 3 + 2] = Math.max(0, z - guarded.cutMm);
+        input.positions[i * 3 + 2] = written;
     }
     raiseInboardOfGuardedRim(input, rimStation, rimCut, rimR);
+    // The viewport sheet relaxes this same top with no frozen rim. Freezing
+    // the crest here left the loft 0.37 mm off that sheet.
     relaxOverlapShoulder(
         input.positions,
         topCount,
-        rimStation,
-        (x, y) => sampleAt(x, y).cut.weight >= 0.98,
+        new Map(),
+        (x, y) => sampleCut(x, y).weight >= 0.98,
         (x, y) => {
             if (useMesh) return taperOverlap(x, meshYToAnatomical(y, input.side, input.medialYSign), ctx);
             const u = Math.max(0, Math.min(1, (x - input.bounds.minX) / length));
@@ -2208,8 +2128,9 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
             return taperOverlap(pt.x, pt.y, ctx);
         },
     );
-    for (let i = 0; i < topCount; i++) {
-        if (input.positions[i * 3 + 2]! < plainZ[i]!) input.positions[i * 3 + 2] = plainZ[i]!;
+    for (let s = 0; s < input.nS; s++) {
+        const written = input.positions[input.vertAt(0, s) * 3 + 2]!;
+        rimR[s] = Math.max(0, rimH[s]! + rimT[s]! - written);
     }
     const styloid = input.sinks!.find((s) => s.kind === "styloid");
     const depth = styloid ? clampSinkDepth("styloid", styloid.depthMm).depthMm : 0;
@@ -2235,5 +2156,5 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
             input.positions[vi * 3 + 2] = Math.max(0, zS + dz);
         }
     }
-    return mergeSinkWarnings(sinkDepthWarnings(input.sinks), sinkRimWarnings(ctx), warnings);
+    return mergeSinkWarnings(sinkDepthWarnings(input.sinks), sinkRimWarnings(ctx), []);
 }

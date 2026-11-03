@@ -38,13 +38,6 @@ import {
     clampArchGrindDepthMm,
 } from "@/lib/geometry/shape-finish-modifiers";
 import { neutralShellThicknessContext } from "@/lib/geometry/shell-thickness-zonal";
-import {
-    meshYToAnatomical,
-    sinkContextForMesh,
-    sinksActive,
-    sinkThicknessAt,
-    sinkThicknessMm,
-} from "@/lib/geometry/sink";
 import { wedgeCorrectionActive, wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
@@ -2740,7 +2733,8 @@ export function applyBaseModifiers(
         ...field,
         thicknessMm: thicknessMmForDelta,
         includeSkives: false,
-        // T is added beside the wedge, top-only. Keep it out of correctionDeltaAt.
+        // The sink cut is a later recess. Keep it out of correctionDeltaAt so
+        // the wide forefoot blend cannot raise a dome on this mesh.
         sinks: undefined,
         sinkStyloidThicken: undefined,
         sinkMarkers: undefined,
@@ -2811,25 +2805,6 @@ export function applyBaseModifiers(
     //    either way (same u/vSigned → correctionDeltaAt).
     const delta = new Float32Array(count);
     const wedgeAt = wedgeActive ? new Float32Array(count) : null;
-    const sinkTActive = sinksActive(field.sinks);
-    const sinkTAt = sinkTActive ? new Float32Array(count) : null;
-    const sinkMeshCtx = sinkTActive
-        ? sinkContextForMesh(
-              {
-                  side: field.side,
-                  lengthMm: field.lengthMm,
-                  widthMm: field.widthMm,
-                  trimline: field.trimline,
-                  sinks: field.sinks,
-                  sinkStyloidThicken: field.sinkStyloidThicken,
-                  sinkMarkers: field.sinkMarkers,
-              },
-              array,
-              topVertexCount > 0 ? topVertexCount : count,
-              lengthAxis,
-              widthAxis,
-          )
-        : null;
     const sampleEnd = useShellFieldSync && topVertexCount > 0 ? topVertexCount : count;
     for (let i = 0; i < sampleEnd; i++) {
         const lenCoord = array[i * 3 + lengthAxis]!;
@@ -2849,15 +2824,6 @@ export function applyBaseModifiers(
             if (isMultiMesh && topVertexCount > 0 && i >= topVertexCount) {
                 d -= postD;
             }
-        }
-        if (sinkTAt && sinkMeshCtx && !(isMultiMesh && topVertexCount > 0 && i >= topVertexCount)) {
-            sinkTAt[i] = sinkMeshCtx.footOutline
-                ? sinkThicknessMm(
-                      lenCoord,
-                      meshYToAnatomical(widCoord, field.side, sinkMeshCtx.medialYSign),
-                      sinkMeshCtx,
-                  )
-                : sinkThicknessAt(u, vSigned, field);
         }
         delta[i] = d;
     }
@@ -2985,24 +2951,7 @@ export function applyBaseModifiers(
                 dz = w * depthVec[g * 3 + 2]!;
             }
         }
-        // No sinks: the original assignment. With sinks, T is top-only (rim included).
-        if (sinkTAt) {
-            const sinkW =
-                isMultiMesh && topVertexCount > 0
-                    ? i < topVertexCount
-                        ? 1
-                        : 0
-                    : topFactors
-                      ? topFactors[i]! > 0.5
-                          ? 1
-                          : 0
-                      : w > 0.5
-                        ? 1
-                        : 0;
-            array[i * 3 + thickAxis] = t + vertD + sinkTAt[i]! * sinkW;
-        } else {
-            array[i * 3 + thickAxis] = t + vertD;
-        }
+        array[i * 3 + thickAxis] = t + vertD;
         array[i * 3 + widthAxis] += latD;
         array[i * 3] += dx;
         array[i * 3 + 1] += dy;
