@@ -70,6 +70,13 @@ export function rerunProductionJob(id: string): Promise<void> {
     );
 }
 
+export function registerMockProductionPrinter(name: string, moonrakerUrl: string): Promise<void> {
+    return withServer(
+        () => trpc.production.registerMockPrinter.mutate({ name, moonrakerUrl }).then(() => undefined),
+        () => useProductionStore.getState().registerMock(name, moonrakerUrl),
+    );
+}
+
 export async function downloadProductionGcode(id: string): Promise<void> {
     const file = isApiConfigured()
         ? await trpc.production.download.query({ id }).catch(() => useProductionStore.getState().download(id))

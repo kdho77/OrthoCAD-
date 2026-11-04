@@ -4,6 +4,7 @@
 // a printer or a mill, and does not create customer orders.
 
 import { type Actor, canAccessOrg } from "./client-files.js";
+import { type MockPairingResult, mockMoonrakerPair } from "./mock-moonraker.js";
 
 export const GCODE_RETAIN_MS = 90 * 24 * 60 * 60 * 1000;
 
@@ -84,9 +85,21 @@ export interface ProductionRepo {
     insertJob(job: ProductionJob): Promise<void>;
     patchJob(id: string, patch: Partial<ProductionJob>): Promise<ProductionJob>;
     listPrinters(): Promise<PrinterRecord[]>;
+    insertPrinter(printer: PrinterRecord): Promise<void>;
     getGcode(jobId: string): Promise<StoredGcode | null>;
     putGcode(jobId: string, value: StoredGcode): Promise<void>;
     clearGcode(jobId: string): Promise<void>;
+}
+
+export interface RegisterMockPrinterInput {
+    name: string;
+    /** Simulated Moonraker base URL. Never contacted in this foundation build. */
+    moonrakerUrl: string;
+}
+
+export interface RegisterMockPrinterResult {
+    printer: PrinterRecord;
+    pairing: MockPairingResult;
 }
 
 export interface EnqueueInput {
@@ -174,6 +187,9 @@ export function createMemoryProductionRepo(db: {
         },
         async listPrinters() {
             return db.printers;
+        },
+        async insertPrinter(printer) {
+            db.printers.push(printer);
         },
         async getGcode(jobId) {
             return db.gcode[jobId] ?? null;
@@ -311,6 +327,49 @@ export async function expireStoredGcode(repo: ProductionRepo, actor: Actor, now 
     }
 }
 
+function duplicateQueuedJob(
+    jobs: ProductionJob[],
+    actor: Actor,
+    designId: string,
+    gcodeSha256: string,
+): ProductionJob | null {
+    return (
+        jobs.find(
+            (job) =>
+                job.ownerId === actor.id &&
+                job.tenantId === actor.tenantId &&
+                job.designId === designId &&
+                job.gcodeSha256 === gcodeSha256 &&
+                QUEUE_STATUSES.includes(job.status),
+        ) ?? null
+    );
+}
+
+export async function registerMockPrinter(
+    repo: ProductionRepo,
+    actor: Actor,
+    input: RegisterMockPrinterInput,
+): Promise<RegisterMockPrinterResult> {
+    const name = input.name.trim();
+    if (!name) throw new ProductionError("BAD_REQUEST", "Printer name is required");
+    let pairing: MockPairingResult;
+    try {
+        pairing = mockMoonrakerPair(input.moonrakerUrl, name);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : "Invalid Moonraker URL";
+        throw new ProductionError("BAD_REQUEST", message);
+    }
+    const printer: PrinterRecord = {
+        id: crypto.randomUUID(),
+        name,
+        state: "offline",
+        tenantId: actor.tenantId,
+        ownerId: actor.id,
+    };
+    await repo.insertPrinter(printer);
+    return { printer, pairing };
+}
+
 export async function listProduction(
     repo: ProductionRepo,
     actor: Actor,
@@ -338,6 +397,8 @@ export async function enqueueJob(
     }
     const createdAt = stamp(now);
     const sha256 = await sha256Hex(input.gcode);
+    const existing = duplicateQueuedJob(await repo.listJobs(), actor, input.designId, sha256);
+    if (existing) return existing;
     const job: ProductionJob = {
         id: crypto.randomUUID(),
         designId: input.designId,
