@@ -35,6 +35,8 @@ import type { PlacedElement, PlacedSink, Side, SideCorrections, SinkKind } from 
 /**
  * SHA-256 of geometryToBinarySTL(reconstructProceduralPreview).
  * Re-recorded for the zonal shell. Straight Men's 9, left foot.
+ * full-length-wedge re-recorded after #249 stopped a rejected plantar trial
+ * from mutating accepted points. The other five pins are unchanged.
  */
 const PARITY_SHA256: Record<string, string> = {
     "no-sink": "4c0e3fa857504ddf81f2722737c83f47b20eac9b642e406656e06ed3deab13e1",
@@ -42,7 +44,7 @@ const PARITY_SHA256: Record<string, string> = {
     "regional-wedge": "be07ace9ba002920665c1763638c4cd0132728f8fd45c8d1bab67591d1b7001e",
     "met-pad": "d7489b3b3405cf04fe978a4041f53c09199c6aeb3df292ae4654ea7db1057084",
     width: "0f63337703e2f3195896fbe369e249bb4e42d034644589d862171a1a64d9c698",
-    "full-length-wedge": "1daf1782d447106ec71e757c3aa8daa3492f13670c622b4d98eb6f61d69abc2f",
+    "full-length-wedge": "a23a8e3a1a52fcc647b8dffb833952c911de1a5147df53408330928ddf8b2728",
 };
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
