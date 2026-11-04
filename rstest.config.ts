@@ -4,6 +4,10 @@ import { defineConfig } from "@rstest/core";
 import packages from "./package.json";
 
 export default defineConfig({
+    // Fail fast on stuck tests; heavy geometry suites override per `test(...)`.
+    testTimeout: 120_000,
+    hookTimeout: 60_000,
+    slowTestThreshold: 30_000,
     // pressure-map.webgl.test.ts needs a Playwright browser. Run it with
     // `npm run test:pressure-map-webgl`, not in the required unit job.
     exclude: [

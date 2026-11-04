@@ -14,12 +14,16 @@ const OUT = resolve("ci/unit-test-shards.json");
 /** Paths relative to repo root — keep on distinct shards from each other. */
 const PINNED_HEAVY = {
     "tests/procedural-wall-s1-parity.test.ts": 1,
+    "tests/procedural-wall-style.test.ts": 2,
+    "tests/s1-ring-size-regression.test.ts": 3,
+    "tests/one-click-export-artifacts.test.ts": 4,
     "tests/sink-fold-gate.test.ts": 2,
     "tests/sink-medial-band.test.ts": 3,
     "tests/procedural-wall-s0-parity.test.ts": 4,
     "tests/rim-conformity-matrix.test.ts": 5,
     "tests/arch-dome-smoothness.test.ts": 6,
-    "tests/bottom-wall-rim-conformity.test.ts": 1,
+    "tests/apex-move-standard-flexible.test.ts": 5,
+    "tests/bottom-wall-rim-conformity.test.ts": 6,
     "tests/heel-cup-depth.realmesh.test.ts": 2,
     "tests/heel-cup-depth.export-solid.test.ts": 3,
     "tests/toprim-extraction.test.ts": 4,
