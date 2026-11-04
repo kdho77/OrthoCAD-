@@ -5,10 +5,11 @@ import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
 import { commitAfoScanPoint } from "@/features/afo/afo-scan-markers";
 import { AFO_PLACE_ADVANCE_MS, afoPlacementComplete } from "@/features/afo/afo-scan-ui";
-import { invertMatrixElements, transformAfoPoint } from "@/lib/geometry/afo/landmark-frame";
-import type { AfoVec3 } from "@/lib/geometry/afo/types";
-import { worldHitToScanLocal } from "@/lib/geometry/scan-display";
-import { refineHitOnFullMesh } from "@/lib/geometry/scan-pick-mesh";
+import {
+    afoScanPickToStoredMm,
+    resolveAfoScanRaycastHit,
+    type AfoScanPickHit,
+} from "@/lib/geometry/afo/afo-scan-pick";
 import { getAfoState, useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useScanStore } from "@/stores/scan-store";
@@ -28,7 +29,7 @@ export function AfoScanLandmarkPlacement() {
         (
             clientX: number,
             clientY: number,
-        ): { point: AfoVec3; scanId: string; displayScale: number; world: THREE.Vector3 } | null => {
+        ): AfoScanPickHit | null => {
             const rect = gl.domElement.getBoundingClientRect();
             const ndc = new THREE.Vector2(
                 ((clientX - rect.left) / rect.width) * 2 - 1,
@@ -50,54 +51,22 @@ export function AfoScanLandmarkPlacement() {
             const targets = pickTargets.length > 0 ? pickTargets : fullTargets;
             if (targets.length === 0) return null;
             const hits = raycaster.intersectObjects(targets, false);
-            const hit = hits[0];
-            if (!hit) return null;
-            const mesh = hit.object as THREE.Mesh;
-
-            if (mesh.userData?.isAfoAlignPick || mesh.userData?.isAfoCast) {
-                const matrix = getAfoState().scanWorkflow.matrixElements;
-                const scanId = getAfoState().scanWorkflow.scanId;
-                const scan = useScanStore.getState().scans.find((item) => item.id === scanId);
-                if (!matrix || !scan) return null;
-                const local = hit.point.clone();
-                mesh.worldToLocal(local);
-                const point = transformAfoPoint(
-                    { x: local.x, y: local.y, z: local.z },
-                    invertMatrixElements(matrix),
-                );
-                return {
-                    point,
-                    scanId: scan.id,
-                    displayScale: scan.display.displayScale,
-                    world: hit.point.clone(),
-                };
-            }
-
-            const scanId = mesh.userData?.scanId as string | undefined;
-            if (!scanId) return null;
-            const scan = useScanStore.getState().scans.find((item) => item.id === scanId);
-            if (!scan) return null;
-            let worldPoint = hit.point.clone();
-            if (mesh.userData?.isScanPickMesh && mesh.userData.fullGeometry) {
-                const fullGeo = mesh.userData.fullGeometry as THREE.BufferGeometry;
-                const localRay = raycaster.ray.clone();
-                const inv = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
-                localRay.applyMatrix4(inv);
-                const coarseLocal = hit.point.clone();
-                mesh.worldToLocal(coarseLocal);
-                const refinedLocal = refineHitOnFullMesh(localRay, fullGeo, coarseLocal);
-                if (!refinedLocal) return null;
-                worldPoint = refinedLocal.clone();
-                mesh.localToWorld(worldPoint);
-            }
-            const local = worldHitToScanLocal(worldPoint, mesh.matrixWorld);
-            const scale = scan.display.displayScale > 0 ? scan.display.displayScale : 1;
-            return {
-                point: { x: local.x * scale, y: local.y * scale, z: local.z * scale },
-                scanId,
-                displayScale: scale,
-                world: worldPoint,
-            };
+            const wf = getAfoState().scanWorkflow;
+            const scanId = wf.scanId;
+            const scan = scanId
+                ? useScanStore.getState().scans.find((item) => item.id === scanId)
+                : undefined;
+            const resolved = resolveAfoScanRaycastHit(raycaster, hits, {
+                alignmentApplied,
+                alignmentMatrixElements: wf.matrixElements,
+                scanIdForOriented: scan?.id ?? scanId ?? null,
+                displayScaleForOriented: scan?.display.displayScale ?? 1,
+            });
+            if (!resolved) return null;
+            const scale =
+                useScanStore.getState().scans.find((item) => item.id === resolved.scanId)?.display
+                    .displayScale ?? 1;
+            return afoScanPickToStoredMm(resolved, alignmentApplied, wf.matrixElements, scale);
         },
         [alignmentApplied, camera, draggingId, gl.domElement, raycaster, scene],
     );
@@ -108,7 +77,9 @@ export function AfoScanLandmarkPlacement() {
             useAfoStore.getState().setScanLandmarkError(message);
             if (message) return;
             useAfoStore.getState().setScanLastUndoId(null);
-            useAfoStore.getState().setScanAutoFrameSuppressed(false);
+            const aligned = Boolean(getAfoState().scanWorkflow.alignmentApplied);
+            if (aligned) useAfoStore.getState().setScanAutoFrameSuppressed(false);
+            else useAfoStore.getState().setScanAutoFrameSuppressed(true);
             const wf = getAfoState().scanWorkflow;
             if (afoPlacementComplete(wf)) {
                 useAfoStore.getState().setScanPlacement(null);

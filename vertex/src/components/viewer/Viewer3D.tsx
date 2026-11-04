@@ -21,7 +21,9 @@ import {
 import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
-import { activeMarkerPlacementLayer } from "@/features/afo/afo-scan-markers";
+import { activeMarkerPlacementLayer, scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
+import { afoPlacementComplete, ensureAfoScanPlacement } from "@/features/afo/afo-scan-ui";
+import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
 import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
@@ -164,13 +166,20 @@ export function Viewer3D() {
     const isAfo = design.productType === "afo";
     const placingScanMarkers = useScanStore((s) => s.placementMode != null);
     const placingAfoLandmarks = useAfoStore((s) => s.scanPlacement != null);
+    const afoScanWorkflow = useDesignStore((s) => s.design.afo?.scanWorkflow) ?? defaultAfoScanWorkflow();
+    const afoStage1Align = isAfo && workflowStep === "scan" && !afoScanWorkflow.alignmentApplied;
     const afoScanLabels = useAfoStore((s) => s.scanShowMarkerLabels);
     const afoAutoFrame = useAfoStore((s) => s.scanAutoFrame);
     const setAfoScanLabels = useAfoStore((s) => s.setScanShowMarkerLabels);
     const setAfoAutoFrame = useAfoStore((s) => s.setScanAutoFrame);
     const markerLayer = activeMarkerPlacementLayer(isAfo, placingScanMarkers, placingAfoLandmarks);
     const afoScanLandmarking = isAfo && workflowStep === "scan" && placingAfoLandmarks;
-    const scanTransparent = afoScanLandmarking ? false : viewer.transparent;
+    const scanTransparent = afoScanLandmarking || afoStage1Align ? false : viewer.transparent;
+
+    useEffect(() => {
+        if (!afoStage1Align || afoPlacementComplete(afoScanWorkflow)) return;
+        if (scanForAfoWorkflow()) ensureAfoScanPlacement();
+    }, [afoStage1Align, afoScanWorkflow]);
 
     useAfoScanCameraFrame(controls);
     const showLeftInsole = !isAfo && viewer.showLeft && !hideInsoleForMarkers;
@@ -292,6 +301,7 @@ export function Viewer3D() {
                         <ScanMeshes
                             transparent={scanTransparent}
                             heightmap={afoScanLandmarking ? false : viewer.heightmap}
+                            afoStage1Align={afoStage1Align}
                         />
                     ) : null}
                     {isAfo ? <AfoMeshes /> : null}

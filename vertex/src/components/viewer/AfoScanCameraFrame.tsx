@@ -6,6 +6,7 @@ import {
     AFO_CAMERA_TWEEN_MS,
     AFO_PLACE_ADVANCE_MS,
     activeAfoTarget,
+    afoScanAutoFrameAllowed,
     cameraViewForAfoMarker,
     type AfoMarkerKey,
 } from "@/features/afo/afo-scan-ui";
@@ -33,6 +34,7 @@ export function useAfoScanCameraFrame(controls: React.RefObject<OrbitControlsImp
     useEffect(() => {
         const ctrl = controls.current;
         if (!ctrl || !placement || !targetId || !autoFrame || suppressed) return;
+        if (!afoScanAutoFrameAllowed(workflow)) return;
         const scan = scanForAfoWorkflow();
         const side = afoFrameSide(scan?.side ?? "left");
         const view = cameraViewForAfoMarker(targetId as AfoMarkerKey, side);

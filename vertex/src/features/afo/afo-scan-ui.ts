@@ -162,6 +162,11 @@ export function jumpToFirstMissingRequired(): void {
 }
 
 /** Camera preset for the active marker; medial/lateral flip with foot side. */
+/** Stage 1 plantar clicks keep the user's camera; auto-frame runs for anatomical landmarks only. */
+export function afoScanAutoFrameAllowed(wf: AfoScanWorkflow): boolean {
+    return wf.alignmentApplied;
+}
+
 export function cameraViewForAfoMarker(id: AfoMarkerKey, side: Side): CameraView {
     if (id === "heel" || id === "m1p" || id === "m5p") return "bottom";
     if (id === "posterior_calcaneus") return "back";

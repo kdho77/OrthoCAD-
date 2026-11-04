@@ -19,6 +19,7 @@ import { buildDecimatedPickGeometry, scanNeedsPickProxy } from "@/lib/geometry/s
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { useDesignStore } from "@/stores/design-store";
 import { getScanRegistrationMatrix, useScanStore } from "@/stores/scan-store";
+import { scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
 import { AFO_SCAN_GREY, activeAfoTarget } from "@/features/afo/afo-scan-ui";
 import { AfoScanStage1Markers } from "@/components/viewer/AfoScanMarkers";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
@@ -275,12 +276,12 @@ function RegisteredScanMesh({
                     emissiveIntensity={selected && !useVertexColors && !afoGreyScan ? 0.35 : 0}
                     metalness={afoGreyScan ? 0 : 0.05}
                     roughness={afoGreyScan ? 0.85 : placingMarkers || depthGeo ? 0.55 : 0.8}
-                    transparent={afoGreyScan ? transparent : transparent || !!coloredGeo || (!registered && !depthGeo)}
+                    transparent={
+                        afoGreyScan ? false : transparent || !!coloredGeo || (!registered && !depthGeo)
+                    }
                     opacity={
                         afoGreyScan
-                            ? transparent
-                                ? 0.45
-                                : 1
+                            ? 1
                             : transparent
                               ? 0.45
                               : coloredGeo
@@ -403,6 +404,7 @@ function RegisteredScanMesh({
                     plantar={afoPlantar}
                     displayScale={display.displayScale}
                     targetId={afoTargetId ?? null}
+                    meshMatrix={meshMatrix}
                 />
             ) : null}
         </group>
@@ -412,9 +414,12 @@ function RegisteredScanMesh({
 export function ScanMeshes({
     transparent,
     heightmap = false,
+    afoStage1Align = false,
 }: {
     transparent: boolean;
     heightmap?: boolean;
+    /** AFO Step 1 plantar alignment — solid grey scan before rigid fit is applied. */
+    afoStage1Align?: boolean;
 }) {
     const scans = useScanStore((s) => s.scans);
     const registrationByScanId = useScanStore((s) => s.registrationByScanId);
@@ -425,6 +430,7 @@ export function ScanMeshes({
     const afoPlacement = useAfoStore((s) => s.scanPlacement);
     const afoWorkflow = useDesignStore((s) => s.design.afo?.scanWorkflow) ?? defaultAfoScanWorkflow();
     const afoTargetId = activeAfoTarget(afoWorkflow, afoPlacement?.redo ?? null);
+    const afoAlignScanId = afoWorkflow.scanId ?? scanForAfoWorkflow()?.id ?? null;
 
     const registrationMatrices = useMemo(() => {
         const map = new Map<string, THREE.Matrix4 | null>();
@@ -453,9 +459,9 @@ export function ScanMeshes({
                         placingMarkers={placementScanId === s.id}
                         afoGreyScan={
                             isAfo &&
-                            afoPlacement != null &&
+                            afoStage1Align &&
                             !afoWorkflow.alignmentApplied &&
-                            s.id === (afoWorkflow.scanId ?? s.id)
+                            s.id === (afoAlignScanId ?? s.id)
                         }
                         afoPlantar={afoWorkflow.plantar}
                         afoTargetId={afoTargetId}

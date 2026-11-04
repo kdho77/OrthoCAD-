@@ -11,8 +11,10 @@ import { useDesignStore } from "@/stores/design-store";
 export function AfoMeshes() {
     const afo = useDesignStore((s) => s.design.afo) ?? getAfoState();
     const viewerTransparent = useDesignStore((s) => s.viewer.transparent);
+    const scanWorkflow = useDesignStore((s) => s.design.afo?.scanWorkflow);
     const placingScan = useAfoStore((s) => s.scanPlacement != null);
-    const transparent = placingScan ? false : viewerTransparent || afo.cast.transparent;
+    const stage1Align = placingScan && !scanWorkflow?.alignmentApplied;
+    const transparent = stage1Align || placingScan ? false : viewerTransparent || afo.cast.transparent;
     const shell = useAfoStore((s) => s.shellMesh);
     const corrected = useAfoStore((s) => s.correctedMesh);
     const cast = useAfoStore((s) => s.castMesh);

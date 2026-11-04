@@ -107,10 +107,12 @@ export function AfoScanStage1Markers({
     plantar,
     displayScale,
     targetId,
+    meshMatrix,
 }: {
     plantar: ReturnType<typeof defaultAfoScanWorkflow>["plantar"];
     displayScale: number;
     targetId: string | null;
+    meshMatrix: THREE.Matrix4;
 }) {
     const showLabels = useAfoStore((s) => s.scanShowMarkerLabels);
     const scale = displayScale > 0 ? displayScale : 1;
@@ -118,16 +120,19 @@ export function AfoScanStage1Markers({
         useAfoStore.getState().setScanDraggingMarkerId(id);
         useAfoStore.getState().setScanPlacement({ redo: id, paused: false });
     };
+    const toWorld = (p: { x: number; y: number; z: number }) =>
+        new THREE.Vector3(p.x / scale, p.y / scale, p.z / scale).applyMatrix4(meshMatrix);
     return (
         <>
             {AFO_PLANTAR_STEPS.map((step) => {
                 const p = plantar[step.id];
                 if (!p) return null;
+                const pos = toWorld(p);
                 return (
                     <AfoScanMarkerDot
                         key={step.id}
                         markerId={step.id}
-                        position={[p.x / scale, p.y / scale, p.z / scale]}
+                        position={[pos.x, pos.y, pos.z]}
                         color={AFO_STAGE1_MARKER}
                         isTarget={targetId === step.id}
                         label={AFO_MARKER_PILL[step.id]}
