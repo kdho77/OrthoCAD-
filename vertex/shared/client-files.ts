@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 // Client-file rules shared by the API and the browser. No CAD geometry.
 
+import type { DesignSettingsEnvelope } from "./design-settings.js";
+
 export const DESIGN_KINDS = ["insole", "afo"] as const;
 export type DesignKind = (typeof DESIGN_KINDS)[number];
 
@@ -210,6 +212,8 @@ export interface DesignGeometryWrite {
     linked: boolean;
     corrections: { left: unknown; right: unknown };
     elements: unknown;
+    /** Full parameter snapshot. Relational columns stay for older rows. */
+    settingsJson: DesignSettingsEnvelope;
     ip: string | null;
 }
 
@@ -264,7 +268,7 @@ export interface ClientFileRepo {
     duplicateDesign(sourceId: string, copy: DuplicateCopy): Promise<DesignRow>;
     /** Full design row plus corrections and elements. Geometry columns are not rewritten here. */
     loadDesignDocument(id: string): Promise<unknown | null>;
-    /** Calls `vertex_save_design`. Adapters must not reshape corrections or elements. */
+    /** Calls `vertex_save_design`, then stores `settingsJson`. Adapters must not reshape corrections, elements, or settings. */
     saveDesignGeometry(input: DesignGeometryWrite): Promise<{ ok: true }>;
     audit(entry: { userId: string; action: string; targetId: string }): Promise<void>;
 }
@@ -274,6 +278,56 @@ export interface MemoryDb {
     designs: DesignRow[];
     exports: { id: string; designId: string }[];
     audits: { userId: string; action: string; targetId: string }[];
+    /** Full design documents keyed by id. Present after saveDesignGeometry. */
+    designDocuments?: Record<string, unknown>;
+}
+
+function memoryNumber(value: unknown, fallback: number): number {
+    return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/** Relational correction columns only. Wedges and other parameters stay in settingsJson. */
+function memoryCorrectionRow(designId: string, side: "left" | "right", value: unknown) {
+    const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+    return {
+        id: crypto.randomUUID(),
+        designId,
+        side,
+        forefootPostingDeg: memoryNumber(row.forefootPostingDeg, 0),
+        rearfootPostingDeg: memoryNumber(row.rearfootPostingDeg, 0),
+        medialSkiveMm: memoryNumber(row.medialSkiveMm, 0),
+        lateralSkiveMm: memoryNumber(row.lateralSkiveMm, 0),
+        archFillMm: memoryNumber(row.archFillMm, 0),
+        archHeightMm: memoryNumber(row.archHeightMm, 0),
+        heelCupDepthMm: memoryNumber(row.heelCupDepthMm, 0),
+        heelCupHeightMm: memoryNumber(row.heelCupHeightMm, 0),
+        apexMoveMm: memoryNumber(row.apexMoveMm, 0),
+        medialFlangeMm: memoryNumber(row.medialFlangeMm, 0),
+        lateralFlangeMm: memoryNumber(row.lateralFlangeMm, 0),
+    };
+}
+
+function memoryElementRows(designId: string, elements: unknown) {
+    if (!Array.isArray(elements)) return [];
+    return elements.map((entry) => {
+        const row = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {};
+        const position =
+            row.position && typeof row.position === "object" ? (row.position as Record<string, unknown>) : {};
+        const scale =
+            row.scale && typeof row.scale === "object" ? (row.scale as Record<string, unknown>) : {};
+        return {
+            id: crypto.randomUUID(),
+            designId,
+            side: row.side === "right" ? "right" : "left",
+            kind: typeof row.kind === "string" ? row.kind : "met_pad",
+            posX: memoryNumber(position.x, 0),
+            posY: memoryNumber(position.y, 0),
+            rotationDeg: memoryNumber(row.rotationDeg, 0),
+            scaleX: memoryNumber(scale.x, 1),
+            scaleY: memoryNumber(scale.y, 1),
+            heightMm: memoryNumber(row.heightMm, 4),
+        };
+    });
 }
 
 export function createMemoryClientFileRepo(db: MemoryDb): ClientFileRepo {
@@ -337,12 +391,47 @@ export function createMemoryClientFileRepo(db: MemoryDb): ClientFileRepo {
                 hasExport: false,
             };
             db.designs.push(row);
+            const sourceDoc = db.designDocuments?.[sourceId];
+            if (sourceDoc && typeof sourceDoc === "object" && db.designDocuments) {
+                db.designDocuments[copy.id] = {
+                    ...(JSON.parse(JSON.stringify(sourceDoc)) as Record<string, unknown>),
+                    id: copy.id,
+                    name: copy.name,
+                };
+            }
             return { ...row };
         },
-        async loadDesignDocument() {
-            return null;
+        async loadDesignDocument(id) {
+            const doc = db.designDocuments?.[id];
+            return doc ? JSON.parse(JSON.stringify(doc)) : null;
         },
-        async saveDesignGeometry() {
+        async saveDesignGeometry(input) {
+            const now = new Date().toISOString();
+            const existing = db.designDocuments?.[input.designId] as { createdAt?: string } | undefined;
+            const createdAt = existing?.createdAt ?? now;
+            if (!db.designDocuments) db.designDocuments = {};
+            db.designDocuments[input.designId] = {
+                id: input.designId,
+                name: input.name,
+                pattern: input.pattern,
+                method: input.method,
+                thicknessMm: input.thicknessMm,
+                linked: input.linked,
+                unit: input.unit,
+                createdAt,
+                updatedAt: now,
+                settingsJson: JSON.parse(JSON.stringify(input.settingsJson)) as DesignSettingsEnvelope,
+                corrections: [
+                    memoryCorrectionRow(input.designId, "left", input.corrections.left),
+                    memoryCorrectionRow(input.designId, "right", input.corrections.right),
+                ],
+                elements: memoryElementRows(input.designId, input.elements),
+            };
+            const design = db.designs.find((row) => row.id === input.designId);
+            if (design) {
+                design.name = input.name;
+                design.updatedAt = now;
+            }
             return { ok: true as const };
         },
         async audit(entry) {

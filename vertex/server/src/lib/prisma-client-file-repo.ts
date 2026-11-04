@@ -236,6 +236,10 @@ export function prismaClientFileRepo(prisma: PrismaClient): ClientFileRepo {
                     thicknessMm: source.thicknessMm,
                     linked: source.linked,
                     unit: source.unit,
+                    settingsJson:
+                        source.settingsJson === null
+                            ? undefined
+                            : (source.settingsJson as Prisma.InputJsonValue),
                     archivedAt: null,
                     deletedAt: null,
                     createdAt: new Date(copy.now),
@@ -274,21 +278,29 @@ export function prismaClientFileRepo(prisma: PrismaClient): ClientFileRepo {
             return row ? JSON.parse(JSON.stringify(row)) : null;
         },
         async saveDesignGeometry(input: DesignGeometryWrite) {
-            await prisma.$queryRaw`
-                SELECT vertex_save_design(
-                    ${input.userId}::uuid,
-                    ${input.designId}::uuid,
-                    ${input.name}::text,
-                    ${input.pattern}::text,
-                    ${input.method}::text,
-                    ${input.thicknessMm}::float8,
-                    ${input.unit}::text,
-                    ${input.linked}::boolean,
-                    ${JSON.stringify(input.corrections)}::jsonb,
-                    ${JSON.stringify(input.elements)}::jsonb,
-                    ${input.ip}::text
-                )
-            `;
+            await prisma.$transaction(async (tx) => {
+                await tx.design.update({
+                    where: { id: input.designId },
+                    data: {
+                        settingsJson: input.settingsJson as unknown as Prisma.InputJsonValue,
+                    },
+                });
+                await tx.$queryRaw`
+                    SELECT vertex_save_design(
+                        ${input.userId}::uuid,
+                        ${input.designId}::uuid,
+                        ${input.name}::text,
+                        ${input.pattern}::text,
+                        ${input.method}::text,
+                        ${input.thicknessMm}::float8,
+                        ${input.unit}::text,
+                        ${input.linked}::boolean,
+                        ${JSON.stringify(input.corrections)}::jsonb,
+                        ${JSON.stringify(input.elements)}::jsonb,
+                        ${input.ip}::text
+                    )
+                `;
+            });
             return { ok: true as const };
         },
         async audit(entry) {

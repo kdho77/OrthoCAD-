@@ -13,7 +13,7 @@ import {
     updateDesignMeta,
 } from "../../../shared/client-files.js";
 import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
-import { designStateSchema } from "../lib/design-schema.js";
+import { designStateSchema, settingsEnvelopeForSave } from "../lib/design-schema.js";
 import { protectedProcedure, router } from "../trpc.js";
 
 const designKind = z.enum(["insole", "afo"]);
@@ -44,6 +44,8 @@ export const designRouter = router({
             await getDesignFile(repo, actor, input.id, storePhi);
             const document = await repo.loadDesignDocument(input.id);
             if (!document) throw new TRPCError({ code: "NOT_FOUND" });
+            // settingsJson is the preferred parameter snapshot. Relational columns
+            // stay on the document so rows saved before that column still load.
             if (!storePhi && typeof document === "object") {
                 return { ...(document as Record<string, unknown>), notes: "" };
             }
@@ -144,7 +146,8 @@ export const designRouter = router({
             }
         }),
 
-    // Persists the full design: header fields + relational corrections + elements.
+    // Persists parameters: relational columns for older readers, plus settingsJson.
+    // settingsJson is the full design state (no meshes). Open prefers it.
     save: protectedProcedure
         .input(
             z.object({ id: z.string().uuid(), name: z.string().min(1).max(120), state: designStateSchema }),
@@ -168,6 +171,7 @@ export const designRouter = router({
                         right: state.corrections.right,
                     },
                     elements: state.elements,
+                    settingsJson: settingsEnvelopeForSave(state),
                     ip: ctx.ip,
                 });
             } catch (error) {
