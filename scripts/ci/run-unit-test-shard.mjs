@@ -18,7 +18,7 @@ if (!shard) {
 
 console.log(`Running shard ${shardIndex}/${manifest.shardCount} (${shard.files.length} files)`);
 
-execFileSync("npx", ["rstest", "run", "--maxConcurrency", "2", ...shard.files], {
+execFileSync("npx", ["rstest", "run", "--maxConcurrency", "1", ...shard.files], {
     stdio: "inherit",
     cwd: resolve("."),
 });
