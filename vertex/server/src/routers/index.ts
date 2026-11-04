@@ -11,6 +11,8 @@ import { scanRouter } from "./scan.js";
 import { stockRouter } from "./stock.js";
 import { userRouter } from "./user.js";
 
+export { bindIntegrationHandler, handleIntegrationFetch } from "./integrations/index.js";
+
 export const appRouter = router({
     user: userRouter,
     export: exportRouter,
