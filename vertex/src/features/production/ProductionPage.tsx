@@ -10,7 +10,6 @@ import { designPath } from "@/features/clients/routes";
 import { cn } from "@/lib/utils";
 import { useProductionStore } from "@/stores/production-store";
 import { formatRelative } from "../../../shared/client-files";
-import { gcodeRetentionLabel } from "../../../shared/retention";
 import {
     type DueFilter,
     defaultHistoryQuery,
@@ -28,6 +27,7 @@ import {
     queryQueue,
     statusLabel,
 } from "../../../shared/production-jobs";
+import { gcodeRetentionLabel } from "../../../shared/retention";
 import {
     assignProductionJob,
     cancelProductionJob,
@@ -35,6 +35,7 @@ import {
     holdProductionJob,
     loadProduction,
     markProductionJobDone,
+    registerMockProductionPrinter,
     rerunProductionJob,
     retryProductionJob,
 } from "./production-actions";
@@ -268,13 +269,63 @@ function PrintersTab({
     jobs: ProductionJob[];
     printers: { id: string; name: string; state: PrinterState; tenantId: string | null; ownerId: string }[];
 }) {
+    const [name, setName] = useState("");
+    const [moonrakerUrl, setMoonrakerUrl] = useState("http://127.0.0.1:7125");
+    const [notice, setNotice] = useState("");
     const cards = printerCards(printers, jobs);
+
+    const register = () => {
+        setNotice("");
+        void registerMockProductionPrinter(name, moonrakerUrl)
+            .then(() => {
+                setName("");
+            })
+            .catch((error: unknown) => {
+                setNotice(error instanceof Error ? error.message : "Registration failed");
+            });
+    };
+
     return (
         <section className="flex flex-col gap-3" data-testid="production-printers">
             <p className="text-sm text-muted-foreground">
                 Printer status only. Live connections arrive with Print Farm. This page does not send printer
                 commands.
             </p>
+            <div className="rounded-xl border border-border bg-panel p-3">
+                <h2 className="text-sm font-medium">Register mock printer</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                    Simulated Moonraker pairing for development. No outbound requests are made.
+                </p>
+                <div className="mt-3 flex flex-col gap-2 md:flex-row md:flex-wrap">
+                    <label className="min-w-0 flex-1 text-xs text-muted-foreground">
+                        Name
+                        <input
+                            aria-label="Printer name"
+                            value={name}
+                            placeholder="Bay 1"
+                            className="mt-1 block min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
+                            onChange={(event) => setName(event.target.value)}
+                        />
+                    </label>
+                    <label className="min-w-0 flex-[2] text-xs text-muted-foreground">
+                        Moonraker URL
+                        <input
+                            aria-label="Moonraker URL"
+                            value={moonrakerUrl}
+                            className="mt-1 block min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
+                            onChange={(event) => setMoonrakerUrl(event.target.value)}
+                        />
+                    </label>
+                    <button
+                        type="button"
+                        className="min-h-11 self-end rounded-md bg-primary px-4 text-sm text-primary-foreground"
+                        onClick={register}
+                    >
+                        Register
+                    </button>
+                </div>
+                {notice ? <p className="mt-2 text-sm text-amber-300">{notice}</p> : null}
+            </div>
             {cards.length === 0 ? <p className="text-sm text-muted-foreground">No printers yet.</p> : null}
             <div className="grid gap-3 md:grid-cols-2">
                 {cards.map((card) => (
