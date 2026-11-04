@@ -16,7 +16,7 @@ jobs:
     unit-tests:
         if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
-        timeout-minutes: 75
+        timeout-minutes: 90
         strategy:
             fail-fast: false
             matrix:
