@@ -165,6 +165,28 @@ enum PrinterState {
     offline
 }
 
+enum IntegrationSource {
+    vo2
+    orthocloud
+}
+
+enum ShoeSizeSystem {
+    US_M
+    US_W
+    EU
+}
+
+enum IntegrationScanSide {
+    left
+    right
+    combined
+}
+
+enum IntegrationLaunchActor {
+    clinic
+    vertex_staff
+}
+
 // --- Identity & Access ------------------------------------------------------
 
 // Mirrors Supabase auth.users (same UUID). Application-level profile + role.
@@ -196,6 +218,7 @@ model User {
     shopJobs        ShopJob[]
     shopPrinters    ShopPrinter[]
     clientScans     ClientScan[]
+    integrationLaunches IntegrationLaunchToken[]
 
     @@index([role])
     @@index([tenantId])
@@ -264,6 +287,9 @@ model Tenant {
     shopPrinters ShopPrinter[]
     shopJobs     ShopJob[]
     clientScans  ClientScan[]
+    integrationCredentialTenants IntegrationCredentialTenant[]
+    integrationClients           IntegrationClient[]
+    integrationDesigns           IntegrationDesign[]
 
     @@index([status])
     @@index([plan])
@@ -348,6 +374,10 @@ model Client {
     shoeSizeLeftUs  Float    @default(9)
     shoeSizeRightUs Float    @default(9)
     shoeWidth       String   @default("medium")
+    // US_M matches the existing chart numbers. Declared stays true for rows
+    // that already have a size, so an order does not overwrite the chart.
+    shoeSizeSystem   ShoeSizeSystem @default(US_M)
+    shoeSizeDeclared Boolean        @default(true)
     archivedAt  DateTime?
     createdAt   DateTime  @default(now())
     updatedAt   DateTime  @updatedAt
@@ -359,6 +389,7 @@ model Client {
     designs     Design[]
     shopJobs    ShopJob[]
     clientScans ClientScan[]
+    integrationLinks IntegrationClient[]
 
     @@index([ownerId])
     @@index([tenantId])
@@ -393,6 +424,7 @@ model Design {
     exports       Export[]
     prescriptions Prescription[]
     shopJobs      ShopJob[]
+    integrationLink IntegrationDesign?
 
     @@index([clientId])
     @@index([ownerId])
@@ -707,4 +739,148 @@ model StockBase {
     @@index([isDefault])
     @@index([isActive])
     @@map("stock_bases")
+}
+
+// --- Launch connector (VO2 / 3D OrthoCloud) ---------------------------------
+// Server-to-server only. API keys are stored as SHA-256 hashes. The webhook
+// signing secret is AES-GCM ciphertext, never the API key. Tenants are never
+// created by this API. Do not apply the migration to production until approved.
+
+model IntegrationCredential {
+    id                      String    @id @default(uuid()) @db.Uuid
+    label                   String
+    keyHash                 String    @unique
+    webhookUrl              String?
+    webhookSecretCiphertext String?
+    createdAt               DateTime  @default(now())
+    revokedAt               DateTime?
+
+    tenants IntegrationCredentialTenant[]
+
+    @@map("integration_credentials")
+}
+
+model IntegrationCredentialTenant {
+    credentialId String @db.Uuid
+    tenantId     String @db.Uuid
+
+    credential IntegrationCredential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+    tenant     Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+    @@id([credentialId, tenantId])
+    @@index([tenantId])
+    @@map("integration_credential_tenants")
+}
+
+model IntegrationClient {
+    id               String            @id @default(uuid()) @db.Uuid
+    source           IntegrationSource
+    tenantId         String            @db.Uuid
+    externalClientId String
+    clientId         String            @db.Uuid
+    shoeSizeSystem   ShoeSizeSystem
+    shoeSize         Float
+    shoeSizeLeft     Float?
+    shoeSizeRight    Float?
+    shoeWidth        String
+    shoeSizeMismatch Boolean           @default(false)
+    createdAt        DateTime          @default(now())
+    updatedAt        DateTime          @updatedAt
+
+    tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+    client Client @relation(fields: [clientId], references: [id], onDelete: Restrict)
+
+    @@unique([source, tenantId, externalClientId])
+    @@index([clientId])
+    @@index([tenantId])
+    @@map("integration_clients")
+}
+
+model IntegrationDesign {
+    id                    String            @id @default(uuid()) @db.Uuid
+    source                IntegrationSource
+    tenantId              String            @db.Uuid
+    externalOrderId       String
+    designId              String            @unique @db.Uuid
+    clientId              String            @db.Uuid
+    kind                  DesignKind
+    sides                 String
+    rxText                String?
+    notes                 String?
+    orderReference        String?
+    orderedByAccount      String?
+    parentExternalOrderId String?
+    parentDesignId        String?           @db.Uuid
+    shoeSizeSystem        ShoeSizeSystem
+    shoeSize              Float
+    shoeSizeLeft          Float?
+    shoeSizeRight         Float?
+    shoeWidth             String
+    shoeSizeMismatch      Boolean           @default(false)
+    createdAt             DateTime          @default(now())
+    updatedAt             DateTime          @updatedAt
+
+    tenant  Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+    design  Design                 @relation(fields: [designId], references: [id], onDelete: Restrict)
+    uploads IntegrationScanUpload[]
+
+    @@unique([source, tenantId, externalOrderId])
+    @@index([tenantId])
+    @@index([clientId])
+    @@map("integration_designs")
+}
+
+model IntegrationScanUpload {
+    id                  String              @id @default(uuid()) @db.Uuid
+    integrationDesignId String              @db.Uuid
+    side                IntegrationScanSide
+    storageKey          String
+    tokenHash           String
+    uploadUrl           String
+    expiresAt           DateTime
+    format              String?
+    fileName            String?
+    sizeBytes           Int?
+    completedAt         DateTime?
+    createdAt           DateTime            @default(now())
+
+    design IntegrationDesign @relation(fields: [integrationDesignId], references: [id], onDelete: Cascade)
+
+    @@index([integrationDesignId])
+    @@map("integration_scan_uploads")
+}
+
+model IntegrationLaunchToken {
+    id          String                  @id @default(uuid()) @db.Uuid
+    tokenHash   String                  @unique
+    tenantId    String                  @db.Uuid
+    designId    String                  @db.Uuid
+    actorKind   IntegrationLaunchActor
+    actorUserId String?                 @db.Uuid
+    actorRole   String
+    expiresAt   DateTime
+    usedAt      DateTime?
+    createdAt   DateTime                @default(now())
+
+    actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+    @@index([designId])
+    @@index([tenantId])
+    @@map("integration_launch_tokens")
+}
+
+model IntegrationWebhookEvent {
+    id            String    @id @default(uuid()) @db.Uuid
+    type          String
+    tenantId      String    @db.Uuid
+    designId      String    @db.Uuid
+    payload       Json
+    attemptCount  Int       @default(0)
+    nextAttemptAt DateTime?
+    deliveredAt   DateTime?
+    createdAt     DateTime  @default(now())
+
+    @@index([tenantId])
+    @@index([nextAttemptAt])
+    @@map("integration_webhook_events")
 }
