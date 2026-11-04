@@ -116,6 +116,9 @@ export function neutralField(field: HeightFieldParams): HeightFieldParams {
         // Skives are applied post-sync on the top mesh only (R11) — never in F.
         includeSkives: false,
         trimline: null,
+        // The filler is a top raise on the live field only. Leaving it on the
+        // neutral baseline would cancel it out of correctionDeltaAt.
+        amputation: undefined,
     };
 }
 
@@ -2744,6 +2747,9 @@ export function applyBaseModifiers(
         sinks: undefined,
         sinkStyloidThicken: undefined,
         sinkMarkers: undefined,
+        // Loft the unraised sheet. The plateau is applied after the wall exists
+        // so a tall toe rim does not rebuild the plantar constraint.
+        amputation: undefined,
         corrections: {
             ...field.corrections,
             heelCupDepthMm: 0,

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { BufferAttribute, BufferGeometry } from "three";
+import { amputationFillerActive, applyAmputationRiseToTop } from "@/lib/geometry/amputee-filler";
 import { apexWarpShiftMm, applyDefaultArchApexWarp } from "@/lib/geometry/apex-move-warp";
 import {
     applyBaseModifiers,
@@ -18,6 +19,7 @@ import {
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
 import { applyAnalyticSinkToLoftedSolid, sinksActive } from "@/lib/geometry/sink";
+import { effectiveOutlineHalfWidth } from "@/lib/geometry/trimline";
 import type { SideCorrections } from "@/types";
 import {
     columnHeading,
@@ -2008,6 +2010,29 @@ export function reconstructProceduralWalls(
         if (repairInvertedBottomFaces(positions, indices) > 0) {
             assertGeneratedEdgesUsedTwice(indices, generatedStart, positions);
         }
+    }
+    // Plateau after the loft, before sinks, so the rim walls grow with the toe
+    // and sink floors are measured from the filled surface. Filler off skips
+    // this and the subdivision below, leaving the loft indices untouched.
+    const amp = options.sourceField?.amputation;
+    if (amp && amputationFillerActive(amp) && options.sourceField) {
+        const lengthMm = options.sourceField.lengthMm;
+        const widthMm = options.sourceField.widthMm;
+        const side = options.sourceField.side;
+        applyAmputationRiseToTop({
+            positions,
+            topCount: generatedStart,
+            side,
+            amp,
+            lengthMm,
+            widthMm,
+            minX: model.bounds.minX,
+            lenSize: Math.max(1e-3, model.bounds.maxX - model.bounds.minX),
+            vSignedAt: (y) => footprintVSignedFromMeshY(y, model.bounds, side, medialYSign),
+            halfWidthMm: (u) =>
+                effectiveOutlineHalfWidth(u, lengthMm, widthMm, options.sourceField?.trimline) *
+                (widthMm / 2),
+        });
     }
     // z-only on the sink-free loft. Composed and analytic tops share this pass
     // so T and S cannot change station pairing, outline XY, or vertex count.
