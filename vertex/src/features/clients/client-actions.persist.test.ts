@@ -100,6 +100,79 @@ describe("client-actions persistence wiring", () => {
         expect(loaded.thicknessMm).toBe(3);
     });
 
+    test("hydrateDesignForEditor prefers settingsJson over older columns", async () => {
+        const settings = {
+            pattern: "full_contact" as const,
+            method: "printing_solid" as const,
+            thicknessMm: 3.5,
+            corrections: {
+                unit: "mm" as const,
+                linked: false,
+                left: {
+                    forefootPostingDeg: 2,
+                    rearfootPostingDeg: 3,
+                    medialSkiveMm: 0,
+                    lateralSkiveMm: 0,
+                    archFillMm: 0,
+                    archHeightMm: 4,
+                    heelCupDepthMm: 12,
+                    heelCupHeightMm: 0,
+                    apexMoveMm: 0,
+                    medialFlangeMm: 0,
+                    lateralFlangeMm: 0,
+                    rearfootWedge: { side: "medial" as const, value: 3, unit: "mm" as const },
+                },
+                right: {
+                    forefootPostingDeg: 5,
+                    rearfootPostingDeg: 6,
+                    medialSkiveMm: 0,
+                    lateralSkiveMm: 0,
+                    archFillMm: 0,
+                    archHeightMm: 4,
+                    heelCupDepthMm: 12,
+                    heelCupHeightMm: 0,
+                    apexMoveMm: 0,
+                    medialFlangeMm: 0,
+                    lateralFlangeMm: 0,
+                },
+            },
+            elements: [],
+            trimlines: { left: [{ x: 1, y: 2, z: 0 }] },
+            printRecipe: {
+                version: 1 as const,
+                pattern: "gyroid" as const,
+                profileId: "apex-belt-v2",
+                defaultHardness: "Medium" as const,
+                zones: [],
+            },
+            base: {
+                assetId: "stock-sample",
+                name: "Sample",
+                source: "stock" as const,
+            },
+        };
+        mockDesignGet.mockResolvedValue({
+            id: "design-1",
+            pattern: "flat",
+            method: "milling_3axis",
+            thicknessMm: 2,
+            linked: true,
+            unit: "deg",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            corrections: [],
+            elements: [],
+            settingsJson: { schemaVersion: 1, settings },
+        });
+        const { createDesignWithStockPlaceholder } = await import("@/stores/design-store");
+        const loaded = await hydrateDesignForEditor(
+            "client-1",
+            "design-1",
+            createDesignWithStockPlaceholder(),
+        );
+        expect(loaded).toEqual(settings);
+    });
+
     test("createClientRecord shows an error instead of keeping a tab-only client", async () => {
         mockClientCreate.mockRejectedValue(new Error("Server refused"));
         await expect(

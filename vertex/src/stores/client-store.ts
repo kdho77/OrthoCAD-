@@ -4,6 +4,7 @@ import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClientNoticeStore } from "@/stores/client-notice-store";
 import type { DesignState } from "@/types";
+import { settingsForDesignSave } from "../../server/src/lib/design-schema";
 import {
     type ClientInput,
     type ClientRow,
@@ -186,7 +187,8 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
         }
         if (isApiConfigured()) {
             try {
-                await trpc.design.save.mutate({ id, name: record.name, state });
+                const settings = settingsForDesignSave(state);
+                await trpc.design.save.mutate({ id, name: record.name, state: settings });
             } catch (error) {
                 const message = error instanceof Error ? error.message : "Design save failed";
                 useClientNoticeStore.getState().setError(message);

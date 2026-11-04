@@ -3,6 +3,7 @@
 
 import { createDesignWithStockPlaceholder, defaultDesign } from "@/stores/design-store";
 import type { DesignState, ElementKind, PlacedElement, Side, SideCorrections, Unit } from "@/types";
+import { readStoredDesignSettings } from "../../../shared/design-settings";
 
 interface CorrectionRow {
     side: Side;
@@ -42,6 +43,8 @@ export interface DesignDocument {
     updatedAt: string;
     corrections?: CorrectionRow[];
     elements?: ElementRow[];
+    /** Versioned parameter snapshot. Absent on designs saved before this column. */
+    settingsJson?: unknown;
 }
 
 function sideCorrectionFromRow(row: CorrectionRow): SideCorrections {
@@ -82,12 +85,15 @@ function elementFromRow(row: ElementRow): PlacedElement {
 /** True when the server has stored geometry beyond a freshly created design row. */
 export function hasPersistedGeometry(doc: DesignDocument | null | undefined): boolean {
     if (!doc) return false;
+    if (readStoredDesignSettings(doc.settingsJson)) return true;
     if ((doc.elements?.length ?? 0) > 0) return true;
     if ((doc.corrections?.length ?? 0) > 0) return true;
     return doc.updatedAt !== doc.createdAt;
 }
 
 export function designStateFromDocument(doc: DesignDocument): DesignState {
+    const stored = readStoredDesignSettings(doc.settingsJson);
+    if (stored) return stored as unknown as DesignState;
     const left = correctionSide(doc.corrections, "left");
     const right = correctionSide(doc.corrections, "right");
     const elements = (doc.elements ?? []).map(elementFromRow);

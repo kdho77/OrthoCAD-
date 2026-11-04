@@ -376,6 +376,8 @@ model Design {
     thicknessMm Float            @default(2)
     linked      Boolean          @default(true)
     unit        Unit             @default(mm)
+    /// Parameter snapshot ({ schemaVersion, settings }). Null on older rows. Never a mesh.
+    settingsJson Json?
     archivedAt  DateTime?
     deletedAt   DateTime?
     createdAt   DateTime         @default(now())
