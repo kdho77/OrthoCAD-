@@ -146,3 +146,38 @@ function base64ToUint8(value: string): Uint8Array {
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
     return bytes;
 }
+
+/** Pull client scan metadata and bytes from the API into the session store. */
+export async function reloadClientScans(clientId: string): Promise<void> {
+    if (!isApiConfigured()) return;
+    const listed = await trpc.scan.list.query({ clientId });
+    const scans: import("../../../shared/client-scans").ScanMeta[] = [];
+    const blobs: Record<string, Uint8Array> = {};
+    for (const item of listed) {
+        await trpc.scan.get.query({ id: item.id });
+        const file = await trpc.scan.download.query({ id: item.id });
+        const meta = {
+            id: item.id,
+            clientId: item.clientId,
+            ownerId: item.ownerId,
+            tenantId: item.tenantId,
+            side: item.side,
+            fileName: item.fileName,
+            contentType: item.contentType,
+            byteLength: item.byteLength,
+            sha256: item.sha256,
+            uploadedAt: item.uploadedAt,
+        };
+        scans.push(meta);
+        blobs[meta.id] = base64ToUint8(file.bytesBase64);
+    }
+    useClientScanStore.setState((state) => {
+        const keep = state.scans.filter((scan) => scan.clientId !== clientId);
+        const nextBlobs = { ...state.blobs };
+        for (const scan of state.scans) {
+            if (scan.clientId === clientId) delete nextBlobs[scan.id];
+        }
+        for (const [id, bytes] of Object.entries(blobs)) nextBlobs[id] = bytes;
+        return { scans: [...scans, ...keep], blobs: nextBlobs };
+    });
+}

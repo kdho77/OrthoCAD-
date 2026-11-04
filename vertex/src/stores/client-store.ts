@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { storePhiEnabled } from "@/lib/phi-policy";
+import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useAuthStore } from "@/stores/auth-store";
+import { useClientNoticeStore } from "@/stores/client-notice-store";
 import type { DesignState } from "@/types";
 import {
     type ClientInput,
@@ -51,7 +53,7 @@ interface ClientStore {
     setActiveClient: (id: string | null) => void;
 
     addDesign: (clientId: string, name: string, state: DesignState, kind?: DesignKind) => string;
-    saveDesign: (id: string, state: DesignState) => void;
+    saveDesign: (id: string, state: DesignState) => Promise<void>;
     renameDesign: (id: string, name: string) => void;
     updateDesignNotes: (id: string, notes: string) => void;
     duplicateDesign: (id: string) => string | null;
@@ -175,12 +177,28 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
         set((s) => ({ designs: [record, ...s.designs], activeDesignId: id, activeClientId: clientId }));
         return id;
     },
-    saveDesign: (id, state) =>
+    saveDesign: async (id, state) => {
+        const record = get().designs.find((design) => design.id === id);
+        if (!record) {
+            const message = "Design not found";
+            useClientNoticeStore.getState().setError(message);
+            throw new Error(message);
+        }
+        if (isApiConfigured()) {
+            try {
+                await trpc.design.save.mutate({ id, name: record.name, state });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : "Design save failed";
+                useClientNoticeStore.getState().setError(message);
+                throw error instanceof Error ? error : new Error(message);
+            }
+        }
         set((s) => ({
             designs: s.designs.map((design) =>
                 design.id === id ? { ...design, state, updatedAt: new Date().toISOString() } : design,
             ),
-        })),
+        }));
+    },
     renameDesign: (id, name) =>
         set((s) => ({
             designs: s.designs.map((design) =>

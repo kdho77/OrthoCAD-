@@ -15,10 +15,18 @@ export function SaveControl() {
 
     const onSave = () => {
         if (!activeDesignId) return;
-        useClientStore.getState().saveDesign(activeDesignId, useDesignStore.getState().design);
-        useAuditStore.getState().record("design_saved", record?.name ?? "Saved design");
-        setSaved(true);
-        setTimeout(() => setSaved(false), 1500);
+        void (async () => {
+            try {
+                await useClientStore
+                    .getState()
+                    .saveDesign(activeDesignId, useDesignStore.getState().design);
+                useAuditStore.getState().record("design_saved", record?.name ?? "Saved design");
+                setSaved(true);
+                setTimeout(() => setSaved(false), 1500);
+            } catch {
+                /* error surfaced via client notice store */
+            }
+        })();
     };
 
     return (

@@ -3,10 +3,13 @@
 import { templateDesignFromChart } from "@/lib/clinical/chart-design";
 import { storePhiEnabled } from "@/lib/phi-policy";
 import { isApiConfigured, trpc } from "@/lib/trpc";
+import { useClientNoticeStore } from "@/stores/client-notice-store";
 import { type ClientInput, useClientStore } from "@/stores/client-store";
 import { createDesignWithStockPlaceholder } from "@/stores/design-store";
 import type { DesignState } from "@/types";
 import { type DesignKind, defaultDesignName, type ShoeChart } from "../../../shared/client-files";
+import { asDesignDocument, designStateFromDocument, hasPersistedGeometry } from "./design-document";
+import { reloadClientScans } from "./scan-actions";
 
 export async function createClientRecord(input: ClientInput): Promise<string> {
     if (isApiConfigured()) {
@@ -35,7 +38,9 @@ export async function createClientRecord(input: ClientInput): Promise<string> {
             }));
             return result.client.id;
         } catch (error) {
-            console.warn("[clients] create fell back to this session", error);
+            const message = error instanceof Error ? error.message : "Could not create client";
+            useClientNoticeStore.getState().setError(message);
+            throw error instanceof Error ? error : new Error(message);
         }
     }
     return useClientStore.getState().addClient(input);
@@ -157,4 +162,37 @@ export async function saveDesignNotes(id: string, notes: string): Promise<void> 
     } catch (error) {
         console.warn("[clients] notes save failed", error);
     }
+}
+
+/** Load saved geometry and client scans when opening a design in the editor. */
+export async function hydrateDesignForEditor(
+    clientId: string,
+    designId: string,
+    sessionState: DesignState,
+): Promise<DesignState> {
+    if (!isApiConfigured()) return sessionState;
+    try {
+        await reloadClientScans(clientId);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not reload scans";
+        useClientNoticeStore.getState().setError(message);
+    }
+    try {
+        const raw = await trpc.design.get.query({ id: designId });
+        const doc = asDesignDocument(raw);
+        if (doc && hasPersistedGeometry(doc)) {
+            const hydrated = designStateFromDocument(doc);
+            useClientStore.setState((s) => ({
+                designs: s.designs.map((design) =>
+                    design.id === designId ? { ...design, state: hydrated } : design,
+                ),
+            }));
+            return hydrated;
+        }
+    } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not load design";
+        useClientNoticeStore.getState().setError(message);
+    }
+    if (sessionState.elements.length > 0) return sessionState;
+    return createDesignWithStockPlaceholder(sessionState);
 }
