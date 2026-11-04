@@ -5,6 +5,7 @@ import {
     type CorrectionPresetApplyMode,
     type CorrectionPresetPayload,
 } from "@/lib/clinical/correction-presets";
+import { defaultSideAmputation, normalizeSideAmputation } from "@/lib/geometry/amputee-filler";
 import {
     createDefaultStockPairedBases,
     designHasBase,
@@ -74,6 +75,7 @@ import type {
     ScanPattern,
     ShapeFinishModifiers,
     Side,
+    SideAmputation,
     SideCorrections,
     SideShapeFinish,
     SinkKind,
@@ -522,6 +524,8 @@ export interface DesignStore {
 
     updateShapeFinish: (side: Side, patch: Partial<SideShapeFinish>) => void;
     setShapeFinishLinked: (linked: boolean) => void;
+    /** Per-foot amputation filler. Not mirrored by corrections.linked. */
+    updateAmputation: (side: Side, patch: Partial<SideAmputation>) => void;
     setTextMarking: (patch: Partial<TextMarking>) => void;
 
     /** Live production constraint violations for the current design (derived). */
@@ -820,6 +824,23 @@ export const useDesignStore = create<DesignStore>()(
                             ...s.design,
                             shoeWidth: side === "left" ? width : s.design.shoeWidth,
                             shoeWidthBySide: { ...s.design.shoeWidthBySide, [side]: width },
+                        },
+                    };
+                }),
+
+            updateAmputation: (side, patch) =>
+                set((s) => {
+                    const current = s.design.amputation ?? {};
+                    const prev = normalizeSideAmputation(current[side] ?? defaultSideAmputation());
+                    const next = normalizeSideAmputation({
+                        ...prev,
+                        ...patch,
+                        points: patch.points ?? prev.points,
+                    });
+                    return {
+                        design: {
+                            ...s.design,
+                            amputation: { ...current, [side]: next },
                         },
                     };
                 }),
