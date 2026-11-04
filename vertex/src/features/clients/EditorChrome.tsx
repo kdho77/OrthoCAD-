@@ -7,8 +7,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { navigate } from "@/features/admin/admin-nav";
 import { useClientStore } from "@/stores/client-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
-import { useDesignStore } from "@/stores/design-store";
+import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
 import { formatClientName } from "../../../shared/client-files";
+import { hydrateDesignForEditor } from "./client-actions";
 import { clientFilePath } from "./routes";
 import { beginInsoleDesignSession, parseDesignEntryParam } from "./start-path";
 
@@ -29,7 +30,11 @@ export function useDesignRoute(clientId: string, designId: string) {
                 .designs.find((design) => design.id === designId && design.clientId === clientId);
             useClientStore.getState().setActiveClient(clientId);
             useClientStore.getState().setActiveDesign(designId);
-            if (current && current.kind !== "afo") useDesignStore.getState().loadDesign(current.state);
+            let state = current?.state ?? createDesignWithStockPlaceholder();
+            if (current && current.kind !== "afo") {
+                state = await hydrateDesignForEditor(clientId, designId, state);
+                useDesignStore.getState().loadDesign(state);
+            }
             const params = new URLSearchParams(window.location.search);
             const entry = parseDesignEntryParam(params.get("entry"));
             if (entry) {
@@ -86,12 +91,19 @@ export function EditorChrome({ clientId, designId }: { clientId: string; designI
             window.clearTimeout(timer);
             if (!changed) return;
             timer = window.setTimeout(() => {
-                const latest = useDesignStore.getState().design;
-                useClientStore.getState().saveDesign(record.id, latest);
-                baseline = JSON.stringify(latest);
-                dirtyRef.current = false;
-                setDirty(false);
-                setSavedAt(new Date());
+                void (async () => {
+                    const latest = useDesignStore.getState().design;
+                    try {
+                        await useClientStore.getState().saveDesign(record.id, latest);
+                        baseline = JSON.stringify(latest);
+                        dirtyRef.current = false;
+                        setDirty(false);
+                        setSavedAt(new Date());
+                    } catch {
+                        dirtyRef.current = true;
+                        setDirty(true);
+                    }
+                })();
             }, 800);
         });
         return () => {
@@ -174,14 +186,21 @@ export function EditorChrome({ clientId, designId }: { clientId: string; designI
                             type="button"
                             className="min-h-11"
                             onClick={() => {
-                                if (record)
-                                    useClientStore
-                                        .getState()
-                                        .saveDesign(record.id, useDesignStore.getState().design);
-                                const href = pendingHref;
-                                setDirty(false);
-                                setPendingHref(null);
-                                if (href) navigate(href);
+                                void (async () => {
+                                    if (record) {
+                                        try {
+                                            await useClientStore
+                                                .getState()
+                                                .saveDesign(record.id, useDesignStore.getState().design);
+                                        } catch {
+                                            return;
+                                        }
+                                    }
+                                    const href = pendingHref;
+                                    setDirty(false);
+                                    setPendingHref(null);
+                                    if (href) navigate(href);
+                                })();
                             }}
                         >
                             Save and leave

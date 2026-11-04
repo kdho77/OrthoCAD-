@@ -4,6 +4,7 @@ import { showSuperAdminLink } from "@/features/admin/admin-nav";
 import { isOfflineStockPlaceholder } from "@/lib/geometry/base-asset";
 import { isApiConfigured } from "@/lib/trpc";
 import { useAuthStore } from "@/stores/auth-store";
+import { useClientNoticeStore } from "@/stores/client-notice-store";
 import { useClientStore } from "@/stores/client-store";
 import { retryStockBaseResolution, useDesignStore } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
@@ -13,6 +14,8 @@ export function StatusBar() {
     const stockBaseError = useDesignStore((s) => s.stockBaseError);
     const stockBaseLoading = useDesignStore((s) => s.stockBaseLoading);
     const clearStockBaseError = useDesignStore((s) => s.clearStockBaseError);
+    const clientError = useClientNoticeStore((s) => s.error);
+    const clearClientError = useClientNoticeStore((s) => s.clearError);
     const activeDesignId = useClientStore((s) => s.activeDesignId);
     const designs = useClientStore((s) => s.designs);
     const { user } = useAuthStore();
@@ -30,6 +33,14 @@ export function StatusBar() {
     return (
         <footer className="flex h-7 items-center justify-between border-t border-border bg-panel px-3 text-[11px] text-muted-foreground">
             <div className="flex min-w-0 flex-1 items-center gap-3">
+                {clientError ? (
+                    <span className="truncate text-red-300" role="alert">
+                        {clientError}
+                        <button type="button" className="ml-2 underline" onClick={() => clearClientError()}>
+                            Dismiss
+                        </button>
+                    </span>
+                ) : null}
                 {superAdmin && stockBaseError ? (
                     <span className="truncate text-red-300" role="alert">
                         {stockBaseError}
