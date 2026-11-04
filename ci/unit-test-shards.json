@@ -95,7 +95,6 @@
                 "tests/heel-skive-kirby.test.ts",
                 "tests/s1-ring-size-regression.test.ts",
                 "tests/sink-preview-gate.test.ts",
-                "tests/text-marking-acceptance.test.ts",
                 "tests/wall-banding.verify.test.ts",
                 "vertex/server/src/lib/client-files.test.ts",
                 "vertex/server/src/lib/production-jobs.test.ts",
@@ -121,6 +120,7 @@
                 "vertex/src/lib/geometry/shape-finish-modifiers.test.ts",
                 "vertex/src/lib/geometry/text-marking/place.test.ts",
                 "vertex/src/lib/geometry/viewport-side-layout.test.ts",
+                "vertex/src/lib/hardness/resolve-bounds.test.ts",
                 "vertex/src/lib/pressure-map/pressure-map.test.ts",
                 "vertex/src/stores/design-store.stock-loading.test.ts"
             ]
@@ -219,6 +219,7 @@
                 "tests/sink-export.smoke.test.ts",
                 "tests/sink-viewport.test.ts",
                 "tests/synced-bottom-shell-field.test.ts",
+                "tests/text-marking-acceptance.test.ts",
                 "tests/width-position-group-laplacian.test.ts",
                 "vertex/server/src/lib/glb-validation.test.ts",
                 "vertex/server/src/routers/admin-access.test.ts",
@@ -243,7 +244,6 @@
                 "vertex/src/lib/geometry/scan-marker-target.test.ts",
                 "vertex/src/lib/geometry/shoe-width.test.ts",
                 "vertex/src/lib/geometry/thickness-raise.test.ts",
-                "vertex/src/lib/hardness/resolve-bounds.test.ts",
                 "vertex/src/stores/client-store.persist.test.ts",
                 "vertex/tests/occt-dormant.test.ts"
             ]

@@ -19,6 +19,10 @@ const PINNED_HEAVY = {
     "tests/export-order-parity.test.ts": 6,
     "tests/sink-fold-gate.test.ts": 2,
     "tests/sink-medial-band.test.ts": 5,
+    // Watertight catalog is ~38m serial once the shell-quality matrix is optional.
+    "tests/s1-ring-size-regression.test.ts": 3,
+    // ~18m self-intersection case; keep it off the s1 shard.
+    "tests/text-marking-acceptance.test.ts": 6,
     "tests/arch-wall-falloff.test.ts": 4,
     "tests/procedural-wall-s0-parity.test.ts": 5,
     "tests/rim-conformity-matrix.test.ts": 5,
