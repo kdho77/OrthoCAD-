@@ -16,6 +16,7 @@ import { printSolidOptions } from "@/lib/geometry/procedural-wall/print-solid-op
 import {
     buildProceduralExportSolid,
     reconstructProceduralPreview,
+    resetSampleTopGeometryCache,
     sampleTopFromArrayBuffer,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
@@ -73,6 +74,18 @@ function stlMd5(geo: BufferGeometry): string {
     return createHash("md5")
         .update(Buffer.from(geometryToBinarySTL(geo)))
         .digest("hex");
+}
+
+const SAMPLE_BYTES = readFileSync(SAMPLE_TOP);
+
+function withSampleTopFetch<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(SAMPLE_BYTES)) as typeof fetch;
+    resetSampleTopGeometryCache();
+    return fn().finally(() => {
+        globalThis.fetch = prev;
+        resetSampleTopGeometryCache();
+    });
 }
 
 describe("insole thickness rigid top offset", () => {
@@ -156,47 +169,63 @@ describe("insole thickness rigid top offset", () => {
     }, 120_000);
 
     test("compose pipeline applies insole lift before elements and sinks", () => {
-        const src = readFileSync(
+        const composeSrc = readFileSync(
             resolve(process.cwd(), "vertex/src/lib/geometry/procedural-wall/print-solid-compose.ts"),
             "utf8",
         );
-        const modifiers = src.indexOf("applyBaseModifiers(");
-        const elements = src.indexOf("applyElementsToTopMeshLast");
-        const sinks = src.indexOf("applyViewerSinkHeight");
-        expect(modifiers).toBeGreaterThan(0);
-        expect(elements).toBeGreaterThan(modifiers);
-        expect(sinks).toBeGreaterThan(elements);
+        const coreBlock = composeSrc.slice(
+            composeSrc.indexOf("function composePrintSolidTopCore"),
+            composeSrc.indexOf("export async function composePrintSolidTop"),
+        );
+        const exportBlock = composeSrc.slice(
+            composeSrc.indexOf("export async function composePrintSolidTop"),
+        );
+        expect(coreBlock.indexOf("applyBaseModifiers(")).toBeGreaterThan(0);
+        expect(exportBlock.indexOf("applyElementsToTopMeshLast")).toBeGreaterThan(0);
+        expect(exportBlock.indexOf("applyViewerSinkHeight")).toBeGreaterThan(
+            exportBlock.indexOf("applyElementsToTopMeshLast"),
+        );
+        const modSrc = readFileSync(
+            resolve(process.cwd(), "vertex/src/lib/geometry/base-modifier.ts"),
+            "utf8",
+        );
+        const insoleLift = modSrc.indexOf("resolveInsoleThicknessOffsetMm(field.insoleThicknessMm)");
+        const modReturn = modSrc.lastIndexOf("return geometry;");
+        expect(insoleLift).toBeGreaterThan(0);
+        expect(insoleLift).toBeLessThan(modReturn);
     });
 
     test("preview and export solids match at 2 mm (max vertex diff 0)", async () => {
-        const raw = await loadSampleTop();
-        const design = createDesignWithStockPlaceholder({
-            ...defaultDesign(),
-            insoleThicknessMm: 2,
-            thicknessMm: BASE_REFERENCE_THICKNESS_MM,
+        await withSampleTopFetch(async () => {
+            const raw = await loadSampleTop();
+            const design = createDesignWithStockPlaceholder({
+                ...defaultDesign(),
+                insoleThicknessMm: 2,
+                thicknessMm: BASE_REFERENCE_THICKNESS_MM,
+            });
+            const fieldAuth = baseModifierFieldAuthoritative(design, "left", design.thicknessMm);
+            const opts = printSolidOptions({
+                design,
+                side: "left",
+                field: fieldAuth,
+                viewer: { wallStyle: "straight" },
+                trimline: null,
+                bottomPattern: null,
+            });
+            const preview = await reconstructProceduralPreview(raw, opts);
+            const exported = await buildProceduralExportSolid(opts);
+            const pa = preview.geometry.getAttribute("position")!.array as Float32Array;
+            const pb = exported.geometry.getAttribute("position")!.array as Float32Array;
+            expect(pa.length).toBe(pb.length);
+            let max = 0;
+            for (let i = 0; i < pa.length; i++) {
+                max = Math.max(max, Math.abs(pa[i]! - pb[i]!));
+            }
+            expect(max).toBe(0);
+            preview.geometry.dispose();
+            exported.geometry.dispose();
+            raw.dispose();
         });
-        const fieldAuth = baseModifierFieldAuthoritative(design, "left", design.thicknessMm);
-        const opts = printSolidOptions({
-            design,
-            side: "left",
-            field: fieldAuth,
-            viewer: { wallStyle: "straight" },
-            trimline: null,
-            bottomPattern: null,
-        });
-        const preview = await reconstructProceduralPreview(raw, opts);
-        const exported = await buildProceduralExportSolid(opts);
-        const pa = preview.geometry.getAttribute("position")!.array as Float32Array;
-        const pb = exported.geometry.getAttribute("position")!.array as Float32Array;
-        expect(pa.length).toBe(pb.length);
-        let max = 0;
-        for (let i = 0; i < pa.length; i++) {
-            max = Math.max(max, Math.abs(pa[i]! - pb[i]!));
-        }
-        expect(max).toBe(0);
-        preview.geometry.dispose();
-        exported.geometry.dispose();
-        raw.dispose();
     }, 180_000);
 
     test("viewer and export composed tops match for offset 2 (max vertex diff 0)", async () => {

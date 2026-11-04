@@ -97,11 +97,7 @@ export function designStateFromDocument(doc: DesignDocument): DesignState {
     const stored = readStoredDesignSettings(doc.settingsJson);
     if (stored) {
         const state = stored as unknown as DesignState;
-        return createDesignWithStockPlaceholder({
-            ...defaultDesign(),
-            ...state,
-            insoleThicknessMm: state.insoleThicknessMm ?? 0,
-        });
+        return { ...state, insoleThicknessMm: state.insoleThicknessMm ?? 0 };
     }
     const left = correctionSide(doc.corrections, "left");
     const right = correctionSide(doc.corrections, "right");
