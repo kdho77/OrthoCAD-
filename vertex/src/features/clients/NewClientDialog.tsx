@@ -19,6 +19,18 @@ import {
 
 const fieldClass = "min-h-11";
 
+const CLIENT_SAVE_FALLBACK = "Couldn't save the client. Please try again.";
+
+function clientSubmitErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+        const message = error.message.trim();
+        if (message && !/^internal server error$/i.test(message)) {
+            return message;
+        }
+    }
+    return CLIENT_SAVE_FALLBACK;
+}
+
 const WIDTH_LABELS: Record<ChartShoeWidth, string> = {
     narrow: "Narrow",
     medium: "Medium",
@@ -34,7 +46,7 @@ interface NewClientDialogProps {
     exceptId?: string;
     storePhi?: boolean;
     onClose: () => void;
-    onSubmit: (input: ClientInput, intent: "file" | "design") => void;
+    onSubmit: (input: ClientInput, intent: "file" | "design") => void | Promise<void>;
     onOpenExisting: (id: string) => void;
 }
 
@@ -65,6 +77,8 @@ export function NewClientDialog({
     const [form, setForm] = useState<ClientInput>(initial ?? empty);
     const [identityError, setIdentityError] = useState("");
     const [chartError, setChartError] = useState("");
+    const [submitError, setSubmitError] = useState("");
+    const [isSubmitting, setIsSubmitting] = useState(false);
     const nameRef = useRef<HTMLInputElement>(null);
     const referenceRef = useRef<HTMLInputElement>(null);
     const formKey = `${open}:${initial?.displayName ?? ""}:${initial?.firstName ?? ""}:${initial?.lastName ?? ""}:${exceptId ?? ""}`;
@@ -73,6 +87,8 @@ export function NewClientDialog({
         setSeenKey(formKey);
         setIdentityError("");
         setChartError("");
+        setSubmitError("");
+        setIsSubmitting(false);
         setForm(
             initial
                 ? { ...empty, ...initial, displayName: initial.displayName || formatClientName(initial) }
@@ -96,9 +112,11 @@ export function NewClientDialog({
     }, [form]);
     const canSave = identityOk && !chartValidation;
 
-    const submit = (intent: "file" | "design") => {
+    const submit = async (intent: "file" | "design") => {
+        if (isSubmitting) return;
         setIdentityError("");
         setChartError("");
+        setSubmitError("");
         try {
             resolveClientIdentity(form);
         } catch (error) {
@@ -126,7 +144,14 @@ export function NewClientDialog({
                   phone: "",
                   notes: "",
               };
-        onSubmit(next, intent);
+        setIsSubmitting(true);
+        try {
+            await onSubmit(next, intent);
+        } catch (error) {
+            setSubmitError(clientSubmitErrorMessage(error));
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     const setChart = (patch: Partial<ClientInput>) => setForm((current) => ({ ...current, ...patch }));
@@ -225,29 +250,39 @@ export function NewClientDialog({
                             </button>
                         </p>
                     ) : null}
+                    {submitError ? (
+                        <p className="text-xs text-red-300" data-testid="client-submit-error" role="alert">
+                            {submitError}
+                        </p>
+                    ) : null}
                     <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:justify-end">
                         {mode === "edit" ? (
-                            <Button type="button" className="min-h-11" onClick={() => submit("file")}>
-                                Save
+                            <Button
+                                type="button"
+                                className="min-h-11"
+                                disabled={isSubmitting}
+                                onClick={() => void submit("file")}
+                            >
+                                {isSubmitting ? "Saving…" : "Save"}
                             </Button>
                         ) : (
                             <>
                                 <Button
                                     type="button"
                                     className="min-h-11"
-                                    disabled={!canSave}
-                                    onClick={() => submit("file")}
+                                    disabled={!canSave || isSubmitting}
+                                    onClick={() => void submit("file")}
                                 >
-                                    Save
+                                    {isSubmitting ? "Saving…" : "Save"}
                                 </Button>
                                 <Button
                                     type="button"
                                     className="min-h-11"
                                     data-testid="create-and-design"
-                                    disabled={!canSave}
-                                    onClick={() => submit("design")}
+                                    disabled={!canSave || isSubmitting}
+                                    onClick={() => void submit("design")}
                                 >
-                                    Save &amp; Launch Design
+                                    {isSubmitting ? "Saving…" : "Save & Launch Design"}
                                 </Button>
                             </>
                         )}

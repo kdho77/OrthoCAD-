@@ -11,6 +11,18 @@ import { type DesignKind, defaultDesignName, type ShoeChart } from "../../../sha
 import { asDesignDocument, designStateFromDocument, hasPersistedGeometry } from "./design-document";
 import { reloadClientScans } from "./scan-actions";
 
+const CLIENT_CREATE_FALLBACK = "Couldn't save the client. Please try again.";
+
+function clientCreateErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+        const message = error.message.trim();
+        if (message && !/^internal server error$/i.test(message)) {
+            return message;
+        }
+    }
+    return CLIENT_CREATE_FALLBACK;
+}
+
 export async function createClientRecord(input: ClientInput): Promise<string> {
     if (isApiConfigured()) {
         try {
@@ -38,9 +50,9 @@ export async function createClientRecord(input: ClientInput): Promise<string> {
             }));
             return result.client.id;
         } catch (error) {
-            const message = error instanceof Error ? error.message : "Could not create client";
+            const message = clientCreateErrorMessage(error);
             useClientNoticeStore.getState().setError(message);
-            throw error instanceof Error ? error : new Error(message);
+            throw new Error(message);
         }
     }
     return useClientStore.getState().addClient(input);

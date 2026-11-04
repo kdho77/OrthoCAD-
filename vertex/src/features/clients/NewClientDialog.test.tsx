@@ -26,6 +26,13 @@ function setInputValue(input: HTMLInputElement, value: string) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function fillValidCreateForm(rootNode: ParentNode, displayName = "Jane Doe") {
+    const name = rootNode.querySelector('[aria-label="Display name or initials"]') as HTMLInputElement;
+    const size = rootNode.querySelector('[data-testid="shoe-size"]') as HTMLInputElement;
+    setInputValue(name, displayName);
+    setInputValue(size, "10");
+}
+
 describe("NewClientDialog create client", () => {
     let container: HTMLDivElement;
     let root: Root | null = null;
@@ -102,5 +109,111 @@ describe("NewClientDialog create client", () => {
         });
         expect(rootNode.querySelector('[data-testid="shoe-size-left"]')).not.toBeNull();
         expect(rootNode.querySelector('[data-testid="shoe-size-right"]')).not.toBeNull();
+    });
+
+    test("shows an inline error and keeps the dialog open when save is rejected", async () => {
+        const onSubmit = rs.fn(async () => {
+            throw new Error("Internal Server Error");
+        });
+        const onClose = rs.fn();
+        await act(async () => {
+            root = createRoot(container);
+            root.render(
+                createElement(NewClientDialog, {
+                    open: true,
+                    mode: "create",
+                    clients: [],
+                    onClose,
+                    onSubmit,
+                    onOpenExisting: () => {},
+                }),
+            );
+        });
+
+        const rootNode = queryDialog();
+        await act(async () => {
+            fillValidCreateForm(rootNode);
+        });
+
+        const saveButton = Array.from(rootNode.querySelectorAll("button")).find((node) =>
+            (node.textContent ?? "").trim().startsWith("Save"),
+        ) as HTMLButtonElement;
+        await act(async () => {
+            saveButton.click();
+        });
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        expect(onSubmit).toHaveBeenCalledTimes(1);
+        expect(onClose).not.toHaveBeenCalled();
+        expect(rootNode.querySelector('[data-testid="client-submit-error"]')?.textContent).toBe(
+            "Couldn't save the client. Please try again.",
+        );
+        const name = rootNode.querySelector('[aria-label="Display name or initials"]') as HTMLInputElement;
+        expect(name.value).toBe("Jane Doe");
+        const buttons = Array.from(rootNode.querySelectorAll("button")).filter((node) =>
+            /Save|Launch/.test(node.textContent ?? ""),
+        );
+        expect(buttons.every((node) => !(node as HTMLButtonElement).disabled)).toBe(true);
+    });
+
+    test("calls onSubmit with design intent and leaves closing to the parent on success", async () => {
+        let open = true;
+        const onClose = rs.fn(() => {
+            open = false;
+        });
+        const onSubmit = rs.fn(async () => {
+            open = false;
+        });
+        await act(async () => {
+            root = createRoot(container);
+            root.render(
+                createElement(NewClientDialog, {
+                    open,
+                    mode: "create",
+                    clients: [],
+                    onClose,
+                    onSubmit,
+                    onOpenExisting: () => {},
+                }),
+            );
+        });
+
+        const rootNode = queryDialog();
+        await act(async () => {
+            fillValidCreateForm(rootNode, "Launch Me");
+        });
+
+        const designButton = rootNode.querySelector('[data-testid="create-and-design"]') as HTMLButtonElement;
+        await act(async () => {
+            designButton.click();
+        });
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        expect(onSubmit).toHaveBeenCalledWith(
+            expect.objectContaining({
+                displayName: "Launch Me",
+                shoeSizeUs: 10,
+            }),
+            "design",
+        );
+        expect(rootNode.querySelector('[data-testid="client-submit-error"]')).toBeNull();
+
+        await act(async () => {
+            root?.render(
+                createElement(NewClientDialog, {
+                    open: false,
+                    mode: "create",
+                    clients: [],
+                    onClose,
+                    onSubmit,
+                    onOpenExisting: () => {},
+                }),
+            );
+        });
+        expect(document.querySelector('[data-testid="dialog-root"]')).toBeNull();
     });
 });

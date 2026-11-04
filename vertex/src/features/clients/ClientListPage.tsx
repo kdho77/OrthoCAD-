@@ -290,7 +290,7 @@ export function ClientListPage() {
                     setDialog(null);
                     navigate(clientFilePath(id));
                 }}
-                onSubmit={(input, intent) => void onSubmit(input, intent)}
+                onSubmit={(input, intent) => onSubmit(input, intent)}
             />
             <TypePickerDialog
                 open={pickerFor !== null}
