@@ -20,6 +20,7 @@ import {
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { defaultElementPose } from "@/lib/geometry/elements";
+import { DEFAULT_INSOLE_THICKNESS_MM, quantizeInsoleThicknessMm } from "@/lib/geometry/insole-thickness";
 import {
     migrateCorrections,
     migrateDesignSinks,
@@ -220,6 +221,7 @@ export function defaultDesign(): DesignState {
         method: "printing_solid",
         printRecipe: migratePrintRecipe(undefined),
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
+        insoleThicknessMm: DEFAULT_INSOLE_THICKNESS_MM,
         shellThicknessMode: "zonal",
         shellThicknessRfMm: 3,
         shellThicknessMfMm: 2.5,
@@ -515,6 +517,7 @@ export interface DesignStore {
     setUkShoeSize: (ukSize: number) => void;
     /** Change foot length in mm and auto-scale. */
     setFootLengthMm: (mm: number) => void;
+    setInsoleThicknessMm: (mm: number) => void;
     setShoeWidth: (width: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide", side?: Side) => void;
 
     /** Patch corrections for a side. When linked, mirrors to the other side. */
@@ -802,6 +805,14 @@ export const useDesignStore = create<DesignStore>()(
                         }),
                     };
                 }),
+
+            setInsoleThicknessMm: (mm) =>
+                set((s) => ({
+                    design: {
+                        ...s.design,
+                        insoleThicknessMm: quantizeInsoleThicknessMm(mm),
+                    },
+                })),
 
             setShoeWidth: (width, side) =>
                 set((s) => {
@@ -1304,6 +1315,7 @@ export const useDesignStore = create<DesignStore>()(
                     ...incoming,
                     printRecipe: migratePrintRecipe(incoming.printRecipe),
                     thicknessMm: r.thicknessMm,
+                    insoleThicknessMm: incoming.insoleThicknessMm ?? 0,
                     corrections: {
                         ...incoming.corrections,
                         left: r.constrained,
