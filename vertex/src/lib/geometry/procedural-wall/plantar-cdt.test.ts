@@ -15,6 +15,7 @@ import {
     makePlantarSampler,
     maxIAspect,
     PLANTAR_STEINER_EDGE_MIN_MM,
+    rejectedTrialHarmsAcceptedDisk,
     SLIVER_MIN_ANGLE_DEG,
     splitBoundarySlivers,
 } from "./plantar-cdt";
@@ -237,6 +238,64 @@ describe("generated plantar CDT", () => {
             const C = mesh.points[f[2]!]!;
             expect(faceMinAngleDeg(A, B, C)).toBeGreaterThanOrEqual(SLIVER_MIN_ANGLE_DEG - 0.5);
         }
+    });
+});
+
+describe("rejected refinement snapshot", () => {
+    const faces: Array<[number, number, number]> = [
+        [0, 1, 2],
+        [0, 2, 3],
+    ];
+
+    test("keeps a nudge that does not invert the accepted disk", () => {
+        const before = [
+            { x: 0, y: 0, z: 0 },
+            { x: 4, y: 0, z: 0 },
+            { x: 4, y: 3, z: 0 },
+            { x: 0, y: 3, z: 0 },
+        ];
+        const after = before.map((p) => ({ ...p }));
+        after[2] = { x: 4.02, y: 3.01, z: 0 };
+        expect(rejectedTrialHarmsAcceptedDisk(before, after, faces)).toBe(false);
+    });
+
+    test("restores when the nudge flips a bottom face", () => {
+        const before = [
+            { x: 0, y: 0, z: 0 },
+            { x: 4, y: 0, z: 0 },
+            { x: 4, y: 3, z: 0 },
+            { x: 0, y: 3, z: 0 },
+        ];
+        const flipped = before.map((p) => ({ ...p }));
+        flipped[2] = { x: 4, y: -1, z: 0 };
+        expect(rejectedTrialHarmsAcceptedDisk(before, flipped, faces)).toBe(true);
+    });
+
+    test("restores when a new dihedral exceeds 90° without an inverted face", () => {
+        const before = [
+            { x: 0, y: 0, z: 0 },
+            { x: 2, y: 0, z: 0 },
+            { x: 1, y: 0.2, z: 0 },
+            { x: 0, y: 1, z: 0 },
+        ];
+        const folded = [
+            { x: 0, y: 0, z: 0 },
+            { x: 2, y: 0, z: 0 },
+            { x: 1, y: 0.2, z: 1 },
+            { x: 0, y: 1, z: -1 },
+        ];
+        expect(rejectedTrialHarmsAcceptedDisk(before, folded, faces)).toBe(true);
+    });
+
+    test("does not treat an inversion that was already there as new harm", () => {
+        const before = [
+            { x: 0, y: 0, z: 0 },
+            { x: 4, y: 0, z: 0 },
+            { x: 4, y: -1, z: 0 },
+            { x: 0, y: 3, z: 0 },
+        ];
+        const after = before.map((p) => ({ ...p, x: p.x + 0.01 }));
+        expect(rejectedTrialHarmsAcceptedDisk(before, after, faces)).toBe(false);
     });
 });
 

@@ -244,6 +244,16 @@ export function supabaseClientFileRepo(supabase: SupabaseClient): ClientFileRepo
             return data ?? null;
         },
         async saveDesignGeometry(input: DesignGeometryWrite) {
+            const { error: settingsError } = await supabase
+                .from("designs")
+                .update({ settingsJson: input.settingsJson })
+                .eq("id", input.designId);
+            if (settingsError) {
+                throw new ClientFileError(
+                    "BAD_REQUEST",
+                    `Design settings save failed: ${settingsError.message}`,
+                );
+            }
             const { data, error } = await supabase.rpc("vertex_save_design", {
                 p_user_id: input.userId,
                 p_design_id: input.designId,

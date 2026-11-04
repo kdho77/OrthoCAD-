@@ -372,5 +372,5 @@ describe("downloads match the order build", () => {
         medium.dispose();
         plain.dispose();
         sample.dispose();
-    }, 600_000);
+    }, 420_000);
 });
