@@ -51,6 +51,16 @@ import {
 
 type Style = "straight" | "round" | "hybrid";
 
+const siByGeometry = new WeakMap<BufferGeometry, ReturnType<typeof countSelfIntersections>>();
+function selfIntersectionReport(geo: BufferGeometry): ReturnType<typeof countSelfIntersections> {
+    let report = siByGeometry.get(geo);
+    if (!report) {
+        report = countSelfIntersections(geo);
+        siByGeometry.set(geo, report);
+    }
+    return report;
+}
+
 /** Legacy-map STRAIGHT STL. ROUND/HYBRID must not change this bytes. */
 const STRAIGHT_STL_MD5 = "053d39a5dfd7c889f6b67d0d3fe2d57e";
 
@@ -269,7 +279,7 @@ function styleMisses(geo: BufferGeometry, style: Style, straight?: BufferGeometr
         }
         if ((q.duplicateVerts ?? 0) > 0) misses.push(`dup-verts ${q.duplicateVerts}`);
     }
-    const hits = countSelfIntersections(geo);
+    const hits = selfIntersectionReport(geo);
     if (hits.real !== 0) misses.push(`SI ${hits.real}`);
     const man = reconstructionManifold(geo);
     if (!man.watertight) misses.push("not-watertight");

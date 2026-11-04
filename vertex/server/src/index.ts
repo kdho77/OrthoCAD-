@@ -3,6 +3,10 @@ import { createHTTPServer } from "@trpc/server/adapters/standalone";
 import { createContext } from "./context.js";
 import { validateServerEnv } from "./lib/env.js";
 import { appRouter } from "./routers/index.js";
+import { handleIntegrationNode } from "./routers/integrations/node-http.js";
+import { ensureIntegrationProduction } from "./routers/integrations/production.js";
+
+ensureIntegrationProduction();
 
 validateServerEnv();
 
@@ -33,6 +37,11 @@ const server = createHTTPServer({
         if (req.method === "OPTIONS") {
             res.writeHead(204);
             res.end();
+            return;
+        }
+        const path = (req.url ?? "").split("?")[0] ?? "";
+        if (path.startsWith("/api/integrations/")) {
+            void handleIntegrationNode(req, res);
             return;
         }
         next();
