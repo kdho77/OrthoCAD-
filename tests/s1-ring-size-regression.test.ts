@@ -49,6 +49,7 @@ function shellQuality(
     over100: number;
     over1000: number;
     worstDihedralDeg: number;
+    upwardBottomFaces: number;
     minEdgeA: number;
     minEdgeB: number;
 } {
@@ -66,6 +67,7 @@ function shellQuality(
             over100: 0,
             over1000: 0,
             worstDihedralDeg: 0,
+            upwardBottomFaces: 0,
             minEdgeA: -1,
             minEdgeB: -1,
         };
@@ -106,6 +108,7 @@ function shellQuality(
         return [nx / len, ny / len, nz / len];
     };
 
+    let upwardBottomFaces = 0;
     let minEdgeMm = Infinity;
     let maxAspect = 0;
     let aspectsOver10 = 0;
@@ -120,6 +123,13 @@ function shellQuality(
         const a = idx[f]!;
         const b = idx[f + 1]!;
         const c = idx[f + 2]!;
+        if (
+            [a, b, c].every((v) => Math.abs(pos[v * 3 + 2]!) <= 1e-4) &&
+            areaOf(f) > 1e-6 &&
+            (normalOf(f)?.[2] ?? 0) > 0
+        ) {
+            upwardBottomFaces++;
+        }
         const ab = edgeLen(a, b);
         const bc = edgeLen(b, c);
         const ca = edgeLen(c, a);
@@ -195,6 +205,7 @@ function shellQuality(
         over100,
         over1000,
         worstDihedralDeg,
+        upwardBottomFaces,
         minEdgeA,
         minEdgeB,
     };
@@ -221,6 +232,7 @@ async function exportClosed(
     over100: number;
     over1000: number;
     worstDihedralDeg: number;
+    upwardBottomFaces: number;
     minEdgeA: number;
     minEdgeB: number;
     topVertexCount: number;
@@ -272,6 +284,22 @@ async function exportClosed(
 }
 
 describe("S1 ring size regression", () => {
+    for (const [usMen, side] of [
+        [2, "right"],
+        [2, "left"],
+        [1.5, "right"],
+        [2.5, "right"],
+    ] as const) {
+        test(`US ${usMen} ${side} straight has no folded plantar faces`, async () => {
+            const solid = await exportClosed(usMen, side, "straight", "");
+            expect(solid.watertight).toBe(true);
+            expect(solid.euler).toBe(2);
+            expect(solid.upwardBottomFaces).toBe(0);
+            expect(solid.worstDihedralDeg).toBeLessThanOrEqual(60);
+            expect(solid.sliverAspect).toBeLessThanOrEqual(20);
+        }, 600_000);
+    }
+
     test("US 5 left straight exports without a boundary sliver", async () => {
         const solid = await exportClosed(5, "left", "straight", "");
         expect(solid.watertight).toBe(true);
