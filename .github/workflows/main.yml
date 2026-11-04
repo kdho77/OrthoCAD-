@@ -2,7 +2,7 @@ name: Test
 
 on:
     push:
-        branches: ["main"]
+        branches: ["main", "ci/shard-unit-tests"]
     pull_request:
         branches: ["main"]
     workflow_dispatch:
