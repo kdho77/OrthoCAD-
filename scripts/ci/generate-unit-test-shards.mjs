@@ -15,8 +15,8 @@ const OUT = resolve("ci/unit-test-shards.json");
 const PINNED_HEAVY = {
     "tests/procedural-wall-s1-parity.test.ts": 1,
     "tests/procedural-wall-style.test.ts": 2,
-    "tests/s1-ring-size-regression.test.ts": 3,
-    "tests/one-click-export-artifacts.test.ts": 3,
+    "tests/s1-ring-size-regression.test.ts": 5,
+    "tests/one-click-export-artifacts.test.ts": 2,
     "tests/export-order-parity.test.ts": 6,
     "tests/sink-fold-gate.test.ts": 2,
     "tests/sink-medial-band.test.ts": 3,
