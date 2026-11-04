@@ -1,20 +1,18 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { listUnitTestFiles } from "./list-unit-test-files.mjs";
 
 const manifestPath = resolve("ci/unit-test-shards.json");
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 
-const listed = execFileSync("npx", ["rstest", "list", "--filesOnly"], {
-    encoding: "utf8",
-    cwd: resolve("."),
-})
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => /\.test\.tsx?$/.test(line));
-
-const expected = [...new Set(listed)].sort();
+let expected;
+try {
+    expected = listUnitTestFiles();
+} catch (err) {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+}
 const fromManifest = manifest.shards.flatMap((s) => s.files).sort();
 
 if (expected.length !== fromManifest.length) {

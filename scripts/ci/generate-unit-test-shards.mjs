@@ -4,9 +4,9 @@
  * Heavy geometry suites are pinned to different shards so one runner
  * does not inherit procedural-wall + sink gates together.
  */
-import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { listUnitTestFiles } from "./list-unit-test-files.mjs";
 
 const SHARD_COUNT = 6;
 const OUT = resolve("ci/unit-test-shards.json");
@@ -31,15 +31,7 @@ const PINNED_HEAVY = {
     "tests/synced-bottom-shell-field.test.ts": 6,
 };
 
-const listed = execFileSync("npx", ["rstest", "list", "--filesOnly"], {
-    encoding: "utf8",
-    cwd: resolve("."),
-})
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => /\.test\.tsx?$/.test(line));
-
-const files = [...new Set(listed)].sort();
+const files = listUnitTestFiles();
 const shards = Array.from({ length: SHARD_COUNT }, () => []);
 
 for (const file of files) {
