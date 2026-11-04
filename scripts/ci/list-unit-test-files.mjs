@@ -20,6 +20,8 @@ export function listUnitTestFiles() {
         maxBuffer: 16 * 1024 * 1024,
         env: {
             ...process.env,
+            NO_COLOR: "1",
+            FORCE_COLOR: "0",
             NODE_OPTIONS: [
                 process.env.NODE_OPTIONS,
                 "--experimental-vm-modules",
