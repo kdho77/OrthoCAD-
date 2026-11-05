@@ -2,6 +2,7 @@
 
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { resolveViewerWallStyle } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
@@ -32,7 +33,7 @@ export function printSolidOptions(input: {
             angleDeg: viewer.lateralFlangeAngleDeg ?? 10,
         },
         archGrindDepthMm: 0,
-        wallStyle: viewer.wallStyle ?? "straight",
+        wallStyle: resolveViewerWallStyle(viewer.wallStyle),
         scanPattern: design.pattern,
         sourceField: field,
         composedTop: true,

@@ -2,7 +2,13 @@
 
 import { beforeEach, describe, expect, test } from "@rstest/core";
 import { useDesignStore } from "@/stores/design-store";
-import { applyViewerWallFlagFromSearch, parseViewerWallFlag } from "./viewer-wall-flag";
+import { printSolidOptions } from "./print-solid-options";
+import {
+    applyViewerWallFlagFromSearch,
+    DEFAULT_PROCEDURAL_WALL_STYLE,
+    parseViewerWallFlag,
+    resolveViewerWallStyle,
+} from "./viewer-wall-flag";
 
 const LEGACY_VIEWER = {
     transparent: false,
@@ -46,5 +52,43 @@ describe("viewer wall flag", () => {
     test("ignored query keys leave the store flag unchanged", () => {
         expect(applyViewerWallFlagFromSearch("?foo=bar")).toBe(false);
         expect(useDesignStore.getState().viewer.wallModel).toBe("legacy");
+    });
+
+    test("resolveViewerWallStyle defaults to Round and keeps explicit grinds", () => {
+        expect(DEFAULT_PROCEDURAL_WALL_STYLE).toBe("round");
+        expect(resolveViewerWallStyle(undefined)).toBe("round");
+        expect(resolveViewerWallStyle("straight")).toBe("straight");
+        expect(resolveViewerWallStyle("hybrid")).toBe("hybrid");
+    });
+
+    test("printSolidOptions passes Round into the wall build when grinding is unset", () => {
+        const options = printSolidOptions({
+            design: useDesignStore.getState().design,
+            side: "left",
+            field: {
+                side: "left",
+                lengthMm: 260,
+                widthMm: 90,
+                thicknessMm: 3,
+            },
+            viewer: {},
+            trimline: null,
+            bottomPattern: null,
+        });
+        expect(options.wallStyle).toBe("round");
+        const straight = printSolidOptions({
+            design: useDesignStore.getState().design,
+            side: "left",
+            field: {
+                side: "left",
+                lengthMm: 260,
+                widthMm: 90,
+                thicknessMm: 3,
+            },
+            viewer: { wallStyle: "straight" },
+            trimline: null,
+            bottomPattern: null,
+        });
+        expect(straight.wallStyle).toBe("straight");
     });
 });

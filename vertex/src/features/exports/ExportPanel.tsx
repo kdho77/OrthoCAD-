@@ -5,6 +5,11 @@ import { OutputSideBar } from "@/components/clinical/OutputSideBar";
 import { PanelHeading } from "@/components/clinical/PanelHeading";
 import { Button } from "@/components/ui/button";
 import { HardnessRegionList } from "@/features/clinical/HardnessRegionList";
+import {
+    clinicalExportFormatTabs,
+    exportClinicalPrinterGcode,
+    type ClinicalExportKind,
+} from "@/features/exports/export-panel-clinical";
 import { exportDesign } from "@/features/exports/export-service";
 import { stlExportUserMessage } from "@/features/exports/export-user-message";
 import { TextSummary } from "@/features/exports/TextSummary";
@@ -17,7 +22,14 @@ import { useDesignStore } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
 import { SIDE_LABELS, type Side } from "@/types";
 
-type ExportKind = "stl" | "glb" | "3mf" | null;
+type ExportKind = ClinicalExportKind | null;
+
+const EXPORT_KIND_LABEL: Record<ClinicalExportKind, string> = {
+    stl: "STL",
+    "3mf": "3MF",
+    glb: "GLB",
+    gcode: "G-code",
+};
 
 export function ExportPanel({
     clinicalExportStep = false,
@@ -27,24 +39,34 @@ export function ExportPanel({
     hideOutputSide?: boolean;
 }) {
     const { user, license } = useAuthStore();
-    const { exportSide } = useDesignStore();
+    const { design, exportSide, viewer } = useDesignStore();
     const [status, setStatus] = useState<string | null>(null);
     const [busyKind, setBusyKind] = useState<ExportKind>(null);
     const [exportKind, setExportKind] = useState<ExportKind>("stl");
+    const formatTabs = clinicalExportFormatTabs(design.method);
 
     const stlCheck = canExport(user, license, "stl");
     const glbCheck = canExport(user, license, "glb");
     const threeMfCheck = canExport(user, license, "3mf");
+    const gcodeCheck = canExport(user, license, "gcode");
     const busy = busyKind !== null;
 
     const activeCheck =
-        exportKind === "stl" ? stlCheck : exportKind === "glb" ? glbCheck : threeMfCheck;
+        exportKind === "stl"
+            ? stlCheck
+            : exportKind === "glb"
+              ? glbCheck
+              : exportKind === "gcode"
+                ? gcodeCheck
+                : threeMfCheck;
     const tokenCost =
         exportKind === "stl"
             ? TOKEN_COST.stl
             : exportKind === "glb"
               ? TOKEN_COST.glb
-              : TOKEN_COST["3mf"];
+              : exportKind === "gcode"
+                ? TOKEN_COST.gcode
+                : TOKEN_COST["3mf"];
 
     const runExport = async () => {
         if (!exportKind) return;
@@ -63,6 +85,17 @@ export function ExportPanel({
                     res.ok
                         ? `Exported ${res.filename} (-${TOKEN_COST["3mf"]} token)`
                         : (res.reason ?? "3MF export failed"),
+                );
+            } else if (exportKind === "gcode") {
+                const res = await exportClinicalPrinterGcode({
+                    side: exportSide,
+                    design,
+                    wallStyle: viewer.wallStyle,
+                });
+                setStatus(
+                    res.ok
+                        ? `Exported ${res.filename} (-${TOKEN_COST.gcode} tokens)`
+                        : stlExportUserMessage(res.reason ?? "G-code export failed"),
                 );
             } else {
                 const res = await exportDesign("glb", exportSide);
@@ -84,34 +117,34 @@ export function ExportPanel({
             <div className="space-y-3">
                 <PanelHeading
                     title="Export"
-                    info="Pick a file type, output foot, then download. G-code is prepared on the Print step."
+                    info="Pick a file type, output foot, then download. G-code uses the same VertexSlice server path as Print prep."
                     trailing={
                         <span className="text-[10px] tabular-nums text-muted-foreground">
                             {user?.tokenBalance ?? 0} tokens
                         </span>
                     }
                 />
-                <div className="flex gap-1">
-                    {(
-                        [
-                            { id: "stl" as const, label: "STL" },
-                            { id: "3mf" as const, label: "3MF" },
-                            { id: "glb" as const, label: "GLB" },
-                        ] as const
-                    ).map((k) => (
+                <div className="flex flex-wrap gap-1">
+                    {formatTabs.map((id) => (
                         <Button
-                            key={k.id}
+                            key={id}
                             size="sm"
-                            variant={exportKind === k.id ? "default" : "secondary"}
-                            className="h-8 flex-1 text-[11px]"
-                            onClick={() => setExportKind(k.id)}
+                            variant={exportKind === id ? "default" : "secondary"}
+                            className="h-8 min-w-[3.5rem] flex-1 text-[11px]"
+                            data-export-kind={id}
+                            onClick={() => setExportKind(id)}
                         >
-                            {k.label}
+                            {EXPORT_KIND_LABEL[id]}
                         </Button>
                     ))}
                 </div>
                 <OutputSideBar />
-                <Button className="w-full" disabled={!activeCheck.ok || busy} onClick={() => void runExport()}>
+                <Button
+                    className="w-full"
+                    data-testid="clinical-export-download"
+                    disabled={!activeCheck.ok || busy}
+                    onClick={() => void runExport()}
+                >
                     {busyKind ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                     ) : activeCheck.ok ? (
@@ -119,7 +152,11 @@ export function ExportPanel({
                     ) : (
                         <Lock className="h-4 w-4" />
                     )}
-                    {busyKind ? "Exporting…" : `Download · ${tokenCost} token`}
+                    {busyKind
+                        ? "Exporting…"
+                        : exportKind === "gcode"
+                          ? `Download G-code · ${tokenCost} tokens`
+                          : `Download · ${tokenCost} token`}
                 </Button>
                 {!activeCheck.ok ? <p className="text-[10px] text-amber-400">{activeCheck.reason}</p> : null}
                 {status ? <p className="rounded-md bg-muted px-2 py-1 text-[11px]">{status}</p> : null}

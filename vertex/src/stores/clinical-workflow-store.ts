@@ -6,6 +6,7 @@ import {
     evaluateScanStepGate,
     scanGateBlocksLaterSteps,
 } from "@/lib/clinical/clinical-step-gates";
+import { invalidateProceduralPrintLoftForDesignStep } from "@/stores/preview-loft-status-store";
 import type { ProductionMethod } from "@/types";
 
 export type ClinicalStepId = "scan" | "setup" | "base" | "corrections" | "elements" | "print" | "export";
@@ -124,6 +125,16 @@ function markCompleted(completed: ClinicalStepId[], step: ClinicalStepId): Clini
     return [...completed, step];
 }
 
+function isProceduralLoftClinicalStep(step: ClinicalStepId): boolean {
+    return step === "print" || step === "export";
+}
+
+function leaveProceduralLoftStep(prev: ClinicalStepId, next: ClinicalStepId): void {
+    if (isProceduralLoftClinicalStep(prev) && !isProceduralLoftClinicalStep(next)) {
+        invalidateProceduralPrintLoftForDesignStep();
+    }
+}
+
 function applyScanStickyReason(step: ClinicalStepId): string | null {
     if (stepIndex(step) <= stepIndex("scan")) {
         const gate = evaluateScanStepGate();
@@ -181,7 +192,9 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
             };
         }),
     setStep: (step) => {
+        const prev = get().step;
         const next = normalizeClinicalStep(step);
+        leaveProceduralLoftStep(prev, next);
         const sticky = applyScanStickyReason(next);
         set({
             step: next,
@@ -209,6 +222,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
             return;
         }
         const step = nextStep(current);
+        leaveProceduralLoftStep(current, step);
         const sticky = applyScanStickyReason(step);
         set((s) => ({
             step,
@@ -219,7 +233,9 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         }));
     },
     goBack: () => {
-        const step = prevStep(get().step);
+        const current = get().step;
+        const step = prevStep(current);
+        leaveProceduralLoftStep(current, step);
         const sticky = applyScanStickyReason(step);
         set({
             step,
