@@ -24,7 +24,11 @@ export default defineConfig({
             resolve: {
                 // Vertex app deps (zustand, react, etc.) install under vertex/; hoist
                 // them for rstest without linking the whole package into npm workspaces.
-                modules: [resolve("vertex/node_modules"), "node_modules"],
+                modules: [
+                    resolve("packages/mcp/node_modules"),
+                    resolve("vertex/node_modules"),
+                    "node_modules",
+                ],
             },
             plugins: [
                 new DefinePlugin({
