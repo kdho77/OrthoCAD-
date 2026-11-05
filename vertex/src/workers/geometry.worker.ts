@@ -1,4 +1,8 @@
-import { geometryToPayload } from "@/lib/geometry/geometry-buffer";
+import { afoMeshToGeometry } from "@/lib/geometry/afo/mesh-ops";
+import { offsetMesh } from "@/lib/geometry/afo/sdf-offset";
+import { buildAfoShell } from "@/lib/geometry/afo/shell";
+import type { AfoOffsetOptions, AfoShellOptions, AfoTriMesh } from "@/lib/geometry/afo/types";
+import { type GeometryBufferPayload, geometryToPayload } from "@/lib/geometry/geometry-buffer";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import type { InsoleParams } from "@/lib/geometry/insole";
 import { buildInsoleGeometry } from "@/lib/geometry/insole";
@@ -32,11 +36,25 @@ export type WorkerRequest =
           vertexOverrides: SerializedVertexOverride[];
       }
     | { id: number; type: "manifold"; positions: Float32Array; indices: Uint32Array | null }
-    | { id: number; type: "buildTrimlineMesh"; payload: TrimlineMeshRequestPayload };
+    | { id: number; type: "buildTrimlineMesh"; payload: TrimlineMeshRequestPayload }
+    | {
+          id: number;
+          type: "afoOffset";
+          mesh: GeometryBufferPayload;
+          options: Omit<AfoOffsetOptions, "onProgress">;
+      }
+    | {
+          id: number;
+          type: "afoShell";
+          mesh: GeometryBufferPayload;
+          trimVertexIndices: number[];
+          options: Omit<AfoShellOptions, "onProgress">;
+      };
 
 export type WorkerResponse =
     | { id: number; type: "geometry"; payload: ReturnType<typeof geometryToPayload> }
     | { id: number; type: "manifold"; report: ReturnType<typeof analyzeManifoldBuffers> }
+    | { id: number; type: "progress"; pct: number; stage: string }
     | { id: number; type: "error"; message: string };
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
@@ -79,6 +97,40 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
             return;
         }
 
+        if (msg.type === "afoOffset") {
+            const mesh = payloadToAfo(msg.mesh);
+            const geometryMesh = offsetMesh(mesh, {
+                ...msg.options,
+                onProgress: (pct, stage) => {
+                    (self as DedicatedWorkerGlobalScope).postMessage({
+                        id: msg.id,
+                        type: "progress",
+                        pct,
+                        stage,
+                    } satisfies WorkerResponse);
+                },
+            });
+            postAfoMesh(msg.id, geometryMesh);
+            return;
+        }
+
+        if (msg.type === "afoShell") {
+            const mesh = payloadToAfo(msg.mesh);
+            const geometryMesh = buildAfoShell(mesh, msg.trimVertexIndices, {
+                ...msg.options,
+                onProgress: (pct, stage) => {
+                    (self as DedicatedWorkerGlobalScope).postMessage({
+                        id: msg.id,
+                        type: "progress",
+                        pct,
+                        stage,
+                    } satisfies WorkerResponse);
+                },
+            });
+            postAfoMesh(msg.id, geometryMesh);
+            return;
+        }
+
         if (msg.type === "buildTrimlineMesh") {
             const { payload } = msg;
             const trimline = deserializeTrimlineCurve(payload.trimline);
@@ -110,3 +162,22 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         } satisfies WorkerResponse);
     }
 };
+
+function payloadToAfo(payload: GeometryBufferPayload): AfoTriMesh {
+    return {
+        positions: payload.positions,
+        indices: payload.indices ?? new Uint32Array(0),
+    };
+}
+
+function postAfoMesh(id: number, mesh: AfoTriMesh): void {
+    const geometry = afoMeshToGeometry(mesh);
+    const out = geometryToPayload(geometry);
+    geometry.dispose();
+    const transfer: Transferable[] = [out.positions.buffer as ArrayBuffer];
+    if (out.indices) transfer.push(out.indices.buffer as ArrayBuffer);
+    (self as DedicatedWorkerGlobalScope).postMessage(
+        { id, type: "geometry", payload: out } satisfies WorkerResponse,
+        transfer,
+    );
+}

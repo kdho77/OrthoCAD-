@@ -59,6 +59,8 @@ class GeometryEngine {
                         this.manifoldPending.delete(msg.id);
                         req.resolve(msg.report);
                     }
+                } else if (msg.type === "progress") {
+                    return;
                 } else if (msg.type === "error") {
                     const req = this.pending.get(msg.id) ?? this.manifoldPending.get(msg.id);
                     if (req) {

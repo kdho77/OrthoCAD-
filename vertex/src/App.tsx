@@ -11,10 +11,11 @@ import { PrescriptionUpload } from "@/components/prescription-upload/Prescriptio
 import { Viewer3D } from "@/components/viewer/Viewer3D";
 import { AdminApp } from "@/features/admin/AdminApp";
 import { navigate, useLocationPath } from "@/features/admin/admin-nav";
+import { ProductTypeBar } from "@/features/afo/ProductTypeBar";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { ClientFilePage } from "@/features/clients/ClientFilePage";
 import { ClientListPage } from "@/features/clients/ClientListPage";
-import { AfoPlaceholder, EditorChrome, useDesignRoute } from "@/features/clients/EditorChrome";
+import { EditorChrome, useDesignRoute } from "@/features/clients/EditorChrome";
 import { InactivityGuard } from "@/features/clients/InactivityGuard";
 import { parseClinicalPath } from "@/features/clients/routes";
 import { exportDesign } from "@/features/exports/export-service";
@@ -161,20 +162,17 @@ function CadApp({ clientId, designId }: { clientId: string; designId: string }) 
                 onOpenPrescription={() => setRxOpen(true)}
                 leading={<EditorChrome clientId={clientId} designId={designId} />}
             />
-            {afo || !record ? (
+            {!record ? (
                 <div className="flex min-h-0 flex-1 flex-col">
-                    {record ? (
-                        <AfoPlaceholder />
-                    ) : (
-                        <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-                            This design is not in the current session.
-                        </div>
-                    )}
+                    <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+                        This design is not in the current session.
+                    </div>
                 </div>
             ) : (
                 <ErrorBoundary>
                     <div className="flex min-h-0 flex-1">
                         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                            {afo ? <ProductTypeBar /> : null}
                             <ClinicalStepRail />
                             <CaseSummaryBar />
                             {viewport === "phone" ? (

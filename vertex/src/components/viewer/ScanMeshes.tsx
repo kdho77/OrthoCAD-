@@ -19,6 +19,11 @@ import { buildDecimatedPickGeometry, scanNeedsPickProxy } from "@/lib/geometry/s
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { useDesignStore } from "@/stores/design-store";
 import { getScanRegistrationMatrix, useScanStore } from "@/stores/scan-store";
+import { scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
+import { AFO_SCAN_GREY, activeAfoTarget } from "@/features/afo/afo-scan-ui";
+import { AfoScanStage1Markers } from "@/components/viewer/AfoScanMarkers";
+import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
+import { useAfoStore } from "@/stores/afo-store";
 
 const CLINICIAN_MARKER_COLOR = "#f59e0b";
 const ARCH_MARKER_COLOR = "#d946ef";
@@ -88,6 +93,9 @@ function RegisteredScanMesh({
     selected,
     heightmap,
     placingMarkers,
+    afoGreyScan,
+    afoPlantar,
+    afoTargetId,
 }: {
     scanId: string;
     geometry: THREE.BufferGeometry;
@@ -99,6 +107,9 @@ function RegisteredScanMesh({
     selected: boolean;
     heightmap: boolean;
     placingMarkers: boolean;
+    afoGreyScan?: boolean;
+    afoPlantar?: ReturnType<typeof defaultAfoScanWorkflow>["plantar"];
+    afoTargetId?: string | null;
 }) {
     const deviationOverlay = useScanStore((s) => s.deviationOverlay);
     const setDeviationBusy = useScanStore((s) => s.setDeviationBusy);
@@ -114,7 +125,7 @@ function RegisteredScanMesh({
     const [coloredGeo, setColoredGeo] = useState<THREE.BufferGeometry | null>(null);
     const deviationGenRef = useRef(0);
     /** Depth shading while placing markers, or when Heightmap is on (and not in deviation mode). */
-    const wantDepthShading = placingMarkers || heightmap;
+    const wantDepthShading = (placingMarkers && !afoGreyScan) || heightmap;
 
     const depthGeo = useMemo(() => {
         if (!wantDepthShading || deviationOverlay) return null;
@@ -251,20 +262,36 @@ function RegisteredScanMesh({
             >
                 <meshStandardMaterial
                     color={
-                        useVertexColors
-                            ? "#ffffff"
-                            : selected
-                              ? "#e9d5ff"
-                              : registered
-                                ? "#c084fc"
-                                : "#a78bfa"
+                        afoGreyScan
+                            ? AFO_SCAN_GREY
+                            : useVertexColors
+                              ? "#ffffff"
+                              : selected
+                                ? "#e9d5ff"
+                                : registered
+                                  ? "#c084fc"
+                                  : "#a78bfa"
                     }
-                    emissive={selected && !useVertexColors ? "#a855f7" : "#000000"}
-                    emissiveIntensity={selected && !useVertexColors ? 0.35 : 0}
-                    metalness={0.05}
-                    roughness={placingMarkers || depthGeo ? 0.55 : 0.8}
-                    transparent={transparent || !!coloredGeo || (!registered && !depthGeo)}
-                    opacity={transparent ? 0.45 : coloredGeo ? 0.9 : depthGeo ? 1 : registered ? 1 : 0.75}
+                    emissive={selected && !useVertexColors && !afoGreyScan ? "#a855f7" : "#000000"}
+                    emissiveIntensity={selected && !useVertexColors && !afoGreyScan ? 0.35 : 0}
+                    metalness={afoGreyScan ? 0 : 0.05}
+                    roughness={afoGreyScan ? 0.85 : placingMarkers || depthGeo ? 0.55 : 0.8}
+                    transparent={
+                        afoGreyScan ? false : transparent || !!coloredGeo || (!registered && !depthGeo)
+                    }
+                    opacity={
+                        afoGreyScan
+                            ? 1
+                            : transparent
+                              ? 0.45
+                              : coloredGeo
+                                ? 0.9
+                                : depthGeo
+                                  ? 1
+                                  : registered
+                                    ? 1
+                                    : 0.75
+                    }
                     side={THREE.DoubleSide}
                     vertexColors={useVertexColors}
                     flatShading={placingMarkers && !coloredGeo}
@@ -372,6 +399,14 @@ function RegisteredScanMesh({
                     <MarkerSphere position={landmarks.B3} color={BASE_LANDMARK_COLOR} radius={1.8} />
                 </>
             ) : null}
+            {afoGreyScan && afoPlantar ? (
+                <AfoScanStage1Markers
+                    plantar={afoPlantar}
+                    displayScale={display.displayScale}
+                    targetId={afoTargetId ?? null}
+                    meshMatrix={meshMatrix}
+                />
+            ) : null}
         </group>
     );
 }
@@ -379,18 +414,24 @@ function RegisteredScanMesh({
 export function ScanMeshes({
     transparent,
     heightmap = false,
+    afoStage1Align = false,
 }: {
     transparent: boolean;
     heightmap?: boolean;
+    /** AFO Step 1 plantar alignment — solid grey scan before rigid fit is applied. */
+    afoStage1Align?: boolean;
 }) {
     const scans = useScanStore((s) => s.scans);
     const registrationByScanId = useScanStore((s) => s.registrationByScanId);
     const manualOffsetByScanId = useScanStore((s) => s.manualOffsetByScanId);
     const selectedScanId = useScanStore((s) => s.selectedScanId);
     const placementScanId = useScanStore((s) => s.placementMode?.scanId ?? null);
+    const isAfo = useDesignStore((s) => s.design.productType === "afo");
+    const afoPlacement = useAfoStore((s) => s.scanPlacement);
+    const afoWorkflow = useDesignStore((s) => s.design.afo?.scanWorkflow) ?? defaultAfoScanWorkflow();
+    const afoTargetId = activeAfoTarget(afoWorkflow, afoPlacement?.redo ?? null);
+    const afoAlignScanId = afoWorkflow.scanId ?? scanForAfoWorkflow()?.id ?? null;
 
-    // Stabilize Matrix4 identity across parent re-renders — a fresh matrix each
-    // render re-fires the deviation effect and can exceed React's update depth.
     const registrationMatrices = useMemo(() => {
         const map = new Map<string, THREE.Matrix4 | null>();
         for (const s of scans) {
@@ -416,6 +457,14 @@ export function ScanMeshes({
                         selected={selectedScanId === s.id}
                         heightmap={heightmap}
                         placingMarkers={placementScanId === s.id}
+                        afoGreyScan={
+                            isAfo &&
+                            afoStage1Align &&
+                            !afoWorkflow.alignmentApplied &&
+                            s.id === (afoAlignScanId ?? s.id)
+                        }
+                        afoPlantar={afoWorkflow.plantar}
+                        afoTargetId={afoTargetId}
                     />
                 ))}
         </group>

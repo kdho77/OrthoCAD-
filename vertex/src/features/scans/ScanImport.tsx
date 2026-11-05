@@ -15,6 +15,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
+import { markerPlaceControl } from "@/features/afo/afo-scan-markers";
 import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
 import { ArchFitError } from "@/lib/geometry/fit-arch-from-scan";
 import { importScanFile } from "@/lib/geometry/import";
@@ -70,6 +71,7 @@ function ScanMarkersSection({
     placed,
     placing,
     baseReady,
+    blockedTitle,
     nextLabel,
     onConfirm,
     onDismiss,
@@ -82,6 +84,7 @@ function ScanMarkersSection({
     placed: number;
     placing: boolean;
     baseReady: boolean;
+    blockedTitle: string | null;
     nextLabel: string | null;
     onConfirm: (id: MarkerId) => void;
     onDismiss: () => void;
@@ -187,7 +190,7 @@ function ScanMarkersSection({
                                     ? placing && nextLabel?.startsWith("ARCH")
                                         ? "Skip optional ARCH apex"
                                         : "Place M1→M2→M3, then optional ARCH apex"
-                                    : "Base geometry not loaded"
+                                    : (blockedTitle ?? "Base geometry not loaded")
                             }
                             onClick={onTogglePlacement}
                             className={cn(
@@ -286,6 +289,9 @@ export function ScanImport() {
     const [sizeAcceptedByScanId, setSizeAcceptedByScanId] = useState<Record<string, boolean>>({});
     const [matchBusyId, setMatchBusyId] = useState<string | null>(null);
     const [importSideChoice, setImportSideChoice] = useState<ImportSideChoice | null>(null);
+    const workflowProduct = useClinicalWorkflowStore((s) => s.productType);
+    const designProduct = useDesignStore((s) => s.design.productType ?? "insole");
+    const isAfo = workflowProduct === "afo" || designProduct === "afo";
     const acknowledgeExplicitFootSide = useClinicalWorkflowStore((s) => s.acknowledgeExplicitFootSide);
     const acknowledgePairAssignment = useClinicalWorkflowStore((s) => s.acknowledgePairAssignment);
     const setLinked = useDesignStore((s) => s.setLinked);
@@ -578,8 +584,13 @@ export function ScanImport() {
                 const markers = markersByScanId[s.id];
                 const placed = [markers?.M1, markers?.M2, markers?.M3].filter(Boolean).length;
                 const placing = placementMode?.scanId === s.id;
-                const baseReady = Boolean(landmarkSourceAssetId);
+                const placeControl = markerPlaceControl({
+                    isAfo,
+                    hasLandmarkBase: Boolean(landmarkSourceAssetId),
+                });
+                const baseReady = placeControl.enabled;
                 const sug = s.suggestedLandmarks;
+                const markerLabels = MARKER_LABELS;
 
                 return (
                     <div
@@ -677,26 +688,29 @@ export function ScanImport() {
                             ))}
                         </div>
 
-                        <ScanMarkersSection
-                            scanId={s.id}
-                            sug={sug}
-                            markers={markers}
-                            placed={placed}
-                            placing={placing}
-                            baseReady={baseReady}
-                            nextLabel={placing ? MARKER_LABELS[placementMode!.next] : null}
-                            onConfirm={(id) => {
-                                if (!sug || id === "ARCH") return;
-                                setMarker(s.id, id, sug[id]);
-                            }}
-                            onDismiss={() => setSuggestedLandmarks(s.id, null)}
-                            onTogglePlacement={() => (placing ? exitPlacement() : enterPlacement(s.id))}
-                            onResetMarkers={() => resetMarkers(s.id)}
-                        />
+                        {isAfo ? null : (
+                            <ScanMarkersSection
+                                scanId={s.id}
+                                sug={sug}
+                                markers={markers}
+                                placed={placed}
+                                placing={placing}
+                                baseReady={baseReady}
+                                blockedTitle={placeControl.blockedTitle}
+                                nextLabel={placing && placementMode ? markerLabels[placementMode.next] : null}
+                                onConfirm={(id) => {
+                                    if (!sug || id === "ARCH") return;
+                                    setMarker(s.id, id, sug[id]);
+                                }}
+                                onDismiss={() => setSuggestedLandmarks(s.id, null)}
+                                onTogglePlacement={() => (placing ? exitPlacement() : enterPlacement(s.id))}
+                                onResetMarkers={() => resetMarkers(s.id)}
+                            />
+                        )}
 
                         {/* Readout */}
                         <div className="space-y-0.5 rounded border border-border/60 bg-muted/30 px-1.5 py-1 text-[11px] text-muted-foreground">
-                            {reg?.incomplete || placed < 3 ? (
+                            {isAfo ? null : reg?.incomplete || placed < 3 ? (
                                 <p>Registration: waiting for 3 markers ({placed}/3)</p>
                             ) : reg?.error ? (
                                 <p className="text-destructive">

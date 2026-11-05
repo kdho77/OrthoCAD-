@@ -146,8 +146,11 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
         return export3mf(side);
     }
     const { design } = useDesignStore.getState();
-    const sides = orderDownloadSides(design);
-    const filename = `insole-${sides.join("-")}-${Date.now()}.stl`;
+    const afoExport = design.productType === "afo";
+    const sides = afoExport ? [side] : orderDownloadSides(design);
+    const filename = afoExport
+        ? `afo-${side}-${Date.now()}.stl`
+        : `insole-${sides.join("-")}-${Date.now()}.stl`;
     try {
         const stl =
             sides.length > 1

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { navigate } from "@/features/admin/admin-nav";
+import { defaultAfoDesignState } from "@/lib/geometry/afo/defaults";
 import { useClientStore } from "@/stores/client-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
@@ -31,7 +32,17 @@ export function useDesignRoute(clientId: string, designId: string) {
             useClientStore.getState().setActiveClient(clientId);
             useClientStore.getState().setActiveDesign(designId);
             let state = current?.state ?? createDesignWithStockPlaceholder();
-            if (current && current.kind !== "afo") {
+            if (current?.kind === "afo") {
+                useDesignStore.setState({
+                    design: {
+                        ...state,
+                        productType: "afo",
+                        method: state.method ?? "printing_shell",
+                        afo: state.afo ?? defaultAfoDesignState(state.afo?.side ?? "left"),
+                    },
+                });
+                useClinicalWorkflowStore.getState().setProductType("afo");
+            } else if (current) {
                 state = await hydrateDesignForEditor(clientId, designId, state);
                 useDesignStore.getState().loadDesign(state);
             }
@@ -79,7 +90,7 @@ export function EditorChrome({ clientId, designId }: { clientId: string; designI
     }, [record?.name]);
 
     useEffect(() => {
-        if (!record || record.kind === "afo") return;
+        if (!record) return;
         let baseline = JSON.stringify(useDesignStore.getState().design);
         let timer = 0;
         setSavedAt(new Date());
