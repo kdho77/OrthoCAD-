@@ -14,6 +14,8 @@ export interface PreviewLoftStatusStore {
     error: string | null;
     errorSide: Side | null;
     retryNonce: number;
+    /** Bumped when leaving Print/Export so re-entry always rebuilds walls. */
+    printLoftEpoch: number;
     startedAt: number | null;
     lastElapsedMs: number;
     /** User hit Cancel — do not auto-restart loft until Retry. */
@@ -34,6 +36,7 @@ export const usePreviewLoftStatusStore = create<PreviewLoftStatusStore>((set) =>
     error: null,
     errorSide: null,
     retryNonce: 0,
+    printLoftEpoch: 0,
     startedAt: null,
     lastElapsedMs: 0,
     cancelled: false,
@@ -80,8 +83,19 @@ export const usePreviewLoftStatusStore = create<PreviewLoftStatusStore>((set) =>
             startedAt: null,
             lastElapsedMs: 0,
             cancelled: false,
+            printLoftEpoch: 0,
         }),
 }));
+
+/** Leaving design-stage tabs invalidates cached print solids without blocking the next loft. */
+export function invalidateProceduralPrintLoftForDesignStep(): void {
+    cancelAllPreviewLofts();
+    usePreviewLoftStatusStore.setState((s) => ({
+        phaseBySide: idlePhases(),
+        printLoftEpoch: s.printLoftEpoch + 1,
+        message: "",
+    }));
+}
 
 export function retryPreviewLoft(): void {
     const err = usePreviewLoftStatusStore.getState().error ?? "";
