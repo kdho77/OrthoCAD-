@@ -330,20 +330,44 @@ export async function exportCncGcode(sides: Side[], profile: MillingProfile): Pr
     }
 }
 
+export const GCODE_EXPORT_STEPS = {
+    prepare: "Preparing the insole solid…",
+    upload: "Uploading the solid…",
+    slice: "Slicing G-code…",
+    download: "Downloading G-code…",
+} as const;
+
+export type GcodeExportStep = (typeof GCODE_EXPORT_STEPS)[keyof typeof GCODE_EXPORT_STEPS];
+
+export interface HybridGcodeOptions {
+    /** Filament choice. Defaults stay on the printer preset when omitted. */
+    material?: string;
+    onProgress?: (step: GcodeExportStep) => void;
+}
+
+function yieldToPaint(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 export async function exportGcode(
     side: Side,
     preset: PrinterPreset,
     overrides: CamOverrides = {},
+    options: HybridGcodeOptions = {},
 ): Promise<ExportOutcome> {
     const { design } = useDesignStore.getState();
     const blocked = refuseMilledPrint(design);
     if (blocked) return blocked;
+    options.onProgress?.(GCODE_EXPORT_STEPS.prepare);
+    await yieldToPaint();
     const sides = orderDownloadSides(design);
     const filename = `insole-${sides.join("-")}-${preset.id}-${Date.now()}.gcode`;
     const auth = await authorize("gcode", side, filename);
     if (!auth.ok) return { ok: false, reason: auth.reason };
     const geometry = await buildOrderPairGeometry();
-    const { gcode, stats } = generateGcode(geometry, preset, overrides);
+    options.onProgress?.(GCODE_EXPORT_STEPS.slice);
+    const presetForSlice = options.material ? { ...preset, material: options.material } : preset;
+    const { gcode, stats } = generateGcode(geometry, presetForSlice, overrides);
     geometry.dispose();
     const blob = new Blob([gcode], { type: "text/plain" });
     downloadBlob(blob, filename);
@@ -360,9 +384,13 @@ export async function generateHybridGcode(
     preset: PrinterPreset,
     grindingStyle: GrindingStyleInput,
     overrides: CamOverrides = {},
+    options: HybridGcodeOptions = {},
 ): Promise<ExportOutcome> {
     const blocked = refuseMilledPrint(useDesignStore.getState().design);
     if (blocked) return blocked;
+    const report = options.onProgress;
+    report?.(GCODE_EXPORT_STEPS.prepare);
+    await yieldToPaint();
     const activeDesignId = useClientStore.getState().activeDesignId;
     const outputType = preset.beltAngleDeg ? "gcode" : "stl";
     const ext = outputType === "gcode" ? "gcode" : "stl";
@@ -374,11 +402,14 @@ export async function generateHybridGcode(
             const stlSides = orderDownloadSides(designForStl);
             const stlBuffer =
                 stlSides.length > 1 ? await buildOrderPairStl() : await buildManufacturingStl(side);
+            report?.(GCODE_EXPORT_STEPS.upload);
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 
             const design = useDesignStore.getState().design;
             const printRecipe = bindPrintRecipeProfile(design.printRecipe, preset.id);
+            const material = options.material?.trim() || preset.material;
 
+            report?.(GCODE_EXPORT_STEPS.slice);
             const res = await trpc.manufacturing.generateSolid.mutate({
                 designId: activeDesignId || undefined,
                 side,
@@ -391,6 +422,7 @@ export async function generateHybridGcode(
                 perimeters: overrides.perimeters,
                 grindingStyle,
                 fileName: filename,
+                ...(material ? { material } : {}),
             });
 
             if (!res?.ok) {
@@ -401,6 +433,7 @@ export async function generateHybridGcode(
             let blob: Blob | undefined;
             const downloadUrl = res.downloadUrl ?? res.gcodeDownloadUrl;
 
+            report?.(GCODE_EXPORT_STEPS.download);
             if (downloadUrl) {
                 const resp = await fetch(downloadUrl);
                 if (!resp.ok) throw new Error(`Download failed with status ${resp.status}`);
@@ -435,7 +468,7 @@ export async function generateHybridGcode(
 
     // Offline fallback — client-side G-code only
     if (outputType === "gcode") {
-        return exportGcode(side, preset, overrides);
+        return exportGcode(side, preset, overrides, options);
     }
     return exportDesign("stl", side);
 }

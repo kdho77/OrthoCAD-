@@ -6,11 +6,13 @@ import { PanelHeading } from "@/components/clinical/PanelHeading";
 import { Button } from "@/components/ui/button";
 import { HardnessRegionList } from "@/features/clinical/HardnessRegionList";
 import {
-    clinicalExportFormatTabs,
-    exportClinicalPrinterGcode,
     type ClinicalExportKind,
+    clinicalExportFormatTabs,
+    clinicalGcodeMaterialOptions,
+    defaultClinicalGcodeMaterial,
+    exportClinicalPrinterGcode,
 } from "@/features/exports/export-panel-clinical";
-import { exportDesign } from "@/features/exports/export-service";
+import { exportDesign, GCODE_EXPORT_STEPS } from "@/features/exports/export-service";
 import { stlExportUserMessage } from "@/features/exports/export-user-message";
 import { TextSummary } from "@/features/exports/TextSummary";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
@@ -41,9 +43,12 @@ export function ExportPanel({
     const { user, license } = useAuthStore();
     const { design, exportSide, viewer } = useDesignStore();
     const [status, setStatus] = useState<string | null>(null);
+    const [progress, setProgress] = useState<string | null>(null);
     const [busyKind, setBusyKind] = useState<ExportKind>(null);
     const [exportKind, setExportKind] = useState<ExportKind>("stl");
+    const [material, setMaterial] = useState(() => defaultClinicalGcodeMaterial(design.method));
     const formatTabs = clinicalExportFormatTabs(design.method);
+    const materialOptions = clinicalGcodeMaterialOptions(design.method);
 
     const stlCheck = canExport(user, license, "stl");
     const glbCheck = canExport(user, license, "glb");
@@ -71,6 +76,10 @@ export function ExportPanel({
     const runExport = async () => {
         if (!exportKind) return;
         setBusyKind(exportKind);
+        if (exportKind === "gcode") {
+            setProgress(GCODE_EXPORT_STEPS.prepare);
+            setStatus(null);
+        }
         try {
             if (exportKind === "stl") {
                 const res = await exportDesign("stl", exportSide);
@@ -91,6 +100,8 @@ export function ExportPanel({
                     side: exportSide,
                     design,
                     wallStyle: viewer.wallStyle,
+                    material,
+                    onProgress: setProgress,
                 });
                 setStatus(
                     res.ok
@@ -109,6 +120,7 @@ export function ExportPanel({
             setStatus(stlExportUserMessage(e instanceof Error ? e.message : undefined));
         } finally {
             setBusyKind(null);
+            setProgress(null);
         }
     };
 
@@ -138,10 +150,31 @@ export function ExportPanel({
                         </Button>
                     ))}
                 </div>
+                {exportKind === "gcode" ? (
+                    <label className="block space-y-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Material
+                        </span>
+                        <select
+                            data-testid="gcode-material"
+                            className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
+                            value={material}
+                            disabled={busy}
+                            onChange={(event) => setMaterial(event.target.value)}
+                        >
+                            {materialOptions.map((name) => (
+                                <option key={name} value={name}>
+                                    {name}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                ) : null}
                 <OutputSideBar />
                 <Button
                     className="w-full"
                     data-testid="clinical-export-download"
+                    aria-busy={busy}
                     disabled={!activeCheck.ok || busy}
                     onClick={() => void runExport()}
                 >
@@ -153,20 +186,27 @@ export function ExportPanel({
                         <Lock className="h-4 w-4" />
                     )}
                     {busyKind
-                        ? "Exporting…"
+                        ? (progress ?? "Exporting…")
                         : exportKind === "gcode"
                           ? `Download G-code · ${tokenCost} tokens`
                           : `Download · ${tokenCost} token`}
                 </Button>
+                {progress ? (
+                    <p
+                        role="status"
+                        data-testid="gcode-export-progress"
+                        className="text-[11px] text-muted-foreground"
+                    >
+                        {progress}
+                    </p>
+                ) : null}
                 {!activeCheck.ok ? <p className="text-[10px] text-amber-400">{activeCheck.reason}</p> : null}
                 {status ? <p className="rounded-md bg-muted px-2 py-1 text-[11px]">{status}</p> : null}
             </div>
         );
     }
 
-    return (
-        <LegacyExportPanel hideOutputSide={hideOutputSide} />
-    );
+    return <LegacyExportPanel hideOutputSide={hideOutputSide} />;
 }
 
 /** Full export panel for Print advanced and legacy paths. */
@@ -305,8 +345,8 @@ function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolea
 
             {design.method === "milling_3axis" ? (
                 <p className="rounded-md border border-border px-2 py-2 text-xs text-muted-foreground">
-                    This order mills an L+R CNC file. Print STL, 3MF, and print G-code are not produced. Use the
-                    Mill step.
+                    This order mills an L+R CNC file. Print STL, 3MF, and print G-code are not produced. Use
+                    the Mill step.
                 </p>
             ) : null}
 
