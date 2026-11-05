@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { create } from "zustand";
+import { resetManufacturingSolidCache } from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
 import { cancelAllPreviewLofts } from "@/lib/geometry/procedural-wall/preview-loft-queue";
 import type { PreviewLoftPhase } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { terminateProceduralWallWorker } from "@/lib/geometry/procedural-wall/preview-loft-worker";
@@ -90,6 +91,8 @@ export const usePreviewLoftStatusStore = create<PreviewLoftStatusStore>((set) =>
 /** Leaving design-stage tabs invalidates cached print solids without blocking the next loft. */
 export function invalidateProceduralPrintLoftForDesignStep(): void {
     cancelAllPreviewLofts();
+    // Epoch bump stays. Clearing the slot is extra; the new epoch already misses.
+    resetManufacturingSolidCache();
     usePreviewLoftStatusStore.setState((s) => ({
         phaseBySide: idlePhases(),
         printLoftEpoch: s.printLoftEpoch + 1,

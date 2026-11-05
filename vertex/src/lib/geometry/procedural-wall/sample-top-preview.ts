@@ -19,6 +19,14 @@ import type { PlacedSink, ScanPattern, Side, SideCorrections, TextMarking } from
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
+import {
+    type ManufacturingSolidContext,
+    manufacturingSolidFingerprint,
+    noteManufacturingSolidBuilt,
+    noteManufacturingSolidReused,
+    peekManufacturingSolid,
+    rememberManufacturingSolid,
+} from "./manufacturing-solid-cache";
 import { FOREFOOT_SHIFT_U_HOLD, forefootFeatureBoxes, offsetPlanLoopForefootWidthMm } from "./modifiers";
 import { composePrintSolidTop, fieldWithoutSinks, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { hasCurveOrTopModifiers, reconstructProceduralWalls } from "./reconstruct";
@@ -124,10 +132,65 @@ export function followViewerPattern(
     });
 }
 
-/** Print / STL: loft the approved solid. Same reconstruct math as the frozen STLs. */
+function cacheHitModel(): StockWallModel {
+    return { id: "manufacturing-cache" } as StockWallModel;
+}
+
+function tagManufacturingSolid(geometry: BufferGeometry, fingerprint: string, fromCache: boolean): void {
+    geometry.userData = {
+        ...geometry.userData,
+        manufacturingFingerprint: fingerprint,
+        fromManufacturingCache: fromCache,
+    };
+}
+
+/** Leader is not applied here. Text runs once on a hit or a fresh loft. */
+async function applyExportText(
+    geometry: BufferGeometry,
+    options: ProceduralPreviewOptions & { mirrored?: boolean },
+): Promise<BufferGeometry> {
+    if (!hasActiveTextMarking(options.textMarking)) return geometry;
+    const { applyTextMarkingToPrintSolid } = await import("@/lib/geometry/text-marking/apply");
+    const { TextMarkingError } = await import("@/lib/geometry/text-marking/errors");
+    const { buildTextGuide } = await import("@/lib/geometry/text-marking/place");
+    const textGuide = buildTextGuide(geometry);
+    try {
+        const marked = await applyTextMarkingToPrintSolid(geometry, options.textMarking, {
+            side: options.side ?? (options.mirrored ? "left" : "right"),
+        });
+        if (marked !== geometry) geometry.dispose();
+        marked.userData = { ...marked.userData, textGuide };
+        return marked;
+    } catch (e) {
+        if (!(e instanceof TextMarkingError)) throw e;
+        geometry.userData = { ...geometry.userData, textFitError: e.message, textGuide };
+        return geometry;
+    }
+}
+
+/**
+ * Print / STL: loft the approved solid. Same reconstruct math as the frozen STLs.
+ * A cache hit skips reconstruct only. Text still runs once. The caller still
+ * closes and validates the mesh, then the G-code path adds the leader once.
+ */
 export async function buildProceduralExportSolid(
     options: ProceduralPreviewOptions & { mirrored?: boolean } = {},
+    cache?: ManufacturingSolidContext | null,
 ): Promise<{ model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry }> {
+    const side = cache?.side ?? options.side ?? (options.mirrored ? "left" : "right");
+    const fingerprint = cache ? manufacturingSolidFingerprint(options, cache) : "";
+    if (cache && fingerprint) {
+        const started = performance.now();
+        const cached = peekManufacturingSolid(fingerprint, side);
+        if (cached) {
+            const geometry = await applyExportText(cached, options);
+            tagManufacturingSolid(geometry, fingerprint, true);
+            noteManufacturingSolidReused(side, performance.now() - started);
+            return { model: cacheHitModel(), pattern: [], geometry };
+        }
+    }
+
+    noteManufacturingSolidBuilt(side);
     let raw = await loadSampleTopGeometry();
     if (options.mirrored) {
         const mirrored = mirrorGeometry(raw);
@@ -136,24 +199,12 @@ export async function buildProceduralExportSolid(
     }
     try {
         const preview = await reconstructProceduralPreview(raw, options);
-        if (!hasActiveTextMarking(options.textMarking)) return preview;
-        const { applyTextMarkingToPrintSolid } = await import("@/lib/geometry/text-marking/apply");
-        const { TextMarkingError } = await import("@/lib/geometry/text-marking/errors");
-        const { buildTextGuide } = await import("@/lib/geometry/text-marking/place");
-        const textGuide = buildTextGuide(preview.geometry);
-        let geometry = preview.geometry;
-        try {
-            geometry = await applyTextMarkingToPrintSolid(preview.geometry, options.textMarking, {
-                side: options.side ?? (options.mirrored ? "left" : "right"),
-            });
-        } catch (e) {
-            if (!(e instanceof TextMarkingError)) throw e;
-            geometry.userData = { ...geometry.userData, textFitError: e.message, textGuide };
-            return { ...preview, geometry };
+        if (cache && fingerprint) {
+            rememberManufacturingSolid(fingerprint, side, preview.geometry);
         }
-        if (geometry !== preview.geometry) preview.geometry.dispose();
-        geometry.userData = { ...geometry.userData, textGuide };
-        return { ...preview, geometry };
+        const geometry = await applyExportText(preview.geometry, options);
+        if (fingerprint) tagManufacturingSolid(geometry, fingerprint, false);
+        return geometry === preview.geometry ? preview : { ...preview, geometry };
     } finally {
         raw.dispose();
     }

@@ -28,6 +28,8 @@ import {
     hashLiveBottomPattern,
     resolveLiveBottomPattern,
 } from "@/lib/geometry/procedural-wall/live-bottom-pattern";
+import { publishPreviewManufacturingSolid } from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
+import { manufacturingCacheContext } from "@/lib/geometry/procedural-wall/manufacturing-solid-context";
 import {
     applyForefootPlanShift,
     FOREFOOT_SHIFT_U_HOLD,
@@ -833,24 +835,22 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         await yieldToPaint();
                         if (session.cancelled) return;
                         const started = performance.now();
+                        const solidOptions = printSolidOptions({
+                            design,
+                            side,
+                            field,
+                            viewer: {
+                                wallStyle,
+                                deviceType,
+                                lateralFlangeHeightMm,
+                                lateralFlangeLengthMm,
+                                lateralFlangeAngleDeg,
+                            },
+                            trimline: printTrim,
+                            bottomPattern: livePts,
+                        });
                         try {
-                            const preview = await reconstructProceduralPreviewInWorker(
-                                raw,
-                                printSolidOptions({
-                                    design,
-                                    side,
-                                    field,
-                                    viewer: {
-                                        wallStyle,
-                                        deviceType,
-                                        lateralFlangeHeightMm,
-                                        lateralFlangeLengthMm,
-                                        lateralFlangeAngleDeg,
-                                    },
-                                    trimline: printTrim,
-                                    bottomPattern: livePts,
-                                }),
-                            );
+                            const preview = await reconstructProceduralPreviewInWorker(raw, solidOptions);
                             let placementReference: BufferGeometry;
                             try {
                                 placementReference = await composeViewerPrintSolidTop({
@@ -876,6 +876,19 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                 preview.geometry.dispose();
                                 return;
                             }
+                            publishPreviewManufacturingSolid(
+                                solidOptions,
+                                {
+                                    ...manufacturingCacheContext({
+                                        design,
+                                        side,
+                                        baseAssetId: base?.assetId ?? "",
+                                        mirrored: isMirroredForLoad,
+                                    }),
+                                    printLoftEpoch,
+                                },
+                                preview.geometry,
+                            );
                             setElementReference(placementReference);
                             if (outRef.current && outRef.current !== workRef.current) {
                                 outRef.current.dispose();
