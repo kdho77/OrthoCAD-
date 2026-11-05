@@ -168,6 +168,23 @@ function scalePlanLoop(points: PolyPoint[], scale: number, center: { x: number; 
     }));
 }
 
+/**
+ * The viewer stores the bottom pattern in the native SAMPLE_Top frame.
+ * Print scales the top sheet by `scale` about `center`; the pattern has to
+ * use that same map or lateral stations stay on the Men's 9 outline and
+ * fall outside a smaller TopSheet rim.
+ */
+export function scaleBottomPatternToFootprint(
+    pattern: PolyPoint[],
+    center: { x: number; y: number },
+    scale: number,
+): PolyPoint[] {
+    if (!pattern.length || !Number.isFinite(scale) || Math.abs(scale - 1) <= 1e-9) {
+        return pattern.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 }));
+    }
+    return scalePlanLoop(pattern, scale, center);
+}
+
 /** Fair the SAMPLE_Top rim: ~0 toe inset, heel ~8 mm, medial arch cut-in. */
 export function buildFairedPatternFromTop(model: StockWallModel, pattern?: ScanPattern): PolyPoint[] {
     const pos = model.top.meshPositions;
@@ -286,7 +303,19 @@ export async function reconstructProceduralPreview(
         if (!topGeo.boundingBox) topGeo.computeBoundingBox();
         const box = topGeo.boundingBox;
         const center = box ? { x: (box.min.x + box.max.x) / 2, y: (box.min.y + box.max.y) / 2 } : null;
-        if (center && !options.bottomPattern?.length && insetsForScanPattern(options.scanPattern) == null) {
+        if (center && options.bottomPattern?.length) {
+            // Live / edited pattern is in the pre-scale frame. Use a fresh
+            // bbox so the center matches scaleSourceShapeToFootprint.
+            topGeo.computeBoundingBox();
+            const live = topGeo.boundingBox;
+            if (live) {
+                scaledPattern = scaleBottomPatternToFootprint(
+                    options.bottomPattern,
+                    { x: (live.min.x + live.max.x) / 2, y: (live.min.y + live.max.y) / 2 },
+                    footprintScale,
+                );
+            }
+        } else if (center && insetsForScanPattern(options.scanPattern) == null) {
             const native = topGeo.clone();
             try {
                 const nativeModel = extractTopOnlyModel(native, {
@@ -338,9 +367,11 @@ export async function reconstructProceduralPreview(
     if (owned) discard.add(source);
     if (footprintClone) discard.add(footprintClone);
     for (const geo of discard) geo.dispose();
-    const requested = options.bottomPattern?.length
-        ? options.bottomPattern
-        : (scaledPattern ?? buildFairedPatternFromTop(model, options.scanPattern));
+    const requested =
+        scaledPattern ??
+        (options.bottomPattern?.length
+            ? options.bottomPattern
+            : buildFairedPatternFromTop(model, options.scanPattern));
     const loft = (pattern: PolyPoint[]) => {
         const thicknessMm =
             options.thicknessMm ?? options.sourceField?.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
