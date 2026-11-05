@@ -69,8 +69,15 @@ describe("ExportPanel clinical step", () => {
 
         await act(async () => (download as HTMLButtonElement).click());
         expect(hybridSpy).toHaveBeenCalledTimes(1);
-        const options = hybridSpy.mock.calls[0]?.[4] as { material?: string } | undefined;
-        expect(options?.material).toBe("TPU 95A");
+        const options = hybridSpy.mock.calls[0]?.[4] as
+            | { apexMaterialId?: string; includeLeaderBlock?: boolean; material?: string }
+            | undefined;
+        expect(options?.apexMaterialId).toBe("ApexCore");
+        expect(options?.includeLeaderBlock).toBe(true);
+        expect(options?.material).toBeUndefined();
+        expect(container.textContent).not.toMatch(/TPU 9[058]A/);
+        const leader = container.querySelector('[data-testid="gcode-leader-block"]') as HTMLInputElement;
+        expect(leader.checked).toBe(true);
     });
 
     test("G-code export shows the real step and disables the button while running", async () => {
@@ -87,9 +94,15 @@ describe("ExportPanel clinical step", () => {
         const gcodeTab = container.querySelector('[data-export-kind="gcode"]') as HTMLButtonElement;
         await act(async () => gcodeTab.click());
         const material = container.querySelector('[data-testid="gcode-material"]') as HTMLSelectElement;
-        expect(material.value).toBe("TPU 95A");
+        expect(material.value).toBe("ApexCore");
+        const bounce = container.querySelector(
+            '[data-testid="apex-material-ApexBounce"]',
+        ) as HTMLOptionElement;
+        const forge = container.querySelector('[data-testid="apex-material-ApexForge"]') as HTMLOptionElement;
+        expect(bounce.disabled).toBe(true);
+        expect(forge.disabled).toBe(true);
         await act(async () => {
-            material.value = "TPU 90A";
+            material.value = "ApexLight";
             material.dispatchEvent(new Event("change", { bubbles: true }));
         });
 
@@ -105,7 +118,9 @@ describe("ExportPanel clinical step", () => {
         expect(download.disabled).toBe(true);
         expect(download.textContent).toContain(GCODE_EXPORT_STEPS.prepare);
         expect(hybridSpy).toHaveBeenCalledTimes(1);
-        expect((hybridSpy.mock.calls[0]?.[4] as { material?: string }).material).toBe("TPU 90A");
+        expect((hybridSpy.mock.calls[0]?.[4] as { apexMaterialId?: string }).apexMaterialId).toBe(
+            "ApexLight",
+        );
 
         await act(async () => {
             release();

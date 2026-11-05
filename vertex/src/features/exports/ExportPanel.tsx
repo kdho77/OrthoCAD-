@@ -5,10 +5,11 @@ import { OutputSideBar } from "@/components/clinical/OutputSideBar";
 import { PanelHeading } from "@/components/clinical/PanelHeading";
 import { Button } from "@/components/ui/button";
 import { HardnessRegionList } from "@/features/clinical/HardnessRegionList";
+import { ApexPrintMaterialPicker } from "@/features/exports/ApexPrintMaterialPicker";
+import type { ApexPrintMaterialId } from "@/features/exports/apex-print-material";
 import {
     type ClinicalExportKind,
     clinicalExportFormatTabs,
-    clinicalGcodeMaterialOptions,
     defaultClinicalGcodeMaterial,
     exportClinicalPrinterGcode,
 } from "@/features/exports/export-panel-clinical";
@@ -46,9 +47,9 @@ export function ExportPanel({
     const [progress, setProgress] = useState<string | null>(null);
     const [busyKind, setBusyKind] = useState<ExportKind>(null);
     const [exportKind, setExportKind] = useState<ExportKind>("stl");
-    const [material, setMaterial] = useState(() => defaultClinicalGcodeMaterial(design.method));
+    const [material, setMaterial] = useState<ApexPrintMaterialId>(() => defaultClinicalGcodeMaterial());
+    const [includeLeaderBlock, setIncludeLeaderBlock] = useState(true);
     const formatTabs = clinicalExportFormatTabs(design.method);
-    const materialOptions = clinicalGcodeMaterialOptions(design.method);
 
     const stlCheck = canExport(user, license, "stl");
     const glbCheck = canExport(user, license, "glb");
@@ -100,7 +101,8 @@ export function ExportPanel({
                     side: exportSide,
                     design,
                     wallStyle: viewer.wallStyle,
-                    material,
+                    apexMaterialId: material,
+                    includeLeaderBlock,
                     onProgress: setProgress,
                 });
                 setStatus(
@@ -151,24 +153,26 @@ export function ExportPanel({
                     ))}
                 </div>
                 {exportKind === "gcode" ? (
-                    <label className="block space-y-1">
-                        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                            Material
-                        </span>
-                        <select
-                            data-testid="gcode-material"
-                            className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
-                            value={material}
-                            disabled={busy}
-                            onChange={(event) => setMaterial(event.target.value)}
-                        >
-                            {materialOptions.map((name) => (
-                                <option key={name} value={name}>
-                                    {name}
-                                </option>
-                            ))}
-                        </select>
-                    </label>
+                    <>
+                        <ApexPrintMaterialPicker value={material} onChange={setMaterial} disabled={busy} />
+                        <label className="flex items-start gap-2 text-[11px]">
+                            <input
+                                type="checkbox"
+                                className="mt-0.5"
+                                data-testid="gcode-leader-block"
+                                checked={includeLeaderBlock}
+                                disabled={busy}
+                                onChange={(event) => setIncludeLeaderBlock(event.target.checked)}
+                            />
+                            <span>
+                                Sacrificial leader block
+                                <span className="block text-[10px] text-muted-foreground">
+                                    Added on the manufacturing STL before slicing. Mesh and CNC exports skip
+                                    it.
+                                </span>
+                            </span>
+                        </label>
+                    </>
                 ) : null}
                 <OutputSideBar />
                 <Button

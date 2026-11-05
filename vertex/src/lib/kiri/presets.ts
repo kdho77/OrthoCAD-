@@ -20,7 +20,7 @@ export const PRINTER_PRESETS: PrinterPreset[] = [
         beltAngleDeg: 45,
         nozzleMm: 0.6,
         layerHeightMm: 0.3,
-        material: "TPU 95A",
+        material: "Apex Core",
         bed: { x: 300, y: 100000, z: 200 },
     },
     {
@@ -30,7 +30,7 @@ export const PRINTER_PRESETS: PrinterPreset[] = [
         beltAngleDeg: 45,
         nozzleMm: 0.6,
         layerHeightMm: 0.3,
-        material: "TPU 95A",
+        material: "Apex Core",
         bed: { x: 300, y: 100000, z: 200 },
     },
     {
@@ -39,7 +39,7 @@ export const PRINTER_PRESETS: PrinterPreset[] = [
         method: "printing_solid",
         nozzleMm: 0.4,
         layerHeightMm: 0.2,
-        material: "TPU 95A",
+        material: "Apex Core",
         bed: { x: 250, y: 210, z: 210 },
     },
     {
