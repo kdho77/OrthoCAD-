@@ -237,8 +237,13 @@ def emit_gcode(
     )
 
     belt = preset.get("beltAngleDeg")
+    # Absent material keeps the historical header (`material=TPU`). A chosen
+    # filament is recorded here and does not change speeds, temps, or infill.
+    material = str(o.get("material") or "TPU")
     g.comment("OrthoCAD Hybrid Manufacturing — belt-aware slicer (walls + gyroid/rectilinear infill)")
-    g.comment(f"preset={preset.get('name','unknown')} layerH={layer_h}mm nozzle={nozzle}mm belt={belt}° material=TPU")
+    g.comment(
+        f"preset={preset.get('name','unknown')} layerH={layer_h}mm nozzle={nozzle}mm belt={belt}° material={material}"
+    )
     g.comment("slow_down_layer_time = 0")
     g.raw("G21")
     g.raw("G90")

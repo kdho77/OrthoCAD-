@@ -22,6 +22,8 @@ export interface ManufacturePayload {
     perimeters?: number;
     grinding_style?: GrindingStylePayload;
     print_recipe?: Record<string, unknown>;
+    /** Filament the user selected. Omitted leaves the slicer header on its preset default. */
+    material?: string;
 }
 
 /** Shape returned by the Python `/manufacture` endpoint on success. */
@@ -59,6 +61,37 @@ export function getManufacturingConfig(): { baseUrl: string; apiKey: string | nu
 }
 
 /**
+ * POST target for the manufacturing service.
+ *
+ * `MANUFACTURING_SERVICE_URL` is the service root (`https://host`). Some
+ * deploys paste the full endpoint (`https://host/manufacture`). Appending
+ * `/manufacture` again requests `/manufacture/manufacture`, which the service
+ * answers with 404.
+ */
+export function resolveManufactureEndpoint(configuredBaseUrl: string): string {
+    const base = configuredBaseUrl.trim().replace(/\/+$/, "");
+    if (/\/manufacture$/i.test(base)) return base;
+    return `${base}/manufacture`;
+}
+
+/** Surface the upstream body. Platform 404s use `message`, FastAPI uses `detail`. */
+export function manufacturingFailureDetail(status: number, statusText: string, bodyText: string): string {
+    let detail = "";
+    const trimmed = bodyText.trim();
+    if (trimmed) {
+        try {
+            const body = JSON.parse(trimmed) as { detail?: unknown; message?: unknown };
+            if (typeof body.detail === "string" && body.detail.trim()) detail = body.detail.trim();
+            else if (typeof body.message === "string" && body.message.trim()) detail = body.message.trim();
+        } catch {
+            detail = trimmed.replace(/\s+/g, " ").slice(0, 300);
+        }
+    }
+    if (!detail) detail = statusText.trim() || "request failed";
+    return `Manufacturing service error (${status}): ${detail}`;
+}
+
+/**
  * Call the Python hybrid-manufacturing service.
  *
  * Validates the finished STL, then returns G-code (belt profiles) or STL bytes.
@@ -66,7 +99,7 @@ export function getManufacturingConfig(): { baseUrl: string; apiKey: string | nu
  */
 export async function callManufacture(payload: ManufacturePayload): Promise<ManufactureResult> {
     const { baseUrl, apiKey } = getManufacturingConfig();
-    const endpoint = `${baseUrl}/manufacture`;
+    const endpoint = resolveManufactureEndpoint(baseUrl);
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
@@ -78,6 +111,7 @@ export async function callManufacture(payload: ManufacturePayload): Promise<Manu
         outputType: payload.output_type,
         beltAngleDeg: payload.belt_angle_deg,
         side: payload.side,
+        material: payload.material ?? null,
         hasStlUrl: Boolean(payload.stl_url && !payload.stl_url.startsWith("file://")),
         authenticated: Boolean(apiKey),
     });
@@ -99,17 +133,17 @@ export async function callManufacture(payload: ManufacturePayload): Promise<Manu
     }
 
     if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-        const detail = body?.detail || (await response.text().catch(() => "")) || response.statusText;
+        const bodyText = await response.text().catch(() => "");
+        const message = manufacturingFailureDetail(response.status, response.statusText, bodyText);
         console.error("[manufacturing] Python service returned error", {
             endpoint,
             status: response.status,
-            detail,
+            detail: message,
         });
         throw new TRPCError({
             code:
                 response.status === 401 || response.status === 403 ? "UNAUTHORIZED" : "INTERNAL_SERVER_ERROR",
-            message: `Manufacturing service error (${response.status}): ${detail}`,
+            message,
         });
     }
 
