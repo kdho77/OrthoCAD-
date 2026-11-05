@@ -25,7 +25,7 @@ const hardnessNameSchema = z.enum(HARDNESS_NAMES);
 export const DEFAULT_PRODUCTION_PROFILE_ID = "apex-belt-v2";
 
 /**
- * Locked VertexSlice process profile for Apex Core and Apex Light printer G-code.
+ * Locked VertexSlice process profile for Apex Core, Apex Light, and Apex Forge printer G-code.
  * Hardness still selects gyroid infill on this profile; it is not a new recipe.
  */
 export const APEX_V2_INSOLE_LOCKED_PROFILE_ID = "apex-v2-insole-95a";
