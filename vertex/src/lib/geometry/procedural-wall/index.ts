@@ -319,6 +319,7 @@ export {
     hygieneBottomPattern,
     PATTERN_MIN_RADIUS_MM,
     PATTERN_RIM_CLEARANCE_MM,
+    projectStationsInsideRim,
     RIM_INSET_SLACK_MM,
 } from "./pattern-hygiene";
 export { assertNonCrossing, buildPlanformFrame } from "./planform";
