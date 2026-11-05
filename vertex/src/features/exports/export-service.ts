@@ -5,6 +5,7 @@ import {
     type VertexSliceMaterialId,
     vertexSliceMaterialForApexMaterial,
 } from "@/features/exports/apex-print-material";
+import { exportMachineFamily, pairExportLayout } from "@/features/exports/machine-export-layout";
 import { stampSingleFootStl } from "@/features/exports/printer-foot-isolation";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { workpiecesFromDesign } from "@/lib/cnc/compose";
@@ -461,7 +462,13 @@ export async function generateHybridGcode(
     const aborted = abort();
     if (aborted) return aborted;
     const activeDesignId = useClientStore.getState().activeDesignId;
-    const outputType = preset.beltAngleDeg ? "gcode" : "stl";
+    const family = exportMachineFamily({
+        method: useDesignStore.getState().design.method,
+        beltAngleDeg: preset.beltAngleDeg,
+    });
+    // Belt: one local-frame STL per foot. Bed printers keep the side-by-side pair STL.
+    const separateFiles = pairExportLayout(family) === "separate-files";
+    const outputType = separateFiles ? "gcode" : "stl";
     if (outputType === "gcode" && !isApexPrintMaterialExportReady(options.apexMaterialId)) {
         return {
             ok: false,
@@ -487,17 +494,16 @@ export async function generateHybridGcode(
 
     if (isApiConfigured()) {
         try {
-            const includeLeader = outputType === "gcode" && options.includeLeaderBlock !== false;
-            const stlBuffer =
-                outputType === "gcode"
-                    ? (await buildPrinterFootManufacturingStl(side, includeLeader)).stl
-                    : await (async () => {
-                          const designForStl = useDesignStore.getState().design;
-                          const stlSides = orderDownloadSides(designForStl);
-                          return stlSides.length > 1
-                              ? await buildOrderPairStl()
-                              : await buildManufacturingStl(side);
-                      })();
+            const includeLeader = separateFiles && options.includeLeaderBlock !== false;
+            const stlBuffer = separateFiles
+                ? (await buildPrinterFootManufacturingStl(side, includeLeader)).stl
+                : await (async () => {
+                      const designForStl = useDesignStore.getState().design;
+                      const stlSides = orderDownloadSides(designForStl);
+                      return stlSides.length > 1
+                          ? await buildOrderPairStl()
+                          : await buildManufacturingStl(side);
+                  })();
             const stopped = abort();
             if (stopped) return stopped;
             report?.(GCODE_EXPORT_STEPS.upload);

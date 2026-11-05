@@ -12,7 +12,9 @@ import {
     type GcodeExportStep,
     type GrindingStyleInput,
     generateHybridGcode,
+    MILLED_ORDER_PRINT_REASON,
 } from "@/features/exports/export-service";
+import { exportMachineFamily, pairExportLayout } from "@/features/exports/machine-export-layout";
 import { orderDownloadSides } from "@/lib/geometry/export-geometry";
 import { resolveViewerWallStyle } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { type CamOverrides, type PrinterPreset, presetsForMethod } from "@/lib/kiri";
@@ -137,12 +139,29 @@ export async function exportClinicalPrinterGcode(input: {
             apexPrintMaterialById(apexMaterialId).disabledReason ?? "Material not available for export";
         return { ok: false, reason };
     }
+    const family = exportMachineFamily({
+        method: input.design.method,
+        beltAngleDeg: preset.beltAngleDeg,
+    });
+    if (family === "cnc") {
+        return { ok: false, reason: MILLED_ORDER_PRINT_REASON };
+    }
+    const overrides = camOverridesForClinicalExport(input.design, preset);
+    const grindingStyle = grindingStyleFromViewerWall(input.wallStyle);
+    // Conventional beds keep one side-by-side file. Only the belt loops feet.
+    if (pairExportLayout(family) !== "separate-files") {
+        const options = {
+            apexMaterialId,
+            includeLeaderBlock: false,
+            onProgress: input.onProgress,
+            shouldAbort: input.shouldAbort,
+        };
+        return exportGcode(input.side, preset, overrides, options);
+    }
     const feet = input.feet ? gcodeFeetForExport(input.design, input.feet) : [input.side];
     if (feet.length === 0) {
         return { ok: false, reason: `This order has no ${input.feet ?? input.side} foot to export.` };
     }
-    const overrides = camOverridesForClinicalExport(input.design, preset);
-    const grindingStyle = grindingStyleFromViewerWall(input.wallStyle);
     const many = feet.length > 1;
     const built: { side: Side; filename: string; blob: Blob }[] = [];
     for (const foot of feet) {
@@ -156,9 +175,7 @@ export async function exportClinicalPrinterGcode(input: {
             shouldAbort: input.shouldAbort,
             onProgress: (step: string) => input.onProgress?.(many ? `${SIDE_LABELS[foot]}: ${step}` : step),
         };
-        const res = preset.beltAngleDeg
-            ? await generateHybridGcode(foot, preset, grindingStyle, overrides, options)
-            : await exportGcode(foot, preset, overrides, options);
+        const res = await generateHybridGcode(foot, preset, grindingStyle, overrides, options);
         if (res.cancelled || input.shouldAbort?.()) {
             return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
         }
