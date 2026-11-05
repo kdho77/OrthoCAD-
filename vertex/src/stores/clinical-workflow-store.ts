@@ -222,7 +222,11 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
     goNext: () => {
         const current = get().step;
         const gate = evaluateNextGate(current);
-        if (!gate.ok) {
+        // Print → Export is the handoff for "Continue to Export" and the
+        // footer Next on Print. Reopened designs clear footSideExplicitlyChosen,
+        // and the rail still allows standing on Print. Re-applying the scan
+        // gate here used to send the user to Scan instead of Export.
+        if (!gate.ok && current !== "print") {
             if (blockedByOutlineEdit(current, "scan")) return;
             set({
                 step: "scan",

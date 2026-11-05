@@ -55,5 +55,19 @@ describe("export panel clinical gcode", () => {
         expect(preset.id).toBe("apex-belt-v2");
         expect(preset.beltAngleDeg).toBe(45);
         expect(grinding.type).toBe("rounded");
+        const options = hybridSpy.mock.calls[0][4] as { material?: string };
+        expect(options.material).toBe("TPU 95A");
+    });
+
+    test("selected material is passed into the slice request", async () => {
+        const res = await exportClinicalPrinterGcode({
+            side: "left",
+            design: useDesignStore.getState().design,
+            wallStyle: "straight",
+            material: "TPU 85A",
+        });
+        expect(res.ok).toBe(true);
+        const options = hybridSpy.mock.calls[0][4] as { material?: string };
+        expect(options.material).toBe("TPU 85A");
     });
 });

@@ -14,5 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Default command runs the FastAPI service
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+# Railway routes to $PORT and marks the deploy failed when nothing listens there.
+# A fixed 8001 leaves the public host unpublished, so POST /manufacture is a platform 404.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8001}"]

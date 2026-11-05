@@ -7,6 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
 import { ExportPanel } from "./ExportPanel";
+import { GCODE_EXPORT_STEPS } from "./export-service";
 
 const hybridSpy = rs.fn(async () => ({ ok: true as const, filename: "hybrid-left.gcode" }));
 
@@ -14,6 +15,12 @@ rs.mock("@/features/exports/export-service", () => ({
     exportDesign: rs.fn(async () => ({ ok: true as const, filename: "x.stl" })),
     generateHybridGcode: (...args: unknown[]) => hybridSpy(...args),
     exportGcode: rs.fn(async () => ({ ok: false as const, reason: "unexpected client path" })),
+    GCODE_EXPORT_STEPS: {
+        prepare: "Preparing the insole solid…",
+        upload: "Uploading the solid…",
+        slice: "Slicing G-code…",
+        download: "Downloading G-code…",
+    },
 }));
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
@@ -62,5 +69,48 @@ describe("ExportPanel clinical step", () => {
 
         await act(async () => (download as HTMLButtonElement).click());
         expect(hybridSpy).toHaveBeenCalledTimes(1);
+        const options = hybridSpy.mock.calls[0]?.[4] as { material?: string } | undefined;
+        expect(options?.material).toBe("TPU 95A");
+    });
+
+    test("G-code export shows the real step and disables the button while running", async () => {
+        let release: () => void = () => {};
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        hybridSpy.mockImplementation(async () => {
+            await gate;
+            return { ok: true as const, filename: "hybrid-left.gcode" };
+        });
+
+        await act(async () => root.render(createElement(ExportPanel, { clinicalExportStep: true })));
+        const gcodeTab = container.querySelector('[data-export-kind="gcode"]') as HTMLButtonElement;
+        await act(async () => gcodeTab.click());
+        const material = container.querySelector('[data-testid="gcode-material"]') as HTMLSelectElement;
+        expect(material.value).toBe("TPU 95A");
+        await act(async () => {
+            material.value = "TPU 90A";
+            material.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+
+        const download = container.querySelector(
+            '[data-testid="clinical-export-download"]',
+        ) as HTMLButtonElement;
+        await act(async () => {
+            download.click();
+        });
+
+        const progress = container.querySelector('[data-testid="gcode-export-progress"]');
+        expect(progress?.textContent).toBe(GCODE_EXPORT_STEPS.prepare);
+        expect(download.disabled).toBe(true);
+        expect(download.textContent).toContain(GCODE_EXPORT_STEPS.prepare);
+        expect(hybridSpy).toHaveBeenCalledTimes(1);
+        expect((hybridSpy.mock.calls[0]?.[4] as { material?: string }).material).toBe("TPU 90A");
+
+        await act(async () => {
+            release();
+            await gate;
+        });
+        expect(download.disabled).toBe(false);
     });
 });
