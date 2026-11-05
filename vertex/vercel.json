@@ -8,6 +8,10 @@
         { "source": "/trpc", "destination": "/api/trpc" },
         { "source": "/trpc/:path*", "destination": "/api/trpc/:path*" },
         {
+            "source": "/api/integrations/:path*",
+            "destination": "/api/integrations"
+        },
+        {
             "source": "/((?!api/|trpc/|elements/|Templates/).*)",
             "destination": "/index.html"
         }

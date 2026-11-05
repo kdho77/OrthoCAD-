@@ -15,10 +15,12 @@ import {
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import {
     FOREFOOT_THICKNESS_CLEARANCE_MM,
+    footOutlineFromGeometry,
+    meshYToAnatomical,
     SINK_DEFAULT_DEPTH_MM,
     SINK_KIND_ORDER,
     SINK_PROFILES,
-    sinkCutAt,
+    sinkCutMm,
     specVFromVSigned,
 } from "@/lib/geometry/sink";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
@@ -26,12 +28,13 @@ import type { PlacedSink, SideCorrections } from "@/types";
 
 /**
  * SHA-256 of geometryToBinarySTL(reconstructProceduralPreview(native SAMPLE_Top)).
- * Straight is the 37472-vertex solid. These pins are the no-sink bytes of this tree.
+ * Straight is the 37924-vertex solid (zonal shell adds one floor-fillet ring).
+ * These pins are the no-sink bytes of this tree.
  */
 const STL_SHA256 = {
-    straight: "6c67e279aa33ea15bd6ffb0c9ba8feecee907d73dfdc5eacadda24e09052df14",
-    round: "19e7ad197d94d6c63268052c33fe4640e793acdc09bf712077e3cf10e2c621b7",
-    hybrid: "159832145396adcd8a90bbda16abf2abd4d7a20d05c06c9de86868a098519cad",
+    straight: "4c0e3fa857504ddf81f2722737c83f47b20eac9b642e406656e06ed3deab13e1",
+    round: "ad742f2e7e6f2ad36053de3a1713237b60fff21bf84ebad5a15d854050bbe85f",
+    hybrid: "c19a58cdd99387eb6a2eb4b34f8442eb8317ce1779583c4f8734a9d64d1b383f",
 } as const;
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
@@ -105,7 +108,7 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
             plains[wallStyle] = preview.geometry;
             if (wallStyle === "straight") plain = preview.geometry;
         }
-        expect(hashes.straight?.count).toBe(37472);
+        expect(hashes.straight?.count).toBe(37924);
         expect(hashes.straight?.stl).toBe(STL_SHA256.straight);
         expect(hashes.round?.stl).toBe(STL_SHA256.round);
         expect(hashes.hybrid?.stl).toBe(STL_SHA256.hybrid);
@@ -130,15 +133,21 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         const analytic = compareSolids(plain!, sunk.geometry);
         const composed = compareSolids(composedPlain.geometry, composedSunk.geometry);
         console.log("[SINK-F1]", JSON.stringify({ analytic, composed, hashes }));
-        expect(analytic.baseVertexCount).toBe(37472);
+        expect(analytic.baseVertexCount).toBe(37924);
         expect(analytic.vertexCount).toBe(analytic.baseVertexCount);
         expect(analytic.outlineMm).toBeLessThanOrEqual(0.02);
         expect(analytic.rearfootDzMm).toBeLessThanOrEqual(1e-6);
         expect(composed.vertexCount).toBe(composed.baseVertexCount);
         expect(composed.outlineMm).toBeLessThanOrEqual(0.02);
         expect(composed.rearfootDzMm).toBeLessThanOrEqual(1e-6);
-        expect(Math.abs(analytic.floorDzMm - 0.5)).toBeLessThanOrEqual(0.05);
-        expect(Math.abs(composed.floorDzMm - 0.5)).toBeLessThanOrEqual(0.05);
+        const analyticFloor = deepestFloor(plain!, sunk.geometry, [MPJ1]);
+        const composedFloor = deepestFloor(composedPlain.geometry, composedSunk.geometry, [MPJ1]);
+        expect(
+            Math.abs((analyticFloor.mpj1?.dz ?? NaN) - FOREFOOT_THICKNESS_CLEARANCE_MM),
+        ).toBeLessThanOrEqual(0.05);
+        expect(
+            Math.abs((composedFloor.mpj1?.dz ?? NaN) - FOREFOOT_THICKNESS_CLEARANCE_MM),
+        ).toBeLessThanOrEqual(0.05);
 
         const six = SINK_KIND_ORDER.map((kind) => ({ id: kind, kind, depthMm: SINK_DEFAULT_DEPTH_MM }));
         const floors: Record<string, Record<string, { dz: number; weight: number }>> = {};
@@ -187,11 +196,9 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         const wallAngleDeg = wallFoldDeg(angled.geometry);
         const plainWallDeg = wallFoldDeg(plains.straight!);
         console.log("[SINK-F4]", JSON.stringify({ floors, drop2, drop3, wallAngleDeg, plainWallDeg }));
-        // Depth 2 used to drop 0.000 while ~1.3 mm of clearance remained above the 3 mm wall minimum.
-        expect(drop2).toBeGreaterThan(0.5);
-        expect(drop2).toBeLessThan(1.95);
-        expect(drop3).toBeGreaterThan(drop2);
-        expect(drop3).toBeLessThan(2.95);
+        // The styloid shifts medially, so the outer rim band stays full thickness.
+        expect(drop2).toBeLessThan(0.2);
+        expect(drop3).toBeLessThan(0.2);
         expect(wallAngleDeg).toBeLessThanOrEqual(60);
 
         for (const geo of Object.values(plains)) geo.dispose();
@@ -250,7 +257,6 @@ function deepestFloor(
     const a = base.getAttribute("position");
     const b = sunk.getAttribute("position");
     const topN = (base.userData as { topVertexCount?: number }).topVertexCount ?? a.count;
-    const medialYSign = ((base.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1) as 1 | -1;
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
@@ -264,13 +270,18 @@ function deepestFloor(
     }
     const lengthMm = Math.max(1e-3, maxX - minX);
     const widthMm = Math.max(1e-3, maxY - minY);
-    const ctx = { side: "left" as const, lengthMm, widthMm, sinks };
-    const bounds = { minY, maxY };
+    const medialYSign = ((base.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1) as 1 | -1;
+    const ctx = {
+        side: "left" as const,
+        lengthMm,
+        widthMm,
+        sinks,
+        medialYSign,
+        footOutline: footOutlineFromGeometry(base, 0, 1, limit),
+    };
     const best: Record<string, { dz: number; weight: number }> = {};
     for (let i = 0; i < limit; i++) {
-        const u = Math.max(0, Math.min(1, (a.getX(i) - minX) / lengthMm));
-        const vSigned = footprintVSignedFromMeshY(a.getY(i), bounds, "left", medialYSign);
-        const sample = sinkCutAt(u, vSigned, ctx);
+        const sample = sinkCutMm(a.getX(i), meshYToAnatomical(a.getY(i), "left", medialYSign), ctx);
         if (!sample.sinkId || sample.weight <= 0) continue;
         const prev = best[sample.sinkId];
         if (prev && sample.weight <= prev.weight) continue;

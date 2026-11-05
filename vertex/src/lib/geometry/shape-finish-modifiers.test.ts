@@ -18,6 +18,7 @@ import {
     clampArchGrindDepthMm,
     defaultSideShapeFinish,
     maxArchGrindDepthForThickness,
+    SHAPE_FINISH_DEFAULTS,
     TRACK5B_MIN_WALL_MM,
     topCoverAccommodateDeltaAt,
     trimmableForefootLengthDeltaMm,
@@ -45,6 +46,17 @@ describe("shape-finish modifiers", () => {
         const gate = gateArchGrindDepth(2, 1.0, 0.25, 1.0);
         expect(gate.ok).toBe(false);
         expect(gate.failures.some((f) => f.includes("top sink"))).toBe(true);
+    });
+
+    test("default trimmable forefoot is an exact no-op", () => {
+        const printing = defaultSideShapeFinish("printing_solid");
+        const milling = defaultSideShapeFinish("milling_3axis");
+        expect(printing.trimmableForefoot).toBe(false);
+        expect(milling.trimmableForefoot).toBe(false);
+        expect(trimmableForefootLengthDeltaMm(printing)).toBe(0);
+        expect(trimmableForefootLengthDeltaMm({ ...printing, trimmableForefoot: true })).toBe(
+            SHAPE_FINISH_DEFAULTS.trimmableForefootExtraMm.default,
+        );
     });
 
     test("trimmable forefoot length gate", () => {

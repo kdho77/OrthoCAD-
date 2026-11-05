@@ -19,11 +19,11 @@ import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
 import type { PlacedElement, SideCorrections } from "@/types";
 import { loadSampleTopGlb } from "./helpers/load-sample-top-glb";
 
-/** Frozen at origin/main M9 compose export (forefootWidthMm=0); full STL MD5 prefixes. */
+/** M9 compose export at forefootWidthMm=0; full STL MD5 prefixes. Re-recorded for the zonal shell. */
 const M9_BASELINE_STL_MD5_PREFIX: Record<"straight" | "round" | "hybrid", string> = {
-    straight: "38dc5fb11432",
-    round: "129269d7c0a1",
-    hybrid: "4c56a8d00a15",
+    straight: "a150f7636b54",
+    round: "96969efc2727",
+    hybrid: "e936b9f52435",
 };
 
 /** Bottom side-shift minus top side-shift, every sampled u. */

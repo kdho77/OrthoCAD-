@@ -1,12 +1,14 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { BufferAttribute, BufferGeometry } from "three";
+import { apexWarpShiftMm, applyDefaultArchApexWarp } from "@/lib/geometry/apex-move-warp";
 import {
     applyBaseModifiers,
     BASE_REFERENCE_THICKNESS_MM,
     correctionDeltaAt,
 } from "@/lib/geometry/base-modifier";
 import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
+import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
     forefootWidthLongitudinalEnvelope,
     type HeightFieldParams,
@@ -64,6 +66,7 @@ import {
     adjustPatternForClearance,
     assertPostLoftGates,
     assertPreLoftStations,
+    clampStationHeadings,
     fairedPlantarFromStock,
     fairMovedPattern,
     filletRadiiFromDefaults,
@@ -135,6 +138,11 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * centroid instead of the per-vertex midline taper.
      */
     forefootRigidBoxes?: ReadonlyArray<{ minX: number; maxX: number; minY: number; maxY: number }>;
+    /**
+     * Retile a z=0 ear that winds upward. Set when the outline was scaled
+     * before the loft. Native lofts leave posting triangulation alone.
+     */
+    repairUpwardBottom?: boolean;
 }
 
 function zeroCorrections(): SideCorrections {
@@ -286,6 +294,24 @@ function applyAnalyticTopDeltas(
         if (Number.isFinite(whole) && Math.abs(whole - 1) > 1e-12) {
             pos[i * 3 + 1] = widCenter + ((pos[i * 3 + 1] ?? y) - widCenter) * whole;
         }
+    }
+    // Kirby skive is a top-only raise (R11). Analytic loft used to drop it
+    // (includeSkives stays false inside correctionDeltaAt). No-op at 0 mm,
+    // so a stock export is unchanged.
+    if ((c.medialSkiveMm ?? 0) > 0 || (c.lateralSkiveMm ?? 0) > 0) {
+        applyHeelSkiveToTopMesh(pos, {
+            side,
+            corrections: c,
+            lengthAxis: 0,
+            widthAxis: 1,
+            thickAxis: 2,
+            lenMin: minX,
+            lenSize: length,
+            topVertexCount: count,
+            // Paired with the side inferred from medialYSign (see postingZDelta):
+            // left shell medial is −Y, mirrored right shell medial is +Y.
+            widthSign: 1,
+        });
     }
 }
 
@@ -719,7 +745,8 @@ function assertGeneratedEdgesUsedTwice(
  *   points down and its signed area matches the star.
  *
  * Meshes with no upward or degenerate bottom face are left byte-for-byte alone.
- * The forefoot-shift caller skips this when the width is 0.
+ * The forefoot-shift caller calls this again only when the width is not 0,
+ * because that shift can create a new ear.
  */
 export function repairInvertedBottomFaces(positions: number[], indices: number[]): number {
     const zEps = 1e-4;
@@ -1175,6 +1202,27 @@ export function reconstructProceduralWalls(
         if (hasCurveOrTopModifiers(options)) {
             applyAnalyticTopDeltas(topPos, model.bounds, options);
         }
+        // Same stock-arch slide as applyBaseModifiers. The composed-top path
+        // (viewport) already ran it there and skips this branch. A non-zero
+        // arch delta recenters the peak by itself, so the shift is 0 and
+        // this write is skipped — Low/High stay on the previous loft.
+        const apexShift = apexWarpShiftMm(options.corrections ?? {});
+        const stockTop = model.top.meshPositions;
+        if (apexShift !== 0 && stockTop) {
+            const lenSize = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+            applyDefaultArchApexWarp({
+                positions: topPos,
+                original: stockTop,
+                index: topIdx,
+                lengthAxis: 0,
+                widthAxis: 1,
+                thickAxis: 2,
+                lenMin: model.bounds.minX,
+                lenSize,
+                topVertexCount: 0,
+                shiftMm: apexShift,
+            });
+        }
     } else {
         throw new Error("procedural reconstruct: TopSheet required (exact stock top mesh)");
     }
@@ -1545,6 +1593,7 @@ export function reconstructProceduralWalls(
             }
         }
     }
+    clampStationHeadings(stations, hygiened.loop);
     assertPreLoftStations(stations, r1, r2, stationSkewOpts);
     {
         let minB = Infinity;
@@ -1900,9 +1949,10 @@ export function reconstructProceduralWalls(
     const bandVerts = new Set<number>();
     for (let i = 0; i < (indexGrid ? nS : refinedB.length); i++) bandVerts.add(refinedVert(i));
     const hygiene = sanitizeMesh(positions, indices, generatedStart, nS, nJ, bandVerts, indexGrid);
-    // The upward ear is a full-length straight-wall artifact. Regional posting
-    // and wedge-off stay on main's triangulation.
-    if (fullLengthWedgeActive(options.corrections)) {
+    // A scaled outline can leave one z=0 ear wound upward. Native lofts,
+    // including posting goldens, keep their triangulation. A full-length
+    // wedge already repairs here. No upward face means no index writes.
+    if (options.repairUpwardBottom || fullLengthWedgeActive(options.corrections)) {
         repairInvertedBottomFaces(positions, indices);
     }
     assertGeneratedEdgesUsedTwice(indices, generatedStart, positions);
@@ -1967,7 +2017,9 @@ export function reconstructProceduralWalls(
         const vertAt = (row: number, station: number) => gridVert(row, station);
         applyAnalyticSinkToLoftedSolid({
             positions,
-            topCount: topPos.length / 3,
+            // Even-split inserts rim vertices after the source sheet and before
+            // the wall. They are part of the top and must take the same cut.
+            topCount: generatedStart,
             nS,
             nJ,
             vertAt,

@@ -1,45 +1,52 @@
-import { Box, Coins, Cpu, Loader2, ShieldAlert, ShieldCheck, WifiOff, X } from "lucide-react";
+import { Coins } from "lucide-react";
+import { HelpPopover } from "@/components/ui/help-popover";
+import { showSuperAdminLink } from "@/features/admin/admin-nav";
 import { isOfflineStockPlaceholder } from "@/lib/geometry/base-asset";
 import { isApiConfigured } from "@/lib/trpc";
 import { useAuthStore } from "@/stores/auth-store";
+import { useClientNoticeStore } from "@/stores/client-notice-store";
 import { useClientStore } from "@/stores/client-store";
 import { retryStockBaseResolution, useDesignStore } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
-import { cn } from "@/lib/utils";
 
-// Bottom status bar — mirrors the dense, professional CAD layout from the
-// reference screenshots.
 export function StatusBar() {
     const design = useDesignStore((s) => s.design);
-    const method = design.method;
-    const elements = design.elements.length;
     const stockBaseError = useDesignStore((s) => s.stockBaseError);
     const stockBaseLoading = useDesignStore((s) => s.stockBaseLoading);
     const clearStockBaseError = useDesignStore((s) => s.clearStockBaseError);
+    const clientError = useClientNoticeStore((s) => s.error);
+    const clearClientError = useClientNoticeStore((s) => s.clearError);
     const activeDesignId = useClientStore((s) => s.activeDesignId);
     const designs = useClientStore((s) => s.designs);
-    const { user, license } = useAuthStore();
+    const { user } = useAuthStore();
     const kernelName = useKernelStore((s) => s.name);
     const kernelLoadState = useKernelStore((s) => s.loadState);
     const record = designs.find((d) => d.id === activeDesignId);
+    const superAdmin = showSuperAdminLink(user?.role);
 
     const stockBase = design.paired?.rightBase ?? design.base;
     const usingOfflinePlaceholder =
         !isApiConfigured() && stockBase?.source === "stock" && isOfflineStockPlaceholder(stockBase);
 
+    const savedLabel = record?.name ? `Saved · ${record.name}` : "Saved";
+
     return (
         <footer className="flex h-7 items-center justify-between border-t border-border bg-panel px-3 text-[11px] text-muted-foreground">
-            <div className="flex min-w-0 flex-1 items-center gap-4">
-                {stockBaseError ? (
-                    <span
-                        className="flex min-w-0 max-w-[min(85vw,960px)] items-start gap-1.5 rounded border border-red-500/50 bg-red-950/70 px-2 py-1 text-red-200"
-                        role="alert"
-                    >
-                        <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        <span className="break-all font-medium leading-snug">{stockBaseError}</span>
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+                {clientError ? (
+                    <span className="truncate text-red-300" role="alert">
+                        {clientError}
+                        <button type="button" className="ml-2 underline" onClick={() => clearClientError()}>
+                            Dismiss
+                        </button>
+                    </span>
+                ) : null}
+                {superAdmin && stockBaseError ? (
+                    <span className="truncate text-red-300" role="alert">
+                        {stockBaseError}
                         <button
                             type="button"
-                            className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide hover:bg-red-900/60"
+                            className="ml-2 underline"
                             onClick={() => {
                                 clearStockBaseError();
                                 retryStockBaseResolution();
@@ -47,47 +54,30 @@ export function StatusBar() {
                         >
                             Retry
                         </button>
-                        <button
-                            type="button"
-                            className="shrink-0 rounded p-0.5 hover:bg-red-900/60"
-                            aria-label="Dismiss stock base error"
-                            onClick={() => clearStockBaseError()}
-                        >
-                            <X className="h-3 w-3" />
-                        </button>
-                    </span>
-                ) : stockBaseLoading ? (
-                    <span className="flex shrink-0 items-center gap-1.5 text-cyan-400/90">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        Loading stock base from server…
-                    </span>
-                ) : usingOfflinePlaceholder ? (
-                    <span
-                        className="flex shrink-0 items-center gap-1.5 rounded border border-amber-500/40 bg-amber-950/40 px-2 py-0.5 text-amber-200"
-                        role="status"
-                    >
-                        <WifiOff className="h-3 w-3" />
-                        Offline dev placeholder base
                     </span>
                 ) : null}
-                <span className="flex shrink-0 items-center gap-1">
-                    <Box className="h-3 w-3" /> {record?.name ?? "Unsaved design"}
-                </span>
-                <span className="capitalize">{method.replace("_", " ")}</span>
-                <span>{elements} element{elements === 1 ? "" : "s"}</span>
+                {superAdmin && stockBaseLoading ? (
+                    <span className="text-cyan-400/90">Base loading…</span>
+                ) : null}
+                {superAdmin && usingOfflinePlaceholder ? (
+                    <span className="text-amber-200">Offline placeholder base</span>
+                ) : null}
+                <span data-testid="status-saved">{savedLabel}</span>
             </div>
-            <div className="flex items-center gap-4">
-                <span className={cn("flex items-center gap-1", license?.status === "active" ? "text-emerald-400" : "text-amber-400")}>
-                    <ShieldCheck className="h-3 w-3" /> {license?.status ?? "no license"}
-                </span>
-                <span className="flex items-center gap-1 text-cyan-400/90">
-                    <Cpu className="h-3 w-3" />
-                    {kernelLoadState === "loading" ? "geometry loading…" : kernelName.replace(/-/g, " ")}
-                </span>
-                <span className="flex items-center gap-1">
+            <div className="flex items-center gap-3">
+                <HelpPopover label="Keyboard shortcuts">
+                    <p>
+                        <strong className="text-foreground">Shortcuts</strong> — Ctrl/Cmd+S save, Ctrl/Cmd+E
+                        export STL, Ctrl/Cmd+P AI Rx, T transparent, Esc cancel tool.
+                    </p>
+                    <p className="mt-1">
+                        <strong className="text-foreground">Kernel</strong> —{" "}
+                        {kernelLoadState === "loading" ? "loading…" : kernelName.replace(/-/g, " ")}
+                    </p>
+                </HelpPopover>
+                <span className="flex items-center gap-1 tabular-nums">
                     <Coins className="h-3 w-3 text-primary" /> {user?.tokenBalance ?? 0} tokens
                 </span>
-                <span>{user?.email}</span>
             </div>
         </footer>
     );

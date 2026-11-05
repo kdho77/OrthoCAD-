@@ -6,16 +6,21 @@ import { KernelLoadingBanner } from "@/components/layout/KernelLoadingBanner";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { SessionRecoveryDialog } from "@/components/layout/SessionRecoveryDialog";
 import { StatusBar } from "@/components/layout/StatusBar";
-import { TopNav } from "@/components/layout/TopNav";
+import { type NavItem, TopNav } from "@/components/layout/TopNav";
 import { PrescriptionUpload } from "@/components/prescription-upload/PrescriptionUpload";
 import { Viewer3D } from "@/components/viewer/Viewer3D";
 import { AdminApp } from "@/features/admin/AdminApp";
-import { useLocationPath } from "@/features/admin/admin-nav";
-import { ProductTypeBar } from "@/features/afo/ProductTypeBar";
+import { navigate, useLocationPath } from "@/features/admin/admin-nav";
 import { LoginScreen } from "@/features/auth/LoginScreen";
-import { ClientsView } from "@/features/clients/ClientsView";
+import { ClientFilePage } from "@/features/clients/ClientFilePage";
+import { ClientListPage } from "@/features/clients/ClientListPage";
+import { ProductTypeBar } from "@/features/afo/ProductTypeBar";
+import { EditorChrome, useDesignRoute } from "@/features/clients/EditorChrome";
+import { InactivityGuard } from "@/features/clients/InactivityGuard";
+import { parseClinicalPath } from "@/features/clients/routes";
 import { exportDesign } from "@/features/exports/export-service";
 import { MillTableView } from "@/features/mill/MillTableView";
+import { ProductionPage } from "@/features/production/ProductionPage";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useViewportMode } from "@/hooks/useViewportMode";
@@ -24,27 +29,29 @@ import { applyViewerWallFlagFromSearch } from "@/lib/geometry/procedural-wall/vi
 import { stockDebug, stockGlbLog } from "@/lib/geometry/stock-debug";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
-import { useAppNavStore } from "@/stores/app-nav-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { ensureDefaultStockBaseResolved, useDesignStore } from "@/stores/design-store";
 import { isAdminPath } from "../shared/admin/admin-domain";
+import { clinicalDocumentTitle } from "../shared/client-files";
 
 export default function App() {
     useAuthBootstrap();
     const { pathname } = useLocationPath();
     const { user, loading: authLoading } = useAuthStore();
 
-    if (isSupabaseConfigured()) {
-        if (authLoading) {
-            return (
-                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                    Loading…
-                </div>
-            );
-        }
-        if (!user) return <LoginScreen />;
+    useEffect(() => {
+        document.title = clinicalDocumentTitle();
+    }, [pathname]);
+
+    if (authLoading) {
+        return (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                Loading…
+            </div>
+        );
     }
+    if (!user) return <LoginScreen />;
 
     if (isAdminPath(pathname)) {
         return (
@@ -54,12 +61,33 @@ export default function App() {
         );
     }
 
-    return <CadApp />;
+    return (
+        <>
+            <InactivityGuard />
+            <ClinicalRoutes pathname={pathname} />
+        </>
+    );
 }
 
-function CadApp() {
-    const nav = useAppNavStore((s) => s.nav);
-    const setNav = useAppNavStore((s) => s.setNav);
+function ClinicalRoutes({ pathname }: { pathname: string }) {
+    const route = parseClinicalPath(pathname);
+
+    const productionPath = route.kind === "production" ? `/production/${route.tab}` : null;
+
+    useLayoutEffect(() => {
+        if (route.kind === "home") navigate(`/clients${window.location.search}`);
+        else if (productionPath && pathname !== productionPath) navigate(productionPath);
+    }, [route.kind, productionPath, pathname]);
+
+    if (route.kind === "home") return null;
+    if (route.kind === "list") return <ClientListPage />;
+    if (route.kind === "file") return <ClientFilePage clientId={route.clientId} />;
+    if (route.kind === "production") return <ProductionPage tab={route.tab} />;
+    return <CadApp clientId={route.clientId} designId={route.designId} />;
+}
+
+function CadApp({ clientId, designId }: { clientId: string; designId: string }) {
+    const { record } = useDesignRoute(clientId, designId);
     const [rxOpen, setRxOpen] = useState(false);
     const applyPrescription = useDesignStore((s) => s.applyPrescription);
     const method = useDesignStore((s) => s.design.method);
@@ -67,12 +95,14 @@ function CadApp() {
     const millLayout = step === "print" && method === "milling_3axis";
     const { user, loading: authLoading } = useAuthStore();
     const viewport = useViewportMode();
+    const afo = record?.kind === "afo";
 
     useLayoutEffect(() => {
         applyViewerWallFlagFromSearch(window.location.search);
     }, []);
 
     useEffect(() => {
+        if (afo) return;
         const bootstrapDesign = useDesignStore.getState().design;
         const bootstrapBase = bootstrapDesign.paired?.rightBase ?? bootstrapDesign.base;
         stockGlbLog(
@@ -88,10 +118,6 @@ function CadApp() {
             glbPath: bootstrapBase?.glbPath ?? null,
         });
 
-        if (useDesignStore.getState().design.productType === "afo") {
-            stockDebug("App stock bootstrap skipped — AFO product (no SAMPLE_Top)");
-            return;
-        }
         if (authLoading) {
             stockDebug("App stock bootstrap waiting for auth");
             return;
@@ -107,13 +133,13 @@ function CadApp() {
 
         stockGlbLog("App stock bootstrap — calling ensureDefaultStockBaseResolved()");
         ensureDefaultStockBaseResolved();
-    }, [authLoading, user]);
+    }, [authLoading, user, afo]);
 
     useKeyboardShortcuts({
         onPrescription: () => setRxOpen(true),
         onToggleTransparent: () => {
-            const v = useDesignStore.getState().viewer;
-            useDesignStore.getState().setViewer({ transparent: !v.transparent });
+            const viewer = useDesignStore.getState().viewer;
+            useDesignStore.getState().setViewer({ transparent: !viewer.transparent });
         },
         onExport: () => {
             const side = useDesignStore.getState().exportSide;
@@ -121,58 +147,64 @@ function CadApp() {
         },
     });
 
-    return (
-        <ErrorBoundary>
-            <div className="flex h-full flex-col">
-                <SessionRecoveryDialog />
-                <KernelLoadingBanner />
-                <TopNav active={nav} onNavigate={setNav} onOpenPrescription={() => setRxOpen(true)} />
+    const go = (item: NavItem) => {
+        if (item === "Clients") navigate("/clients");
+        else navigate("/production/queue");
+    };
 
-                <div className="flex min-h-0 flex-1">
-                    {nav === "Production" ? (
+    return (
+        <div className="flex h-full flex-col">
+            <SessionRecoveryDialog />
+            <KernelLoadingBanner />
+            <TopNav
+                active="Clients"
+                onNavigate={go}
+                onOpenPrescription={() => setRxOpen(true)}
+                leading={<EditorChrome clientId={clientId} designId={designId} />}
+            />
+            {!record ? (
+                <div className="flex min-h-0 flex-1 flex-col">
+                    <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+                        This design is not in the current session.
+                    </div>
+                </div>
+            ) : (
+                <ErrorBoundary>
+                    <div className="flex min-h-0 flex-1">
                         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                            <ProductTypeBar />
+                            {afo ? <ProductTypeBar /> : null}
                             <ClinicalStepRail />
                             <CaseSummaryBar />
+                            {viewport === "phone" ? (
+                                <div className="border-b border-border bg-panel px-4 py-3 text-center text-[12px] text-muted-foreground">
+                                    Best on a larger screen
+                                </div>
+                            ) : null}
                             <div className="relative flex min-h-0 flex-1">
                                 <main className="min-w-0 flex-1">
                                     {millLayout ? <MillTableView /> : <Viewer3D />}
                                 </main>
-                                {viewport === "phone" ? (
-                                    <div className="flex w-64 items-center justify-center border-l border-border bg-panel px-4 text-center text-[12px] text-muted-foreground">
-                                        Editing is available on a tablet or computer
-                                    </div>
-                                ) : viewport === "tablet" ? (
+                                {viewport === "tablet" ? (
                                     <div className="absolute inset-x-0 bottom-0 z-20 max-h-[48%] overflow-hidden border-t border-border bg-panel shadow-lg">
                                         <RightPanel />
                                     </div>
-                                ) : (
+                                ) : viewport === "desktop" ? (
                                     <RightPanel />
-                                )}
+                                ) : null}
                             </div>
                         </div>
-                    ) : nav === "Clients" ? (
-                        <ClientsView onOpenDesign={() => setNav("Production")} />
-                    ) : (
-                        <div className="flex flex-1 flex-col items-center justify-center gap-1 text-sm text-muted-foreground">
-                            <span className="text-foreground">Orders</span>
-                            <span className="text-xs">Production queue &amp; fulfilment tracking.</span>
-                        </div>
-                    )}
-                </div>
-
-                <StatusBar />
-
-                <PrescriptionUpload
-                    open={rxOpen}
-                    onClose={() => setRxOpen(false)}
-                    onApply={(result) => {
-                        applyPrescription(result);
-                        setNav("Production");
-                        setRxOpen(false);
-                    }}
-                />
-            </div>
-        </ErrorBoundary>
+                    </div>
+                </ErrorBoundary>
+            )}
+            <StatusBar />
+            <PrescriptionUpload
+                open={rxOpen}
+                onClose={() => setRxOpen(false)}
+                onApply={(result) => {
+                    applyPrescription(result);
+                    setRxOpen(false);
+                }}
+            />
+        </div>
     );
 }

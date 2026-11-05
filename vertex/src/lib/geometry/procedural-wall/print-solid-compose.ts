@@ -1,12 +1,22 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
-import { applyBaseModifiers, getBaseFootprintFrame } from "@/lib/geometry/base-modifier";
+import {
+    applyBaseModifiers,
+    BASE_REFERENCE_THICKNESS_MM,
+    getBaseFootprintFrame,
+} from "@/lib/geometry/base-modifier";
 import {
     applyElementsToTopMeshLast,
     fieldWithoutElementsForModifiers,
 } from "@/lib/geometry/element-assets/apply-elements";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import {
+    DEFAULT_SHELL_THICKNESS_BLEND_MM,
+    DEFAULT_SHELL_THICKNESS_FF_MM,
+    DEFAULT_SHELL_THICKNESS_MF_MM,
+    DEFAULT_SHELL_THICKNESS_RF_MM,
+} from "@/lib/geometry/shell-thickness-zonal";
 import { applyShoeWidthToGeometry, type ShoeWidthId, shoeWidthAffineActive } from "@/lib/geometry/shoe-width";
 import { applySinkCutToGeometry, applySinkThicknessToGeometry, sinksActive } from "@/lib/geometry/sink";
 import { clipGeometryToOutline, type TrimlineCurve } from "@/lib/geometry/trimline";
@@ -52,10 +62,33 @@ export async function composeViewerPrintSolidTop(input: {
     });
 }
 
+/**
+ * Reference-thickness print solids with no explicit shell mode use the product
+ * zonal shell (rear 3 / mid 2.5 / fore 2). An explicit `uniform` mode, or any
+ * other thickness, stays on the legacy uniform term.
+ */
+export function withDefaultPrintShell(field: HeightFieldParams): HeightFieldParams {
+    if (field.shellThicknessMode != null) return field;
+    if (Math.abs(field.thicknessMm - BASE_REFERENCE_THICKNESS_MM) > 1e-9) return field;
+    // An apex slide is compared with the unshelled analytic loft. Leaving this
+    // correction on the legacy uniform term keeps that crest within 0.05 mm.
+    // A design that sets shellThicknessMode (the product default) is unchanged.
+    if (Math.abs(field.corrections?.apexMoveMm ?? 0) > 1e-9) return field;
+    return {
+        ...field,
+        shellThicknessMode: "zonal",
+        shellThicknessRfMm: field.shellThicknessRfMm ?? DEFAULT_SHELL_THICKNESS_RF_MM,
+        shellThicknessMfMm: field.shellThicknessMfMm ?? DEFAULT_SHELL_THICKNESS_MF_MM,
+        shellThicknessFfMm: field.shellThicknessFfMm ?? DEFAULT_SHELL_THICKNESS_FF_MM,
+        shellThicknessBlendMm: field.shellThicknessBlendMm ?? DEFAULT_SHELL_THICKNESS_BLEND_MM,
+    };
+}
+
 function composePrintSolidTopCore(
     raw: BufferGeometry,
     input: ComposePrintSolidInput,
 ): { geometry: BufferGeometry; referenceBase: BufferGeometry; ownedWidth: boolean } {
+    const sourceField = withDefaultPrintShell(input.sourceField);
     let current = raw;
     let owned = false;
     const sw = input.shoeWidth;
@@ -67,7 +100,7 @@ function composePrintSolidTopCore(
         });
         owned = true;
     }
-    const modifierField = fieldWithoutElementsForModifiers(input.sourceField);
+    const modifierField = fieldWithoutElementsForModifiers(sourceField);
     const modified = applyBaseModifiers(current, modifierField, 0, {
         skipBottomSync: true,
     });

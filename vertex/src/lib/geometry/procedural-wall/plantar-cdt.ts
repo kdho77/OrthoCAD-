@@ -569,6 +569,96 @@ function sliverFillSteiner(
     return { extra, worst };
 }
 
+const UPWARD_BOTTOM_AREA_MM2 = 1e-6;
+
+/**
+ * Shell emits plantar faces as (a, c, b). A face with positive export Z, or a
+ * clockwise footprint large enough to survive that swap, is inverted or upward.
+ */
+function invertedOrUpwardBottom(points: PolyPoint[], face: [number, number, number]): boolean {
+    const a = points[face[0]!]!;
+    const b = points[face[1]!]!;
+    const c = points[face[2]!]!;
+    const ux = c.x - a.x;
+    const uy = c.y - a.y;
+    const uz = c.z - a.z;
+    const vx = b.x - a.x;
+    const vy = b.y - a.y;
+    const vz = b.z - a.z;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const area = Math.hypot(nx, ny, nz) * 0.5;
+    if (area <= UPWARD_BOTTOM_AREA_MM2) return false;
+    if (nz > 0) return true;
+    const area2 = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    return area2 < -UPWARD_BOTTOM_AREA_MM2;
+}
+
+function faceNormal(points: PolyPoint[], face: [number, number, number]): [number, number, number] | null {
+    const a = points[face[0]!]!;
+    const b = points[face[1]!]!;
+    const c = points[face[2]!]!;
+    const ux = b.x - a.x;
+    const uy = b.y - a.y;
+    const uz = b.z - a.z;
+    const vx = c.x - a.x;
+    const vy = c.y - a.y;
+    const vz = c.z - a.z;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-12) return null;
+    return [nx / len, ny / len, nz / len];
+}
+
+function dihedralDeg(
+    points: PolyPoint[],
+    left: [number, number, number],
+    right: [number, number, number],
+): number | null {
+    const n1 = faceNormal(points, left);
+    const n2 = faceNormal(points, right);
+    if (!n1 || !n2) return null;
+    const dot = Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]));
+    return (Math.acos(dot) * 180) / Math.PI;
+}
+
+/**
+ * A rejected candidate shares Steiner objects with the accepted disk, so the
+ * speculative nudge can move accepted coordinates. Restore the snapshot only
+ * when that move leaves the accepted disk worse: a face that is newly
+ * inverted or upward, or an edge whose dihedral newly exceeds 90°.
+ */
+export function rejectedTrialHarmsAcceptedDisk(
+    before: PolyPoint[],
+    after: PolyPoint[],
+    faces: Array<[number, number, number]>,
+): boolean {
+    for (const face of faces) {
+        if (invertedOrUpwardBottom(after, face) && !invertedOrUpwardBottom(before, face)) return true;
+    }
+    const edgeFaces = new Map<string, [number, number, number][]>();
+    for (const face of faces) {
+        for (let e = 0; e < 3; e++) {
+            const p = face[e]!;
+            const q = face[(e + 1) % 3]!;
+            const key = p < q ? `${p},${q}` : `${q},${p}`;
+            const list = edgeFaces.get(key);
+            if (list) list.push(face);
+            else edgeFaces.set(key, [face]);
+        }
+    }
+    for (const pair of edgeFaces.values()) {
+        if (pair.length !== 2) continue;
+        const prev = dihedralDeg(before, pair[0]!, pair[1]!);
+        const next = dihedralDeg(after, pair[0]!, pair[1]!);
+        if (next != null && next > 90 && !(prev != null && prev > 90)) return true;
+    }
+    return false;
+}
+
 function refineMinAngle(
     loop: PolyPoint[],
     extra: PolyPoint[],
@@ -599,15 +689,99 @@ function refineMinAngle(
         refine.push(...filled.extra);
         const steiner = [...baseSteiner, ...refine];
         const points = [...loop, ...extra, ...steiner];
+        // Snapshot before the nudge. The candidate shares Steiner objects with
+        // the accepted disk; restore them only if the rejected trial harms it.
+        const acceptedPoints = good.points.map((p) => ({ ...p }));
         nudgeInteriorDuplicates(points, loop.length, loop, keep);
         const faces = libraryCdtInterior(points, loop.length, extraEdges);
         assertIEdges(faces, loop.length);
         assertLibraryDisk(faces, loop.length);
         const aspect = maxBoundaryAspect(points, faces, loop, PLANTAR_SLIVER_BAND_MM);
-        if (aspect > I_SLIVER_ASPECT) return good;
+        if (aspect > I_SLIVER_ASPECT) {
+            if (rejectedTrialHarmsAcceptedDisk(acceptedPoints, good.points, good.faces)) {
+                return { ...good, points: acceptedPoints };
+            }
+            return good;
+        }
         good = { points, faces, steinerCount: steiner.length, sliverMaxAspect: aspect };
     }
     return good;
+}
+
+/** Bisect only shared interior edges; the wall's boundary ring stays untouched. */
+export function splitBoundarySlivers(
+    points: PolyPoint[],
+    faces: Array<[number, number, number]>,
+    nOuter: number,
+    maxSplits = 64,
+): number {
+    const boundary = points.slice(0, nOuter);
+    let splits = 0;
+    while (splits < maxSplits) {
+        let worst = I_SLIVER_ASPECT;
+        let edge: [number, number] | null = null;
+        for (const face of faces) {
+            const [a, b, c] = face.map((i) => points[i]!) as [PolyPoint, PolyPoint, PolyPoint];
+            if (
+                minDistToLoopXY((a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3, boundary) >
+                PLANTAR_SLIVER_BAND_MM
+            )
+                continue;
+            const { aspect } = faceAspect(a, b, c);
+            if (!Number.isFinite(aspect) || aspect <= worst) continue;
+            const edges: Array<[number, number]> = [
+                [face[0], face[1]],
+                [face[1], face[2]],
+                [face[2], face[0]],
+            ];
+            edges.sort(
+                ([a, b], [c, d]) =>
+                    Math.hypot(points[d]!.x - points[c]!.x, points[d]!.y - points[c]!.y) -
+                    Math.hypot(points[b]!.x - points[a]!.x, points[b]!.y - points[a]!.y),
+            );
+            const [u, v] = edges[0]!;
+            // Splitting a perimeter edge would disconnect the cap from the wall.
+            if (u < nOuter && v < nOuter && (Math.abs(u - v) === 1 || Math.abs(u - v) === nOuter - 1))
+                continue;
+            worst = aspect;
+            edge = [u, v];
+        }
+        if (!edge) break;
+        const [u, v] = edge;
+        const incident = faces.flatMap((f, i) => (f.includes(u) && f.includes(v) ? [i] : []));
+        if (incident.length !== 2) break;
+        const a = points[u]!;
+        const b = points[v]!;
+        const mid = points.length;
+        points.push({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 });
+        for (const fi of incident) {
+            const face = faces[fi]!;
+            const k = face.findIndex(
+                (p, j) => (p === u && face[(j + 1) % 3] === v) || (p === v && face[(j + 1) % 3] === u),
+            );
+            const p = face[k]!;
+            const q = face[(k + 1) % 3]!;
+            const r = face[(k + 2) % 3]!;
+            faces[fi] = [p, mid, r];
+            faces.push([mid, q, r]);
+        }
+        splits++;
+    }
+    return splits;
+}
+
+class PlantarSliverError extends Error {
+    constructor(
+        message: string,
+        readonly mesh: {
+            points: PolyPoint[];
+            faces: Array<[number, number, number]>;
+            steinerCount: number;
+            sliverMaxAspect: number;
+        },
+    ) {
+        super(message);
+    }
 }
 
 function cdtDiskOf(
@@ -729,8 +903,13 @@ function cdtDiskOf(
             }),
         );
     }
-    assertBoundarySlivers(points, faces, loop);
-    return { points, faces, steinerCount: steiner.length, sliverMaxAspect };
+    const mesh = { points, faces, steinerCount: steiner.length, sliverMaxAspect };
+    try {
+        assertBoundarySlivers(points, faces, loop);
+    } catch (err) {
+        throw new PlantarSliverError((err as Error).message, mesh);
+    }
+    return mesh;
 }
 
 function tryInsetStrip(
@@ -766,17 +945,42 @@ function triangulateWithOffsetFallback(
         return { ...cdtDiskOf(loop, [], [], margin), usedSliverFallback: false };
     } catch (err) {
         const msg = String(err);
-        if (!msg.includes("[S1-CDT]") && !msg.includes("[S1-I]")) {
+        // [S1-B] CDT sliver is the boundary aspect failure. The inset strip is
+        // the recovery for that ring; other [S1-B] mismatches stay fatal.
+        if (!msg.includes("[S1-CDT]") && !msg.includes("[S1-I]") && !msg.includes("CDT sliver")) {
             throw err;
         }
-        const insets = [0.8, PLANTAR_FALLBACK_INSET_MM];
         let last: unknown = err;
+        // A 0.4 mm B edge leaves a needle inside the 0.5 mm steiner keep-out.
+        // Points closer than that keep are added only after the primary disk threw.
+        for (const dist of [0.35, 0.2]) {
+            try {
+                const extra = inwardEdgeSteiner(loop, dist, Math.min(0.12, dist * 0.4));
+                return {
+                    ...cdtDiskOf(loop, extra, [], margin, { steiner: false }),
+                    usedSliverFallback: true,
+                };
+            } catch (next) {
+                last = next;
+            }
+        }
+        const insets = [0.8, PLANTAR_FALLBACK_INSET_MM];
         for (const insetMm of insets) {
             try {
                 return tryInsetStrip(loop, margin, insetMm);
             } catch (next) {
                 last = next;
             }
+        }
+        // Last resort only: successful existing disks must retain their exact tessellation.
+        // Unlike adding a collar, this splits the offending edge and both incident faces.
+        if (err instanceof PlantarSliverError) {
+            const mesh = err.mesh;
+            mesh.steinerCount += splitBoundarySlivers(mesh.points, mesh.faces, loop.length);
+            assertIEdges(mesh.faces, loop.length);
+            assertLibraryDisk(mesh.faces, loop.length);
+            mesh.sliverMaxAspect = assertBoundarySlivers(mesh.points, mesh.faces, loop);
+            return { ...mesh, usedSliverFallback: true };
         }
         throw last;
     }

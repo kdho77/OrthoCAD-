@@ -2,7 +2,7 @@ name: Test
 
 on:
     push:
-        branches: ["main"]
+        branches: ["main", "ci/shard-unit-tests"]
     pull_request:
         branches: ["main"]
     workflow_dispatch:
@@ -13,11 +13,14 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
-    test-and-deploy:
-        # Manual dispatch is reserved for the optional procedural smoke test.
+    unit-tests:
         if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
         timeout-minutes: 90
+        strategy:
+            fail-fast: false
+            matrix:
+                shard: [1, 2, 3, 4, 5, 6]
 
         steps:
             - name: Checkout repository
@@ -51,11 +54,46 @@ jobs:
             - name: Materialize incoming element binaries
               run: python3 scripts/materialize-incoming-elements.py
 
+            - name: Validate unit test shard manifest
+              run: node scripts/ci/validate-unit-test-shards.mjs
+
+            - name: Run unit tests (shard ${{ matrix.shard }}/6)
+              run: node scripts/ci/run-unit-test-shard.mjs ${{ matrix.shard }}
+
+    test-and-deploy:
+        # Branch protection gates on this job name; it aggregates shard results.
+        if: always() && github.event_name != 'workflow_dispatch'
+        needs: unit-tests
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 24
+
+            - name: Install dependencies
+              run: npm install
+
+            - name: Install vertex app dependencies
+              run: npm install --prefix vertex
+
+            - name: Generate Prisma client (vertex)
+              run: npm run prisma:generate --prefix vertex
+
             - name: Assert server entry boots under plain Node ESM
               run: node vertex/scripts/assert-server-esm-boot.mjs
 
-            - name: Run unit tests
-              run: npm run test
+            - name: Require all unit test shards to pass
+              run: |
+                  if [ "${{ needs.unit-tests.result }}" != "success" ]; then
+                      echo "unit-tests result: ${{ needs.unit-tests.result }}"
+                      exit 1
+                  fi
 
     # Optional diagnostic: run manually from Actions when investigating residuals.
     default-procedural-smoke:

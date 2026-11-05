@@ -112,8 +112,18 @@ export interface WedgeCorrection {
     side: "medial" | "lateral";
     /** Positive user-entered value. */
     value: number;
-    /** Raw unit. Degrees are resolved against current local width at eval time. */
+    /**
+     * Raw unit. Millimetres are an absolute edge raise.
+     * Degrees without `degreeMode: "station"` use the local-width angle.
+     * Station mode converts once: h = W·tan(θ).
+     */
     unit: "mm" | "deg";
+    /**
+     * Degree evaluation. Omitted or `"local"` keeps the original per-u width.
+     * `"station"` measures the bottom-outline chord once at the zone station.
+     * Ignored for millimetre entries.
+     */
+    degreeMode?: "local" | "station";
 }
 
 export interface UserProfile {
@@ -203,7 +213,7 @@ export interface SideCorrections {
     /**
      * New medial/lateral wedge system (surface modifications on the plantar/top).
      * Only one wedge (medial or lateral) per zone is allowed (enforced by UI + single object).
-     * Stored as raw user input; resolution (esp. for degrees) happens at evaluation time.
+     * Stored as raw user input. Station-mode degrees convert once at the zone station.
      */
     rearfootWedge?: WedgeCorrection;
     forefootWedge?: WedgeCorrection;
@@ -282,7 +292,7 @@ export interface PlacedElement {
  * and an empty list leaves every existing element output byte-identical.
  * u, v are outline fractions (heel→toe, medial→lateral). A scan marker overrides them.
  */
-export type SinkKind = "mpj1" | "mpj2" | "mpj3" | "mpj4" | "mpj5" | "styloid";
+export type SinkKind = "mpj1" | "mpj2" | "mpj3" | "mpj4" | "mpj5" | "rkw" | "styloid";
 
 export interface PlacedSink {
     id: string;
@@ -292,6 +302,11 @@ export interface PlacedSink {
     u?: number;
     v?: number;
     markerId?: string;
+    /**
+     * Styloid only. Allows the rim clearance under the 3 mm hard-stop, down to a 2 mm floor.
+     * The sink still shifts medially instead of being clipped.
+     */
+    rimOverride?: boolean;
 }
 
 /** Scan marker that overrides a sink's u, v. */
@@ -423,12 +438,12 @@ export interface DesignState {
     ukSize?: number;
     /** Foot length in mm (Mondopoint-style). Used when `sizeSystem` is `"mm"`. */
     footLengthMm?: number;
-    /** Last width vs Medium. Forefoot Δ −5/0/+5/+10 mm; heel capped ±2 mm. */
-    shoeWidth?: "narrow" | "medium" | "wide" | "extra_wide";
+    /** Last width vs Medium. Forefoot Δ −10/−5/0/+5/+10 mm (width only); heel capped ±2 mm. */
+    shoeWidth?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
     /** Per-foot width when L/R corrections are unlinked. Linked designs use `shoeWidth`. */
     shoeWidthBySide?: {
-        left?: "narrow" | "medium" | "wide" | "extra_wide";
-        right?: "narrow" | "medium" | "wide" | "extra_wide";
+        left?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
+        right?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
     };
     corrections: Corrections;
     elements: PlacedElement[];

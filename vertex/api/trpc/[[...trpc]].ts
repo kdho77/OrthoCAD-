@@ -11,8 +11,8 @@
 // persistent /trpc 500s). The same rule applies to every file under
 // server/src/. Verify with `npx vercel build` + booting
 // .vercel/output/functions/api/trpc/[[...trpc]].func/api/trpc/[[...trpc]].js.
-// Also keep this the ONLY module inside api/ (Vercel deploys every
-// non-underscore file under api/ as its own function). node_modules are traced
+// Keep helpers out of api/ (Vercel deploys every non-underscore file under api/
+// as its own function). node_modules are traced
 // automatically, including Prisma query engines — no `functions` config needed.
 //
 // Routing: the client calls /trpc (see src/lib/trpc.ts); rewrites in

@@ -16,6 +16,7 @@ import {
     normalizeUsMenSize,
     REFERENCE_US_MEN_SIZE,
     scaleGeometryToInsoleSize,
+    scaleSourceShapeToFootprint,
     ukFootLengthMm,
     ukShoeSizeOptions,
     usMenFootLengthMm,
@@ -151,5 +152,29 @@ describe("UK and mm sizing systems", () => {
         const mm = insoleLayoutFromDesign({ sizeSystem: "mm", footLengthMm: 270 });
         expect(mm.sizeSystem).toBe("mm");
         expect(mm.footLengthMm).toBe(270);
+    });
+});
+
+describe("scaleSourceShapeToFootprint", () => {
+    test("scale 1 does not write, and only relief above the 2 mm floor scales", () => {
+        const geometry = new THREE.BufferGeometry();
+        const src = new Float32Array([0, -10, 2, 100, 10, 2, 50, 0, 22]);
+        geometry.setAttribute("position", new THREE.BufferAttribute(src.slice(), 3));
+        const before = Array.from(src);
+        scaleSourceShapeToFootprint(geometry, 1, 2);
+        const stayed = geometry.getAttribute("position").array as Float32Array;
+        expect(Array.from(stayed)).toEqual(before);
+
+        const s = 23 / 31;
+        scaleSourceShapeToFootprint(geometry, s, 2);
+        const pos = geometry.getAttribute("position");
+        const cx = 50;
+        const cy = 0;
+        expect(pos.getX(0)).toBeCloseTo(cx + (0 - cx) * s, 5);
+        expect(pos.getY(0)).toBeCloseTo(cy + (-10 - cy) * s, 5);
+        expect(pos.getZ(0)).toBeCloseTo(2, 6);
+        expect(pos.getZ(1)).toBeCloseTo(2, 6);
+        expect(pos.getX(2)).toBeCloseTo(cx, 6);
+        expect(pos.getZ(2)).toBeCloseTo(2 + (22 - 2) * s, 5);
     });
 });

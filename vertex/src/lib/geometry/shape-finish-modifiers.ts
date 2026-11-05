@@ -33,9 +33,12 @@ export function getSideShapeFinish(design: DesignState, side: Side): SideShapeFi
 }
 
 export function defaultSideShapeFinish(method?: ProductionMethod): SideShapeFinish {
+    // The shoe-size outline is the wear length. A distal flange is opt-in.
+    // The old print default (on, +5 mm) stretched u >= 0.72 by exactly 5 mm.
+    void method;
     return {
         topCoverAccommodateMm: SHAPE_FINISH_DEFAULTS.topCoverAccommodateMm.default,
-        trimmableForefoot: method !== "milling_3axis",
+        trimmableForefoot: false,
         trimmableForefootExtraMm: SHAPE_FINISH_DEFAULTS.trimmableForefootExtraMm.default,
         archGrindDepthMm: 0,
         archSkiveMm: 0,

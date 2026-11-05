@@ -1,16 +1,18 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { AlertCircle, Check, CircleDot } from "lucide-react";
+import { navigate } from "@/features/admin/admin-nav";
+import { clientFilePath } from "@/features/clients/routes";
+import { isOptionalScanWorkflow } from "@/features/clients/start-path";
 import { useSaveDesign } from "@/features/designs/SaveControl";
 import {
-    clinicalRailBannerReason,
     evaluateNextGate,
     evaluateStepComplete,
     selectAfoLandmarkRevision,
     selectScanGateRevision,
 } from "@/lib/clinical/clinical-step-gates";
 import { cn } from "@/lib/utils";
-import { useAppNavStore } from "@/stores/app-nav-store";
+import { useClientStore } from "@/stores/client-store";
 import {
     type ClinicalStepId,
     clinicalStepShort,
@@ -24,6 +26,7 @@ export function ClinicalStepRail() {
     const productType = useClinicalWorkflowStore((s) => s.productType);
     const steps = stepsForProduct(productType);
     const step = useClinicalWorkflowStore((s) => s.step);
+    const designStartPath = useClinicalWorkflowStore((s) => s.designStartPath);
     const completedSteps = useClinicalWorkflowStore((s) => s.completedSteps);
     const nextBlockReason = useClinicalWorkflowStore((s) => s.nextBlockReason);
     const scanGateStickyReason = useClinicalWorkflowStore((s) => s.scanGateStickyReason);
@@ -49,9 +52,10 @@ export function ClinicalStepRail() {
         return "upcoming";
     };
 
-    const bannerReason = clinicalRailBannerReason(step);
     void scanGateStickyReason;
     void nextBlockReason;
+
+    const optionalScanRail = isOptionalScanWorkflow(designStartPath);
 
     return (
         <div
@@ -63,6 +67,7 @@ export function ClinicalStepRail() {
             <nav aria-label="Clinical workflow" className="flex flex-wrap items-center gap-1">
                 {steps.map((s, i) => {
                     const state = stepState(s.id);
+                    const scanOptional = s.id === "scan" && optionalScanRail;
                     return (
                         <button
                             key={s.id}
@@ -70,14 +75,19 @@ export function ClinicalStepRail() {
                             onClick={() => setStep(s.id)}
                             className={cn(
                                 "flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors",
+                                scanOptional &&
+                                    state !== "current" &&
+                                    "border border-dashed border-border/80 bg-muted/30 text-muted-foreground/90",
                                 state === "current" && "bg-primary text-primary-foreground",
                                 state === "completed" &&
+                                    !scanOptional &&
                                     "border border-emerald-500/40 bg-emerald-500/10 text-emerald-200",
                                 state === "visited" &&
                                     "border border-border bg-background text-muted-foreground hover:text-foreground",
                                 state === "attention" &&
                                     "border border-amber-500/50 bg-amber-500/10 text-amber-100",
                                 state === "upcoming" &&
+                                    !scanOptional &&
                                     "bg-muted text-muted-foreground hover:text-foreground",
                             )}
                         >
@@ -91,16 +101,15 @@ export function ClinicalStepRail() {
                                 <span className="text-[10px] opacity-80">{i + 1}.</span>
                             )}
                             {clinicalStepShort(s.id, method)}
+                            {scanOptional ? (
+                                <span className="rounded bg-muted px-1 py-0.5 text-[9px] font-normal uppercase tracking-wide text-muted-foreground">
+                                    Optional
+                                </span>
+                            ) : null}
                         </button>
                     );
                 })}
             </nav>
-
-            {bannerReason && typeof bannerReason === "string" ? (
-                <p className="mt-2 text-[11px] leading-snug text-amber-300/95" role="status">
-                    {bannerReason}
-                </p>
-            ) : null}
         </div>
     );
 }
@@ -124,7 +133,6 @@ export function ClinicalStepFooter() {
     const steps = stepsForProduct(productType);
     const atFirst = step === steps[0]?.id;
     const atLast = step === steps[steps.length - 1]?.id;
-    const gate = evaluateNextGate(step);
     const isAfoPrint = productType === "afo" && step === "print";
 
     if (isAfoPrint) {
@@ -157,18 +165,13 @@ export function ClinicalStepFooter() {
                     </button>
                 ) : null}
             </div>
-            {!gate.ok ? (
-                <p className="mt-1.5 text-[11px] leading-snug text-amber-300/95" role="status">
-                    {gate.reason} Next jumps to what’s missing.
-                </p>
-            ) : null}
         </div>
     );
 }
 
 function AfoPrintFooter() {
-    const { saved, onSave, dialog } = useSaveDesign();
-    const setNav = useAppNavStore((s) => s.setNav);
+    const { saved, onSave } = useSaveDesign();
+    const clientId = useClientStore((s) => s.activeClientId);
 
     return (
         <div className="sticky bottom-0 z-10 border-t border-border bg-panel px-3 py-2">
@@ -182,13 +185,12 @@ function AfoPrintFooter() {
                 </button>
                 <button
                     type="button"
-                    onClick={() => setNav("Clients")}
+                    onClick={() => navigate(clientId ? clientFilePath(clientId) : "/clients")}
                     className="h-8 flex-1 rounded-md border border-border bg-background text-[12px] font-medium text-foreground"
                 >
                     Return to patient file
                 </button>
             </div>
-            {dialog}
         </div>
     );
 }

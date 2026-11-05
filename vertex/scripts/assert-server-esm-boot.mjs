@@ -55,14 +55,16 @@ for (const file of jsonFiles) {
     cpSync(file, dest);
 }
 
-const handlerPath = join(outDir, "api/trpc/[[...trpc]].js");
+const handlerPaths = [join(outDir, "api/trpc/[[...trpc]].js"), join(outDir, "api/integrations/index.js")];
 
-try {
-    await import(pathToFileURL(handlerPath).href);
-    console.log("server-esm-boot: ok", relative(vertexRoot, handlerPath));
-} catch (err) {
-    const code = err && typeof err === "object" && "code" in err ? String(err.code) : "";
-    const message = err instanceof Error ? err.message : String(err);
-    console.error("server-esm-boot: failed", { code, message });
-    process.exit(1);
+for (const handlerPath of handlerPaths) {
+    try {
+        await import(pathToFileURL(handlerPath).href);
+        console.log("server-esm-boot: ok", relative(vertexRoot, handlerPath));
+    } catch (err) {
+        const code = err && typeof err === "object" && "code" in err ? String(err.code) : "";
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("server-esm-boot: failed", relative(vertexRoot, handlerPath), { code, message });
+        process.exit(1);
+    }
 }
