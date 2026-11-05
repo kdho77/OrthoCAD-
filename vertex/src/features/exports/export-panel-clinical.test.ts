@@ -65,7 +65,7 @@ describe("export panel clinical gcode", () => {
         expect(options.material).toBeUndefined();
     });
 
-    test("Apex Light is passed through and Bounce is refused before slicing", async () => {
+    test("Apex Light and Forge are passed through and Bounce is refused before slicing", async () => {
         const res = await exportClinicalPrinterGcode({
             side: "left",
             design: useDesignStore.getState().design,
@@ -89,12 +89,14 @@ describe("export panel clinical gcode", () => {
         if (!blocked.ok) expect(blocked.reason).toMatch(/approved/i);
         expect(hybridSpy).toHaveBeenCalledTimes(1);
 
+        hybridSpy.mockClear();
         const forge = await exportClinicalPrinterGcode({
             side: "left",
             design: useDesignStore.getState().design,
             apexMaterialId: "ApexForge",
         });
-        expect(forge.ok).toBe(false);
-        expect(hybridSpy).toHaveBeenCalledTimes(1);
+        expect(forge.ok).toBe(true);
+        const forgeOptions = hybridSpy.mock.calls[0][4] as { apexMaterialId?: string };
+        expect(forgeOptions.apexMaterialId).toBe("ApexForge");
     });
 });
