@@ -17,11 +17,7 @@ import {
     exportModeFromMethod,
     orderDownloadSides,
 } from "@/lib/geometry/export-geometry";
-import {
-    concatenateBinaryStls,
-    manufacturingStlForExportKind,
-    translateBinaryStlY,
-} from "@/lib/geometry/leader-block";
+import { manufacturingStlForExportKind } from "@/lib/geometry/leader-block";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { collectHardnessRegions } from "@/lib/hardness/collect";
 import { packHardness3mf } from "@/lib/hardness/export-3mf";
@@ -73,11 +69,14 @@ export interface ExportOutcome {
     ok: boolean;
     reason?: string;
     filename?: string;
+    /** Set when one Export action downloads more than one file. */
+    filenames?: string[];
     blob?: Blob;
     stats?: CamResult["stats"];
     productionId?: string;
     warning?: string;
     report?: HardnessExportReport;
+    cancelled?: boolean;
 }
 
 function applyServerBalance(balance: number | undefined): void {
@@ -357,7 +356,18 @@ export interface HybridGcodeOptions {
     apexMaterialId?: ApexPrintMaterialId;
     /** Default on for belt G-code. Mesh and CNC callers leave this unset. */
     includeLeaderBlock?: boolean;
-    onProgress?: (step: GcodeExportStep) => void;
+    onProgress?: (step: string) => void;
+    /** Pair export downloads after every foot succeeds. */
+    deferDownload?: boolean;
+    shouldAbort?: () => boolean;
+}
+
+export function hybridGcodeFilename(side: Side, presetId: string, now = Date.now()): string {
+    return `hybrid-${side}-${presetId}-${now}.gcode`;
+}
+
+function exportCancelled(): ExportOutcome {
+    return { ok: false, reason: "Export cancelled", cancelled: true };
 }
 
 /** Wire fields for one VertexSlice printer G-code job. */
@@ -372,28 +382,12 @@ export function printerGcodeSliceFields(apexMaterialId: ApexPrintMaterialId): {
 }
 
 /**
- * Manufacturing STL for printer G-code. The leader is on each foot before a pair is
- * shifted in Y, and before the bytes are uploaded to VertexSlice.
+ * One foot, in its own frame. The leader is applied once, on these bytes,
+ * after the solid cache and before the slicer upload. A pair is two jobs.
  */
 async function buildPrinterGcodeManufacturingStl(side: Side, includeLeader: boolean): Promise<ArrayBuffer> {
-    const { design } = useDesignStore.getState();
-    const sides = orderDownloadSides(design);
-    const kind = includeLeader ? "gcode" : "stl";
-    if (sides.length <= 1) {
-        return manufacturingStlForExportKind(await buildManufacturingStl(side), kind);
-    }
-    const layout = insoleLayoutFromDesign(design);
-    const gap = layout.widthMm + 30;
-    const parts: ArrayBuffer[] = [];
-    for (const foot of sides) {
-        let stl = manufacturingStlForExportKind(
-            await buildExportStl(foot, { exportMode: exportModeFromMethod(design.method) }),
-            kind,
-        );
-        if (foot === "right") stl = translateBinaryStlY(stl, gap);
-        parts.push(stl);
-    }
-    return concatenateBinaryStls(parts);
+    const raw = await buildManufacturingStl(side);
+    return manufacturingStlForExportKind(raw, includeLeader ? "gcode" : "stl");
 }
 
 function yieldToPaint(): Promise<void> {
@@ -421,7 +415,7 @@ export async function exportGcode(
     const { gcode, stats } = generateGcode(geometry, presetForSlice, overrides);
     geometry.dispose();
     const blob = new Blob([gcode], { type: "text/plain" });
-    downloadBlob(blob, filename);
+    if (!options.deferDownload) downloadBlob(blob, filename);
     recordExport(`G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
     return { ok: true, filename, blob, stats };
 }
@@ -440,8 +434,11 @@ export async function generateHybridGcode(
     const blocked = refuseMilledPrint(useDesignStore.getState().design);
     if (blocked) return blocked;
     const report = options.onProgress;
+    const abort = (): ExportOutcome | null => (options.shouldAbort?.() ? exportCancelled() : null);
     report?.(GCODE_EXPORT_STEPS.prepare);
     await yieldToPaint();
+    const aborted = abort();
+    if (aborted) return aborted;
     const activeDesignId = useClientStore.getState().activeDesignId;
     const outputType = preset.beltAngleDeg ? "gcode" : "stl";
     if (outputType === "gcode" && !isApexPrintMaterialExportReady(options.apexMaterialId)) {
@@ -455,7 +452,10 @@ export async function generateHybridGcode(
             ? printerGcodeSliceFields(options.apexMaterialId)
             : null;
     const ext = outputType === "gcode" ? "gcode" : "stl";
-    const filename = `hybrid-${side}-${sliceFields?.presetId ?? preset.id}-${Date.now()}.${ext}`;
+    const filename =
+        outputType === "gcode"
+            ? hybridGcodeFilename(side, sliceFields?.presetId ?? preset.id)
+            : `hybrid-${side}-${sliceFields?.presetId ?? preset.id}-${Date.now()}.${ext}`;
 
     if (outputType === "gcode" && !isApiConfigured()) {
         return {
@@ -477,8 +477,12 @@ export async function generateHybridGcode(
                               ? await buildOrderPairStl()
                               : await buildManufacturingStl(side);
                       })();
+            const stopped = abort();
+            if (stopped) return stopped;
             report?.(GCODE_EXPORT_STEPS.upload);
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
+            const stoppedAfterUpload = abort();
+            if (stoppedAfterUpload) return stoppedAfterUpload;
 
             const design = useDesignStore.getState().design;
             const presetId = sliceFields?.presetId ?? preset.id;
@@ -508,6 +512,8 @@ export async function generateHybridGcode(
             let blob: Blob | undefined;
             const downloadUrl = res.downloadUrl ?? res.gcodeDownloadUrl;
 
+            const stoppedBeforeDownload = abort();
+            if (stoppedBeforeDownload) return stoppedBeforeDownload;
             report?.(GCODE_EXPORT_STEPS.download);
             if (downloadUrl) {
                 const resp = await fetch(downloadUrl);
@@ -515,17 +521,15 @@ export async function generateHybridGcode(
                 const data = await resp.arrayBuffer();
                 const mime = outputType === "gcode" ? "text/plain" : "model/stl";
                 blob = new Blob([data], { type: mime });
-                downloadBlob(blob, filename);
             } else if (outputType === "gcode" && res.gcode) {
                 blob = new Blob([res.gcode], { type: "text/plain" });
-                downloadBlob(blob, filename);
             } else if (outputType === "stl" && res.stlBase64) {
                 const bytes = Uint8Array.from(atob(res.stlBase64), (c) => c.charCodeAt(0));
                 blob = new Blob([bytes], { type: "model/stl" });
-                downloadBlob(blob, filename);
             } else {
                 return { ok: false, reason: "Server did not return a downloadable output file" };
             }
+            if (!options.deferDownload) downloadBlob(blob, filename);
 
             recordExport(
                 `Hybrid ${outputType.toUpperCase()} ${side} · ${preset.name} (${grindingStyle.type}) (productionId=${res.productionId || "n/a"})`,

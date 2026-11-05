@@ -10,7 +10,11 @@ import {
     grindingStyleFromViewerWall,
 } from "./export-panel-clinical";
 
-const hybridSpy = rs.fn(async () => ({ ok: true as const, filename: "order.gcode" }));
+const hybridSpy = rs.fn(async (side: string) => ({
+    ok: true as const,
+    filename: `hybrid-${side}.gcode`,
+    blob: new Blob([side]),
+}));
 
 rs.mock("@/features/exports/export-service", () => ({
     generateHybridGcode: (...args: unknown[]) => hybridSpy(...args),
@@ -96,5 +100,74 @@ describe("export panel clinical gcode", () => {
         });
         expect(forge.ok).toBe(false);
         expect(hybridSpy).toHaveBeenCalledTimes(1);
+    });
+
+    test("paired export requests both feet and a single side stays one foot", async () => {
+        const design = useDesignStore.getState().design;
+        const both = await exportClinicalPrinterGcode({
+            side: "left",
+            feet: "both",
+            design,
+        });
+        expect(both.ok).toBe(true);
+        expect(hybridSpy.mock.calls.map((call) => call[0])).toEqual(["left", "right"]);
+        expect(both.filenames).toEqual(["hybrid-left.gcode", "hybrid-right.gcode"]);
+        for (const call of hybridSpy.mock.calls) {
+            expect((call[4] as { includeLeaderBlock?: boolean }).includeLeaderBlock).toBe(true);
+            expect((call[4] as { deferDownload?: boolean }).deferDownload).toBe(true);
+        }
+
+        hybridSpy.mockClear();
+        const rightOnly = await exportClinicalPrinterGcode({
+            side: "left",
+            feet: "right",
+            design,
+        });
+        expect(rightOnly.ok).toBe(true);
+        expect(hybridSpy).toHaveBeenCalledTimes(1);
+        expect(hybridSpy.mock.calls[0]?.[0]).toBe("right");
+        expect(rightOnly.filenames).toEqual(["hybrid-right.gcode"]);
+    });
+
+    test("a pair failure is not a one-foot success, and cancel downloads nothing", async () => {
+        const design = useDesignStore.getState().design;
+        hybridSpy
+            .mockResolvedValueOnce({
+                ok: true as const,
+                filename: "hybrid-left.gcode",
+                blob: new Blob(["L"]),
+            })
+            .mockResolvedValueOnce({ ok: false as const, reason: "slice failed" });
+        const created: string[] = [];
+        const original = URL.createObjectURL;
+        URL.createObjectURL = ((blob: Blob) => {
+            created.push(String(blob.size));
+            return "blob:test";
+        }) as typeof URL.createObjectURL;
+        const failed = await exportClinicalPrinterGcode({ side: "left", feet: "both", design });
+        expect(failed.ok).toBe(false);
+        if (!failed.ok) {
+            expect(failed.reason).toMatch(/Right/);
+            expect(failed.reason).toMatch(/No files were downloaded/);
+        }
+        expect(created).toEqual([]);
+
+        hybridSpy.mockReset();
+        let started = false;
+        hybridSpy.mockImplementation(async () => {
+            started = true;
+            return { ok: true as const, filename: "hybrid-left.gcode", blob: new Blob(["L"]) };
+        });
+        const cancelled = await exportClinicalPrinterGcode({
+            side: "left",
+            feet: "both",
+            design,
+            shouldAbort: () => started,
+        });
+        expect(cancelled.ok).toBe(false);
+        expect(cancelled.cancelled).toBe(true);
+        expect(hybridSpy).toHaveBeenCalledTimes(1);
+        expect(created).toEqual([]);
+        URL.createObjectURL = original;
     });
 });
