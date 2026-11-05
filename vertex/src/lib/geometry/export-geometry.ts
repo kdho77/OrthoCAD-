@@ -14,6 +14,8 @@ import {
     DEFAULT_GLB_CLOSED_BASELINE,
 } from "@/lib/geometry/mesh-close";
 import { resolveLiveBottomPattern } from "@/lib/geometry/procedural-wall/live-bottom-pattern";
+import { dropManufacturingSolid } from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
+import { manufacturingCacheContext } from "@/lib/geometry/procedural-wall/manufacturing-solid-context";
 import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { printSolidOptions } from "@/lib/geometry/procedural-wall/print-solid-options";
 import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -73,7 +75,8 @@ async function buildModifiedBaseGeometry(
             : design.thicknessMm;
         const field = baseModifierFieldAuthoritative(design, side, effThickness);
         const edits = useMeshEditStore.getState();
-        const preview = await buildProceduralExportSolid({
+        const mirrored = Boolean(base.mirrored);
+        const solidOptions = {
             ...printSolidOptions({
                 design,
                 side,
@@ -85,8 +88,17 @@ async function buildModifiedBaseGeometry(
                     stored: useBottomPatternStore.getState().getPattern(side),
                 }),
             }),
-            mirrored: Boolean(base.mirrored),
-        });
+            mirrored,
+        };
+        const preview = await buildProceduralExportSolid(
+            solidOptions,
+            manufacturingCacheContext({
+                design,
+                side,
+                baseAssetId: base.assetId ?? "",
+                mirrored,
+            }),
+        );
         return preview.geometry;
     }
     const raw = await loadBaseGeometry(base);
@@ -180,8 +192,14 @@ export function mergeGeometries(parts: BufferGeometry[]): BufferGeometry {
     return g;
 }
 
-/** Build and validate the actual manufacturing mesh. Caller owns the geometry. */
-async function buildClosedExportGeometry(side: Side): Promise<BufferGeometry> {
+function solidCameFromManufacturingCache(geometry: BufferGeometry | undefined): boolean {
+    return Boolean(
+        (geometry?.userData as { fromManufacturingCache?: boolean } | undefined)?.fromManufacturingCache,
+    );
+}
+
+/** Close, watertight-check, and scale one foot. A bad cache entry is dropped and lofted once. */
+async function closeAndValidateExportGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
     assertShapeFinishExportAllowed(design, side);
     const geometry = await buildModifiedBaseGeometry(design, side, 0);
@@ -190,6 +208,7 @@ async function buildClosedExportGeometry(side: Side): Promise<BufferGeometry> {
             "[EXPORT] No GLB base geometry available. Load a stock base before exporting. Parametric export is not supported.",
         );
     }
+    const fromCache = solidCameFromManufacturingCache(geometry);
     let solid: BufferGeometry | undefined;
     try {
         solid = closeGlbInsoleToSolid(geometry);
@@ -213,9 +232,26 @@ async function buildClosedExportGeometry(side: Side): Promise<BufferGeometry> {
     } catch (error) {
         if (solid && solid !== geometry) solid.dispose();
         if (!solid || solid === geometry) geometry.dispose();
+        if (fromCache) {
+            dropManufacturingSolid(side);
+            if (error && typeof error === "object") {
+                (error as { fromManufacturingCache?: boolean }).fromManufacturingCache = true;
+            }
+        }
         throw error;
     } finally {
         if (solid && solid !== geometry) geometry.dispose();
+    }
+}
+
+/** Build and validate the actual manufacturing mesh. Caller owns the geometry. */
+async function buildClosedExportGeometry(side: Side): Promise<BufferGeometry> {
+    try {
+        return await closeAndValidateExportGeometry(side);
+    } catch (error) {
+        // A fresh loft that fails validation stays failed. printLoftEpoch is not bumped.
+        if (!(error as { fromManufacturingCache?: boolean } | null)?.fromManufacturingCache) throw error;
+        return closeAndValidateExportGeometry(side);
     }
 }
 

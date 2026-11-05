@@ -5,6 +5,8 @@ import {
     type VertexSliceMaterialId,
     vertexSliceMaterialForApexMaterial,
 } from "@/features/exports/apex-print-material";
+import { exportMachineFamily, pairExportLayout } from "@/features/exports/machine-export-layout";
+import { stampSingleFootStl } from "@/features/exports/printer-foot-isolation";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { workpiecesFromDesign } from "@/lib/cnc/compose";
 import { generateCncJob } from "@/lib/cnc/export";
@@ -17,11 +19,7 @@ import {
     exportModeFromMethod,
     orderDownloadSides,
 } from "@/lib/geometry/export-geometry";
-import {
-    concatenateBinaryStls,
-    manufacturingStlForExportKind,
-    translateBinaryStlY,
-} from "@/lib/geometry/leader-block";
+import { binaryStlTriangleCount, manufacturingStlForExportKind } from "@/lib/geometry/leader-block";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { collectHardnessRegions } from "@/lib/hardness/collect";
 import { packHardness3mf } from "@/lib/hardness/export-3mf";
@@ -73,11 +71,14 @@ export interface ExportOutcome {
     ok: boolean;
     reason?: string;
     filename?: string;
+    /** Set when one Export action downloads more than one file. */
+    filenames?: string[];
     blob?: Blob;
     stats?: CamResult["stats"];
     productionId?: string;
     warning?: string;
     report?: HardnessExportReport;
+    cancelled?: boolean;
 }
 
 function applyServerBalance(balance: number | undefined): void {
@@ -357,7 +358,18 @@ export interface HybridGcodeOptions {
     apexMaterialId?: ApexPrintMaterialId;
     /** Default on for belt G-code. Mesh and CNC callers leave this unset. */
     includeLeaderBlock?: boolean;
-    onProgress?: (step: GcodeExportStep) => void;
+    onProgress?: (step: string) => void;
+    /** Pair export downloads after every foot succeeds. */
+    deferDownload?: boolean;
+    shouldAbort?: () => boolean;
+}
+
+export function hybridGcodeFilename(side: Side, presetId: string, now = Date.now()): string {
+    return `hybrid-${side}-${presetId}-${now}.gcode`;
+}
+
+function exportCancelled(): ExportOutcome {
+    return { ok: false, reason: "Export cancelled", cancelled: true };
 }
 
 /** Wire fields for one VertexSlice printer G-code job. */
@@ -372,28 +384,32 @@ export function printerGcodeSliceFields(apexMaterialId: ApexPrintMaterialId): {
 }
 
 /**
- * Manufacturing STL for printer G-code. The leader is on each foot before a pair is
- * shifted in Y, and before the bytes are uploaded to VertexSlice.
+ * One foot, in its own frame. This is the only mesh the belt slicer receives.
+ * It calls {@link buildExportStl} for `side` and never the Y-shifted pair.
+ * The leader is applied once, then a header stamp names the foot. Triangle
+ * bytes are the solid plus that one leader.
  */
-async function buildPrinterGcodeManufacturingStl(side: Side, includeLeader: boolean): Promise<ArrayBuffer> {
-    const { design } = useDesignStore.getState();
-    const sides = orderDownloadSides(design);
-    const kind = includeLeader ? "gcode" : "stl";
-    if (sides.length <= 1) {
-        return manufacturingStlForExportKind(await buildManufacturingStl(side), kind);
+export async function buildPrinterFootManufacturingStl(
+    side: Side,
+    includeLeader: boolean,
+): Promise<{ stl: ArrayBuffer; solidTriangles: number; uploadTriangles: number }> {
+    const solid = await buildExportStl(side, {
+        exportMode: exportModeFromMethod(useDesignStore.getState().design.method),
+    });
+    const solidTriangles = binaryStlTriangleCount(solid);
+    const withLeader = manufacturingStlForExportKind(solid, includeLeader ? "gcode" : "stl");
+    const uploadTriangles = binaryStlTriangleCount(withLeader);
+    if (includeLeader && uploadTriangles <= solidTriangles) {
+        throw new Error(`Leader was not applied to the ${side} manufacturing STL`);
     }
-    const layout = insoleLayoutFromDesign(design);
-    const gap = layout.widthMm + 30;
-    const parts: ArrayBuffer[] = [];
-    for (const foot of sides) {
-        let stl = manufacturingStlForExportKind(
-            await buildExportStl(foot, { exportMode: exportModeFromMethod(design.method) }),
-            kind,
-        );
-        if (foot === "right") stl = translateBinaryStlY(stl, gap);
-        parts.push(stl);
+    if (!includeLeader && withLeader !== solid) {
+        throw new Error(`Leader was applied to a non-G-code ${side} STL`);
     }
-    return concatenateBinaryStls(parts);
+    return {
+        stl: stampSingleFootStl(withLeader, side),
+        solidTriangles,
+        uploadTriangles,
+    };
 }
 
 function yieldToPaint(): Promise<void> {
@@ -421,7 +437,7 @@ export async function exportGcode(
     const { gcode, stats } = generateGcode(geometry, presetForSlice, overrides);
     geometry.dispose();
     const blob = new Blob([gcode], { type: "text/plain" });
-    downloadBlob(blob, filename);
+    if (!options.deferDownload) downloadBlob(blob, filename);
     recordExport(`G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
     return { ok: true, filename, blob, stats };
 }
@@ -440,10 +456,19 @@ export async function generateHybridGcode(
     const blocked = refuseMilledPrint(useDesignStore.getState().design);
     if (blocked) return blocked;
     const report = options.onProgress;
+    const abort = (): ExportOutcome | null => (options.shouldAbort?.() ? exportCancelled() : null);
     report?.(GCODE_EXPORT_STEPS.prepare);
     await yieldToPaint();
+    const aborted = abort();
+    if (aborted) return aborted;
     const activeDesignId = useClientStore.getState().activeDesignId;
-    const outputType = preset.beltAngleDeg ? "gcode" : "stl";
+    const family = exportMachineFamily({
+        method: useDesignStore.getState().design.method,
+        beltAngleDeg: preset.beltAngleDeg,
+    });
+    // Belt: one local-frame STL per foot. Bed printers keep the side-by-side pair STL.
+    const separateFiles = pairExportLayout(family) === "separate-files";
+    const outputType = separateFiles ? "gcode" : "stl";
     if (outputType === "gcode" && !isApexPrintMaterialExportReady(options.apexMaterialId)) {
         return {
             ok: false,
@@ -455,7 +480,10 @@ export async function generateHybridGcode(
             ? printerGcodeSliceFields(options.apexMaterialId)
             : null;
     const ext = outputType === "gcode" ? "gcode" : "stl";
-    const filename = `hybrid-${side}-${sliceFields?.presetId ?? preset.id}-${Date.now()}.${ext}`;
+    const filename =
+        outputType === "gcode"
+            ? hybridGcodeFilename(side, sliceFields?.presetId ?? preset.id)
+            : `hybrid-${side}-${sliceFields?.presetId ?? preset.id}-${Date.now()}.${ext}`;
 
     if (outputType === "gcode" && !isApiConfigured()) {
         return {
@@ -466,19 +494,22 @@ export async function generateHybridGcode(
 
     if (isApiConfigured()) {
         try {
-            const includeLeader = outputType === "gcode" && options.includeLeaderBlock !== false;
-            const stlBuffer =
-                outputType === "gcode"
-                    ? await buildPrinterGcodeManufacturingStl(side, includeLeader)
-                    : await (async () => {
-                          const designForStl = useDesignStore.getState().design;
-                          const stlSides = orderDownloadSides(designForStl);
-                          return stlSides.length > 1
-                              ? await buildOrderPairStl()
-                              : await buildManufacturingStl(side);
-                      })();
+            const includeLeader = separateFiles && options.includeLeaderBlock !== false;
+            const stlBuffer = separateFiles
+                ? (await buildPrinterFootManufacturingStl(side, includeLeader)).stl
+                : await (async () => {
+                      const designForStl = useDesignStore.getState().design;
+                      const stlSides = orderDownloadSides(designForStl);
+                      return stlSides.length > 1
+                          ? await buildOrderPairStl()
+                          : await buildManufacturingStl(side);
+                  })();
+            const stopped = abort();
+            if (stopped) return stopped;
             report?.(GCODE_EXPORT_STEPS.upload);
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
+            const stoppedAfterUpload = abort();
+            if (stoppedAfterUpload) return stoppedAfterUpload;
 
             const design = useDesignStore.getState().design;
             const presetId = sliceFields?.presetId ?? preset.id;
@@ -508,6 +539,8 @@ export async function generateHybridGcode(
             let blob: Blob | undefined;
             const downloadUrl = res.downloadUrl ?? res.gcodeDownloadUrl;
 
+            const stoppedBeforeDownload = abort();
+            if (stoppedBeforeDownload) return stoppedBeforeDownload;
             report?.(GCODE_EXPORT_STEPS.download);
             if (downloadUrl) {
                 const resp = await fetch(downloadUrl);
@@ -515,17 +548,15 @@ export async function generateHybridGcode(
                 const data = await resp.arrayBuffer();
                 const mime = outputType === "gcode" ? "text/plain" : "model/stl";
                 blob = new Blob([data], { type: mime });
-                downloadBlob(blob, filename);
             } else if (outputType === "gcode" && res.gcode) {
                 blob = new Blob([res.gcode], { type: "text/plain" });
-                downloadBlob(blob, filename);
             } else if (outputType === "stl" && res.stlBase64) {
                 const bytes = Uint8Array.from(atob(res.stlBase64), (c) => c.charCodeAt(0));
                 blob = new Blob([bytes], { type: "model/stl" });
-                downloadBlob(blob, filename);
             } else {
                 return { ok: false, reason: "Server did not return a downloadable output file" };
             }
+            if (!options.deferDownload) downloadBlob(blob, filename);
 
             recordExport(
                 `Hybrid ${outputType.toUpperCase()} ${side} · ${preset.name} (${grindingStyle.type}) (productionId=${res.productionId || "n/a"})`,

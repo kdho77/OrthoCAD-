@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { describe, expect, test } from "@rstest/core";
-import { printerGcodeSliceFields } from "@/features/exports/export-service";
+import { hybridGcodeFilename, printerGcodeSliceFields } from "@/features/exports/export-service";
 import { gyroidInfillPctForHardness } from "../../../shared/print-recipe/print-recipe";
 
 describe("printer G-code VertexSlice fields", () => {
@@ -20,6 +20,14 @@ describe("printer G-code VertexSlice fields", () => {
         expect(gyroidInfillPctForHardness("Medium")).toBe(26);
         expect(gyroidInfillPctForHardness("Hard")).toBe(32);
         expect(gyroidInfillPctForHardness("Extra Hard")).toBe(38);
+    });
+
+    test("paired filenames stay side-specific on the locked Core profile", () => {
+        const left = hybridGcodeFilename("left", "apex-v2-insole-95a", 1793911362202);
+        const right = hybridGcodeFilename("right", "apex-v2-insole-95a", 1793911362202);
+        expect(left).toBe("hybrid-left-apex-v2-insole-95a-1793911362202.gcode");
+        expect(right).toBe("hybrid-right-apex-v2-insole-95a-1793911362202.gcode");
+        expect(left).not.toBe(right);
     });
 
     test("Bounce and Forge cannot produce a slice payload", () => {

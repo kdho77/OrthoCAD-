@@ -1,5 +1,5 @@
 import { Boxes, CheckCircle2, Download, FileCode2, Loader2, Lock, TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CaseOrderSummary } from "@/components/clinical/CaseOrderSummary";
 import { OutputSideBar } from "@/components/clinical/OutputSideBar";
 import { PanelHeading } from "@/components/clinical/PanelHeading";
@@ -11,13 +11,21 @@ import {
     type ClinicalExportKind,
     clinicalExportFormatTabs,
     defaultClinicalGcodeMaterial,
+    defaultGcodeFootScope,
     exportClinicalPrinterGcode,
+    type GcodeFootScope,
+    gcodeFeetForExport,
 } from "@/features/exports/export-panel-clinical";
 import { exportDesign, GCODE_EXPORT_STEPS } from "@/features/exports/export-service";
 import { stlExportUserMessage } from "@/features/exports/export-user-message";
 import { TextSummary } from "@/features/exports/TextSummary";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { useSolidValidation } from "@/hooks/useSolidValidation";
+import { orderDownloadSides } from "@/lib/geometry/export-geometry";
+import {
+    manufacturingMachineId,
+    setManufacturingSliceTarget,
+} from "@/lib/geometry/procedural-wall/manufacturing-solid-context";
 import type { HardnessExportReport } from "@/lib/hardness/report";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
@@ -42,14 +50,26 @@ export function ExportPanel({
     hideOutputSide?: boolean;
 }) {
     const { user, license } = useAuthStore();
-    const { design, exportSide, viewer } = useDesignStore();
+    const { design, exportSide, setExportSide, viewer } = useDesignStore();
     const [status, setStatus] = useState<string | null>(null);
     const [progress, setProgress] = useState<string | null>(null);
     const [busyKind, setBusyKind] = useState<ExportKind>(null);
     const [exportKind, setExportKind] = useState<ExportKind>("stl");
     const [material, setMaterial] = useState<ApexPrintMaterialId>(() => defaultClinicalGcodeMaterial());
     const [includeLeaderBlock, setIncludeLeaderBlock] = useState(true);
+    const [gcodeScope, setGcodeScope] = useState<GcodeFootScope>(() => defaultGcodeFootScope(design));
+    const abortRef = useRef(false);
     const formatTabs = clinicalExportFormatTabs(design.method);
+    const orderSides = orderDownloadSides(design);
+    const pairedOrder = orderSides.length > 1;
+    const gcodeFeet = gcodeFeetForExport(design, pairedOrder ? gcodeScope : defaultGcodeFootScope(design));
+
+    useEffect(() => {
+        setManufacturingSliceTarget({
+            productId: material,
+            machineId: manufacturingMachineId(design.method, material),
+        });
+    }, [material, design.method]);
 
     const stlCheck = canExport(user, license, "stl");
     const glbCheck = canExport(user, license, "glb");
@@ -71,15 +91,25 @@ export function ExportPanel({
             : exportKind === "glb"
               ? TOKEN_COST.glb
               : exportKind === "gcode"
-                ? TOKEN_COST.gcode
+                ? TOKEN_COST.gcode * Math.max(1, gcodeFeet.length)
                 : TOKEN_COST["3mf"];
+
+    const chooseGcodeScope = (scope: GcodeFootScope) => {
+        setGcodeScope(scope);
+        if (scope === "left" || scope === "right") setExportSide(scope);
+    };
 
     const runExport = async () => {
         if (!exportKind) return;
+        abortRef.current = false;
         setBusyKind(exportKind);
         if (exportKind === "gcode") {
             setProgress(GCODE_EXPORT_STEPS.prepare);
             setStatus(null);
+            setManufacturingSliceTarget({
+                productId: material,
+                machineId: manufacturingMachineId(design.method, material),
+            });
         }
         try {
             if (exportKind === "stl") {
@@ -99,16 +129,20 @@ export function ExportPanel({
             } else if (exportKind === "gcode") {
                 const res = await exportClinicalPrinterGcode({
                     side: exportSide,
+                    feet: pairedOrder ? gcodeScope : defaultGcodeFootScope(design),
                     design,
                     wallStyle: viewer.wallStyle,
                     apexMaterialId: material,
                     includeLeaderBlock,
                     onProgress: setProgress,
+                    shouldAbort: () => abortRef.current,
                 });
                 setStatus(
-                    res.ok
-                        ? `Exported ${res.filename} (-${TOKEN_COST.gcode} tokens)`
-                        : stlExportUserMessage(res.reason ?? "G-code export failed"),
+                    res.cancelled
+                        ? "Export cancelled. No G-code was downloaded."
+                        : res.ok
+                          ? `Exported ${res.filename} (-${TOKEN_COST.gcode * Math.max(1, gcodeFeet.length)} tokens)`
+                          : stlExportUserMessage(res.reason ?? "G-code export failed"),
                 );
             } else {
                 const res = await exportDesign("glb", exportSide);
@@ -131,7 +165,7 @@ export function ExportPanel({
             <div className="space-y-3">
                 <PanelHeading
                     title="Export"
-                    info="Pick a file type, output foot, then download. G-code uses the same VertexSlice server path as Print prep."
+                    info="Pick a file type, then download. A paired order's G-code downloads left and right. Choose Left or Right for one foot."
                     trailing={
                         <span className="text-[10px] tabular-nums text-muted-foreground">
                             {user?.tokenBalance ?? 0} tokens
@@ -154,7 +188,17 @@ export function ExportPanel({
                 </div>
                 {exportKind === "gcode" ? (
                     <>
-                        <ApexPrintMaterialPicker value={material} onChange={setMaterial} disabled={busy} />
+                        <ApexPrintMaterialPicker
+                            value={material}
+                            onChange={(next) => {
+                                setMaterial(next);
+                                setManufacturingSliceTarget({
+                                    productId: next,
+                                    machineId: manufacturingMachineId(design.method, next),
+                                });
+                            }}
+                            disabled={busy}
+                        />
                         <label className="flex items-start gap-2 text-[11px]">
                             <input
                                 type="checkbox"
@@ -174,12 +218,49 @@ export function ExportPanel({
                         </label>
                     </>
                 ) : null}
-                <OutputSideBar />
+                {exportKind === "gcode" ? (
+                    <div className="space-y-2 border-t border-border pt-2" data-testid="gcode-output-scope">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Output
+                        </div>
+                        <div className={pairedOrder ? "grid grid-cols-3 gap-1" : "grid grid-cols-2 gap-1"}>
+                            {(["left", "right"] as const).map((side) => (
+                                <Button
+                                    key={side}
+                                    size="sm"
+                                    variant={gcodeScope === side ? "default" : "secondary"}
+                                    className="h-8 text-[11px]"
+                                    data-testid={`gcode-output-${side}`}
+                                    data-selected={gcodeScope === side ? "true" : "false"}
+                                    disabled={busy || !orderSides.includes(side)}
+                                    onClick={() => chooseGcodeScope(side)}
+                                >
+                                    {SIDE_LABELS[side]}
+                                </Button>
+                            ))}
+                            {pairedOrder ? (
+                                <Button
+                                    size="sm"
+                                    variant={gcodeScope === "both" ? "default" : "secondary"}
+                                    className="h-8 text-[11px]"
+                                    data-testid="gcode-output-both"
+                                    data-selected={gcodeScope === "both" ? "true" : "false"}
+                                    disabled={busy}
+                                    onClick={() => chooseGcodeScope("both")}
+                                >
+                                    Both
+                                </Button>
+                            ) : null}
+                        </div>
+                    </div>
+                ) : (
+                    <OutputSideBar />
+                )}
                 <Button
                     className="w-full"
                     data-testid="clinical-export-download"
                     aria-busy={busy}
-                    disabled={!activeCheck.ok || busy}
+                    disabled={!activeCheck.ok || busy || (exportKind === "gcode" && gcodeFeet.length === 0)}
                     onClick={() => void runExport()}
                 >
                     {busyKind ? (
@@ -192,9 +273,24 @@ export function ExportPanel({
                     {busyKind
                         ? (progress ?? "Exporting…")
                         : exportKind === "gcode"
-                          ? `Download G-code · ${tokenCost} tokens`
+                          ? gcodeFeet.length > 1
+                              ? `Download G-code · both feet · ${tokenCost} tokens`
+                              : `Download G-code · ${tokenCost} tokens`
                           : `Download · ${tokenCost} token`}
                 </Button>
+                {busyKind === "gcode" ? (
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        className="w-full"
+                        data-testid="gcode-export-cancel"
+                        onClick={() => {
+                            abortRef.current = true;
+                        }}
+                    >
+                        Cancel export
+                    </Button>
+                ) : null}
                 {progress ? (
                     <p
                         role="status"
