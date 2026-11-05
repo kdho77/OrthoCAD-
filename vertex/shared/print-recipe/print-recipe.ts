@@ -24,6 +24,12 @@ const hardnessNameSchema = z.enum(HARDNESS_NAMES);
 /** Phase A production default — belt TPU profile (Track 0 migration target). */
 export const DEFAULT_PRODUCTION_PROFILE_ID = "apex-belt-v2";
 
+/**
+ * Locked VertexSlice process profile for Apex Core and Apex Light printer G-code.
+ * Hardness still selects gyroid infill on this profile; it is not a new recipe.
+ */
+export const APEX_V2_INSOLE_LOCKED_PROFILE_ID = "apex-v2-insole-95a";
+
 export const printRecipeV1Schema = z.object({
     version: z.literal(1),
     pattern: z.literal("gyroid"),
@@ -52,6 +58,7 @@ export const GYROID_MANUFACTURING_PRESET_IDS = new Set([
     "desktop-fdm",
     "apex-belt-v2-45",
     "layerloop-30",
+    APEX_V2_INSOLE_LOCKED_PROFILE_ID,
 ]);
 
 export function isGyroidManufacturingPreset(presetId: string): boolean {

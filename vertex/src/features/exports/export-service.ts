@@ -1,3 +1,10 @@
+import {
+    type ApexPrintMaterialId,
+    isApexPrintMaterialExportReady,
+    lockedProfileIdForApexMaterial,
+    type VertexSliceMaterialId,
+    vertexSliceMaterialForApexMaterial,
+} from "@/features/exports/apex-print-material";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { workpiecesFromDesign } from "@/lib/cnc/compose";
 import { generateCncJob } from "@/lib/cnc/export";
@@ -10,6 +17,11 @@ import {
     exportModeFromMethod,
     orderDownloadSides,
 } from "@/lib/geometry/export-geometry";
+import {
+    concatenateBinaryStls,
+    manufacturingStlForExportKind,
+    translateBinaryStlY,
+} from "@/lib/geometry/leader-block";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { collectHardnessRegions } from "@/lib/hardness/collect";
 import { packHardness3mf } from "@/lib/hardness/export-3mf";
@@ -340,9 +352,48 @@ export const GCODE_EXPORT_STEPS = {
 export type GcodeExportStep = (typeof GCODE_EXPORT_STEPS)[keyof typeof GCODE_EXPORT_STEPS];
 
 export interface HybridGcodeOptions {
-    /** Filament choice. Defaults stay on the printer preset when omitted. */
+    /** @deprecated Shore-A names are not printer materials. Use apexMaterialId. */
     material?: string;
+    apexMaterialId?: ApexPrintMaterialId;
+    /** Default on for belt G-code. Mesh and CNC callers leave this unset. */
+    includeLeaderBlock?: boolean;
     onProgress?: (step: GcodeExportStep) => void;
+}
+
+/** Wire fields for one VertexSlice printer G-code job. */
+export function printerGcodeSliceFields(apexMaterialId: ApexPrintMaterialId): {
+    presetId: string;
+    material: VertexSliceMaterialId;
+} {
+    return {
+        presetId: lockedProfileIdForApexMaterial(apexMaterialId),
+        material: vertexSliceMaterialForApexMaterial(apexMaterialId),
+    };
+}
+
+/**
+ * Manufacturing STL for printer G-code. The leader is on each foot before a pair is
+ * shifted in Y, and before the bytes are uploaded to VertexSlice.
+ */
+async function buildPrinterGcodeManufacturingStl(side: Side, includeLeader: boolean): Promise<ArrayBuffer> {
+    const { design } = useDesignStore.getState();
+    const sides = orderDownloadSides(design);
+    const kind = includeLeader ? "gcode" : "stl";
+    if (sides.length <= 1) {
+        return manufacturingStlForExportKind(await buildManufacturingStl(side), kind);
+    }
+    const layout = insoleLayoutFromDesign(design);
+    const gap = layout.widthMm + 30;
+    const parts: ArrayBuffer[] = [];
+    for (const foot of sides) {
+        let stl = manufacturingStlForExportKind(
+            await buildExportStl(foot, { exportMode: exportModeFromMethod(design.method) }),
+            kind,
+        );
+        if (foot === "right") stl = translateBinaryStlY(stl, gap);
+        parts.push(stl);
+    }
+    return concatenateBinaryStls(parts);
 }
 
 function yieldToPaint(): Promise<void> {
@@ -393,36 +444,60 @@ export async function generateHybridGcode(
     await yieldToPaint();
     const activeDesignId = useClientStore.getState().activeDesignId;
     const outputType = preset.beltAngleDeg ? "gcode" : "stl";
+    if (outputType === "gcode" && !isApexPrintMaterialExportReady(options.apexMaterialId)) {
+        return {
+            ok: false,
+            reason: "Pick Apex Light or Apex Core before exporting G-code.",
+        };
+    }
+    const sliceFields =
+        outputType === "gcode" && options.apexMaterialId
+            ? printerGcodeSliceFields(options.apexMaterialId)
+            : null;
     const ext = outputType === "gcode" ? "gcode" : "stl";
-    const filename = `hybrid-${side}-${preset.id}-${Date.now()}.${ext}`;
+    const filename = `hybrid-${side}-${sliceFields?.presetId ?? preset.id}-${Date.now()}.${ext}`;
+
+    if (outputType === "gcode" && !isApiConfigured()) {
+        return {
+            ok: false,
+            reason: "Printer G-code requires the VertexSlice server. Local slicing is disabled so the leader block is not dropped.",
+        };
+    }
 
     if (isApiConfigured()) {
         try {
-            const designForStl = useDesignStore.getState().design;
-            const stlSides = orderDownloadSides(designForStl);
+            const includeLeader = outputType === "gcode" && options.includeLeaderBlock !== false;
             const stlBuffer =
-                stlSides.length > 1 ? await buildOrderPairStl() : await buildManufacturingStl(side);
+                outputType === "gcode"
+                    ? await buildPrinterGcodeManufacturingStl(side, includeLeader)
+                    : await (async () => {
+                          const designForStl = useDesignStore.getState().design;
+                          const stlSides = orderDownloadSides(designForStl);
+                          return stlSides.length > 1
+                              ? await buildOrderPairStl()
+                              : await buildManufacturingStl(side);
+                      })();
             report?.(GCODE_EXPORT_STEPS.upload);
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
 
             const design = useDesignStore.getState().design;
-            const printRecipe = bindPrintRecipeProfile(design.printRecipe, preset.id);
-            const material = options.material?.trim() || preset.material;
+            const presetId = sliceFields?.presetId ?? preset.id;
+            const printRecipe = bindPrintRecipeProfile(design.printRecipe, presetId);
 
             report?.(GCODE_EXPORT_STEPS.slice);
             const res = await trpc.manufacturing.generateSolid.mutate({
                 designId: activeDesignId || undefined,
                 side,
-                presetId: preset.id,
+                presetId,
                 stlStorageKey,
                 outputType,
                 beltAngleDeg: preset.beltAngleDeg ?? 45,
-                layerHeightMm: overrides.layerHeightMm,
+                layerHeightMm: outputType === "gcode" ? undefined : overrides.layerHeightMm,
                 printRecipe,
-                perimeters: overrides.perimeters,
+                perimeters: outputType === "gcode" ? undefined : overrides.perimeters,
                 grindingStyle,
                 fileName: filename,
-                ...(material ? { material } : {}),
+                ...(sliceFields ? { material: sliceFields.material } : {}),
             });
 
             if (!res?.ok) {
@@ -466,9 +541,11 @@ export async function generateHybridGcode(
         }
     }
 
-    // Offline fallback — client-side G-code only
     if (outputType === "gcode") {
-        return exportGcode(side, preset, overrides, options);
+        return {
+            ok: false,
+            reason: "Printer G-code requires the VertexSlice server. Local slicing is disabled so the leader block is not dropped.",
+        };
     }
     return exportDesign("stl", side);
 }

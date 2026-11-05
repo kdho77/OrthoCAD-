@@ -122,7 +122,8 @@ export function PrintingPanel({
             // authoritative CustomPrefab lookup + signed URL (see export-service.ts).
             // designId is also passed when an active persisted design exists.
             const res = await generateHybridGcode(exportSide, preset, grindingStyle, overrides, {
-                material: preset.material,
+                apexMaterialId: "ApexCore",
+                includeLeaderBlock: true,
                 onProgress: setStatus,
             });
             if (res.ok) {

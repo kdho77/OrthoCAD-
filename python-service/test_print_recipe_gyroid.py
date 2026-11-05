@@ -56,10 +56,10 @@ class PrintRecipeGyroidTests(unittest.TestCase):
         ]
         preset = {"name": "test", "nozzleMm": 0.4, "layerHeightMm": 0.3}
         default = emit_gcode(layers, preset)
-        chosen = emit_gcode(layers, preset, {"material": "TPU 95A"})
+        chosen = emit_gcode(layers, preset, {"material": "Apex Core"})
         self.assertIn("material=TPU", default)
-        self.assertNotIn("material=TPU 95A", default)
-        self.assertIn("material=TPU 95A", chosen)
+        self.assertNotIn("material=Apex Core", default)
+        self.assertIn("material=Apex Core", chosen)
 
     def test_coerce_default_medium(self) -> None:
         self.assertEqual(coerce_print_recipe(None).default_hardness, "Medium")
