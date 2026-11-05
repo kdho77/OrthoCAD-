@@ -410,8 +410,9 @@ export function confirmAmputationDraw(
 interface PreparedCut {
     key: string;
     spline: AmputationPoint[];
-    polygon: AmputationPoint[];
     spec: AmputationProfile;
+    /** +1 when the toe lies to the left of the directed cut. */
+    toeSign: number;
 }
 
 const preparedCache = new WeakMap<SideAmputation, PreparedCut>();
@@ -440,11 +441,11 @@ function prepareCut(
     const draw = confirmAmputationDraw(amp.points, lengthMm, widthMm, halfWidthMm);
     if (draw.rejected || draw.spline.length < 2) return null;
     const outline = footOutlineMedial(lengthMm, widthMm, halfWidthMm);
-    const polygon = closeAlongOutline(draw.spline, outline);
+    const toe = outline.reduce((best, p) => (p.x > best.x ? p : best), outline[0]!);
     const prep: PreparedCut = {
         key,
         spline: draw.spline,
-        polygon,
+        toeSign: nearestSplineSide(toe, draw.spline).side,
         spec: {
             height: amp.height,
             filletInside: amp.filletInside,
@@ -456,62 +457,28 @@ function prepareCut(
     return prep;
 }
 
-function closeAlongOutline(spline: AmputationPoint[], outline: OutlineSample[]): AmputationPoint[] {
-    if (spline.length < 2 || outline.length < 4) return spline.map((p) => ({ ...p }));
-    const start = nearestOutlineIndex(spline[0]!, outline);
-    const end = nearestOutlineIndex(spline[spline.length - 1]!, outline);
-    const toe = outline.reduce((best, p, i) => (p.x > outline[best]!.x ? i : best), 0);
-    const forward = arcIndices(end, start, outline.length);
-    const back = arcIndices(end, start, outline.length, true);
-    const use = forward.includes(toe) ? forward : back;
-    const arc = use.map((i) => ({ x: outline[i]!.x, y: outline[i]!.y }));
-    return spline.map((p) => ({ ...p })).concat(arc);
-}
-
-function nearestOutlineIndex(p: AmputationPoint, outline: OutlineSample[]): number {
-    let best = 0;
-    let bestD = Infinity;
-    for (let i = 0; i < outline.length; i++) {
-        const d = (outline[i]!.x - p.x) ** 2 + (outline[i]!.y - p.y) ** 2;
-        if (d < bestD) {
-            bestD = d;
-            best = i;
+/** Distance to the directed cut and which side the point is on (+1 left). */
+function nearestSplineSide(p: AmputationPoint, line: AmputationPoint[]): { dist: number; side: number } {
+    let best = Infinity;
+    let side = 1;
+    for (let i = 0; i < line.length - 1; i++) {
+        const a = line[i]!;
+        const b = line[i + 1]!;
+        const abx = b.x - a.x;
+        const aby = b.y - a.y;
+        const len2 = abx * abx + aby * aby;
+        let t = 0;
+        if (len2 > 1e-12) t = Math.max(0, Math.min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2));
+        const qx = a.x + abx * t;
+        const qy = a.y + aby * t;
+        const d = Math.hypot(p.x - qx, p.y - qy);
+        if (d < best) {
+            best = d;
+            const cross = abx * (p.y - a.y) - aby * (p.x - a.x);
+            side = cross >= 0 ? 1 : -1;
         }
     }
-    return best;
-}
-
-function arcIndices(from: number, to: number, n: number, reverse = false): number[] {
-    const out: number[] = [];
-    let i = from;
-    for (let guard = 0; guard <= n; guard++) {
-        out.push(i);
-        if (i === to) break;
-        i = reverse ? (i - 1 + n) % n : (i + 1) % n;
-    }
-    return out;
-}
-
-function pointInPoly(p: AmputationPoint, poly: AmputationPoint[]): boolean {
-    let wind = 0;
-    for (let i = 0; i < poly.length; i++) {
-        const a = poly[i]!;
-        const b = poly[(i + 1) % poly.length]!;
-        if (a.y <= p.y) {
-            if (b.y > p.y && cross(b.x - a.x, b.y - a.y, p.x - a.x, p.y - a.y) > 0) wind++;
-        } else if (b.y <= p.y && cross(b.x - a.x, b.y - a.y, p.x - a.x, p.y - a.y) < 0) wind--;
-    }
-    return wind !== 0;
-}
-
-function distToPolyline(p: AmputationPoint, line: AmputationPoint[]): number {
-    let best = Infinity;
-    for (let i = 0; i < line.length - 1; i++) {
-        const hit = projectSeg(p, line[i]!, line[i + 1]!);
-        const d = Math.hypot(hit.x - p.x, hit.y - p.y);
-        if (d < best) best = d;
-    }
-    return best;
+    return { dist: best, side };
 }
 
 /**
@@ -535,20 +502,106 @@ export function amputationDeltaMm(
     const medial = -(vSigned * medialSign);
     const y = medial * (widthMm / 2);
     const p = { x, y };
-    const dist = distToPolyline(p, prep.spline);
-    const inside = pointInPoly(p, prep.polygon);
-    const signed = inside ? dist : -dist;
+    // Side of the cut line, not the stylized outline. The outline is narrower
+    // than the mesh, and using it as the sign flipped toe-side vertices just
+    // past that curve into the heel fillet.
+    const hit = nearestSplineSide(p, prep.spline);
+    const signed = hit.side === prep.toeSign ? hit.dist : -hit.dist;
     return amputationRiseMm(signed, prep.spec);
 }
 
+/** Smoothstep 0 at the rim, 1 once the blend has finished. Peak slope is 1.5. */
+export function rimRiseTaper(distToRimMm: number, bandMm: number): number {
+    if (!(bandMm > 1e-6) || distToRimMm <= 0) return 0;
+    if (distToRimMm >= bandMm) return 1;
+    const t = distToRimMm / bandMm;
+    return t * t * (3 - 2 * t);
+}
+
 /**
- * Add the plateau to the lofted top sheet. The rim vertices are in this range,
- * so the walls grow taller with the toe and can be subdivided afterwards.
- * Runs only when the filler is active.
+ * Width of the rim fade. The smoothstep slope stays at or under 50° so the
+ * blend is finished before the wall and the rim itself is not raised.
+ */
+export function rimBlendBandMm(spec: AmputationProfile): number {
+    const height = Math.max(0, spec.height);
+    const maxSlope = Math.tan((50 * Math.PI) / 180);
+    const fromSlope = height > 0 ? (1.5 * height) / maxSlope : 0;
+    return Math.max(fromSlope, amputationOutsideReachMm(spec), 1);
+}
+
+/** Top-sheet edges used by one top face: the rim the wall is lofted from. */
+function topRimEdges(indices: number[], topCount: number): Array<[number, number]> {
+    const use = new Map<string, number>();
+    const triCount = (indices.length / 3) | 0;
+    for (let f = 0; f < triCount; f++) {
+        const a = indices[f * 3] ?? -1;
+        const b = indices[f * 3 + 1] ?? -1;
+        const c = indices[f * 3 + 2] ?? -1;
+        if (a < 0 || b < 0 || c < 0) continue;
+        if (a >= topCount || b >= topCount || c >= topCount) continue;
+        for (const [i, j] of [
+            [a, b],
+            [b, c],
+            [c, a],
+        ] as const) {
+            const k = i < j ? `${i},${j}` : `${j},${i}`;
+            use.set(k, (use.get(k) ?? 0) + 1);
+        }
+    }
+    const edges: Array<[number, number]> = [];
+    for (const [key, count] of use) {
+        if (count !== 1) continue;
+        const [sa, sb] = key.split(",");
+        edges.push([Number(sa), Number(sb)]);
+    }
+    return edges;
+}
+
+function distToSegments(x: number, y: number, positions: number[], edges: Array<[number, number]>): number {
+    let best = Infinity;
+    for (const [ia, ib] of edges) {
+        const ax = positions[ia * 3] ?? 0;
+        const ay = positions[ia * 3 + 1] ?? 0;
+        const bx = positions[ib * 3] ?? 0;
+        const by = positions[ib * 3 + 1] ?? 0;
+        const abx = bx - ax;
+        const aby = by - ay;
+        const len2 = abx * abx + aby * aby;
+        let t = 0;
+        if (len2 > 1e-12) t = Math.max(0, Math.min(1, ((x - ax) * abx + (y - ay) * aby) / len2));
+        const px = ax + abx * t;
+        const py = ay + aby * t;
+        const d = Math.hypot(x - px, y - py);
+        if (d < best) best = d;
+    }
+    return best;
+}
+
+export interface AmputationBridge {
+    index: number;
+    parents: [number, number, number];
+}
+
+export interface AmputationRiseResult {
+    /** Top vertices the filler actually lifted. Wall subdivision uses this. */
+    raised: Set<number>;
+    /**
+     * Centroids appended past the loft so a coarse top triangle can follow the
+     * fillet. Sinks only walk the original top prefix, so these follow their
+     * parents' sink motion afterwards.
+     */
+    bridges: AmputationBridge[];
+}
+
+/**
+ * Add the plateau to the lofted top sheet. Rise tapers to 0 on the rim so the
+ * fillet is finished before the wall. Returns vertices that actually rose, for
+ * the wall split that follows. Runs only when the filler is active.
  */
 export function applyAmputationRiseToTop(args: {
     positions: number[];
     topCount: number;
+    indices: number[];
     side: Side;
     amp: SideAmputation;
     lengthMm: number;
@@ -557,22 +610,219 @@ export function applyAmputationRiseToTop(args: {
     lenSize: number;
     vSignedAt: (y: number) => number;
     halfWidthMm: (u: number) => number;
-}): void {
-    const { positions, topCount, side, amp, lengthMm, widthMm, minX, lenSize, vSignedAt, halfWidthMm } = args;
-    if (!amputationFillerActive(amp) || !(lenSize > 1e-6)) return;
+}): AmputationRiseResult {
+    const raised = new Set<number>();
+    const bridges: AmputationBridge[] = [];
+    const {
+        positions,
+        topCount,
+        indices,
+        side,
+        amp,
+        lengthMm,
+        widthMm,
+        minX,
+        lenSize,
+        vSignedAt,
+        halfWidthMm,
+    } = args;
+    if (!amputationFillerActive(amp) || !(lenSize > 1e-6)) return { raised, bridges };
     const n = Math.min(topCount, (positions.length / 3) | 0);
-    const riseOf: number[] = [];
+    const rim = topRimEdges(indices, n);
+    const band = rimBlendBandMm(amp);
     const origZ: number[] = [];
+    const riseAt = (x: number, y: number): number => {
+        const u = Math.max(0, Math.min(1, (x - minX) / lenSize));
+        const raw = amputationDeltaMm(u, vSignedAt(y), side, lengthMm, widthMm, amp, halfWidthMm);
+        if (!(raw > 0)) return 0;
+        const dist = rim.length > 0 ? distToSegments(x, y, positions, rim) : band;
+        return raw * rimRiseTaper(dist, band);
+    };
     for (let i = 0; i < n; i++) {
         const x = positions[i * 3] ?? 0;
         const y = positions[i * 3 + 1] ?? 0;
-        const z = positions[i * 3 + 2] ?? 0;
-        origZ[i] = z;
-        const u = Math.max(0, Math.min(1, (x - minX) / lenSize));
-        const rise = amputationDeltaMm(u, vSignedAt(y), side, lengthMm, widthMm, amp, halfWidthMm);
-        riseOf[i] = rise;
-        if (rise !== 0) positions[i * 3 + 2] = z + rise;
+        origZ[i] = positions[i * 3 + 2] ?? 0;
+        const rise = riseAt(x, y);
+        positions[i * 3 + 2] = (origZ[i] ?? 0) + rise;
+        if (rise > 1e-6) raised.add(i);
     }
+    capRiseSlopes(positions, indices, n, origZ);
+    return { raised, bridges };
+}
+
+/**
+ * Move appended fillet vertices by the same amount the sink moved their
+ * parents, so the floor stays on the filled surface.
+ */
+export function applySinkDeltaToBridges(
+    positions: number[],
+    bridges: readonly AmputationBridge[],
+    zBefore: ArrayLike<number>,
+): void {
+    for (const bridge of bridges) {
+        let delta = 0;
+        for (const parent of bridge.parents) {
+            delta += (zBefore[parent] ?? 0) - (positions[parent * 3 + 2] ?? 0);
+        }
+        positions[bridge.index * 3 + 2] = (zBefore[bridge.index] ?? 0) - delta / bridge.parents.length;
+    }
+}
+
+/**
+ * Keep the fillet from folding a coarse triangle. An apex may not stand
+ * steeper than 30° over the opposite edge, and any crease that is still
+ * sharper than the shell is pulled toward its neighbors. Rise stays between
+ * the original surface and the fillet.
+ */
+function capRiseSlopes(positions: number[], indices: number[], topCount: number, baseZ: number[]): void {
+    const tanCap = Math.tan((30 * Math.PI) / 180);
+    const fieldZ: number[] = [];
+    for (let i = 0; i < topCount; i++) fieldZ[i] = positions[i * 3 + 2] ?? 0;
+    const top = new Set<number>();
+    for (let i = 0; i < topCount; i++) top.add(i);
+    for (let pass = 0; pass < 6; pass++) {
+        const next = new Map<number, number>();
+        const triCount = (indices.length / 3) | 0;
+        for (let f = 0; f < triCount; f++) {
+            const tri = faceVerts(indices, f);
+            if (!top.has(tri[0]) || !top.has(tri[1]) || !top.has(tri[2])) continue;
+            for (let k = 0; k < 3; k++) {
+                const apex = tri[k]!;
+                const e0 = tri[(k + 1) % 3]!;
+                const e1 = tri[(k + 2) % 3]!;
+                const h = pointLineDist(positions, apex, e0, e1);
+                if (!(h > 1e-4)) continue;
+                const zA = positions[apex * 3 + 2] ?? 0;
+                const riseA = zA - (baseZ[apex] ?? 0);
+                if (riseA <= 0.05) continue;
+                const zFoot = edgeFootZ(positions, apex, e0, e1);
+                const limit = zFoot + tanCap * h;
+                if (zA <= limit + 0.05) continue;
+                const floor = baseZ[apex] ?? zA;
+                const clamped = Math.max(floor, limit);
+                if (clamped >= zA - 0.01) continue;
+                const prev = next.get(apex);
+                next.set(apex, prev === undefined ? clamped : Math.min(prev, clamped));
+            }
+        }
+        if (next.size === 0) break;
+        for (const [i, z] of next) positions[i * 3 + 2] = Math.max(baseZ[i] ?? z, z);
+    }
+    // The altitude cap leaves a handful of creases where the footbed was already
+    // curved. Pull those vertices toward their neighbors, never above the fillet
+    // and never through the original surface.
+    for (let pass = 0; pass < 8; pass++) {
+        const hot = new Set<number>();
+        const triCount = (indices.length / 3) | 0;
+        const facesOf = new Map<string, number[]>();
+        for (let f = 0; f < triCount; f++) {
+            const tri = faceVerts(indices, f);
+            if (!top.has(tri[0]) || !top.has(tri[1]) || !top.has(tri[2])) continue;
+            for (let k = 0; k < 3; k++) {
+                const i = tri[k]!;
+                const j = tri[(k + 1) % 3]!;
+                const key = i < j ? `${i},${j}` : `${j},${i}`;
+                const list = facesOf.get(key);
+                if (list) list.push(f);
+                else facesOf.set(key, [f]);
+            }
+        }
+        for (const [, faces] of facesOf) {
+            if (faces.length !== 2) continue;
+            const n1 = triNormal(positions, indices, faces[0] ?? 0);
+            const n2 = triNormal(positions, indices, faces[1] ?? 0);
+            if (!n1 || !n2) continue;
+            const dot = Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]));
+            if ((Math.acos(dot) * 180) / Math.PI <= 58) continue;
+            const f0 = faces[0] ?? 0;
+            const f1 = faces[1] ?? 0;
+            for (const v of faceVerts(indices, f0).concat(faceVerts(indices, f1))) {
+                const rise = (positions[v * 3 + 2] ?? 0) - (baseZ[v] ?? 0);
+                if (rise > 0.3 && rise <= 15.05) hot.add(v);
+            }
+        }
+        if (hot.size === 0) break;
+        const adj = new Map<number, number[]>();
+        for (const [key] of facesOf) {
+            const [sa, sb] = key.split(",");
+            const ia = Number(sa);
+            const ib = Number(sb);
+            const push = (i: number, j: number) => {
+                const list = adj.get(i);
+                if (list) list.push(j);
+                else adj.set(i, [j]);
+            };
+            push(ia, ib);
+            push(ib, ia);
+        }
+        let moved = false;
+        for (const i of hot) {
+            const neighbors = adj.get(i);
+            if (!neighbors || neighbors.length === 0) continue;
+            let sum = 0;
+            for (const j of neighbors) sum += positions[j * 3 + 2] ?? 0;
+            const mean = sum / neighbors.length;
+            const have = positions[i * 3 + 2] ?? 0;
+            const nextZ = have + (mean - have) * 0.5;
+            const z = Math.max(baseZ[i] ?? nextZ, Math.min(fieldZ[i] ?? nextZ, nextZ));
+            if (Math.abs(z - have) > 0.01) {
+                positions[i * 3 + 2] = z;
+                moved = true;
+            }
+        }
+        if (!moved) break;
+    }
+}
+
+function pointLineDist(positions: number[], apex: number, e0: number, e1: number): number {
+    const ax = positions[e0 * 3] ?? 0;
+    const ay = positions[e0 * 3 + 1] ?? 0;
+    const bx = positions[e1 * 3] ?? 0;
+    const by = positions[e1 * 3 + 1] ?? 0;
+    const px = positions[apex * 3] ?? 0;
+    const py = positions[apex * 3 + 1] ?? 0;
+    const abx = bx - ax;
+    const aby = by - ay;
+    const len = Math.hypot(abx, aby);
+    if (len < 1e-9) return Math.hypot(px - ax, py - ay);
+    return Math.abs(abx * (ay - py) - aby * (ax - px)) / len;
+}
+
+function edgeFootZ(positions: number[], apex: number, e0: number, e1: number): number {
+    const ax = positions[e0 * 3] ?? 0;
+    const ay = positions[e0 * 3 + 1] ?? 0;
+    const bx = positions[e1 * 3] ?? 0;
+    const by = positions[e1 * 3 + 1] ?? 0;
+    const px = positions[apex * 3] ?? 0;
+    const py = positions[apex * 3 + 1] ?? 0;
+    const abx = bx - ax;
+    const aby = by - ay;
+    const len2 = abx * abx + aby * aby;
+    let t = 0;
+    if (len2 > 1e-12) t = Math.max(0, Math.min(1, ((px - ax) * abx + (py - ay) * aby) / len2));
+    const z0 = positions[e0 * 3 + 2] ?? 0;
+    const z1 = positions[e1 * 3 + 2] ?? 0;
+    return z0 + (z1 - z0) * t;
+}
+
+function faceVerts(indices: number[], face: number): [number, number, number] {
+    return [indices[face * 3] ?? 0, indices[face * 3 + 1] ?? 0, indices[face * 3 + 2] ?? 0];
+}
+
+function triNormal(positions: number[], indices: number[], face: number): [number, number, number] | null {
+    const [a, b, c] = faceVerts(indices, face);
+    const ux = (positions[b * 3] ?? 0) - (positions[a * 3] ?? 0);
+    const uy = (positions[b * 3 + 1] ?? 0) - (positions[a * 3 + 1] ?? 0);
+    const uz = (positions[b * 3 + 2] ?? 0) - (positions[a * 3 + 2] ?? 0);
+    const vx = (positions[c * 3] ?? 0) - (positions[a * 3] ?? 0);
+    const vy = (positions[c * 3 + 1] ?? 0) - (positions[a * 3 + 1] ?? 0);
+    const vz = (positions[c * 3 + 2] ?? 0) - (positions[a * 3 + 2] ?? 0);
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-6 || len * 0.5 < 1e-3) return null;
+    return [nx / len, ny / len, nz / len];
 }
 
 /**
@@ -581,7 +831,12 @@ export function applyAmputationRiseToTop(args: {
  * half of an edge that was already the long side of its face, so the mesh
  * minimum edge does not get shorter.
  */
-export function subdivideTallWalls(positions: number[], indices: number[]): number {
+export function subdivideTallWalls(
+    positions: number[],
+    indices: number[],
+    /** When set, only edges that touch a raised vertex are split. */
+    raised?: ReadonlySet<number> | null,
+): number {
     const ASPECT = 8;
     const MIN_HALF_MM = 1.2;
     let splits = 0;
@@ -626,6 +881,7 @@ export function subdivideTallWalls(positions: number[], indices: number[]): numb
             const dz = Math.abs(positions[longest[0] * 3 + 2]! - positions[longest[1] * 3 + 2]!);
             // Only the near-vertical wall edges. Splitting a diagonal can fold a quad.
             if (dz < 0.85 * longest[2]) continue;
+            if (raised && !raised.has(longest[0]) && !raised.has(longest[1])) continue;
             const k = longest[0] < longest[1] ? `${longest[0]},${longest[1]}` : `${longest[1]},${longest[0]}`;
             const share = facesOf.get(k);
             if (!share || share.length !== 2) continue;

@@ -11,6 +11,8 @@ import {
     confirmAmputationDraw,
     defaultSideAmputation,
     normalizeSideAmputation,
+    rimBlendBandMm,
+    rimRiseTaper,
     subdivideTallWalls,
 } from "./amputee-filler";
 import { type HeightFieldParams, heightAt, outlineHalfWidth } from "./height-field";
@@ -94,6 +96,18 @@ describe("amputation fillet profile", () => {
             expect(h).toBeGreaterThanOrEqual(0);
             expect(h).toBeLessThanOrEqual(15);
         }
+    });
+
+    test("the rim fade is 0 on the wall and full height once the blend has finished", () => {
+        expect(rimRiseTaper(0, 20)).toBe(0);
+        expect(rimRiseTaper(-1, 20)).toBe(0);
+        expect(rimRiseTaper(20, 20)).toBe(1);
+        expect(rimRiseTaper(10, 20)).toBeGreaterThan(0.4);
+        expect(rimRiseTaper(10, 20)).toBeLessThan(0.6);
+        const band = rimBlendBandMm(spec);
+        expect(band).toBeGreaterThan(15);
+        const peak = (1.5 * spec.height) / band;
+        expect(Math.atan(peak) * (180 / Math.PI)).toBeLessThanOrEqual(50.1);
     });
 
     test("interface fillet off cleans up about 1 mm and is near-vertical", () => {

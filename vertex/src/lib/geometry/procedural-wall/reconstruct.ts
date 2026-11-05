@@ -1,7 +1,12 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { BufferAttribute, BufferGeometry } from "three";
-import { amputationFillerActive, applyAmputationRiseToTop } from "@/lib/geometry/amputee-filler";
+import {
+    amputationFillerActive,
+    applyAmputationRiseToTop,
+    applySinkDeltaToBridges,
+    subdivideTallWalls,
+} from "@/lib/geometry/amputee-filler";
 import { apexWarpShiftMm, applyDefaultArchApexWarp } from "@/lib/geometry/apex-move-warp";
 import {
     applyBaseModifiers,
@@ -2015,13 +2020,16 @@ export function reconstructProceduralWalls(
     // and sink floors are measured from the filled surface. Filler off skips
     // this and the subdivision below, leaving the loft indices untouched.
     const amp = options.sourceField?.amputation;
+    let ampBridges: { index: number; parents: [number, number, number] }[] = [];
+    let ampZBefore: Float64Array | null = null;
     if (amp && amputationFillerActive(amp) && options.sourceField) {
         const lengthMm = options.sourceField.lengthMm;
         const widthMm = options.sourceField.widthMm;
         const side = options.sourceField.side;
-        applyAmputationRiseToTop({
+        const rise = applyAmputationRiseToTop({
             positions,
             topCount: generatedStart,
+            indices,
             side,
             amp,
             lengthMm,
@@ -2033,6 +2041,13 @@ export function reconstructProceduralWalls(
                 effectiveOutlineHalfWidth(u, lengthMm, widthMm, options.sourceField?.trimline) *
                 (widthMm / 2),
         });
+        // Only the columns that grew. Filler off never reaches this call.
+        subdivideTallWalls(positions, indices, rise.raised);
+        if (rise.bridges.length > 0) {
+            ampBridges = rise.bridges;
+            ampZBefore = new Float64Array(positions.length / 3);
+            for (let i = 0; i < ampZBefore.length; i++) ampZBefore[i] = positions[i * 3 + 2] ?? 0;
+        }
     }
     // z-only on the sink-free loft. Composed and analytic tops share this pass
     // so T and S cannot change station pairing, outline XY, or vertex count.
@@ -2055,6 +2070,7 @@ export function reconstructProceduralWalls(
             sinkStyloidThicken: options.sourceField?.sinkStyloidThicken ?? options.sinkStyloidThicken,
         });
     }
+    if (ampZBefore && ampBridges.length > 0) applySinkDeltaToBridges(positions, ampBridges, ampZBefore);
     const geo = new BufferGeometry();
     geo.setAttribute("position", new BufferAttribute(new Float32Array(positions), 3));
     geo.setIndex(indices);
