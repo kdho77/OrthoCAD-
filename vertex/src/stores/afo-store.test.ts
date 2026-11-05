@@ -22,17 +22,18 @@ describe("AFO product workflow", () => {
         setProductType("afo", "left");
         expect(useDesignStore.getState().design.productType).toBe("afo");
         expect(useDesignStore.getState().design.afo?.print.thicknessMm).toBe(4);
-        expect(useDesignStore.getState().design.afo?.print.edgeMm).toBe(2.5);
-        expect(useDesignStore.getState().design.afo?.print.flareMm).toBe(2.5);
+        expect(useDesignStore.getState().design.afo?.print.edgeMm).toBe(2);
+        expect(useDesignStore.getState().design.afo?.print.flareMm).toBe(1.5);
+        expect(useDesignStore.getState().design.afo?.print.material).toBe("PLA");
         expect(useDesignStore.getState().design.afo?.print).not.toHaveProperty("hideCast");
         expect(useDesignStore.getState().design.afo?.corrections).not.toHaveProperty("toeFlowMm");
         expect(useDesignStore.getState().design.afo?.cast.shinBox).toEqual({
             widthMm: 80,
             depthMm: 70,
-            heightMm: 220,
+            heightMm: 100,
             enabled: false,
         });
-        expect(useDesignStore.getState().design.afo?.cast.removeCastMm).toBe(0);
+        expect(useDesignStore.getState().design.afo?.cast.removeCastMm).toBe(-2);
         expect(useDesignStore.getState().design.afo?.cast.shinOffsetMm).toBe(0);
         expect(useDesignStore.getState().design.afo?.reliefs.malleoli).toEqual({ mm: -3, on: true });
         expect(useDesignStore.getState().design.afo?.cast.toeBox).toEqual({
@@ -40,6 +41,8 @@ describe("AFO product workflow", () => {
             depthMm: 90,
             heightMm: 50,
             heightPct: 100,
+            thicknessMm: 0,
+            extraLengthMm: 15,
             enabled: false,
         });
     });

@@ -9,8 +9,8 @@ import { AfoPrintPanel } from "@/features/afo/AfoPrintPanel";
 import { AfoScanPanel } from "@/features/afo/AfoScanPanel";
 import { ClinicalPrintStepPanel } from "@/features/clinical/ClinicalPrintStepPanel";
 import { ClinicalScanStepPanel } from "@/features/clinical/ClinicalScanStepPanel";
-import { SetupStepPanel } from "@/features/clinical/SetupStepPanel";
 import { HardnessStepPanel } from "@/features/clinical/HardnessStepPanel";
+import { SetupStepPanel } from "@/features/clinical/SetupStepPanel";
 import { CorrectionsPanel } from "@/features/corrections/CorrectionsPanel";
 import { ElementsPanel } from "@/features/elements/ElementsPanel";
 import { ExportPanel } from "@/features/exports/ExportPanel";
@@ -42,7 +42,11 @@ export function RightPanel() {
                     {!isAfo && step === "setup" ? <SetupStepPanel /> : null}
                     {!isAfo && step === "base" ? (
                         <div className="space-y-3">
-                            <LeftSidebar embedded sections={["pattern", "library"]} clinicalDeclutter="base" />
+                            <LeftSidebar
+                                embedded
+                                sections={["pattern", "library"]}
+                                clinicalDeclutter="base"
+                            />
                             <TrimPresetsPanel />
                             {shouldShowShapeFinishOnShapeStep() ? <ShapeFinishPanel /> : null}
                         </div>

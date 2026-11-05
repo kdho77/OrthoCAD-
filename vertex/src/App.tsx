@@ -11,10 +11,10 @@ import { PrescriptionUpload } from "@/components/prescription-upload/Prescriptio
 import { Viewer3D } from "@/components/viewer/Viewer3D";
 import { AdminApp } from "@/features/admin/AdminApp";
 import { navigate, useLocationPath } from "@/features/admin/admin-nav";
+import { ProductTypeBar } from "@/features/afo/ProductTypeBar";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { ClientFilePage } from "@/features/clients/ClientFilePage";
 import { ClientListPage } from "@/features/clients/ClientListPage";
-import { ProductTypeBar } from "@/features/afo/ProductTypeBar";
 import { EditorChrome, useDesignRoute } from "@/features/clients/EditorChrome";
 import { InactivityGuard } from "@/features/clients/InactivityGuard";
 import { parseClinicalPath } from "@/features/clients/routes";

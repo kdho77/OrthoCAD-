@@ -2,9 +2,13 @@
 
 import { create } from "zustand";
 import { applyClinicalCast } from "@/lib/geometry/afo/cast";
-import { applyAfoCorrections } from "@/lib/geometry/afo/corrections";
+import { applyAfoCorrections, correctionContextFromAfo } from "@/lib/geometry/afo/corrections";
 import { detectTibialCrest } from "@/lib/geometry/afo/crest";
-import { defaultAfoDesignState } from "@/lib/geometry/afo/defaults";
+import {
+    correctionsForSide,
+    defaultAfoDesignState,
+    defaultAfoSideCorrection,
+} from "@/lib/geometry/afo/defaults";
 import { cloneMesh } from "@/lib/geometry/afo/mesh-ops";
 import type { AfoClinicalMarkerId, AfoScanWorkflow, AfoTriMesh } from "@/lib/geometry/afo/types";
 import { useDesignStore } from "@/stores/design-store";
@@ -68,7 +72,7 @@ export function getAfoState() {
         ...base,
         ...design.afo,
         cast: { ...base.cast, ...design.afo.cast },
-        corrections: { ...base.corrections, ...design.afo.corrections },
+        corrections: mergeCorrections(base.corrections, design.afo.corrections),
         reliefs: { ...base.reliefs, ...design.afo.reliefs },
         print: { ...base.print, ...design.afo.print },
         crest: { ...base.crest, ...design.afo.crest },
@@ -76,6 +80,37 @@ export function getAfoState() {
         landmarks: design.afo.landmarks ?? [],
         scanWorkflow: mergeScanWorkflow(base.scanWorkflow, design.afo.scanWorkflow),
         trimPoints: design.afo.trimPoints ?? [],
+        trimCurve: design.afo.trimCurve ?? [],
+    };
+}
+
+function mergeCorrections(
+    base: ReturnType<typeof defaultAfoDesignState>["corrections"],
+    extra: ReturnType<typeof defaultAfoDesignState>["corrections"],
+) {
+    const side = defaultAfoSideCorrection();
+    const legacy = {
+        legRearDeg: extra.legRearDeg ?? side.legRearDeg,
+        legSideDeg: extra.legSideDeg ?? side.legSideDeg,
+        heelLiftMm: extra.heelLiftMm ?? side.heelLiftMm,
+        footLiftMedMm: extra.footLiftMedMm ?? side.footLiftMedMm,
+        footLiftLatMm: extra.footLiftLatMm ?? side.footLiftLatMm,
+        medialArchMm: extra.medialArchMm ?? side.medialArchMm,
+        heelWidthMm: extra.heelWidthMm ?? side.heelWidthMm,
+        braceHeightMm: extra.braceHeightMm ?? side.braceHeightMm,
+        toeRiseMm: extra.toeRiseMm ?? side.toeRiseMm,
+    };
+    return {
+        ...base,
+        ...extra,
+        ...legacy,
+        left: { ...legacy, ...(extra.left ?? {}) },
+        right: { ...legacy, ...(extra.right ?? {}) },
+        volumeRegions: extra.volumeRegions ?? base.volumeRegions ?? [],
+        smoothRegions: extra.smoothRegions ?? base.smoothRegions ?? [],
+        text: extra.text === undefined ? base.text : extra.text,
+        patientName: extra.patientName ?? base.patientName,
+        smoothIterations: extra.smoothIterations ?? base.smoothIterations,
     };
 }
 
@@ -122,9 +157,9 @@ export function refreshAfoWorkingMesh(): void {
             design: { ...ds.design, afo: { ...current, effectiveFeatherMm: featherMm } },
         });
     }
-    const corrected = applyAfoCorrections(mesh, afo.corrections, {
-        medialMal: medial,
-        lateralMal: lateral,
+    const corrected = applyAfoCorrections(mesh, correctionsForSide(afo.corrections, afo.side), {
+        ...correctionContextFromAfo(afo, { medialMal: medial, lateralMal: lateral }),
+        anatomical: Boolean(medial && lateral),
     });
     useAfoStore.getState().setCorrectedMesh(corrected);
 }

@@ -19,9 +19,47 @@ export interface AfoBoxParams {
     widthMm: number;
     depthMm: number;
     heightMm: number;
-    /** Toe box: 100–130% of max Z in the toe region. */
+    /** Legacy toe-box height percent. The Windows toe box uses thickness and extra length. */
     heightPct?: number;
+    /** Toe box dorsum addition (mm). Default 0. */
+    thicknessMm?: number;
+    /** Toe box distal extrusion (mm). Default 15. */
+    extraLengthMm?: number;
     enabled: boolean;
+}
+
+export interface AfoSideCorrection {
+    /** Frontal-plane tibial rotation (varus positive), degrees. */
+    legRearDeg: number;
+    /** Sagittal rotation. Positive is dorsiflexion. */
+    legSideDeg: number;
+    heelLiftMm: number;
+    footLiftMedMm: number;
+    footLiftLatMm: number;
+    medialArchMm: number;
+    heelWidthMm: number;
+    braceHeightMm: number;
+    /** Forefoot rise (mm). 0 leaves the toes on the flattened plane. */
+    toeRiseMm: number;
+}
+
+export interface AfoVolumeRegion {
+    id: string;
+    vertexIndices: number[];
+    offsetMm: number;
+    featherMm: number;
+}
+
+export interface AfoSmoothRegion {
+    id: string;
+    vertexIndices: number[];
+    iterations: number;
+}
+
+export interface AfoTextMark {
+    text: string;
+    depthMm: number;
+    anchor: AfoVec3 | null;
 }
 
 export interface AfoReliefChannel {
@@ -60,12 +98,17 @@ export interface AfoCrestState {
 }
 
 export interface AfoCastState {
-    /** Remove Cast offset `c_cast` (mm). c>0 shrinks. */
+    /** Remove Cast offset `c_cast` (mm). c>0 shrinks. Default −2. */
     removeCastMm: number;
     /** Shin offset `c_shin` (mm). */
     shinOffsetMm: number;
     insensate: boolean;
+    /** Flatten bottom enabled. */
     flattenBottom: boolean;
+    /** Plantar plane height above the lowest vertex (mm). Default 7. */
+    flattenRemoveMm: number;
+    /** Plantar band above the plane that is also pulled onto it (mm). Default 2.8. */
+    flattenAddMm: number;
     shinBox: AfoBoxParams;
     toeBox: AfoBoxParams;
     transparent: boolean;
@@ -73,18 +116,16 @@ export interface AfoCastState {
     showCorrected: boolean;
 }
 
-export interface AfoCorrections {
-    /** Frontal-plane tibial rotation (varus / valgus), degrees. */
-    legRearDeg: number;
-    /** Sagittal-plane rotation (PF / DF), degrees. */
-    legSideDeg: number;
-    heelLiftMm: number;
-    footLiftMedMm: number;
-    footLiftLatMm: number;
-    medialArchMm: number;
-    heelWidthMm: number;
-    braceHeightMm: number;
+export interface AfoCorrections extends AfoSideCorrection {
+    /** Shared by both sides. Taubin iterations. */
     smoothIterations: number;
+    left: AfoSideCorrection;
+    right: AfoSideCorrection;
+    volumeRegions: AfoVolumeRegion[];
+    smoothRegions: AfoSmoothRegion[];
+    text: AfoTextMark | null;
+    /** Default plaque reads this name plus the side letter. */
+    patientName: string;
 }
 
 export type AfoDesignMarkerId =
@@ -109,6 +150,8 @@ export interface AfoPrintParams {
     thicknessMm: number;
     edgeMm: number;
     flareMm: number;
+    /** Print material. Geometry does not assume a polymer. */
+    material: string;
 }
 
 export interface AfoWarning {
@@ -177,6 +220,8 @@ export interface AfoDesignState {
     landmarks: AfoLandmark[];
     scanWorkflow: AfoScanWorkflow;
     trimPoints: AfoTrimPoint[];
+    /** Densified surface spline through the trim pins. Empty until the loop is fit. */
+    trimCurve: AfoVec3[];
     trimClosed: boolean;
     trimConfirmed: boolean;
     print: AfoPrintParams;

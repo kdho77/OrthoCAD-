@@ -18,6 +18,22 @@ export function evaluateAfoWarnings(afo: AfoDesignState, mesh: AfoTriMesh | null
     if (afo.corrections.legSideDeg > 5) {
         out.push({ id: "df_high", message: "Sagittal DF > +5°", blocking: false });
     }
+    if (afo.corrections.legSideDeg < -3 || afo.corrections.legSideDeg > 7) {
+        out.push({
+            id: "sagittal_window",
+            message: "Side rotation outside −3° to +7°",
+            blocking: false,
+        });
+    }
+    if (afo.corrections.heelLiftMm > 12) {
+        out.push({ id: "heel_lift_high", message: "Heel lift > 12 mm", blocking: false });
+    }
+    if (afo.corrections.medialArchMm > 5) {
+        out.push({ id: "arch_high", message: "Medial arch > 5 mm", blocking: false });
+    }
+    if (afo.cast.flattenBottom && afo.cast.flattenRemoveMm > 8) {
+        out.push({ id: "flatten_remove", message: "Flatten remove > 8 mm", blocking: false });
+    }
     if (Math.abs(afo.corrections.legRearDeg) > 5) {
         out.push({ id: "frontal_high", message: "Frontal rotation |deg| > 5°", blocking: false });
     }
@@ -77,6 +93,24 @@ export function evaluateAfoWarnings(afo: AfoDesignState, mesh: AfoTriMesh | null
     }
 
     const fib = afo.clinicalMarkers.find((m) => m.id === "fibular_head");
+    if (fib && afo.corrections.braceHeightMm > fib.point.z - 15) {
+        out.push({
+            id: "brace_fibular",
+            message: "Brace height is less than 15 mm below the fibular head",
+            blocking: true,
+        });
+    }
+    if (afo.corrections.text?.text) {
+        const token = afo.corrections.text.text.trim().split(/\s+/).pop()?.toUpperCase() ?? "";
+        const want = afo.side === "left" ? "L" : "R";
+        if (token !== want && !token.endsWith(want)) {
+            out.push({
+                id: "text_side",
+                message: `Text side mark does not match ${want}`,
+                blocking: false,
+            });
+        }
+    }
     if (mesh && afo.trimPoints.length > 0) {
         if (fib) {
             const src = nearestVertex(mesh, fib.point).index;

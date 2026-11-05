@@ -3,11 +3,18 @@
 import { SliderField } from "@/components/ui/slider-field";
 import {
     AFO_CLINICAL_MARKERS,
+    AFO_FLATTEN_ADD_MM,
+    AFO_FLATTEN_REMOVE_MM,
+    AFO_REAR_ROT_RANGE,
     AFO_RELIEF_RANGE,
+    AFO_REMOVE_CAST_DEFAULT,
     AFO_REMOVE_CAST_RANGE,
+    AFO_SHIN_BOX_HEIGHT_MM,
     AFO_SHIN_OFFSET_RANGE,
-    AFO_TOE_BOX_PCT_RANGE,
+    AFO_SIDE_ROT_RANGE,
+    AFO_TOE_EXTRA_MM,
     defaultAfoCast,
+    defaultAfoCorrections,
     defaultAfoReliefs,
 } from "@/lib/geometry/afo/defaults";
 import { evaluateAfoWarnings } from "@/lib/geometry/afo/warnings";
@@ -16,7 +23,7 @@ import { useDesignStore } from "@/stores/design-store";
 import type { ProductionMethod } from "@/types";
 
 const METHODS: { id: ProductionMethod; label: string }[] = [
-    { id: "printing_shell", label: "3D print shell" },
+    { id: "printing_shell", label: "3D Printing: Brace/shell" },
     { id: "printing_solid", label: "3D print solid" },
     { id: "milling_3axis", label: "Mill (3-axis)" },
 ];
@@ -24,6 +31,9 @@ const METHODS: { id: ProductionMethod; label: string }[] = [
 export function AfoCastPanel() {
     const afo = useDesignStore((s) => s.design.afo) ?? getAfoState();
     const cast = afo.cast ?? defaultAfoCast();
+    const corrections = afo.corrections ?? defaultAfoCorrections();
+    const active =
+        afo.side === "right" ? (corrections.right ?? corrections) : (corrections.left ?? corrections);
     const reliefs = afo.reliefs ?? defaultAfoReliefs();
     const setMethod = useDesignStore((s) => s.setMethod);
     const sourceMesh = useAfoStore((s) => s.sourceMesh);
@@ -67,7 +77,7 @@ export function AfoCastPanel() {
                 min={AFO_REMOVE_CAST_RANGE[0]}
                 max={AFO_REMOVE_CAST_RANGE[1]}
                 unit="mm"
-                defaultValue={0}
+                defaultValue={AFO_REMOVE_CAST_DEFAULT}
                 onChange={(v) => patchCast({ removeCastMm: v })}
             />
             <SliderField
@@ -98,6 +108,30 @@ export function AfoCastPanel() {
                 />
                 Flatten bottom
             </label>
+            {cast.flattenBottom ? (
+                <>
+                    <SliderField
+                        label="Flatten remove"
+                        value={cast.flattenRemoveMm ?? AFO_FLATTEN_REMOVE_MM}
+                        min={0}
+                        max={12}
+                        step={0.1}
+                        unit="mm"
+                        defaultValue={AFO_FLATTEN_REMOVE_MM}
+                        onChange={(v) => patchCast({ flattenRemoveMm: v })}
+                    />
+                    <SliderField
+                        label="Flatten add"
+                        value={cast.flattenAddMm ?? AFO_FLATTEN_ADD_MM}
+                        min={0}
+                        max={8}
+                        step={0.1}
+                        unit="mm"
+                        defaultValue={AFO_FLATTEN_ADD_MM}
+                        onChange={(v) => patchCast({ flattenAddMm: v })}
+                    />
+                </>
+            ) : null}
             <label className="flex items-center gap-2">
                 <input
                     type="checkbox"
@@ -108,11 +142,12 @@ export function AfoCastPanel() {
             </label>
             {cast.shinBox.enabled ? (
                 <SliderField
-                    label="Shin height"
+                    label="Shin box height"
                     value={cast.shinBox.heightMm}
-                    min={80}
-                    max={350}
+                    min={40}
+                    max={180}
                     unit="mm"
+                    defaultValue={AFO_SHIN_BOX_HEIGHT_MM}
                     onChange={(v) => patchCast({ shinBox: { ...cast.shinBox, heightMm: v } })}
                 />
             ) : null}
@@ -124,17 +159,78 @@ export function AfoCastPanel() {
                 />
                 Toe box
             </label>
-            {cast.toeBox.enabled ? (
-                <SliderField
-                    label="Toe box height"
-                    value={cast.toeBox.heightPct ?? 100}
-                    min={AFO_TOE_BOX_PCT_RANGE[0]}
-                    max={AFO_TOE_BOX_PCT_RANGE[1]}
-                    unit="%"
-                    defaultValue={100}
-                    onChange={(v) => patchCast({ toeBox: { ...cast.toeBox, heightPct: v } })}
-                />
+            {cast.shinBox.enabled && afo.method === "printing_shell" ? (
+                <p className="text-[10px] text-muted-foreground">
+                    Shin box is mold-only. The printed shell omits it.
+                </p>
             ) : null}
+            {cast.toeBox.enabled ? (
+                <>
+                    <SliderField
+                        label="Toe box thickness"
+                        value={cast.toeBox.thicknessMm ?? 0}
+                        min={0}
+                        max={8}
+                        step={0.1}
+                        unit="mm"
+                        defaultValue={0}
+                        onChange={(v) => patchCast({ toeBox: { ...cast.toeBox, thicknessMm: v } })}
+                    />
+                    <SliderField
+                        label="Toe box extra length"
+                        value={cast.toeBox.extraLengthMm ?? AFO_TOE_EXTRA_MM}
+                        min={0}
+                        max={40}
+                        unit="mm"
+                        defaultValue={AFO_TOE_EXTRA_MM}
+                        onChange={(v) => patchCast({ toeBox: { ...cast.toeBox, extraLengthMm: v } })}
+                    />
+                </>
+            ) : null}
+            <SliderField
+                label="Rotate Rear View"
+                value={active.legRearDeg}
+                min={AFO_REAR_ROT_RANGE[0]}
+                max={AFO_REAR_ROT_RANGE[1]}
+                step={0.5}
+                unit="°"
+                defaultValue={0}
+                onChange={(v) => {
+                    const nextSide = { ...active, legRearDeg: v };
+                    patchAfoState(
+                        {
+                            corrections: {
+                                ...corrections,
+                                ...nextSide,
+                                left: afo.side === "left" ? nextSide : corrections.left,
+                                right: afo.side === "right" ? nextSide : corrections.right,
+                            },
+                        },
+                        "afo-rotation",
+                    );
+                    refreshAfoWorkingMesh();
+                }}
+            />
+            <SliderField
+                label="Rotate Side View"
+                value={active.legSideDeg}
+                min={AFO_SIDE_ROT_RANGE[0]}
+                max={AFO_SIDE_ROT_RANGE[1]}
+                step={0.5}
+                unit="°"
+                defaultValue={0}
+                onChange={(v) => {
+                    const nextSide = { ...active, legSideDeg: v };
+                    const next = {
+                        ...corrections,
+                        ...nextSide,
+                        left: afo.side === "left" ? nextSide : corrections.left,
+                        right: afo.side === "right" ? nextSide : corrections.right,
+                    };
+                    patchAfoState({ corrections: next }, "afo-rotation");
+                    refreshAfoWorkingMesh();
+                }}
+            />
 
             <section className="space-y-2 rounded-md border border-border bg-background/40 p-2">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">

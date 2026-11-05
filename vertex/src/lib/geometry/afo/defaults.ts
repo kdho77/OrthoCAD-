@@ -11,20 +11,35 @@ import type {
     AfoPrintParams,
     AfoReliefs,
     AfoScanWorkflow,
+    AfoSideCorrection,
 } from "./types";
 
 /** Plantar / calcaneus Z in the oriented frame (C). */
 export const AFO_C_MM = 0;
 /** [K] Print wall thickness (mm). */
 export const AFO_THICKNESS_MM = 4;
-/** [K] Rim blend width (mm). */
-export const AFO_EDGE_MM = 2.5;
-/** [K] Outward flare at the trim opening (mm). */
-export const AFO_FLARE_MM = 2.5;
-/** [K] Brace height from plantar origin (mm). */
+/** [K] Rim thickness (mm). Interior wall stays AFO_THICKNESS_MM. */
+export const AFO_EDGE_MM = 2;
+/** [K] Outward flare at the trim opening (mm). Footplate flanges cap at 1. */
+export const AFO_FLARE_MM = 1.5;
+/** [K] Brace height from plantar origin when the fibular head is unknown (mm). */
 export const AFO_BRACE_HEIGHT_MM = 220;
+/** Proximal trim sits this far below the fibular head when height is automatic. */
+export const AFO_BRACE_BELOW_FIBULA_MM = 22;
+/** Hard warning when the trim is closer than this to the fibular head. */
+export const AFO_BRACE_FIBULA_HARD_MM = 15;
 /** [K] Taubin smooth iterations. */
-export const AFO_SMOOTH_ITERATIONS = 4;
+export const AFO_SMOOTH_ITERATIONS = 6;
+/** Rim band over which thickness blends from the wall to the edge (mm). */
+export const AFO_RIM_BAND_MM = 10;
+export const AFO_MATERIAL = "PLA";
+export const AFO_FLATTEN_REMOVE_MM = 7;
+export const AFO_FLATTEN_ADD_MM = 2.8;
+export const AFO_FLATTEN_WARN_MM = 8;
+export const AFO_SHIN_BOX_HEIGHT_MM = 100;
+export const AFO_TOE_THICKNESS_MM = 0;
+export const AFO_TOE_EXTRA_MM = 15;
+export const AFO_REMOVE_CAST_DEFAULT = -2;
 /** [K] Production method for a new AFO case. */
 export const AFO_PRODUCTION_METHOD: ProductionMethod = "printing_shell";
 
@@ -44,18 +59,25 @@ export const AFO_ORIENT_TARGETS_MM: [number, number, number][] = [
     [-35, 40, 80],
 ];
 
-export const AFO_THICKNESS_RANGE: [number, number] = [1.2, 12];
+export const AFO_THICKNESS_RANGE: [number, number] = [2.5, 6];
 export const AFO_THICKNESS_WARN_MM = 2;
-export const AFO_EDGE_RANGE: [number, number] = [0.5, 8];
-export const AFO_FLARE_RANGE: [number, number] = [0, 8];
+export const AFO_EDGE_RANGE: [number, number] = [1.5, 3];
+export const AFO_FLARE_RANGE: [number, number] = [0, 4];
 /** Frontal (varus/valgus) about the mid-malleolar frontal axis. */
 export const AFO_REAR_ROT_RANGE: [number, number] = [-10, 10];
 /** Sagittal (PF/DF) about the malleolar axis. */
 export const AFO_SIDE_ROT_RANGE: [number, number] = [-5, 10];
-export const AFO_HEEL_LIFT_RANGE: [number, number] = [0, 12];
+export const AFO_HEEL_LIFT_RANGE: [number, number] = [0, 20];
+export const AFO_HEEL_LIFT_WARN_MM = 12;
+export const AFO_TOE_RISE_RANGE: [number, number] = [0, 15];
 export const AFO_FOOT_LIFT_RANGE: [number, number] = [0, 12];
-export const AFO_ARCH_RANGE: [number, number] = [0, 18];
-export const AFO_HEEL_WIDTH_RANGE: [number, number] = [-10, 10];
+export const AFO_ARCH_RANGE: [number, number] = [0, 8];
+export const AFO_ARCH_WARN_MM = 5;
+export const AFO_HEEL_WIDTH_RANGE: [number, number] = [-4, 4];
+export const AFO_VOLUME_OFFSET_RANGE: [number, number] = [-3, 10];
+export const AFO_VOLUME_FEATHER_MM: [number, number] = [8, 12];
+export const AFO_TEXT_DEPTH_MM: [number, number] = [0.4, 0.6];
+export const AFO_SAGITTAL_WARN: [number, number] = [-3, 7];
 export const AFO_BRACE_HEIGHT_RANGE: [number, number] = [80, 350];
 export const AFO_SMOOTH_RANGE: [number, number] = [0, 12];
 export const AFO_REMOVE_CAST_RANGE: [number, number] = [-10, 10];
@@ -90,7 +112,7 @@ export const AFO_CLINICAL_MARKERS: {
 
 export type { AfoDesignMarkerId };
 
-export function defaultAfoCorrections(): AfoCorrections {
+export function defaultAfoSideCorrection(): AfoSideCorrection {
     return {
         legRearDeg: 0,
         legSideDeg: 0,
@@ -100,7 +122,37 @@ export function defaultAfoCorrections(): AfoCorrections {
         medialArchMm: 0,
         heelWidthMm: 0,
         braceHeightMm: AFO_BRACE_HEIGHT_MM,
+        toeRiseMm: 0,
+    };
+}
+
+export function defaultAfoCorrections(): AfoCorrections {
+    const side = defaultAfoSideCorrection();
+    return {
+        ...side,
         smoothIterations: AFO_SMOOTH_ITERATIONS,
+        left: { ...side },
+        right: { ...side },
+        volumeRegions: [],
+        smoothRegions: [],
+        text: null,
+        patientName: "PATIENT",
+    };
+}
+
+/** Copy one side's numbers onto the top-level fields. Smooth stays shared. */
+export function correctionsForSide(c: AfoCorrections, side: "left" | "right"): AfoCorrections {
+    const values = side === "right" ? (c.right ?? c) : (c.left ?? c);
+    return {
+        ...c,
+        ...values,
+        smoothIterations: c.smoothIterations,
+        left: c.left,
+        right: c.right,
+        volumeRegions: c.volumeRegions ?? [],
+        smoothRegions: c.smoothRegions ?? [],
+        text: c.text ?? null,
+        patientName: c.patientName ?? "PATIENT",
     };
 }
 
@@ -126,12 +178,22 @@ export function defaultAfoCrest(): AfoCrestState {
 
 export function defaultAfoCast(): AfoCastState {
     return {
-        removeCastMm: 0,
+        removeCastMm: AFO_REMOVE_CAST_DEFAULT,
         shinOffsetMm: 0,
         insensate: false,
         flattenBottom: false,
-        shinBox: { widthMm: 80, depthMm: 70, heightMm: 220, enabled: false },
-        toeBox: { widthMm: 80, depthMm: 90, heightMm: 50, heightPct: 100, enabled: false },
+        flattenRemoveMm: AFO_FLATTEN_REMOVE_MM,
+        flattenAddMm: AFO_FLATTEN_ADD_MM,
+        shinBox: { widthMm: 80, depthMm: 70, heightMm: AFO_SHIN_BOX_HEIGHT_MM, enabled: false },
+        toeBox: {
+            widthMm: 80,
+            depthMm: 90,
+            heightMm: 50,
+            heightPct: 100,
+            thicknessMm: AFO_TOE_THICKNESS_MM,
+            extraLengthMm: AFO_TOE_EXTRA_MM,
+            enabled: false,
+        },
         transparent: false,
         show3dModel: true,
         showCorrected: false,
@@ -143,6 +205,7 @@ export function defaultAfoPrint(): AfoPrintParams {
         thicknessMm: AFO_THICKNESS_MM,
         edgeMm: AFO_EDGE_MM,
         flareMm: AFO_FLARE_MM,
+        material: AFO_MATERIAL,
     };
 }
 
@@ -173,6 +236,7 @@ export function defaultAfoDesignState(side: Side = "left"): AfoDesignState {
         landmarks: [],
         scanWorkflow: defaultAfoScanWorkflow(),
         trimPoints: [],
+        trimCurve: [],
         trimClosed: false,
         trimConfirmed: false,
         print: defaultAfoPrint(),
@@ -189,6 +253,10 @@ export function isAfoIdentityCorrections(c: AfoCorrections): boolean {
         c.footLiftLatMm === 0 &&
         c.medialArchMm === 0 &&
         c.heelWidthMm === 0 &&
-        c.smoothIterations === 0
+        (c.toeRiseMm ?? 0) === 0 &&
+        c.smoothIterations === 0 &&
+        (c.volumeRegions?.length ?? 0) === 0 &&
+        (c.smoothRegions?.length ?? 0) === 0 &&
+        !c.text?.text
     );
 }

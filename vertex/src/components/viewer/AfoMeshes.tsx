@@ -23,22 +23,32 @@ export function AfoMeshes() {
     const showCorrected = afo.cast.showCorrected;
 
     const working = showCorrected ? (corrected ?? cast) : cast;
-    const showCast = Boolean(working) && show3d && !shell;
+    const showCast = Boolean(source ?? working) && show3d && !shell;
+    const showCorrectedMesh = Boolean(corrected) && show3d && !shell;
 
-    const castGeo = useMemo(() => (working ? afoMeshToGeometry(working) : null), [working]);
+    const castGeo = useMemo(
+        () => (source ? afoMeshToGeometry(source) : working ? afoMeshToGeometry(working) : null),
+        [source, working],
+    );
+    const correctedGeo = useMemo(() => (corrected ? afoMeshToGeometry(corrected) : null), [corrected]);
     const shellGeo = useMemo(() => (shell ? afoMeshToGeometry(shell) : null), [shell]);
     const pickGeo = useMemo(
         () => (placingScan && source ? afoMeshToGeometry(source) : null),
         [placingScan, source],
     );
     const trimLine = useMemo(() => {
-        if (!working || afo.trimPoints.length < 2) return null;
-        const pts = geodesicPolyline(
-            working,
-            afo.trimPoints.map((p) => p.vertexIndex),
-            afo.trimClosed,
-        );
-        if (pts.length < 2) return null;
+        const curve = afo.trimCurve ?? [];
+        const pts =
+            curve.length >= 2
+                ? curve
+                : !working || afo.trimPoints.length < 2
+                  ? []
+                  : geodesicPolyline(
+                        working,
+                        afo.trimPoints.map((p) => p.vertexIndex),
+                        afo.trimClosed,
+                    );
+        if (!pts || pts.length < 2) return null;
         const arr = new Float32Array(pts.length * 3);
         for (let i = 0; i < pts.length; i++) {
             const pt = pts[i];
@@ -51,20 +61,27 @@ export function AfoMeshes() {
         g.setAttribute("position", new BufferAttribute(arr, 3));
         const mat = new LineBasicMaterial({ color: 0x38bdf8 });
         return new ThreeLine(g, mat);
-    }, [working, afo.trimPoints, afo.trimClosed]);
+    }, [working, afo.trimPoints, afo.trimClosed, afo.trimCurve]);
 
     useEffect(() => {
         return () => {
             castGeo?.dispose();
+            correctedGeo?.dispose();
             shellGeo?.dispose();
             pickGeo?.dispose();
             trimLine?.geometry.dispose();
             (trimLine?.material as LineBasicMaterial | undefined)?.dispose();
         };
-    }, [castGeo, shellGeo, pickGeo, trimLine]);
+    }, [castGeo, correctedGeo, shellGeo, pickGeo, trimLine]);
 
     const scanMatProps = placingScan
-        ? { color: AFO_SCAN_GREY, roughness: 0.85, metalness: 0, transparent, opacity: transparent ? 0.45 : 1 }
+        ? {
+              color: AFO_SCAN_GREY,
+              roughness: 0.85,
+              metalness: 0,
+              transparent,
+              opacity: transparent ? 0.45 : 1,
+          }
         : {
               color: "#c4b5a0",
               roughness: 0.55,
@@ -82,7 +99,22 @@ export function AfoMeshes() {
             ) : null}
             {showCast && castGeo ? (
                 <mesh geometry={castGeo} userData={{ isAfoCast: true, isScanMesh: true }}>
-                    <meshStandardMaterial side={DoubleSide} {...scanMatProps} />
+                    <meshStandardMaterial
+                        side={DoubleSide}
+                        {...scanMatProps}
+                        transparent={showCorrectedMesh || scanMatProps.transparent}
+                        opacity={showCorrectedMesh ? 0.35 : scanMatProps.opacity}
+                    />
+                </mesh>
+            ) : null}
+            {showCorrectedMesh && correctedGeo ? (
+                <mesh geometry={correctedGeo} userData={{ isAfoCorrected: true }}>
+                    <meshStandardMaterial
+                        color="#f4f1ea"
+                        roughness={0.5}
+                        metalness={0.02}
+                        side={DoubleSide}
+                    />
                 </mesh>
             ) : null}
             {shellGeo ? (

@@ -430,7 +430,7 @@ describe("AFO clinical addendum (tests a–l)", () => {
             const open = validateTrimLoop(sphere, loop, false);
             expect(open.ok).toBe(false);
         }
-        expect(defaultAfoCast().removeCastMm).toBe(0);
+        expect(defaultAfoCast().removeCastMm).toBe(-2);
         expect(defaultAfoDesignState().print.thicknessMm).toBe(4);
     });
 });

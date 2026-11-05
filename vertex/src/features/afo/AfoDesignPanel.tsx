@@ -1,7 +1,9 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { AFO_DESIGN_MARKERS } from "@/lib/geometry/afo/defaults";
+import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
 import { loopNearZ, validateTrimLoop } from "@/lib/geometry/afo/trim-loop";
+import { balanceBracePins, fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import { getAfoState, patchAfoState, useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
 
@@ -40,6 +42,52 @@ export function AfoDesignPanel() {
         }
         useAfoStore.getState().setLastError(null);
         patchAfoState({ trimConfirmed: true }, "afo-trim-confirm");
+    };
+
+    const fitSpline = () => {
+        if (!working || afo.landmarks.length < 3) return;
+        const pins = afo.landmarks.map((l) => l.point);
+        const fit = fitSurfaceSpline(working, pins);
+        if (!fit.ok) {
+            useAfoStore.getState().setLastError(fit.reasons.join(" "));
+            return;
+        }
+        useAfoStore.getState().setLastError(null);
+        patchAfoState(
+            {
+                trimCurve: fit.curve,
+                trimPoints: pins.map((point) => ({
+                    point,
+                    vertexIndex: nearestVertex(working, point).index,
+                })),
+                trimClosed: true,
+                trimConfirmed: false,
+            },
+            "afo-trim-spline",
+        );
+    };
+
+    const placeBalanceBrace = () => {
+        if (!working) return;
+        const brace = balanceBracePins(working, afo);
+        const fit = fitSurfaceSpline(working, brace.pins);
+        if (!fit.ok) {
+            useAfoStore.getState().setLastError([...brace.reasons, ...fit.reasons].join(" "));
+            return;
+        }
+        useAfoStore.getState().setLastError(brace.reasons.join(" ") || null);
+        patchAfoState(
+            {
+                trimCurve: fit.curve,
+                trimPoints: brace.pins.map((point) => ({
+                    point,
+                    vertexIndex: nearestVertex(working, point).index,
+                })),
+                trimClosed: true,
+                trimConfirmed: false,
+            },
+            "afo-balance-brace",
+        );
     };
 
     const snapBraceLoop = () => {
@@ -106,7 +154,7 @@ export function AfoDesignPanel() {
 
             <section className="space-y-2 rounded-md border border-border bg-background/40 p-2">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Geodesic trim
+                    Smooth trimline
                 </div>
                 <p className="text-muted-foreground">
                     Click to place. Close by clicking the first point. Drag handles to edit.
@@ -128,6 +176,22 @@ export function AfoDesignPanel() {
                           </p>
                       ))
                     : null}
+                <button
+                    type="button"
+                    disabled={!working || afo.landmarks.length < 3}
+                    className="h-8 w-full rounded-md border border-border bg-background disabled:opacity-40"
+                    onClick={fitSpline}
+                >
+                    Fit smooth trim
+                </button>
+                <button
+                    type="button"
+                    disabled={!working}
+                    className="h-8 w-full rounded-md border border-border bg-background"
+                    onClick={placeBalanceBrace}
+                >
+                    Balance brace
+                </button>
                 <button
                     type="button"
                     disabled={!working}
@@ -155,9 +219,29 @@ export function AfoDesignPanel() {
                 {lastError ? <p className="text-[10px] text-amber-200">{lastError}</p> : null}
             </section>
 
-            <p className="rounded-md border border-dashed border-border px-2 py-2 text-[10px] text-muted-foreground">
-                Cut out, hole pattern, corrugation, add pad and add volume are deferred.
-            </p>
+            <div className="space-y-1">
+                <button
+                    type="button"
+                    disabled
+                    className="h-7 w-full rounded border border-border text-[11px] opacity-40"
+                >
+                    Cut out
+                </button>
+                <button
+                    type="button"
+                    disabled
+                    className="h-7 w-full rounded border border-border text-[11px] opacity-40"
+                >
+                    Hole pattern
+                </button>
+                <button
+                    type="button"
+                    disabled
+                    className="h-7 w-full rounded border border-border text-[11px] opacity-40"
+                >
+                    Strengthen
+                </button>
+            </div>
         </div>
     );
 }

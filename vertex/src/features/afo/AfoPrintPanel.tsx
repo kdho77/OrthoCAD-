@@ -2,13 +2,17 @@
 
 import { SliderField } from "@/components/ui/slider-field";
 import { runAfoShell } from "@/lib/geometry/afo/afo-engine";
+import { applyClinicalCast } from "@/lib/geometry/afo/cast";
+import { applyAfoCorrections, correctionContextFromAfo } from "@/lib/geometry/afo/corrections";
 import {
     AFO_EDGE_MM,
     AFO_EDGE_RANGE,
     AFO_FLARE_MM,
     AFO_FLARE_RANGE,
+    AFO_MATERIAL,
     AFO_THICKNESS_MM,
     AFO_THICKNESS_RANGE,
+    correctionsForSide,
     defaultAfoPrint,
 } from "@/lib/geometry/afo/defaults";
 import { evaluateAfoWarnings } from "@/lib/geometry/afo/warnings";
@@ -20,6 +24,7 @@ export function AfoPrintPanel() {
     const print = afo.print ?? defaultAfoPrint();
     const correctedMesh = useAfoStore((s) => s.correctedMesh);
     const castMesh = useAfoStore((s) => s.castMesh);
+    const sourceMesh = useAfoStore((s) => s.sourceMesh);
     const working = correctedMesh ?? castMesh;
     const progress = useAfoStore((s) => s.workerProgress);
     const lastError = useAfoStore((s) => s.lastError);
@@ -36,8 +41,19 @@ export function AfoPrintPanel() {
         setError(null);
         setProgress({ pct: 0, stage: "shell" });
         try {
+            const src = sourceMesh ?? working;
+            const includeShinBox = afo.method !== "printing_shell";
+            const casted = src ? applyClinicalCast(src, afo, undefined, { includeShinBox }) : null;
+            const positive =
+                casted != null
+                    ? applyAfoCorrections(casted.mesh, correctionsForSide(afo.corrections, afo.side), {
+                          ...correctionContextFromAfo(afo),
+                          anatomical: true,
+                      })
+                    : working;
+            if (!positive) return;
             const shell = await runAfoShell(
-                working,
+                positive,
                 afo.trimPoints.map((p) => p.vertexIndex),
                 {
                     thicknessMm: print.thicknessMm,
@@ -67,7 +83,7 @@ export function AfoPrintPanel() {
                 onChange={(v) => patchAfoState({ print: { ...print, thicknessMm: v } }, "afo-print")}
             />
             <SliderField
-                label="Edge"
+                label="Edge thickness"
                 value={print.edgeMm}
                 min={AFO_EDGE_RANGE[0]}
                 max={AFO_EDGE_RANGE[1]}
@@ -84,6 +100,16 @@ export function AfoPrintPanel() {
                 defaultValue={AFO_FLARE_MM}
                 onChange={(v) => patchAfoState({ print: { ...print, flareMm: v } }, "afo-print")}
             />
+            <label className="block text-[10px] text-muted-foreground">
+                Material
+                <input
+                    className="mt-1 h-7 w-full rounded border border-border bg-background px-2 text-foreground"
+                    value={print.material ?? AFO_MATERIAL}
+                    onChange={(e) =>
+                        patchAfoState({ print: { ...print, material: e.target.value } }, "afo-print")
+                    }
+                />
+            </label>
             <button
                 type="button"
                 onClick={() => void generate()}

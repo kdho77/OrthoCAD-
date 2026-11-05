@@ -6,6 +6,7 @@ import * as THREE from "three";
 import { AFO_DESIGN_MARKERS } from "@/lib/geometry/afo/defaults";
 import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
 import { isCloseClick } from "@/lib/geometry/afo/trim-loop";
+import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import { applyCameraViewPreset, type CameraViewControls } from "@/lib/geometry/viewport-side-layout";
 import { getAfoState, patchAfoState, refreshAfoWorkingMesh, useAfoStore } from "@/stores/afo-store";
 import { type CameraView, useDesignStore } from "@/stores/design-store";
@@ -161,11 +162,34 @@ export function AfoMarkerPlacement() {
             const current = useDesignStore.getState().design.afo ?? getAfoState();
             const next = current.trimPoints.slice();
             if (!next[drag]) return;
+            const point = { x: hit.point.x, y: hit.point.y, z: hit.point.z };
+            const snapped = nearestVertex(working, point);
             next[drag] = {
-                point: { x: hit.point.x, y: hit.point.y, z: hit.point.z },
-                vertexIndex: hit.index,
+                point: {
+                    x: working.positions[snapped.index * 3] ?? point.x,
+                    y: working.positions[snapped.index * 3 + 1] ?? point.y,
+                    z: working.positions[snapped.index * 3 + 2] ?? point.z,
+                },
+                vertexIndex: snapped.index,
             };
-            patchAfoState({ trimPoints: next, trimConfirmed: false }, "afo-trim-drag");
+            const fit = current.trimClosed
+                ? fitSurfaceSpline(
+                      working,
+                      next.map((p) => p.point),
+                  )
+                : null;
+            if (fit && !fit.ok) {
+                useAfoStore.getState().setLastError(fit.reasons.join(" "));
+                return;
+            }
+            patchAfoState(
+                {
+                    trimPoints: next,
+                    trimCurve: fit?.curve ?? current.trimCurve ?? [],
+                    trimConfirmed: false,
+                },
+                "afo-trim-drag",
+            );
         };
 
         const onUp = () => setDragging(null);

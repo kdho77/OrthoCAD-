@@ -13,5 +13,6 @@ export * from "./self-intersection";
 export * from "./shell";
 export * from "./synthetic-leg";
 export * from "./trim-loop";
+export * from "./trim-spline";
 export * from "./types";
 export * from "./warnings";
