@@ -2,9 +2,8 @@ import { z } from "zod";
 
 const envSchema = z.object({
     ORTHOCAD_API_BASE: z.string().url().optional(),
+    /** Dedicated CAD-operator integration credential (not the VO2 order connector key). */
     ORTHOCAD_MCP_API_KEY: z.string().min(1).optional(),
-    /** Supabase access token or other Bearer accepted by vertex protectedProcedure. */
-    ORTHOCAD_MCP_TRPC_BEARER: z.string().min(1).optional(),
 });
 
 export type OrthocadMcpConfig = z.infer<typeof envSchema> & {
@@ -22,26 +21,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OrthocadMcpCon
     return { ...parsed.data, apiBase, trpcUrl };
 }
 
-export function requireIntegrationKey(config: OrthocadMcpConfig): string {
+export function requireCadOperatorKey(config: OrthocadMcpConfig): string {
     const key = config.ORTHOCAD_MCP_API_KEY?.trim();
     if (!key) {
         throw new Error(
-            "ORTHOCAD_MCP_API_KEY is required for integration REST tools (Bearer ocad_* integration key).",
+            "ORTHOCAD_MCP_API_KEY is required — issue a dedicated CAD-operator integration credential " +
+                "for bot e11f63f7 (not the VO2 order integration key).",
         );
     }
     if (/\s/.test(key)) {
         throw new Error("ORTHOCAD_MCP_API_KEY must not contain whitespace.");
     }
+    if (!key.startsWith("ocad_")) {
+        throw new Error("ORTHOCAD_MCP_API_KEY must be an OrthoCAD integration key (ocad_… prefix).");
+    }
     return key;
 }
 
-export function requireTrpcBearer(config: OrthocadMcpConfig): string {
-    const token = config.ORTHOCAD_MCP_TRPC_BEARER?.trim();
-    if (!token) {
-        throw new Error(
-            "ORTHOCAD_MCP_TRPC_BEARER is required for manufacturing and design tRPC tools " +
-                "(Supabase session access token for a licensed OrthoCAD user).",
-        );
-    }
-    return token;
-}
+/** @deprecated Use requireCadOperatorKey */
+export const requireIntegrationKey = requireCadOperatorKey;

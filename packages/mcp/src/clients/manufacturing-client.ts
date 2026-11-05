@@ -1,6 +1,7 @@
 /**
- * Mirrors vertex/src/features/exports/export-service.ts manufacturing tRPC usage.
- * CAD mesh build stays in the OrthoCAD browser — callers must upload STL first.
+ * Manufacturing wrap: tRPC `manufacturing.*` on main → `generateSolid` → Python `/manufacture`
+ * (see vertex/server/src/lib/manufacturing-client.ts). Phase A does not depend on open PR #263
+ * (Apex materials / VertexSlice leader path). CAD mesh build stays in the OrthoCAD browser.
  */
 
 import { createTRPCClient, httpBatchLink } from "@trpc/client";
@@ -33,7 +34,8 @@ export type OrthocadMcpTrpcProxy = {
 
 export interface ManufacturingClientOptions {
     trpcUrl: string;
-    bearerToken: string;
+    /** Dedicated CAD-operator integration key (`Authorization: Bearer ocad_…`). */
+    cadOperatorKey: string;
     fetchImpl?: typeof fetch;
 }
 
@@ -44,7 +46,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
                 url: options.trpcUrl,
                 transformer: superjson,
                 headers: () => ({
-                    authorization: `Bearer ${options.bearerToken}`,
+                    authorization: `Bearer ${options.cadOperatorKey}`,
                 }),
                 fetch: options.fetchImpl,
             }),

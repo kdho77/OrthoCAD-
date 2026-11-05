@@ -37,21 +37,23 @@ export const getExportDownloadInputSchema = z.object({
     production_id: z.string().uuid(),
 });
 
-const exportedFileSchema = z.object({
+const voHandoffFileSchema = z.object({
     side: z.string().min(1),
     machine: z.string().min(1),
     format: z.string().min(1),
     material: z.string().min(1),
     download_url: z.string().url(),
+    expires_at: z.string().min(1),
+    content_type: z.string().min(1),
+    filename: z.string().min(1),
 });
 
 export const buildDesignExportedPayloadInputSchema = z.object({
-    id: z.string().min(1),
     design_id: z.string().uuid(),
     tenant_id: z.string().uuid(),
-    source: integrationSourceSchema,
+    source: z.literal("vo2"),
     external_order_id: z.string().trim().min(1).max(200),
-    files: z.array(exportedFileSchema).min(1),
+    files: z.array(voHandoffFileSchema).min(1),
 });
 
 /** MCP tool catalog metadata (Phase A v0). */
@@ -59,40 +61,45 @@ export const MCP_TOOL_DEFINITIONS = [
     {
         name: "get_design",
         description:
-            "Fetch an integration design record by design_id (integration REST GET; Phase B server route).",
+            "Fetch a design by design_id. Auth: CAD-operator Bearer key. Integration GET route is Phase B residual.",
         inputSchema: getDesignInputSchema,
     },
     {
         name: "list_designs_by_order",
-        description: "List designs for an external order (integration REST GET; Phase B server route).",
+        description:
+            "List designs for external_order_id + tenant_id + source. Auth: CAD-operator key. GET route Phase B.",
         inputSchema: listDesignsByOrderInputSchema,
     },
     {
         name: "get_design_params",
         description:
-            "Load design document / settingsJson for production (tRPC design.get; requires ORTHOCAD_MCP_TRPC_BEARER).",
+            "Design document / settingsJson for production via documented manufacturing tRPC wrap. Auth: CAD-operator key only.",
         inputSchema: getDesignParamsInputSchema,
     },
     {
         name: "prepare_manufacturing_stl_upload",
         description:
-            "Signed URL for uploading a finalized STL. CAD build is client-side — STL must already exist in OrthoCAD before upload.",
+            "Signed URL to upload finalized STL (CAD build is client-side in OrthoCAD). Auth: CAD-operator key.",
         inputSchema: prepareManufacturingStlUploadInputSchema,
     },
     {
         name: "generate_gcode",
         description:
-            "Run manufacturing.generateSolid after STL is in storage (stl_storage_key). Does not build mesh from scan.",
+            "Production G-code on **main today**: tRPC manufacturing.generateSolid → Python /manufacture. Requires stl_storage_key. " +
+            "Open PR #263 (Apex materials / VertexSlice leader) is **not** a Phase A dependency — residual only.",
         inputSchema: generateGcodeInputSchema,
     },
     {
         name: "get_export_download",
-        description: "Signed download URL for stored G-code (manufacturing.getGcodeDownloadUrl).",
+        description:
+            "Signed G-code download URL (manufacturing.getGcodeDownloadUrl). Auth: CAD-operator key.",
         inputSchema: getExportDownloadInputSchema,
     },
     {
         name: "build_design_exported_payload",
-        description: "Build design.exported VO handoff JSON (files + ids only; no order status writes).",
+        description:
+            "VO upload handoff JSON: design_id, external_order_id, tenant_id, source vo2, files[] with download metadata. " +
+            "Does not write VO order status.",
         inputSchema: buildDesignExportedPayloadInputSchema,
     },
 ] as const;
@@ -127,6 +134,7 @@ function zodFieldToJson(field: z.ZodTypeAny): Record<string, unknown> {
     }
     if (field instanceof z.ZodNumber) return { type: "number" };
     if (field instanceof z.ZodEnum) return { type: "string", enum: field._def.values };
+    if (field instanceof z.ZodLiteral) return { type: "string", enum: [field.value] };
     if (field instanceof z.ZodArray) {
         return { type: "array", items: zodFieldToJson(field._def.type as z.ZodTypeAny) };
     }

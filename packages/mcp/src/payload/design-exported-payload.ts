@@ -1,49 +1,54 @@
 /**
- * VO handoff payload aligned with vertex/server/src/webhooks/design-exported.ts
- * (buildDesignExportedEvent). Kept in-repo duplicate to avoid pulling the full server graph into MCP tsc.
+ * VO upload-to-order handoff for `build_design_exported_payload`.
+ * OrthoCAD never writes VO order status. Shape is MCP/VO-specific (not the outbound webhook envelope).
  */
 
-export interface ExportedFile {
+export interface VoHandoffFile {
     side: string;
     machine: string;
     format: string;
     material: string;
     download_url: string;
+    expires_at: string;
+    content_type: string;
+    filename: string;
 }
 
-export interface DesignExportedEvent {
-    id: string;
-    type: "design.exported";
-    tenant_id: string;
+/** Exact VO handoff object returned by the MCP tool. */
+export interface VoDesignExportedHandoff {
     design_id: string;
-    source: "vo2" | "orthocloud";
     external_order_id: string;
-    files: ExportedFile[];
+    tenant_id: string;
+    source: "vo2";
+    files: VoHandoffFile[];
 }
 
 export interface BuildDesignExportedPayloadInput {
-    id: string;
     design_id: string;
-    tenant_id: string;
-    source: "vo2" | "orthocloud";
     external_order_id: string;
-    files: ExportedFile[];
+    tenant_id: string;
+    source: "vo2";
+    files: VoHandoffFile[];
 }
 
-export function buildDesignExportedPayload(input: BuildDesignExportedPayloadInput): DesignExportedEvent {
+export function buildDesignExportedPayload(input: BuildDesignExportedPayloadInput): VoDesignExportedHandoff {
+    if (input.source !== "vo2") {
+        throw new Error('source must be "vo2" for VO handoff payloads');
+    }
     return {
-        id: input.id,
-        type: "design.exported",
-        tenant_id: input.tenant_id,
         design_id: input.design_id,
-        source: input.source,
         external_order_id: input.external_order_id,
+        tenant_id: input.tenant_id,
+        source: "vo2",
         files: input.files.map((file) => ({
             side: file.side,
             machine: file.machine,
             format: file.format,
             material: file.material,
             download_url: file.download_url,
+            expires_at: file.expires_at,
+            content_type: file.content_type,
+            filename: file.filename,
         })),
     };
 }

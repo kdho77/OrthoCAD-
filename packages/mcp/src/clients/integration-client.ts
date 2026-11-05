@@ -1,5 +1,5 @@
 /**
- * Thin HTTP client for POST /api/integrations/v1/* (Bearer integration key).
+ * Thin HTTP client for integration REST (Bearer **CAD-operator** key — not the VO2 connector key).
  * Read helpers target documented GET routes — Phase B server work at
  * vertex/server/src/routers/integrations/http.ts and service.ts (getDesignForCredential).
  */

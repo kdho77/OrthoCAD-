@@ -17,6 +17,12 @@ describe("OrthoCAD MCP tool schemas", () => {
         expect(new Set(names).size).toBe(names.length);
     });
 
+    test("generate_gcode description references main manufacture path and #263 residual", () => {
+        const tool = MCP_TOOL_DEFINITIONS.find((t) => t.name === "generate_gcode");
+        expect(tool?.description).toMatch(/\/manufacture/);
+        expect(tool?.description).toMatch(/#263/);
+    });
+
     test("each tool schema accepts a minimal valid payload", () => {
         const samples: Record<string, unknown> = {
             get_design: { design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
@@ -33,7 +39,6 @@ describe("OrthoCAD MCP tool schemas", () => {
             },
             get_export_download: { production_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
             build_design_exported_payload: {
-                id: "evt-1",
                 design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                 tenant_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
                 source: "vo2",
@@ -45,6 +50,9 @@ describe("OrthoCAD MCP tool schemas", () => {
                         format: "gcode",
                         material: "TPU",
                         download_url: "https://files.example.test/left.gcode?exp=1&sig=abc",
+                        expires_at: "2026-11-06T00:00:00.000Z",
+                        content_type: "application/octet-stream",
+                        filename: "left.gcode",
                     },
                 ],
             },

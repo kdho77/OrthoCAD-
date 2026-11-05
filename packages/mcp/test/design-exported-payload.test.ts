@@ -3,9 +3,8 @@ import { describe, expect, test } from "@rstest/core";
 import { buildDesignExportedPayload } from "../src/payload/design-exported-payload.js";
 
 describe("build_design_exported_payload", () => {
-    test("matches design.exported webhook shape and excludes order status", () => {
+    test("returns exact VO handoff keys and required file metadata", () => {
         const payload = buildDesignExportedPayload({
-            id: "evt-phase-a",
             design_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
             tenant_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
             source: "vo2",
@@ -17,14 +16,20 @@ describe("build_design_exported_payload", () => {
                     format: "gcode",
                     material: "TPU",
                     download_url: "https://files.example.test/gcode/left?exp=99&sig=deadbeef",
+                    expires_at: "2026-11-06T12:00:00.000Z",
+                    content_type: "application/octet-stream",
+                    filename: "insole-left.gcode",
                 },
             ],
         });
 
-        expect(payload.type).toBe("design.exported");
-        expect(payload.design_id).toBe("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
-        expect(payload.tenant_id).toBe("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
-        expect(payload.external_order_id).toBe("order-42");
+        expect(Object.keys(payload).sort()).toEqual([
+            "design_id",
+            "external_order_id",
+            "files",
+            "source",
+            "tenant_id",
+        ]);
         expect(payload.source).toBe("vo2");
         expect(payload.files[0]).toEqual({
             side: "left",
@@ -32,8 +37,12 @@ describe("build_design_exported_payload", () => {
             format: "gcode",
             material: "TPU",
             download_url: "https://files.example.test/gcode/left?exp=99&sig=deadbeef",
+            expires_at: "2026-11-06T12:00:00.000Z",
+            content_type: "application/octet-stream",
+            filename: "insole-left.gcode",
         });
         expect(Object.hasOwn(payload, "status")).toBe(false);
+        expect(Object.hasOwn(payload, "type")).toBe(false);
         expect(JSON.stringify(payload)).not.toMatch(/order_status|file_ready|in_production/i);
     });
 });
