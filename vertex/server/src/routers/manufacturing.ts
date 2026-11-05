@@ -49,6 +49,13 @@ const manufactureInputSchema = z.object({
     grindingStyle: grindingStyleSchema.optional(),
     printRecipe: printRecipeV1Schema.optional(),
     fileName: z.string().max(200).optional(),
+    material: z
+        .string()
+        .trim()
+        .min(1)
+        .max(80)
+        .regex(/^[\w .+\-/%()]+$/)
+        .optional(),
 });
 
 const uploadStlInputSchema = z.object({
@@ -263,6 +270,7 @@ export const manufacturingRouter = router({
                     perimeters: input.perimeters,
                     grinding_style: input.grindingStyle,
                     print_recipe: resolvedPrintRecipe ? printRecipeToSnake(resolvedPrintRecipe) : undefined,
+                    ...(input.material ? { material: input.material } : {}),
                 });
 
                 const outputType = pythonResult.output_type ?? input.outputType;
@@ -318,6 +326,7 @@ export const manufacturingRouter = router({
                             presetId: input.presetId,
                             beltAngleDeg: input.beltAngleDeg,
                             grindingStyle: input.grindingStyle?.type ?? null,
+                            material: input.material ?? null,
                             side: input.side ?? null,
                             layerHeightMm: input.layerHeightMm ?? null,
                             infillDensity: resolvedPrintRecipe ? null : (input.infillDensity ?? null),

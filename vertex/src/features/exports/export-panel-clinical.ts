@@ -3,6 +3,7 @@
 import {
     type ExportOutcome,
     exportGcode,
+    type GcodeExportStep,
     type GrindingStyleInput,
     generateHybridGcode,
 } from "@/features/exports/export-service";
@@ -31,6 +32,20 @@ export function defaultPrinterPresetForMethod(method: ProductionMethod): Printer
     return presets.find((p) => p.beltAngleDeg) ?? presets[0];
 }
 
+/** Filament choices for Export G-code. The first match on the printer preset is the default. */
+export const CLINICAL_GCODE_MATERIALS = ["TPU 95A", "TPU 90A", "TPU 85A"] as const;
+
+export function defaultClinicalGcodeMaterial(method: ProductionMethod): string {
+    return defaultPrinterPresetForMethod(method)?.material ?? "TPU 95A";
+}
+
+export function clinicalGcodeMaterialOptions(method: ProductionMethod): string[] {
+    const preset = defaultClinicalGcodeMaterial(method);
+    const options: string[] = [...CLINICAL_GCODE_MATERIALS];
+    if (!options.includes(preset)) options.unshift(preset);
+    return options;
+}
+
 export function grindingStyleFromViewerWall(wallStyle: ViewerSettings["wallStyle"]): GrindingStyleInput {
     const style = resolveViewerWallStyle(wallStyle);
     if (style === "straight") return { type: "straight", angle_degrees: 8 };
@@ -54,15 +69,20 @@ export async function exportClinicalPrinterGcode(input: {
     side: Side;
     design: DesignState;
     wallStyle?: Parameters<typeof resolveViewerWallStyle>[0];
+    /** Selected filament. Defaults to the printer preset material from Print. */
+    material?: string;
+    onProgress?: (step: GcodeExportStep) => void;
 }): Promise<ExportOutcome> {
     const preset = defaultPrinterPresetForMethod(input.design.method);
     if (!preset) {
         return { ok: false, reason: "No printer preset for this production method" };
     }
+    const material = input.material?.trim() || defaultClinicalGcodeMaterial(input.design.method);
     const overrides = camOverridesForClinicalExport(input.design, preset);
     const grindingStyle = grindingStyleFromViewerWall(input.wallStyle);
+    const options = { material, onProgress: input.onProgress };
     if (preset.beltAngleDeg) {
-        return generateHybridGcode(input.side, preset, grindingStyle, overrides);
+        return generateHybridGcode(input.side, preset, grindingStyle, overrides, options);
     }
-    return exportGcode(input.side, preset, overrides);
+    return exportGcode(input.side, preset, overrides, options);
 }
