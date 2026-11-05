@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
+    gyroidInfillPctForHardness,
     isGyroidManufacturingPreset,
     migratePrintRecipe,
     PrintRecipeProfileRequiredError,
@@ -24,6 +25,8 @@ import {
     uploadAsset,
 } from "../lib/storage.js";
 import { assertActiveLicense, getUserTokenBalance, requireSupabaseAdmin } from "../lib/supabase-db.js";
+import { readUpstreamErrorText } from "../lib/upstream-error.js";
+import { manufacturingBackendForOutput, sliceWithVertexSlice } from "../lib/vertexslice-client.js";
 import { protectedProcedure, rateLimitedProcedure, router } from "../trpc.js";
 
 const HYBRID_GCODE_COST = 3;
@@ -57,6 +60,27 @@ const manufactureInputSchema = z.object({
         .regex(/^[\w .+\-/%()]+$/)
         .optional(),
 });
+
+async function downloadManufacturingStl(url: string): Promise<Uint8Array> {
+    let response: Response;
+    try {
+        response = await fetch(url);
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Could not download manufacturing STL: ${message}`,
+        });
+    }
+    if (!response.ok) {
+        const detail = await readUpstreamErrorText(response);
+        throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Could not download manufacturing STL (${response.status}): ${detail}`,
+        });
+    }
+    return new Uint8Array(await response.arrayBuffer());
+}
 
 const uploadStlInputSchema = z.object({
     side: z.enum(["left", "right"]),
@@ -257,29 +281,67 @@ export const manufacturingRouter = router({
                     );
                 }
 
-                const pythonResult = await callManufacture({
-                    job_id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                    design_id: input.designId ?? "adhoc",
-                    preset_id: input.presetId,
-                    stl_url: stlUrl,
-                    output_type: input.outputType,
-                    belt_angle_deg: input.beltAngleDeg,
-                    side: input.side ?? null,
-                    layer_height_mm: input.layerHeightMm,
-                    infill_density: resolvedPrintRecipe ? undefined : input.infillDensity,
-                    perimeters: input.perimeters,
-                    grinding_style: input.grindingStyle,
-                    print_recipe: resolvedPrintRecipe ? printRecipeToSnake(resolvedPrintRecipe) : undefined,
-                    ...(input.material ? { material: input.material } : {}),
-                });
+                const jobStamp = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+                let outputBytes: Buffer;
+                let outputType: "gcode" | "stl";
+                let jobId: string;
+                let inlineGcode: string | undefined;
+                let inlineStl: string | undefined;
 
-                const outputType = pythonResult.output_type ?? input.outputType;
+                if (manufacturingBackendForOutput(input.outputType) === "vertexslice") {
+                    if (!resolvedPrintRecipe) {
+                        throw new TRPCError({
+                            code: "BAD_REQUEST",
+                            message:
+                                "Printer G-code requires PrintRecipe hardness so gyroid infill stays on the locked profile.",
+                        });
+                    }
+                    const infillDensityPct = gyroidInfillPctForHardness(
+                        resolvedPrintRecipe.defaultHardness,
+                        resolvedPrintRecipe.hardnessToInfillPct,
+                    );
+                    const stlBytes = await downloadManufacturingStl(stlUrl);
+                    const gcode = await sliceWithVertexSlice({
+                        profileId: input.presetId,
+                        material: input.material ?? "",
+                        model: stlBytes,
+                        filename: `${input.side ?? "model"}.stl`,
+                        infillDensityPct,
+                    });
+                    outputBytes = Buffer.from(gcode, "utf-8");
+                    outputType = "gcode";
+                    jobId = `vs_${jobStamp}`;
+                    inlineGcode = gcode;
+                } else {
+                    const pythonResult = await callManufacture({
+                        job_id: jobStamp,
+                        design_id: input.designId ?? "adhoc",
+                        preset_id: input.presetId,
+                        stl_url: stlUrl,
+                        output_type: input.outputType,
+                        belt_angle_deg: input.beltAngleDeg,
+                        side: input.side ?? null,
+                        layer_height_mm: input.layerHeightMm,
+                        infill_density: resolvedPrintRecipe ? undefined : input.infillDensity,
+                        perimeters: input.perimeters,
+                        grinding_style: input.grindingStyle,
+                        print_recipe: resolvedPrintRecipe
+                            ? printRecipeToSnake(resolvedPrintRecipe)
+                            : undefined,
+                        ...(input.material ? { material: input.material } : {}),
+                    });
+                    outputType = pythonResult.output_type ?? input.outputType;
+                    inlineGcode = pythonResult.gcode;
+                    inlineStl = pythonResult.stl_base64;
+                    jobId = pythonResult.job_id ?? jobStamp;
+                    outputBytes =
+                        outputType === "gcode"
+                            ? Buffer.from(pythonResult.gcode ?? "", "utf-8")
+                            : Buffer.from(pythonResult.stl_base64 ?? "", "base64");
+                }
+
                 const isGcode = outputType === "gcode";
                 const exportFormat = isGcode ? "gcode" : "stl";
-
-                const outputBytes = isGcode
-                    ? Buffer.from(pythonResult.gcode ?? "", "utf-8")
-                    : Buffer.from(pythonResult.stl_base64 ?? "", "base64");
 
                 if (outputBytes.length === 0) {
                     throw new TRPCError({
@@ -318,7 +380,7 @@ export const manufacturingRouter = router({
                         p_layer_height_mm: input.layerHeightMm ?? null,
                         p_is_gcode: isGcode,
                         p_storage_key: isGcode ? storageKey : null,
-                        p_job_id: pythonResult.job_id,
+                        p_job_id: jobId,
                         p_ip: ctx.ip,
                         p_metadata: {
                             kind: "manufacturing_hybrid",
@@ -327,6 +389,7 @@ export const manufacturingRouter = router({
                             beltAngleDeg: input.beltAngleDeg,
                             grindingStyle: input.grindingStyle?.type ?? null,
                             material: input.material ?? null,
+                            slicer: isGcode ? "vertexslice" : "python",
                             side: input.side ?? null,
                             layerHeightMm: input.layerHeightMm ?? null,
                             infillDensity: resolvedPrintRecipe ? null : (input.infillDensity ?? null),
@@ -392,8 +455,8 @@ export const manufacturingRouter = router({
                     outputType,
                     ...result,
                     downloadUrl,
-                    gcode: isGcode && !downloadUrl ? pythonResult.gcode : undefined,
-                    stlBase64: !isGcode && !downloadUrl ? pythonResult.stl_base64 : undefined,
+                    gcode: isGcode && !downloadUrl ? inlineGcode : undefined,
+                    stlBase64: !isGcode && !downloadUrl ? inlineStl : undefined,
                     gcodeDownloadUrl: isGcode ? downloadUrl : undefined,
                 };
             } catch (err) {
