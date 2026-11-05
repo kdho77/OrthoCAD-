@@ -17,10 +17,11 @@ describe("OrthoCAD MCP tool schemas", () => {
         expect(new Set(names).size).toBe(names.length);
     });
 
-    test("generate_gcode description references main manufacture path and #263 residual", () => {
+    test("generate_gcode description references main manufacture path and merged #263 on main", () => {
         const tool = MCP_TOOL_DEFINITIONS.find((t) => t.name === "generate_gcode");
         expect(tool?.description).toMatch(/\/manufacture/);
-        expect(tool?.description).toMatch(/#263/);
+        expect(tool?.description).toMatch(/70e33f8a/);
+        expect(tool?.description).not.toMatch(/open PR #263/i);
     });
 
     test("each tool schema accepts a minimal valid payload", () => {

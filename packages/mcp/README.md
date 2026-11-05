@@ -77,7 +77,7 @@ STL/G-code flow: operator builds STL in OrthoCAD UI → `prepare_manufacturing_s
 
 ### `generate_gcode` / production path
 
-Phase A targets **current production on `main`**: `manufacturing.generateSolid` → `callManufacture` → Python **`/manufacture`**. Open **PR #263** (Apex materials + leader / VertexSlice) is noted as a **residual**; Phase A does **not** depend on #263 merging.
+Phase A targets **production on `main`**: `manufacturing.generateSolid` → `callManufacture` → Python **`/manufacture`**. **PR #263** merged to `main` as squash **`70e33f8a`** (2026-11-05 America/Boise): Apex materials, VertexSlice locked profiles, and founder-locked leader v2 on the printer G-code path are **on main**. Phase A MCP tools stay on the documented `generateSolid` wrap — no new VertexSlice client work in this package.
 
 ## VO handoff payload (`build_design_exported_payload`)
 
@@ -112,7 +112,7 @@ OrthoCAD never writes VO order status.
 2. MCP server starts: `ORTHOCAD_MCP_API_KEY=ocad_… ORTHOCAD_API_BASE=… node dist/cli.js` (stdio; no key in logs).
 3. Tool list includes seven tools (`get_design` … `build_design_exported_payload`).
 4. `build_design_exported_payload` with sample files returns exact VO shape above (no `status` / order fields).
-5. `generate_gcode` documentation references main `/manufacture` path, not #263.
+5. `generate_gcode` documentation references main `/manufacture` path (VertexSlice/Apex/leader via #263 on main).
 
 ## Tests
 
@@ -127,4 +127,4 @@ npm test -- packages/mcp/test
 - **GET** integration routes for `get_design` / `list_designs_by_order`.
 - **Founder** decision: bot **service-account tRPC** if CAD-operator Bearer is insufficient server-side.
 - **Headless CAD** from scan.
-- **PR #263** VertexSlice leader path (track separately from Phase A).
+- **VertexSlice/Apex/leader on main** (#263 merged `70e33f8a`) — Phase A does not add separate MCP VertexSlice tooling beyond `generate_gcode` → `generateSolid`.

@@ -1,7 +1,8 @@
 /**
  * Manufacturing wrap: tRPC `manufacturing.*` on main → `generateSolid` → Python `/manufacture`
- * (see vertex/server/src/lib/manufacturing-client.ts). Phase A does not depend on open PR #263
- * (Apex materials / VertexSlice leader path). CAD mesh build stays in the OrthoCAD browser.
+ * (see vertex/server/src/lib/manufacturing-client.ts). PR #263 merged to main (70e33f8a): Apex materials,
+ * VertexSlice locked profiles, leader v2 on the printer G-code path. Phase A calls generateSolid only.
+ * CAD mesh build stays in the OrthoCAD browser.
  */
 
 import { createTRPCClient, httpBatchLink } from "@trpc/client";

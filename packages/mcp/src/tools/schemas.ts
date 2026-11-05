@@ -86,7 +86,7 @@ export const MCP_TOOL_DEFINITIONS = [
         name: "generate_gcode",
         description:
             "Production G-code on **main today**: tRPC manufacturing.generateSolid → Python /manufacture. Requires stl_storage_key. " +
-            "Open PR #263 (Apex materials / VertexSlice leader) is **not** a Phase A dependency — residual only.",
+            "Main path: manufacturing.generateSolid → Python /manufacture. PR #263 merged (70e33f8a): Apex + VertexSlice profiles + leader v2 on main; Phase A uses this wrap only.",
         inputSchema: generateGcodeInputSchema,
     },
     {
