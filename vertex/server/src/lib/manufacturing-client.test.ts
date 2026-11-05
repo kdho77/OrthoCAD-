@@ -19,7 +19,7 @@ const PAYLOAD: ManufacturePayload = {
     output_type: "gcode",
     belt_angle_deg: 45,
     side: "left",
-    material: "TPU 95A",
+    material: "apex_core",
 };
 
 const OK_BODY = JSON.stringify({
@@ -55,7 +55,7 @@ describe("manufacturing service route", () => {
                 });
             }
             const sent = JSON.parse(String(init?.body)) as { material?: string };
-            expect(sent.material).toBe("TPU 95A");
+            expect(sent.material).toBe("apex_core");
             return new Response(OK_BODY, { status: 200, headers: { "content-type": "application/json" } });
         });
         process.env.MANUFACTURING_SERVICE_URL = "http://manufacturing.test/manufacture";

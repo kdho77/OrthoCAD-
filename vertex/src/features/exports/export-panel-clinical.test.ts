@@ -55,19 +55,46 @@ describe("export panel clinical gcode", () => {
         expect(preset.id).toBe("apex-belt-v2");
         expect(preset.beltAngleDeg).toBe(45);
         expect(grinding.type).toBe("rounded");
-        const options = hybridSpy.mock.calls[0][4] as { material?: string };
-        expect(options.material).toBe("TPU 95A");
+        const options = hybridSpy.mock.calls[0][4] as {
+            apexMaterialId?: string;
+            includeLeaderBlock?: boolean;
+            material?: string;
+        };
+        expect(options.apexMaterialId).toBe("ApexCore");
+        expect(options.includeLeaderBlock).toBe(true);
+        expect(options.material).toBeUndefined();
     });
 
-    test("selected material is passed into the slice request", async () => {
+    test("Apex Light is passed through and Bounce is refused before slicing", async () => {
         const res = await exportClinicalPrinterGcode({
             side: "left",
             design: useDesignStore.getState().design,
             wallStyle: "straight",
-            material: "TPU 85A",
+            apexMaterialId: "ApexLight",
         });
         expect(res.ok).toBe(true);
-        const options = hybridSpy.mock.calls[0][4] as { material?: string };
-        expect(options.material).toBe("TPU 85A");
+        const options = hybridSpy.mock.calls[0][4] as {
+            apexMaterialId?: string;
+            includeLeaderBlock?: boolean;
+        };
+        expect(options.apexMaterialId).toBe("ApexLight");
+        expect(options.includeLeaderBlock).toBe(true);
+
+        const blocked = await exportClinicalPrinterGcode({
+            side: "left",
+            design: useDesignStore.getState().design,
+            apexMaterialId: "ApexBounce",
+        });
+        expect(blocked.ok).toBe(false);
+        if (!blocked.ok) expect(blocked.reason).toMatch(/approved/i);
+        expect(hybridSpy).toHaveBeenCalledTimes(1);
+
+        const forge = await exportClinicalPrinterGcode({
+            side: "left",
+            design: useDesignStore.getState().design,
+            apexMaterialId: "ApexForge",
+        });
+        expect(forge.ok).toBe(false);
+        expect(hybridSpy).toHaveBeenCalledTimes(1);
     });
 });

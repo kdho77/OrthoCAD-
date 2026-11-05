@@ -1,6 +1,12 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import {
+    type ApexPrintMaterialId,
+    apexPrintMaterialById,
+    DEFAULT_APEX_PRINT_MATERIAL_ID,
+    isApexPrintMaterialExportReady,
+} from "@/features/exports/apex-print-material";
+import {
     type ExportOutcome,
     exportGcode,
     type GcodeExportStep,
@@ -32,18 +38,8 @@ export function defaultPrinterPresetForMethod(method: ProductionMethod): Printer
     return presets.find((p) => p.beltAngleDeg) ?? presets[0];
 }
 
-/** Filament choices for Export G-code. The first match on the printer preset is the default. */
-export const CLINICAL_GCODE_MATERIALS = ["TPU 95A", "TPU 90A", "TPU 85A"] as const;
-
-export function defaultClinicalGcodeMaterial(method: ProductionMethod): string {
-    return defaultPrinterPresetForMethod(method)?.material ?? "TPU 95A";
-}
-
-export function clinicalGcodeMaterialOptions(method: ProductionMethod): string[] {
-    const preset = defaultClinicalGcodeMaterial(method);
-    const options: string[] = [...CLINICAL_GCODE_MATERIALS];
-    if (!options.includes(preset)) options.unshift(preset);
-    return options;
+export function defaultClinicalGcodeMaterial(): ApexPrintMaterialId {
+    return DEFAULT_APEX_PRINT_MATERIAL_ID;
 }
 
 export function grindingStyleFromViewerWall(wallStyle: ViewerSettings["wallStyle"]): GrindingStyleInput {
@@ -69,18 +65,29 @@ export async function exportClinicalPrinterGcode(input: {
     side: Side;
     design: DesignState;
     wallStyle?: Parameters<typeof resolveViewerWallStyle>[0];
-    /** Selected filament. Defaults to the printer preset material from Print. */
-    material?: string;
+    /** Apex product. Defaults to Apex Core. Bounce and Forge are refused. */
+    apexMaterialId?: ApexPrintMaterialId;
+    /** Belt G-code adds the sacrificial leader before the slicer. Default on. */
+    includeLeaderBlock?: boolean;
     onProgress?: (step: GcodeExportStep) => void;
 }): Promise<ExportOutcome> {
     const preset = defaultPrinterPresetForMethod(input.design.method);
     if (!preset) {
         return { ok: false, reason: "No printer preset for this production method" };
     }
-    const material = input.material?.trim() || defaultClinicalGcodeMaterial(input.design.method);
+    const apexMaterialId = input.apexMaterialId ?? defaultClinicalGcodeMaterial();
+    if (!isApexPrintMaterialExportReady(apexMaterialId)) {
+        const reason =
+            apexPrintMaterialById(apexMaterialId).disabledReason ?? "Material not available for export";
+        return { ok: false, reason };
+    }
     const overrides = camOverridesForClinicalExport(input.design, preset);
     const grindingStyle = grindingStyleFromViewerWall(input.wallStyle);
-    const options = { material, onProgress: input.onProgress };
+    const options = {
+        apexMaterialId,
+        includeLeaderBlock: input.includeLeaderBlock !== false,
+        onProgress: input.onProgress,
+    };
     if (preset.beltAngleDeg) {
         return generateHybridGcode(input.side, preset, grindingStyle, overrides, options);
     }
