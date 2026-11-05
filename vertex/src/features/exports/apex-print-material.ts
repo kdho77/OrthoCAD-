@@ -12,6 +12,10 @@ export type VertexSliceMaterialId = "apex_core" | "apex_light" | "apex_forge" | 
 
 export { APEX_V2_INSOLE_LOCKED_PROFILE_ID };
 
+/** VertexSlice applies nozzle temps per material id; OrthoCAD sends material + locked profile only. */
+export const APEX_CORE_VERTEX_SLICE_NOZZLE_TEMP_C = 225;
+export const APEX_FORGE_VERTEX_SLICE_NOZZLE_TEMP_C = 245;
+
 export interface ApexPrintMaterialOption {
     id: ApexPrintMaterialId;
     label: string;
@@ -19,6 +23,8 @@ export interface ApexPrintMaterialOption {
     vertexSliceMaterial: VertexSliceMaterialId;
     /** Secondary QC text. Empty until that product's settings are approved. */
     shoreLabel: string;
+    /** Expected VertexSlice nozzle temp (°C) when set. */
+    vertexSliceNozzleTempC?: number;
     enabled: boolean;
     disabledReason?: string;
 }
@@ -26,8 +32,9 @@ export interface ApexPrintMaterialOption {
 const SETTINGS_NOT_APPROVED = "Disabled until print settings are approved";
 
 /**
- * Apex Light and Apex Core share the locked process profile.
- * Bounce and Forge stay visible and disabled until settings are approved.
+ * Apex Light, Apex Core, and Apex Forge share the locked process profile.
+ * Forge matches Core except VertexSlice nozzle temp (245°C vs 225°C).
+ * Bounce stays visible and disabled until settings are approved.
  * ApexComfort is not a fifth product: it uses Apex Core's locked settings.
  */
 export const APEX_PRINT_MATERIAL_OPTIONS: readonly ApexPrintMaterialOption[] = [
@@ -45,6 +52,7 @@ export const APEX_PRINT_MATERIAL_OPTIONS: readonly ApexPrintMaterialOption[] = [
         lockedProfileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
         vertexSliceMaterial: "apex_core",
         shoreLabel: "Shore 95A",
+        vertexSliceNozzleTempC: APEX_CORE_VERTEX_SLICE_NOZZLE_TEMP_C,
         enabled: true,
     },
     {
@@ -61,9 +69,9 @@ export const APEX_PRINT_MATERIAL_OPTIONS: readonly ApexPrintMaterialOption[] = [
         label: "Apex Forge",
         lockedProfileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
         vertexSliceMaterial: "apex_forge",
-        shoreLabel: "",
-        enabled: false,
-        disabledReason: SETTINGS_NOT_APPROVED,
+        shoreLabel: "Shore 95A",
+        vertexSliceNozzleTempC: APEX_FORGE_VERTEX_SLICE_NOZZLE_TEMP_C,
+        enabled: true,
     },
 ] as const;
 

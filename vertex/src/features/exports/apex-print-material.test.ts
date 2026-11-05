@@ -6,6 +6,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ApexPrintMaterialPicker } from "@/features/exports/ApexPrintMaterialPicker";
 import {
+    APEX_CORE_VERTEX_SLICE_NOZZLE_TEMP_C,
+    APEX_FORGE_VERTEX_SLICE_NOZZLE_TEMP_C,
     APEX_V2_INSOLE_LOCKED_PROFILE_ID,
     apexPrintMaterialById,
     apexPrintMaterialForOrderMaterial,
@@ -37,13 +39,25 @@ describe("Apex print material", () => {
         expect(lockedProfileIdForApexMaterial("ApexCore")).toBe("apex-v2-insole-95a");
     });
 
-    test("Bounce and Forge cannot be selected for export", () => {
-        expect(apexPrintMaterialById("ApexBounce").enabled).toBe(false);
-        expect(apexPrintMaterialById("ApexForge").enabled).toBe(false);
-        expect(apexPrintMaterialById("ApexBounce").label).toBe("Apex Bounce");
+    test("Apex Forge mirrors Core locked profile with 245°C nozzle temp", () => {
+        expect(apexPrintMaterialById("ApexForge").enabled).toBe(true);
         expect(apexPrintMaterialById("ApexForge").label).toBe("Apex Forge");
+        expect(apexPrintMaterialById("ApexForge").shoreLabel).toBe("Shore 95A");
+        expect(lockedProfileIdForApexMaterial("ApexForge")).toBe(APEX_V2_INSOLE_LOCKED_PROFILE_ID);
+        expect(vertexSliceMaterialForApexMaterial("ApexForge")).toBe("apex_forge");
+        expect(apexPrintMaterialById("ApexCore").vertexSliceNozzleTempC).toBe(
+            APEX_CORE_VERTEX_SLICE_NOZZLE_TEMP_C,
+        );
+        expect(apexPrintMaterialById("ApexForge").vertexSliceNozzleTempC).toBe(
+            APEX_FORGE_VERTEX_SLICE_NOZZLE_TEMP_C,
+        );
+        expect(printerPresetForApexMaterial("ApexForge").id).toBe("apex-v2-insole-95a");
+    });
+
+    test("Bounce cannot be selected for export", () => {
+        expect(apexPrintMaterialById("ApexBounce").enabled).toBe(false);
+        expect(apexPrintMaterialById("ApexBounce").label).toBe("Apex Bounce");
         expect(() => lockedProfileIdForApexMaterial("ApexBounce")).toThrow(/approved/i);
-        expect(() => lockedProfileIdForApexMaterial("ApexForge")).toThrow(/approved/i);
     });
 
     describe("ApexPrintMaterialPicker", () => {
@@ -55,7 +69,7 @@ describe("Apex print material", () => {
             container?.remove();
         });
 
-        test("shows Apex Light and Apex Core as selectable and disables Bounce and Forge", async () => {
+        test("shows Apex Light, Core, and Forge as selectable and disables Bounce", async () => {
             container = document.createElement("div");
             document.body.appendChild(container);
             const picks: string[] = [];
@@ -87,7 +101,7 @@ describe("Apex print material", () => {
             expect(light.disabled).toBe(false);
             expect(core.disabled).toBe(false);
             expect(bounce.disabled).toBe(true);
-            expect(forge.disabled).toBe(true);
+            expect(forge.disabled).toBe(false);
             expect(bounce.title).toMatch(/approved/i);
             expect(container.textContent).not.toMatch(/TPU 9[058]A/);
             expect(container.querySelector('[data-testid="gcode-material-shore"]')?.textContent).toBe(
@@ -105,6 +119,12 @@ describe("Apex print material", () => {
                 select.dispatchEvent(new Event("change", { bubbles: true }));
             });
             expect(picks).toEqual(["ApexLight"]);
+
+            await act(async () => {
+                select.value = "ApexForge";
+                select.dispatchEvent(new Event("change", { bubbles: true }));
+            });
+            expect(picks).toEqual(["ApexLight", "ApexForge"]);
         });
     });
 });

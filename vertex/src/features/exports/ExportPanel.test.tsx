@@ -100,7 +100,7 @@ describe("ExportPanel clinical step", () => {
         ) as HTMLOptionElement;
         const forge = container.querySelector('[data-testid="apex-material-ApexForge"]') as HTMLOptionElement;
         expect(bounce.disabled).toBe(true);
-        expect(forge.disabled).toBe(true);
+        expect(forge.disabled).toBe(false);
         await act(async () => {
             material.value = "ApexLight";
             material.dispatchEvent(new Event("change", { bubbles: true }));

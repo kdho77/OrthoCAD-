@@ -65,7 +65,7 @@ export async function exportClinicalPrinterGcode(input: {
     side: Side;
     design: DesignState;
     wallStyle?: Parameters<typeof resolveViewerWallStyle>[0];
-    /** Apex product. Defaults to Apex Core. Bounce and Forge are refused. */
+    /** Apex product. Defaults to Apex Core. Bounce is refused until approved. */
     apexMaterialId?: ApexPrintMaterialId;
     /** Belt G-code adds the sacrificial leader before the slicer. Default on. */
     includeLeaderBlock?: boolean;

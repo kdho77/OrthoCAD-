@@ -5,13 +5,16 @@ import { printerGcodeSliceFields } from "@/features/exports/export-service";
 import { gyroidInfillPctForHardness } from "../../../shared/print-recipe/print-recipe";
 
 describe("printer G-code VertexSlice fields", () => {
-    test("Apex Light and Apex Core send the locked profile and do not swap materials", () => {
+    test("Apex Light, Core, and Forge send the locked profile and distinct material ids", () => {
         const light = printerGcodeSliceFields("ApexLight");
         const core = printerGcodeSliceFields("ApexCore");
+        const forge = printerGcodeSliceFields("ApexForge");
         expect(light).toEqual({ presetId: "apex-v2-insole-95a", material: "apex_light" });
         expect(core).toEqual({ presetId: "apex-v2-insole-95a", material: "apex_core" });
-        expect(light.material).not.toBe(core.material);
+        expect(forge).toEqual({ presetId: "apex-v2-insole-95a", material: "apex_forge" });
+        expect(new Set([light.material, core.material, forge.material]).size).toBe(3);
         expect(light.presetId).toBe(core.presetId);
+        expect(forge.presetId).toBe(core.presetId);
     });
 
     test("hardness still maps to the locked gyroid infill percent", () => {
@@ -22,8 +25,7 @@ describe("printer G-code VertexSlice fields", () => {
         expect(gyroidInfillPctForHardness("Extra Hard")).toBe(38);
     });
 
-    test("Bounce and Forge cannot produce a slice payload", () => {
+    test("Bounce cannot produce a slice payload", () => {
         expect(() => printerGcodeSliceFields("ApexBounce")).toThrow(/approved/i);
-        expect(() => printerGcodeSliceFields("ApexForge")).toThrow(/approved/i);
     });
 });

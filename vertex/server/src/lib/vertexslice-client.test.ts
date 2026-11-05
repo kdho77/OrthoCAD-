@@ -35,14 +35,12 @@ describe("VertexSlice printer G-code client", () => {
         expect(manufacturingBackendForOutput("stl")).toBe("python");
     });
 
-    test("Bounce and Forge are refused before any slicer call", () => {
+    test("Bounce is refused and Forge is allowed before any slicer call", () => {
         expect(() => assertEnabledVertexSliceMaterial("apex_bounce")).toThrow(
             /disabled until print settings/i,
         );
-        expect(() => assertEnabledVertexSliceMaterial("apex_forge")).toThrow(
-            /disabled until print settings/i,
-        );
-        expect(() => assertEnabledVertexSliceMaterial("TPU 95A")).toThrow(/Apex Core/);
+        expect(assertEnabledVertexSliceMaterial("apex_forge")).toBe("apex_forge");
+        expect(() => assertEnabledVertexSliceMaterial("TPU 95A")).toThrow(/Apex Forge/);
     });
 
     test("reads material ids from a list or a map", () => {
@@ -65,9 +63,12 @@ describe("VertexSlice printer G-code client", () => {
         process.env.VERTEXSLICE_API_KEY = "super-secret-key";
         const calls = installFetch((url) => {
             if (url.endsWith("/v1/materials")) {
-                return new Response(JSON.stringify({ materials: ["apex_core", "apex_light"] }), {
-                    status: 200,
-                });
+                return new Response(
+                    JSON.stringify({ materials: ["apex_core", "apex_light", "apex_forge"] }),
+                    {
+                        status: 200,
+                    },
+                );
             }
             return new Response("SLICE_OK", { status: 200 });
         });
@@ -98,6 +99,33 @@ describe("VertexSlice printer G-code client", () => {
         expect(form.get("wall_loops")).toBeNull();
         expect(form.get("print_direction")).toBeNull();
         expect(calls.map((call) => call.url).join(" ")).not.toContain("super-secret-key");
+    });
+
+    test("POST /v1/slice accepts apex_forge with the same locked profile as apex_core", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example/";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const calls = installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify({ materials: ["apex_core", "apex_forge"] }), {
+                    status: 200,
+                });
+            }
+            return new Response("FORGE_SLICE_OK", { status: 200 });
+        });
+
+        const gcode = await sliceWithVertexSlice({
+            profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+            material: "apex_forge",
+            model: new Uint8Array([9]),
+            infillDensityPct: 26,
+        });
+
+        expect(gcode).toBe("FORGE_SLICE_OK");
+        const slice = calls.find((call) => call.url.endsWith("/v1/slice"));
+        expect(slice).toBeDefined();
+        const form = slice?.init.body as FormData;
+        expect(form.get("profile_id")).toBe("apex-v2-insole-95a");
+        expect(form.get("material")).toBe("apex_forge");
     });
 
     test("fails closed when /v1/materials does not list the material and does not slice", async () => {
