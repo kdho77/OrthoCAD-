@@ -7,9 +7,12 @@ import {
     binaryStlTriangleCount,
     LEADER_BLOCK_DEPTH_MM,
     LEADER_BLOCK_HEIGHT_MM,
+    LEADER_BLOCK_WIDTH_INNER_MM,
     LEADER_BLOCK_WIDTH_OUTER_MM,
+    LEADER_BRIDGE_BLOCK_OVERLAP_MM,
     LEADER_BRIDGE_EMBED_MM,
     LEADER_BRIDGE_LENGTH_MM,
+    LEADER_BRIDGE_THICKNESS_MM,
     LeaderBlockOrientationError,
     manufacturingStlForExportKind,
     manufacturingStlIncludesLeaderBlock,
@@ -81,6 +84,59 @@ function writeBox(x0: number, y0: number, z0: number, x1: number, y1: number, z1
     return buffer;
 }
 
+/** Tip at x=220; bottom outline at y=±5 sits at x=200. */
+function curvedToe(): ArrayBuffer {
+    const heel = writeBox(0, -20, 0, 15, 20, 30);
+    const beak = writeTriangles([
+        [200, -5, 0],
+        [200, 5, 0],
+        [220, 0, 0],
+        [200, -5, 0],
+        [220, 0, 3],
+        [200, 5, 0],
+        [200, -5, 2],
+        [220, 0, 3],
+        [200, 5, 2],
+    ]);
+    return concatStls([heel, beak]);
+}
+
+function writeTriangles(corners: Array<[number, number, number]>): ArrayBuffer {
+    const triCount = corners.length / 3;
+    const buffer = new ArrayBuffer(84 + triCount * 50);
+    const view = new DataView(buffer);
+    view.setUint32(80, triCount, true);
+    let offset = 84;
+    for (let t = 0; t < triCount; t++) {
+        offset += 12;
+        for (let k = 0; k < 3; k++) {
+            const p = corners[t * 3 + k];
+            if (!p) throw new Error("test triangle vertex missing");
+            view.setFloat32(offset, p[0], true);
+            view.setFloat32(offset + 4, p[1], true);
+            view.setFloat32(offset + 8, p[2], true);
+            offset += 12;
+        }
+        view.setUint16(offset, 0, true);
+        offset += 2;
+    }
+    return buffer;
+}
+
+function concatStls(parts: ArrayBuffer[]): ArrayBuffer {
+    const counts = parts.map((part) => binaryStlTriangleCount(part));
+    const total = counts.reduce((sum, n) => sum + n, 0);
+    const out = new ArrayBuffer(84 + total * 50);
+    new DataView(out).setUint32(80, total, true);
+    let cursor = 84;
+    for (const part of parts) {
+        const bytes = new Uint8Array(part).subarray(84);
+        new Uint8Array(out).set(bytes, cursor);
+        cursor += bytes.length;
+    }
+    return out;
+}
+
 /** Thick heel at min X, thin toe at max X. */
 function toeAtMaxX(): ArrayBuffer {
     const heel = writeBox(0, -30, 0, 10, 30, 24);
@@ -110,14 +166,27 @@ describe("sacrificial leader block", () => {
         expect(binaryStlTriangleCount(gcodeStl)).toBeGreaterThan(binaryStlTriangleCount(raw));
     });
 
+    test("founder-locked v2 constants", () => {
+        expect(LEADER_BLOCK_DEPTH_MM).toBe(10);
+        expect(LEADER_BLOCK_HEIGHT_MM).toBe(10);
+        expect(LEADER_BRIDGE_THICKNESS_MM).toBe(1.5);
+        expect(LEADER_BRIDGE_LENGTH_MM).toBe(2.5);
+        expect(LEADER_BRIDGE_EMBED_MM).toBe(1);
+        expect(LEADER_BRIDGE_BLOCK_OVERLAP_MM).toBe(1);
+        expect(LEADER_BLOCK_WIDTH_INNER_MM).toBe(10);
+        expect(LEADER_BLOCK_WIDTH_OUTER_MM).toBe(20);
+    });
+
     test("places the bridge and trapezoid on the thinner max-X toe", () => {
         const raw = toeAtMaxX();
         const before = binaryStlBounds(raw);
         const withLeader = applySacrificialLeaderBlock(raw);
         const after = binaryStlBounds(withLeader);
-        const expectedMaxX =
-            before.maxX - LEADER_BRIDGE_EMBED_MM + LEADER_BRIDGE_LENGTH_MM + LEADER_BLOCK_DEPTH_MM;
+        // Flat toe: outline at yc±5 is xmax. Block starts after the 2.5 mm gap and is 10 mm deep.
+        const blockX0 = before.maxX + LEADER_BRIDGE_LENGTH_MM;
+        const expectedMaxX = blockX0 + LEADER_BLOCK_DEPTH_MM;
         expect(after.maxX).toBeCloseTo(expectedMaxX, 3);
+        expect(after.maxX - before.maxX).toBeCloseTo(12.5, 3);
         expect(after.maxZ).toBeCloseTo(Math.max(before.maxZ, LEADER_BLOCK_HEIGHT_MM), 3);
         expect(after.minZ).toBeCloseTo(0, 3);
         const outer = verticesNear(withLeader, expectedMaxX);
@@ -133,8 +202,32 @@ describe("sacrificial leader block", () => {
         ).toBe(true);
         const bridgeStart = before.maxX - LEADER_BRIDGE_EMBED_MM;
         const embedded = verticesNear(withLeader, bridgeStart);
-        expect(embedded.some((v) => v[2] === 2)).toBe(true);
+        expect(embedded.some((v) => Math.abs(v[2] - LEADER_BRIDGE_THICKNESS_MM) < 1e-4)).toBe(true);
+        const overlapEnd = blockX0 + LEADER_BRIDGE_BLOCK_OVERLAP_MM;
+        const overlap = verticesNear(withLeader, overlapEnd);
+        expect(overlap.some((v) => Math.abs(v[2] - LEADER_BRIDGE_THICKNESS_MM) < 1e-4)).toBe(true);
+        const blockNear = verticesNear(withLeader, blockX0);
+        expect(blockNear.some((v) => Math.abs(v[1] - LEADER_BLOCK_WIDTH_INNER_MM / 2) < 0.01)).toBe(true);
         expect(binaryStlTriangleCount(withLeader)).toBe(binaryStlTriangleCount(raw) + 24);
+    });
+
+    test("curved toe starts the bridge at the inset outline, not at xmax - 1", () => {
+        const raw = curvedToe();
+        const before = binaryStlBounds(raw);
+        expect(before.maxX).toBeCloseTo(220, 3);
+        const withLeader = applySacrificialLeaderBlock(raw);
+        const xEdge = 200;
+        const bridgeStart = xEdge - LEADER_BRIDGE_EMBED_MM;
+        const tipStart = before.maxX - LEADER_BRIDGE_EMBED_MM;
+        expect(bridgeStart).toBeLessThan(tipStart);
+        const embedded = verticesNear(withLeader, bridgeStart);
+        expect(embedded.some((v) => Math.abs(v[2] - LEADER_BRIDGE_THICKNESS_MM) < 1e-4)).toBe(true);
+        expect(verticesNear(withLeader, tipStart).some((v) => Math.abs(v[2] - 1.5) < 1e-4)).toBe(false);
+        const blockX0 = before.maxX + LEADER_BRIDGE_LENGTH_MM;
+        const overlapEnd = blockX0 + LEADER_BRIDGE_BLOCK_OVERLAP_MM;
+        expect(binaryStlBounds(withLeader).maxX).toBeCloseTo(blockX0 + LEADER_BLOCK_DEPTH_MM, 3);
+        expect(verticesNear(withLeader, overlapEnd).length).toBeGreaterThan(0);
+        expect(verticesNear(withLeader, blockX0).length).toBeGreaterThan(0);
     });
 
     test("aborts when the max-X end is the thick end", () => {

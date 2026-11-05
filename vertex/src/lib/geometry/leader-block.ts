@@ -3,23 +3,28 @@
 /**
  * Sacrificial belt-printer leader, applied to the manufacturing STL before VertexSlice.
  *
- * Founder dimensions (do not freestyle):
- * - bridge 10 wide × 2 thick × 2.5 long, embedded 1 mm into the insole
- * - trapezoid block 20 deep × 10 high, width 10 → 20, on Z = 0
- * - centered on the toe mid-width
+ * Founder-locked v2 (Kendon 2026-10-23; CAD signed 2026-10-24):
+ * - bridge 10 wide × 1.5 thick, 2.5 mm gap past the toe tip, embedded 1 mm
+ * - trapezoid block 10 deep × 10 high, width 10 → 20, on Z = 0
+ * - bridge overlaps the block by 1 mm; the block itself does not move
+ * - curved toe: embed is measured at the bridge side edges (yc ± 5), not at xmax
  * - toe = the thinner max-X end in the OrthoCAD frame; abort if that end is not thinner
  *
- * CAD review is required before this geometry is treated as approved.
+ * Triangles are appended. The embed intersects the insole, so the mesh is not a boolean union.
  */
 
 export const LEADER_BRIDGE_WIDTH_MM = 10;
-export const LEADER_BRIDGE_THICKNESS_MM = 2;
+export const LEADER_BRIDGE_THICKNESS_MM = 1.5;
 export const LEADER_BRIDGE_LENGTH_MM = 2.5;
 export const LEADER_BRIDGE_EMBED_MM = 1;
-export const LEADER_BLOCK_DEPTH_MM = 20;
+/** Bridge continues this far past the block's near face so the joint is not face-touch only. */
+export const LEADER_BRIDGE_BLOCK_OVERLAP_MM = 1;
+export const LEADER_BLOCK_DEPTH_MM = 10;
 export const LEADER_BLOCK_HEIGHT_MM = 10;
 export const LEADER_BLOCK_WIDTH_INNER_MM = 10;
 export const LEADER_BLOCK_WIDTH_OUTER_MM = 20;
+const BOTTOM_OUTLINE_Z_MM = 1;
+const BOTTOM_OUTLINE_Y_TOL_MM = 0.5;
 
 export type MeshExportKind = "gcode" | "stl" | "3mf" | "glb" | "cnc";
 
@@ -150,8 +155,11 @@ function leaderTrianglesForMesh(tris: Tri[]): Tri[] {
     }
 
     const yCenter = (toe.minY + toe.maxY) / 2;
-    const bridgeX0 = bounds.maxX - LEADER_BRIDGE_EMBED_MM;
-    const bridgeX1 = bridgeX0 + LEADER_BRIDGE_LENGTH_MM;
+    const xEdge = curvedToeOutlineX(tris, yCenter, bounds.maxX);
+    const bridgeX0 = xEdge - LEADER_BRIDGE_EMBED_MM;
+    // 2.5 mm gap from the toe tip to the block. Overlap extends the bridge only.
+    const blockX0 = bounds.maxX + LEADER_BRIDGE_LENGTH_MM;
+    const bridgeX1 = blockX0 + LEADER_BRIDGE_BLOCK_OVERLAP_MM;
     const bridge = boxTriangles(
         bridgeX0,
         yCenter - LEADER_BRIDGE_WIDTH_MM / 2,
@@ -161,14 +169,58 @@ function leaderTrianglesForMesh(tris: Tri[]): Tri[] {
         LEADER_BRIDGE_THICKNESS_MM,
     );
     const block = trapezoidTriangles(
-        bridgeX1,
-        bridgeX1 + LEADER_BLOCK_DEPTH_MM,
+        blockX0,
+        blockX0 + LEADER_BLOCK_DEPTH_MM,
         yCenter,
         LEADER_BLOCK_WIDTH_INNER_MM,
         LEADER_BLOCK_WIDTH_OUTER_MM,
         LEADER_BLOCK_HEIGHT_MM,
     );
     return bridge.concat(block);
+}
+
+/**
+ * Toe-side bottom outline at the bridge edges y = yc ± 5.
+ * Each station uses the maximum X (the front of the foot). x_edge is the minimum of those
+ * two, so a curved toe embeds the full 10 mm width by at least 1 mm.
+ */
+function curvedToeOutlineX(tris: Tri[], yCenter: number, maxX: number): number {
+    const half = LEADER_BRIDGE_WIDTH_MM / 2;
+    const left = frontBottomOutlineX(tris, yCenter - half);
+    const right = frontBottomOutlineX(tris, yCenter + half);
+    const samples = [left, right].filter((x): x is number => x !== null);
+    if (samples.length === 0) return maxX;
+    return Math.min(...samples);
+}
+
+function frontBottomOutlineX(tris: Tri[], yTarget: number): number | null {
+    let front: number | null = null;
+    const take = (x: number) => {
+        front = front === null ? x : Math.max(front, x);
+    };
+    for (const t of tris) {
+        const verts: Array<[number, number, number]> = [
+            [t.ax, t.ay, t.az],
+            [t.bx, t.by, t.bz],
+            [t.cx, t.cy, t.cz],
+        ];
+        for (let i = 0; i < 3; i++) {
+            const a = verts[i];
+            const b = verts[(i + 1) % 3];
+            if (!a || !b) continue;
+            if (a[2] >= BOTTOM_OUTLINE_Z_MM || b[2] >= BOTTOM_OUTLINE_Z_MM) continue;
+            if (Math.abs(a[1] - yTarget) < BOTTOM_OUTLINE_Y_TOL_MM) take(a[0]);
+            if (Math.abs(b[1] - yTarget) < BOTTOM_OUTLINE_Y_TOL_MM) take(b[0]);
+            const dy = b[1] - a[1];
+            if (Math.abs(dy) < 1e-8) continue;
+            if ((a[1] - yTarget) * (b[1] - yTarget) >= 0) continue;
+            const tParam = (yTarget - a[1]) / dy;
+            const z = a[2] + tParam * (b[2] - a[2]);
+            if (z >= BOTTOM_OUTLINE_Z_MM) continue;
+            take(a[0] + tParam * (b[0] - a[0]));
+        }
+    }
+    return front;
 }
 
 function bandStats(tris: Tri[], inBand: (x: number) => boolean): XBand {
