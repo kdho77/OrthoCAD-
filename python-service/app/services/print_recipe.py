@@ -5,6 +5,10 @@ PrintRecipeV1 resolution for hybrid manufacturing (Phase A).
 
 Shares the locked hardness→% ladder with the TypeScript client via
 vertex/shared/print-recipe/hardness-to-infill-pct.json.
+
+The manufacturing image copies that same file to this path. parents[3]
+is the repo root in a checkout and "/" in the image, where this module
+is /app/app/services/print_recipe.py.
 """
 
 from __future__ import annotations
