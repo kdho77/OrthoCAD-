@@ -5,6 +5,7 @@ import {
     type VertexSliceMaterialId,
     vertexSliceMaterialForApexMaterial,
 } from "@/features/exports/apex-print-material";
+import { stampSingleFootStl } from "@/features/exports/printer-foot-isolation";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { workpiecesFromDesign } from "@/lib/cnc/compose";
 import { generateCncJob } from "@/lib/cnc/export";
@@ -17,7 +18,7 @@ import {
     exportModeFromMethod,
     orderDownloadSides,
 } from "@/lib/geometry/export-geometry";
-import { manufacturingStlForExportKind } from "@/lib/geometry/leader-block";
+import { binaryStlTriangleCount, manufacturingStlForExportKind } from "@/lib/geometry/leader-block";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { collectHardnessRegions } from "@/lib/hardness/collect";
 import { packHardness3mf } from "@/lib/hardness/export-3mf";
@@ -382,12 +383,32 @@ export function printerGcodeSliceFields(apexMaterialId: ApexPrintMaterialId): {
 }
 
 /**
- * One foot, in its own frame. The leader is applied once, on these bytes,
- * after the solid cache and before the slicer upload. A pair is two jobs.
+ * One foot, in its own frame. This is the only mesh the belt slicer receives.
+ * It calls {@link buildExportStl} for `side` and never the Y-shifted pair.
+ * The leader is applied once, then a header stamp names the foot. Triangle
+ * bytes are the solid plus that one leader.
  */
-async function buildPrinterGcodeManufacturingStl(side: Side, includeLeader: boolean): Promise<ArrayBuffer> {
-    const raw = await buildManufacturingStl(side);
-    return manufacturingStlForExportKind(raw, includeLeader ? "gcode" : "stl");
+export async function buildPrinterFootManufacturingStl(
+    side: Side,
+    includeLeader: boolean,
+): Promise<{ stl: ArrayBuffer; solidTriangles: number; uploadTriangles: number }> {
+    const solid = await buildExportStl(side, {
+        exportMode: exportModeFromMethod(useDesignStore.getState().design.method),
+    });
+    const solidTriangles = binaryStlTriangleCount(solid);
+    const withLeader = manufacturingStlForExportKind(solid, includeLeader ? "gcode" : "stl");
+    const uploadTriangles = binaryStlTriangleCount(withLeader);
+    if (includeLeader && uploadTriangles <= solidTriangles) {
+        throw new Error(`Leader was not applied to the ${side} manufacturing STL`);
+    }
+    if (!includeLeader && withLeader !== solid) {
+        throw new Error(`Leader was applied to a non-G-code ${side} STL`);
+    }
+    return {
+        stl: stampSingleFootStl(withLeader, side),
+        solidTriangles,
+        uploadTriangles,
+    };
 }
 
 function yieldToPaint(): Promise<void> {
@@ -469,7 +490,7 @@ export async function generateHybridGcode(
             const includeLeader = outputType === "gcode" && options.includeLeaderBlock !== false;
             const stlBuffer =
                 outputType === "gcode"
-                    ? await buildPrinterGcodeManufacturingStl(side, includeLeader)
+                    ? (await buildPrinterFootManufacturingStl(side, includeLeader)).stl
                     : await (async () => {
                           const designForStl = useDesignStore.getState().design;
                           const stlSides = orderDownloadSides(designForStl);
