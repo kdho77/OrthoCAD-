@@ -31,7 +31,10 @@ function fmtTime(sec: number): string {
 interface PrintingPanelProps {
     /** Simplified clinical print step — primary CTA + fewer exposed knobs. */
     clinicalMode?: boolean;
-    /** Clinical print step: only foot side + Prepare for print (AC7). */
+    /**
+     * Clinical print step shows foot side and print settings only.
+     * G-code download lives on Export. Continue to Export is the primary action.
+     */
     primaryOnly?: boolean;
     /**
      * Show the existing viewer.wallModel flag + grinding dropdown.
@@ -122,7 +125,10 @@ export function PrintingPanel({
             // baseAssetId will be included (when a base is active) so the server can do
             // authoritative CustomPrefab lookup + signed URL (see export-service.ts).
             // designId is also passed when an active persisted design exists.
-            const res = await generateHybridGcode(exportSide, preset, grindingStyle, overrides);
+            const res = await generateHybridGcode(exportSide, preset, grindingStyle, overrides, {
+                material: preset.material,
+                onProgress: setStatus,
+            });
             if (res.ok) {
                 const idPart = res.productionId ? ` [production ${res.productionId}]` : "";
                 setStatus(
@@ -348,7 +354,7 @@ export function PrintingPanel({
                 </Button>
             ) : null}
 
-            {cncSelected || isCnc ? null : isBeltPreset ? (
+            {cncSelected || isCnc || clinicalMode ? null : isBeltPreset ? (
                 <Button
                     variant="default"
                     className="w-full"
@@ -357,12 +363,7 @@ export function PrintingPanel({
                     title="Exports the finished viewer solid as STL, uploads to server, then slices with belt transform"
                 >
                     {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
-                    {clinicalMode ? "Prepare for print" : `Generate G-code (Server) — ${grindingStyle.type}`}
-                </Button>
-            ) : clinicalMode ? (
-                <Button className="w-full" disabled={busy || !preset || !gcodeCheck.ok} onClick={onExport}>
-                    {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
-                    Prepare for print · {TOKEN_COST.gcode} tokens
+                    {`Generate G-code (Server) — ${grindingStyle.type}`}
                 </Button>
             ) : null}
 

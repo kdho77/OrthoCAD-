@@ -45,4 +45,16 @@ describe("clinical workflow steps", () => {
         expect(useClinicalWorkflowStore.getState().step).toBe("scan");
         expect(useClinicalWorkflowStore.getState().nextBlockReason).toMatch(/Left, Right, or Pair/i);
     });
+
+    test("Continue to Export from Print opens Export when the scan gate would bounce Next", () => {
+        useClinicalWorkflowStore.setState({
+            step: "print",
+            footSideExplicitlyChosen: false,
+            completedSteps: [],
+            nextBlockReason: null,
+        });
+        useClinicalWorkflowStore.getState().goNext();
+        expect(useClinicalWorkflowStore.getState().step).toBe("export");
+        expect(useClinicalWorkflowStore.getState().completedSteps).toContain("print");
+    });
 });
