@@ -324,3 +324,56 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
         return null;
     },
 }));
+
+const OUTLINE_DIRTY_EPS = 1e-4;
+
+/** True when the live draft differs from the session snapshot. */
+export function outlineSessionDirty(session: TrimlineEditSession | null): boolean {
+    if (!session) return false;
+    const draft = session.draft.points;
+    const snapshot = session.snapshot.points;
+    if (draft.length !== snapshot.length) return true;
+    for (let i = 0; i < draft.length; i++) {
+        const p = draft[i];
+        const q = snapshot[i];
+        if (!p || !q) return true;
+        if (
+            Math.abs(p.x - q.x) > OUTLINE_DIRTY_EPS ||
+            Math.abs(p.y - q.y) > OUTLINE_DIRTY_EPS ||
+            Math.abs(p.z - q.z) > OUTLINE_DIRTY_EPS
+        ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** Active trimline or bottom-pattern session, or null when another tool is active. */
+export function activeOutlineSession(): TrimlineEditSession | null {
+    const state = useMeshEditStore.getState();
+    if (state.editMode === "edit-trimline") return state.trimlineEdit;
+    if (state.editMode === "edit-bottom-pattern") return state.bottomPatternEdit;
+    return null;
+}
+
+/**
+ * Leave trimline / bottom-pattern edit.
+ * Prompts only when `promptIfDirty` is set and the draft differs from the snapshot.
+ * Returns false when the user keeps the session.
+ */
+export function leaveOutlineEdit(options?: { promptIfDirty?: boolean }): boolean {
+    const state = useMeshEditStore.getState();
+    const session = activeOutlineSession();
+    if (!session) return true;
+    if (options?.promptIfDirty && outlineSessionDirty(session)) {
+        const tool = state.editMode === "edit-trimline" ? "trimline" : "bottom pattern";
+        const confirmed =
+            typeof window !== "undefined" && typeof window.confirm === "function"
+                ? window.confirm(`Discard unsaved ${tool} changes?`)
+                : false;
+        if (!confirmed) return false;
+    }
+    if (state.editMode === "edit-trimline") state.cancelTrimlineEdit();
+    else state.cancelBottomPatternEdit();
+    return true;
+}

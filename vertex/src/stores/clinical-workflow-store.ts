@@ -6,6 +6,7 @@ import {
     evaluateScanStepGate,
     scanGateBlocksLaterSteps,
 } from "@/lib/clinical/clinical-step-gates";
+import { leaveOutlineEdit } from "@/stores/mesh-edit-store";
 import { invalidateProceduralPrintLoftForDesignStep } from "@/stores/preview-loft-status-store";
 import type { ProductionMethod } from "@/types";
 
@@ -135,6 +136,12 @@ function leaveProceduralLoftStep(prev: ClinicalStepId, next: ClinicalStepId): vo
     }
 }
 
+/** Step changes leave outline edit, prompting only when the draft is unsaved. */
+function blockedByOutlineEdit(prev: ClinicalStepId, next: ClinicalStepId): boolean {
+    if (prev === next) return false;
+    return !leaveOutlineEdit({ promptIfDirty: true });
+}
+
 function applyScanStickyReason(step: ClinicalStepId): string | null {
     if (stepIndex(step) <= stepIndex("scan")) {
         const gate = evaluateScanStepGate();
@@ -194,6 +201,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
     setStep: (step) => {
         const prev = get().step;
         const next = normalizeClinicalStep(step);
+        if (blockedByOutlineEdit(prev, next)) return;
         leaveProceduralLoftStep(prev, next);
         const sticky = applyScanStickyReason(next);
         set({
@@ -204,11 +212,13 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         });
     },
     setElementPlacementFoot: (foot) => set({ elementPlacementFoot: foot }),
-    openTextEditor: () =>
+    openTextEditor: () => {
+        if (blockedByOutlineEdit(get().step, "elements")) return;
         set((s) => ({
             step: "elements",
             textFocusNonce: s.textFocusNonce + 1,
-        })),
+        }));
+    },
     goNext: () => {
         const current = get().step;
         const gate = evaluateNextGate(current);
@@ -217,6 +227,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         // and the rail still allows standing on Print. Re-applying the scan
         // gate here used to send the user to Scan instead of Export.
         if (!gate.ok && current !== "print") {
+            if (blockedByOutlineEdit(current, "scan")) return;
             set({
                 step: "scan",
                 nextBlockReason: gate.reason,
@@ -226,6 +237,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
             return;
         }
         const step = nextStep(current);
+        if (blockedByOutlineEdit(current, step)) return;
         leaveProceduralLoftStep(current, step);
         const sticky = applyScanStickyReason(step);
         set((s) => ({
@@ -239,6 +251,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
     goBack: () => {
         const current = get().step;
         const step = prevStep(current);
+        if (blockedByOutlineEdit(current, step)) return;
         leaveProceduralLoftStep(current, step);
         const sticky = applyScanStickyReason(step);
         set({

@@ -18,7 +18,6 @@ import { type CamOverrides, type CamResult, generateGcode, presetsForMethod } fr
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
-import { useMillingProfileStore } from "@/stores/milling-profile-store";
 import { SIDE_LABELS, type Side } from "@/types";
 import { infillFractionFromRecipe, migratePrintRecipe } from "../../../shared/print-recipe/print-recipe";
 
@@ -50,9 +49,6 @@ export function PrintingPanel({
 }: PrintingPanelProps) {
     const { user, license } = useAuthStore();
     const { design, exportSide, setExportSide, setViewer } = useDesignStore();
-    const machine = useMillingProfileStore((s) => s.machine);
-    const setMachine = useMillingProfileStore((s) => s.setMachine);
-    const cncSelected = machine === "cnc";
     const printRecipe = migratePrintRecipe(design.printRecipe);
     const recipeInfillPct = Math.round(infillFractionFromRecipe(printRecipe) * 100);
     const [layerHeight, setLayerHeight] = useState(0.3);
@@ -153,7 +149,7 @@ export function PrintingPanel({
     };
 
     const showPrimaryOnly = clinicalMode && primaryOnly;
-    const showProceduralWallControls = !cncSelected && !isCnc && (showWallPreview ?? !showPrimaryOnly);
+    const showProceduralWallControls = !isCnc && (showWallPreview ?? !showPrimaryOnly);
 
     const onWallStyle = (t: ProceduralWallStyleChoice) => {
         setViewer({ wallStyle: t });
@@ -168,34 +164,17 @@ export function PrintingPanel({
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     Machine
                 </div>
-                <div className="flex gap-1">
-                    {(
-                        [
-                            { id: "printer" as const, label: "3D printer", icon: Printer },
-                            { id: "cnc" as const, label: "3-axis CNC", icon: Cpu },
-                        ] as const
-                    ).map((m) => (
-                        <button
-                            key={m.id}
-                            type="button"
-                            onClick={() => setMachine(m.id)}
-                            className={cn(
-                                "flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border px-2 text-xs",
-                                machine === m.id
-                                    ? "border-primary bg-primary/10 text-foreground"
-                                    : "border-border bg-background text-muted-foreground",
-                            )}
-                        >
-                            <m.icon className="h-3.5 w-3.5" />
-                            {m.label}
-                        </button>
-                    ))}
+                <div className="flex gap-1" data-testid="print-machine">
+                    <div className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border border-primary bg-primary/10 px-2 text-xs text-foreground">
+                        {isCnc ? <Cpu className="h-3.5 w-3.5" /> : <Printer className="h-3.5 w-3.5" />}
+                        {isCnc ? "3-axis CNC" : "3D printer"}
+                    </div>
                 </div>
             </div>
 
-            {cncSelected || isCnc ? <CncMillingPanel /> : null}
+            {isCnc ? <CncMillingPanel /> : null}
 
-            {!cncSelected && !isCnc && !showPrimaryOnly && !clinicalMode ? (
+            {!isCnc && !showPrimaryOnly && !clinicalMode ? (
                 <div className="flex gap-1">
                     {(["left", "right"] as Side[]).map((s) => (
                         <Button
@@ -211,7 +190,7 @@ export function PrintingPanel({
                 </div>
             ) : null}
 
-            {cncSelected || isCnc ? null : !showPrimaryOnly ? (
+            {isCnc ? null : !showPrimaryOnly ? (
                 <div className="space-y-1.5">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                         {isCnc ? "Mill preset" : "Printer preset"}
@@ -247,7 +226,7 @@ export function PrintingPanel({
 
             {showProceduralWallControls ? <ProceduralWallPreviewControls onWallStyle={onWallStyle} /> : null}
 
-            {cncSelected || isCnc ? null : !showPrimaryOnly && isBeltPreset ? (
+            {isCnc ? null : !showPrimaryOnly && isBeltPreset ? (
                 <div className="space-y-1.5">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                         Grinding Style (server hybrid)
@@ -283,7 +262,7 @@ export function PrintingPanel({
                 </div>
             ) : null}
 
-            {cncSelected || isCnc ? null : !showPrimaryOnly && isCnc ? (
+            {isCnc ? null : !showPrimaryOnly && isCnc ? (
                 <SliderField
                     label="Tool diameter"
                     value={toolDia}
@@ -324,13 +303,13 @@ export function PrintingPanel({
                 </>
             )}
 
-            {cncSelected || isCnc ? null : !clinicalMode ? (
+            {isCnc ? null : !clinicalMode ? (
                 <Button variant="secondary" className="w-full" disabled={busy || !preset} onClick={onPreview}>
                     <Play className="h-4 w-4" /> {busy ? "Generating…" : "Generate toolpath"}
                 </Button>
             ) : null}
 
-            {cncSelected || isCnc ? null : result ? (
+            {isCnc ? null : result ? (
                 <div className="space-y-1 rounded-md border border-border bg-background/50 p-2 text-xs">
                     <Row label="Moves" value={result.moveCount.toLocaleString()} />
                     <Row label="Est. time" value={fmtTime(result.stats.estimatedTimeSec)} />
@@ -347,14 +326,14 @@ export function PrintingPanel({
                 </div>
             ) : null}
 
-            {cncSelected || isCnc ? null : !clinicalMode ? (
+            {isCnc ? null : !clinicalMode ? (
                 <Button className="w-full" disabled={busy || !preset || !gcodeCheck.ok} onClick={onExport}>
                     {gcodeCheck.ok ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                     Export G-code · {TOKEN_COST.gcode} tokens (client)
                 </Button>
             ) : null}
 
-            {cncSelected || isCnc || clinicalMode ? null : isBeltPreset ? (
+            {isCnc || clinicalMode ? null : isBeltPreset ? (
                 <Button
                     variant="default"
                     className="w-full"
@@ -367,14 +346,14 @@ export function PrintingPanel({
                 </Button>
             ) : null}
 
-            {cncSelected || isCnc ? null : !gcodeCheck.ok ? (
+            {isCnc ? null : !gcodeCheck.ok ? (
                 <p className="text-xs text-amber-400">{gcodeCheck.reason}</p>
             ) : null}
-            {cncSelected || isCnc ? null : status ? (
+            {isCnc ? null : status ? (
                 <p className="rounded-md bg-muted px-2 py-1.5 text-xs">{status}</p>
             ) : null}
 
-            {cncSelected || isCnc ? null : !showPrimaryOnly ? (
+            {isCnc ? null : !showPrimaryOnly ? (
                 <p className="text-xs text-muted-foreground">
                     {preset?.beltAngleDeg
                         ? `Belt presets support client preview or server G-code from the finished viewer solid.`
