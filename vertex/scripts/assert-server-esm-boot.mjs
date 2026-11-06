@@ -72,3 +72,14 @@ for (const handlerPath of handlerPaths) {
         process.exit(1);
     }
 }
+
+const persistBuilderPath = join(outDir, "shared/saved-design-snapshot.js");
+try {
+    await import(pathToFileURL(persistBuilderPath).href);
+    console.log("server-esm-boot: ok", relative(vertexRoot, persistBuilderPath));
+} catch (err) {
+    const code = err && typeof err === "object" && "code" in err ? String(err.code) : "";
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("server-esm-boot: failed", relative(vertexRoot, persistBuilderPath), { code, message });
+    process.exit(1);
+}

@@ -10,6 +10,7 @@ import {
     SavedDesignSnapshotError,
     type StoredLinkShoe,
 } from "../../../shared/saved-design-catalog.js";
+import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot.js";
 import {
     SAMPLE_TOP_ASSET_ID,
     SAMPLE_TOP_GLB_PATH,
@@ -86,10 +87,6 @@ function assertSampleTop(settingsJson: unknown): void {
     }
 }
 
-/**
- * Replace settingsJson on the given design. Does not create a design, touch
- * production status, or read rx text / notes from the integration link.
- */
 type SnapshotBuilder = (input: { stored: StoredLinkShoe | null; catalog: SavedDesignCatalog }) => {
     design: unknown;
     paths: string[];
@@ -97,19 +94,16 @@ type SnapshotBuilder = (input: { stored: StoredLinkShoe | null; catalog: SavedDe
     usMenSize: number;
 };
 
-async function loadSnapshotBuilder(): Promise<SnapshotBuilder> {
-    // Non-literal specifier so server tsc does not pull the client loft module.
-    const builderSpecifier: string = "../../../src/lib/clinical/saved-design-snapshot.ts";
-    const module = (await import(builderSpecifier)) as { buildSavedDesignSnapshot: SnapshotBuilder };
-    return module.buildSavedDesignSnapshot;
-}
-
+/**
+ * Replace settingsJson on the given design. Does not create a design, touch
+ * production status, or read rx text / notes from the integration link.
+ */
 export async function persistSavedDesignSnapshotOnDesign(args: {
     prisma: PrismaClient;
     principal: CadOperatorPrincipal;
     designId: string;
     catalog: unknown;
-    /** Test seam. Production loads the SAMPLE_Top builder. */
+    /** Test seam. Production uses {@link buildSavedDesignSnapshot} from shared. */
     buildSnapshot?: SnapshotBuilder;
 }): Promise<PersistSavedDesignSnapshotResult> {
     const row = (await args.prisma.design.findUnique({
@@ -179,7 +173,7 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
     }
 
     const catalog = parseSavedDesignCatalog(args.catalog);
-    const buildSnapshot = args.buildSnapshot ?? (await loadSnapshotBuilder());
+    const buildSnapshot = args.buildSnapshot ?? buildSavedDesignSnapshot;
     const built = buildSnapshot({
         stored: storedShoe(row?.integrationLink ?? null),
         catalog,
