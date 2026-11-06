@@ -538,34 +538,23 @@ function centroidsOf(groups: TextGlyphGroup[]): TextXy[] {
     return groups.map(interiorPoint);
 }
 
-export function flattenText(
+function flattenSingleLineText(
     font: Font,
     text: string,
     capHeightMm: number,
     letterSpacingMm: number,
     bold: boolean,
-    allowThin = false,
+    allowThin: boolean,
+    yBaseline: number,
 ): FlattenedText {
-    if (text.length > TEXT_MAX_CHARS) throw textTooLong();
-    if (!text.trim()) {
-        return {
-            groups: [],
-            advanceMm: 0,
-            capHeightMm,
-            bold,
-            minStrokeMm: TEXT_MIN_STROKE_MM,
-            centroids: [],
-        };
-    }
     const tracking = Math.max(TEXT_MIN_LETTER_SPACING_MM, letterSpacingMm);
     const fontSize = capHeightFontSize(font, capHeightMm);
     const scale = fontSize / font.unitsPerEm;
     let x = 0;
     const raw: TextXy[][] = [];
-    // Per-character (no GSUB ligatures) so patient names engrave exactly as typed.
     for (let i = 0; i < text.length; i++) {
         const glyph = font.charToGlyph(text[i]!);
-        const path = glyph.getPath(x, 0, fontSize);
+        const path = glyph.getPath(x, yBaseline, fontSize);
         raw.push(...flattenPath(path.commands as OtCommand[], TEXT_FLATTEN_CHORD_MM));
         x += (glyph.advanceWidth ?? 0) * scale;
         if (i < text.length - 1) x += tracking;
@@ -588,4 +577,78 @@ export function flattenText(
         minStrokeMm: allowThin ? stroke : Math.max(stroke, TEXT_MIN_STROKE_MM),
         centroids: centroidsOf(groups),
     };
+}
+
+function mergeFlattenedLines(lines: FlattenedText[]): FlattenedText {
+    if (!lines.length) {
+        return {
+            groups: [],
+            advanceMm: 0,
+            capHeightMm: lines[0]?.capHeightMm ?? 0,
+            bold: lines[0]?.bold ?? true,
+            minStrokeMm: TEXT_MIN_STROKE_MM,
+            centroids: [],
+        };
+    }
+    const capHeightMm = lines[0]!.capHeightMm;
+    const bold = lines[0]!.bold;
+    let advanceMm = 0;
+    let minStrokeMm = TEXT_MIN_STROKE_MM;
+    const groups = lines.flatMap((line) => line.groups);
+    const centroids = lines.flatMap((line) => line.centroids);
+    for (const line of lines) {
+        advanceMm = Math.max(advanceMm, line.advanceMm);
+        minStrokeMm = Math.min(minStrokeMm, line.minStrokeMm);
+    }
+    return { groups, advanceMm, capHeightMm, bold, minStrokeMm, centroids };
+}
+
+export function flattenText(
+    font: Font,
+    text: string,
+    capHeightMm: number,
+    letterSpacingMm: number,
+    bold: boolean,
+    allowThin = false,
+): FlattenedText {
+    for (const line of text.split("\n")) {
+        if (line.length > TEXT_MAX_CHARS) throw textTooLong();
+    }
+    if (!text.trim()) {
+        return {
+            groups: [],
+            advanceMm: 0,
+            capHeightMm,
+            bold,
+            minStrokeMm: TEXT_MIN_STROKE_MM,
+            centroids: [],
+        };
+    }
+    const lineGapMm = capHeightMm * 0.2;
+    const lines = text.split("\n");
+    if (lines.length === 1) {
+        return flattenSingleLineText(font, text, capHeightMm, letterSpacingMm, bold, allowThin, 0);
+    }
+    const flattened: FlattenedText[] = [];
+    let yBaseline = 0;
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        if (trimmed.length > TEXT_MAX_CHARS) throw textTooLong();
+        flattened.push(
+            flattenSingleLineText(font, trimmed, capHeightMm, letterSpacingMm, bold, allowThin, yBaseline),
+        );
+        yBaseline -= capHeightMm + lineGapMm;
+    }
+    if (!flattened.length) {
+        return {
+            groups: [],
+            advanceMm: 0,
+            capHeightMm,
+            bold,
+            minStrokeMm: TEXT_MIN_STROKE_MM,
+            centroids: [],
+        };
+    }
+    return mergeFlattenedLines(flattened);
 }

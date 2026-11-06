@@ -4,7 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SliderField } from "@/components/ui/slider-field";
+import { activePatientDisplayName } from "@/lib/clinical/patient-display-name";
+import { addPatientNameEnabled, composeMarkingTextForSide } from "@/lib/geometry/text-marking/compose";
 import {
+    bottomPatientNameRequested,
     defaultTextMarking,
     isSideText,
     TEXT_ANCHOR_U,
@@ -80,13 +83,29 @@ export function useTextFitReport(): TextFitReport & {
     const marking = useDesignStore((s) => s.design.textMarking) ?? defaultTextMarking();
     const setTextMarking = useDesignStore((s) => s.setTextMarking);
     const method = useDesignStore((s) => s.design.method);
+    const placementFoot = useClinicalWorkflowStore((s) => s.elementPlacementFoot);
     const guides = useTextGuides();
     const guide = guides.right ?? guides.left;
     const [metrics, setMetrics] = useState({ advanceMm: 0, strokeMm: 0.9 });
-    const raw = marking.differentOnLR ? `${marking.textLeft}${marking.textRight}` : marking.text;
+    const patientName = activePatientDisplayName();
+    const composedBottom =
+        marking.surface === "bottom"
+            ? composeMarkingTextForSide(marking, placementFoot === "left" ? "left" : "right", patientName)
+            : "";
+    const raw = marking.differentOnLR
+        ? `${marking.textLeft}${marking.textRight}`
+        : marking.surface === "bottom"
+          ? composedBottom
+          : marking.text;
 
     useEffect(() => {
-        const text = (marking.differentOnLR ? marking.textRight || marking.textLeft : marking.text).trim();
+        const text = (
+            marking.differentOnLR
+                ? marking.textRight || marking.textLeft
+                : marking.surface === "bottom"
+                  ? composedBottom
+                  : marking.text
+        ).trim();
         if (!text) {
             setMetrics({ advanceMm: 0, strokeMm: 0.9 });
             return;
@@ -121,6 +140,8 @@ export function useTextFitReport(): TextFitReport & {
         marking.text,
         marking.textLeft,
         marking.textRight,
+        marking.addPatientName,
+        composedBottom,
     ]);
 
     const along = useMemo(() => {
@@ -254,6 +275,7 @@ export function TextMarkingPanel() {
     const marking = useDesignStore((s) => s.design.textMarking) ?? defaultTextMarking();
     const setTextMarking = useDesignStore((s) => s.setTextMarking);
     const placementFoot = useClinicalWorkflowStore((s) => s.elementPlacementFoot);
+    const patientName = activePatientDisplayName();
     const bounds = useMemo(() => textControlBounds(marking.surface), [marking.surface]);
     const side = isSideText(marking.surface);
     const bottomFace = marking.surface === "bottom";
@@ -265,6 +287,12 @@ export function TextMarkingPanel() {
             setTextMarking({ mode: "engrave" });
         }
     }, [marking.surface, marking.mode, setTextMarking]);
+
+    useEffect(() => {
+        if (marking.surface !== "bottom" || !bottomPatientNameRequested(marking)) return;
+        if (patientName) return;
+        setTextMarking({ addPatientName: false });
+    }, [marking.surface, marking.addPatientName, patientName, setTextMarking]);
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
@@ -315,11 +343,32 @@ export function TextMarkingPanel() {
             <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Text
             </div>
+            {marking.surface === "bottom" ? (
+                <label className="flex items-center gap-2 text-[11px] text-foreground">
+                    <input
+                        type="checkbox"
+                        className="size-3.5 rounded border border-border"
+                        checked={addPatientNameEnabled(marking)}
+                        disabled={!patientName}
+                        onChange={(e) => setTextMarking({ addPatientName: e.target.checked })}
+                    />
+                    Add patient name
+                    {patientName ? (
+                        <span className="text-muted-foreground">({patientName.toUpperCase()})</span>
+                    ) : (
+                        <span className="text-amber-200">Link a client to auto-fill</span>
+                    )}
+                </label>
+            ) : null}
             <Input
                 value={value}
                 maxLength={TEXT_MAX_CHARS}
-                placeholder="Name or mark (max 24)"
-                aria-label="Insole text"
+                placeholder={
+                    marking.surface === "bottom"
+                        ? "Additional text (optional, line below name)"
+                        : "Name or mark (max 24)"
+                }
+                aria-label={marking.surface === "bottom" ? "Additional bottom text" : "Insole text"}
                 className="h-8 text-xs"
                 onChange={(e) => setTextMarking({ [field]: e.target.value })}
             />

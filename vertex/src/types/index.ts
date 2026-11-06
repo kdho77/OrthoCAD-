@@ -45,7 +45,10 @@ export type TextFeet = "both" | "left" | "right";
 
 /** Custom text. Empty text is a no-op. Placement is mirrored per foot; glyphs are not. */
 export interface TextMarking {
+    /** Optional second line on the bottom (below the auto patient name). */
     text: string;
+    /** When true (default), bottom engrave includes the linked client name; user does not type it. */
+    addPatientName?: boolean;
     surface: TextSurface;
     mode: TextMode;
     /** Always the bundled bold sans. Kept so older designs still round-trip. */

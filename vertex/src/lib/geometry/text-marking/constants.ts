@@ -137,6 +137,7 @@ export function defaultTextMarking(surface: TextSurface = "bottom"): TextMarking
     const side = isSideText(surface);
     return {
         text: "",
+        addPatientName: surface === "bottom",
         surface,
         mode: "engrave",
         bold: true,
@@ -171,6 +172,10 @@ export function markingForSide(marking: TextMarking, side: Side): TextMarking {
 
 export function hasActiveTextMarking(marking: TextMarking | null | undefined): boolean {
     return Boolean(marking && marking.text.trim().length > 0);
+}
+
+export function bottomPatientNameRequested(marking: TextMarking | null | undefined): boolean {
+    return Boolean(marking && marking.surface === "bottom" && marking.addPatientName !== false);
 }
 
 export function snapTextStep(value: number, min: number, max: number, step: number): number {

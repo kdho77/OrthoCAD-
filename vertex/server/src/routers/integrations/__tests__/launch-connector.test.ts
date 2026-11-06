@@ -283,7 +283,8 @@ describe("launch connector idempotency, launch, and scans", () => {
         const design = await env.store.getDesign(String(created.body.design_id));
         const settings = readStoredDesignSettings(design?.settingsJson);
         expect(settings?.textMarking).toMatchObject({
-            text: "JANE DOE",
+            addPatientName: true,
+            text: "",
             surface: "bottom",
             mode: "engrave",
             feet: "both",

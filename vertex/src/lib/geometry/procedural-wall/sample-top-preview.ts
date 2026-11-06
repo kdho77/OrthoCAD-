@@ -7,7 +7,7 @@ import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
 import { scaleSourceShapeToFootprint } from "@/lib/geometry/shoe-size";
-import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
+import { hasActiveComposedTextMarking } from "@/lib/geometry/text-marking/compose";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
     extractMergedGeometry,
@@ -159,15 +159,28 @@ async function applyExportText(
     geometry: BufferGeometry,
     options: ProceduralPreviewOptions & { mirrored?: boolean },
 ): Promise<BufferGeometry> {
-    if (!hasActiveTextMarking(options.textMarking)) return geometry;
+    if (
+        !hasActiveComposedTextMarking(
+            options.textMarking,
+            options.patientDisplayName,
+            options.side ?? "right",
+        )
+    ) {
+        return geometry;
+    }
     const { applyTextMarkingToPrintSolid } = await import("@/lib/geometry/text-marking/apply");
     const { TextMarkingError } = await import("@/lib/geometry/text-marking/errors");
     const { buildTextGuide } = await import("@/lib/geometry/text-marking/place");
     const textGuide = buildTextGuide(geometry);
     try {
-        const marked = await applyTextMarkingToPrintSolid(geometry, options.textMarking, {
-            side: options.side ?? (options.mirrored ? "left" : "right"),
-        });
+        const marked = await applyTextMarkingToPrintSolid(
+            geometry,
+            options.textMarking,
+            {
+                side: options.side ?? (options.mirrored ? "left" : "right"),
+            },
+            options.patientDisplayName,
+        );
         if (marked !== geometry) geometry.dispose();
         marked.userData = { ...marked.userData, textGuide };
         return marked;
@@ -286,6 +299,8 @@ export interface ProceduralPreviewOptions {
     composedTop?: boolean;
     /** Print-step custom text. Applied after loft; empty is a no-op. */
     textMarking?: TextMarking | null;
+    /** Linked client name for bottom addPatientName (not stored in textMarking.text). */
+    patientDisplayName?: string | null;
     /** Foot side for left/right placement (wall text is never glyph-mirrored). */
     side?: Side;
     /**

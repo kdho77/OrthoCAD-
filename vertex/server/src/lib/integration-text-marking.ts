@@ -7,29 +7,33 @@ import {
     readStoredDesignSettings,
 } from "../../../shared/design-settings.js";
 import {
+    addPatientNameEnabled,
+    hasActiveComposedTextMarking,
+    markingWithComposedText,
+    migrateLegacyPatientNameInText,
+    patientDisplayNameFromParts,
+} from "../../../src/lib/geometry/text-marking/compose.js";
+import {
     defaultTextMarking,
     hasActiveTextMarking,
     sanitizeText,
 } from "../../../src/lib/geometry/text-marking/constants.js";
 import type { TextMarking } from "../../../src/lib/geometry/text-marking/types.js";
 import { normalizeTextMarking } from "../../../src/lib/geometry/text-marking/validate.js";
+import type { Side } from "../../../src/types/index.js";
 
-export { hasActiveTextMarking, sanitizeText };
+export { hasActiveComposedTextMarking, hasActiveTextMarking, patientDisplayNameFromParts, sanitizeText };
 
 export function patientDisplayName(firstName: string, lastName: string): string {
-    return [firstName, lastName]
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .join(" ");
+    return patientDisplayNameFromParts(firstName, lastName);
 }
 
-/** Bottom engrave on both feet — matches the Print/Export panel defaults. */
-export function textMarkingFromPatientName(rawName: string): TextMarking | null {
-    const sanitized = sanitizeText(rawName.trim());
-    if (!sanitized) return null;
+/** Integration createDesign: default-on checkbox, extra line empty until the user adds text. */
+export function integrationBottomTextMarkingDefaults(): TextMarking {
     return normalizeTextMarking({
         ...defaultTextMarking("bottom"),
-        text: sanitized,
+        addPatientName: true,
+        text: "",
         surface: "bottom",
         mode: "engrave",
         feet: "both",
@@ -57,51 +61,73 @@ export function mergeTextMarkingIntoEnvelope(
 
 export function settingsEnvelopeForPatientName(
     rawSettingsJson: unknown,
-    rawName: string,
-): DesignSettingsEnvelope | null {
-    const marking = textMarkingFromPatientName(rawName);
-    if (!marking) return null;
-    return mergeTextMarkingIntoEnvelope(rawSettingsJson, marking);
+    _rawName: string,
+): DesignSettingsEnvelope {
+    return mergeTextMarkingIntoEnvelope(rawSettingsJson, integrationBottomTextMarkingDefaults());
 }
 
 export interface ResolvedProductionTextMarking {
     envelope: DesignSettingsEnvelope;
     textMarking: TextMarking;
+    patientDisplayName: string | null;
     persisted: boolean;
 }
 
+function resolvePatientDisplayName(args: {
+    patientNameOverride?: string;
+    clientDisplayName?: string | null;
+}): string | null {
+    const raw =
+        args.patientNameOverride !== undefined ? args.patientNameOverride : (args.clientDisplayName ?? "");
+    const sanitized = sanitizeText(raw.trim());
+    return sanitized || null;
+}
+
 /**
- * CAD-operator export: optional patient_name overrides saved text for this run and is merged into settingsJson.
- * When patientNameOverride is omitted, saved textMarking is kept as-is.
+ * CAD-operator export: optional patient_name overrides the linked client name for this run.
+ * Persisted settings keep addPatientName and extra text separate; loft uses envelopeWithLoftTextMarking.
  */
 export function resolveProductionTextMarking(args: {
     settingsJson: unknown;
     patientNameOverride?: string;
+    clientDisplayName?: string | null;
 }): ResolvedProductionTextMarking {
     const existing = readStoredDesignSettings(args.settingsJson) ?? {};
-    const prior = normalizeTextMarking({
+    const patientDisplayName = resolvePatientDisplayName(args);
+    let prior = normalizeTextMarking({
         ...defaultTextMarking("bottom"),
         ...((existing.textMarking as Partial<TextMarking> | undefined) ?? {}),
         surface: "bottom",
         mode: "engrave",
     });
-    const marking =
-        args.patientNameOverride !== undefined
-            ? normalizeTextMarking({
-                  ...prior,
-                  text: sanitizeText(args.patientNameOverride),
-                  surface: "bottom",
-                  mode: "engrave",
-                  feet: "both",
-              })
-            : prior;
-    const envelope = mergeTextMarkingIntoEnvelope(args.settingsJson, marking);
+    prior = migrateLegacyPatientNameInText(prior, patientDisplayName ?? args.clientDisplayName ?? null);
+    if (args.patientNameOverride !== undefined) {
+        prior = normalizeTextMarking({ ...prior, addPatientName: true });
+    }
+    const envelope = mergeTextMarkingIntoEnvelope(args.settingsJson, prior);
     const persisted =
         args.patientNameOverride !== undefined ||
         JSON.stringify(existing.textMarking ?? null) !== JSON.stringify(envelope.settings.textMarking);
     return {
         envelope,
-        textMarking: marking,
+        textMarking: prior,
+        patientDisplayName,
         persisted,
     };
+}
+
+/** In-memory snapshot for headless Export loft (composed name + extra on one bottom string). */
+export function envelopeWithLoftTextMarking(
+    envelope: DesignSettingsEnvelope,
+    patientDisplayName: string | null,
+    side: Side,
+): DesignSettingsEnvelope {
+    const marking = envelope.settings.textMarking as TextMarking | undefined;
+    if (!marking) return envelope;
+    if (!addPatientNameEnabled(marking) && !hasActiveTextMarking(marking)) return envelope;
+    const composed = markingWithComposedText(marking, side, patientDisplayName);
+    return designSettingsEnvelope({
+        ...envelope.settings,
+        textMarking: composed,
+    });
 }

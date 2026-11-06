@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { activePatientDisplayName } from "@/lib/clinical/patient-display-name";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { resolveViewerWallStyle } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
@@ -45,6 +46,7 @@ export function printSolidOptions(input: {
         },
         trimline,
         textMarking: design.textMarking,
+        patientDisplayName: activePatientDisplayName(),
         side,
         // Loft at the target footprint. Export must not scale the finished solid.
         footprintScale: layout.scale,

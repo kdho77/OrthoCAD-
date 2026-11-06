@@ -20,7 +20,12 @@ import {
 } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { buildHeadlessFinalizedFoot } from "../lib/finalized-mesh-runner.js";
-import { hasActiveTextMarking, resolveProductionTextMarking } from "../lib/integration-text-marking.js";
+import {
+    envelopeWithLoftTextMarking,
+    hasActiveComposedTextMarking,
+    patientDisplayName,
+    resolveProductionTextMarking,
+} from "../lib/integration-text-marking.js";
 
 export interface CadGeneratePlan {
     stlStorageKey: string;
@@ -70,7 +75,7 @@ export async function planCadOperatorGenerate(args: {
             settingsJson: true,
             updatedAt: true,
             deletedAt: true,
-            client: { select: { tenantId: true } },
+            client: { select: { tenantId: true, firstName: true, lastName: true } },
             integrationLink: {
                 select: { tenantId: true, source: true, externalOrderId: true, sides: true },
             },
@@ -103,15 +108,22 @@ export async function planCadOperatorGenerate(args: {
     if (design.method === "milling_3axis") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Milled orders are not belt G-code" });
     }
+    const clientDisplayName = row
+        ? patientDisplayName(row.client.firstName ?? "", row.client.lastName ?? "")
+        : "";
     const resolved = resolveProductionTextMarking({
         settingsJson: design.settingsJson,
         patientNameOverride: args.patientName,
+        clientDisplayName,
     });
-    if (args.useSavedDesignMesh && !hasActiveTextMarking(resolved.textMarking)) {
+    if (
+        args.useSavedDesignMesh &&
+        !hasActiveComposedTextMarking(resolved.textMarking, resolved.patientDisplayName, args.side)
+    ) {
         throw new TRPCError({
             code: "BAD_REQUEST",
             message:
-                "A patient name is required for printed devices. Provide patient_name on generate_gcode or save bottom textMarking.text on the design.",
+                "A patient name is required for printed devices. Provide patient_name on generate_gcode, link a client with first and last name, or add optional bottom text.",
         });
     }
     if (resolved.persisted) {
@@ -120,7 +132,9 @@ export async function planCadOperatorGenerate(args: {
             data: { settingsJson: resolved.envelope as object },
         });
     }
-    const settingsJson = resolved.envelope;
+    const settingsJson = args.useSavedDesignMesh
+        ? envelopeWithLoftTextMarking(resolved.envelope, resolved.patientDisplayName, args.side)
+        : resolved.envelope;
     const printRecipe = lockedRecipe(settingsJson);
     const shared = {
         presetId: CAD_OPERATOR_BELT_PROFILE_ID,
