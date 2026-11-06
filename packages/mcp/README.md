@@ -72,6 +72,7 @@ Local dev: `npm run dev` (tsx stdio server).
 | `generate_gcode` | tRPC `manufacturing.generateSolid` → **Python `/manufacture` on main** |
 | `get_export_download` | tRPC `manufacturing.getGcodeDownloadUrl` |
 | `build_design_exported_payload` | VO handoff object (below) — **no VO order status writes** |
+| `persist_saved_design_snapshot` | tRPC `manufacturing.persistSavedDesignSnapshot` — writes `settingsJson` on an existing design |
 
 Saved-design belt flow: `generate_gcode` with `use_saved_design: true` and `design_id`. The server builds the canonical Export mesh internally and returns left and right G-code downloads. No STL file is returned. Omitting `side` requires both feet. The legacy STL upload path (`prepare_manufacturing_stl_upload` → `stl_storage_key`) remains for a mesh the operator already built.
 
@@ -110,7 +111,7 @@ OrthoCAD never writes VO order status.
 
 1. `npm run build` in `packages/mcp` succeeds.
 2. MCP server starts: `ORTHOCAD_MCP_API_KEY=ocad_… ORTHOCAD_API_BASE=… node dist/cli.js` (stdio; no key in logs).
-3. Tool list includes seven tools (`get_design` … `build_design_exported_payload`).
+3. Tool list includes eight tools (`get_design` … `persist_saved_design_snapshot`).
 4. `build_design_exported_payload` with sample files returns exact VO shape above (no `status` / order fields).
 5. `generate_gcode` documentation references main `/manufacture` path (VertexSlice/Apex/leader via #263 on main).
 
@@ -127,6 +128,8 @@ npm test -- packages/mcp/test
 Dogfood tenant `54b6a960-aa40-4988-b116-adf5ed6c72f8` only. CAD-operator Bearer (`ocad_…`) can read designs and call manufacturing prepare / generateSolid / getGcodeDownloadUrl. Session auth is unchanged. Other tRPC procedures still reject the key.
 
 `use_saved_design` lofts with the UI Export path (SAMPLE_Top procedural solid, watertight check, leader once per foot) and returns G-code only.
+
+`persist_saved_design_snapshot` writes that parameter snapshot onto an existing design (`design_id`). It copies the stored integration-link shoe size and width, maps only structured catalog fields, and returns 422 instead of inventing a prescription. `rx_text` and notes are ignored. It does not change File Ready or In Production.
 
 Residuals:
 

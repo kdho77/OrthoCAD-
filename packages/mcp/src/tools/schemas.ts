@@ -84,6 +84,113 @@ export const buildDesignExportedPayloadInputSchema = z.object({
     files: z.array(voHandoffFileSchema).min(1),
 });
 
+const shoeSystemSchema = z.preprocess(
+    (value) => (typeof value === "string" ? value.trim().toUpperCase().replace(/\s+/g, "_") : value),
+    z.enum(["US_M", "US_W", "EU"]),
+);
+
+const widthSchema = z.preprocess(
+    (value) => (typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, "_") : value),
+    z.enum(["narrow", "medium", "wide", "extra_narrow", "extra_wide"]),
+);
+
+const archSchema = z.preprocess(
+    (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+    z.enum(["low", "medium", "standard", "high"]),
+);
+
+const savedDesignSliderSchema = z
+    .object({
+        forefoot_posting_deg: z.number().finite().optional(),
+        rearfoot_posting_deg: z.number().finite().optional(),
+        medial_skive_mm: z.number().finite().optional(),
+        lateral_skive_mm: z.number().finite().optional(),
+        arch_ease_mm: z.number().finite().optional(),
+        heel_cup_depth_mm: z.number().finite().optional(),
+        heel_cup_height_mm: z.number().finite().optional(),
+        heel_cup_width_mm: z.number().finite().optional(),
+        forefoot_width_mm: z.number().finite().optional(),
+        heel_lift_mm: z.number().finite().optional(),
+        medial_flange_mm: z.number().finite().optional(),
+        lateral_flange_mm: z.number().finite().optional(),
+    })
+    .strict();
+
+const wedgeSchema = z
+    .object({
+        side: z.enum(["medial", "lateral"]),
+        value: z.number().finite(),
+        unit: z.enum(["mm", "deg"]),
+        degree_mode: z.enum(["local", "station"]).optional(),
+    })
+    .strict();
+
+/**
+ * VertexOrders catalog. Keep keys aligned with vertex/shared/saved-design-catalog.ts.
+ * rx_text, notes, rigidity, extra_soft, and hardness are accepted and not mapped.
+ */
+export const savedDesignCatalogSchema = z
+    .object({
+        shoe_size: z
+            .object({
+                system: shoeSystemSchema,
+                size: z.number().finite().positive(),
+                left: z.number().finite().positive().nullable().optional(),
+                right: z.number().finite().positive().nullable().optional(),
+            })
+            .strict()
+            .optional(),
+        width: widthSchema.optional(),
+        arch: archSchema.optional(),
+        flexible_foot: z.boolean().optional(),
+        elements: z
+            .array(
+                z
+                    .object({
+                        name: z.string().trim().min(1).max(80),
+                        side: z.enum(["left", "right"]),
+                        height_mm: z.number().finite().nonnegative().optional(),
+                    })
+                    .strict(),
+            )
+            .max(24)
+            .optional(),
+        sliders: savedDesignSliderSchema.optional(),
+        sliders_by_side: z
+            .object({
+                left: savedDesignSliderSchema.optional(),
+                right: savedDesignSliderSchema.optional(),
+            })
+            .strict()
+            .optional(),
+        rearfoot_wedge: wedgeSchema.optional(),
+        forefoot_wedge: wedgeSchema.optional(),
+        full_length_wedge: z
+            .object({
+                side: z.enum(["medial", "lateral"]),
+                value: z.number().finite(),
+                unit: z.enum(["mm", "deg"]),
+            })
+            .strict()
+            .optional(),
+        rx_text: z.string().max(8000).optional(),
+        notes: z.string().max(8000).optional(),
+        rigidity: z.string().max(80).optional(),
+        extra_soft: z.union([z.string().max(80), z.boolean()]).optional(),
+        hardness: z.string().max(80).optional(),
+    })
+    .strict();
+
+export const persistSavedDesignSnapshotInputSchema = z
+    .object({
+        design_id: z.string().uuid(),
+        catalog: savedDesignCatalogSchema.optional(),
+        /** Accepted and dropped. Clinical values are not read from free text. */
+        rx_text: z.string().max(8000).optional(),
+        notes: z.string().max(8000).optional(),
+    })
+    .strict();
+
 /** MCP tool catalog metadata (Phase A v0). */
 export const MCP_TOOL_DEFINITIONS = [
     {
@@ -132,6 +239,27 @@ export const MCP_TOOL_DEFINITIONS = [
             "Does not write VO order status.",
         inputSchema: buildDesignExportedPayloadInputSchema,
     },
+    {
+        name: "persist_saved_design_snapshot",
+        description:
+            "Update one existing design's settingsJson in place with a loftable SAMPLE_Top parameter snapshot " +
+            "for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when " +
+            "present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, " +
+            "shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide), " +
+            "arch (low|medium|standard|high → −3.5|0|0|+3 mm), flexible_foot (true → apex +4 mm on both feet), " +
+            "elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), " +
+            "sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, " +
+            "sliders.lateral_skive_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, " +
+            "sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, " +
+            "sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), " +
+            "rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, " +
+            "forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, " +
+            "full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit. " +
+            "Ignored and never mapped: rx_text, notes, rigidity, extra_soft, hardness. " +
+            "422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, " +
+            "or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
+        inputSchema: persistSavedDesignSnapshotInputSchema,
+    },
 ] as const;
 
 export function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
@@ -155,19 +283,49 @@ export function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
     return { type: "object" };
 }
 
+function unwrapZod(field: z.ZodTypeAny): z.ZodTypeAny {
+    if (field instanceof z.ZodEffects) return unwrapZod(field._def.schema as z.ZodTypeAny);
+    if (field instanceof z.ZodOptional) return unwrapZod(field._def.innerType as z.ZodTypeAny);
+    if (field instanceof z.ZodNullable) return unwrapZod(field._def.innerType as z.ZodTypeAny);
+    if (field instanceof z.ZodDefault) return unwrapZod(field._def.innerType as z.ZodTypeAny);
+    return field;
+}
+
+export function listMcpSavedDesignCatalogKeyPaths(): string[] {
+    const paths: string[] = [];
+    const walk = (field: z.ZodTypeAny, prefix: string) => {
+        const inner = unwrapZod(field);
+        if (inner instanceof z.ZodObject) {
+            for (const [key, value] of Object.entries(inner.shape)) {
+                const path = prefix ? `${prefix}.${key}` : key;
+                paths.push(path);
+                walk(value as z.ZodTypeAny, path);
+            }
+            return;
+        }
+        if (inner instanceof z.ZodArray) walk(inner._def.type as z.ZodTypeAny, prefix);
+    };
+    walk(savedDesignCatalogSchema, "");
+    return paths;
+}
+
 function zodFieldToJson(field: z.ZodTypeAny): Record<string, unknown> {
-    if (field instanceof z.ZodOptional) return zodFieldToJson(field._def.innerType as z.ZodTypeAny);
-    if (field instanceof z.ZodDefault) return zodFieldToJson(field._def.innerType as z.ZodTypeAny);
-    if (field instanceof z.ZodString) {
+    const inner = unwrapZod(field);
+    if (inner instanceof z.ZodString) {
         const out: Record<string, unknown> = { type: "string" };
-        if (field._def.checks?.some((c) => c.kind === "uuid")) out.format = "uuid";
+        if (inner._def.checks?.some((c) => c.kind === "uuid")) out.format = "uuid";
         return out;
     }
-    if (field instanceof z.ZodNumber) return { type: "number" };
-    if (field instanceof z.ZodEnum) return { type: "string", enum: field._def.values };
-    if (field instanceof z.ZodLiteral) return { type: "string", enum: [field.value] };
-    if (field instanceof z.ZodArray) {
-        return { type: "array", items: zodFieldToJson(field._def.type as z.ZodTypeAny) };
+    if (inner instanceof z.ZodNumber) return { type: "number" };
+    if (inner instanceof z.ZodBoolean) return { type: "boolean" };
+    if (inner instanceof z.ZodEnum) return { type: "string", enum: inner._def.values };
+    if (inner instanceof z.ZodLiteral) return { type: "string", enum: [inner.value] };
+    if (inner instanceof z.ZodUnion) {
+        return { anyOf: (inner._def.options as z.ZodTypeAny[]).map((option) => zodFieldToJson(option)) };
     }
+    if (inner instanceof z.ZodArray) {
+        return { type: "array", items: zodFieldToJson(inner._def.type as z.ZodTypeAny) };
+    }
+    if (inner instanceof z.ZodObject) return zodToJsonSchema(inner);
     return {};
 }

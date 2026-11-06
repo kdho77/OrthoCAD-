@@ -25,6 +25,9 @@ export type OrthocadMcpTrpcProxy = {
                 productionId: string;
             }) => Promise<{ downloadUrl: string; productionId: string }>;
         };
+        persistSavedDesignSnapshot: {
+            mutate: (input: { designId: string; catalog?: unknown }) => Promise<Record<string, unknown>>;
+        };
     };
     design: {
         get: {
@@ -115,6 +118,18 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
         /** Production parameter snapshot — settingsJson on the design document. */
         getDesignParams(designId: string) {
             return trpc.design.get.query({ id: designId });
+        },
+
+        /**
+         * Replace settingsJson on an existing design with a fail-closed SAMPLE_Top snapshot.
+         * Call site: vertex/server/src/routers/manufacturing.ts persistSavedDesignSnapshot.
+         * rx_text is not forwarded.
+         */
+        persistSavedDesignSnapshot(input: { designId: string; catalog?: unknown }) {
+            return trpc.manufacturing.persistSavedDesignSnapshot.mutate({
+                designId: input.designId,
+                catalog: input.catalog,
+            });
         },
     };
 }

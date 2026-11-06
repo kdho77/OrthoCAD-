@@ -9,6 +9,7 @@ import {
     printRecipeV1Schema,
     resolveGyroidManufacturingPrintRecipe,
 } from "../../../shared/print-recipe/print-recipe.js";
+import { SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
 import {
     assertCadOperatorGcodeKey,
     buildCadOperatorGcodeKey,
@@ -22,6 +23,7 @@ import {
     deleteManufacturingTempBestEffort,
 } from "../lib/manufacturing-stl-lifecycle.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
+import { persistSavedDesignSnapshotOnDesign } from "../lib/saved-design-snapshot.js";
 import {
     assertManufacturingTempKeyForUser,
     buildManufacturingTempStlKey,
@@ -574,6 +576,40 @@ export const manufacturingRouter = router({
             } catch (err) {
                 deleteManufacturingTempBestEffort(supabase, tempStlKey);
                 throw err;
+            }
+        }),
+
+    /**
+     * Persist a loftable SAMPLE_Top settingsJson on an existing design.
+     * Does not create a design, change production status, or read rx text.
+     */
+    persistSavedDesignSnapshot: rateLimitedSessionOrCadProcedure(
+        RATE_LIMITS.export,
+        "manufacturing:persistSavedDesignSnapshot",
+        "manufacturing:generate",
+    )
+        .input(
+            z.object({
+                designId: z.string().uuid(),
+                catalog: z.unknown().optional(),
+            }),
+        )
+        .mutation(async ({ ctx, input }) => {
+            if (!ctx.cadOperator) {
+                throw new TRPCError({ code: "FORBIDDEN", message: "CAD-operator credential required" });
+            }
+            try {
+                return await persistSavedDesignSnapshotOnDesign({
+                    prisma: ctx.prisma,
+                    principal: ctx.cadOperator,
+                    designId: input.designId,
+                    catalog: input.catalog,
+                });
+            } catch (error) {
+                if (error instanceof SavedDesignSnapshotError) {
+                    throw new TRPCError({ code: "UNPROCESSABLE_CONTENT", message: error.message });
+                }
+                throw error;
             }
         }),
 
