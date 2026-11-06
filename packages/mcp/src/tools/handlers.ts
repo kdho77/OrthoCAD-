@@ -11,6 +11,7 @@ import {
     getDesignParamsInputSchema,
     getExportDownloadInputSchema,
     listDesignsByOrderInputSchema,
+    persistSavedDesignSnapshotInputSchema,
     prepareManufacturingStlUploadInputSchema,
 } from "./schemas.js";
 
@@ -178,6 +179,19 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
         case "build_design_exported_payload": {
             const input = buildDesignExportedPayloadInputSchema.parse(args);
             return buildDesignExportedPayload(input);
+        }
+        case "persist_saved_design_snapshot": {
+            const input = persistSavedDesignSnapshotInputSchema.parse(args);
+            const manufacturing =
+                deps.manufacturing ??
+                (await import("../clients/manufacturing-client.js")).createManufacturingClient({
+                    trpcUrl: deps.config.trpcUrl,
+                    cadOperatorKey: requireCadOperatorKey(deps.config),
+                });
+            return manufacturing.persistSavedDesignSnapshot({
+                designId: input.design_id,
+                catalog: input.catalog,
+            });
         }
         default:
             throw new Error(`Unknown tool: ${name}`);
