@@ -192,6 +192,32 @@ describe("design settings round trip", () => {
         expect(loaded.corrections.left.forefootPostingDeg).toBe(4);
     });
 
+    test("amputation parameters round-trip in settingsJson and a design without them is unchanged", () => {
+        const plain = settingsFixture();
+        expect(settingsForDesignSave(plain)).toEqual(plain);
+        const withFiller = {
+            ...plain,
+            amputation: {
+                left: {
+                    enabled: true,
+                    points: [
+                        { x: 180, y: 30 },
+                        { x: 210, y: 0 },
+                        { x: 180, y: -30 },
+                    ],
+                    height: 15,
+                    filletInside: 10,
+                    filletOutside: 30,
+                    interfaceFillet: false,
+                },
+            },
+        };
+        expect(settingsForDesignSave(withFiller)).toEqual(withFiller);
+        const stored = readStoredDesignSettings(settingsEnvelopeForSave(withFiller));
+        expect(stored).toEqual(withFiller);
+        expect(JSON.stringify(stored)).not.toMatch(/vertices|faces|stl/i);
+    });
+
     test("a stored snapshot wins over older column values", () => {
         const settings = { ...settingsFixture(), thicknessMm: 7 };
         const doc = asDesignDocument(

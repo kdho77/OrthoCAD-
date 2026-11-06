@@ -331,6 +331,35 @@ export interface DesignTrimlines {
 }
 
 /**
+ * Amputation cut in the mirror-safe foot frame.
+ * x: millimetres from the heel toward the toe.
+ * y: millimetres from the midline, medial positive and lateral negative.
+ */
+export interface AmputationPoint {
+    x: number;
+    y: number;
+}
+
+/** One foot. Stored in settingsJson. The mesh is not stored. */
+export interface SideAmputation {
+    enabled: boolean;
+    points: AmputationPoint[];
+    /** Flat-top rise, straight up, millimetres. Default 15. */
+    height: number;
+    /** Convex top-edge rounding radius, millimetres. Default 10. */
+    filletInside: number;
+    /** Concave blend into the insole, millimetres. Default 30. */
+    filletOutside: number;
+    /** Off: near-vertical step with about 1 mm of cleanup. */
+    interfaceFillet: boolean;
+}
+
+export interface DesignAmputation {
+    left?: SideAmputation;
+    right?: SideAmputation;
+}
+
+/**
  * Optional base template a design starts from (Base + Modifier model — see
  * docs/base-modifier-architecture.md). When absent, the design is generated
  * purely parametrically. When present, corrections / trimline / elements /
@@ -462,6 +491,12 @@ export interface DesignState {
      * does not change print geometry.
      */
     smoothElements?: boolean;
+    /**
+     * Per-foot amputation filler. Parameters only — the mesh is rebuilt on open.
+     * Absent on older designs, which keeps every existing mesh byte-identical.
+     */
+    amputation?: DesignAmputation;
+
     /** User-edited insole outline curves — persisted with the design. */
     trimlines?: DesignTrimlines;
     /** Active top-trim preset label per foot (cleared to custom on manual edit). */

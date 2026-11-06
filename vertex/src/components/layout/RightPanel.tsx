@@ -1,6 +1,7 @@
 import { ClinicalStepFooter } from "@/components/clinical/ClinicalStepRail";
 import { EditingStepHeader } from "@/components/clinical/EditingStepHeader";
 import { LeftSidebar } from "@/components/layout/LeftSidebar";
+import { AmputationPanel } from "@/features/amputation/AmputationPanel";
 import { ClinicalPrintStepPanel } from "@/features/clinical/ClinicalPrintStepPanel";
 import { ClinicalScanStepPanel } from "@/features/clinical/ClinicalScanStepPanel";
 import { HardnessStepPanel } from "@/features/clinical/HardnessStepPanel";
@@ -42,6 +43,7 @@ export function RightPanel() {
                     {step === "corrections" ? (
                         <div className="space-y-3">
                             <CorrectionPresetsPanel />
+                            <AmputationPanel />
                             <CorrectionsPanel />
                         </div>
                     ) : null}

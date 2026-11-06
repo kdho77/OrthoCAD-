@@ -1,3 +1,8 @@
+import {
+    amputationDeltaMm,
+    amputationFillerActive,
+    type SideAmputation,
+} from "@/lib/geometry/amputee-filler";
 import { elementHeightAt } from "@/lib/geometry/elements";
 import {
     type FullLengthRimFrame,
@@ -47,6 +52,11 @@ export interface HeightFieldParams {
     includeSkives?: boolean;
     /** When false, elements are omitted (applied later on the export mesh path). */
     includeElements?: boolean;
+    /**
+     * Amputation filler for this foot. Absent or disabled adds nothing, so the
+     * height stays bit-identical to a design that has never stored one.
+     */
+    amputation?: SideAmputation | null;
     /** Optional user-edited insole perimeter override. */
     trimline?: TrimlineCurve | null;
     /** Phase 4 operator graph (additive clinical operators). When present its delta is added. */
@@ -506,6 +516,20 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
             u,
             vSigned,
             params,
+            (uu) => effectiveOutlineHalfWidth(uu, lengthMm, widthMm, params.trimline) * (widthMm / 2),
+        );
+    }
+
+    // Amputation plateau. After posting and the thickness lift, before sinks.
+    // Disabled / absent skips the call so this sum stays bit-identical.
+    if (params.amputation && amputationFillerActive(params.amputation)) {
+        h += amputationDeltaMm(
+            u,
+            vSigned,
+            side,
+            lengthMm,
+            widthMm,
+            params.amputation,
             (uu) => effectiveOutlineHalfWidth(uu, lengthMm, widthMm, params.trimline) * (widthMm / 2),
         );
     }
