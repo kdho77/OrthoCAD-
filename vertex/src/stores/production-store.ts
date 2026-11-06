@@ -8,12 +8,15 @@ import {
     assignJob,
     cancelJob,
     downloadGcode,
+    type EnqueueInput,
+    enqueueJob,
     holdJob,
     markJobDone,
     type PrinterRecord,
     ProductionError,
     type ProductionJob,
     type ProductionRepo,
+    registerMockPrinter,
     rerunJob,
     retryJob,
     type StoredGcode,
@@ -31,6 +34,8 @@ interface ProductionStore {
     assign: (id: string, printerId: string) => Promise<void>;
     rerun: (id: string) => Promise<void>;
     download: (id: string) => Promise<{ filename: string; gcode: string; sha256: string }>;
+    registerMock: (name: string, moonrakerUrl: string) => Promise<void>;
+    enqueuePrint: (input: EnqueueInput) => Promise<void>;
     /** Dev-only preview of the G-code countdown. Not used in production builds. */
     seedRetentionDemo: () => void;
 }
@@ -72,6 +77,11 @@ function repo(): ProductionRepo {
         },
         async listPrinters() {
             return useProductionStore.getState().printers;
+        },
+        async insertPrinter(printer) {
+            useProductionStore.setState((state) => ({
+                printers: [...state.printers.filter((row) => row.id !== printer.id), printer],
+            }));
         },
         async getGcode(jobId) {
             return useProductionStore.getState().gcode[jobId] ?? null;
@@ -120,6 +130,15 @@ export const useProductionStore = create<ProductionStore>((_set, _get) => ({
     },
     download(id) {
         return downloadGcode(repo(), actor(), id);
+    },
+    async registerMock(name, moonrakerUrl) {
+        const result = await registerMockPrinter(repo(), actor(), { name, moonrakerUrl });
+        useProductionStore.setState((state) => ({
+            printers: [...state.printers.filter((row) => row.id !== result.printer.id), result.printer],
+        }));
+    },
+    async enqueuePrint(input) {
+        remember(await enqueueJob(repo(), actor(), input));
     },
     seedRetentionDemo() {
         const current = useProductionStore.getState();

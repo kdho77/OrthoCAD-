@@ -157,6 +157,17 @@ export function prismaProductionRepo(prisma: PrismaClient): ProductionRepo {
             const rows = await prisma.shopPrinter.findMany({ orderBy: { name: "asc" } });
             return rows.map((row) => mapPrinter(row));
         },
+        async insertPrinter(printer) {
+            await prisma.shopPrinter.create({
+                data: {
+                    id: printer.id,
+                    name: printer.name,
+                    state: printer.state,
+                    ownerId: printer.ownerId,
+                    tenantId: printer.tenantId,
+                },
+            });
+        },
         async getGcode(jobId) {
             const row = await prisma.jobGcode.findUnique({ where: { jobId } });
             if (!row) return null;

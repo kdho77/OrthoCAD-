@@ -10,6 +10,7 @@ import {
     holdJob,
     listProduction,
     markJobDone,
+    registerMockPrinter,
     rerunJob,
     retryJob,
 } from "../../../shared/production-jobs.js";
@@ -120,4 +121,21 @@ export const productionRouter = router({
             rethrowProduction(error);
         }
     }),
+
+    /** Mock Moonraker pairing only. Does not open a live printer connection. */
+    registerMockPrinter: protectedProcedure
+        .input(
+            z.object({
+                name: z.string().min(1).max(80),
+                moonrakerUrl: z.string().min(1).max(500),
+            }),
+        )
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await registerMockPrinter(repo, actor, input);
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
 });

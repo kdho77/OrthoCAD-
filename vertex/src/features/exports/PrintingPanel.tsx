@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { Cpu, Download, Lock, Play, Printer } from "lucide-react";
+import { Cpu, Download, Factory, Lock, Play, Printer } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SliderField } from "@/components/ui/slider-field";
@@ -12,9 +12,11 @@ import {
     type ProceduralWallStyleChoice,
 } from "@/features/exports/procedural-wall-preview-controls";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
+import { enqueueCurrentDesignPrintFarm } from "@/features/production/production-actions";
 import { getKernel } from "@/lib/geometry/geometry-kernel";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
 import { type CamOverrides, type CamResult, generateGcode, presetsForMethod } from "@/lib/kiri";
+import type { GcodeStats } from "@/lib/kiri/gcode";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -26,6 +28,18 @@ function fmtTime(sec: number): string {
     const m = Math.round((sec % 3600) / 60);
     return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
+
+async function blobToUtf8(blob: Blob): Promise<string> {
+    return new TextDecoder().decode(await blob.arrayBuffer());
+}
+
+const EMPTY_GCODE_STATS: GcodeStats = {
+    lines: 0,
+    extrudeDistanceMm: 0,
+    travelDistanceMm: 0,
+    estimatedTimeSec: 0,
+    estimatedMaterialMm3: 0,
+};
 
 interface PrintingPanelProps {
     /** Simplified clinical print step — primary CTA + fewer exposed knobs. */
@@ -56,6 +70,7 @@ export function PrintingPanel({
     const [toolDia, setToolDia] = useState(6);
     const [result, setResult] = useState<CamResult | null>(null);
     const [status, setStatus] = useState<string | null>(null);
+    const [sendStatus, setSendStatus] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
 
     // Hybrid manufacturing (server-side solid + G-code) controls
@@ -105,7 +120,20 @@ export function PrintingPanel({
                 ? `Exported ${res.filename} (-${TOKEN_COST.gcode} tokens)`
                 : (res.reason ?? "Export failed"),
         );
-        if (res.ok && res.stats) setResult((r) => (r ? r : { gcode: "", stats: res.stats!, moveCount: 0 }));
+        if (res.ok && res.stats) {
+            let gcodeText = "";
+            if (res.blob) {
+                try {
+                    gcodeText = await blobToUtf8(res.blob);
+                } catch {
+                    gcodeText = "";
+                }
+            }
+            setResult((r) => {
+                const base = r ?? { gcode: "", stats: res.stats!, moveCount: 0 };
+                return gcodeText ? { ...base, gcode: gcodeText } : base;
+            });
+        }
         setBusy(false);
     };
 
@@ -131,6 +159,20 @@ export function PrintingPanel({
                 setStatus(
                     `Server G-code exported ${res.filename || "file"}${idPart} (tokens deducted on success)`,
                 );
+                if (res.blob) {
+                    try {
+                        const text = await blobToUtf8(res.blob);
+                        if (text.trim()) {
+                            setResult((prev) => {
+                                const stats = res.stats ?? prev?.stats ?? EMPTY_GCODE_STATS;
+                                const moveCount = prev?.moveCount ?? 0;
+                                return { gcode: text, stats, moveCount };
+                            });
+                        }
+                    } catch {
+                        /* keep prior toolpath preview if blob decode fails */
+                    }
+                }
             } else {
                 // Same friendly mapping as ExportPanel — hybrid STL build uses closeGlbInsoleToSolid
                 // and export-service returns the raw MeshNotWatertightError message as res.reason.
@@ -157,6 +199,28 @@ export function PrintingPanel({
         setGrindingStyle(
             t === "straight" ? { type: "straight", angle_degrees: 8 } : { type: "rounded", radius_mm: 3 },
         );
+    };
+
+    const onSendToPrintFarm = async () => {
+        const gcode = result?.gcode?.trim();
+        if (!gcode) {
+            setSendStatus("Generate G-code first (Export or Prepare for print), then send to Production.");
+            return;
+        }
+        setBusy(true);
+        setSendStatus(null);
+        try {
+            const ok = await enqueueCurrentDesignPrintFarm(gcode);
+            setSendStatus(
+                ok
+                    ? "Queued on Production. Open Production → Queue to assign a printer."
+                    : "Save the design to the server first, then try Send to Print Farm again.",
+            );
+        } catch (e) {
+            setSendStatus(e instanceof Error ? e.message : "Could not queue for print");
+        } finally {
+            setBusy(false);
+        }
     };
 
     return (
@@ -349,6 +413,21 @@ export function PrintingPanel({
 
             {isCnc ? null : !gcodeCheck.ok ? (
                 <p className="text-xs text-amber-400">{gcodeCheck.reason}</p>
+            ) : null}
+            {isCnc ? null : gcodeCheck.ok && result?.gcode?.trim() ? (
+                <Button
+                    type="button"
+                    variant="secondary"
+                    className="w-full"
+                    disabled={busy}
+                    onClick={() => void onSendToPrintFarm()}
+                >
+                    <Factory className="h-4 w-4" />
+                    Send to Print Farm
+                </Button>
+            ) : null}
+            {isCnc ? null : sendStatus ? (
+                <p className="rounded-md border border-border bg-background/50 px-2 py-1.5 text-xs">{sendStatus}</p>
             ) : null}
             {isCnc ? null : status ? (
                 <p className="rounded-md bg-muted px-2 py-1.5 text-xs">{status}</p>
