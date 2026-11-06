@@ -22,6 +22,8 @@ import { AfoScanGuidedCard } from "@/features/afo/AfoScanGuidedCard";
 import { afoViewportPlacementLayer, scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
 import { shouldDeferTopMeshLoad } from "@/features/clients/start-path";
 import { afoPlacementComplete, ensureAfoScanPlacement } from "@/features/afo/afo-scan-ui";
+import { AmputationDrawOverlay } from "@/features/amputation/AmputationDrawOverlay";
+import { useAmputationDrawStore } from "@/features/amputation/amputation-draw-store";
 import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
 import { MeasureOverlay } from "@/features/measure/MeasureOverlay";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
@@ -135,6 +137,7 @@ export function Viewer3D() {
     const afoTrimGesture = useAfoStore((s) => s.trimGestureActive);
     const afoWorkingMesh = useAfoStore((s) => s.castMesh);
     const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
+    const drawingSide = useAmputationDrawStore((s) => s.side);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
     const confirmBottomPatternEdit = useMeshEditStore((s) => s.confirmBottomPatternEdit);
@@ -363,9 +366,16 @@ export function Viewer3D() {
                             ) ? (
                                 <SplitElementOverlays />
                             ) : null}
-                            {!printPreview ? <MeshEditTools /> : null}
-                            {!printPreview && !loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
-                            {!printPreview && !loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
+                            {/* Invisible pick meshes can start geometry edits on pointer-down,
+                                before an element's click opens its hardness selector. */}
+                            {!printPreview && !drawingSide ? <MeshEditTools /> : null}
+                            {!printPreview && !loftOverlay.blockViewport && !drawingSide ? (
+                                <TrimlineEditTools />
+                            ) : null}
+                            {!printPreview && !loftOverlay.blockViewport && !drawingSide ? (
+                                <BottomPatternEditTools />
+                            ) : null}
+                            {drawingSide && !loftOverlay.blockViewport ? <AmputationDrawOverlay /> : null}
                         </>
                     )}
                     <MeasureOverlay />
@@ -498,6 +508,11 @@ export function Viewer3D() {
                 {editMode === "edit-bottom-pattern" && bottomPatternEdit ? (
                     <span className="w-fit rounded bg-teal-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         Editing bottom pattern · {bottomPatternEdit.side}
+                    </span>
+                ) : null}
+                {!isAfo && drawingSide ? (
+                    <span className="w-fit rounded bg-rose-600/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        Drawing amputation · {drawingSide}
                     </span>
                 ) : null}
                 {!isAfo && hideInsoleForMarkers && !placingArchOnly ? (
