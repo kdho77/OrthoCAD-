@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { useThree } from "@react-three/fiber";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
 import { AFO_DESIGN_MARKERS } from "@/lib/geometry/afo/defaults";
 import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
@@ -29,6 +29,7 @@ export function AfoMarkerPlacement() {
     const setView = useDesignStore((s) => s.setViewer);
     const setPlacing = useAfoStore((s) => s.setPlacingLandmarkIndex);
     const setDragging = useAfoStore((s) => s.setDraggingTrimIndex);
+    const lastClient = useRef<{ x: number; y: number } | null>(null);
 
     const applyView = useCallback(
         (view: CameraView) => {
@@ -52,22 +53,37 @@ export function AfoMarkerPlacement() {
         ): { point: THREE.Vector3; index: number } | null => {
             if (!working) return null;
             const rect = gl.domElement.getBoundingClientRect();
+            if (rect.width < 1 || rect.height < 1) return null;
             const ndc = new THREE.Vector2(
                 ((clientX - rect.left) / rect.width) * 2 - 1,
                 -((clientY - rect.top) / rect.height) * 2 + 1,
             );
             raycaster.setFromCamera(ndc, camera);
             const targets: THREE.Object3D[] = [];
+            let surface: THREE.Mesh | null = null;
             scene.traverse((obj) => {
-                if ((obj as THREE.Mesh).isMesh && (obj.userData?.isAfoCast || obj.userData?.isScanMesh)) {
-                    targets.push(obj);
+                const mesh = obj as THREE.Mesh;
+                if (!mesh.isMesh || mesh.visible === false) return;
+                const data = mesh.userData ?? {};
+                if (data.isAfoTrimHandle || data.isScanPickMesh || data.isScanHoverHighlight) return;
+                if (data.isAfoCorrected || data.isAfoCast || data.isAfoShell) {
+                    targets.push(mesh);
+                    if (!surface || data.isAfoCorrected) surface = mesh;
+                    return;
                 }
+                if (data.isScanMesh && data.scanId) targets.push(mesh);
             });
             const hits = raycaster.intersectObjects(targets, false);
-            const first = hits[0];
+            const first = hits.find((hit) => hit.object.visible !== false);
             if (!first) return null;
-            const mesh = first.object as THREE.Mesh;
-            const local = mesh.worldToLocal(first.point.clone());
+            const hitMesh = first.object as THREE.Mesh;
+            const hitData = hitMesh.userData ?? {};
+            const space =
+                hitData.isAfoCast || hitData.isAfoCorrected || hitData.isAfoShell
+                    ? hitMesh
+                    : (surface ?? hitMesh);
+            space.updateWorldMatrix(true, false);
+            const local = space.worldToLocal(first.point.clone());
             const snap = nearestVertex(working, { x: local.x, y: local.y, z: local.z });
             return {
                 point: new THREE.Vector3(
@@ -78,6 +94,20 @@ export function AfoMarkerPlacement() {
                 index: snap.index,
             };
         };
+
+        const publishHover = (clientX: number, clientY: number) => {
+            if (!useAfoStore.getState().placingTrim) return;
+            const hit = hitWorking(clientX, clientY);
+            useAfoStore
+                .getState()
+                .setTrimHover(hit ? { x: hit.point.x, y: hit.point.y, z: hit.point.z } : null);
+        };
+
+        if (!placingTrim) {
+            if (useAfoStore.getState().trimHover) useAfoStore.getState().setTrimHover(null);
+        } else if (lastClient.current) {
+            publishHover(lastClient.current.x, lastClient.current.y);
+        }
 
         const hitHandle = (clientX: number, clientY: number): number | null => {
             const rect = gl.domElement.getBoundingClientRect();
@@ -96,6 +126,7 @@ export function AfoMarkerPlacement() {
         };
 
         const onDown = (ev: PointerEvent) => {
+            lastClient.current = { x: ev.clientX, y: ev.clientY };
             if (!working) return;
             if (placingTrim || afo.trimPoints.length > 0) {
                 const handle = hitHandle(ev.clientX, ev.clientY);
@@ -155,6 +186,8 @@ export function AfoMarkerPlacement() {
         };
 
         const onMove = (ev: PointerEvent) => {
+            lastClient.current = { x: ev.clientX, y: ev.clientY };
+            if (useAfoStore.getState().placingTrim) publishHover(ev.clientX, ev.clientY);
             const drag = useAfoStore.getState().draggingTrimIndex;
             if (drag == null) return;
             const hit = hitWorking(ev.clientX, ev.clientY);

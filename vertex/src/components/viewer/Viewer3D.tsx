@@ -21,10 +21,11 @@ import {
 import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
-import { activeMarkerPlacementLayer, scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
+import { AfoScanGuidedCard } from "@/features/afo/AfoScanGuidedCard";
+import { afoViewportPlacementLayer, scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
 import { afoPlacementComplete, ensureAfoScanPlacement } from "@/features/afo/afo-scan-ui";
-import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
 import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
+import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -42,11 +43,10 @@ import type { Side } from "@/types";
 import { AfoMarkerPlacement } from "./AfoMarkerPlacement";
 import { AfoMeshes } from "./AfoMeshes";
 import { recenterAfoScanCamera, useAfoScanCameraFrame } from "./AfoScanCameraFrame";
-import { AfoScanGuidedCard } from "@/features/afo/AfoScanGuidedCard";
 import { AfoScanHoverDot } from "./AfoScanHoverDot";
 import { AfoScanLandmarkLighting } from "./AfoScanLandmarkLighting";
-import { AfoScanMarkers } from "./AfoScanMarkers";
 import { AfoScanLandmarkPlacement } from "./AfoScanLandmarkPlacement";
+import { AfoScanMarkers } from "./AfoScanMarkers";
 import { BaseInsoleMesh } from "./BaseInsoleMesh";
 import { BottomPatternEditTools } from "./BottomPatternEditTools";
 import { ElementMarkers } from "./ElementMarkers";
@@ -172,7 +172,12 @@ export function Viewer3D() {
     const afoAutoFrame = useAfoStore((s) => s.scanAutoFrame);
     const setAfoScanLabels = useAfoStore((s) => s.setScanShowMarkerLabels);
     const setAfoAutoFrame = useAfoStore((s) => s.setScanAutoFrame);
-    const markerLayer = activeMarkerPlacementLayer(isAfo, placingScanMarkers, placingAfoLandmarks);
+    const markerLayer = afoViewportPlacementLayer(
+        workflowStep,
+        isAfo,
+        placingScanMarkers,
+        placingAfoLandmarks,
+    );
     const afoScanLandmarking = isAfo && workflowStep === "scan" && placingAfoLandmarks;
     const scanTransparent = afoScanLandmarking || afoStage1Align ? false : viewer.transparent;
 
@@ -302,6 +307,7 @@ export function Viewer3D() {
                             transparent={scanTransparent}
                             heightmap={afoScanLandmarking ? false : viewer.heightmap}
                             afoStage1Align={afoStage1Align}
+                            afoLandmarkOpaque={afoScanLandmarking || afoStage1Align}
                         />
                     ) : null}
                     {isAfo ? <AfoMeshes /> : null}
@@ -320,7 +326,9 @@ export function Viewer3D() {
                             <ScanRotateTool />
                             <ScanTransformTool />
                             {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
-                            {workflowStep === "print" && !hideInsoleForMarkers && !loftOverlay.blockViewport ? (
+                            {workflowStep === "print" &&
+                            !hideInsoleForMarkers &&
+                            !loftOverlay.blockViewport ? (
                                 <SplitElementOverlays />
                             ) : null}
                             {!printPreview ? <MeshEditTools /> : null}
