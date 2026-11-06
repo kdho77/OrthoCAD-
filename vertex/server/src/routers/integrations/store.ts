@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import type { DesignSettingsEnvelope } from "../../../../shared/design-settings.js";
+
 export const INTEGRATION_SOURCES = ["vo2", "orthocloud"] as const;
 export type IntegrationSource = (typeof INTEGRATION_SOURCES)[number];
 
@@ -83,6 +85,8 @@ export interface DesignRecord {
     kind: DesignType;
     name: string;
     notes: string;
+    /** Mapped order parameters. Null when the order named none. */
+    settingsJson: DesignSettingsEnvelope | null;
     updatedAt: string;
 }
 

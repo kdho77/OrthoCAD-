@@ -190,6 +190,7 @@
                 "vertex/server/src/lib/client-files.test.ts",
                 "vertex/server/src/lib/prisma.test.ts",
                 "vertex/server/src/routers/integrations/__tests__/launch-connector.test.ts",
+                "vertex/server/src/routers/integrations/__tests__/vo-catalog-settings.test.ts",
                 "vertex/src/components/layout/TopNav.test.tsx",
                 "vertex/src/components/viewer/element-markers-no-coin.test.ts",
                 "vertex/src/features/clients/DesignNotesField.test.tsx",

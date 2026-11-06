@@ -17,6 +17,11 @@ import type {
     ShoeSystem,
     ShoeWidth,
 } from "./store.js";
+import {
+    resolveVoOrderCatalog,
+    settingsEnvelopeForVoCatalog,
+    VoCatalogConflictError,
+} from "./vo-catalog-settings.js";
 
 const sourceSchema = z.enum(["vo2", "orthocloud"]);
 const shoeSchema = z.object({
@@ -46,6 +51,15 @@ const scanDeclareSchema = z.object({
     format: z.enum(["stl", "obj", "ply"]).optional(),
 });
 
+const catalogSchema = z
+    .object({
+        shoe_size: shoeSchema.nullable().optional(),
+        shoe_size_left: z.number().finite().positive().nullable().optional(),
+        shoe_size_right: z.number().finite().positive().nullable().optional(),
+        width: widthSchema.nullable().optional(),
+    })
+    .passthrough();
+
 const designSchema = z.object({
     source: sourceSchema,
     tenant_id: z.string().uuid(),
@@ -62,6 +76,8 @@ const designSchema = z.object({
     shoe_size_left: z.number().finite().positive().optional(),
     shoe_size_right: z.number().finite().positive().optional(),
     width: widthSchema.optional(),
+    /** Structured catalog. Unknown keys are not copied into settingsJson. */
+    catalog: catalogSchema.optional(),
     scans: z.array(scanDeclareSchema).optional(),
 });
 
@@ -200,14 +216,38 @@ export function createIntegrationHandler(deps: IntegrationDeps) {
                     if (!scan.side) throw new IntegrationError(422, "scan side is required");
                     scanSides.push(scan.side);
                 }
-                const shoe = parsed.data.shoe_size
+                let resolved: ReturnType<typeof resolveVoOrderCatalog>;
+                try {
+                    resolved = resolveVoOrderCatalog({
+                        shoeSize: parsed.data.shoe_size ?? null,
+                        shoeSizeLeft: parsed.data.shoe_size_left ?? null,
+                        shoeSizeRight: parsed.data.shoe_size_right ?? null,
+                        width: parsed.data.width ?? null,
+                        catalog: parsed.data.catalog ?? null,
+                    });
+                } catch (error) {
+                    if (error instanceof VoCatalogConflictError)
+                        throw new IntegrationError(422, error.message);
+                    throw error;
+                }
+                if ((resolved.shoeSizeLeft == null) !== (resolved.shoeSizeRight == null)) {
+                    throw new IntegrationError(422, "shoe_size_left and shoe_size_right must both be set");
+                }
+                const shoe = resolved.shoeSize
                     ? shoeFrom(
-                          parsed.data.shoe_size,
-                          parsed.data.shoe_size_left,
-                          parsed.data.shoe_size_right,
-                          parsed.data.width,
+                          resolved.shoeSize,
+                          resolved.shoeSizeLeft ?? undefined,
+                          resolved.shoeSizeRight ?? undefined,
+                          resolved.width ?? undefined,
                       )
                     : null;
+                const settingsJson = settingsEnvelopeForVoCatalog({
+                    shoeSize: resolved.shoeSize,
+                    shoeSizeLeft: resolved.shoeSizeLeft,
+                    shoeSizeRight: resolved.shoeSizeRight,
+                    width: resolved.width,
+                    catalog: null,
+                });
                 const result = await service.createDesign(authorization, {
                     source: parsed.data.source as IntegrationSource,
                     tenantId: parsed.data.tenant_id,
@@ -222,6 +262,7 @@ export function createIntegrationHandler(deps: IntegrationDeps) {
                     parentExternalOrderId: parsed.data.parent_external_order_id ?? null,
                     shoe,
                     scanSides,
+                    settingsJson,
                 });
                 return json(200, result);
             }

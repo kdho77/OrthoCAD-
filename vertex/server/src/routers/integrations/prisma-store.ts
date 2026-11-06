@@ -5,6 +5,10 @@ import { createHash } from "node:crypto";
 
 import { Prisma } from "@prisma/client";
 
+import {
+    DESIGN_SETTINGS_SCHEMA_VERSION,
+    type DesignSettingsEnvelope,
+} from "../../../../shared/design-settings.js";
 import { prisma } from "../../lib/prisma.js";
 import type {
     ClientLinkRecord,
@@ -47,6 +51,19 @@ function day(value: Date | null | undefined): string | null {
 
 function asDate(value: string | null): Date | null {
     return value ? new Date(`${value}T00:00:00.000Z`) : null;
+}
+
+function readSettingsEnvelope(raw: unknown): DesignSettingsEnvelope | null {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const envelope = raw as { schemaVersion?: unknown; settings?: unknown };
+    if (envelope.schemaVersion !== DESIGN_SETTINGS_SCHEMA_VERSION) return null;
+    if (!envelope.settings || typeof envelope.settings !== "object" || Array.isArray(envelope.settings)) {
+        return null;
+    }
+    return {
+        schemaVersion: DESIGN_SETTINGS_SCHEMA_VERSION,
+        settings: envelope.settings as Record<string, unknown>,
+    };
 }
 
 function asWidth(value: string): ShoeWidth {
@@ -345,6 +362,7 @@ export function createPrismaIntegrationStore(db: Db = prisma): IntegrationStore 
                 kind: row.kind,
                 name: row.name,
                 notes: row.notes ?? "",
+                settingsJson: readSettingsEnvelope(row.settingsJson),
                 updatedAt: row.updatedAt.toISOString(),
             };
             return design;
@@ -360,6 +378,9 @@ export function createPrismaIntegrationStore(db: Db = prisma): IntegrationStore 
                             kind: input.design.kind,
                             name: input.design.name,
                             notes: input.design.notes || null,
+                            settingsJson: input.design.settingsJson
+                                ? (input.design.settingsJson as unknown as Prisma.InputJsonValue)
+                                : Prisma.DbNull,
                         },
                     });
                     await tx.integrationDesign.create({
