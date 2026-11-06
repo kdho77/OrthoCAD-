@@ -82,6 +82,28 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
             });
         },
 
+        /**
+         * Server lofts the saved design with the Export path and slices belt G-code.
+         * The placeholder storage key is rejected unless the server replaces it.
+         */
+        generateFromSavedDesign(input: {
+            designId: string;
+            side: "left" | "right";
+            presetId: string;
+            fileName?: string;
+        }) {
+            return trpc.manufacturing.generateSolid.mutate({
+                designId: input.designId,
+                side: input.side,
+                presetId: input.presetId,
+                stlStorageKey: "saved-design-internal",
+                outputType: "gcode",
+                beltAngleDeg: 45,
+                useSavedDesignMesh: true,
+                fileName: input.fileName,
+            });
+        },
+
         /** Call site: vertex/server/src/routers/manufacturing.ts getGcodeDownloadUrl */
         getGcodeDownloadUrl(productionId: string) {
             return trpc.manufacturing.getGcodeDownloadUrl.query({ productionId });

@@ -31,7 +31,7 @@ Issue keys with `vertex/server/src/auth/issue-integration-key.ts` (label for CAD
 
 The CAD-operator credential must be allowed for:
 
-- Integration REST (`POST /api/integrations/v1/*`; GET read routes are **Phase B** residual).
+- Integration REST (`POST /api/integrations/v1/*` and dogfood GET design read).
 - Manufacturing handoff tools that call the documented tRPC wrap (`prepare_manufacturing_stl_upload`, `generate_gcode`, `get_export_download`, `get_design_params`).
 
 ## Install
@@ -65,15 +65,15 @@ Local dev: `npm run dev` (tsx stdio server).
 
 | Tool | Surface |
 | --- | --- |
-| `get_design` | Integration REST GET (**Phase B** — client stub today) |
-| `list_designs_by_order` | Integration REST GET by order (**Phase B**) |
+| `get_design` | Integration REST GET (dogfood tenant only) |
+| `list_designs_by_order` | Integration REST GET by order (dogfood tenant only) |
 | `get_design_params` | Documented tRPC wrap → `design.get` |
 | `prepare_manufacturing_stl_upload` | tRPC `manufacturing.prepareManufacturingStlUpload` |
 | `generate_gcode` | tRPC `manufacturing.generateSolid` → **Python `/manufacture` on main** |
 | `get_export_download` | tRPC `manufacturing.getGcodeDownloadUrl` |
 | `build_design_exported_payload` | VO handoff object (below) — **no VO order status writes** |
 
-STL/G-code flow: operator builds STL in OrthoCAD UI → `prepare_manufacturing_stl_upload` → PUT STL → `generate_gcode` with `stl_storage_key` → `get_export_download` → `build_design_exported_payload` for VO upload.
+Saved-design belt flow: `generate_gcode` with `use_saved_design: true` and `design_id`. The server builds the canonical Export mesh internally and returns left and right G-code downloads. No STL file is returned. Omitting `side` requires both feet. The legacy STL upload path (`prepare_manufacturing_stl_upload` → `stl_storage_key`) remains for a mesh the operator already built.
 
 ### `generate_gcode` / production path
 
@@ -122,9 +122,14 @@ From repo root:
 npm test -- packages/mcp/test
 ```
 
-## Phase B / residuals (not implemented in Phase A)
+## Phase B
 
-- **GET** integration routes for `get_design` / `list_designs_by_order`.
-- **Founder** decision: bot **service-account tRPC** if CAD-operator Bearer is insufficient server-side.
-- **Headless CAD** from scan.
-- **VertexSlice/Apex/leader on main** (#263 merged `70e33f8a`) — Phase A does not add separate MCP VertexSlice tooling beyond `generate_gcode` → `generateSolid`.
+Dogfood tenant `54b6a960-aa40-4988-b116-adf5ed6c72f8` only. CAD-operator Bearer (`ocad_…`) can read designs and call manufacturing prepare / generateSolid / getGcodeDownloadUrl. Session auth is unchanged. Other tRPC procedures still reject the key.
+
+`use_saved_design` lofts with the UI Export path (SAMPLE_Top procedural solid, watertight check, leader once per foot) and returns G-code only.
+
+Residuals:
+
+- Reference design `cc357f83-3391-4c93-90b0-e18b6bce1a1d` was not compared. No production credential is available. Mesh parity tests use a sanitized SAMPLE_Top design against `buildPrinterFootManufacturingStl`.
+- Headless loft needs the same Node loader as the Export modules (`@/` alias, SAMPLE_Top bytes, DOMParser for the GLB). If that load fails, generateSolid errors and does not substitute a mesh.
+- No headless CAD from a scan. No VO order upload. No STL deliverable.

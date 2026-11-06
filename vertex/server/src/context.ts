@@ -1,6 +1,11 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { FetchCreateContextFnOptions } from "@trpc/server/adapters/fetch";
 import type { CreateHTTPContextOptions } from "@trpc/server/adapters/standalone";
+import {
+    type CadOperatorCredentialRow,
+    type CadOperatorPrincipal,
+    resolveCadOperatorFromAuthorization,
+} from "./auth/cad-operator.js";
 import { isDevAuthAllowed, resolveDevBearerUser, resolveDevRole } from "./lib/dev-auth.js";
 import { prisma, prismaDirect } from "./lib/prisma.js";
 
@@ -39,6 +44,24 @@ export interface AuthedUser {
     role: string;
 }
 
+async function lookupCadOperatorCredential(hash: string): Promise<CadOperatorCredentialRow | null> {
+    const row = await prisma.integrationCredential.findUnique({
+        where: { keyHash: hash },
+        include: { tenants: { select: { tenantId: true } } },
+    });
+    if (!row) return null;
+    return {
+        id: row.id,
+        revokedAt: row.revokedAt ? row.revokedAt.toISOString() : null,
+        tenantIds: row.tenants.map((tenant) => tenant.tenantId),
+    };
+}
+
+/** ocad_ keys never become session users. Missing, revoked, and non-dogfood keys stay anonymous. */
+async function resolveCadOperator(authHeader?: string): Promise<CadOperatorPrincipal | null> {
+    return resolveCadOperatorFromAuthorization(authHeader, lookupCadOperatorCredential);
+}
+
 async function resolveUser(authHeader?: string): Promise<AuthedUser | null> {
     if (isDevAuthAllowed(supabaseConfigured)) {
         const devUser = resolveDevBearerUser(authHeader);
@@ -47,7 +70,7 @@ async function resolveUser(authHeader?: string): Promise<AuthedUser | null> {
 
     if (!supabase || !authHeader?.startsWith("Bearer ")) return null;
     const token = authHeader.slice("Bearer ".length);
-    if (token.startsWith("dev:")) return null;
+    if (token.startsWith("dev:") || token.startsWith("ocad_")) return null;
     const { data, error } = await supabase.auth.getUser(token);
     if (error || !data.user) return null;
     const email = data.user.email ?? "";
@@ -59,8 +82,12 @@ async function resolveUser(authHeader?: string): Promise<AuthedUser | null> {
 }
 
 export async function createContext({ req }: CreateHTTPContextOptions) {
-    const user = await resolveUser(req.headers.authorization);
-    return { prisma, prismaDirect, user, ip: req.socket.remoteAddress ?? null };
+    const authorization = req.headers.authorization;
+    const [user, cadOperator] = await Promise.all([
+        resolveUser(authorization),
+        resolveCadOperator(authorization),
+    ]);
+    return { prisma, prismaDirect, user, cadOperator, ip: req.socket.remoteAddress ?? null };
 }
 
 /** Fetch adapter context (Vercel serverless / edge). */
@@ -68,8 +95,12 @@ export async function createFetchContext({ req }: FetchCreateContextFnOptions) {
     const authHeader = req.headers.get("authorization");
     const forwarded = req.headers.get("x-forwarded-for");
     const ip = forwarded?.split(",")[0]?.trim() ?? req.headers.get("x-real-ip") ?? null;
-    const user = await resolveUser(authHeader ?? undefined);
-    return { prisma, prismaDirect, user, ip };
+    const authorization = authHeader ?? undefined;
+    const [user, cadOperator] = await Promise.all([
+        resolveUser(authorization),
+        resolveCadOperator(authorization),
+    ]);
+    return { prisma, prismaDirect, user, cadOperator, ip };
 }
 
 export type Context = Awaited<ReturnType<typeof createContext>>;
