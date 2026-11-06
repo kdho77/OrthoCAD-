@@ -33,13 +33,15 @@ export interface AfoSideCorrection {
     legRearDeg: number;
     /** Sagittal rotation. Positive is dorsiflexion. */
     legSideDeg: number;
+    /** Signed. Positive raises the heel, negative lowers it. */
     heelLiftMm: number;
     footLiftMedMm: number;
     footLiftLatMm: number;
+    /** Signed. Positive raises the medial arch, negative lowers it. */
     medialArchMm: number;
     heelWidthMm: number;
     braceHeightMm: number;
-    /** Forefoot rise (mm). 0 leaves the toes on the flattened plane. */
+    /** Signed forefoot offset (mm). Positive rises, negative lowers. 0 stays on the plane. */
     toeRiseMm: number;
 }
 

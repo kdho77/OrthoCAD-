@@ -23,6 +23,21 @@ import type { CameraView } from "@/stores/design-store";
 import type { Side } from "@/types";
 
 export const AFO_SCAN_GREY = "#C9CDD3";
+
+/**
+ * The Stage-1 plantar scan is solid grey. Keep that for every later landmark,
+ * and whenever the Transparent control is off.
+ */
+export function afoUploadedScanMaterial(opts: { transparentOn: boolean; placingLandmarks: boolean }): {
+    opacity: number;
+    transparent: boolean;
+    grey: boolean;
+} {
+    if (opts.placingLandmarks || !opts.transparentOn) {
+        return { opacity: 1, transparent: false, grey: opts.placingLandmarks };
+    }
+    return { opacity: 0.45, transparent: true, grey: false };
+}
 export const AFO_STAGE1_MARKER = "#F59E0B";
 export const AFO_REQUIRED_MARKER = "#22D3EE";
 export const AFO_OPTIONAL_MARKER = "#A78BFA";
