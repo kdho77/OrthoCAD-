@@ -1,6 +1,10 @@
 import { describe, expect, test } from "@rstest/core";
 
-import { MCP_TOOL_DEFINITIONS, zodToJsonSchema } from "../src/tools/schemas.js";
+import {
+    generateGcodeInputObjectSchema,
+    MCP_TOOL_DEFINITIONS,
+    zodToJsonSchema,
+} from "../src/tools/schemas.js";
 
 describe("OrthoCAD MCP tool schemas", () => {
     test("Phase A exposes seven tools with unique snake_case names", () => {
@@ -26,10 +30,12 @@ describe("OrthoCAD MCP tool schemas", () => {
 
     test("generate_gcode advertised JSON schema exposes saved-design and legacy input fields", () => {
         const tool = MCP_TOOL_DEFINITIONS.find((t) => t.name === "generate_gcode");
-        expect(tool).toBeTruthy();
-        const jsonSchema = zodToJsonSchema(tool!.inputSchema);
+        if (!tool) throw new Error("generate_gcode tool missing");
+        expect(tool.inputSchema).toBe(generateGcodeInputObjectSchema);
+        const jsonSchema = zodToJsonSchema(tool.inputSchema);
         const properties = jsonSchema.properties as Record<string, unknown>;
         expect(properties).toHaveProperty("use_saved_design");
+        expect(properties).toHaveProperty("patient_name");
         expect(properties).toHaveProperty("design_id");
         expect(properties).toHaveProperty("side");
         expect(properties).toHaveProperty("preset_id");
