@@ -3,7 +3,7 @@ import { describe, expect, test } from "@rstest/core";
 
 import { readStoredDesignSettings } from "../../../shared/design-settings.js";
 import { SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
-import { buildSavedDesignSnapshot } from "../../../src/lib/clinical/saved-design-snapshot.ts";
+import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot.js";
 import { type CadOperatorPrincipal, DOGFOOD_TENANT_ID } from "../auth/cad-operator.js";
 import { persistSavedDesignSnapshotOnDesign } from "./saved-design-snapshot.js";
 
