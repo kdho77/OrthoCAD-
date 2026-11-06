@@ -1,9 +1,8 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { type MouseEvent, useMemo, useRef, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
-    type AmputationPoint,
     confirmAmputationDraw,
     defaultSideAmputation,
     footOutlineMedial,
@@ -13,11 +12,10 @@ import { outlineHalfWidth } from "@/lib/geometry/height-field";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { useDesignStore } from "@/stores/design-store";
 import type { Side, SideAmputation } from "@/types";
+import { useAmputationDrawStore } from "./amputation-draw-store";
 
 const SIDES: Side[] = ["left", "right"];
 const SIDE_LABEL: Record<Side, string> = { left: "Left", right: "Right" };
-
-type DraftPoint = AmputationPoint & { id: string };
 
 /**
  * Windows Amputation panel: per foot, Enabled and Draw, then Height,
@@ -32,30 +30,37 @@ export function AmputationPanel() {
         () => (u: number) => outlineHalfWidth(u) * (layout.widthMm / 2),
         [layout.widthMm],
     );
-    const [drawing, setDrawing] = useState<Side | null>(null);
-    const [draft, setDraft] = useState<DraftPoint[]>([]);
+    const drawing = useAmputationDrawStore((s) => s.side);
+    const draft = useAmputationDrawStore((s) => s.points);
+    const start = useAmputationDrawStore((s) => s.start);
+    const place = useAmputationDrawStore((s) => s.place);
+    const undoPoint = useAmputationDrawStore((s) => s.undo);
+    const cancelDraw = useAmputationDrawStore((s) => s.cancel);
     const [note, setNote] = useState<string | null>(null);
-    const pointIds = useRef(0);
+
+    useEffect(() => () => useAmputationDrawStore.getState().cancel(), []);
 
     const startDraw = (side: Side) => {
-        const existing = design.amputation?.[side]?.points ?? [];
-        setDrawing(side);
-        setDraft(existing.map((p) => ({ ...p, id: `p${pointIds.current++}` })));
-        setNote("Click the medial edge, around the toe, then the lateral edge. Confirm to keep the line.");
+        if (drawing === side) return;
+        start(side);
+        setNote(
+            "Click the insole from the medial edge, around the toe, to the lateral edge. The cut shows on the sheet as you place points.",
+        );
     };
 
-    const onCanvasClick = (event: MouseEvent<HTMLDivElement>) => {
+    const onPlace = (x: number, y: number) => {
         if (!drawing) return;
-        const rect = event.currentTarget.getBoundingClientRect();
-        const x = ((event.clientX - rect.left) / rect.width) * layout.lengthMm;
-        const ySvg = ((event.clientY - rect.top) / rect.height) * layout.widthMm;
-        const y = layout.widthMm / 2 - ySvg;
-        setDraft((pts) => [...pts, { x, y, id: `p${pointIds.current++}` }]);
+        place({ x, y });
     };
 
     const confirm = () => {
         if (!drawing) return;
-        const result = confirmAmputationDraw(draft, layout.lengthMm, layout.widthMm, halfWidthMm);
+        const result = confirmAmputationDraw(
+            draft.map((p) => ({ x: p.x, y: p.y })),
+            layout.lengthMm,
+            layout.widthMm,
+            halfWidthMm,
+        );
         if (result.rejected) {
             setNote(result.reason ?? "That line cannot be used.");
             return;
@@ -64,8 +69,7 @@ export function AmputationPanel() {
         setNote(
             result.clipped ? "Clipped to the outline." : "Line saved. The filler rebuilds when you reopen.",
         );
-        setDrawing(null);
-        setDraft([]);
+        cancelDraw();
     };
 
     return (
@@ -102,20 +106,13 @@ export function AmputationPanel() {
                         widthMm={layout.widthMm}
                         halfWidthMm={halfWidthMm}
                         points={draft}
-                        onClick={onCanvasClick}
+                        onPlace={onPlace}
                     />
                     <div className="flex gap-2">
                         <Button type="button" size="sm" onClick={confirm}>
                             Confirm
                         </Button>
-                        <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => {
-                                setDraft((pts) => pts.slice(0, -1));
-                            }}
-                        >
+                        <Button type="button" size="sm" variant="outline" onClick={() => undoPoint()}>
                             Undo point
                         </Button>
                         <Button
@@ -123,8 +120,8 @@ export function AmputationPanel() {
                             size="sm"
                             variant="ghost"
                             onClick={() => {
-                                setDrawing(null);
-                                setDraft([]);
+                                cancelDraw();
+                                setNote(null);
                             }}
                         >
                             Cancel
@@ -235,13 +232,13 @@ function DrawCanvas({
     widthMm,
     halfWidthMm,
     points,
-    onClick,
+    onPlace,
 }: {
     lengthMm: number;
     widthMm: number;
     halfWidthMm: (u: number) => number;
-    points: DraftPoint[];
-    onClick: (event: MouseEvent<HTMLDivElement>) => void;
+    points: { id: string; x: number; y: number }[];
+    onPlace: (x: number, y: number) => void;
 }) {
     const outline = footOutlineMedial(lengthMm, widthMm, halfWidthMm);
     const sy = (y: number) => widthMm / 2 - y;
@@ -252,34 +249,57 @@ function DrawCanvas({
         points.length > 1
             ? points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(2)},${sy(p.y).toFixed(2)}`).join(" ")
             : "";
+    const onClick = (event: MouseEvent<SVGSVGElement>) => {
+        const svg = event.currentTarget;
+        const pt = svg.createSVGPoint();
+        pt.x = event.clientX;
+        pt.y = event.clientY;
+        const ctm = svg.getScreenCTM();
+        if (!ctm) return;
+        const local = pt.matrixTransform(ctm.inverse());
+        onPlace(local.x, widthMm / 2 - local.y);
+    };
     return (
-        <div
-            role="application"
-            aria-label="Amputation draw canvas"
-            className="h-36 w-full"
-            onClick={onClick}
-            onKeyDown={() => {
-                // The cut is placed with the pointer. Confirm commits it from the keyboard.
-            }}
-        >
-            <svg viewBox={`0 0 ${lengthMm} ${widthMm}`} className="h-full w-full rounded bg-muted">
+        <div className="h-36 w-full">
+            <svg
+                viewBox={`0 0 ${lengthMm} ${widthMm}`}
+                className="h-full w-full rounded bg-muted"
+                role="application"
+                aria-label="Amputation draw canvas"
+                onClick={onClick}
+                onKeyDown={() => {
+                    // Points are placed with the pointer. Confirm commits the cut.
+                }}
+            >
                 <title>Foot outline</title>
                 <path
                     d={`${outlineD} Z`}
                     fill="none"
-                    stroke="currentColor"
-                    strokeWidth={Math.max(1, lengthMm / 180)}
+                    stroke="#64748b"
+                    strokeWidth={2}
+                    vectorEffect="non-scaling-stroke"
                 />
                 {lineD ? (
                     <path
                         d={lineD}
                         fill="none"
-                        stroke="currentColor"
-                        strokeWidth={Math.max(1.4, lengthMm / 140)}
+                        stroke="#f8fafc"
+                        strokeWidth={3.5}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        vectorEffect="non-scaling-stroke"
                     />
                 ) : null}
                 {points.map((p) => (
-                    <circle key={p.id} cx={p.x} cy={sy(p.y)} r={Math.max(1.5, lengthMm / 90)} />
+                    <circle
+                        key={p.id}
+                        cx={p.x}
+                        cy={sy(p.y)}
+                        r={Math.max(2.4, lengthMm / 70)}
+                        fill="#f8fafc"
+                        stroke="#e11d48"
+                        strokeWidth={Math.max(1.2, lengthMm / 160)}
+                    />
                 ))}
             </svg>
         </div>
