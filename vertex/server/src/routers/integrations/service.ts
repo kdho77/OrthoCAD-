@@ -3,7 +3,7 @@
 // A missing tenant is refused. This service never creates a tenant.
 
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
-
+import type { DesignSettingsEnvelope } from "../../../../shared/design-settings.js";
 import { DOGFOOD_TENANT_ID } from "../../auth/cad-operator.js";
 import { hashIntegrationKey } from "../../auth/integration-keys.js";
 import type { DesignExportedEvent, ExportedFile } from "../../webhooks/design-exported.js";
@@ -78,6 +78,8 @@ export interface CreateDesignInput {
     parentExternalOrderId: string | null;
     shoe: ShoeSize | null;
     scanSides: ScanSide[];
+    /** Order parameters only. Null when nothing on the order mapped. */
+    settingsJson: DesignSettingsEnvelope | null;
 }
 
 export interface CompleteScanInput {
@@ -368,6 +370,7 @@ export function createIntegrationService(deps: IntegrationDeps) {
                             120,
                         ),
                         notes: designNotes(notes, input.rxText),
+                        settingsJson: input.settingsJson,
                         updatedAt: nowIso,
                     },
                     link,
