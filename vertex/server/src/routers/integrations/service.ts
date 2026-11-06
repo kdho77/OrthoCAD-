@@ -2,10 +2,13 @@
 // Launch-connector use cases. Tenant allowlist is checked before any write.
 // A missing tenant is refused. This service never creates a tenant.
 
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { DOGFOOD_TENANT_ID } from "../../auth/cad-operator.js";
 import { hashIntegrationKey } from "../../auth/integration-keys.js";
+import { createSignedUpload, MAIN_BUCKET } from "../../lib/storage.js";
 import type { DesignExportedEvent, ExportedFile } from "../../webhooks/design-exported.js";
 import { buildDesignExportedEvent } from "../../webhooks/design-exported.js";
 import type {
@@ -48,8 +51,11 @@ export interface SessionUser {
 export interface IntegrationDeps {
     store: IntegrationStore;
     now: () => Date;
-    uploadSigningKey: string;
-    uploadBaseUrl: string;
+    /**
+     * Service-role client used only to sign STORAGE_BUCKET PUT URLs.
+     * Null when storage is not configured. Scan bytes are never proxied through this process.
+     */
+    supabase: SupabaseClient | null;
     appOrigin: string;
     log?: (event: string, fields: Record<string, string | number>) => void;
 }
@@ -132,11 +138,6 @@ function designNotes(notes: string | null, rxText: string | null): string {
     return text.slice(0, 500);
 }
 
-function signUpload(base: string, key: string, expSec: number, signingKey: string): string {
-    const sig = createHmac("sha256", signingKey).update(`${key}.${expSec}`).digest("hex");
-    return `${base.replace(/\/+$/, "")}/${key}?exp=${expSec}&sig=${sig}`;
-}
-
 function uploadSides(sides: DesignSides, declared: ScanSide[]): ScanSide[] {
     const set = new Set<ScanSide>();
     if (sides === "pair" || sides === "left") set.add("left");
@@ -192,14 +193,15 @@ export function createIntegrationService(deps: IntegrationDeps) {
         declared: ScanSide[],
     ): Promise<Record<string, string>> {
         const expires = new Date(deps.now().getTime() + UPLOAD_URL_TTL_MS);
-        const expSec = Math.floor(expires.getTime() / 1000);
         const urls: Record<string, string> = {};
         const rows: UploadRecord[] = [];
+        if (!deps.supabase) throw new Error("Storage is not configured");
         for (const side of uploadSides(link.sides, declared)) {
             const id = randomUUID();
             const nonce = randomBytes(8).toString("hex");
             const storageKey = `integrations/${link.tenantId}/${link.designId}/${side}/${nonce}`;
-            const uploadUrl = signUpload(deps.uploadBaseUrl, storageKey, expSec, deps.uploadSigningKey);
+            const signed = await createSignedUpload(deps.supabase, storageKey, MAIN_BUCKET);
+            const uploadUrl = signed.uploadUrl;
             urls[side] = uploadUrl;
             rows.push({
                 id,

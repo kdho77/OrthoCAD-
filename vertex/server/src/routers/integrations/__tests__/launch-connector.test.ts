@@ -3,6 +3,7 @@
 import { describe, expect, test } from "@rstest/core";
 
 import { issueIntegrationCredential } from "../../../auth/integration-keys.js";
+import { MAIN_BUCKET } from "../../../lib/storage.js";
 import {
     buildDesignExportedEvent,
     DOWNLOAD_URL_TTL_SEC,
@@ -17,6 +18,7 @@ import { createIntegrationHandler } from "../http.js";
 import { createMemoryIntegrationStore } from "../memory-store.js";
 import type { IntegrationDeps } from "../service.js";
 import { createIntegrationService } from "../service.js";
+import { UPLOAD_URL_TTL_MS } from "../store.js";
 
 const TENANT_A = "11111111-1111-4111-8111-111111111111";
 const TENANT_B = "22222222-2222-4222-8222-222222222222";
@@ -29,7 +31,42 @@ function shoe(size = 9) {
     return { system: "US_M" as const, size };
 }
 
-function harness() {
+function signedStorage() {
+    const calls: { bucket: string; key: string }[] = [];
+    const supabase = {
+        storage: {
+            from(bucket: string) {
+                return {
+                    async createSignedUploadUrl(key: string) {
+                        calls.push({ bucket, key });
+                        const token = `tok-${calls.length}`;
+                        return {
+                            data: {
+                                signedUrl: `https://project.supabase.co/storage/v1/object/upload/sign/${bucket}/${key}?token=${token}`,
+                                token,
+                                path: key,
+                            },
+                            error: null,
+                        };
+                    },
+                };
+            },
+        },
+    };
+    return { supabase: supabase as IntegrationDeps["supabase"], calls };
+}
+
+function expectSignedPut(url: string, key: string) {
+    const parsed = new URL(url);
+    expect(parsed.origin).toBe("https://project.supabase.co");
+    expect(parsed.pathname).toBe(`/storage/v1/object/upload/sign/${MAIN_BUCKET}/${key}`);
+    expect(parsed.searchParams.get("token")).toBeTruthy();
+    expect(parsed.searchParams.get("sig")).toBeNull();
+    expect(parsed.searchParams.get("exp")).toBeNull();
+    expect(url).not.toContain("orthocad.invalid");
+}
+
+function harness(overrides: Partial<IntegrationDeps> = {}) {
     const store = createMemoryIntegrationStore();
     store.addTenant({ id: TENANT_A, name: "Clinic A" });
     store.addTenant({ id: TENANT_B, name: "Clinic B" });
@@ -38,18 +75,20 @@ function harness() {
     store.addUser({ id: STAFF, tenantId: null, role: "super_admin", email: "staff@vertex.test" });
     let now = new Date("2026-11-04T00:00:00.000Z");
     const logs: string[] = [];
+    const storage = signedStorage();
     const deps: IntegrationDeps = {
         store,
         now: () => now,
-        uploadSigningKey: "test-upload-signing-key",
-        uploadBaseUrl: "https://uploads.example.test/put",
+        supabase: storage.supabase,
         appOrigin: "https://app.example.test",
         log: (_event, fields) => logs.push(JSON.stringify(fields)),
+        ...overrides,
     };
     return {
         store,
         logs,
         deps,
+        calls: storage.calls,
         handler: createIntegrationHandler(deps),
         service: createIntegrationService(deps),
         setNow(value: Date) {
@@ -239,12 +278,32 @@ describe("launch connector idempotency, launch, and scans", () => {
         const again = await read(await post(env, "/api/integrations/v1/designs", key.apiKey, designBody));
         expect(created.status).toBe(200);
         expect(again.body.design_id).toBe(created.body.design_id);
+        const designId = String(created.body.design_id);
         const firstUrls = created.body.upload_urls as { left: string; right: string };
         const secondUrls = again.body.upload_urls as { left: string; right: string };
         expect(firstUrls.left).not.toBe(secondUrls.left);
         expect(firstUrls.right).not.toBe(secondUrls.right);
-        const exp = Number(new URL(firstUrls.left).searchParams.get("exp"));
-        expect(exp - Math.floor(new Date("2026-11-04T00:00:00.000Z").getTime() / 1000)).toBe(30 * 60);
+        expect(env.calls.slice(0, 2).map((call) => call.bucket)).toEqual([MAIN_BUCKET, MAIN_BUCKET]);
+        expect(env.calls[0]?.key).toMatch(
+            new RegExp(`^integrations/${TENANT_A}/${designId}/left/[0-9a-f]{16}$`),
+        );
+        expect(env.calls[1]?.key).toMatch(
+            new RegExp(`^integrations/${TENANT_A}/${designId}/right/[0-9a-f]{16}$`),
+        );
+        expectSignedPut(firstUrls.left, env.calls[0]?.key ?? "");
+        expectSignedPut(firstUrls.right, env.calls[1]?.key ?? "");
+        expect(env.calls[2]?.key).not.toBe(env.calls[0]?.key);
+        expect(env.calls[3]?.key).not.toBe(env.calls[1]?.key);
+        const link = await env.store.findDesignLink({
+            source: "vo2",
+            tenantId: TENANT_A,
+            externalOrderId: "order-1",
+        });
+        const open = await env.store.listUploads(link?.id ?? "");
+        const left = open.find((row) => row.side === "left");
+        expect(left?.storageKey).toBe(env.calls[2]?.key);
+        expect(left?.uploadUrl).toBe(secondUrls.left);
+        expect(left?.expiresAt).toBe(new Date(env.now().getTime() + UPLOAD_URL_TTL_MS).toISOString());
         expect(JSON.stringify(created.body)).not.toContain(key.apiKey);
 
         const otherSource = await read(
@@ -384,6 +443,71 @@ describe("launch connector idempotency, launch, and scans", () => {
         );
         expect(repeat.status).toBe(200);
         expect(await env.store.countScans(designId)).toBe(1);
+    });
+
+    test("a storage signing failure does not fall back to an HMAC upload URL", async () => {
+        const env = harness({
+            supabase: {
+                storage: {
+                    from() {
+                        return {
+                            async createSignedUploadUrl() {
+                                return { data: null, error: { message: "bucket missing" } };
+                            },
+                        };
+                    },
+                },
+            } as IntegrationDeps["supabase"],
+        });
+        const key = await issueKey(env, [TENANT_A]);
+        const client = await read(
+            await post(env, "/api/integrations/v1/clients/upsert", key.apiKey, clientBody(TENANT_A)),
+        );
+        const failed = await read(
+            await post(env, "/api/integrations/v1/designs", key.apiKey, {
+                source: "vo2",
+                tenant_id: TENANT_A,
+                client_id: client.body.client_id,
+                external_order_id: "order-unsigned",
+                type: "insole",
+                sides: "left",
+            }),
+        );
+        expect(failed.status).toBe(500);
+        expect(JSON.stringify(failed.body)).not.toContain("sig=");
+        expect(JSON.stringify(failed.body)).not.toContain("orthocad.invalid");
+        expect(JSON.stringify(failed.body)).not.toContain("upload_urls");
+        const link = await env.store.findDesignLink({
+            source: "vo2",
+            tenantId: TENANT_A,
+            externalOrderId: "order-unsigned",
+        });
+        expect(link).toBeTruthy();
+        expect(await env.store.listUploads(link?.id ?? "")).toEqual([]);
+
+        const unconfigured = harness({ supabase: null });
+        const unconfiguredKey = await issueKey(unconfigured, [TENANT_A]);
+        const unconfiguredClient = await read(
+            await post(
+                unconfigured,
+                "/api/integrations/v1/clients/upsert",
+                unconfiguredKey.apiKey,
+                clientBody(TENANT_A),
+            ),
+        );
+        const missingStorage = await read(
+            await post(unconfigured, "/api/integrations/v1/designs", unconfiguredKey.apiKey, {
+                source: "vo2",
+                tenant_id: TENANT_A,
+                client_id: unconfiguredClient.body.client_id,
+                external_order_id: "order-no-storage",
+                type: "insole",
+                sides: "left",
+            }),
+        );
+        expect(missingStorage.status).toBe(500);
+        expect(JSON.stringify(missingStorage.body)).not.toContain("upload_urls");
+        expect(unconfigured.calls).toEqual([]);
     });
 
     test("a parent order is cloned into a new design and the parent row is not edited", async () => {
