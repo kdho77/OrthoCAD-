@@ -150,6 +150,7 @@ describe("client-actions persistence wiring", () => {
                 name: "Sample",
                 source: "stock" as const,
             },
+            insoleThicknessMm: 0,
         };
         mockDesignGet.mockResolvedValue({
             id: "design-1",

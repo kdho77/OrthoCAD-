@@ -35,6 +35,8 @@ export interface HeightFieldParams {
     lengthMm: number;
     widthMm: number;
     thicknessMm: number;
+    /** Rigid top-sheet Z lift (mm). Absent ⇒ 0 (legacy byte parity). */
+    insoleThicknessMm?: number;
     corrections: SideCorrections;
     elements?: PlacedElement[];
     /** MPJ / styloid sinks. Absent or empty ⇒ sinkThicknessAt is not called. */

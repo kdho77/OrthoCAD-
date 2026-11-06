@@ -912,6 +912,7 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         // paired value). Ignoring it here froze the viewer at the committed
         // legacy thickness, so the thickness slider appeared dead.
         thicknessMm,
+        insoleThicknessMm: design.insoleThicknessMm,
         corrections: mergeCorrections(side, design.corrections[side]),
         elements: mergeElementPreviews(design.elements.filter((e) => e.side === side)),
         // Skives excluded from F / heightAt on the base path — applied post-sync

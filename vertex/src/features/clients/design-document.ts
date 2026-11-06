@@ -45,6 +45,8 @@ export interface DesignDocument {
     elements?: ElementRow[];
     /** Versioned parameter snapshot. Absent on designs saved before this column. */
     settingsJson?: unknown;
+    /** Legacy rows only; new saves use settingsJson.insoleThicknessMm. */
+    insoleThicknessMm?: number | null;
 }
 
 function sideCorrectionFromRow(row: CorrectionRow): SideCorrections {
@@ -93,7 +95,10 @@ export function hasPersistedGeometry(doc: DesignDocument | null | undefined): bo
 
 export function designStateFromDocument(doc: DesignDocument): DesignState {
     const stored = readStoredDesignSettings(doc.settingsJson);
-    if (stored) return stored as unknown as DesignState;
+    if (stored) {
+        const state = stored as unknown as DesignState;
+        return { ...state, insoleThicknessMm: state.insoleThicknessMm ?? 0 };
+    }
     const left = correctionSide(doc.corrections, "left");
     const right = correctionSide(doc.corrections, "right");
     const elements = (doc.elements ?? []).map(elementFromRow);
@@ -102,6 +107,7 @@ export function designStateFromDocument(doc: DesignDocument): DesignState {
         pattern: doc.pattern,
         method: doc.method,
         thicknessMm: doc.thicknessMm,
+        insoleThicknessMm: doc.insoleThicknessMm ?? 0,
         corrections: {
             unit: doc.unit,
             linked: doc.linked,

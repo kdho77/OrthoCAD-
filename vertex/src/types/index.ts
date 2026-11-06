@@ -412,6 +412,11 @@ export interface DesignState {
     /** Phase A gyroid hardness ladder (PrintRecipe v1). */
     printRecipe?: PrintRecipeV1;
     thicknessMm: number;
+    /**
+     * Setup rigid top lift (mm). New designs default to 2; saved rows without the
+     * field load as 0 for byte-identical legacy output.
+     */
+    insoleThicknessMm?: number;
     /** uniform | zonal shell thickness (Track 4 #1). Default zonal. */
     shellThicknessMode?: ShellThicknessMode;
     shellThicknessRfMm?: number;

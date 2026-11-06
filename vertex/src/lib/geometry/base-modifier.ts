@@ -21,6 +21,11 @@ import {
     resolveShellThicknessContext,
     smoothstep,
 } from "@/lib/geometry/height-field";
+import {
+    applyInsoleThicknessRigidOffset,
+    insoleThicknessWallFrame,
+    resolveInsoleThicknessOffsetMm,
+} from "@/lib/geometry/insole-thickness";
 import { analyzeManifold, type ManifoldReport } from "@/lib/geometry/manifold";
 import {
     closeGlbInsoleToSolid,
@@ -3344,6 +3349,19 @@ export function applyBaseModifiers(
                 }
             }
         }
+    }
+
+    const insoleOffsetMm = resolveInsoleThicknessOffsetMm(field.insoleThicknessMm);
+    if (insoleOffsetMm > 1e-9 && isMultiMesh && topVertexCount > 0) {
+        applyInsoleThicknessRigidOffset({
+            positions: array,
+            topVertexCount,
+            thickAxis,
+            offsetMm: insoleOffsetMm,
+            wallFrame: options?.skipBottomSync
+                ? null
+                : insoleThicknessWallFrame(base, topVertexCount, thickAxis),
+        });
     }
 
     pos.needsUpdate = true;

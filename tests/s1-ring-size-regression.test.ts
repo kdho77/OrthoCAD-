@@ -241,6 +241,7 @@ async function exportClosed(
     const layout = insoleLayoutForUsMenSize(usMen);
     const design = createDesignWithStockPlaceholder({
         ...defaultDesign(),
+        insoleThicknessMm: 0,
         sizeSystem: "us",
         usMenSize: layout.usMenSize,
         footLengthMm: layout.footLengthMm,

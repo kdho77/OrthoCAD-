@@ -5,7 +5,9 @@ import {
     FlipHorizontal,
     Footprints,
     Layers3,
+    Minus,
     Pencil,
+    Plus,
     Save,
     Trash2,
     Upload,
@@ -14,6 +16,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { PanelHeading } from "@/components/clinical/PanelHeading";
+import { productionMethodDisabledInUi } from "@/components/layout/production-method-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -57,7 +60,6 @@ import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { ProductionMethod, ScanPattern, Side } from "@/types";
-import { productionMethodDisabledInUi } from "@/components/layout/production-method-ui";
 
 const METHODS: { id: ProductionMethod; label: string }[] = [
     { id: "printing_solid", label: "Printing — Solid" },
@@ -388,7 +390,11 @@ export function LeftSidebar({
                                     )}
                                 >
                                     <span className="flex items-center justify-between gap-2">
-                                        <span>{clinicalDeclutter === "setup" && m.id === "printing_solid" ? "Solid print" : m.label}</span>
+                                        <span>
+                                            {clinicalDeclutter === "setup" && m.id === "printing_solid"
+                                                ? "Solid print"
+                                                : m.label}
+                                        </span>
                                         {shellUiLocked ? (
                                             <span className="shrink-0 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
                                                 Coming soon
@@ -418,6 +424,7 @@ export function LeftSidebar({
                         onMmChange={setFootLengthMm}
                     />
                     <ShoeWidthSelect />
+                    <InsoleThicknessControl />
                 </Section>
             ) : null}
 
@@ -568,6 +575,58 @@ function ShoeSizeSelect({
                       : formatFootLengthLabel(footLengthMm)}{" "}
                 · {layout.lengthMm.toFixed(0)} × {layout.widthMm.toFixed(0)} mm
             </p>
+        </div>
+    );
+}
+
+function InsoleThicknessControl() {
+    const value = useDesignStore((s) => s.design.insoleThicknessMm ?? 0);
+    const setInsoleThicknessMm = useDesignStore((s) => s.setInsoleThicknessMm);
+
+    const step = (delta: number) => {
+        setInsoleThicknessMm(value + delta);
+    };
+
+    const onInput = (raw: string) => {
+        const parsed = Number.parseFloat(raw);
+        if (Number.isNaN(parsed)) return;
+        setInsoleThicknessMm(parsed);
+    };
+
+    return (
+        <div className="space-y-1">
+            <label htmlFor="setup-insole-thickness" className="text-[10px] font-medium text-muted-foreground">
+                Insole thickness (mm)
+            </label>
+            <div className="flex items-center gap-1">
+                <button
+                    type="button"
+                    aria-label="Decrease insole thickness"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-muted/60"
+                    onClick={() => step(-0.5)}
+                >
+                    <Minus className="h-3.5 w-3.5" />
+                </button>
+                <input
+                    id="setup-insole-thickness"
+                    data-testid="insole-thickness-mm"
+                    type="number"
+                    min={0}
+                    max={10}
+                    step={0.5}
+                    className="h-9 w-full rounded-md border border-input bg-background px-2 text-center text-xs text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    value={Number.isFinite(value) ? value : 0}
+                    onChange={(e) => onInput(e.target.value)}
+                />
+                <button
+                    type="button"
+                    aria-label="Increase insole thickness"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-muted/60"
+                    onClick={() => step(0.5)}
+                >
+                    <Plus className="h-3.5 w-3.5" />
+                </button>
+            </div>
         </div>
     );
 }

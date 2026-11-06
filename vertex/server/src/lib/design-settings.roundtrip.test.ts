@@ -44,6 +44,7 @@ function settingsFixture() {
         pattern: "full_contact" as const,
         method: "printing_solid" as const,
         thicknessMm: 3.5,
+        insoleThicknessMm: 2,
         usMenSize: 10,
         shoeWidth: "wide" as const,
         corrections: {

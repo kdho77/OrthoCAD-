@@ -138,6 +138,7 @@ export const designStateSchema = z
         pattern: z.enum(SCAN_PATTERNS),
         method: z.enum(PRODUCTION_METHODS),
         thicknessMm: z.number(),
+        insoleThicknessMm: z.number().min(0).max(10).optional(),
         corrections: z
             .object({
                 unit: z.enum(["mm", "deg"]),
