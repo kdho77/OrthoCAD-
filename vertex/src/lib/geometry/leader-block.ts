@@ -3,9 +3,10 @@
 /**
  * Sacrificial belt-printer leader, applied to the manufacturing STL before VertexSlice.
  *
- * Founder-locked v2 (Kendon 2026-10-23; CAD signed 2026-10-24):
- * - bridge 10 wide × 1.5 thick, 2.5 mm gap past the toe tip, embedded 1 mm
- * - trapezoid block 10 deep × 10 high, width 10 → 20, on Z = 0
+ * Founder-locked (Kendon photo 2026-11-06; replaces #263 v2):
+ * - bridge 10 wide × 1.5 thick, 1 mm neck past the toe tip, embedded 1 mm
+ * - trapezoid block 20 deep × 10 high, width 20 → 40, on Z = 0
+ * - block sits at the insole front (the 1 mm neck) so the toe cannot fold under
  * - bridge overlaps the block by 1 mm; the block itself does not move
  * - curved toe: embed is measured at the bridge side edges (yc ± 5), not at xmax
  * - toe = the thinner max-X end in the OrthoCAD frame; abort if that end is not thinner
@@ -15,14 +16,14 @@
 
 export const LEADER_BRIDGE_WIDTH_MM = 10;
 export const LEADER_BRIDGE_THICKNESS_MM = 1.5;
-export const LEADER_BRIDGE_LENGTH_MM = 2.5;
+export const LEADER_BRIDGE_LENGTH_MM = 1;
 export const LEADER_BRIDGE_EMBED_MM = 1;
 /** Bridge continues this far past the block's near face so the joint is not face-touch only. */
 export const LEADER_BRIDGE_BLOCK_OVERLAP_MM = 1;
-export const LEADER_BLOCK_DEPTH_MM = 10;
+export const LEADER_BLOCK_DEPTH_MM = 20;
 export const LEADER_BLOCK_HEIGHT_MM = 10;
-export const LEADER_BLOCK_WIDTH_INNER_MM = 10;
-export const LEADER_BLOCK_WIDTH_OUTER_MM = 20;
+export const LEADER_BLOCK_WIDTH_INNER_MM = 20;
+export const LEADER_BLOCK_WIDTH_OUTER_MM = 40;
 const BOTTOM_OUTLINE_Z_MM = 1;
 const BOTTOM_OUTLINE_Y_TOL_MM = 0.5;
 
@@ -157,7 +158,7 @@ function leaderTrianglesForMesh(tris: Tri[]): Tri[] {
     const yCenter = (toe.minY + toe.maxY) / 2;
     const xEdge = curvedToeOutlineX(tris, yCenter, bounds.maxX);
     const bridgeX0 = xEdge - LEADER_BRIDGE_EMBED_MM;
-    // 2.5 mm gap from the toe tip to the block. Overlap extends the bridge only.
+    // 1 mm neck from the toe tip to the block. Overlap extends the bridge only.
     const blockX0 = bounds.maxX + LEADER_BRIDGE_LENGTH_MM;
     const bridgeX1 = blockX0 + LEADER_BRIDGE_BLOCK_OVERLAP_MM;
     const bridge = boxTriangles(

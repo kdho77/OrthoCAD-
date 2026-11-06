@@ -166,15 +166,15 @@ describe("sacrificial leader block", () => {
         expect(binaryStlTriangleCount(gcodeStl)).toBeGreaterThan(binaryStlTriangleCount(raw));
     });
 
-    test("founder-locked v2 constants", () => {
-        expect(LEADER_BLOCK_DEPTH_MM).toBe(10);
+    test("founder-locked constants (Kendon 2026-11-06)", () => {
+        expect(LEADER_BLOCK_DEPTH_MM).toBe(20);
         expect(LEADER_BLOCK_HEIGHT_MM).toBe(10);
         expect(LEADER_BRIDGE_THICKNESS_MM).toBe(1.5);
-        expect(LEADER_BRIDGE_LENGTH_MM).toBe(2.5);
+        expect(LEADER_BRIDGE_LENGTH_MM).toBe(1);
         expect(LEADER_BRIDGE_EMBED_MM).toBe(1);
         expect(LEADER_BRIDGE_BLOCK_OVERLAP_MM).toBe(1);
-        expect(LEADER_BLOCK_WIDTH_INNER_MM).toBe(10);
-        expect(LEADER_BLOCK_WIDTH_OUTER_MM).toBe(20);
+        expect(LEADER_BLOCK_WIDTH_INNER_MM).toBe(20);
+        expect(LEADER_BLOCK_WIDTH_OUTER_MM).toBe(40);
     });
 
     test("places the bridge and trapezoid on the thinner max-X toe", () => {
@@ -182,11 +182,11 @@ describe("sacrificial leader block", () => {
         const before = binaryStlBounds(raw);
         const withLeader = applySacrificialLeaderBlock(raw);
         const after = binaryStlBounds(withLeader);
-        // Flat toe: outline at yc±5 is xmax. Block starts after the 2.5 mm gap and is 10 mm deep.
+        // Flat toe: outline at yc±5 is xmax. Block starts after the 1 mm neck and is 20 mm deep.
         const blockX0 = before.maxX + LEADER_BRIDGE_LENGTH_MM;
         const expectedMaxX = blockX0 + LEADER_BLOCK_DEPTH_MM;
         expect(after.maxX).toBeCloseTo(expectedMaxX, 3);
-        expect(after.maxX - before.maxX).toBeCloseTo(12.5, 3);
+        expect(after.maxX - before.maxX).toBeCloseTo(21, 3);
         expect(after.maxZ).toBeCloseTo(Math.max(before.maxZ, LEADER_BLOCK_HEIGHT_MM), 3);
         expect(after.minZ).toBeCloseTo(0, 3);
         const outer = verticesNear(withLeader, expectedMaxX);
