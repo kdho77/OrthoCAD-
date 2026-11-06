@@ -270,7 +270,9 @@
                 "vertex/src/features/exports/pair-gcode-isolation.test.ts",
                 "vertex/src/features/exports/vertexslice-gcode-path.test.ts",
                 "vertex/src/lib/geometry/leader-block.test.ts",
-                "vertex/src/lib/geometry/procedural-wall/manufacturing-solid-cache.test.ts"
+                "vertex/src/lib/geometry/procedural-wall/manufacturing-solid-cache.test.ts",
+                "vertex/server/src/lib/integration-text-marking.test.ts",
+                "vertex/src/lib/geometry/text-marking/compose.test.ts"
             ]
         }
     ]

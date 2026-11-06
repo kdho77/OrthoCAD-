@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { normalizeBottomTextMarking } from "../../../../shared/bottom-text-marking";
 import {
     defaultTextMarking,
     hasActiveTextMarking,
@@ -91,8 +92,10 @@ export function normalizeTextMarking(
     surfaceHint?: TextSurface,
 ): TextMarking {
     const surface = input?.surface ?? surfaceHint ?? "bottom";
+    if (surface === "bottom") return normalizeBottomTextMarking(input);
     const base = defaultTextMarking(surface);
     const next: TextMarking = { ...base, ...input, surface };
+    next.addPatientName = false;
     next.bold = true;
     next.anchor = (input?.anchor ?? base.anchor) as TextAnchor;
     next.feet = (input?.feet ?? base.feet) as TextFeet;
@@ -102,8 +105,6 @@ export function normalizeTextMarking(
     next.nudgeAlongMm = input?.nudgeAlongMm ?? 0;
     next.nudgeAcrossMm = input?.nudgeAcrossMm ?? 0;
     if (typeof next.text === "string") next.text = next.text.toUpperCase();
-    // Bottom emboss would add material below z=0 and break the flat sole.
-    if (surface === "bottom") next.mode = "engrave";
     const bounds = textControlBounds(surface);
     next.capHeightMm = snapTextStep(next.capHeightMm, bounds.capMin, bounds.capMax, 0.1);
     next.depthMm = snapTextStep(next.depthMm, bounds.depthMin, bounds.depthMax, TEXT_DEPTH_STEP_MM);

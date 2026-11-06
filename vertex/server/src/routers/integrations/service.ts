@@ -6,6 +6,7 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 
 import { DOGFOOD_TENANT_ID } from "../../auth/cad-operator.js";
 import { hashIntegrationKey } from "../../auth/integration-keys.js";
+import { patientDisplayName, settingsEnvelopeForPatientName } from "../../lib/integration-text-marking.js";
 import type { DesignExportedEvent, ExportedFile } from "../../webhooks/design-exported.js";
 import { buildDesignExportedEvent } from "../../webhooks/design-exported.js";
 import type {
@@ -337,6 +338,10 @@ export function createIntegrationService(deps: IntegrationDeps) {
             const designId = randomUUID();
             const linkId = randomUUID();
             const nowIso = deps.now().toISOString();
+            const settingsJson = settingsEnvelopeForPatientName(
+                null,
+                patientDisplayName(client.firstName, client.lastName),
+            );
             const link: DesignLinkRecord = {
                 id: linkId,
                 source: input.source,
@@ -369,6 +374,7 @@ export function createIntegrationService(deps: IntegrationDeps) {
                         ),
                         notes: designNotes(notes, input.rxText),
                         updatedAt: nowIso,
+                        settingsJson,
                     },
                     link,
                 });

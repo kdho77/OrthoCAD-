@@ -360,6 +360,10 @@ export function createPrismaIntegrationStore(db: Db = prisma): IntegrationStore 
                             kind: input.design.kind,
                             name: input.design.name,
                             notes: input.design.notes || null,
+                            settingsJson:
+                                input.design.settingsJson === undefined
+                                    ? undefined
+                                    : (input.design.settingsJson as Prisma.InputJsonValue),
                         },
                     });
                     await tx.integrationDesign.create({

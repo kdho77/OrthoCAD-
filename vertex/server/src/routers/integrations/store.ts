@@ -84,6 +84,7 @@ export interface DesignRecord {
     name: string;
     notes: string;
     updatedAt: string;
+    settingsJson?: unknown;
 }
 
 export interface DesignLinkRecord {

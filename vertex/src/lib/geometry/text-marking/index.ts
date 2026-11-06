@@ -2,6 +2,15 @@
 
 export { applyTextMarkingToPrintSolid } from "./apply";
 export {
+    addPatientNameEnabled,
+    composeMarkingTextForSide,
+    hasActiveComposedTextMarking,
+    markingWithComposedText,
+    migrateLegacyPatientNameInText,
+    patientDisplayNameFromParts,
+} from "./compose";
+export {
+    bottomPatientNameRequested,
     defaultTextMarking,
     hasActiveTextMarking,
     TEXT_BOOLEAN_EPS_MM,

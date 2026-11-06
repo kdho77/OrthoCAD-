@@ -20,6 +20,12 @@ import {
 } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { buildHeadlessFinalizedFoot } from "../lib/finalized-mesh-runner.js";
+import {
+    envelopeWithLoftTextMarking,
+    hasActiveComposedTextMarking,
+    patientDisplayName,
+    resolveProductionTextMarking,
+} from "../lib/integration-text-marking.js";
 
 export interface CadGeneratePlan {
     stlStorageKey: string;
@@ -45,8 +51,9 @@ export async function planCadOperatorGenerate(args: {
     outputType: "gcode" | "stl";
     useSavedDesignMesh: boolean;
     stlStorageKey: string;
+    patientName?: string;
     uploadStl: (key: string, bytes: Buffer) => Promise<void>;
-}): Promise<CadGeneratePlan> {
+}): Promise<CadGeneratePlan & { settingsJson: unknown }> {
     if (args.outputType !== "gcode") {
         throw new TRPCError({
             code: "BAD_REQUEST",
@@ -68,7 +75,7 @@ export async function planCadOperatorGenerate(args: {
             settingsJson: true,
             updatedAt: true,
             deletedAt: true,
-            client: { select: { tenantId: true } },
+            client: { select: { tenantId: true, firstName: true, lastName: true } },
             integrationLink: {
                 select: { tenantId: true, source: true, externalOrderId: true, sides: true },
             },
@@ -101,7 +108,34 @@ export async function planCadOperatorGenerate(args: {
     if (design.method === "milling_3axis") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Milled orders are not belt G-code" });
     }
-    const printRecipe = lockedRecipe(design.settingsJson);
+    const clientDisplayName = row
+        ? patientDisplayName(row.client.firstName ?? "", row.client.lastName ?? "")
+        : "";
+    const resolved = resolveProductionTextMarking({
+        settingsJson: design.settingsJson,
+        patientNameOverride: args.patientName,
+        clientDisplayName,
+    });
+    if (
+        args.useSavedDesignMesh &&
+        !hasActiveComposedTextMarking(resolved.textMarking, resolved.patientDisplayName, args.side)
+    ) {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+                "A patient name is required for printed devices. Provide patient_name on generate_gcode, link a client with first and last name, or add optional bottom text.",
+        });
+    }
+    if (resolved.persisted) {
+        await args.prisma.design.update({
+            where: { id: args.designId },
+            data: { settingsJson: resolved.envelope as object },
+        });
+    }
+    const settingsJson = args.useSavedDesignMesh
+        ? envelopeWithLoftTextMarking(resolved.envelope, resolved.patientDisplayName, args.side)
+        : resolved.envelope;
+    const printRecipe = lockedRecipe(settingsJson);
     const shared = {
         presetId: CAD_OPERATOR_BELT_PROFILE_ID,
         printRecipe,
@@ -115,12 +149,12 @@ export async function planCadOperatorGenerate(args: {
         } catch {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid manufacturing STL storage key" });
         }
-        return { ...shared, stlStorageKey: args.stlStorageKey, fingerprint: null };
+        return { ...shared, stlStorageKey: args.stlStorageKey, fingerprint: null, settingsJson };
     }
     let foot: Awaited<ReturnType<typeof buildHeadlessFinalizedFoot>>;
     try {
         foot = await buildHeadlessFinalizedFoot({
-            settingsJson: design.settingsJson,
+            settingsJson,
             side: args.side,
         });
     } catch (error) {
@@ -132,5 +166,5 @@ export async function planCadOperatorGenerate(args: {
     }
     const stlStorageKey = buildCadOperatorTempStlKey(args.principal.credentialId);
     await args.uploadStl(stlStorageKey, Buffer.from(foot.stl));
-    return { ...shared, stlStorageKey, fingerprint: foot.fingerprint };
+    return { ...shared, stlStorageKey, fingerprint: foot.fingerprint, settingsJson };
 }

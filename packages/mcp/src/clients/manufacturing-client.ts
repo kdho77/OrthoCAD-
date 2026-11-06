@@ -75,6 +75,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
             beltAngleDeg?: number;
             fileName?: string;
             material?: string;
+            patientName?: string;
         }) {
             return trpc.manufacturing.generateSolid.mutate({
                 beltAngleDeg: 45,
@@ -91,6 +92,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
             side: "left" | "right";
             presetId: string;
             fileName?: string;
+            patientName?: string;
         }) {
             return trpc.manufacturing.generateSolid.mutate({
                 designId: input.designId,
@@ -101,6 +103,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
                 beltAngleDeg: 45,
                 useSavedDesignMesh: true,
                 fileName: input.fileName,
+                patientName: input.patientName,
             });
         },
 
