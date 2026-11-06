@@ -7,8 +7,11 @@ import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/tr
 import type { PlacedElement, PlacedSink, Side, SinkKind, SinkMarkerRef, TextMarking } from "@/types";
 
 /**
- * Elements > Sink. Two top-sheet terms, never a boolean and never the bottom:
- * local forefoot thickness T (additive) then sink cut S (subtractive, applied last).
+ * Elements > Sink. Two top-sheet terms, never a boolean and never the bottom.
+ * The manufactured top is unsunk Z + T − S. T is forefoot thickness
+ * (depth + 0.5 mm, blended over 25 mm). S is the oval cut. The 2 mm floor
+ * is applied last, after the shoulder relax, and a styloid crest stays at
+ * least 3 mm above z = 0. The surface is not lifted back onto the unsunk mesh.
  * Empty / undefined sinks return before any work so exports stay byte-identical.
  *
  * Picked constants (Kendon brief v1) — change them here.
@@ -1654,13 +1657,19 @@ export function applySinkCutToGeometry(
             (x, y) => taperOverlap(x, meshYToAnatomical(y, ctx.side, cutCtx.medialYSign), cutCtx),
         );
         for (let i = 0; i < count; i++) {
-            const cutZ = arr[i * 3 + thickAxis]!;
             const plain = base[i * 3 + thickAxis]!;
-            const next = positions[i * 3 + 2]!;
-            // Relax may ease a shoulder. When the cut already sits on the
-            // thickened surface, do not let that ease fall through the plain.
-            // A cut-only call is below that plain on purpose and must stay cut.
-            arr[i * 3 + thickAxis] = cutZ >= plain - 1e-6 ? Math.max(next, plain) : next;
+            let next = positions[i * 3 + 2]!;
+            // Floor last. Do not lift a composed z0 + T − S back to the unsunk
+            // surface. A shoulder the relax pulled under 2 mm returns to the floor.
+            if (plain >= FLOOR_MIN_MM - 1e-6 && next < FLOOR_MIN_MM) {
+                const lenCoord = base[i * 3 + lengthAxis]!;
+                const widCoord = base[i * 3 + widthAxis]!;
+                const yAnat = meshYToAnatomical(widCoord, ctx.side, cutCtx.medialYSign);
+                const thick = sinkThicknessMm(lenCoord, yAnat, cutCtx);
+                const cutMm = sinkCutMm(lenCoord, yAnat, cutCtx).mm;
+                if (thick > 1e-8 || cutMm > 1e-8) next = FLOOR_MIN_MM;
+            }
+            arr[i * 3 + thickAxis] = next;
         }
     }
     pos.needsUpdate = true;
@@ -2208,8 +2217,25 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
             return taperOverlap(pt.x, pt.y, ctx);
         },
     );
+    // Floor last. z0 + T − S is the surface. Lifting any vertex that fell
+    // below the unsunk mesh erased the cut wherever S exceeded local T.
+    // A sink vertex the relax pulled under 2 mm returns to the floor.
+    // A styloid crest with a wall stays at least 3 mm above z = 0.
     for (let i = 0; i < topCount; i++) {
-        if (input.positions[i * 3 + 2]! < plainZ[i]!) input.positions[i * 3 + 2] = plainZ[i]!;
+        const z = input.positions[i * 3 + 2]!;
+        const z0 = plainZ[i]!;
+        if (z >= FLOOR_MIN_MM || z0 < FLOOR_MIN_MM - 1e-6) continue;
+        const sampled = sampleAt(input.positions[i * 3]!, input.positions[i * 3 + 1]!);
+        if (sampled.t <= 1e-8 && sampled.cut.mm <= 1e-8) continue;
+        input.positions[i * 3 + 2] = FLOOR_MIN_MM;
+    }
+    for (let s = 0; s < input.nS; s++) {
+        if (rimIsStyloid[s] !== 1 || !stationHasWall(s, rimH[s]!)) continue;
+        if (rimH[s]! < SINK_WALL_MIN_MM - 1e-6) continue;
+        const vi = input.vertAt(0, s);
+        if (input.positions[vi * 3 + 2]! < SINK_WALL_MIN_MM) {
+            input.positions[vi * 3 + 2] = SINK_WALL_MIN_MM;
+        }
     }
     const styloid = input.sinks!.find((s) => s.kind === "styloid");
     const depth = styloid ? clampSinkDepth("styloid", styloid.depthMm).depthMm : 0;
