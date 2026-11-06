@@ -26,6 +26,9 @@ function walk(dir, acc = []) {
 }
 
 const srcRoots = [join(vertexRoot, "api"), join(vertexRoot, "server/src"), join(vertexRoot, "shared")];
+// Server modules statically import a few client files. Those specifiers are kept
+// verbatim (no bundle), so the copy must include them or Node throws ERR_MODULE_NOT_FOUND.
+const extraTsEntries = [join(vertexRoot, "src/lib/geometry/procedural-wall/sample-top-id.ts")];
 const tsEntries = [];
 const jsonFiles = [];
 for (const root of srcRoots) {
@@ -35,6 +38,7 @@ for (const root of srcRoots) {
         if (file.endsWith(".json")) jsonFiles.push(file);
     }
 }
+tsEntries.push(...extraTsEntries);
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
