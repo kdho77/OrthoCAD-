@@ -134,10 +134,36 @@ export function createIntegrationHandler(deps: IntegrationDeps) {
     const service = createIntegrationService(deps);
 
     return async function handleIntegration(request: Request): Promise<Response> {
-        const path = new URL(request.url).pathname.replace(/\/+$/, "") || "/";
+        const url = new URL(request.url);
+        const path = url.pathname.replace(/\/+$/, "") || "/";
         try {
-            if (request.method !== "POST") return json(405, { error: "Method not allowed" });
             const authorization = request.headers.get("authorization") ?? undefined;
+            if (request.method === "GET") {
+                const one = /^\/api\/integrations\/v1\/designs\/([^/]+)$/.exec(path);
+                if (one) {
+                    const designId = decodeURIComponent(one[1] ?? "");
+                    if (!z.string().uuid().safeParse(designId).success) {
+                        throw new IntegrationError(422, "design id must be a uuid");
+                    }
+                    return json(200, await service.getDesignForCredential(authorization, designId));
+                }
+                if (path === "/api/integrations/v1/designs") {
+                    const tenantId = url.searchParams.get("tenant_id") ?? "";
+                    if (!z.string().uuid().safeParse(tenantId).success) {
+                        throw new IntegrationError(422, "tenant_id must be a uuid");
+                    }
+                    return json(
+                        200,
+                        await service.listDesignsForCredential(authorization, {
+                            source: url.searchParams.get("source") ?? "",
+                            tenantId,
+                            externalOrderId: url.searchParams.get("external_order_id") ?? "",
+                        }),
+                    );
+                }
+                return json(404, { error: "Not found" });
+            }
+            if (request.method !== "POST") return json(405, { error: "Method not allowed" });
             if (path === "/api/integrations/v1/clients/upsert") {
                 const raw = asRecord(await readBody(request));
                 if (!("shoe_size" in raw) || raw.shoe_size == null) {

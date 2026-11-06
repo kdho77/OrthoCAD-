@@ -4,12 +4,14 @@
 
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 
+import { DOGFOOD_TENANT_ID } from "../../auth/cad-operator.js";
 import { hashIntegrationKey } from "../../auth/integration-keys.js";
 import type { DesignExportedEvent, ExportedFile } from "../../webhooks/design-exported.js";
 import { buildDesignExportedEvent } from "../../webhooks/design-exported.js";
 import type {
     CredentialRecord,
     DesignLinkRecord,
+    DesignRecord,
     DesignSides,
     DesignType,
     IntegrationSource,
@@ -20,7 +22,13 @@ import type {
     UploadRecord,
     UserRecord,
 } from "./store.js";
-import { LAUNCH_TTL_MS, SCAN_BYTES_MAX, StoreConflict, UPLOAD_URL_TTL_MS } from "./store.js";
+import {
+    INTEGRATION_SOURCES,
+    LAUNCH_TTL_MS,
+    SCAN_BYTES_MAX,
+    StoreConflict,
+    UPLOAD_URL_TTL_MS,
+} from "./store.js";
 
 export class IntegrationError extends Error {
     readonly status: 401 | 403 | 404 | 422;
@@ -97,6 +105,26 @@ function sameShoe(a: ShoeSize, b: ShoeSize): boolean {
         close(a.left, b.left) &&
         close(a.right, b.right)
     );
+}
+
+function parseIntegrationSource(value: string): IntegrationSource {
+    if ((INTEGRATION_SOURCES as readonly string[]).includes(value)) return value as IntegrationSource;
+    throw new IntegrationError(422, "source is required");
+}
+
+/** CAD read shape. Notes, rx text, and patient fields stay off this response. */
+function publicIntegrationDesign(link: DesignLinkRecord, design: DesignRecord) {
+    return {
+        design_id: design.id,
+        tenant_id: link.tenantId,
+        source: link.source,
+        external_order_id: link.externalOrderId,
+        type: link.kind,
+        sides: link.sides,
+        client_id: link.clientId,
+        updated_at: design.updatedAt,
+        name: design.name,
+    };
 }
 
 function designNotes(notes: string | null, rxText: string | null): string {
@@ -471,6 +499,51 @@ export function createIntegrationService(deps: IntegrationDeps) {
                     tenant_id: row.tenantId,
                 },
             };
+        },
+
+        async getDesignForCredential(authorization: string | undefined, designId: string) {
+            const credential = await requireCredential(authorization);
+            if (!credential.tenantIds.includes(DOGFOOD_TENANT_ID)) {
+                throw new IntegrationError(401, "Authentication required");
+            }
+            const link = await store.findDesignLinkByDesignId(designId);
+            const design = link ? await store.getDesign(link.designId) : null;
+            if (
+                !link ||
+                !design ||
+                link.tenantId !== DOGFOOD_TENANT_ID ||
+                design.tenantId !== DOGFOOD_TENANT_ID ||
+                !credential.tenantIds.includes(link.tenantId)
+            ) {
+                throw new IntegrationError(404, "Design not found");
+            }
+            return publicIntegrationDesign(link, design);
+        },
+
+        async listDesignsForCredential(
+            authorization: string | undefined,
+            query: { source: string; tenantId: string; externalOrderId: string },
+        ) {
+            const credential = await requireCredential(authorization);
+            if (!credential.tenantIds.includes(DOGFOOD_TENANT_ID)) {
+                throw new IntegrationError(401, "Authentication required");
+            }
+            if (query.tenantId !== DOGFOOD_TENANT_ID) {
+                throw new IntegrationError(404, "Design not found");
+            }
+            const source = parseIntegrationSource(query.source);
+            if (!query.externalOrderId.trim()) {
+                throw new IntegrationError(422, "external_order_id is required");
+            }
+            const link = await store.findDesignLink({
+                source,
+                tenantId: DOGFOOD_TENANT_ID,
+                externalOrderId: query.externalOrderId.trim(),
+            });
+            if (!link) return { designs: [] };
+            const design = await store.getDesign(link.designId);
+            if (!design || design.tenantId !== DOGFOOD_TENANT_ID) return { designs: [] };
+            return { designs: [publicIntegrationDesign(link, design)] };
         },
 
         async queueDesignExported(input: {

@@ -62,6 +62,16 @@ export function resetSampleTopGeometryCache(): void {
     inflight = null;
 }
 
+/**
+ * Install SAMPLE_Top parsed by {@link sampleTopFromArrayBuffer}.
+ * loadSampleTopGeometry then clones this mesh instead of fetching.
+ */
+export function primeSampleTopGeometry(geometry: BufferGeometry): void {
+    cachedNative?.dispose();
+    cachedNative = geometry;
+    inflight = null;
+}
+
 /** Load the bundled top-only SAMPLE_Top.glb (cloned; caller owns the result). */
 export async function loadSampleTopGeometry(): Promise<BufferGeometry> {
     if (cachedNative) return cachedNative.clone();
