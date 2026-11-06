@@ -16,7 +16,7 @@ import { TextMarkingError } from "./errors";
 import { refineHostLocally, SampleGrid } from "./host-refine";
 import { decimateCoplanarCaps } from "./qem-caps";
 import { distToTextRegion } from "./quality";
-import { countSoupSelfIntersections } from "./soup-intersect";
+import { countSoupSelfIntersections, type SoupIntersectionReport } from "./soup-intersect";
 import type { MapTextPoint, TextApplyMeta, TextGlyphGroup, TextHostRepair } from "./types";
 
 type ManifoldMesh = {
@@ -1707,6 +1707,7 @@ export async function booleanTextSolid(
     op: "add" | "subtract",
     rebind?: (geo: BufferGeometry) => MapTextPoint,
     sidewallRings?: number,
+    keepSelfIntersections = false,
 ): Promise<BufferGeometry> {
     const mod = await loadWasm();
     const mappedOrig = rebind ? rebind(host) : mapPoint;
@@ -1817,7 +1818,11 @@ export async function booleanTextSolid(
         }
         cleaned.userData = { ...cleaned.userData, textQem: qem.report };
         const hits = countSoupSelfIntersections(cleaned, TEXT_WELD_MM);
-        if (hits.real > 0 && hostFix.report.siAfter === 0) {
+        cleaned.userData = {
+            ...cleaned.userData,
+            textSoupHits: hits satisfies SoupIntersectionReport,
+        };
+        if (hits.real > 0 && hostFix.report.siAfter === 0 && !keepSelfIntersections) {
             const p = hits.pairs[0];
             throw new TextMarkingError(
                 "stl-gate",
