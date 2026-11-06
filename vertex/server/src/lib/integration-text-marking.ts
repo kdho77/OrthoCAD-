@@ -2,25 +2,23 @@
 // Production/integration bottom text uses the same textMarking model as Print/Export.
 
 import {
+    addPatientNameEnabled,
+    defaultBottomTextMarking,
+    hasActiveComposedTextMarking,
+    hasActiveTextMarking,
+    markingWithComposedText,
+    migrateLegacyPatientNameInText,
+    normalizeBottomTextMarking,
+    patientDisplayNameFromParts,
+    type Side,
+    sanitizeText,
+    type TextMarking,
+} from "../../../shared/bottom-text-marking.js";
+import {
     type DesignSettingsEnvelope,
     designSettingsEnvelope,
     readStoredDesignSettings,
 } from "../../../shared/design-settings.js";
-import {
-    addPatientNameEnabled,
-    hasActiveComposedTextMarking,
-    markingWithComposedText,
-    migrateLegacyPatientNameInText,
-    patientDisplayNameFromParts,
-} from "../../../src/lib/geometry/text-marking/compose.js";
-import {
-    defaultTextMarking,
-    hasActiveTextMarking,
-    sanitizeText,
-} from "../../../src/lib/geometry/text-marking/constants.js";
-import type { TextMarking } from "../../../src/lib/geometry/text-marking/types.js";
-import { normalizeTextMarking } from "../../../src/lib/geometry/text-marking/validate.js";
-import type { Side } from "../../../src/types/index.js";
 
 export { hasActiveComposedTextMarking, hasActiveTextMarking, patientDisplayNameFromParts, sanitizeText };
 
@@ -30,8 +28,8 @@ export function patientDisplayName(firstName: string, lastName: string): string 
 
 /** Integration createDesign: default-on checkbox, extra line empty until the user adds text. */
 export function integrationBottomTextMarkingDefaults(): TextMarking {
-    return normalizeTextMarking({
-        ...defaultTextMarking("bottom"),
+    return normalizeBottomTextMarking({
+        ...defaultBottomTextMarking(),
         addPatientName: true,
         text: "",
         surface: "bottom",
@@ -46,8 +44,8 @@ export function mergeTextMarkingIntoEnvelope(
 ): DesignSettingsEnvelope {
     const existing = readStoredDesignSettings(rawSettingsJson) ?? {};
     const prior = (existing.textMarking as Partial<TextMarking> | undefined) ?? {};
-    const merged = normalizeTextMarking({
-        ...defaultTextMarking("bottom"),
+    const merged = normalizeBottomTextMarking({
+        ...defaultBottomTextMarking(),
         ...prior,
         ...marking,
         surface: "bottom",
@@ -94,15 +92,15 @@ export function resolveProductionTextMarking(args: {
 }): ResolvedProductionTextMarking {
     const existing = readStoredDesignSettings(args.settingsJson) ?? {};
     const patientDisplayName = resolvePatientDisplayName(args);
-    let prior = normalizeTextMarking({
-        ...defaultTextMarking("bottom"),
+    let prior = normalizeBottomTextMarking({
+        ...defaultBottomTextMarking(),
         ...((existing.textMarking as Partial<TextMarking> | undefined) ?? {}),
         surface: "bottom",
         mode: "engrave",
     });
     prior = migrateLegacyPatientNameInText(prior, patientDisplayName ?? args.clientDisplayName ?? null);
     if (args.patientNameOverride !== undefined) {
-        prior = normalizeTextMarking({ ...prior, addPatientName: true });
+        prior = normalizeBottomTextMarking({ ...prior, addPatientName: true });
     }
     const envelope = mergeTextMarkingIntoEnvelope(args.settingsJson, prior);
     const persisted =
