@@ -133,6 +133,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                             side,
                             presetId: input.preset_id,
                             fileName: input.file_name,
+                            patientName: input.patient_name,
                         });
                         files.push(gcodeFileFromResult(side, result));
                     } catch (error) {
@@ -163,6 +164,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                 beltAngleDeg: input.belt_angle_deg,
                 fileName: input.file_name,
                 material: input.material,
+                patientName: input.patient_name,
             });
         }
         case "get_export_download": {

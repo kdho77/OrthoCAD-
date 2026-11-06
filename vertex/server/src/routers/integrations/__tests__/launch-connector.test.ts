@@ -2,6 +2,7 @@
 
 import { describe, expect, test } from "@rstest/core";
 
+import { readStoredDesignSettings } from "../../../../../shared/design-settings.js";
 import { issueIntegrationCredential } from "../../../auth/integration-keys.js";
 import {
     buildDesignExportedEvent,
@@ -254,6 +255,39 @@ describe("launch connector idempotency, launch, and scans", () => {
             }),
         );
         expect(otherSource.body.design_id).not.toBe(created.body.design_id);
+    });
+
+    test("createDesign persists bottom textMarking from the linked client name, not rx_text", async () => {
+        const env = harness();
+        const key = await issueKey(env, [TENANT_A]);
+        const client = await read(
+            await post(env, "/api/integrations/v1/clients/upsert", key.apiKey, {
+                ...clientBody(TENANT_A, "jane-doe-client", 9),
+                first_name: "Jane",
+                last_name: "Doe",
+            }),
+        );
+        expect(client.status).toBe(200);
+        const created = await read(
+            await post(env, "/api/integrations/v1/designs", key.apiKey, {
+                source: "vo2",
+                tenant_id: TENANT_A,
+                client_id: String(client.body.client_id),
+                external_order_id: "order-text-mark",
+                type: "insole",
+                sides: "pair",
+                rx_text: "Patient name Jane Smith on rx only",
+            }),
+        );
+        expect(created.status).toBe(200);
+        const design = await env.store.getDesign(String(created.body.design_id));
+        const settings = readStoredDesignSettings(design?.settingsJson);
+        expect(settings?.textMarking).toMatchObject({
+            text: "JANE DOE",
+            surface: "bottom",
+            mode: "engrave",
+            feet: "both",
+        });
     });
 
     test("shoe size is required, fills an empty chart, and a mismatch does not overwrite the chart", async () => {

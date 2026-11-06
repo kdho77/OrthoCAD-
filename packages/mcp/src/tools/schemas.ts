@@ -35,6 +35,8 @@ export const generateGcodeInputSchema = z
         material: z.string().max(80).optional(),
         /** Server builds the canonical Export mesh and returns per-foot belt G-code only. */
         use_saved_design: z.boolean().optional(),
+        /** Optional bottom engrave label for this export (same sanitize as Print/Export textMarking). */
+        patient_name: z.string().max(200).optional(),
     })
     .superRefine((value, ctx) => {
         if (value.use_saved_design) {

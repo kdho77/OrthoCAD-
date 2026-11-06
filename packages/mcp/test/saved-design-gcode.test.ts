@@ -67,6 +67,33 @@ describe("saved-design belt G-code tool", () => {
         expect(result.content[0]?.text).not.toMatch(/stlBase64|should-not-leak|\.stl/);
     });
 
+    test("forwards patient_name to saved-design manufacturing", async () => {
+        const seen: Array<{ patientName?: string }> = [];
+        const manufacturing = {
+            generateFromSavedDesign: async (input: { side: "left" | "right"; patientName?: string }) => {
+                seen.push({ patientName: input.patientName });
+                return {
+                    ok: true,
+                    outputType: "gcode",
+                    productionId: `prod-${input.side}`,
+                    gcodeDownloadUrl: `https://files.example.test/${input.side}.gcode`,
+                };
+            },
+        } as unknown as ManufacturingClient;
+        await handleOrthocadTool(
+            "generate_gcode",
+            {
+                preset_id: "apex-v2-insole-95a",
+                use_saved_design: true,
+                design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                patient_name: "Jane Doe",
+            },
+            { config, manufacturing },
+        );
+        expect(seen).toHaveLength(2);
+        expect(seen.every((row) => row.patientName === "Jane Doe")).toBe(true);
+    });
+
     test("a failed right foot is not a successful half pair", async () => {
         const manufacturing = {
             generateFromSavedDesign: async (input: { side: "left" | "right" }) => {

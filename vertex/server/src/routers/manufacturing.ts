@@ -66,6 +66,8 @@ const manufactureInputSchema = z.object({
     fileName: z.string().max(200).optional(),
     /** Dogfood CAD-operator only. The server builds the Export mesh and does not return STL. */
     useSavedDesignMesh: z.boolean().optional(),
+    /** Dogfood CAD-operator only. Bottom engrave textMarking for this export (merged into settingsJson). */
+    patientName: z.string().max(200).optional(),
     material: z
         .string()
         .trim()
@@ -246,6 +248,7 @@ export const manufacturingRouter = router({
                     outputType: input.outputType,
                     useSavedDesignMesh: input.useSavedDesignMesh === true,
                     stlStorageKey,
+                    patientName: input.patientName,
                     uploadStl: async (key, bytes) => {
                         if (!supabaseForPlan) {
                             throw new TRPCError({
