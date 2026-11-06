@@ -22,7 +22,6 @@ interface FinalizedMeshModule {
 }
 
 const SAMPLE_TOP_URL = new URL("../../../public/Templates/SAMPLE_Top.glb", import.meta.url);
-const MESH_MODULE_SPECIFIER = "../../../src/features/exports/saved-design-finalized-mesh.ts";
 
 let sampleTopBytes: ArrayBuffer | null = null;
 let meshModule: FinalizedMeshModule | null = null;
@@ -39,7 +38,11 @@ async function ensureBrowserParser(): Promise<void> {
 async function loadMeshModule(): Promise<FinalizedMeshModule> {
     if (meshModule) return meshModule;
     await ensureBrowserParser();
-    meshModule = (await import(MESH_MODULE_SPECIFIER)) as FinalizedMeshModule;
+    // Literal specifier so the Vercel file trace copies the bundle into /var/task.
+    // Emitted by vertex/scripts/bundle-canonical-export-loft.mjs (vercel-build)
+    // from src/features/exports/saved-design-finalized-mesh.ts. Do not import that
+    // .ts path: @vercel/node does not ship raw client modules or rewrite `@/`.
+    meshModule = (await import("./canonical-export-loft.js")) as FinalizedMeshModule;
     return meshModule;
 }
 
