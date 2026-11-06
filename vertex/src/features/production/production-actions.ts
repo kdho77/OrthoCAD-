@@ -3,7 +3,10 @@
 // Downloads are built in the browser from stored text. Nothing is written into the repo.
 
 import { isApiConfigured, trpc } from "@/lib/trpc";
+import { useClientStore } from "@/stores/client-store";
 import { useProductionStore } from "@/stores/production-store";
+import { formatClientName } from "../../../shared/client-files";
+import type { EnqueueInput } from "../../../shared/production-jobs";
 
 export async function loadProduction(): Promise<void> {
     if (!isApiConfigured()) return;
@@ -13,6 +16,47 @@ export async function loadProduction(): Promise<void> {
     } catch (error) {
         console.warn("[production] list fell back to this session", error);
     }
+}
+
+function resolveEnqueueContext(): {
+    designId: string;
+    designName: string;
+    designKind: EnqueueInput["designKind"];
+    clientId: string;
+    clientLabel: string;
+} | null {
+    const { activeDesignId, designs, clients } = useClientStore.getState();
+    if (!activeDesignId) return null;
+    const dr = designs.find((d) => d.id === activeDesignId);
+    if (!dr) return null;
+    const client = clients.find((c) => c.id === dr.clientId);
+    const clientLabel =
+        client?.displayName?.trim() ||
+        formatClientName({ firstName: client?.firstName ?? "", lastName: client?.lastName ?? "" }).trim() ||
+        "Client";
+    return {
+        designId: dr.id,
+        designName: dr.name.trim() || "Design",
+        designKind: dr.kind,
+        clientId: dr.clientId,
+        clientLabel,
+    };
+}
+
+/** Queue a print job for the active persisted design. Requires API or returns false when there is no active design. */
+export async function enqueueCurrentDesignPrintFarm(gcode: string): Promise<boolean> {
+    const ctx = resolveEnqueueContext();
+    if (!ctx) return false;
+    const input: EnqueueInput = {
+        ...ctx,
+        process: "print",
+        gcode,
+    };
+    await withServer(
+        () => trpc.production.enqueue.mutate(input).then(() => undefined),
+        () => useProductionStore.getState().enqueuePrint(input),
+    );
+    return true;
 }
 
 async function withServer(run: () => Promise<void>, local: () => Promise<void>): Promise<void> {

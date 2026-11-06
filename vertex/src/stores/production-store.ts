@@ -8,6 +8,8 @@ import {
     assignJob,
     cancelJob,
     downloadGcode,
+    type EnqueueInput,
+    enqueueJob,
     holdJob,
     markJobDone,
     type PrinterRecord,
@@ -33,6 +35,7 @@ interface ProductionStore {
     rerun: (id: string) => Promise<void>;
     download: (id: string) => Promise<{ filename: string; gcode: string; sha256: string }>;
     registerMock: (name: string, moonrakerUrl: string) => Promise<void>;
+    enqueuePrint: (input: EnqueueInput) => Promise<void>;
     /** Dev-only preview of the G-code countdown. Not used in production builds. */
     seedRetentionDemo: () => void;
 }
@@ -133,6 +136,9 @@ export const useProductionStore = create<ProductionStore>((_set, _get) => ({
         useProductionStore.setState((state) => ({
             printers: [...state.printers.filter((row) => row.id !== result.printer.id), result.printer],
         }));
+    },
+    async enqueuePrint(input) {
+        remember(await enqueueJob(repo(), actor(), input));
     },
     seedRetentionDemo() {
         const current = useProductionStore.getState();
