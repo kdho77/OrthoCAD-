@@ -26,8 +26,24 @@ function harness() {
     const deps: IntegrationDeps = {
         store,
         now: () => new Date("2026-11-06T00:00:00.000Z"),
-        uploadSigningKey: "test-upload-signing-key",
-        uploadBaseUrl: "https://uploads.example.test/put",
+        supabase: {
+            storage: {
+                from(bucket: string) {
+                    return {
+                        async createSignedUploadUrl(key: string) {
+                            return {
+                                data: {
+                                    signedUrl: `https://project.supabase.co/storage/v1/object/upload/sign/${bucket}/${key}?token=tok`,
+                                    token: "tok",
+                                    path: key,
+                                },
+                                error: null,
+                            };
+                        },
+                    };
+                },
+            },
+        } as IntegrationDeps["supabase"],
         appOrigin: "https://app.example.test",
     };
     return { store, handler: createIntegrationHandler(deps) };
