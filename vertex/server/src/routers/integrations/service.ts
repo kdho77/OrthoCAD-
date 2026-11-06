@@ -338,8 +338,10 @@ export function createIntegrationService(deps: IntegrationDeps) {
             const designId = randomUUID();
             const linkId = randomUUID();
             const nowIso = deps.now().toISOString();
-            const clientName = patientDisplayName(client.firstName, client.lastName);
-            const settingsJson = settingsEnvelopeForPatientName(null, clientName);
+            const settingsJson = settingsEnvelopeForPatientName(
+                null,
+                patientDisplayName(client.firstName, client.lastName),
+            );
             const link: DesignLinkRecord = {
                 id: linkId,
                 source: input.source,
@@ -372,7 +374,7 @@ export function createIntegrationService(deps: IntegrationDeps) {
                         ),
                         notes: designNotes(notes, input.rxText),
                         updatedAt: nowIso,
-                        ...(settingsJson ? { settingsJson } : {}),
+                        settingsJson,
                     },
                     link,
                 });

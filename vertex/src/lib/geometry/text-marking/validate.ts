@@ -93,6 +93,11 @@ export function normalizeTextMarking(
     const surface = input?.surface ?? surfaceHint ?? "bottom";
     const base = defaultTextMarking(surface);
     const next: TextMarking = { ...base, ...input, surface };
+    if (surface === "bottom") {
+        next.addPatientName = input?.addPatientName !== undefined ? input.addPatientName !== false : true;
+    } else {
+        next.addPatientName = false;
+    }
     next.bold = true;
     next.anchor = (input?.anchor ?? base.anchor) as TextAnchor;
     next.feet = (input?.feet ?? base.feet) as TextFeet;

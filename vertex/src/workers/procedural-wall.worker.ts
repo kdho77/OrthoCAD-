@@ -42,13 +42,26 @@ self.onmessage = async (event: MessageEvent<ProceduralWallWorkerRequest>) => {
             const textGuide = buildTextGuide(preview.geometry);
             const marking = msg.options.textMarking;
             let textFitError: string | null = null;
-            if (marking?.text.trim()) {
+            const { hasActiveComposedTextMarking } = await import("@/lib/geometry/text-marking/compose");
+            if (
+                marking &&
+                hasActiveComposedTextMarking(
+                    marking,
+                    msg.options.patientDisplayName,
+                    msg.options.side ?? "right",
+                )
+            ) {
                 const { applyTextMarkingToPrintSolid } = await import("@/lib/geometry/text-marking/apply");
                 const { TextMarkingError } = await import("@/lib/geometry/text-marking/errors");
                 try {
-                    outGeo = await applyTextMarkingToPrintSolid(preview.geometry, marking, {
-                        side: msg.options.side ?? "right",
-                    });
+                    outGeo = await applyTextMarkingToPrintSolid(
+                        preview.geometry,
+                        marking,
+                        {
+                            side: msg.options.side ?? "right",
+                        },
+                        msg.options.patientDisplayName,
+                    );
                 } catch (e) {
                     if (!(e instanceof TextMarkingError)) throw e;
                     textFitError = e.message;

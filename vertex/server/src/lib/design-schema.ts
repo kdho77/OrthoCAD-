@@ -221,6 +221,7 @@ export const designStateSchema = z
         textMarking: z
             .object({
                 text: z.string().max(40),
+                addPatientName: z.boolean().optional(),
                 surface: z.enum(["bottom", "wall"]),
                 mode: z.enum(["engrave", "emboss"]),
                 bold: z.boolean(),
