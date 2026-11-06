@@ -22,42 +22,42 @@ export const prepareManufacturingStlUploadInputSchema = z.object({
     file_name: z.string().max(200).optional(),
 });
 
-export const generateGcodeInputSchema = z
-    .object({
-        design_id: z.string().uuid().optional(),
-        side: sideSchema.optional(),
-        preset_id: z.string().min(1),
-        /** Required unless use_saved_design. The saved-design path does not accept an STL deliverable. */
-        stl_storage_key: z.string().min(1).optional(),
-        output_type: z.enum(["gcode", "stl"]).default("gcode"),
-        belt_angle_deg: z.number().min(10).max(80).optional(),
-        file_name: z.string().max(200).optional(),
-        material: z.string().max(80).optional(),
-        /** Server builds the canonical Export mesh and returns per-foot belt G-code only. */
-        use_saved_design: z.boolean().optional(),
-    })
-    .superRefine((value, ctx) => {
-        if (value.use_saved_design) {
-            if (!value.design_id) {
-                ctx.addIssue({ code: "custom", message: "design_id is required", path: ["design_id"] });
-            }
-            if (value.output_type === "stl") {
-                ctx.addIssue({
-                    code: "custom",
-                    message: "Saved-design manufacturing returns G-code only",
-                    path: ["output_type"],
-                });
-            }
-            return;
+export const generateGcodeInputObjectSchema = z.object({
+    design_id: z.string().uuid().optional(),
+    side: sideSchema.optional(),
+    preset_id: z.string().min(1),
+    /** Required unless use_saved_design. The saved-design path does not accept an STL deliverable. */
+    stl_storage_key: z.string().min(1).optional(),
+    output_type: z.enum(["gcode", "stl"]).default("gcode"),
+    belt_angle_deg: z.number().min(10).max(80).optional(),
+    file_name: z.string().max(200).optional(),
+    material: z.string().max(80).optional(),
+    /** Server builds the canonical Export mesh and returns per-foot belt G-code only. */
+    use_saved_design: z.boolean().optional(),
+});
+
+export const generateGcodeInputSchema = generateGcodeInputObjectSchema.superRefine((value, ctx) => {
+    if (value.use_saved_design) {
+        if (!value.design_id) {
+            ctx.addIssue({ code: "custom", message: "design_id is required", path: ["design_id"] });
         }
-        if (!value.stl_storage_key) {
+        if (value.output_type === "stl") {
             ctx.addIssue({
                 code: "custom",
-                message: "stl_storage_key is required unless use_saved_design",
-                path: ["stl_storage_key"],
+                message: "Saved-design manufacturing returns G-code only",
+                path: ["output_type"],
             });
         }
-    });
+        return;
+    }
+    if (!value.stl_storage_key) {
+        ctx.addIssue({
+            code: "custom",
+            message: "stl_storage_key is required unless use_saved_design",
+            path: ["stl_storage_key"],
+        });
+    }
+});
 
 export const getExportDownloadInputSchema = z.object({
     production_id: z.string().uuid(),
@@ -115,7 +115,7 @@ export const MCP_TOOL_DEFINITIONS = [
             "No STL deliverable. Omitting side generates both feet and fails if either foot fails. " +
             "Legacy mode still calls manufacturing.generateSolid → Python /manufacture with stl_storage_key. " +
             "PR #263 merged (70e33f8a): Apex + VertexSlice profiles + leader v2 on main.",
-        inputSchema: generateGcodeInputSchema,
+        inputSchema: generateGcodeInputObjectSchema,
     },
     {
         name: "get_export_download",

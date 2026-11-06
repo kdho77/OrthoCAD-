@@ -24,6 +24,19 @@ describe("OrthoCAD MCP tool schemas", () => {
         expect(tool?.description).not.toMatch(/open PR #263/i);
     });
 
+    test("generate_gcode advertised JSON schema exposes saved-design and legacy input fields", () => {
+        const tool = MCP_TOOL_DEFINITIONS.find((t) => t.name === "generate_gcode");
+        expect(tool).toBeTruthy();
+        const jsonSchema = zodToJsonSchema(tool!.inputSchema);
+        const properties = jsonSchema.properties as Record<string, unknown>;
+        expect(properties).toHaveProperty("use_saved_design");
+        expect(properties).toHaveProperty("design_id");
+        expect(properties).toHaveProperty("side");
+        expect(properties).toHaveProperty("preset_id");
+        expect(properties).toHaveProperty("stl_storage_key");
+        expect(jsonSchema.required).toEqual(expect.arrayContaining(["preset_id"]));
+    });
+
     test("each tool schema accepts a minimal valid payload", () => {
         const samples: Record<string, unknown> = {
             get_design: { design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
