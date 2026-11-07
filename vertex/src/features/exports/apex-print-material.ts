@@ -10,6 +10,35 @@ export type ApexPrintMaterialId = "ApexLight" | "ApexCore" | "ApexBounce" | "Ape
 /** VertexSlice `/v1/slice` material ids. */
 export type VertexSliceMaterialId = "apex_core" | "apex_light" | "apex_forge" | "apex_bounce";
 
+/**
+ * Founder-approved Apex Core nozzle. VertexSlice applies it on `apex_core`.
+ * OrthoCAD does not send a temperature override on `/v1/slice`.
+ */
+export const APEX_CORE_NOZZLE_TEMP_C = 225;
+
+/**
+ * Apex Bounce is Apex Core with these approved deltas.
+ * Speed is a factor of Core's print speeds. Core's mm/s value is not invented here.
+ */
+export const APEX_BOUNCE_NOZZLE_TEMP_C = 220;
+export const APEX_BOUNCE_BED_TEMP_C = 70;
+export const APEX_BOUNCE_SPEED_FACTOR = 0.8;
+
+/** Bounded packet for the VertexSlice owner. Not applied by this repository. */
+export const VERTEX_SLICE_APEX_BOUNCE_PACKET = {
+    owner: "VertexSlice",
+    liveVerified: false,
+    orthocadSendsProcessOverrides: false,
+    materialId: "apex_bounce",
+    cloneFromMaterialId: "apex_core",
+    nozzleTempC: APEX_BOUNCE_NOZZLE_TEMP_C,
+    coreNozzleTempC: APEX_CORE_NOZZLE_TEMP_C,
+    bedTempC: APEX_BOUNCE_BED_TEMP_C,
+    speedFactorVersusCore: APEX_BOUNCE_SPEED_FACTOR,
+    otherwiseIdenticalTo: "apex_core",
+    sliceFormFieldsSentByOrthocad: ["profile_id", "material", "infill_density", "model"],
+} as const;
+
 export { APEX_V2_INSOLE_LOCKED_PROFILE_ID };
 
 export interface ApexPrintMaterialOption {
@@ -26,9 +55,9 @@ export interface ApexPrintMaterialOption {
 const SETTINGS_NOT_APPROVED = "Disabled until print settings are approved";
 
 /**
- * Apex Light and Apex Core share the locked process profile.
- * Bounce and Forge stay visible and disabled until settings are approved.
- * ApexComfort is not a fifth product: it uses Apex Core's locked settings.
+ * Apex Light, Apex Core, and Apex Bounce share the locked process profile id.
+ * Bounce process deltas (220°C, 0.8× Core speed, 70°C bed) are applied by VertexSlice
+ * on `apex_bounce`. Forge stays disabled. ApexComfort uses Apex Core.
  */
 export const APEX_PRINT_MATERIAL_OPTIONS: readonly ApexPrintMaterialOption[] = [
     {
@@ -53,8 +82,7 @@ export const APEX_PRINT_MATERIAL_OPTIONS: readonly ApexPrintMaterialOption[] = [
         lockedProfileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
         vertexSliceMaterial: "apex_bounce",
         shoreLabel: "",
-        enabled: false,
-        disabledReason: SETTINGS_NOT_APPROVED,
+        enabled: true,
     },
     {
         id: "ApexForge",

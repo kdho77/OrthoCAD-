@@ -30,8 +30,11 @@ describe("printer G-code VertexSlice fields", () => {
         expect(left).not.toBe(right);
     });
 
-    test("Bounce and Forge cannot produce a slice payload", () => {
-        expect(() => printerGcodeSliceFields("ApexBounce")).toThrow(/approved/i);
+    test("Apex Bounce slices as apex_bounce and Forge cannot produce a payload", () => {
+        expect(printerGcodeSliceFields("ApexBounce")).toEqual({
+            presetId: "apex-v2-insole-95a",
+            material: "apex_bounce",
+        });
         expect(() => printerGcodeSliceFields("ApexForge")).toThrow(/approved/i);
     });
 });
