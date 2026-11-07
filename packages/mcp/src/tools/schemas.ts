@@ -197,6 +197,10 @@ export const createSavedDesignInputSchema = z
         catalog: savedDesignCatalogSchema.optional(),
         /** Accepted and ignored. A name is not order-person identity. */
         patient_name: z.string().max(200).optional(),
+        /** Chart label for a new client after the server verifier. Not sent to VertexOrders. */
+        given_name: z.string().trim().min(1).max(100).optional(),
+        /** Chart label for a new client after the server verifier. Not sent to VertexOrders. */
+        family_name: z.string().trim().min(1).max(100).optional(),
     })
     .strict();
 
@@ -310,6 +314,7 @@ export const MCP_TOOL_DEFINITIONS = [
             "Source is vo2 and the tenant is the internal dogfood tenant. Does not take a clinic tenant id. " +
             "client_id is optional and only confirms the client already stored on that order. " +
             "patient_name, an external client id, and a name are not accepted as identity. " +
+            "given_name and family_name are chart labels for a new client after the server verifier and are not sent as order-owner proof. " +
             "A different client_id, more than one link, or a client outside the dogfood tenant fails closed with no write and no tenant change. " +
             "When the order-owner verifier is unconfigured or refuses, this does not create a client or a design and does not call integration client upsert. " +
             "A server verifier may bind the verified person for this dogfood order. Caller fields are not that verifier. " +

@@ -303,6 +303,8 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                 return await manufacturing.createSavedDesign({
                     externalOrderId: input.external_order_id,
                     clientId: input.client_id,
+                    givenName: input.given_name,
+                    familyName: input.family_name,
                     catalog: input.catalog,
                 });
             } catch (error) {

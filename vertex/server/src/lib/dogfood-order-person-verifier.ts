@@ -5,16 +5,25 @@
 
 import { DOGFOOD_TENANT_ID } from "../auth/cad-operator.js";
 
-/** Role of the principal that may attest an order's person. Not a credential name. */
+/** In-process seam principal. The live wire principal is orthocad-dogfood-saved-design. */
 export const VO_ORDER_OWNER_PRINCIPAL = "vo-order-owner" as const;
 
-/** Consumer audience. Not a URL and not a caller argument. */
+/** Logical principal the producer binds to the dedicated Bearer credential. Not a user row. */
+export const ORTHOCAD_DOGFOOD_SAVED_DESIGN_PRINCIPAL = "orthocad-dogfood-saved-design" as const;
+
+/** In-process audience. The live wire audience is dogfood_saved_design_establishment. */
 export const DOGFOOD_SAVED_DESIGN_AUDIENCE = "dogfood-saved-design" as const;
+
+/** Agreed wire audience. Not a caller argument and not a URL. */
+export const DOGFOOD_SAVED_DESIGN_ESTABLISHMENT_AUDIENCE = "dogfood_saved_design_establishment" as const;
 
 export const DOGFOOD_BIND_ORDER_PERSON = "bind-order-person" as const;
 
-/** Use-time freshness. A result older than this is refused. Nothing is cached. */
+/** Use-time freshness for the in-process seam. Nothing is cached. */
 export const ORDER_PERSON_FRESH_MS = 60_000;
+
+/** Agreed online freshness. Request and response issued_at are checked separately. */
+export const ORDER_OWNER_WIRE_FRESH_MS = 300_000;
 
 export const ORDER_PERSON_PRODUCER_UNRESOLVED = [
     "read method",
@@ -53,12 +62,12 @@ export interface OrderPersonVerificationRequest {
 }
 
 export interface VerifiedOrderPerson {
-    principal: typeof VO_ORDER_OWNER_PRINCIPAL;
+    principal: typeof VO_ORDER_OWNER_PRINCIPAL | typeof ORTHOCAD_DOGFOOD_SAVED_DESIGN_PRINCIPAL;
     source: "vo2";
     tenantId: typeof DOGFOOD_TENANT_ID;
     externalOrderId: string;
     externalPersonId: string;
-    audience: typeof DOGFOOD_SAVED_DESIGN_AUDIENCE;
+    audience: typeof DOGFOOD_SAVED_DESIGN_AUDIENCE | typeof DOGFOOD_SAVED_DESIGN_ESTABLISHMENT_AUDIENCE;
     operation: typeof DOGFOOD_BIND_ORDER_PERSON;
     verifiedAt: string;
     givenName: string | null;
@@ -71,7 +80,8 @@ export type OrderPersonVerificationFailure =
     | "verifier_revoked"
     | "verifier_untrusted"
     | "verifier_stale"
-    | "verifier_incomplete";
+    | "verifier_incomplete"
+    | "verifier_unavailable";
 
 export type OrderPersonVerification =
     | ({ ok: true } & VerifiedOrderPerson)
@@ -115,15 +125,22 @@ export function acceptVerifiedOrderPerson(
     now: Date,
 ): { ok: true; person: VerifiedOrderPerson } | { ok: false; code: OrderPersonVerificationFailure } {
     if (!result.ok) return { ok: false, code: result.code };
-    if (result.principal !== VO_ORDER_OWNER_PRINCIPAL) return { ok: false, code: "verifier_unauthorized" };
+    const legacy =
+        result.principal === VO_ORDER_OWNER_PRINCIPAL &&
+        result.audience === DOGFOOD_SAVED_DESIGN_AUDIENCE &&
+        result.operation === DOGFOOD_BIND_ORDER_PERSON;
+    const online =
+        result.principal === ORTHOCAD_DOGFOOD_SAVED_DESIGN_PRINCIPAL &&
+        result.audience === DOGFOOD_SAVED_DESIGN_ESTABLISHMENT_AUDIENCE &&
+        result.operation === DOGFOOD_BIND_ORDER_PERSON;
+    if (!legacy && !online) {
+        const knownPrincipal =
+            result.principal === VO_ORDER_OWNER_PRINCIPAL ||
+            result.principal === ORTHOCAD_DOGFOOD_SAVED_DESIGN_PRINCIPAL;
+        return { ok: false, code: knownPrincipal ? "verifier_untrusted" : "verifier_unauthorized" };
+    }
     if (result.source !== "vo2" || request.source !== "vo2") return { ok: false, code: "verifier_untrusted" };
     if (result.tenantId !== DOGFOOD_TENANT_ID || request.tenantId !== DOGFOOD_TENANT_ID) {
-        return { ok: false, code: "verifier_untrusted" };
-    }
-    if (result.audience !== DOGFOOD_SAVED_DESIGN_AUDIENCE || request.audience !== result.audience) {
-        return { ok: false, code: "verifier_untrusted" };
-    }
-    if (result.operation !== DOGFOOD_BIND_ORDER_PERSON || request.operation !== result.operation) {
         return { ok: false, code: "verifier_untrusted" };
     }
     if (result.externalOrderId !== request.externalOrderId) return { ok: false, code: "verifier_untrusted" };
@@ -131,8 +148,10 @@ export function acceptVerifiedOrderPerson(
     if (!personId || personId.length > 200) return { ok: false, code: "verifier_untrusted" };
     const verifiedAt = Date.parse(result.verifiedAt);
     if (!Number.isFinite(verifiedAt)) return { ok: false, code: "verifier_stale" };
+    const windowMs = online ? ORDER_OWNER_WIRE_FRESH_MS : ORDER_PERSON_FRESH_MS;
+    const skewMs = online ? ORDER_OWNER_WIRE_FRESH_MS : 5_000;
     const age = now.getTime() - verifiedAt;
-    if (age < -5_000 || age > ORDER_PERSON_FRESH_MS) return { ok: false, code: "verifier_stale" };
+    if (age < -skewMs || age > windowMs) return { ok: false, code: "verifier_stale" };
     return {
         ok: true,
         person: {
@@ -141,7 +160,7 @@ export function acceptVerifiedOrderPerson(
             tenantId: DOGFOOD_TENANT_ID,
             externalOrderId: request.externalOrderId,
             externalPersonId: personId,
-            audience: DOGFOOD_SAVED_DESIGN_AUDIENCE,
+            audience: result.audience,
             operation: DOGFOOD_BIND_ORDER_PERSON,
             verifiedAt: result.verifiedAt,
             givenName: cleanName(result.givenName),

@@ -18,6 +18,7 @@ import {
 } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { getSupabaseAdmin } from "../context.js";
+import { runtimeDogfoodOrderOwnerVerifier } from "../lib/dogfood-order-owner-wire.js";
 import {
     createDogfoodSavedDesign,
     DogfoodOrderIdentityError,
@@ -647,6 +648,8 @@ export const manufacturingRouter = router({
             z.object({
                 externalOrderId: z.string().trim().min(1).max(200),
                 clientId: z.string().uuid().optional(),
+                givenName: z.string().trim().min(1).max(100).optional(),
+                familyName: z.string().trim().min(1).max(100).optional(),
                 catalog: z.unknown().optional(),
             }),
         )
@@ -660,6 +663,8 @@ export const manufacturingRouter = router({
                     externalOrderId: input.externalOrderId,
                     clientId: input.clientId,
                     catalog: input.catalog,
+                    chart: { givenName: input.givenName, familyName: input.familyName },
+                    verifier: runtimeDogfoodOrderOwnerVerifier(process.env),
                     store: prismaDogfoodSavedDesignStore(ctx.prisma),
                     persist: (designId) =>
                         persistSavedDesignSnapshotOnDesign({

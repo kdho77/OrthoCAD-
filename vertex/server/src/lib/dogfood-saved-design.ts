@@ -34,6 +34,7 @@ export const DOGFOOD_ORDER_IDENTITY_CODES = [
     "verifier_untrusted",
     "verifier_stale",
     "verifier_incomplete",
+    "verifier_unavailable",
 ] as const;
 
 export type DogfoodOrderIdentityCode = (typeof DOGFOOD_ORDER_IDENTITY_CODES)[number];
@@ -163,7 +164,9 @@ function refusalMessage(code: DogfoodOrderIdentityCode): string {
         case "verifier_stale":
             return "The order-owner verification is stale. No client or design was written.";
         case "verifier_incomplete":
-            return "The order-owner verification has no name for a new client. No client or design was written.";
+            return "A new dogfood client needs given_name and family_name on this call after the order-owner check. Those fields are not identity. No client or design was written.";
+        case "verifier_unavailable":
+            return "The order-owner verifier is unavailable. No client or design was written.";
         case "order_client_mismatch":
             return "client_id does not match the client already bound to this order. No design was written and the client tenant was not changed.";
         case "order_client_ambiguous":
@@ -207,6 +210,8 @@ export async function createDogfoodSavedDesign(args: {
     externalOrderId: string;
     clientId?: string | null;
     catalog?: unknown;
+    /** Chart labels for a new client row. Not sent to the order-owner verifier. */
+    chart?: { givenName?: string | null; familyName?: string | null } | null;
     store: DogfoodSavedDesignStore;
     verifier?: OrderPersonVerifier;
     now?: () => Date;
@@ -270,9 +275,20 @@ async function refreshStoredBinding(
     };
 }
 
+function chartLabel(value: string | null | undefined): string | null {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > 100) return null;
+    for (let index = 0; index < trimmed.length; index += 1) {
+        if (trimmed.charCodeAt(index) < 32) return null;
+    }
+    return trimmed;
+}
+
 async function bindVerifiedPerson(
     args: {
         catalog?: unknown;
+        chart?: { givenName?: string | null; familyName?: string | null } | null;
         store: DogfoodSavedDesignStore;
         buildSnapshot?: typeof buildSavedDesignSnapshot;
         persist: (designId: string) => Promise<PersistSavedDesignSnapshotResult>;
@@ -311,17 +327,17 @@ async function bindVerifiedPerson(
             client_id: client.id,
         };
     }
-    if (!person.givenName || !person.familyName) {
-        if (!existingPerson) throw identityError("verifier_incomplete");
-    }
+    const givenName = existingPerson?.givenName ?? person.givenName ?? chartLabel(args.chart?.givenName);
+    const familyName = existingPerson?.familyName ?? person.familyName ?? chartLabel(args.chart?.familyName);
+    if (!existingPerson && (!givenName || !familyName)) throw identityError("verifier_incomplete");
     const built = await snapshotForNewDesign(args.catalog, args.buildSnapshot);
     const settingsJson = envelopeFor(built);
     if (!orderPersonStillFresh(person, now)) throw identityError("verifier_stale");
     const established = await commitVerified(args.store, {
         externalOrderId,
         externalPersonId: person.externalPersonId,
-        givenName: existingPerson?.givenName ?? person.givenName ?? "",
-        familyName: existingPerson?.familyName ?? person.familyName ?? "",
+        givenName: givenName ?? "",
+        familyName: familyName ?? "",
         verifiedAt: person.verifiedAt,
         now,
         settingsJson,
