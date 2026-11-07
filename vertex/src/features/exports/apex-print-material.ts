@@ -37,6 +37,13 @@ export const VERTEX_SLICE_APEX_BOUNCE_PACKET = {
     speedFactorVersusCore: APEX_BOUNCE_SPEED_FACTOR,
     otherwiseIdenticalTo: "apex_core",
     sliceFormFieldsSentByOrthocad: ["profile_id", "material", "infill_density", "model"],
+    coreSpeedMmS: null,
+    runtimeProofRequired: [
+        "GET /v1/materials on the deployed slicer lists apex_bounce.",
+        "POST /v1/slice with profile_id apex-v2-insole-95a and material apex_bounce returns non-empty G-code.",
+        "That G-code sets the hotend to 220C and the bed to 70C.",
+        "Its print speed is 0.8 times the apex_core speed defined in VertexSlice. OrthoCAD does not store that mm/s value.",
+    ],
 } as const;
 
 export { APEX_V2_INSOLE_LOCKED_PROFILE_ID };

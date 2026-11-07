@@ -47,3 +47,19 @@ export function createMockMoonrakerAdapter(): PrinterAdapter {
 export function mockAdapterCapabilities(): PrinterCapabilities {
     return MOCK_PRINTER_CAPABILITIES;
 }
+
+/**
+ * What a live adapter still needs. The mock name is not a vendor protocol.
+ * No print, upload, or probe method exists in this repository.
+ */
+export const REAL_PRINTER_ADAPTER_DEPENDENCY = {
+    liveVerified: false,
+    inRepoImplementation: "mock-only",
+    protocolVerified: false,
+    note: "The mock is labeled moonraker because the print-farm foundation used that name. URL normalization is not a printer API.",
+    requiredBeforeLiveAdapter: [
+        "The shop's authoritative printer protocol. Do not infer commands from this mock.",
+        "The authentication scheme and a credential issued outside this repository.",
+        "A contract test against that protocol on a fake socket, with liveVerified still false until a physical call is evidenced.",
+    ],
+} as const;

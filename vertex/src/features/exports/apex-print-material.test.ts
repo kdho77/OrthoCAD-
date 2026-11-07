@@ -59,6 +59,10 @@ describe("Apex print material", () => {
             speedFactorVersusCore: 0.8,
         });
         expect(VERTEX_SLICE_APEX_BOUNCE_PACKET).not.toHaveProperty("printSpeedMmS");
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.coreSpeedMmS).toBeNull();
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.runtimeProofRequired.join(" ")).toMatch(/220C/);
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.runtimeProofRequired.join(" ")).toMatch(/70C/);
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.runtimeProofRequired.join(" ")).toMatch(/0\.8/);
         expect(apexPrintMaterialById("ApexForge").enabled).toBe(false);
         expect(() => lockedProfileIdForApexMaterial("ApexForge")).toThrow(/approved/i);
     });

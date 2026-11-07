@@ -76,11 +76,11 @@ describe("OrthoCAD MCP tool schemas", () => {
                 catalog: { shoe_size: { system: "US_M", size: 9 } },
             },
             prepare_vo_attachment: {
-                order_id: "order-1",
+                order_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
                 design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                 files: [
-                    { side: "left", storage_key: "gcode/cad-operator/left.gcode" },
-                    { side: "right", storage_key: "gcode/cad-operator/right.gcode" },
+                    { side: "left", content_base64: "RzEgWDAK" },
+                    { side: "right", content_base64: "RzEgWDEK" },
                 ],
             },
             build_design_exported_payload: {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@rstest/core";
 
-import { createMockMoonrakerAdapter } from "./printer-adapter.js";
+import { createMockMoonrakerAdapter, REAL_PRINTER_ADAPTER_DEPENDENCY } from "./printer-adapter.js";
 
 describe("printer adapter contract", () => {
     test("the mock adapter describes a printer without calling the network", () => {
@@ -26,6 +26,9 @@ describe("printer adapter contract", () => {
             expect(adapter.describe("Bay 1", "http://127.0.0.1:7125")).toEqual(described);
             expect(() => adapter.normalizeBaseUrl("ftp://printer.local")).toThrow(/http/);
             expect(calls).toEqual([]);
+            expect(REAL_PRINTER_ADAPTER_DEPENDENCY.liveVerified).toBe(false);
+            expect(REAL_PRINTER_ADAPTER_DEPENDENCY.protocolVerified).toBe(false);
+            expect(REAL_PRINTER_ADAPTER_DEPENDENCY.inRepoImplementation).toBe("mock-only");
         } finally {
             globalThis.fetch = original;
         }

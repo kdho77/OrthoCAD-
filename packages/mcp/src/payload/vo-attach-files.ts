@@ -1,14 +1,16 @@
 /**
- * Handoff for VertexOrders `attach_files` (lib/mcp/attach-files.ts).
- * OrthoCAD does not call VertexOrders. Re-running with the same order, design,
- * and storage keys returns the same idempotency key.
+ * Dogfood handoff for the live VertexOrders `attach_files` tool.
+ * OrthoCAD does not call VertexOrders and does not write an order status.
  *
- * The VO source file was not readable from this workspace. Field names follow
- * the contract named for this path: order id, left/right side, durable storage
- * key, idempotent re-run. Confirm them against that file before a live attach.
+ * The public VO arguments are orderId / external_order_id, optional source,
+ * optional design_id, optional tenant_id, and files. design_id and tenant_id
+ * trigger clinic or link checks and are omitted here. A storage key is CAD
+ * provenance, not a file body. There is no public idempotency argument.
  */
 
 import { createHash } from "node:crypto";
+
+import { voAttachArgumentError, VO_ATTACH_TEXT_MAX } from "./vo-attach-contract.js";
 
 export const FORBIDDEN_ORDER_STATUSES = [
     "Production",
@@ -26,26 +28,93 @@ export const DOGFOOD_HELD_ID_PREFIXES = [
     "c4092f6e",
 ] as const;
 
-export interface VoAttachFile {
-    side: "left" | "right";
-    storage_key: string;
-    filename: string;
-    content_type: "text/plain";
-    format: "gcode";
-}
+/** Retrieved reference: "Export file is over the 100 MB limit". */
+const MAX_ATTACH_BYTES = 100 * 1024 * 1024;
 
-export interface VoAttachFilesHandoff {
-    order_id: string;
-    design_id: string;
-    files: VoAttachFile[];
-    idempotency_key: string;
+const FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]*$/;
+
+export interface VoAttachFileInput {
+    side: "left" | "right";
+    /** CAD object key. Recorded in provenance and never placed on the VO file. */
+    storage_key?: string;
+    filename?: string;
+    content_base64?: string;
+    download_url?: string;
+    expires_at?: string;
 }
 
 export interface VoAttachFilesInput {
     order_id: string;
-    design_id: string;
-    files: Array<{ side: "left" | "right"; storage_key: string; filename?: string }>;
+    /** Kept on the CAD result only. Sending it makes VO check the design link. */
+    design_id?: string;
+    files: VoAttachFileInput[];
+    now?: number;
 }
+
+export interface VoAttachFilesArguments {
+    orderId: string;
+    external_order_id: string;
+    source: "vo2";
+    files: Array<{
+        side: "left" | "right";
+        format: "gcode";
+        filename: string;
+        content_type: "text/plain";
+        content_base64?: string;
+        download_url?: string;
+        expires_at?: string;
+    }>;
+}
+
+export interface VoAttachPreparation {
+    /** Pass this object alone to VertexOrders attach_files. */
+    vo_attach_files: VoAttachFilesArguments;
+    cad_provenance: {
+        design_id: string | null;
+        vo_duplicate_suppression: "unsupported";
+        cad_replay_sha256: string;
+        files: Array<{
+            side: "left" | "right";
+            storage_key: string | null;
+            sha256: string;
+            byte_length: number | null;
+        }>;
+    };
+    /** This tool does not write a VO order status. File Ready stays a VO decision. */
+    order_status_written: false;
+}
+
+/**
+ * Public attach_files cannot dedupe. uploadId is server-side and not an argument.
+ * OrthoCAD must not send upload_id until VO accepts it, or the call is rejected.
+ */
+export const VO_ATTACH_RETRY_PACKET = {
+    owner: "VertexOrders2-0",
+    file: "lib/mcp/attach-files.ts",
+    doNotEditFromOrthocad: true,
+    publicSchemaHasIdempotencyKey: false,
+    currentBehavior:
+        "deps.uploadId defaults to crypto.randomUUID and is not a public argument. storagePath uses that id as eventId. A second attach_files call stores a new object. A batch that fails after the first save leaves that file stored, and a retry with a new id does not treat it as alreadyStored.",
+    proposedPublicField: {
+        name: "upload_id",
+        type: "string",
+        format: "uuid",
+        mapsTo: "deps.uploadId",
+    },
+    downloadUrlLimit: {
+        current: "readShortText TEXT_MAX 200 includes download_url",
+        effect: "A signed URL longer than 200 characters is rejected before fetch",
+        proposed: "Do not apply TEXT_MAX to download_url. Keep a single https fetch and the expires_at check.",
+    },
+    acceptance: [
+        "Two attach_files calls with the same upload_id and the same files return alreadyStored true and do not fetch those URLs again.",
+        "A different upload_id stores a second object.",
+        "A batch that fails on file 2 leaves file 1 stored. Retry with the same upload_id skips file 1 and retries file 2.",
+        "An https download_url longer than 200 characters is accepted when expires_at is absent or in the future.",
+        "The result keeps orderStatusUnchanged true and writes no order status.",
+        "tenant_id and design_id stay optional and are still not stored.",
+    ],
+} as const;
 
 function assertNotHeld(value: string): void {
     const id = value.trim().toLowerCase();
@@ -56,73 +125,129 @@ function assertNotHeld(value: string): void {
     }
 }
 
-function assertNoStatus(value: unknown): void {
-    if (typeof value === "string") {
-        const found = FORBIDDEN_ORDER_STATUSES.find(
-            (status) => status.toLowerCase() === value.trim().toLowerCase(),
-        );
-        if (found) throw new Error(`Handoff refused: order status "${found}" is not emitted by OrthoCAD.`);
-        return;
+function decodeBase64(value: string): Buffer {
+    const compact = value.replace(/\s/g, "");
+    if (!compact || !/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+        throw new Error("content_base64 is not valid base64");
     }
-    if (Array.isArray(value)) {
-        for (const entry of value) assertNoStatus(entry);
-        return;
-    }
-    if (!value || typeof value !== "object") return;
-    for (const [key, child] of Object.entries(value)) {
-        if (key.toLowerCase() === "status" || key.toLowerCase() === "order_status") {
-            throw new Error("Handoff refused: order status is not part of this payload.");
-        }
-        assertNoStatus(child);
-    }
+    const bytes = Buffer.from(compact, "base64");
+    if (bytes.byteLength === 0) throw new Error("file is empty");
+    if (bytes.byteLength > MAX_ATTACH_BYTES) throw new Error("Export file is over the 100 MB limit");
+    return bytes;
 }
 
-export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachFilesHandoff {
+function gcodeFilename(side: "left" | "right", requested: string | undefined): string {
+    const raw = requested?.trim() ?? "";
+    const base = raw.split(/[/\\]/).pop()?.trim() ?? "";
+    const lowered = base.toLowerCase();
+    if (
+        base &&
+        lowered.length <= 180 &&
+        !lowered.includes("..") &&
+        FILENAME_RE.test(base) &&
+        lowered.endsWith(".gcode") &&
+        !lowered.includes(".stl") &&
+        lowered.startsWith(side)
+    ) {
+        return lowered;
+    }
+    return `${side}.gcode`;
+}
+
+export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPreparation {
     const orderId = input.order_id.trim();
-    const designId = input.design_id.trim();
-    if (!orderId) throw new Error("order_id is required");
-    if (!designId) throw new Error("design_id is required");
+    if (!orderId) throw new Error("orderId or external_order_id is required");
     assertNotHeld(orderId);
-    assertNotHeld(designId);
-    if (input.files.length < 1) throw new Error("at least one G-code file is required");
+    if (input.design_id) assertNotHeld(input.design_id);
+    if (input.files.length < 1) throw new Error("files must be an array of 1 to 10");
 
     const seen = new Set<string>();
-    const files: VoAttachFile[] = input.files
-        .map((file) => {
-            const storageKey = file.storage_key.trim();
-            if (!storageKey || storageKey.includes("..")) throw new Error("storage_key is required");
-            if (/\.stl($|\?)/i.test(storageKey)) {
-                throw new Error("STL files are not attached. G-code storage keys only.");
-            }
-            if (seen.has(file.side)) throw new Error(`duplicate ${file.side} file`);
-            seen.add(file.side);
-            const filename = (file.filename?.trim() || `${file.side}.gcode`).replace(/[^a-zA-Z0-9_.-]/g, "_");
-            return {
-                side: file.side,
-                storage_key: storageKey,
-                filename,
-                content_type: "text/plain" as const,
-                format: "gcode" as const,
-            };
-        })
-        .sort((a, b) => a.side.localeCompare(b.side));
+    const files: VoAttachFilesArguments["files"] = [];
+    const provenanceFiles: VoAttachPreparation["cad_provenance"]["files"] = [];
 
-    const idempotencyKey = createHash("sha256")
-        .update(
-            JSON.stringify({
-                order_id: orderId,
-                design_id: designId,
-                files: files.map((file) => ({ side: file.side, storage_key: file.storage_key })),
-            }),
-        )
-        .digest("hex");
+    for (const file of [...input.files].sort((a, b) => a.side.localeCompare(b.side))) {
+        if (seen.has(file.side)) throw new Error(`duplicate ${file.side} file`);
+        seen.add(file.side);
+        if (file.filename && /\.stl($|\?)/i.test(file.filename)) {
+            throw new Error("STL files are not attached. G-code only.");
+        }
+        const filename = gcodeFilename(file.side, file.filename);
+        if (filename.toLowerCase().endsWith(".stl")) {
+            throw new Error("STL files are not attached. G-code only.");
+        }
+        const download = file.download_url?.trim() || "";
+        const encoded = file.content_base64?.trim() || "";
+        if (download && encoded) {
+            throw new Error("file must include download_url or content_base64, not both");
+        }
+        if (!download && !encoded) {
+            throw new Error(
+                file.storage_key
+                    ? "storage_key is not attachable bytes. file must include download_url or content_base64, not both"
+                    : "file must include download_url or content_base64, not both",
+            );
+        }
+        if (download && /\.stl($|\?)/i.test(download)) {
+            throw new Error("STL files are not attached. G-code only.");
+        }
+        if (download && !download.toLowerCase().startsWith("https://")) {
+            throw new Error("download_url must be an https URL");
+        }
+        if (download && download.length > VO_ATTACH_TEXT_MAX) {
+            throw new Error(
+                `download_url must be 1-${VO_ATTACH_TEXT_MAX} characters. Pass content_base64 for this G-code.`,
+            );
+        }
+        if (download && file.expires_at) {
+            const expires = Date.parse(file.expires_at);
+            if (!Number.isFinite(expires)) throw new Error("expires_at must be an ISO timestamp");
+            if (expires <= (input.now ?? Date.now())) throw new Error("file download_url has expired");
+        }
 
-    const payload: VoAttachFilesHandoff = {
-        order_id: orderId,
-        design_id: designId,
+        let byteLength: number | null = null;
+        let digestSource = download;
+        if (encoded) {
+            const bytes = decodeBase64(encoded);
+            byteLength = bytes.byteLength;
+            digestSource = bytes.toString("base64");
+        }
+        const wire: VoAttachFilesArguments["files"][number] = {
+            side: file.side,
+            format: "gcode",
+            filename,
+            content_type: "text/plain",
+        };
+        if (encoded) wire.content_base64 = encoded.replace(/\s/g, "");
+        if (download) {
+            wire.download_url = download;
+            if (file.expires_at) wire.expires_at = file.expires_at;
+        }
+        files.push(wire);
+        provenanceFiles.push({
+            side: file.side,
+            storage_key: file.storage_key?.trim() || null,
+            sha256: createHash("sha256").update(digestSource).digest("hex"),
+            byte_length: byteLength,
+        });
+    }
+
+    const voAttachFiles: VoAttachFilesArguments = {
+        orderId,
+        external_order_id: orderId,
+        source: "vo2",
         files,
-        idempotency_key: idempotencyKey,
     };
-    assertNoStatus(payload);
-    return payload;
+    const rejected = voAttachArgumentError(voAttachFiles, input.now ?? Date.now());
+    if (rejected) throw new Error(rejected);
+
+    return {
+        vo_attach_files: voAttachFiles,
+        cad_provenance: {
+            design_id: input.design_id ?? null,
+            vo_duplicate_suppression: "unsupported",
+            cad_replay_sha256: createHash("sha256").update(JSON.stringify(voAttachFiles)).digest("hex"),
+            files: provenanceFiles,
+        },
+        order_status_written: false,
+    };
 }

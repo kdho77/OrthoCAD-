@@ -30,6 +30,7 @@ interface SavedDesignGcodeFile {
     production_id: string | null;
     download_url: string | null;
     storage_key: string | null;
+    content_base64: string | null;
 }
 
 interface UserQuestion {
@@ -99,7 +100,20 @@ function gcodeFileFromResult(side: "left" | "right", result: Record<string, unkn
             : typeof result.storageKey === "string"
               ? result.storageKey
               : null;
-    return { side, format: "gcode", production_id: productionId, download_url: download, storage_key: storageKey };
+    const contentBase64 =
+        typeof result.gcodeBase64 === "string"
+            ? result.gcodeBase64
+            : typeof result.gcode === "string" && result.gcode.length > 0
+              ? Buffer.from(result.gcode, "utf8").toString("base64")
+              : null;
+    return {
+        side,
+        format: "gcode",
+        production_id: productionId,
+        download_url: download,
+        storage_key: storageKey,
+        content_base64: contentBase64,
+    };
 }
 
 function integrationNotReady(error: unknown): string {

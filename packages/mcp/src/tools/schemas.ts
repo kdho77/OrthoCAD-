@@ -198,15 +198,21 @@ export const createSavedDesignInputSchema = z
 const attachFileSchema = z
     .object({
         side: sideSchema,
-        storage_key: z.string().trim().min(1).max(500),
+        /** CAD provenance only. Not copied into the VO file object. */
+        storage_key: z.string().trim().min(1).max(500).optional(),
         filename: z.string().max(200).optional(),
+        content_base64: z.string().min(1).optional(),
+        download_url: z.string().min(1).max(4000).optional(),
+        expires_at: z.string().min(1).max(80).optional(),
     })
     .strict();
 
 export const prepareVoAttachmentInputSchema = z
     .object({
-        order_id: z.string().trim().min(1).max(200),
-        design_id: z.string().uuid(),
+        /** Existing VO order UUID. Sent as orderId and external_order_id. */
+        order_id: z.string().uuid(),
+        /** CAD provenance only. Not sent; VO would check the design link. */
+        design_id: z.string().uuid().optional(),
         files: z.array(attachFileSchema).min(1).max(2),
     })
     .strict();
@@ -304,9 +310,12 @@ export const MCP_TOOL_DEFINITIONS = [
     {
         name: "prepare_vo_attachment",
         description:
-            "Build the VertexOrders attach_files handoff for an existing order: order_id, left/right side, durable G-code storage_key, " +
-            "and a stable idempotency_key. Does not call VertexOrders and does not write an order status. " +
-            "Re-running with the same keys returns the same payload. STL keys are refused.",
+            "Build the live VertexOrders attach_files arguments for an existing order UUID. " +
+            "Forward only vo_attach_files (orderId, external_order_id, source vo2, files). " +
+            "Each file is separate left or right G-code with exactly one of content_base64 or an https download_url of at most 200 characters. " +
+            "A storage key is CAD provenance, not a VO field. design_id and tenant_id are omitted so VO does not run clinic or link checks. " +
+            "Does not call VertexOrders and does not write an order status. " +
+            "VO's public tool has no idempotency argument, so a repeat call is not server-side deduplication. STL is refused.",
         inputSchema: prepareVoAttachmentInputSchema,
     },
 ] as const;

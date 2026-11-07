@@ -587,6 +587,10 @@ export const manufacturingRouter = router({
                     stlBase64: cadOperator || isGcode || downloadUrl ? undefined : inlineStl,
                     gcodeDownloadUrl: isGcode ? downloadUrl : undefined,
                     gcodeStorageKey: isGcode ? storageKey : undefined,
+                    gcodeBase64:
+                        cadOperator && isGcode && inlineGcode
+                            ? Buffer.from(inlineGcode, "utf8").toString("base64")
+                            : undefined,
                 };
             } catch (err) {
                 deleteManufacturingTempBestEffort(supabase, tempStlKey);
