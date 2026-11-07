@@ -4,7 +4,7 @@
 // Printer addresses come from the cloud enrollment, never from this file.
 
 import { runBridgeSession } from "../shared/print-bridge-session.js";
-import { productionAddressPolicy } from "../shared/printer-address-policy.js";
+import { productionBridgePolicy } from "../shared/printer-address-resolve.js";
 
 function required(name: string): string {
     const value = process.env[name]?.trim() ?? "";
@@ -35,7 +35,7 @@ const result = await runBridgeSession({
     origin,
     bridgeId,
     stateDir,
-    policy: productionAddressPolicy(),
+    policy: productionBridgePolicy(),
     proof: process.env.ORTHOCAD_BRIDGE_ENROLLMENT_PROOF?.trim() || undefined,
 });
 console.error(`bridge stopped: ${result.stopped} cycles=${result.cycles}`);

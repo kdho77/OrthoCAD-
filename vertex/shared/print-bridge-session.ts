@@ -10,7 +10,7 @@ import { createMoonrakerClient, MoonrakerCallError, type MoonrakerClient } from 
 import { sha256Hex } from "./print-bridge-enrollment.js";
 import { publicPrinterMessage } from "./printer-adapter.js";
 import type { AddressPolicy } from "./printer-address-policy.js";
-import { productionAddressPolicy } from "./printer-address-policy.js";
+import { productionBridgePolicy } from "./printer-address-resolve.js";
 
 export interface BridgeJobOffer {
     jobId: string;
@@ -132,7 +132,7 @@ export async function runBridgeSession(
     options: BridgeSessionOptions,
 ): Promise<{ cycles: number; stopped: string }> {
     const origin = options.origin;
-    const policy = options.policy ?? productionAddressPolicy();
+    const policy = options.policy ?? productionBridgePolicy();
     const moonraker = options.moonraker ?? createMoonrakerClient(policy);
     mkdirSync(options.stateDir, { recursive: true });
     const credentialFile = join(options.stateDir, "credential");

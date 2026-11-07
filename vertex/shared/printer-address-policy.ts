@@ -3,9 +3,6 @@
 // Production rejects loopback, link-local, metadata, and public hosts.
 // Test loopback is a separate function. Production code must not call it.
 
-import { lookup as dnsLookup } from "node:dns/promises";
-import { isIP } from "node:net";
-
 export type AddressDecision =
     | { ok: true; host: string; port: number; pinnedIp: string | null }
     | { ok: false; reason: string };
@@ -18,6 +15,13 @@ export interface AddressPolicy {
 }
 
 const REJECTED = "Printer address is not an approved LAN destination.";
+
+function isIP(host: string): number {
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) && host.split(".").every((part) => Number(part) <= 255))
+        return 4;
+    if (host.includes(":")) return 6;
+    return 0;
+}
 
 function ipv4ToInt(ip: string): number | null {
     const parts = ip.split(".");
@@ -108,19 +112,9 @@ export function productionAddressPolicy(): AddressPolicy {
             return decideHost(parsed.host, parsed.port, false);
         },
         async resolve(raw) {
-            const parsed = parsePrinterUrl(raw);
-            if ("error" in parsed) return { ok: false, reason: parsed.error };
-            const initial = decideHost(parsed.host, parsed.port, false);
-            if (!initial.ok || initial.pinnedIp) return initial;
-            const records = await dnsLookup(parsed.host, { all: true, verbatim: true });
-            if (records.length === 0) return { ok: false, reason: REJECTED };
-            for (const record of records) {
-                const kind = classifyIp(record.address);
-                if (kind !== "lan") return { ok: false, reason: REJECTED };
-            }
-            const pinned = records[0]?.address;
-            if (!pinned) return { ok: false, reason: REJECTED };
-            return { ok: true, host: parsed.host, port: parsed.port, pinnedIp: pinned };
+            const decision = this.decide(raw);
+            if (!decision.ok || decision.pinnedIp) return decision;
+            return { ok: false, reason: "A hostname is resolved only on the local bridge." };
         },
     };
 }
@@ -136,20 +130,9 @@ export function testLoopbackAddressPolicy(): AddressPolicy {
             return decideHost(parsed.host, parsed.port, true);
         },
         async resolve(raw) {
-            const parsed = parsePrinterUrl(raw);
-            if ("error" in parsed) return { ok: false, reason: parsed.error };
-            const initial = decideHost(parsed.host, parsed.port, true);
-            if (!initial.ok || initial.pinnedIp) return initial;
-            const records = await dnsLookup(parsed.host, { all: true, verbatim: true });
-            for (const record of records) {
-                const kind = classifyIp(record.address);
-                if (kind === "blocked" || kind === "loopback") return { ok: false, reason: REJECTED };
-                if (kind !== "lan") return { ok: false, reason: REJECTED };
-            }
-            const pinned = records[0]?.address ?? null;
-            return pinned
-                ? { ok: true, host: parsed.host, port: parsed.port, pinnedIp: pinned }
-                : { ok: false, reason: REJECTED };
+            const decision = this.decide(raw);
+            if (!decision.ok || decision.pinnedIp) return decision;
+            return { ok: false, reason: "A hostname is resolved only on the local bridge." };
         },
     };
 }

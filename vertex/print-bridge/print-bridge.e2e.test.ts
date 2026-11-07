@@ -407,7 +407,7 @@ describe("local bridge and fake Moonraker", () => {
     test("the production bridge executable enrolls outbound and does not embed a test loopback policy", async () => {
         const { readFileSync } = await import("node:fs");
         const source = readFileSync(join(process.cwd(), "vertex/print-bridge/main.ts"), "utf8");
-        expect(source).toContain("productionAddressPolicy");
+        expect(source).toContain("productionBridgePolicy");
         expect(source).not.toContain("testLoopback");
         const repo = createMemoryProductionRepo({ jobs: [], printers: [], gcode: {} });
         const directory = memoryBridgeDirectory();
