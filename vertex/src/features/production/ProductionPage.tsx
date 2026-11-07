@@ -10,6 +10,7 @@ import { designPath } from "@/features/clients/routes";
 import { cn } from "@/lib/utils";
 import { useProductionStore } from "@/stores/production-store";
 import { formatRelative } from "../../../shared/client-files";
+import { LOCAL_BRIDGE_PROTOCOL_ID } from "../../../shared/printer-adapter";
 import {
     type DueFilter,
     defaultHistoryQuery,
@@ -17,6 +18,7 @@ import {
     formatDuration,
     type HistoryQuery,
     type JobProcess,
+    type PrinterRecord,
     type PrinterState,
     type ProductionJob,
     printerCards,
@@ -30,11 +32,16 @@ import {
 import { gcodeRetentionLabel } from "../../../shared/retention";
 import {
     assignProductionJob,
+    cancelDispatchedProductionJob,
     cancelProductionJob,
+    dispatchProductionJob,
     downloadProductionGcode,
     holdProductionJob,
     loadProduction,
     markProductionJobDone,
+    reconcileProductionPrinter,
+    refreshProductionReadiness,
+    registerConfiguredProductionPrinter,
     registerMockProductionPrinter,
     rerunProductionJob,
     retryProductionJob,
@@ -93,7 +100,7 @@ export function ProductionPage({ tab }: { tab: ProductionTab }) {
     );
 }
 
-function QueueTab({ jobs, printers }: { jobs: ProductionJob[]; printers: { id: string; name: string }[] }) {
+function QueueTab({ jobs, printers }: { jobs: ProductionJob[]; printers: PrinterRecord[] }) {
     const [query, setQuery] = useState<QueueQuery>(defaultQueueQuery());
     const [assignId, setAssignId] = useState<string | null>(null);
     const [cancelId, setCancelId] = useState<string | null>(null);
@@ -179,6 +186,7 @@ function QueueTab({ jobs, printers }: { jobs: ProductionJob[]; printers: { id: s
                                 <td className="py-2 pr-3">{processLabel(job.process)}</td>
                                 <td className="py-2 pr-3">
                                     <Status job={job} />
+                                    <DispatchFacts job={job} />
                                 </td>
                                 <td className="py-2 pr-3">
                                     {job.process === "print" ? (job.printerName ?? "—") : "—"}
@@ -188,6 +196,7 @@ function QueueTab({ jobs, printers }: { jobs: ProductionJob[]; printers: { id: s
                                 <td className="py-2">
                                     <JobActions
                                         job={job}
+                                        printers={printers}
                                         onAssign={setAssignId}
                                         onCancel={setCancelId}
                                         run={run}
@@ -206,12 +215,19 @@ function QueueTab({ jobs, printers }: { jobs: ProductionJob[]; printers: { id: s
                         <p className="text-muted-foreground">{job.clientLabel}</p>
                         <p>
                             <Source job={job} /> · {processLabel(job.process)} · <Status job={job} />
+                            <DispatchFacts job={job} />
                         </p>
                         <p className="text-xs text-muted-foreground">
                             {job.process === "print" ? (job.printerName ?? "No printer") : "Mill"} · Due{" "}
                             {job.dueAt ? job.dueAt.slice(0, 10) : "—"} · {formatRelative(job.createdAt)}
                         </p>
-                        <JobActions job={job} onAssign={setAssignId} onCancel={setCancelId} run={run} />
+                        <JobActions
+                            job={job}
+                            printers={printers}
+                            onAssign={setAssignId}
+                            onCancel={setCancelId}
+                            run={run}
+                        />
                     </article>
                 ))}
             </div>
@@ -249,7 +265,13 @@ function QueueTab({ jobs, printers }: { jobs: ProductionJob[]; printers: { id: s
             <ConfirmDeleteDialog
                 open={cancelId !== null}
                 title="Cancel this job?"
-                description="It will move to History. The design is kept."
+                description={
+                    jobs.find((job) => job.id === cancelId)?.dispatchState === "none" ||
+                    jobs.find((job) => job.id === cancelId)?.dispatchState === "rejected" ||
+                    !cancelId
+                        ? "It will move to History. The design is kept."
+                        : "This job may already have reached a printer. Queue cancel will be refused until that is safe."
+                }
                 confirmLabel="Cancel job"
                 onClose={() => setCancelId(null)}
                 onConfirm={() => {
@@ -262,15 +284,13 @@ function QueueTab({ jobs, printers }: { jobs: ProductionJob[]; printers: { id: s
     );
 }
 
-function PrintersTab({
-    jobs,
-    printers,
-}: {
-    jobs: ProductionJob[];
-    printers: { id: string; name: string; state: PrinterState; tenantId: string | null; ownerId: string }[];
-}) {
+function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: PrinterRecord[] }) {
     const [name, setName] = useState("");
     const [moonrakerUrl, setMoonrakerUrl] = useState("http://127.0.0.1:7125");
+    const [configName, setConfigName] = useState("");
+    const [endpoint, setEndpoint] = useState("");
+    const [credentialRef, setCredentialRef] = useState("");
+    const [cancellation, setCancellation] = useState<"unsupported" | "explicit">("unsupported");
     const [notice, setNotice] = useState("");
     const cards = printerCards(printers, jobs);
 
@@ -285,11 +305,37 @@ function PrintersTab({
             });
     };
 
+    const configure = () => {
+        setNotice("");
+        void registerConfiguredProductionPrinter({
+            name: configName,
+            protocolId: LOCAL_BRIDGE_PROTOCOL_ID,
+            endpoint,
+            credentialRef,
+            cancellation,
+        })
+            .then(() => {
+                setConfigName("");
+                setEndpoint("");
+                setCredentialRef("");
+            })
+            .catch((error: unknown) => {
+                setNotice(error instanceof Error ? error.message : "Configuration failed");
+            });
+    };
+
+    const runPrinter = (printerId: string, work: (id: string) => Promise<void>) => {
+        setNotice("");
+        void work(printerId).catch((error: unknown) => {
+            setNotice(error instanceof Error ? error.message : "Printer action failed");
+        });
+    };
+
     return (
         <section className="flex flex-col gap-3" data-testid="production-printers">
             <p className="text-sm text-muted-foreground">
-                Printer status only. Live connections arrive with Print Farm. This page does not send printer
-                commands.
+                Queue state for two or more printers. Mock registration is not a live printer. A configured
+                printer stays unverified, and this page does not open a socket.
             </p>
             <div className="rounded-xl border border-border bg-panel p-3">
                 <h2 className="text-sm font-medium">Register mock printer</h2>
@@ -324,8 +370,71 @@ function PrintersTab({
                         Register
                     </button>
                 </div>
-                {notice ? <p className="mt-2 text-sm text-amber-300">{notice}</p> : null}
             </div>
+            <div className="rounded-xl border border-border bg-panel p-3" data-testid="configure-printer">
+                <h2 className="text-sm font-medium">Configure printer</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                    Software seam only ({LOCAL_BRIDGE_PROTOCOL_ID}). Not shop-verified. The credential field
+                    is a name, not a secret. Saving does not connect.
+                </p>
+                <div className="mt-3 flex flex-col gap-2 md:flex-row md:flex-wrap">
+                    <label className="min-w-0 flex-1 text-xs text-muted-foreground">
+                        Name
+                        <input
+                            aria-label="Configured printer name"
+                            value={configName}
+                            placeholder="Bay 1"
+                            className="mt-1 block min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
+                            onChange={(event) => setConfigName(event.target.value)}
+                        />
+                    </label>
+                    <label className="min-w-0 flex-[2] text-xs text-muted-foreground">
+                        Bridge endpoint
+                        <input
+                            aria-label="Bridge endpoint"
+                            value={endpoint}
+                            autoComplete="off"
+                            className="mt-1 block min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
+                            onChange={(event) => setEndpoint(event.target.value)}
+                        />
+                    </label>
+                    <label className="min-w-0 flex-1 text-xs text-muted-foreground">
+                        Credential name
+                        <input
+                            aria-label="Credential name"
+                            value={credentialRef}
+                            autoComplete="off"
+                            placeholder="Name only"
+                            className="mt-1 block min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
+                            onChange={(event) => setCredentialRef(event.target.value)}
+                        />
+                    </label>
+                    <label className="min-w-0 text-xs text-muted-foreground">
+                        Cancellation
+                        <select
+                            aria-label="Cancellation"
+                            value={cancellation}
+                            className="mt-1 block min-h-11 rounded-md border border-input bg-background px-2 text-sm"
+                            onChange={(event) =>
+                                setCancellation(
+                                    event.target.value === "explicit" ? "explicit" : "unsupported",
+                                )
+                            }
+                        >
+                            <option value="unsupported">Unsupported</option>
+                            <option value="explicit">Explicit only</option>
+                        </select>
+                    </label>
+                    <button
+                        type="button"
+                        className="min-h-11 self-end rounded-md bg-primary px-4 text-sm text-primary-foreground"
+                        onClick={configure}
+                    >
+                        Save configuration
+                    </button>
+                </div>
+            </div>
+            {notice ? <p className="text-sm text-amber-300">{notice}</p> : null}
             {cards.length === 0 ? <p className="text-sm text-muted-foreground">No printers yet.</p> : null}
             <div className="grid gap-3 md:grid-cols-2">
                 {cards.map((card) => (
@@ -337,6 +446,25 @@ function PrintersTab({
                         <div className="flex items-center justify-between gap-2">
                             <h2 className="font-semibold">{card.printer.name}</h2>
                             <PrinterStateBadge state={card.printer.state} />
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                            {card.printer.adapterMode === "mock-only"
+                                ? "Mock only. Not a live printer."
+                                : card.printer.adapterMode === "configured"
+                                  ? "Configured seam. Not shop-verified. No socket is opened from this app."
+                                  : "No controller configuration. Not a live printer."}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                            Endpoint {card.printer.endpointConfigured ? "stored" : "missing"} · credential{" "}
+                            {card.printer.credentialRef ?? "missing"} · cancel {card.printer.cancellation}
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                            <Action onClick={() => runPrinter(card.printer.id, refreshProductionReadiness)}>
+                                Check readiness
+                            </Action>
+                            <Action onClick={() => runPrinter(card.printer.id, reconcileProductionPrinter)}>
+                                Reconcile status
+                            </Action>
                         </div>
                         <p className="mt-3 text-sm">Current: {card.current?.designName ?? "None"}</p>
                         <div className="mt-2 h-2 overflow-hidden rounded-full bg-secondary" aria-hidden>
@@ -489,22 +617,46 @@ function Status({ job }: { job: ProductionJob }) {
     );
 }
 
+function DispatchFacts({ job }: { job: ProductionJob }) {
+    if (!job.dispatchState || job.dispatchState === "none") return null;
+    return (
+        <span className="mt-1 block text-xs text-muted-foreground">
+            Dispatch {job.dispatchState}
+            {job.controllerJobId ? ` · controller ${job.controllerJobId}` : ""}
+            {job.dispatchError ? ` · ${job.dispatchError}` : ""}
+        </span>
+    );
+}
+
 function JobActions({
     job,
+    printers,
     onAssign,
     onCancel,
     run,
 }: {
     job: ProductionJob;
+    printers: PrinterRecord[];
     onAssign: (id: string) => void;
     onCancel: (id: string) => void;
     run: (work: () => Promise<void>) => void;
 }) {
+    const printer = printers.find((item) => item.id === job.printerId) ?? null;
+    const canDispatch =
+        job.process === "print" && job.status === "assigned" && (job.dispatchState ?? "none") === "none";
     return (
         <div className="flex flex-wrap gap-1">
             <Action onClick={() => navigate(designPath(job.clientId, job.designId))}>Open design</Action>
             {job.process === "print" ? (
                 <Action onClick={() => onAssign(job.id)}>Assign to printer</Action>
+            ) : null}
+            {canDispatch ? (
+                <Action onClick={() => run(() => dispatchProductionJob(job.id))}>Dispatch</Action>
+            ) : null}
+            {printer?.cancellation === "explicit" && job.dispatchState === "acknowledged" ? (
+                <Action onClick={() => run(() => cancelDispatchedProductionJob(job.id))}>
+                    Cancel on printer
+                </Action>
             ) : null}
             {job.process === "mill" ? (
                 <Action onClick={() => run(() => downloadProductionGcode(job.id))}>Download G-code</Action>

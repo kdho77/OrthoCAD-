@@ -2,14 +2,20 @@
 // Shop jobs only. This router does not create or edit Vertex Orders.
 
 import { z } from "zod";
+import { closedPrinterDispatch } from "../../../shared/printer-adapter.js";
 import {
     assignJob,
+    cancelDispatchedPrint,
     cancelJob,
+    dispatchAssignedJob,
     downloadGcode,
     enqueueJob,
     holdJob,
     listProduction,
     markJobDone,
+    reconcilePrinter,
+    refreshPrinterReadiness,
+    registerConfiguredPrinter,
     registerMockPrinter,
     rerunJob,
     retryJob,
@@ -117,6 +123,71 @@ export const productionRouter = router({
         try {
             const { repo, actor } = await scope(ctx);
             return await downloadGcode(repo, actor, input.id);
+        } catch (error) {
+            rethrowProduction(error);
+        }
+    }),
+
+    /**
+     * Stores a printer configuration for the software seam.
+     * Uses the closed transport: no socket, no credential value, liveVerified stays false.
+     */
+    registerConfiguredPrinter: protectedProcedure
+        .input(
+            z.object({
+                name: z.string().min(1).max(80),
+                protocolId: z.string().min(1).max(80),
+                endpoint: z.string().min(1).max(500),
+                credentialRef: z.string().min(1).max(80),
+                cancellation: z.enum(["unsupported", "explicit"]),
+            }),
+        )
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await registerConfiguredPrinter(repo, actor, input);
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    /** Same dispatch function the queue uses. Closed until a transport and credential gate are injected. */
+    dispatch: protectedProcedure.input(idInput).mutation(async ({ ctx, input }) => {
+        try {
+            const { repo, actor } = await scope(ctx);
+            return await dispatchAssignedJob(repo, actor, input.id, closedPrinterDispatch());
+        } catch (error) {
+            rethrowProduction(error);
+        }
+    }),
+
+    reconcile: protectedProcedure
+        .input(z.object({ printerId: z.string().uuid() }))
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await reconcilePrinter(repo, actor, input.printerId, closedPrinterDispatch());
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    refreshReadiness: protectedProcedure
+        .input(z.object({ printerId: z.string().uuid() }))
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await refreshPrinterReadiness(repo, actor, input.printerId, closedPrinterDispatch());
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    /** Explicit printer cancel. Refuses when cancellation is unsupported or the transport is closed. */
+    cancelDispatched: protectedProcedure.input(idInput).mutation(async ({ ctx, input }) => {
+        try {
+            const { repo, actor } = await scope(ctx);
+            return await cancelDispatchedPrint(repo, actor, input.id, closedPrinterDispatch());
         } catch (error) {
             rethrowProduction(error);
         }
