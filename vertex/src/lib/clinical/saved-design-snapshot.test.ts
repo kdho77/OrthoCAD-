@@ -45,7 +45,17 @@ describe("SAMPLE_Top saved-design snapshot", () => {
         const settings = readStoredDesignSettings(envelope);
         expect(settings?.usMenSize).toBe(9);
         expect(settings?.sizeSystem).toBe("us");
-        expect(settings).not.toHaveProperty("shoeWidth");
+        expect(settings?.shoeWidth).toBe("medium");
+        expect(built.shoeWidthSource).toBe("defaulted");
+        expect(built.hardnessSource).toBe("unspecified");
+        expect(built.design.dogfoodManufacturing).toMatchObject({
+            template: "SAMPLE_Top",
+            scansUsed: false,
+            shoeWidth: "medium",
+            shoeWidthSource: "defaulted",
+            hardness: null,
+            hardnessSource: "unspecified",
+        });
         expect(built.design.elements).toEqual([]);
         expect(built.design.corrections.left.archHeightMm).toBe(0);
         expect(built.design.corrections.right.archHeightMm).toBe(0);
@@ -68,6 +78,7 @@ describe("SAMPLE_Top saved-design snapshot", () => {
         const mens = build({}, { ...storedNine, size: 10.5, width: "wide" });
         expect(mens.usMenSize).toBe(10.5);
         expect(mens.design.shoeWidth).toBe("wide");
+        expect(mens.shoeWidthSource).toBe("prescribed");
         const womens = build({}, { ...storedNine, system: "US_W", size: 8, width: "narrow" });
         expect(womens.usMenSize).toBe(6.5);
         expect(womens.design.shoeWidth).toBe("narrow");
@@ -84,8 +95,9 @@ describe("SAMPLE_Top saved-design snapshot", () => {
         expect(built.design.elements).toEqual([]);
         expect(built.design.corrections.left.apexMoveMm).toBe(0);
         expect(built.design.corrections.left.archHeightMm).toBe(0);
-        expect(built.design.printRecipe?.defaultHardness).toBe("Medium");
-        expect(built.ignoredFields).toEqual(["rx_text", "notes", "rigidity", "extra_soft", "hardness"]);
+        expect(built.design.printRecipe?.defaultHardness).toBe("Extra Soft");
+        expect(built.hardnessSource).toBe("prescribed");
+        expect(built.ignoredFields).toEqual(["rx_text", "notes", "rigidity", "extra_soft"]);
         expect(JSON.stringify(built.design)).not.toMatch(/Morton|Extra Soft shell/i);
     });
 

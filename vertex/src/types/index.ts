@@ -4,7 +4,7 @@
 
 import type { RegionHardnessClass } from "../../shared/print-recipe/hardness-class-table";
 import type { DepthSpec, HardnessOverrides } from "../../shared/print-recipe/hardness-region";
-import type { PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
+import type { HardnessName, PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
 
 export type { HardnessName, PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
 export type { DepthSpec, HardnessOverrides, HardnessRegion, RegionKind } from "../../shared/print-recipe/hardness-region";
@@ -475,6 +475,19 @@ export interface DesignState {
      * omitted from the design-state hash so frozen STLs stay byte-identical.
      */
     textMarking?: TextMarking;
+
+    /**
+     * Dogfood SAMPLE_Top provenance. Width may be Medium because the order
+     * omitted it (`defaulted`). Hardness is never filled in here.
+     */
+    dogfoodManufacturing?: {
+        template: "SAMPLE_Top";
+        scansUsed: false;
+        shoeWidth: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
+        shoeWidthSource: "prescribed" | "defaulted";
+        hardness: HardnessName | null;
+        hardnessSource: "prescribed" | "unspecified";
+    };
 
     /**
      * Optional 2D plantar pressure map overlays (viewer only). Omitted from

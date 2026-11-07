@@ -6,6 +6,12 @@ import { TRPCError } from "@trpc/server";
 
 import { readStoredDesignSettings } from "../../../shared/design-settings.js";
 import {
+    decideDogfoodHardness,
+    DogfoodUserQuestion,
+    type DogfoodHardnessProvenance,
+    patientNameQuestion,
+} from "../../../shared/dogfood-manufacturing.js";
+import {
     bindPrintRecipeProfile,
     type PrintRecipeV1,
     printRecipeV1Schema,
@@ -52,6 +58,7 @@ export async function planCadOperatorGenerate(args: {
     useSavedDesignMesh: boolean;
     stlStorageKey: string;
     patientName?: string;
+    hardness?: string;
     uploadStl: (key: string, bytes: Buffer) => Promise<void>;
 }): Promise<CadGeneratePlan & { settingsJson: unknown }> {
     if (args.outputType !== "gcode") {
@@ -120,11 +127,7 @@ export async function planCadOperatorGenerate(args: {
         args.useSavedDesignMesh &&
         !hasActiveComposedTextMarking(resolved.textMarking, resolved.patientDisplayName, args.side)
     ) {
-        throw new TRPCError({
-            code: "BAD_REQUEST",
-            message:
-                "A patient name is required for printed devices. Provide patient_name on generate_gcode, link a client with first and last name, or add optional bottom text.",
-        });
+        throw new DogfoodUserQuestion(patientNameQuestion());
     }
     if (resolved.persisted) {
         await args.prisma.design.update({
@@ -135,7 +138,18 @@ export async function planCadOperatorGenerate(args: {
     const settingsJson = args.useSavedDesignMesh
         ? envelopeWithLoftTextMarking(resolved.envelope, resolved.patientDisplayName, args.side)
         : resolved.envelope;
-    const printRecipe = lockedRecipe(settingsJson);
+    let printRecipe = lockedRecipe(settingsJson);
+    if (args.useSavedDesignMesh) {
+        const recorded = readStoredDesignSettings(settingsJson)?.dogfoodManufacturing as
+            | DogfoodHardnessProvenance
+            | undefined;
+        const decision = decideDogfoodHardness({
+            provenance: recorded ?? null,
+            requested: args.hardness,
+        });
+        if (!decision.ok) throw new DogfoodUserQuestion(decision);
+        printRecipe = { ...printRecipe, defaultHardness: decision.hardness };
+    }
     const shared = {
         presetId: CAD_OPERATOR_BELT_PROFILE_ID,
         printRecipe,

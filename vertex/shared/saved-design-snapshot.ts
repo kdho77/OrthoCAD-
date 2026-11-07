@@ -11,7 +11,11 @@ import type {
     Side,
     SideCorrections,
 } from "../src/types/index.js";
-import { migratePrintRecipe } from "./print-recipe/print-recipe.js";
+import {
+    type HardnessName,
+    migratePrintRecipe,
+} from "./print-recipe/print-recipe.js";
+import { canonicalMaterialHardness } from "./dogfood-manufacturing.js";
 import {
     ARCH_HEIGHT_MM,
     FLEXIBLE_FOOT_APEX_MM,
@@ -280,6 +284,17 @@ export interface SavedDesignSnapshotBuild {
     paths: string[];
     ignoredFields: IgnoredCatalogKey[];
     usMenSize: number;
+    shoeWidth: NonNullable<DesignState["shoeWidth"]>;
+    shoeWidthSource: "prescribed" | "defaulted";
+    hardness: HardnessName | null;
+    hardnessSource: "prescribed" | "unspecified";
+    /** Retail size written on the integration link. Not the lofted US men's number. */
+    linkShoe: {
+        system: "US_M" | "US_W";
+        size: number;
+        left: number | null;
+        right: number | null;
+    };
 }
 
 const LINK_WIDTHS = new Set(["narrow", "medium", "wide"]);
@@ -441,7 +456,10 @@ function sliderHasNumber(sliders: SavedDesignSlider | undefined): boolean {
 }
 
 function ignoredFields(catalog: SavedDesignCatalog): IgnoredCatalogKey[] {
-    return IGNORED_CATALOG_KEYS.filter((key) => catalog[key] !== undefined);
+    return IGNORED_CATALOG_KEYS.filter((key) => {
+        if (key === "hardness") return false;
+        return catalog[key] !== undefined;
+    });
 }
 
 /**
@@ -487,12 +505,36 @@ export function buildSavedDesignSnapshot(input: {
 
     design.sizeSystem = "us";
     design.usMenSize = usMenSize;
-    if (shoe.width) {
-        design.shoeWidth = shoe.width;
-        paths.push("settings.shoeWidth");
-    } else {
-        delete design.shoeWidth;
+    const shoeWidth = shoe.width ?? "medium";
+    const shoeWidthSource = shoe.width ? "prescribed" : "defaulted";
+    design.shoeWidth = shoeWidth;
+    paths.push("settings.shoeWidth", "settings.dogfoodManufacturing.shoeWidthSource");
+
+    let hardness: HardnessName | null = null;
+    let hardnessSource: "prescribed" | "unspecified" = "unspecified";
+    if (input.catalog.hardness !== undefined) {
+        const named = canonicalMaterialHardness(input.catalog.hardness);
+        if (!named) {
+            throw new SavedDesignSnapshotError(
+                `hardness "${input.catalog.hardness}" is not a known material hardness. Refusing to guess.`,
+            );
+        }
+        hardness = named;
+        hardnessSource = "prescribed";
+        if (!design.printRecipe) {
+            throw new SavedDesignSnapshotError("print recipe is missing. Refusing to invent one.");
+        }
+        design.printRecipe = { ...design.printRecipe, defaultHardness: named };
+        paths.push("settings.printRecipe.defaultHardness");
     }
+    design.dogfoodManufacturing = {
+        template: "SAMPLE_Top",
+        scansUsed: false,
+        shoeWidth,
+        shoeWidthSource,
+        hardness,
+        hardnessSource,
+    };
 
     const catalog = input.catalog;
     if (
@@ -588,5 +630,20 @@ export function buildSavedDesignSnapshot(input: {
     }
     design.elements = elements;
 
-    return { design, paths, ignoredFields: ignoredFields(catalog), usMenSize };
+    return {
+        design,
+        paths,
+        ignoredFields: ignoredFields(catalog),
+        usMenSize,
+        shoeWidth,
+        shoeWidthSource,
+        hardness,
+        hardnessSource,
+        linkShoe: {
+            system: shoe.system === "US_W" ? "US_W" : "US_M",
+            size: shoe.size,
+            left: shoe.left,
+            right: shoe.right,
+        },
+    };
 }

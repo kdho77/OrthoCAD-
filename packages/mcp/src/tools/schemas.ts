@@ -36,6 +36,11 @@ export const generateGcodeInputObjectSchema = z.object({
     use_saved_design: z.boolean().optional(),
     /** Optional bottom engrave label for this export (same sanitize as Print/Export textMarking). */
     patient_name: z.string().max(200).optional(),
+    /**
+     * Material hardness for a saved-design pair. Omitted or unknown hardness
+     * returns a question for the user and does not slice.
+     */
+    hardness: z.string().max(40).optional(),
 });
 
 export const generateGcodeInputSchema = generateGcodeInputObjectSchema.superRefine((value, ctx) => {
@@ -181,6 +186,37 @@ export const savedDesignCatalogSchema = z
     })
     .strict();
 
+export const createSavedDesignInputSchema = z
+    .object({
+        external_order_id: z.string().trim().min(1).max(200),
+        client_id: z.string().uuid(),
+        catalog: savedDesignCatalogSchema.optional(),
+        patient_name: z.string().max(200).optional(),
+    })
+    .strict();
+
+const attachFileSchema = z
+    .object({
+        side: sideSchema,
+        /** CAD provenance only. Not copied into the VO file object. */
+        storage_key: z.string().trim().min(1).max(500).optional(),
+        filename: z.string().max(200).optional(),
+        content_base64: z.string().min(1).optional(),
+        download_url: z.string().min(1).max(4000).optional(),
+        expires_at: z.string().min(1).max(80).optional(),
+    })
+    .strict();
+
+export const prepareVoAttachmentInputSchema = z
+    .object({
+        /** Existing VO order UUID. Sent as orderId and external_order_id. */
+        order_id: z.string().uuid(),
+        /** CAD provenance only. Not sent; VO would check the design link. */
+        design_id: z.string().uuid().optional(),
+        files: z.array(attachFileSchema).min(1).max(2),
+    })
+    .strict();
+
 export const persistSavedDesignSnapshotInputSchema = z
     .object({
         design_id: z.string().uuid(),
@@ -223,7 +259,7 @@ export const MCP_TOOL_DEFINITIONS = [
             "Belt G-code. Saved-design mode (use_saved_design) builds the canonical Export mesh on the server and returns left and right G-code files. " +
             "No STL deliverable. Omitting side generates both feet and fails if either foot fails. " +
             "Legacy mode still calls manufacturing.generateSolid → Python /manufacture with stl_storage_key. " +
-            "PR #263 merged (70e33f8a): Apex + VertexSlice profiles + leader v2 on main.",
+            "PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck.",
         inputSchema: generateGcodeInputObjectSchema,
     },
     {
@@ -255,10 +291,32 @@ export const MCP_TOOL_DEFINITIONS = [
             "rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, " +
             "forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, " +
             "full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit. " +
-            "Ignored and never mapped: rx_text, notes, rigidity, extra_soft, hardness. " +
+            "Ignored and never mapped: rx_text, notes, rigidity, extra_soft. " +
+            "hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. " +
+            "Absent width is Medium and recorded as defaulted, not prescribed. " +
             "422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, " +
             "or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
         inputSchema: persistSavedDesignSnapshotInputSchema,
+    },
+    {
+        name: "create_saved_design",
+        description:
+            "Dogfood SAMPLE_Top design for an existing VertexOrders order. Does not take a clinic tenant id. " +
+            "Creates the design when that order has none on the dogfood account, and refreshes settingsJson when it does. " +
+            "No scan upload and no STL. Medium width is used only when width is absent and is recorded as defaulted, not prescribed. " +
+            "Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
+        inputSchema: createSavedDesignInputSchema,
+    },
+    {
+        name: "prepare_vo_attachment",
+        description:
+            "Build the live VertexOrders attach_files arguments for an existing order UUID. " +
+            "Forward only vo_attach_files (orderId, external_order_id, source vo2, files). " +
+            "Each file is separate left or right G-code with exactly one of content_base64 or an https download_url of at most 200 characters. " +
+            "A storage key is CAD provenance, not a VO field. design_id and tenant_id are omitted so VO does not run clinic or link checks. " +
+            "Does not call VertexOrders and does not write an order status. " +
+            "VO's public tool has no idempotency argument, so a repeat call is not server-side deduplication. STL is refused.",
+        inputSchema: prepareVoAttachmentInputSchema,
     },
 ] as const;
 

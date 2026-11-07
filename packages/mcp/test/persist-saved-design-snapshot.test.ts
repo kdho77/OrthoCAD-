@@ -72,4 +72,26 @@ describe("persist_saved_design_snapshot tool", () => {
         });
         expect(JSON.stringify(forwarded)).not.toMatch(/6mm|flexible foot|Extra Soft/);
     });
+
+    test("a missing shoe size comes back as a question for the user", async () => {
+        const manufacturing = {
+            persistSavedDesignSnapshot: async () => {
+                throw new Error("422 shoe size is required to loft a saved design. Refusing to invent one.");
+            },
+        } as unknown as ManufacturingClient;
+        const result = await handleOrthocadTool(
+            "persist_saved_design_snapshot",
+            { design_id: designId, catalog: {} },
+            { config, manufacturing },
+        );
+        expect(result.isError).toBeUndefined();
+        const payload = JSON.parse(result.content[0]?.text ?? "{}") as {
+            ask?: string;
+            relay?: string;
+            questions?: Array<{ field: string }>;
+        };
+        expect(payload.ask).toBe("user");
+        expect(payload.relay).toBe("none");
+        expect(payload.questions?.[0]?.field).toBe("shoe_size");
+    });
 });

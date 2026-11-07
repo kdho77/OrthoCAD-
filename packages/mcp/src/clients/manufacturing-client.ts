@@ -28,6 +28,13 @@ export type OrthocadMcpTrpcProxy = {
         persistSavedDesignSnapshot: {
             mutate: (input: { designId: string; catalog?: unknown }) => Promise<Record<string, unknown>>;
         };
+        createSavedDesign: {
+            mutate: (input: {
+                externalOrderId: string;
+                clientId: string;
+                catalog?: unknown;
+            }) => Promise<Record<string, unknown>>;
+        };
     };
     design: {
         get: {
@@ -96,6 +103,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
             presetId: string;
             fileName?: string;
             patientName?: string;
+            hardness?: string;
         }) {
             return trpc.manufacturing.generateSolid.mutate({
                 designId: input.designId,
@@ -107,6 +115,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
                 useSavedDesignMesh: true,
                 fileName: input.fileName,
                 patientName: input.patientName,
+                hardness: input.hardness,
             });
         },
 
@@ -130,6 +139,11 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
                 designId: input.designId,
                 catalog: input.catalog,
             });
+        },
+
+        /** Dogfood SAMPLE_Top create/refresh. The server pins the dogfood tenant. */
+        createSavedDesign(input: { externalOrderId: string; clientId: string; catalog?: unknown }) {
+            return trpc.manufacturing.createSavedDesign.mutate(input);
         },
     };
 }

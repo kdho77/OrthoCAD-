@@ -9,7 +9,12 @@ import {
     printRecipeV1Schema,
     resolveGyroidManufacturingPrintRecipe,
 } from "../../../shared/print-recipe/print-recipe.js";
+import { DogfoodUserQuestion } from "../../../shared/dogfood-manufacturing.js";
 import { SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
+import {
+    createDogfoodSavedDesign,
+    prismaDogfoodSavedDesignStore,
+} from "../lib/dogfood-saved-design.js";
 import {
     assertCadOperatorGcodeKey,
     buildCadOperatorGcodeKey,
@@ -70,6 +75,8 @@ const manufactureInputSchema = z.object({
     useSavedDesignMesh: z.boolean().optional(),
     /** Dogfood CAD-operator only. Bottom engrave textMarking for this export (merged into settingsJson). */
     patientName: z.string().max(200).optional(),
+    /** Explicit material hardness. Omitted hardness asks the user instead of using Medium. */
+    hardness: z.string().max(40).optional(),
     material: z
         .string()
         .trim()
@@ -242,7 +249,9 @@ export const manufacturingRouter = router({
 
             if (cadOperator && input.designId && input.side) {
                 const supabaseForPlan = getSupabaseAdmin();
-                const plan = await planCadOperatorGenerate({
+                let plan: Awaited<ReturnType<typeof planCadOperatorGenerate>>;
+                try {
+                    plan = await planCadOperatorGenerate({
                     prisma: ctx.prisma,
                     principal: cadOperator,
                     designId: input.designId,
@@ -251,6 +260,7 @@ export const manufacturingRouter = router({
                     useSavedDesignMesh: input.useSavedDesignMesh === true,
                     stlStorageKey,
                     patientName: input.patientName,
+                    hardness: input.hardness,
                     uploadStl: async (key, bytes) => {
                         if (!supabaseForPlan) {
                             throw new TRPCError({
@@ -261,6 +271,10 @@ export const manufacturingRouter = router({
                         await uploadAsset(supabaseForPlan, key, bytes, "model/stl", MANUFACTURING_BUCKET);
                     },
                 });
+                } catch (error) {
+                    if (error instanceof DogfoodUserQuestion) return error.payload;
+                    throw error;
+                }
                 stlStorageKey = plan.stlStorageKey;
                 presetId = plan.presetId;
                 printRecipe = plan.printRecipe;
@@ -465,7 +479,7 @@ export const manufacturingRouter = router({
                         ? buildCadOperatorGcodeKey(
                               cadOperator.credentialId,
                               input.designId,
-                              `${Date.now()}-${safeName}`,
+                              `${input.side ?? "foot"}-${Date.now()}-${safeName}`,
                           )
                         : `${storagePrefix}/${input.designId || "adhoc"}/${Date.now()}-${safeName}`;
                 const contentType = isGcode ? "text/plain" : "model/stl";
@@ -572,6 +586,11 @@ export const manufacturingRouter = router({
                     gcode: isGcode && !downloadUrl ? inlineGcode : undefined,
                     stlBase64: cadOperator || isGcode || downloadUrl ? undefined : inlineStl,
                     gcodeDownloadUrl: isGcode ? downloadUrl : undefined,
+                    gcodeStorageKey: isGcode ? storageKey : undefined,
+                    gcodeBase64:
+                        cadOperator && isGcode && inlineGcode
+                            ? Buffer.from(inlineGcode, "utf8").toString("base64")
+                            : undefined,
                 };
             } catch (err) {
                 deleteManufacturingTempBestEffort(supabase, tempStlKey);
@@ -608,6 +627,54 @@ export const manufacturingRouter = router({
             } catch (error) {
                 if (error instanceof SavedDesignSnapshotError) {
                     throw new TRPCError({ code: "UNPROCESSABLE_CONTENT", message: error.message });
+                }
+                throw error;
+            }
+        }),
+
+    /**
+     * Dogfood SAMPLE_Top design for an existing order. Creates one design when
+     * the order has none, and refreshes settingsJson when it already does.
+     * No scan upload and no STL deliverable.
+     */
+    createSavedDesign: rateLimitedSessionOrCadProcedure(
+        RATE_LIMITS.export,
+        "manufacturing:createSavedDesign",
+        "manufacturing:generate",
+    )
+        .input(
+            z.object({
+                externalOrderId: z.string().trim().min(1).max(200),
+                clientId: z.string().uuid(),
+                catalog: z.unknown().optional(),
+            }),
+        )
+        .mutation(async ({ ctx, input }) => {
+            if (!ctx.cadOperator) {
+                throw new TRPCError({ code: "FORBIDDEN", message: "CAD-operator credential required" });
+            }
+            try {
+                return await createDogfoodSavedDesign({
+                    principal: ctx.cadOperator,
+                    externalOrderId: input.externalOrderId,
+                    clientId: input.clientId,
+                    catalog: input.catalog,
+                    store: prismaDogfoodSavedDesignStore(ctx.prisma),
+                    persist: (designId) =>
+                        persistSavedDesignSnapshotOnDesign({
+                            prisma: ctx.prisma,
+                            principal: ctx.cadOperator!,
+                            designId,
+                            catalog: input.catalog,
+                        }),
+                });
+            } catch (error) {
+                if (error instanceof DogfoodUserQuestion) return error.payload;
+                if (error instanceof SavedDesignSnapshotError) {
+                    throw new TRPCError({ code: "UNPROCESSABLE_CONTENT", message: error.message });
+                }
+                if (error instanceof Error && error.name === "DogfoodHoldError") {
+                    throw new TRPCError({ code: "FORBIDDEN", message: error.message });
                 }
                 throw error;
             }

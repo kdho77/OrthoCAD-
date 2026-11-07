@@ -10,7 +10,10 @@ import {
     SavedDesignSnapshotError,
     type StoredLinkShoe,
 } from "../../../shared/saved-design-catalog.js";
-import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot.js";
+import {
+    buildSavedDesignSnapshot,
+    type SavedDesignSnapshotBuild,
+} from "../../../shared/saved-design-snapshot.js";
 import {
     SAMPLE_TOP_ASSET_ID,
     SAMPLE_TOP_GLB_PATH,
@@ -55,6 +58,12 @@ export interface PersistSavedDesignSnapshotResult {
     unmapped_fields: string[];
     paths: string[];
     settingsJson: unknown;
+    template: "SAMPLE_Top";
+    scans_used: false;
+    shoe_width: string;
+    shoe_width_source: "prescribed" | "defaulted";
+    hardness: string | null;
+    hardness_source: "prescribed" | "unspecified";
 }
 
 function storedShoe(link: SnapshotLink | null): StoredLinkShoe | null {
@@ -87,12 +96,10 @@ function assertSampleTop(settingsJson: unknown): void {
     }
 }
 
-type SnapshotBuilder = (input: { stored: StoredLinkShoe | null; catalog: SavedDesignCatalog }) => {
-    design: unknown;
-    paths: string[];
-    ignoredFields: string[];
-    usMenSize: number;
-};
+type SnapshotBuilder = (input: {
+    stored: StoredLinkShoe | null;
+    catalog: SavedDesignCatalog;
+}) => SavedDesignSnapshotBuild;
 
 /**
  * Replace settingsJson on the given design. Does not create a design, touch
@@ -204,5 +211,11 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
         unmapped_fields: built.ignoredFields,
         paths: built.paths,
         settingsJson,
+        template: "SAMPLE_Top",
+        scans_used: false,
+        shoe_width: built.shoeWidth,
+        shoe_width_source: built.shoeWidthSource,
+        hardness: built.hardness,
+        hardness_source: built.hardnessSource,
     };
 }

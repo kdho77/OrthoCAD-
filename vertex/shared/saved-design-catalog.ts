@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 // Structured VertexOrders catalog for a SAMPLE_Top settings snapshot.
-// rx_text, notes, rigidity, extra_soft, and hardness are accepted and ignored.
+// rx_text, notes, rigidity, and extra_soft are accepted and ignored.
+// hardness is mapped only when it names Extra Soft, Soft, Medium, Hard, or Extra Hard.
 
 import { z } from "zod";
 
@@ -41,7 +42,7 @@ export const SLIDER_FIELDS = {
 
 export type SliderField = keyof typeof SLIDER_FIELDS;
 
-/** Present on the catalog and never copied into clinical settings. */
+/** Present on the catalog and never copied into clinical settings. Hardness is handled separately. */
 export const IGNORED_CATALOG_KEYS = ["rx_text", "notes", "rigidity", "extra_soft", "hardness"] as const;
 
 export type IgnoredCatalogKey = (typeof IGNORED_CATALOG_KEYS)[number];

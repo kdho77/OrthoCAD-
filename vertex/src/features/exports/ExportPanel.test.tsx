@@ -115,7 +115,7 @@ describe("ExportPanel clinical step", () => {
             '[data-testid="apex-material-ApexBounce"]',
         ) as HTMLOptionElement;
         const forge = container.querySelector('[data-testid="apex-material-ApexForge"]') as HTMLOptionElement;
-        expect(bounce.disabled).toBe(true);
+        expect(bounce.disabled).toBe(false);
         expect(forge.disabled).toBe(true);
         await act(async () => {
             material.value = "ApexLight";

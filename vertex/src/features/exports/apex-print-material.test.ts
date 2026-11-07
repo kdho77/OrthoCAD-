@@ -6,11 +6,16 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ApexPrintMaterialPicker } from "@/features/exports/ApexPrintMaterialPicker";
 import {
+    APEX_BOUNCE_BED_TEMP_C,
+    APEX_BOUNCE_NOZZLE_TEMP_C,
+    APEX_BOUNCE_SPEED_FACTOR,
+    APEX_CORE_NOZZLE_TEMP_C,
     APEX_V2_INSOLE_LOCKED_PROFILE_ID,
     apexPrintMaterialById,
     apexPrintMaterialForOrderMaterial,
     lockedProfileIdForApexMaterial,
     printerPresetForApexMaterial,
+    VERTEX_SLICE_APEX_BOUNCE_PACKET,
     vertexSliceMaterialForApexMaterial,
 } from "@/features/exports/apex-print-material";
 
@@ -37,12 +42,28 @@ describe("Apex print material", () => {
         expect(lockedProfileIdForApexMaterial("ApexCore")).toBe("apex-v2-insole-95a");
     });
 
-    test("Bounce and Forge cannot be selected for export", () => {
-        expect(apexPrintMaterialById("ApexBounce").enabled).toBe(false);
+    test("Apex Bounce uses the approved Core deltas and Forge stays disabled", () => {
+        expect(apexPrintMaterialById("ApexBounce").enabled).toBe(true);
+        expect(lockedProfileIdForApexMaterial("ApexBounce")).toBe(APEX_V2_INSOLE_LOCKED_PROFILE_ID);
+        expect(vertexSliceMaterialForApexMaterial("ApexBounce")).toBe("apex_bounce");
+        expect(APEX_CORE_NOZZLE_TEMP_C).toBe(225);
+        expect(APEX_BOUNCE_NOZZLE_TEMP_C).toBe(220);
+        expect(APEX_BOUNCE_BED_TEMP_C).toBe(70);
+        expect(APEX_BOUNCE_SPEED_FACTOR).toBe(0.8);
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET).toMatchObject({
+            owner: "VertexSlice",
+            liveVerified: false,
+            orthocadSendsProcessOverrides: false,
+            materialId: "apex_bounce",
+            cloneFromMaterialId: "apex_core",
+            speedFactorVersusCore: 0.8,
+        });
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET).not.toHaveProperty("printSpeedMmS");
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.coreSpeedMmS).toBeNull();
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.runtimeProofRequired.join(" ")).toMatch(/220C/);
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.runtimeProofRequired.join(" ")).toMatch(/70C/);
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.runtimeProofRequired.join(" ")).toMatch(/0\.8/);
         expect(apexPrintMaterialById("ApexForge").enabled).toBe(false);
-        expect(apexPrintMaterialById("ApexBounce").label).toBe("Apex Bounce");
-        expect(apexPrintMaterialById("ApexForge").label).toBe("Apex Forge");
-        expect(() => lockedProfileIdForApexMaterial("ApexBounce")).toThrow(/approved/i);
         expect(() => lockedProfileIdForApexMaterial("ApexForge")).toThrow(/approved/i);
     });
 
@@ -55,7 +76,7 @@ describe("Apex print material", () => {
             container?.remove();
         });
 
-        test("shows Apex Light and Apex Core as selectable and disables Bounce and Forge", async () => {
+        test("shows Apex Light, Core, and Bounce as selectable and disables Forge", async () => {
             container = document.createElement("div");
             document.body.appendChild(container);
             const picks: string[] = [];
@@ -86,9 +107,9 @@ describe("Apex print material", () => {
             ) as HTMLOptionElement;
             expect(light.disabled).toBe(false);
             expect(core.disabled).toBe(false);
-            expect(bounce.disabled).toBe(true);
+            expect(bounce.disabled).toBe(false);
             expect(forge.disabled).toBe(true);
-            expect(bounce.title).toMatch(/approved/i);
+            expect(forge.title).toMatch(/approved/i);
             expect(container.textContent).not.toMatch(/TPU 9[058]A/);
             expect(container.querySelector('[data-testid="gcode-material-shore"]')?.textContent).toBe(
                 "Apex Core · Shore 95A",
@@ -98,13 +119,13 @@ describe("Apex print material", () => {
                 select.value = "ApexBounce";
                 select.dispatchEvent(new Event("change", { bubbles: true }));
             });
-            expect(picks).toEqual([]);
+            expect(picks).toEqual(["ApexBounce"]);
 
             await act(async () => {
                 select.value = "ApexLight";
                 select.dispatchEvent(new Event("change", { bubbles: true }));
             });
-            expect(picks).toEqual(["ApexLight"]);
+            expect(picks).toEqual(["ApexBounce", "ApexLight"]);
         });
     });
 });

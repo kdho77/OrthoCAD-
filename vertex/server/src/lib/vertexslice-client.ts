@@ -9,7 +9,7 @@ export const VERTEX_SLICE_MATERIAL_IDS = ["apex_core", "apex_light", "apex_forge
 
 export type VertexSliceMaterialId = (typeof VERTEX_SLICE_MATERIAL_IDS)[number];
 
-export const ENABLED_VERTEX_SLICE_MATERIALS = ["apex_core", "apex_light"] as const;
+export const ENABLED_VERTEX_SLICE_MATERIALS = ["apex_core", "apex_light", "apex_bounce"] as const;
 
 export type EnabledVertexSliceMaterial = (typeof ENABLED_VERTEX_SLICE_MATERIALS)[number];
 
@@ -44,21 +44,22 @@ export function manufacturingBackendForOutput(outputType: "gcode" | "stl"): "ver
 }
 
 /**
- * Bounce and Forge stay disabled until settings are approved.
+ * Apex Forge stays disabled. Apex Bounce is enabled; its temperatures and speed
+ * are a VertexSlice material profile, not fields on this form.
  * Any other id, including legacy Shore-A names, is refused. Nothing is substituted.
  */
 export function assertEnabledVertexSliceMaterial(material: string | undefined): EnabledVertexSliceMaterial {
     const id = material?.trim() ?? "";
-    if (id === "apex_bounce" || id === "apex_forge") {
+    if (id === "apex_forge") {
         throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "Apex Bounce and Apex Forge are disabled until print settings are approved",
+            message: "Apex Forge is disabled until print settings are approved",
         });
     }
-    if (id !== "apex_core" && id !== "apex_light") {
+    if (id !== "apex_core" && id !== "apex_light" && id !== "apex_bounce") {
         throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "Printer G-code requires Apex Core (apex_core) or Apex Light (apex_light).",
+            message: "Printer G-code requires Apex Core (apex_core), Apex Light (apex_light), or Apex Bounce (apex_bounce).",
         });
     }
     return id;
