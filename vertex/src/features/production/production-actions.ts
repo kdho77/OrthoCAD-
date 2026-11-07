@@ -6,6 +6,7 @@ import { isApiConfigured, trpc } from "@/lib/trpc";
 import { useClientStore } from "@/stores/client-store";
 import { useProductionStore } from "@/stores/production-store";
 import { formatClientName } from "../../../shared/client-files";
+import type { SaveMoonrakerPrinterInput } from "../../../shared/moonraker-farm";
 import { closedPrinterDispatch } from "../../../shared/printer-adapter";
 import type { EnqueueInput, RegisterConfiguredPrinterInput } from "../../../shared/production-jobs";
 
@@ -122,6 +123,29 @@ async function samePath(server: () => Promise<void>, local: () => Promise<void>)
         return;
     }
     await local();
+}
+
+export function saveMoonrakerProductionPrinter(input: SaveMoonrakerPrinterInput): Promise<void> {
+    return samePath(
+        () => trpc.production.saveMoonrakerPrinter.mutate(input).then(() => undefined),
+        () => useProductionStore.getState().saveMoonraker(input),
+    );
+}
+
+export function createBridgeEnrollment(
+    bridgeName: string,
+): Promise<{ proof: string; bridgeId: string; expiresAt: string }> {
+    if (!isApiConfigured()) {
+        return Promise.reject(new Error("Production API is not configured."));
+    }
+    return trpc.production.createBridgeEnrollment.mutate({ bridgeName });
+}
+
+export function revokeBridgeEnrollment(bridgeId: string): Promise<void> {
+    if (!isApiConfigured()) {
+        return Promise.reject(new Error("Production API is not configured."));
+    }
+    return trpc.production.revokeBridge.mutate({ bridgeId }).then(() => undefined);
 }
 
 export function registerConfiguredProductionPrinter(input: RegisterConfiguredPrinterInput): Promise<void> {

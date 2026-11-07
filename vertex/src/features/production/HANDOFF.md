@@ -83,6 +83,22 @@ Do not drop `shop_jobs`, `shop_printers`, or `job_gcode` as part of that rollbac
 - The session store does not sync printers across browsers. Postgres is authoritative when the ledger tables exist.
 - An uncertain dispatch must be reconciled by an operator. The software will not send it again.
 
+## Local Moonraker bridge
+
+The shop computer runs `vertex/print-bridge/main.ts`. It opens an outbound HTTPS connection to `ORTHOCAD_BRIDGE_CLOUD_ORIGIN` and then talks to Moonraker on the LAN. It does not listen for inbound printer traffic. Moonraker is not given a public port.
+
+Documented Moonraker calls, and only these: `POST /server/files/upload` with `print=false`, `POST /printer/print/start`, `GET /printer/objects/query?webhooks&virtual_sdcard&print_stats`, JSON-RPC `printer.objects.query` on `/websocket`, and `POST /printer/print/pause|resume|cancel` when the operator asked and cancellation is explicit. `printer.gcode.script` is not called. Upload and start are separate. A timeout after a possible start stays uncertain and is not sent again.
+
+Printer addresses are operator-entered. Production policy allows RFC1918 hosts with an explicit port and rejects loopback, link-local, metadata, public hosts, userinfo, redirects, and a DNS answer that is not LAN. `testLoopbackAddressPolicy` exists for fake localhost servers and is not used by `main.ts`.
+
+New config key names, not yet provisioned: `ORTHOCAD_BRIDGE_CLOUD_ORIGIN`, `ORTHOCAD_BRIDGE_ID`, `ORTHOCAD_BRIDGE_STATE_DIR`, `ORTHOCAD_BRIDGE_ENROLLMENT_PROOF` (one enroll only), `ORTHOCAD_CLOUD_ORIGIN` (server, https), `ORTHOCAD_MOONRAKER_API_KEY_FILE` (optional local file path, not a key in the environment). Founder example addresses are not stored in this repo.
+
+Start, from `vertex/`: `npx tsx print-bridge/main.ts`. Node 22. The credential file is written mode 0600 under the state directory. Revocation makes the next heartbeat fail and stops new work. An in-flight print is not cancelled automatically and is not sent again.
+
+`print-bridge.review.sql` is not under `prisma/migrations` and is not applied. Apply it only after the foundation migration and `dispatch-ledger.review.sql`, with Founder approval.
+
+Gates still open: review, deploy, bridge install, enroll, printer config on the shop LAN, read-only connectivity check, then a separately authorized controlled print.
+
 ## How to verify locally
 
 ```bash

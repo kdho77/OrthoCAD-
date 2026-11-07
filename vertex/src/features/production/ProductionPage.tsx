@@ -10,7 +10,6 @@ import { designPath } from "@/features/clients/routes";
 import { cn } from "@/lib/utils";
 import { useProductionStore } from "@/stores/production-store";
 import { formatRelative } from "../../../shared/client-files";
-import { LOCAL_BRIDGE_PROTOCOL_ID } from "../../../shared/printer-adapter";
 import {
     type DueFilter,
     defaultHistoryQuery,
@@ -41,10 +40,10 @@ import {
     markProductionJobDone,
     reconcileProductionPrinter,
     refreshProductionReadiness,
-    registerConfiguredProductionPrinter,
     registerMockProductionPrinter,
     rerunProductionJob,
     retryProductionJob,
+    saveMoonrakerProductionPrinter,
 } from "./production-actions";
 
 export type ProductionTab = "queue" | "printers" | "history";
@@ -286,10 +285,11 @@ function QueueTab({ jobs, printers }: { jobs: ProductionJob[]; printers: Printer
 
 function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: PrinterRecord[] }) {
     const [name, setName] = useState("");
-    const [moonrakerUrl, setMoonrakerUrl] = useState("http://127.0.0.1:7125");
+    const [moonrakerUrl, setMoonrakerUrl] = useState("");
     const [configName, setConfigName] = useState("");
     const [endpoint, setEndpoint] = useState("");
-    const [credentialRef, setCredentialRef] = useState("");
+    const [bridgeId, setBridgeId] = useState("");
+    const [enabled, setEnabled] = useState(true);
     const [cancellation, setCancellation] = useState<"unsupported" | "explicit">("unsupported");
     const [notice, setNotice] = useState("");
     const cards = printerCards(printers, jobs);
@@ -307,17 +307,17 @@ function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: Prin
 
     const configure = () => {
         setNotice("");
-        void registerConfiguredProductionPrinter({
+        void saveMoonrakerProductionPrinter({
             name: configName,
-            protocolId: LOCAL_BRIDGE_PROTOCOL_ID,
-            endpoint,
-            credentialRef,
+            address: endpoint,
+            bridgeId,
             cancellation,
+            enabled,
         })
             .then(() => {
                 setConfigName("");
                 setEndpoint("");
-                setCredentialRef("");
+                setBridgeId("");
             })
             .catch((error: unknown) => {
                 setNotice(error instanceof Error ? error.message : "Configuration failed");
@@ -372,10 +372,10 @@ function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: Prin
                 </div>
             </div>
             <div className="rounded-xl border border-border bg-panel p-3" data-testid="configure-printer">
-                <h2 className="text-sm font-medium">Configure printer</h2>
+                <h2 className="text-sm font-medium">Configure Moonraker printer</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
-                    Software seam only ({LOCAL_BRIDGE_PROTOCOL_ID}). Not shop-verified. The credential field
-                    is a name, not a secret. Saving does not connect.
+                    Enter this shop&apos;s printer address. Nothing is prefilled, and the cloud does not
+                    connect to it. Saving does not start a print.
                 </p>
                 <div className="mt-3 flex flex-col gap-2 md:flex-row md:flex-wrap">
                     <label className="min-w-0 flex-1 text-xs text-muted-foreground">
@@ -389,24 +389,34 @@ function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: Prin
                         />
                     </label>
                     <label className="min-w-0 flex-[2] text-xs text-muted-foreground">
-                        Bridge endpoint
+                        Printer address
                         <input
-                            aria-label="Bridge endpoint"
+                            aria-label="Printer address"
                             value={endpoint}
                             autoComplete="off"
+                            placeholder="http://printer-host:7125"
                             className="mt-1 block min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
                             onChange={(event) => setEndpoint(event.target.value)}
                         />
                     </label>
                     <label className="min-w-0 flex-1 text-xs text-muted-foreground">
-                        Credential name
+                        Bridge id
                         <input
-                            aria-label="Credential name"
-                            value={credentialRef}
+                            aria-label="Bridge id"
+                            value={bridgeId}
                             autoComplete="off"
-                            placeholder="Name only"
                             className="mt-1 block min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
-                            onChange={(event) => setCredentialRef(event.target.value)}
+                            onChange={(event) => setBridgeId(event.target.value)}
+                        />
+                    </label>
+                    <label className="min-w-0 text-xs text-muted-foreground">
+                        Enabled
+                        <input
+                            aria-label="Printer enabled"
+                            type="checkbox"
+                            checked={enabled}
+                            className="mt-3 block h-5 w-5"
+                            onChange={(event) => setEnabled(event.target.checked)}
                         />
                     </label>
                     <label className="min-w-0 text-xs text-muted-foreground">

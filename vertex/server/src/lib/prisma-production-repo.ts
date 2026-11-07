@@ -144,6 +144,7 @@ function withDispatch(
     const state = row.dispatchState;
     const dispatchState =
         state === "started" ||
+        state === "uploaded" ||
         state === "acknowledged" ||
         state === "uncertain" ||
         state === "rejected" ||

@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { useAuthStore } from "@/stores/auth-store";
 import type { Actor } from "../../shared/client-files";
+import { type SaveMoonrakerPrinterInput, saveMoonrakerPrinter } from "../../shared/moonraker-farm";
 import type { DispatchDeps, DispatchEvent, PrinterBinding } from "../../shared/production-jobs";
 import {
     assignJob,
@@ -44,6 +45,7 @@ interface ProductionStore {
     download: (id: string) => Promise<{ filename: string; gcode: string; sha256: string }>;
     registerMock: (name: string, moonrakerUrl: string) => Promise<void>;
     registerConfigured: (input: RegisterConfiguredPrinterInput) => Promise<void>;
+    saveMoonraker: (input: SaveMoonrakerPrinterInput) => Promise<void>;
     dispatch: (id: string, deps: DispatchDeps) => Promise<void>;
     reconcile: (printerId: string, deps: DispatchDeps) => Promise<void>;
     refreshReadiness: (printerId: string, deps: DispatchDeps) => Promise<void>;
@@ -224,6 +226,12 @@ export const useProductionStore = create<ProductionStore>((_set, _get) => ({
     },
     async registerConfigured(input) {
         const printer = await registerConfiguredPrinter(repo(), actor(), input);
+        useProductionStore.setState((state) => ({
+            printers: [...state.printers.filter((row) => row.id !== printer.id), printer],
+        }));
+    },
+    async saveMoonraker(input) {
+        const printer = await saveMoonrakerPrinter(repo(), actor(), input);
         useProductionStore.setState((state) => ({
             printers: [...state.printers.filter((row) => row.id !== printer.id), printer],
         }));

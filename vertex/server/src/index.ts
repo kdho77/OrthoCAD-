@@ -2,6 +2,10 @@ import "./load-env.js";
 import { createHTTPServer } from "@trpc/server/adapters/standalone";
 import { createContext } from "./context.js";
 import { validateServerEnv } from "./lib/env.js";
+import { prisma, resolveDatabaseUrl } from "./lib/prisma.js";
+import { prismaProductionRepo } from "./lib/prisma-production-repo.js";
+import { handlePrintBridgeNode } from "./print-bridge-http.js";
+import { serverBridgeDirectory } from "./print-bridge-state.js";
 import { appRouter } from "./routers/index.js";
 import { handleIntegrationNode } from "./routers/integrations/node-http.js";
 import { ensureIntegrationProduction } from "./routers/integrations/production.js";
@@ -31,6 +35,19 @@ const server = createHTTPServer({
         });
     },
     middleware: (req, res, next) => {
+        const early = (req.url ?? "").split("?")[0] ?? "";
+        if (early.startsWith("/print-bridge/")) {
+            if (!resolveDatabaseUrl()) {
+                res.writeHead(503, { "content-type": "application/json" });
+                res.end(JSON.stringify({ error: "bridge store is not configured" }));
+                return;
+            }
+            void handlePrintBridgeNode(req, res, {
+                directory: serverBridgeDirectory,
+                repo: prismaProductionRepo(prisma),
+            });
+            return;
+        }
         res.setHeader("Access-Control-Allow-Origin", ORIGIN);
         res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");

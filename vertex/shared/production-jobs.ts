@@ -81,6 +81,12 @@ export interface ProductionJob {
     dispatchAttempt: number;
     idempotencyKey: string | null;
     dispatchError: string | null;
+    /** Set when a file upload finished and print start has not been confirmed. */
+    uploadedFilename?: string | null;
+    configVersion?: number | null;
+    bridgeId?: string | null;
+    releasedAt?: string | null;
+    controlRequest?: "cancel" | "pause" | "resume" | null;
 }
 
 export const EMPTY_DISPATCH = {
@@ -94,7 +100,14 @@ export const EMPTY_DISPATCH = {
     "dispatchState" | "controllerJobId" | "dispatchAttempt" | "idempotencyKey" | "dispatchError"
 >;
 
-export const DISPATCH_STATES = ["none", "started", "acknowledged", "uncertain", "rejected"] as const;
+export const DISPATCH_STATES = [
+    "none",
+    "started",
+    "uploaded",
+    "acknowledged",
+    "uncertain",
+    "rejected",
+] as const;
 export type DispatchState = (typeof DISPATCH_STATES)[number];
 
 export interface PrinterRecord {
@@ -105,7 +118,7 @@ export interface PrinterRecord {
     ownerId: string;
     adapterMode: "unset" | "mock-only" | "configured";
     protocolId: string | null;
-    /** True when an endpoint is stored. The URL is not on this record. */
+    /** True when an endpoint is stored. */
     endpointConfigured: boolean;
     /** Secret name only. Never a token or password. */
     credentialRef: string | null;
@@ -113,6 +126,11 @@ export interface PrinterRecord {
     liveVerified: false;
     protocolVerified: false;
     lastSeenAt: string | null;
+    enabled?: boolean;
+    bridgeId?: string | null;
+    configVersion?: number;
+    /** Operator-visible LAN address for this tenant. Not a credential. */
+    address?: string | null;
 }
 
 export const UNCONFIGURED_PRINTER = {
@@ -265,6 +283,7 @@ export function createMemoryProductionRepo(db: {
     const shownPrinter = (printer: PrinterRecord): PrinterRecord => ({
         ...printer,
         endpointConfigured: Boolean(endpoints[printer.id]) || printer.endpointConfigured === true,
+        address: endpoints[printer.id] ?? printer.address ?? null,
         liveVerified: false,
         protocolVerified: false,
     });
@@ -296,12 +315,16 @@ export function createMemoryProductionRepo(db: {
             return endpoints[printerId] ?? null;
         },
         async insertConfiguredPrinter(printer, binding) {
-            db.printers.push({
+            const next = {
                 ...printer,
                 endpointConfigured: true,
-                liveVerified: false,
-                protocolVerified: false,
-            });
+                address: binding.endpoint,
+                liveVerified: false as const,
+                protocolVerified: false as const,
+            };
+            const index = db.printers.findIndex((item) => item.id === printer.id);
+            if (index >= 0) db.printers[index] = next;
+            else db.printers.push(next);
             endpoints[printer.id] = binding.endpoint;
         },
         async patchPrinter(id, patch) {
@@ -644,6 +667,14 @@ export async function cancelJob(
     if (job.status === "done" || job.status === "cancelled") {
         throw new ProductionError("BAD_REQUEST", "Job is already finished");
     }
+    if (job.dispatchState === "uploaded") {
+        return repo.patchJob(jobId, {
+            status: "cancelled",
+            finishedAt: stamp(now),
+            updatedAt: stamp(now),
+            dispatchError: "Uploaded file was not started. The printer was not told to cancel.",
+        });
+    }
     if (dispatchInFlight(job)) {
         throw new ProductionError(
             "BAD_REQUEST",
@@ -768,11 +799,16 @@ export async function downloadGcode(
 
 function dispatchInFlight(job: ProductionJob): boolean {
     const state = job.dispatchState ?? "none";
-    return state === "started" || state === "uncertain" || state === "acknowledged";
+    return state === "started" || state === "uploaded" || state === "uncertain" || state === "acknowledged";
 }
 
 function blocksPrinter(job: ProductionJob): boolean {
-    if (job.dispatchState === "started" || job.dispatchState === "uncertain") return true;
+    if (
+        job.dispatchState === "started" ||
+        job.dispatchState === "uploaded" ||
+        job.dispatchState === "uncertain"
+    )
+        return true;
     if (
         job.dispatchState === "acknowledged" &&
         (job.status === "assigned" || job.status === "running" || job.status === "paused")
@@ -1028,6 +1064,7 @@ async function dispatchAssignedJobBody(
     if (
         job.dispatchState === "uncertain" ||
         job.dispatchState === "started" ||
+        job.dispatchState === "uploaded" ||
         job.dispatchState === "acknowledged"
     ) {
         await audit(

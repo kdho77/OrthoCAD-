@@ -630,6 +630,9 @@ model ShopPrinterConfig {
     credentialRef String?
     cancellation  String    @default("unsupported")
     lastSeenAt    DateTime?
+    enabled       Boolean   @default(true)
+    bridgeId      String?   @db.Uuid
+    configVersion Int       @default(1)
 
     printer ShopPrinter @relation(fields: [printerId], references: [id], onDelete: Cascade)
 
@@ -662,6 +665,39 @@ model ShopDispatchEvent {
 
     @@index([jobId])
     @@map("shop_dispatch_events")
+}
+
+/// Bridge enrollment hashes. Not created by prisma/migrations.
+/// See vertex/src/features/production/print-bridge.review.sql.
+model ShopBridge {
+    id             String    @id @db.Uuid
+    tenantId       String?   @db.Uuid
+    shopId         String
+    name           String
+    credentialHash String?
+    revokedAt      DateTime?
+    lastSeenAt     DateTime?
+    createdAt      DateTime  @default(now())
+
+    @@index([tenantId])
+    @@map("shop_bridges")
+}
+
+model ShopEnrollment {
+    id         String    @id @db.Uuid
+    proofHash  String    @unique
+    tenantId   String?   @db.Uuid
+    shopId     String
+    bridgeId   String    @db.Uuid
+    printerIds Json
+    audience   String
+    origin     String
+    expiresAt  DateTime
+    usedAt     DateTime?
+    createdAt  DateTime  @default(now())
+
+    @@index([bridgeId])
+    @@map("shop_enrollments")
 }
 
 // A token-consuming export of an STL or G-code artifact.
