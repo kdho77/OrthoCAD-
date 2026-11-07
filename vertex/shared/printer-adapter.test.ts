@@ -1,6 +1,10 @@
 import { describe, expect, test } from "@rstest/core";
 
-import { createMockMoonrakerAdapter, REAL_PRINTER_ADAPTER_DEPENDENCY } from "./printer-adapter.js";
+import {
+    closedPrinterDispatch,
+    createMockMoonrakerAdapter,
+    REAL_PRINTER_ADAPTER_DEPENDENCY,
+} from "./printer-adapter.js";
 
 describe("printer adapter contract", () => {
     test("the mock adapter describes a printer without calling the network", () => {
@@ -29,6 +33,14 @@ describe("printer adapter contract", () => {
             expect(REAL_PRINTER_ADAPTER_DEPENDENCY.liveVerified).toBe(false);
             expect(REAL_PRINTER_ADAPTER_DEPENDENCY.protocolVerified).toBe(false);
             expect(REAL_PRINTER_ADAPTER_DEPENDENCY.inRepoImplementation).toBe("mock-only");
+            expect(REAL_PRINTER_ADAPTER_DEPENDENCY.vendorProtocolDocumented).toBe(false);
+            expect(REAL_PRINTER_ADAPTER_DEPENDENCY.dispatchTransport).toBe("unbound");
+            expect(REAL_PRINTER_ADAPTER_DEPENDENCY.mockReportedAsLive).toBe(false);
+            const closed = closedPrinterDispatch();
+            expect(closed.transport.bound).toBe(false);
+            expect(closed.transport.liveVerified).toBe(false);
+            expect(closed.transport.protocolVerified).toBe(false);
+            expect(closed.credentialGate("shop-printer-a")).toBe("absent");
         } finally {
             globalThis.fetch = original;
         }
