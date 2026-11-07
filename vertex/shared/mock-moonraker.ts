@@ -11,6 +11,9 @@ export const MOCK_PRINTER_CAPABILITIES = {
 export interface MockPairingResult {
     paired: true;
     adapter: "mock-moonraker";
+    /** Contract-test adapter. This pairing does not contact a printer. */
+    mode: "mock-only";
+    liveVerified: false;
     moonrakerBaseUrl: string;
     /** Opaque token for a future agent; not a secret and not logged with patient data. */
     registrationToken: string;
@@ -46,6 +49,8 @@ export function mockMoonrakerPair(moonrakerUrl: string, printerName: string): Mo
     return {
         paired: true,
         adapter: "mock-moonraker",
+        mode: "mock-only",
+        liveVerified: false,
         moonrakerBaseUrl: base,
         registrationToken,
         capabilities: MOCK_PRINTER_CAPABILITIES,

@@ -255,6 +255,8 @@ describe("production jobs", () => {
         expect(printer.state).toBe("offline");
         expect(printer.name).toBe("Bay 1");
         expect(pairing.adapter).toBe("mock-moonraker");
+        expect(pairing.mode).toBe("mock-only");
+        expect(pairing.liveVerified).toBe(false);
         expect(normalizeMoonrakerBaseUrl("https://farm.example:7125/api/")).toBe(
             "https://farm.example:7125/api",
         );

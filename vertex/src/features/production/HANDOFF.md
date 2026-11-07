@@ -8,6 +8,7 @@
 - **Postgres models** `ShopJob`, `JobGcode`, `ShopPrinter` + migration `20261101170000_production_jobs` (file only; not applied to production).
 - **tRPC** `production.*` routes backed by Prisma (`vertex/server/src/routers/production.ts`).
 - **Mock Moonraker registration** (`vertex/shared/mock-moonraker.ts`, `production.registerMockPrinter`) — pairing metadata only; no live HTTP or printer commands.
+- **Printer adapter contract** (`vertex/shared/printer-adapter.ts`) — `createMockMoonrakerAdapter()` implements the queue-facing interface. `liveVerified` is false. Contract tests use the mock and do not call a printer. Live Moonraker remains unverified.
 - **Duplicate enqueue guard** — same tenant, design, and G-code sha256 while still in-queue returns the existing job (retry/network safe).
 - **Targeted tests** — `vertex/server/src/lib/production-jobs.test.ts`, production routes in `routes.test.ts`, tenancy coverage in `tenancy.test.ts`.
 
