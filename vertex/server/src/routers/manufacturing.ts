@@ -13,6 +13,7 @@ import { DogfoodUserQuestion } from "../../../shared/dogfood-manufacturing.js";
 import { SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
 import {
     createDogfoodSavedDesign,
+    DogfoodOrderIdentityError,
     prismaDogfoodSavedDesignStore,
 } from "../lib/dogfood-saved-design.js";
 import {
@@ -633,8 +634,8 @@ export const manufacturingRouter = router({
         }),
 
     /**
-     * Dogfood SAMPLE_Top design for an existing order. Creates one design when
-     * the order has none, and refreshes settingsJson when it already does.
+     * Refresh the dogfood SAMPLE_Top design already bound to a vo2 order.
+     * Does not create a client or a design. clientId only confirms the bound client.
      * No scan upload and no STL deliverable.
      */
     createSavedDesign: rateLimitedSessionOrCadProcedure(
@@ -645,7 +646,7 @@ export const manufacturingRouter = router({
         .input(
             z.object({
                 externalOrderId: z.string().trim().min(1).max(200),
-                clientId: z.string().uuid(),
+                clientId: z.string().uuid().optional(),
                 catalog: z.unknown().optional(),
             }),
         )
@@ -658,7 +659,6 @@ export const manufacturingRouter = router({
                     principal: ctx.cadOperator,
                     externalOrderId: input.externalOrderId,
                     clientId: input.clientId,
-                    catalog: input.catalog,
                     store: prismaDogfoodSavedDesignStore(ctx.prisma),
                     persist: (designId) =>
                         persistSavedDesignSnapshotOnDesign({
@@ -669,6 +669,14 @@ export const manufacturingRouter = router({
                         }),
                 });
             } catch (error) {
+                if (error instanceof DogfoodOrderIdentityError) {
+                    const forbidden =
+                        error.code === "order_client_mismatch" || error.code === "order_client_cross_tenant";
+                    throw new TRPCError({
+                        code: forbidden ? "FORBIDDEN" : "PRECONDITION_FAILED",
+                        message: error.message,
+                    });
+                }
                 if (error instanceof DogfoodUserQuestion) return error.payload;
                 if (error instanceof SavedDesignSnapshotError) {
                     throw new TRPCError({ code: "UNPROCESSABLE_CONTENT", message: error.message });
