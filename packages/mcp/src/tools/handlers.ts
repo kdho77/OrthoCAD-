@@ -292,7 +292,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
         case "create_saved_design": {
             const input = createSavedDesignInputSchema.parse(args);
             assertToolNotHeld(input.external_order_id);
-            assertToolNotHeld(input.client_id);
+            if (input.client_id) assertToolNotHeld(input.client_id);
             const manufacturing =
                 deps.manufacturing ??
                 (await import("../clients/manufacturing-client.js")).createManufacturingClient({

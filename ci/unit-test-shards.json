@@ -146,6 +146,7 @@
         {
             "index": 4,
             "files": [
+                "packages/mcp/test/dogfood-order-identity.test.ts",
                 "packages/mcp/test/tool-schemas.test.ts",
                 "tests/arch-wall-falloff.test.ts",
                 "tests/cnc/drop-cutter.test.ts",
