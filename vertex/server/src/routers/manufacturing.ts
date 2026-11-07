@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { DogfoodUserQuestion } from "../../../shared/dogfood-manufacturing.js";
 import {
     gyroidInfillPctForHardness,
     isGyroidManufacturingPreset,
@@ -9,13 +10,7 @@ import {
     printRecipeV1Schema,
     resolveGyroidManufacturingPrintRecipe,
 } from "../../../shared/print-recipe/print-recipe.js";
-import { DogfoodUserQuestion } from "../../../shared/dogfood-manufacturing.js";
 import { SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
-import {
-    createDogfoodSavedDesign,
-    DogfoodOrderIdentityError,
-    prismaDogfoodSavedDesignStore,
-} from "../lib/dogfood-saved-design.js";
 import {
     assertCadOperatorGcodeKey,
     buildCadOperatorGcodeKey,
@@ -23,6 +18,11 @@ import {
 } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { getSupabaseAdmin } from "../context.js";
+import {
+    createDogfoodSavedDesign,
+    DogfoodOrderIdentityError,
+    prismaDogfoodSavedDesignStore,
+} from "../lib/dogfood-saved-design.js";
 import { callManufacture } from "../lib/manufacturing-client.js";
 import {
     archiveManufacturingSourceStl,
@@ -253,25 +253,25 @@ export const manufacturingRouter = router({
                 let plan: Awaited<ReturnType<typeof planCadOperatorGenerate>>;
                 try {
                     plan = await planCadOperatorGenerate({
-                    prisma: ctx.prisma,
-                    principal: cadOperator,
-                    designId: input.designId,
-                    side: input.side,
-                    outputType: input.outputType,
-                    useSavedDesignMesh: input.useSavedDesignMesh === true,
-                    stlStorageKey,
-                    patientName: input.patientName,
-                    hardness: input.hardness,
-                    uploadStl: async (key, bytes) => {
-                        if (!supabaseForPlan) {
-                            throw new TRPCError({
-                                code: "INTERNAL_SERVER_ERROR",
-                                message: "Storage not available",
-                            });
-                        }
-                        await uploadAsset(supabaseForPlan, key, bytes, "model/stl", MANUFACTURING_BUCKET);
-                    },
-                });
+                        prisma: ctx.prisma,
+                        principal: cadOperator,
+                        designId: input.designId,
+                        side: input.side,
+                        outputType: input.outputType,
+                        useSavedDesignMesh: input.useSavedDesignMesh === true,
+                        stlStorageKey,
+                        patientName: input.patientName,
+                        hardness: input.hardness,
+                        uploadStl: async (key, bytes) => {
+                            if (!supabaseForPlan) {
+                                throw new TRPCError({
+                                    code: "INTERNAL_SERVER_ERROR",
+                                    message: "Storage not available",
+                                });
+                            }
+                            await uploadAsset(supabaseForPlan, key, bytes, "model/stl", MANUFACTURING_BUCKET);
+                        },
+                    });
                 } catch (error) {
                     if (error instanceof DogfoodUserQuestion) return error.payload;
                     throw error;
@@ -659,6 +659,7 @@ export const manufacturingRouter = router({
                     principal: ctx.cadOperator,
                     externalOrderId: input.externalOrderId,
                     clientId: input.clientId,
+                    catalog: input.catalog,
                     store: prismaDogfoodSavedDesignStore(ctx.prisma),
                     persist: (designId) =>
                         persistSavedDesignSnapshotOnDesign({
@@ -671,7 +672,11 @@ export const manufacturingRouter = router({
             } catch (error) {
                 if (error instanceof DogfoodOrderIdentityError) {
                     const forbidden =
-                        error.code === "order_client_mismatch" || error.code === "order_client_cross_tenant";
+                        error.code === "order_client_mismatch" ||
+                        error.code === "order_client_cross_tenant" ||
+                        error.code === "verifier_revoked" ||
+                        error.code === "verifier_unauthorized" ||
+                        error.code === "verifier_untrusted";
                     throw new TRPCError({
                         code: forbidden ? "FORBIDDEN" : "PRECONDITION_FAILED",
                         message: error.message,

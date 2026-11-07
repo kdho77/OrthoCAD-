@@ -346,7 +346,12 @@ describe("dogfood order-person identity", () => {
             },
         } as unknown as PrismaClient;
         const store = prismaDogfoodSavedDesignStore(prisma);
-        expect(Object.keys(store).sort()).toEqual(["findClient", "findOrderLinks"]);
+        expect(Object.keys(store).sort()).toEqual([
+            "establishVerifiedOrder",
+            "findClient",
+            "findOrderLinks",
+            "findPersonLinks",
+        ]);
         const result = await refresh({
             store,
             persist: async (designId) => snapshot(designId),
