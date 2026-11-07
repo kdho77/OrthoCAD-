@@ -7,7 +7,7 @@ import {
 } from "../src/tools/schemas.js";
 
 describe("OrthoCAD MCP tool schemas", () => {
-    test("Phase A exposes eight tools with unique snake_case names", () => {
+    test("Phase A exposes the dogfood tools with unique snake_case names", () => {
         const names = MCP_TOOL_DEFINITIONS.map((t) => t.name);
         expect(names).toEqual([
             "get_design",
@@ -18,6 +18,8 @@ describe("OrthoCAD MCP tool schemas", () => {
             "get_export_download",
             "build_design_exported_payload",
             "persist_saved_design_snapshot",
+            "create_saved_design",
+            "prepare_vo_attachment",
         ]);
         expect(new Set(names).size).toBe(names.length);
     });
@@ -67,6 +69,19 @@ describe("OrthoCAD MCP tool schemas", () => {
                     elements: [{ name: "mortons_extension", side: "left" }],
                 },
                 rx_text: "Morton's extension — ignored",
+            },
+            create_saved_design: {
+                external_order_id: "order-1",
+                client_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                catalog: { shoe_size: { system: "US_M", size: 9 } },
+            },
+            prepare_vo_attachment: {
+                order_id: "order-1",
+                design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                files: [
+                    { side: "left", storage_key: "gcode/cad-operator/left.gcode" },
+                    { side: "right", storage_key: "gcode/cad-operator/right.gcode" },
+                ],
             },
             build_design_exported_payload: {
                 design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

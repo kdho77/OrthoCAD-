@@ -36,6 +36,11 @@ export const generateGcodeInputObjectSchema = z.object({
     use_saved_design: z.boolean().optional(),
     /** Optional bottom engrave label for this export (same sanitize as Print/Export textMarking). */
     patient_name: z.string().max(200).optional(),
+    /**
+     * Material hardness for a saved-design pair. Omitted or unknown hardness
+     * returns a question for the user and does not slice.
+     */
+    hardness: z.string().max(40).optional(),
 });
 
 export const generateGcodeInputSchema = generateGcodeInputObjectSchema.superRefine((value, ctx) => {
@@ -181,6 +186,31 @@ export const savedDesignCatalogSchema = z
     })
     .strict();
 
+export const createSavedDesignInputSchema = z
+    .object({
+        external_order_id: z.string().trim().min(1).max(200),
+        client_id: z.string().uuid(),
+        catalog: savedDesignCatalogSchema.optional(),
+        patient_name: z.string().max(200).optional(),
+    })
+    .strict();
+
+const attachFileSchema = z
+    .object({
+        side: sideSchema,
+        storage_key: z.string().trim().min(1).max(500),
+        filename: z.string().max(200).optional(),
+    })
+    .strict();
+
+export const prepareVoAttachmentInputSchema = z
+    .object({
+        order_id: z.string().trim().min(1).max(200),
+        design_id: z.string().uuid(),
+        files: z.array(attachFileSchema).min(1).max(2),
+    })
+    .strict();
+
 export const persistSavedDesignSnapshotInputSchema = z
     .object({
         design_id: z.string().uuid(),
@@ -223,7 +253,7 @@ export const MCP_TOOL_DEFINITIONS = [
             "Belt G-code. Saved-design mode (use_saved_design) builds the canonical Export mesh on the server and returns left and right G-code files. " +
             "No STL deliverable. Omitting side generates both feet and fails if either foot fails. " +
             "Legacy mode still calls manufacturing.generateSolid → Python /manufacture with stl_storage_key. " +
-            "PR #263 merged (70e33f8a): Apex + VertexSlice profiles + leader v2 on main.",
+            "PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck.",
         inputSchema: generateGcodeInputObjectSchema,
     },
     {
@@ -255,10 +285,29 @@ export const MCP_TOOL_DEFINITIONS = [
             "rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, " +
             "forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, " +
             "full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit. " +
-            "Ignored and never mapped: rx_text, notes, rigidity, extra_soft, hardness. " +
+            "Ignored and never mapped: rx_text, notes, rigidity, extra_soft. " +
+            "hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. " +
+            "Absent width is Medium and recorded as defaulted, not prescribed. " +
             "422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, " +
             "or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
         inputSchema: persistSavedDesignSnapshotInputSchema,
+    },
+    {
+        name: "create_saved_design",
+        description:
+            "Dogfood SAMPLE_Top design for an existing VertexOrders order. Does not take a clinic tenant id. " +
+            "Creates the design when that order has none on the dogfood account, and refreshes settingsJson when it does. " +
+            "No scan upload and no STL. Medium width is used only when width is absent and is recorded as defaulted, not prescribed. " +
+            "Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
+        inputSchema: createSavedDesignInputSchema,
+    },
+    {
+        name: "prepare_vo_attachment",
+        description:
+            "Build the VertexOrders attach_files handoff for an existing order: order_id, left/right side, durable G-code storage_key, " +
+            "and a stable idempotency_key. Does not call VertexOrders and does not write an order status. " +
+            "Re-running with the same keys returns the same payload. STL keys are refused.",
+        inputSchema: prepareVoAttachmentInputSchema,
     },
 ] as const;
 

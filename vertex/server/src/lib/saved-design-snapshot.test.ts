@@ -90,6 +90,50 @@ describe("persist saved design snapshot", () => {
         expect(JSON.stringify(result.settingsJson)).not.toMatch(/Morton|Extra Soft/);
         expect(result.paths).toContain("settings.usMenSize");
         expect(result.paths).toContain("settings.shoeWidth");
+        expect(result.shoe_width).toBe("medium");
+        expect(result.shoe_width_source).toBe("prescribed");
+        expect(result.hardness_source).toBe("unspecified");
+        expect(result.scans_used).toBe(false);
+    });
+
+    test("a blank stored width is medium and recorded as defaulted", async () => {
+        const { prisma, updates } = fakePrisma(
+            row({
+                integrationLink: {
+                    ...row().integrationLink,
+                    shoeWidth: "",
+                },
+            }),
+        );
+        const result = await persistSavedDesignSnapshotOnDesign({
+            prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: {},
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        expect(updates).toHaveLength(1);
+        expect(result.shoe_width).toBe("medium");
+        expect(result.shoe_width_source).toBe("defaulted");
+        const settings = readStoredDesignSettings(result.settingsJson);
+        expect(settings?.shoeWidth).toBe("medium");
+        expect(
+            (settings?.dogfoodManufacturing as { shoeWidthSource?: string } | undefined)?.shoeWidthSource,
+        ).toBe("defaulted");
+    });
+
+    test("an unknown hardness does not write", async () => {
+        const { prisma, updates } = fakePrisma();
+        await expect(
+            persistSavedDesignSnapshotOnDesign({
+                prisma,
+                principal,
+                designId: DESIGN_ID,
+                catalog: { hardness: "shore 99" },
+                buildSnapshot: buildSavedDesignSnapshot,
+            }),
+        ).rejects.toMatchObject({ status: 422, message: expect.stringMatching(/hardness/) });
+        expect(updates).toEqual([]);
     });
 
     test("a conflicting supplied size is 422 and does not write", async () => {

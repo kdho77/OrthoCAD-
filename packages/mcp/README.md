@@ -73,6 +73,8 @@ Local dev: `npm run dev` (tsx stdio server).
 | `get_export_download` | tRPC `manufacturing.getGcodeDownloadUrl` |
 | `build_design_exported_payload` | VO handoff object (below) — **no VO order status writes** |
 | `persist_saved_design_snapshot` | tRPC `manufacturing.persistSavedDesignSnapshot` — writes `settingsJson` on an existing design |
+| `create_saved_design` | tRPC `manufacturing.createSavedDesign` — dogfood SAMPLE_Top for an existing order. No clinic tenant argument |
+| `prepare_vo_attachment` | VO `attach_files` handoff (order id, L/R, storage key, idempotency key). Does not call VO |
 
 Saved-design belt flow: `generate_gcode` with `use_saved_design: true` and `design_id`. The server builds the canonical Export mesh internally and returns left and right G-code downloads. No STL file is returned. Omitting `side` requires both feet. The legacy STL upload path (`prepare_manufacturing_stl_upload` → `stl_storage_key`) remains for a mesh the operator already built.
 
@@ -111,7 +113,7 @@ OrthoCAD never writes VO order status.
 
 1. `npm run build` in `packages/mcp` succeeds.
 2. MCP server starts: `ORTHOCAD_MCP_API_KEY=ocad_… ORTHOCAD_API_BASE=… node dist/cli.js` (stdio; no key in logs).
-3. Tool list includes eight tools (`get_design` … `persist_saved_design_snapshot`).
+3. Tool list includes ten tools (`get_design` … `prepare_vo_attachment`).
 4. `build_design_exported_payload` with sample files returns exact VO shape above (no `status` / order fields).
 5. `generate_gcode` documentation references main `/manufacture` path (VertexSlice/Apex/leader via #263 on main).
 

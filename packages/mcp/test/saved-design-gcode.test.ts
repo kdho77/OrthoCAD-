@@ -44,6 +44,7 @@ describe("saved-design belt G-code tool", () => {
                     outputType: "gcode",
                     productionId: `prod-${input.side}`,
                     gcodeDownloadUrl: `https://files.example.test/${input.side}.gcode`,
+                    gcodeStorageKey: `gcode/cad-operator/design/${input.side}.gcode`,
                     stlBase64: "should-not-leak",
                 };
             },
@@ -60,10 +61,15 @@ describe("saved-design belt G-code tool", () => {
         expect(result.isError).toBeUndefined();
         expect(calls).toEqual(["left", "right"]);
         const payload = JSON.parse(result.content[0]?.text ?? "{}") as {
-            files: Array<{ side: string; format: string; download_url: string }>;
+            files: Array<{ side: string; format: string; download_url: string; storage_key: string }>;
         };
         expect(payload.files).toHaveLength(2);
+        expect(payload.files.map((file) => file.side)).toEqual(["left", "right"]);
         expect(payload.files.map((file) => file.format)).toEqual(["gcode", "gcode"]);
+        expect(payload.files.map((file) => file.storage_key)).toEqual([
+            "gcode/cad-operator/design/left.gcode",
+            "gcode/cad-operator/design/right.gcode",
+        ]);
         expect(result.content[0]?.text).not.toMatch(/stlBase64|should-not-leak|\.stl/);
     });
 
@@ -92,6 +98,40 @@ describe("saved-design belt G-code tool", () => {
         );
         expect(seen).toHaveLength(2);
         expect(seen.every((row) => row.patientName === "Jane Doe")).toBe(true);
+    });
+
+    test("a hardness question is returned before a pair is claimed", async () => {
+        let calls = 0;
+        const manufacturing = {
+            generateFromSavedDesign: async () => {
+                calls += 1;
+                return {
+                    ok: false,
+                    ask: "user",
+                    relay: "none",
+                    questions: [{ field: "hardness", prompt: "Which hardness?" }],
+                };
+            },
+        } as unknown as ManufacturingClient;
+        const result = await handleOrthocadTool(
+            "generate_gcode",
+            {
+                preset_id: "apex-v2-insole-95a",
+                use_saved_design: true,
+                design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            },
+            { config, manufacturing },
+        );
+        expect(result.isError).toBeUndefined();
+        expect(calls).toBe(1);
+        const payload = JSON.parse(result.content[0]?.text ?? "{}") as {
+            ask?: string;
+            relay?: string;
+            files?: unknown;
+        };
+        expect(payload.ask).toBe("user");
+        expect(payload.relay).toBe("none");
+        expect(payload.files).toBeUndefined();
     });
 
     test("a failed right foot is not a successful half pair", async () => {
