@@ -5,6 +5,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { assertDogfoodNotHeld } from "../../../shared/dogfood-holds.js";
 import { type CadOperatorPrincipal, DOGFOOD_TENANT_ID } from "../auth/cad-operator.js";
+import { classifyOrderPersonEvidence } from "./dogfood-order-person-boundary.js";
 import type { PersistSavedDesignSnapshotResult } from "./saved-design-snapshot.js";
 
 export const DOGFOOD_ORDER_IDENTITY_CODES = [
@@ -119,10 +120,17 @@ export async function createDogfoodSavedDesign(args: {
     }
     const link = links[0];
     if (!link) {
-        throw new DogfoodOrderIdentityError(
-            "order_person_unbound",
-            "No vo2 dogfood design is linked to this order. A client UUID, name, or external client id from the caller is not the order's person. This path does not create a client or a design, and it does not call integration client upsert.",
-        );
+        const decision = classifyOrderPersonEvidence({
+            kind: "cad_operator_request",
+            externalOrderId,
+            clientId: confirmingClientId,
+        });
+        const unbound =
+            "No vo2 dogfood design is linked to this order. A client UUID, name, or external client id from the caller is not the order's person. This path does not create a client or a design, and it does not call integration client upsert.";
+        if (decision.established || decision.writes !== "none" || decision.code !== "order_person_unbound") {
+            throw new DogfoodOrderIdentityError("order_person_unbound", unbound);
+        }
+        throw new DogfoodOrderIdentityError(decision.code, unbound);
     }
     if (confirmingClientId && !sameId(confirmingClientId, link.clientId)) {
         throw new DogfoodOrderIdentityError(

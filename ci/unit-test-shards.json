@@ -111,6 +111,7 @@
                 "tests/split-elements-ui.test.ts",
                 "tests/wall-banding.verify.test.ts",
                 "vertex/server/src/auth/dogfood-design-access.test.ts",
+                "vertex/server/src/lib/dogfood-order-person-boundary.test.ts",
                 "vertex/server/src/lib/dogfood-saved-design.test.ts",
                 "vertex/server/src/lib/production-jobs.test.ts",
                 "vertex/server/src/routers/client-access.test.ts",
