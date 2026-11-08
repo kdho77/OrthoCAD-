@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, test } from "@rstest/core";
 import {
+    assertAcceptanceSummary,
     assertIsolatedAcceptanceEnv,
     REQUIRED_CASES,
 } from "../../../../scripts/ci/isolated-postgres-acceptance.mjs";
@@ -686,6 +687,7 @@ describe("isolated postgres acceptance gate", () => {
         expect(readFileSync("rstest.config.ts", "utf8")).toContain('"**/*.optional.test.ts"');
         const isolated = readFileSync("rstest.isolated-pg.config.ts", "utf8");
         expect(isolated).toContain("dogfood-saved-design.pg.optional.test.ts");
+        expect(isolated).toContain('["json", { outputPath: "/tmp/orthocad-isolated-pg-report.json" }]');
         expect(isolated).not.toContain("**/*.optional.test.ts");
         const workflow = readFileSync(".github/workflows/main.yml", "utf8");
         expect(workflow).toContain("isolated-postgres-acceptance:");
@@ -698,5 +700,45 @@ describe("isolated postgres acceptance gate", () => {
         });
         expect(missing.status).not.toBe(0);
         expect(`${missing.stdout ?? ""}${missing.stderr ?? ""}`).toMatch(/not selected|Refusing to skip/);
+    });
+
+    test("the GitHub compact reporter is not a pass, and a complete JSON summary is", () => {
+        const compact = [
+            "Rstest v0.10.0",
+            ...REQUIRED_CASES.map((name) => `✓ isolated postgres identity transaction > ${name}`),
+            "Test Files  1 passed",
+            "     Tests  10 passed",
+        ].join("\n");
+        expect(compact).not.toContain('"passedTests"');
+        expect(() => assertAcceptanceSummary(compact)).toThrow(/JSON summary/);
+        const passing = {
+            tool: "rstest",
+            status: "pass",
+            summary: {
+                tests: REQUIRED_CASES.length,
+                passedTests: REQUIRED_CASES.length,
+                failedTests: 0,
+                skippedTests: 0,
+                todoTests: 0,
+            },
+            tests: REQUIRED_CASES.map((name) => ({
+                status: "pass",
+                fullName: `isolated postgres identity transaction > ${name}`,
+            })),
+        };
+        expect(() => assertAcceptanceSummary(passing)).not.toThrow();
+        expect(() =>
+            assertAcceptanceSummary({
+                ...passing,
+                summary: { ...passing.summary, skippedTests: 1, tests: REQUIRED_CASES.length + 1 },
+            }),
+        ).toThrow(/skippedTests/);
+        expect(() =>
+            assertAcceptanceSummary({
+                ...passing,
+                tests: passing.tests.slice(0, -1),
+            }),
+        ).toThrow(/missing passed cases/);
+        expect(() => assertAcceptanceSummary({ ...passing, status: "fail" })).toThrow(/status fail/);
     });
 });

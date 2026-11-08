@@ -20,7 +20,7 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -31,6 +31,7 @@ const DATABASE = "orthocad_width";
 const USER = "orthocad_test";
 const SYNTHETIC_PASSWORD = "orthocad_test";
 const LOCAL_URL = `postgresql://${USER}@127.0.0.1:${PORT}/${DATABASE}`;
+export const ACCEPTANCE_REPORT_PATH = "/tmp/orthocad-isolated-pg-report.json";
 
 const BLOCKED_ENV = [
     "DATABASE_URL",
@@ -82,6 +83,35 @@ export function assertDisposableUrl(url) {
         if (lowered.includes(banned)) throw new Error("refusing a non-disposable postgres host");
     }
     return url;
+}
+
+export function assertAcceptanceSummary(report, requiredCases = REQUIRED_CASES) {
+    const summary = report?.summary;
+    if (report?.tool !== "rstest" || !summary || !Array.isArray(report.tests)) {
+        throw new Error("isolated acceptance did not emit an rstest JSON summary. Refusing to pass.");
+    }
+    const problems = [];
+    if (report.status !== "pass") problems.push(`status ${report.status}`);
+    if (summary.passedTests !== requiredCases.length) problems.push(`passedTests ${summary.passedTests}`);
+    if (summary.failedTests !== 0) problems.push(`failedTests ${summary.failedTests}`);
+    if (summary.skippedTests !== 0) problems.push(`skippedTests ${summary.skippedTests}`);
+    if (summary.todoTests !== 0) problems.push(`todoTests ${summary.todoTests}`);
+    if (summary.tests !== requiredCases.length) problems.push(`tests ${summary.tests}`);
+    const passedNames = report.tests
+        .filter((test) => test.status === "pass")
+        .map((test) => String(test.fullName ?? ""));
+    const missing = requiredCases.filter((name) => !passedNames.some((fullName) => fullName.includes(name)));
+    if (missing.length > 0) {
+        const sample = report.tests[0] ? Object.keys(report.tests[0]).join(",") : "none";
+        problems.push(`missing passed cases: ${missing.join("; ")} (test fields ${sample})`);
+    }
+    const skippedOrFailed = report.tests.filter((test) => test.status !== "pass");
+    if (skippedOrFailed.length > 0) {
+        problems.push(`non-pass results: ${skippedOrFailed.map((test) => test.status).join(", ")}`);
+    }
+    if (problems.length > 0) {
+        throw new Error(`isolated acceptance summary rejected: ${problems.join("; ")}. Refusing to pass.`);
+    }
 }
 
 export function assertIsolatedAcceptanceEnv(env) {
@@ -201,6 +231,7 @@ function run() {
         ORTHOCAD_ISOLATED_PG_URL: process.env.ORTHOCAD_ISOLATED_PG_URL,
     });
     printVersion(url);
+    rmSync(ACCEPTANCE_REPORT_PATH, { force: true });
     const env = { ...process.env };
     for (const key of BLOCKED_ENV) delete env[key];
     env.ORTHOCAD_ISOLATED_PG_ACCEPTANCE = "1";
@@ -216,28 +247,26 @@ function run() {
         console.error(result.error.message);
         process.exit(1);
     }
-    const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
     if (result.status !== 0) process.exit(result.status ?? 1);
-    const missing = REQUIRED_CASES.filter((name) => !output.includes(name));
-    if (missing.length > 0) {
-        console.error(`isolated acceptance did not report required cases:\n${missing.join("\n")}`);
+    if (!existsSync(ACCEPTANCE_REPORT_PATH)) {
+        console.error("isolated acceptance did not write the rstest JSON summary. Refusing to pass.");
         process.exit(1);
     }
-    const passed = output.match(/"passedTests":\s*(\d+)/);
-    const failed = output.match(/"failedTests":\s*(\d+)/);
-    const skipped = output.match(/"skippedTests":\s*(\d+)/);
-    if (
-        !passed ||
-        Number(passed[1]) !== REQUIRED_CASES.length ||
-        !failed ||
-        Number(failed[1]) !== 0 ||
-        !skipped ||
-        Number(skipped[1]) !== 0
-    ) {
-        console.error(
-            `isolated acceptance summary was not ${REQUIRED_CASES.length} passed, 0 failed, 0 skipped. Refusing to pass.`,
-        );
+    let report;
+    try {
+        report = JSON.parse(readFileSync(ACCEPTANCE_REPORT_PATH, "utf8"));
+    } catch (error) {
+        console.error(error instanceof Error ? error.message : error);
+        console.error("isolated acceptance JSON summary was not readable. Refusing to pass.");
         process.exit(1);
+    }
+    try {
+        assertAcceptanceSummary(report);
+    } catch (error) {
+        console.error(error instanceof Error ? error.message : error);
+        process.exit(1);
+    } finally {
+        rmSync(ACCEPTANCE_REPORT_PATH, { force: true });
     }
 }
 

@@ -7,6 +7,9 @@ import packages from "./package.json";
 export default defineConfig({
     include: ["vertex/server/src/lib/dogfood-saved-design.pg.optional.test.ts"],
     exclude: ["**/cpp/**", "**/node_modules/**"],
+    // Pin reporters. Agent sessions otherwise switch to the markdown reporter,
+    // and GitHub Actions uses the compact reporter. The JSON file is the summary.
+    reporters: ["default", ["json", { outputPath: "/tmp/orthocad-isolated-pg-report.json" }]],
     testTimeout: 120_000,
     hookTimeout: 120_000,
     globals: true,
