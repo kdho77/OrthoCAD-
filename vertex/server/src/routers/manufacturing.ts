@@ -22,6 +22,7 @@ import { runtimeDogfoodOrderOwnerVerifier } from "../lib/dogfood-order-owner-wir
 import {
     createDogfoodSavedDesign,
     DogfoodOrderIdentityError,
+    IntegrationShoeWidthError,
     prismaDogfoodSavedDesignStore,
 } from "../lib/dogfood-saved-design.js";
 import { callManufacture } from "../lib/manufacturing-client.js";
@@ -688,7 +689,7 @@ export const manufacturingRouter = router({
                     });
                 }
                 if (error instanceof DogfoodUserQuestion) return error.payload;
-                if (error instanceof SavedDesignSnapshotError) {
+                if (error instanceof SavedDesignSnapshotError || error instanceof IntegrationShoeWidthError) {
                     throw new TRPCError({ code: "UNPROCESSABLE_CONTENT", message: error.message });
                 }
                 if (error instanceof Error && error.name === "DogfoodHoldError") {

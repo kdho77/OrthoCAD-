@@ -323,6 +323,58 @@ describe("order-owner wire contract", () => {
         expect(timeout).toEqual({ ok: false, code: "verifier_unavailable" });
         expect(JSON.stringify(timeout)).not.toMatch(/synthetic-bearer|vo\.example/);
     });
+
+    test("correlation logging is request_id and outcome only", async () => {
+        const lines: string[] = [];
+        const original = console.info;
+        console.info = ((message?: unknown) => {
+            lines.push(String(message));
+        }) as typeof console.info;
+        try {
+            const accepted = await postOrderOwnerVerify({ origin: ORIGIN, bearer: BEARER }, ORDER, {
+                fetchImpl: seenFetch(fixture.response_200).fetchImpl,
+                now: () => NOW,
+                requestId: () => REQUEST,
+            });
+            expect(accepted.ok).toBe(true);
+            const denied = await postOrderOwnerVerify({ origin: ORIGIN, bearer: BEARER }, ORDER, {
+                fetchImpl: seenFetch(
+                    { ...fixture.response_200, patient_name: "Row Fixture", note: ORDER },
+                    200,
+                ).fetchImpl,
+                now: () => NOW,
+                requestId: () => REQUEST,
+            });
+            expect(denied).toEqual({ ok: false, code: "verifier_untrusted" });
+            const offline = await postOrderOwnerVerify(
+                { origin: "http://insecure.example", bearer: BEARER },
+                ORDER,
+                {
+                    fetchImpl: async () => {
+                        throw new Error("must not send");
+                    },
+                    now: () => NOW,
+                    requestId: () => "patient-order-secret",
+                },
+            );
+            expect(offline).toEqual({ ok: false, code: "verifier_unauthorized" });
+        } finally {
+            console.info = original;
+        }
+        expect(lines).toEqual([
+            JSON.stringify({ request_id: REQUEST, outcome: "accepted" }),
+            JSON.stringify({ request_id: REQUEST, outcome: "verifier_untrusted" }),
+            JSON.stringify({ request_id: "invalid", outcome: "verifier_unauthorized" }),
+        ]);
+        const leaked = lines.join("\n");
+        expect(leaked).not.toContain(ORDER);
+        expect(leaked).not.toContain(BEARER);
+        expect(leaked).not.toContain(fixture.request.tenant_id);
+        expect(leaked).not.toContain("Row");
+        expect(leaked).not.toContain("patient");
+        expect(leaked).not.toContain("external_order_id");
+        expect(Object.keys(JSON.parse(lines[0] ?? "{}")).sort()).toEqual(["outcome", "request_id"]);
+    });
 });
 
 function orderOwnerInternal() {

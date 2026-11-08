@@ -1,10 +1,22 @@
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, test } from "@rstest/core";
+import { CHART_SHOE_WIDTHS } from "../../../shared/client-files.js";
+import { parseSavedDesignCatalog } from "../../../shared/saved-design-catalog.js";
+import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot.js";
+import { normalizeShoeWidth } from "../../../src/lib/geometry/shoe-width.js";
 import { type CadOperatorPrincipal, DOGFOOD_TENANT_ID } from "../auth/cad-operator.js";
+import { settingsEnvelopeForSave } from "./design-schema.js";
+import type { OrderPersonVerifier } from "./dogfood-order-person-verifier.js";
+import { VO_ORDER_OWNER_PRINCIPAL } from "./dogfood-order-person-verifier.js";
 import {
     createDogfoodSavedDesign,
     type DogfoodOrderLink,
     type DogfoodSavedDesignStore,
+    type EstablishVerifiedOrderInput,
+    IntegrationShoeWidthError,
+    integrationLinkShoeWidth,
     prismaDogfoodSavedDesignStore,
 } from "./dogfood-saved-design.js";
 import type { PersistSavedDesignSnapshotResult } from "./saved-design-snapshot.js";
@@ -373,5 +385,270 @@ describe("dogfood order-person identity", () => {
                 select: { id: true, ownerId: true, tenantId: true },
             },
         });
+    });
+});
+
+const WIDTH_NOW = new Date("2026-11-08T12:00:00.000Z");
+
+function sourceFiles(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir)) {
+        if (entry === "node_modules" || entry === "dist") continue;
+        const path = join(dir, entry);
+        if (statSync(path).isDirectory()) out.push(...sourceFiles(path));
+        else if (/\.(ts|tsx)$/.test(entry) && !/\.test\.(ts|tsx)$/.test(entry)) out.push(path);
+    }
+    return out;
+}
+
+function acceptingVerifier(): OrderPersonVerifier {
+    return {
+        async verify(request) {
+            return {
+                ok: true,
+                principal: VO_ORDER_OWNER_PRINCIPAL,
+                source: "vo2",
+                tenantId: DOGFOOD_TENANT_ID,
+                externalOrderId: request.externalOrderId,
+                externalPersonId: "synthetic-person",
+                audience: "dogfood-saved-design",
+                operation: "bind-order-person",
+                verifiedAt: WIDTH_NOW.toISOString(),
+                givenName: "Chart",
+                familyName: "Label",
+            };
+        },
+    };
+}
+
+function recordingStore() {
+    const inputs: EstablishVerifiedOrderInput[] = [];
+    const store: DogfoodSavedDesignStore = {
+        async findOrderLinks() {
+            return [];
+        },
+        async findClient() {
+            return null;
+        },
+        async findPersonLinks() {
+            return [];
+        },
+        async establishVerifiedOrder(input) {
+            inputs.push(input);
+            return { outcome: "created", clientId: CLIENT, designId: DESIGN, createdClient: true };
+        },
+    };
+    return { store, inputs };
+}
+
+function establishInput(
+    linkShoeWidth: string,
+    chartWidth: "narrow" | "medium" | "wide",
+): EstablishVerifiedOrderInput {
+    return {
+        externalOrderId: ORDER,
+        externalPersonId: "synthetic-person",
+        givenName: "Chart",
+        familyName: "Label",
+        verifiedAt: WIDTH_NOW.toISOString(),
+        now: WIDTH_NOW,
+        settingsJson: { schemaVersion: 1 },
+        linkShoe: { system: "US_M", size: 10, left: null, right: null },
+        linkShoeWidth,
+        chartWidth,
+    };
+}
+
+describe("integration link width", () => {
+    test("an omitted width is medium on the link and stays defaulted on the snapshot", async () => {
+        const db = recordingStore();
+        const result = await createDogfoodSavedDesign({
+            principal,
+            externalOrderId: ORDER,
+            catalog: { shoe_size: { system: "US_M", size: 10 }, hardness: "Hard" },
+            store: db.store,
+            verifier: acceptingVerifier(),
+            now: () => WIDTH_NOW,
+            buildSnapshot: buildSavedDesignSnapshot,
+            persist: async () => {
+                throw new Error("persist is the refresh path");
+            },
+        });
+        expect(result.shoe_width).toBe("medium");
+        expect(result.shoe_width_source).toBe("defaulted");
+        expect(result.hardness).toBe("Hard");
+        expect(db.inputs).toHaveLength(1);
+        expect(db.inputs[0]?.linkShoeWidth).toBe("medium");
+        expect(db.inputs[0]?.chartWidth).toBe("medium");
+        expect(result.settingsJson).toMatchObject({
+            settings: {
+                shoeWidth: "medium",
+                dogfoodManufacturing: { shoeWidth: "medium", shoeWidthSource: "defaulted" },
+            },
+        });
+    });
+
+    test("prescribed narrow, medium, and wide pass through unchanged", async () => {
+        for (const width of ["narrow", "medium", "wide"] as const) {
+            const db = recordingStore();
+            const result = await createDogfoodSavedDesign({
+                principal,
+                externalOrderId: ORDER,
+                catalog: { shoe_size: { system: "US_M", size: 10 }, width, hardness: "Hard" },
+                store: db.store,
+                verifier: acceptingVerifier(),
+                now: () => WIDTH_NOW,
+                buildSnapshot: buildSavedDesignSnapshot,
+                persist: async () => {
+                    throw new Error("persist is the refresh path");
+                },
+            });
+            expect(result.shoe_width).toBe(width);
+            expect(result.shoe_width_source).toBe("prescribed");
+            expect(db.inputs[0]?.linkShoeWidth).toBe(width);
+            expect(db.inputs[0]?.chartWidth).toBe(width);
+        }
+    });
+
+    test("extra widths are rejected before establishment", async () => {
+        for (const width of ["extra_narrow", "extra_wide"] as const) {
+            const db = recordingStore();
+            await expect(
+                createDogfoodSavedDesign({
+                    principal,
+                    externalOrderId: ORDER,
+                    catalog: { shoe_size: { system: "US_M", size: 10 }, width, hardness: "Hard" },
+                    store: db.store,
+                    verifier: acceptingVerifier(),
+                    now: () => WIDTH_NOW,
+                    buildSnapshot: buildSavedDesignSnapshot,
+                    persist: async () => {
+                        throw new Error("persist is the refresh path");
+                    },
+                }),
+            ).rejects.toBeInstanceOf(IntegrationShoeWidthError);
+            expect(db.inputs).toEqual([]);
+        }
+    });
+
+    test("absent link width normalizes to medium and extra widths do not open a transaction", async () => {
+        expect(integrationLinkShoeWidth("", "defaulted")).toBe("medium");
+        expect(integrationLinkShoeWidth("wide", "prescribed")).toBe("wide");
+        expect(() => integrationLinkShoeWidth("extra_wide", "prescribed")).toThrow(IntegrationShoeWidthError);
+        const seen: string[] = [];
+        const tx = {
+            integrationDesign: {
+                findMany: async () => [],
+                create: async (args: { data: { shoeWidth: string } }) => {
+                    seen.push(`design:${args.data.shoeWidth}`);
+                },
+            },
+            integrationClient: {
+                findMany: async () => [],
+                create: async (args: { data: { shoeWidth: string } }) => {
+                    seen.push(`client-link:${args.data.shoeWidth}`);
+                },
+            },
+            user: { findFirst: async () => ({ id: OWNER }) },
+            client: {
+                create: async (args: { data: { shoeWidth: string } }) => {
+                    seen.push(`client:${args.data.shoeWidth}`);
+                },
+            },
+            design: { create: async () => undefined },
+        };
+        let began = 0;
+        const prisma = {
+            $transaction: async (fn: (transaction: typeof tx) => Promise<unknown>) => {
+                began += 1;
+                return fn(tx);
+            },
+        } as unknown as PrismaClient;
+        const store = prismaDogfoodSavedDesignStore(prisma);
+        const created = await store.establishVerifiedOrder?.(establishInput("", "medium"));
+        expect(created).toMatchObject({ outcome: "created" });
+        expect(seen).toEqual(["client:medium", "client-link:medium", "design:medium"]);
+        for (const width of ["extra_narrow", "extra_wide", "giant"]) {
+            await expect(
+                store.establishVerifiedOrder?.(establishInput(width, "medium")),
+            ).rejects.toBeInstanceOf(IntegrationShoeWidthError);
+        }
+        expect(began).toBe(1);
+    });
+
+    test("human create, edit, save, export, and order paths do not use integration width rejection", () => {
+        const files = [
+            ...sourceFiles("vertex/server/src"),
+            ...sourceFiles("vertex/src"),
+            ...sourceFiles("vertex/shared"),
+        ];
+        const readers = files.map((file) => ({ file, text: readFileSync(file, "utf8") }));
+        const importsEstablishment = (text: string) =>
+            /import\s*\{[^}]*\bcreateDogfoodSavedDesign\b[^}]*\}/s.test(text);
+        expect(
+            readers.filter((entry) => importsEstablishment(entry.text)).map((entry) => entry.file),
+        ).toEqual(["vertex/server/src/routers/manufacturing.ts"]);
+        expect(
+            readers
+                .filter((entry) => entry.text.includes("integrationLinkShoeWidth"))
+                .map((entry) => entry.file),
+        ).toEqual(["vertex/server/src/lib/dogfood-saved-design.ts"]);
+        expect(
+            readers
+                .filter((entry) => entry.text.includes("IntegrationShoeWidthError"))
+                .map((entry) => entry.file)
+                .sort(),
+        ).toEqual(
+            [
+                "vertex/server/src/lib/dogfood-saved-design.ts",
+                "vertex/server/src/routers/manufacturing.ts",
+            ].sort(),
+        );
+        const human = [
+            "vertex/server/src/routers/client.ts",
+            "vertex/server/src/routers/export.ts",
+            "vertex/server/src/lib/saved-design-snapshot.ts",
+            "vertex/shared/saved-design-snapshot.ts",
+            "vertex/shared/saved-design-catalog.ts",
+            "vertex/shared/client-files.ts",
+            "vertex/src/stores/client-store.ts",
+            "vertex/src/stores/design-store.ts",
+            "vertex/src/features/exports/export-service.ts",
+            "vertex/src/features/clients/client-actions.ts",
+            "vertex/src/lib/geometry/shoe-width.ts",
+            "vertex/server/src/routers/integrations/service.ts",
+            "vertex/server/src/routers/integrations/prisma-store.ts",
+        ];
+        for (const file of human) {
+            const text = readFileSync(file, "utf8");
+            expect(text, file).not.toContain("integrationLinkShoeWidth");
+            expect(text, file).not.toContain("IntegrationShoeWidthError");
+            expect(text, file).not.toContain("createDogfoodSavedDesign");
+        }
+        expect([...CHART_SHOE_WIDTHS]).toEqual(["narrow", "medium", "wide", "extra_wide"]);
+        expect(normalizeShoeWidth("extra_narrow")).toBe("extra_narrow");
+        expect(normalizeShoeWidth("extra_wide")).toBe("extra_wide");
+        expect(normalizeShoeWidth("wide")).toBe("wide");
+        expect(normalizeShoeWidth(undefined)).toBe("medium");
+        expect(parseSavedDesignCatalog({ width: "extra_narrow" }).width).toBe("extra_narrow");
+        expect(parseSavedDesignCatalog({ width: "extra_wide" }).width).toBe("extra_wide");
+        const prescribed = buildSavedDesignSnapshot({
+            stored: null,
+            catalog: parseSavedDesignCatalog({
+                shoe_size: { system: "US_M", size: 10 },
+                width: "extra_wide",
+            }),
+        });
+        expect(prescribed.shoeWidth).toBe("extra_wide");
+        expect(prescribed.shoeWidthSource).toBe("prescribed");
+        expect(settingsEnvelopeForSave(prescribed.design).settings).toMatchObject({
+            shoeWidth: "extra_wide",
+        });
+        const omitted = buildSavedDesignSnapshot({
+            stored: null,
+            catalog: parseSavedDesignCatalog({ shoe_size: { system: "US_M", size: 10 } }),
+        });
+        expect(omitted.shoeWidth).toBe("medium");
+        expect(omitted.shoeWidthSource).toBe("defaulted");
     });
 });
