@@ -1,11 +1,15 @@
-// Disposable local PostgreSQL only. This file is excluded from the required CI
-// shard. A missing ORTHOCAD_ISOLATED_PG_URL fails the file; it does not skip.
+// Explicit isolated PostgreSQL acceptance. Default unit shards exclude this
+// file. Selecting it without ORTHOCAD_ISOLATED_PG_ACCEPTANCE=1 fails closed.
 
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, test } from "@rstest/core";
+import {
+    assertDisposableUrl,
+    assertIsolatedAcceptanceEnv,
+} from "../../../../scripts/ci/isolated-postgres-acceptance.mjs";
 import { assertDogfoodNotHeld } from "../../../shared/dogfood-holds.js";
 import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot.js";
 import { type CadOperatorPrincipal, DOGFOOD_TENANT_ID } from "../auth/cad-operator.js";
@@ -17,7 +21,6 @@ import {
     prismaDogfoodSavedDesignStore,
 } from "./dogfood-saved-design.js";
 
-const ISOLATED_URL = process.env.ORTHOCAD_ISOLATED_PG_URL ?? "";
 const MIGRATION = "vertex/prisma/migrations/20261104120000_integration_launch_connector/migration.sql";
 const OWNER_ID = "abababab-abab-4aba-8aba-abababababab";
 
@@ -27,31 +30,6 @@ const principal: CadOperatorPrincipal = {
     tenantId: DOGFOOD_TENANT_ID,
     scopes: ["design:read", "manufacturing:prepare", "manufacturing:generate", "manufacturing:download"],
 };
-
-function assertDisposable(url: string): void {
-    let parsed: URL;
-    try {
-        parsed = new URL(url);
-    } catch {
-        throw new Error(
-            "UNEXECUTED isolated PostgreSQL: ORTHOCAD_ISOLATED_PG_URL is missing or unusable. Release blocker, not a pass.",
-        );
-    }
-    if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:") {
-        throw new Error("isolated postgres url must use the postgresql protocol");
-    }
-    if (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") {
-        throw new Error("isolated postgres must listen on localhost");
-    }
-    if (parsed.password) throw new Error("isolated postgres url must not carry a password");
-    if (parsed.pathname !== "/orthocad_width") {
-        throw new Error("isolated postgres database must be the disposable orthocad_width database");
-    }
-    const lowered = url.toLowerCase();
-    for (const banned of ["supabase", "amazonaws", "neon.tech", "render.com", "pooler"]) {
-        if (lowered.includes(banned)) throw new Error("refusing a non-disposable postgres host");
-    }
-}
 
 function syntheticId(): string {
     for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -173,17 +151,14 @@ async function installChecks(): Promise<void> {
 
 describe("isolated postgres identity transaction", () => {
     beforeAll(async () => {
-        if (!ISOLATED_URL) {
-            throw new Error(
-                "UNEXECUTED isolated PostgreSQL: set ORTHOCAD_ISOLATED_PG_URL to a disposable local database. Release blocker, not a pass.",
-            );
-        }
-        assertDisposable(ISOLATED_URL);
-        prisma = new PrismaClient({ datasourceUrl: ISOLATED_URL });
+        const url = assertIsolatedAcceptanceEnv(process.env);
+        prisma = new PrismaClient({ datasourceUrl: url });
+        const version = await prisma.$queryRaw<Array<{ version: string }>>`SELECT version() AS version`;
+        console.info(`isolated_postgres_version ${version[0]?.version ?? ""}`);
         const ready = await prisma.$queryRaw<Array<{ ok: string | null }>>`
             SELECT to_regclass('public.integration_designs')::text AS ok
         `;
-        if (!ready[0]?.ok) pushSchema(ISOLATED_URL);
+        if (!ready[0]?.ok) pushSchema(url);
         await installChecks();
         await prisma.tenant.upsert({
             where: { id: DOGFOOD_TENANT_ID },
@@ -214,9 +189,22 @@ describe("isolated postgres identity transaction", () => {
     });
 
     test("the harness refuses a non-local url before connecting", () => {
+        expect(process.env.ORTHOCAD_ISOLATED_PG_ACCEPTANCE).toBe("1");
+        expect(process.env.DATABASE_URL ?? "").toBe("");
         expect(() =>
-            assertDisposable("postgresql://user:secret@db.example.supabase.co:5432/postgres"),
-        ).toThrow(/localhost|password|disposable/);
+            assertDisposableUrl("postgresql://user:secret@db.example.supabase.co:5432/postgres"),
+        ).toThrow(/localhost|password|disposable|orthocad_test/);
+        expect(() =>
+            assertDisposableUrl("postgresql://orthocad_test:live-secret@127.0.0.1:54329/orthocad_width"),
+        ).toThrow(/password/);
+        expect(() => assertIsolatedAcceptanceEnv({})).toThrow(/not selected/);
+        expect(() =>
+            assertIsolatedAcceptanceEnv({
+                ORTHOCAD_ISOLATED_PG_ACCEPTANCE: "1",
+                ORTHOCAD_ISOLATED_PG_URL: "postgresql://orthocad_test@127.0.0.1:54329/orthocad_width",
+                DATABASE_URL: "postgresql://prod.example/postgres",
+            }),
+        ).toThrow(/DATABASE_URL/);
     });
 
     test("the migration shoe-width checks are present on both link tables", async () => {

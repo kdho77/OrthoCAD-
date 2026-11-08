@@ -1,7 +1,12 @@
+import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, test } from "@rstest/core";
+import {
+    assertIsolatedAcceptanceEnv,
+    REQUIRED_CASES,
+} from "../../../../scripts/ci/isolated-postgres-acceptance.mjs";
 import { CHART_SHOE_WIDTHS } from "../../../shared/client-files.js";
 import { parseSavedDesignCatalog } from "../../../shared/saved-design-catalog.js";
 import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot.js";
@@ -650,5 +655,48 @@ describe("integration link width", () => {
         });
         expect(omitted.shoeWidth).toBe("medium");
         expect(omitted.shoeWidthSource).toBe("defaulted");
+    });
+});
+
+describe("isolated postgres acceptance gate", () => {
+    test("default unit discovery excludes the acceptance file and the explicit command fails closed", () => {
+        const safeUrl = "postgresql://orthocad_test@127.0.0.1:54329/orthocad_width";
+        expect(() => assertIsolatedAcceptanceEnv({})).toThrow(/not selected/);
+        expect(() => assertIsolatedAcceptanceEnv({ ORTHOCAD_ISOLATED_PG_ACCEPTANCE: "1" })).toThrow(
+            /missing/,
+        );
+        expect(() =>
+            assertIsolatedAcceptanceEnv({
+                ORTHOCAD_ISOLATED_PG_ACCEPTANCE: "1",
+                ORTHOCAD_ISOLATED_PG_URL: "postgresql://user:secret@db.example.supabase.co/postgres",
+            }),
+        ).toThrow(/localhost|disposable|orthocad_test/);
+        expect(
+            assertIsolatedAcceptanceEnv({
+                ORTHOCAD_ISOLATED_PG_ACCEPTANCE: "1",
+                ORTHOCAD_ISOLATED_PG_URL: safeUrl,
+            }),
+        ).toBe(safeUrl);
+        const acceptance = readFileSync(
+            "vertex/server/src/lib/dogfood-saved-design.pg.optional.test.ts",
+            "utf8",
+        );
+        expect(REQUIRED_CASES.length).toBeGreaterThanOrEqual(10);
+        for (const name of REQUIRED_CASES) expect(acceptance, name).toContain(name);
+        expect(readFileSync("rstest.config.ts", "utf8")).toContain('"**/*.optional.test.ts"');
+        const isolated = readFileSync("rstest.isolated-pg.config.ts", "utf8");
+        expect(isolated).toContain("dogfood-saved-design.pg.optional.test.ts");
+        expect(isolated).not.toContain("**/*.optional.test.ts");
+        const workflow = readFileSync(".github/workflows/main.yml", "utf8");
+        expect(workflow).toContain("isolated-postgres-acceptance:");
+        expect(workflow).toContain("needs: [unit-tests, isolated-postgres-acceptance]");
+        expect(workflow).toContain("node scripts/ci/isolated-postgres-acceptance.mjs run");
+        expect(workflow).toContain("postgres:16");
+        const missing = spawnSync(process.execPath, ["scripts/ci/isolated-postgres-acceptance.mjs", "run"], {
+            encoding: "utf8",
+            env: { PATH: process.env.PATH ?? "" },
+        });
+        expect(missing.status).not.toBe(0);
+        expect(`${missing.stdout ?? ""}${missing.stderr ?? ""}`).toMatch(/not selected|Refusing to skip/);
     });
 });
