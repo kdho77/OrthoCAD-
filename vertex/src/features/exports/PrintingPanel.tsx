@@ -213,7 +213,7 @@ export function PrintingPanel({
             const ok = await enqueueCurrentDesignPrintFarm(gcode);
             setSendStatus(
                 ok
-                    ? "Queued on Production. Open Production → Queue to assign a printer."
+                    ? "Queued on Production. Open Production → Queue to assign a printer. Dispatch does not run from this step."
                     : "Save the design to the server first, then try Send to Print Farm again.",
             );
         } catch (e) {
@@ -427,7 +427,9 @@ export function PrintingPanel({
                 </Button>
             ) : null}
             {isCnc ? null : sendStatus ? (
-                <p className="rounded-md border border-border bg-background/50 px-2 py-1.5 text-xs">{sendStatus}</p>
+                <p className="rounded-md border border-border bg-background/50 px-2 py-1.5 text-xs">
+                    {sendStatus}
+                </p>
             ) : null}
             {isCnc ? null : status ? (
                 <p className="rounded-md bg-muted px-2 py-1.5 text-xs">{status}</p>

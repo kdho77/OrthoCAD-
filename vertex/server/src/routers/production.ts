@@ -3,18 +3,31 @@
 
 import { z } from "zod";
 import {
+    releaseAssignedJobToBridge,
+    saveMoonrakerPrinter,
+    setMoonrakerPrinterEnabled,
+} from "../../../shared/moonraker-farm.js";
+import { createEnrollment } from "../../../shared/print-bridge-enrollment.js";
+import { closedPrinterDispatch } from "../../../shared/printer-adapter.js";
+import {
     assignJob,
+    cancelDispatchedPrint,
     cancelJob,
     downloadGcode,
     enqueueJob,
     holdJob,
     listProduction,
     markJobDone,
+    ProductionError,
+    reconcilePrinter,
+    refreshPrinterReadiness,
+    registerConfiguredPrinter,
     registerMockPrinter,
     rerunJob,
     retryJob,
 } from "../../../shared/production-jobs.js";
 import { openProduction, rethrowProduction } from "../lib/production-access.js";
+import { serverBridgeDirectory } from "../print-bridge-state.js";
 import { protectedProcedure, router } from "../trpc.js";
 
 const idInput = z.object({ id: z.string().uuid() });
@@ -117,6 +130,156 @@ export const productionRouter = router({
         try {
             const { repo, actor } = await scope(ctx);
             return await downloadGcode(repo, actor, input.id);
+        } catch (error) {
+            rethrowProduction(error);
+        }
+    }),
+
+    /**
+     * Stores a printer configuration for the software seam.
+     * Uses the closed transport: no socket, no credential value, liveVerified stays false.
+     */
+    registerConfiguredPrinter: protectedProcedure
+        .input(
+            z.object({
+                name: z.string().min(1).max(80),
+                protocolId: z.string().min(1).max(80),
+                endpoint: z.string().min(1).max(500),
+                credentialRef: z.string().min(1).max(80),
+                cancellation: z.enum(["unsupported", "explicit"]),
+            }),
+        )
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await registerConfiguredPrinter(repo, actor, input);
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    /** Queues the job for the enrolled bridge. The cloud does not dial the printer. */
+    dispatch: protectedProcedure.input(idInput).mutation(async ({ ctx, input }) => {
+        try {
+            const { repo, actor } = await scope(ctx);
+            const job = await repo.getJob(input.id);
+            const printer = (await repo.listPrinters()).find((item) => item.id === job?.printerId);
+            const bridge = printer?.bridgeId
+                ? await serverBridgeDirectory.findBridge(printer.bridgeId)
+                : null;
+            return await releaseAssignedJobToBridge(repo, actor, input.id, bridge);
+        } catch (error) {
+            rethrowProduction(error);
+        }
+    }),
+
+    saveMoonrakerPrinter: protectedProcedure
+        .input(
+            z.object({
+                id: z.string().uuid().optional(),
+                name: z.string().min(1).max(80),
+                address: z.string().min(1).max(500),
+                bridgeId: z.string().uuid(),
+                cancellation: z.enum(["unsupported", "explicit"]),
+                enabled: z.boolean(),
+            }),
+        )
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await saveMoonrakerPrinter(repo, actor, input);
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    setMoonrakerPrinterEnabled: protectedProcedure
+        .input(z.object({ id: z.string().uuid(), enabled: z.boolean() }))
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await setMoonrakerPrinterEnabled(repo, actor, input.id, input.enabled);
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    createBridgeEnrollment: protectedProcedure
+        .input(z.object({ bridgeName: z.string().min(1).max(80) }))
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { actor } = await scope(ctx);
+                const origin = process.env.ORTHOCAD_CLOUD_ORIGIN?.trim() ?? "";
+                if (!origin.startsWith("https://")) {
+                    throw new ProductionError("BAD_REQUEST", "Cloud origin is not configured.");
+                }
+                if (!actor.tenantId) throw new ProductionError("BAD_REQUEST", "A tenant is required.");
+                const bridgeId = crypto.randomUUID();
+                const created = createEnrollment({
+                    tenantId: actor.tenantId,
+                    shopId: actor.tenantId,
+                    bridgeId,
+                    printerIds: [],
+                    origin,
+                    now: new Date(),
+                });
+                await serverBridgeDirectory.putEnrollment(created.record);
+                return {
+                    bridgeId,
+                    bridgeName: input.bridgeName,
+                    proof: created.proof,
+                    expiresAt: created.record.expiresAt,
+                };
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    revokeBridge: protectedProcedure
+        .input(z.object({ bridgeId: z.string().uuid() }))
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { actor } = await scope(ctx);
+                if (!actor.tenantId) throw new ProductionError("BAD_REQUEST", "A tenant is required.");
+                const ok = await serverBridgeDirectory.revoke(
+                    input.bridgeId,
+                    actor.tenantId,
+                    new Date().toISOString(),
+                );
+                if (!ok) throw new ProductionError("NOT_FOUND", "Bridge not found.");
+                return { revoked: true };
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    reconcile: protectedProcedure
+        .input(z.object({ printerId: z.string().uuid() }))
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await reconcilePrinter(repo, actor, input.printerId, closedPrinterDispatch());
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    refreshReadiness: protectedProcedure
+        .input(z.object({ printerId: z.string().uuid() }))
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { repo, actor } = await scope(ctx);
+                return await refreshPrinterReadiness(repo, actor, input.printerId, closedPrinterDispatch());
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    /** Explicit printer cancel. Refuses when cancellation is unsupported or the transport is closed. */
+    cancelDispatched: protectedProcedure.input(idInput).mutation(async ({ ctx, input }) => {
+        try {
+            const { repo, actor } = await scope(ctx);
+            return await cancelDispatchedPrint(repo, actor, input.id, closedPrinterDispatch());
         } catch (error) {
             rethrowProduction(error);
         }

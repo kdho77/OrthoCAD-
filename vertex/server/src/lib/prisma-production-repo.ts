@@ -3,12 +3,17 @@
 // point at RDS later. It does not import the Supabase client or a slicer.
 
 import type { Prisma, PrismaClient } from "@prisma/client";
-import type {
-    PrinterRecord,
-    PrinterState,
-    ProductionJob,
-    ProductionRepo,
-    StoredGcode,
+import { DISPATCH_LEDGER_UNAVAILABLE } from "../../../shared/printer-adapter.js";
+import {
+    type DispatchEvent,
+    EMPTY_DISPATCH,
+    type PrinterBinding,
+    type PrinterRecord,
+    type PrinterState,
+    ProductionError,
+    type ProductionJob,
+    type ProductionRepo,
+    type StoredGcode,
 } from "../../../shared/production-jobs.js";
 
 type JobRow = {
@@ -72,17 +77,88 @@ function mapJob(row: JobRow): ProductionJob {
         progress: row.progress,
         gcodeSha256: row.gcodeSha256,
         gcodeStoredAt: iso(row.gcodeStoredAt),
+        ...EMPTY_DISPATCH,
     };
 }
 
-function mapPrinter(row: {
-    id: string;
-    name: string;
-    state: PrinterState;
-    tenantId: string | null;
-    ownerId: string;
-}): PrinterRecord {
-    return { id: row.id, name: row.name, state: row.state, tenantId: row.tenantId, ownerId: row.ownerId };
+function mapPrinter(
+    row: {
+        id: string;
+        name: string;
+        state: PrinterState;
+        tenantId: string | null;
+        ownerId: string;
+    },
+    config?: {
+        adapterMode: string;
+        protocolId: string | null;
+        endpoint: string | null;
+        credentialRef: string | null;
+        cancellation: string;
+        lastSeenAt: Date | null;
+    } | null,
+): PrinterRecord {
+    const mode =
+        config?.adapterMode === "mock-only" || config?.adapterMode === "configured"
+            ? config.adapterMode
+            : "unset";
+    return {
+        id: row.id,
+        name: row.name,
+        state: row.state,
+        tenantId: row.tenantId,
+        ownerId: row.ownerId,
+        adapterMode: mode,
+        protocolId: config?.protocolId ?? null,
+        endpointConfigured: Boolean(config?.endpoint),
+        credentialRef: config?.credentialRef ?? null,
+        cancellation: config?.cancellation === "explicit" ? "explicit" : "unsupported",
+        liveVerified: false,
+        protocolVerified: false,
+        lastSeenAt: config?.lastSeenAt ? config.lastSeenAt.toISOString() : null,
+    };
+}
+
+function isMissingLedger(error: unknown): boolean {
+    if (typeof error !== "object" || error === null || !("code" in error)) return false;
+    const code = (error as { code?: unknown }).code;
+    return code === "P2021" || code === "P2022";
+}
+
+function ledgerError(error: unknown): never {
+    if (isMissingLedger(error)) throw new ProductionError("BAD_REQUEST", DISPATCH_LEDGER_UNAVAILABLE);
+    throw error;
+}
+
+function withDispatch(
+    job: ProductionJob,
+    row: {
+        dispatchState: string;
+        controllerJobId: string | null;
+        dispatchAttempt: number;
+        idempotencyKey: string | null;
+        dispatchError: string | null;
+    } | null,
+): ProductionJob {
+    if (!row) return { ...job, ...EMPTY_DISPATCH };
+    const state = row.dispatchState;
+    const dispatchState =
+        state === "started" ||
+        state === "uploaded" ||
+        state === "acknowledged" ||
+        state === "uncertain" ||
+        state === "rejected" ||
+        state === "none"
+            ? state
+            : "none";
+    return {
+        ...job,
+        dispatchState,
+        controllerJobId: row.controllerJobId,
+        dispatchAttempt: row.dispatchAttempt,
+        idempotencyKey: row.idempotencyKey,
+        dispatchError: row.dispatchError,
+    };
 }
 
 function dateOrNull(value: string | null | undefined): Date | null | undefined {
@@ -91,15 +167,44 @@ function dateOrNull(value: string | null | undefined): Date | null | undefined {
     return new Date(value);
 }
 
+async function ledgerRow(prisma: PrismaClient, jobId: string) {
+    try {
+        return await prisma.shopDispatchRecord.findUnique({ where: { jobId } });
+    } catch (error) {
+        if (isMissingLedger(error)) return null;
+        throw error;
+    }
+}
+
+async function configRow(prisma: PrismaClient, printerId: string) {
+    try {
+        return await prisma.shopPrinterConfig.findUnique({ where: { printerId } });
+    } catch (error) {
+        if (isMissingLedger(error)) return null;
+        throw error;
+    }
+}
+
 export function prismaProductionRepo(prisma: PrismaClient): ProductionRepo {
     return {
         async listJobs() {
             const rows = await prisma.shopJob.findMany({ orderBy: { createdAt: "desc" } });
-            return rows.map((row) => mapJob(row));
+            const jobs = rows.map((row) => mapJob(row));
+            try {
+                const ledgers = await prisma.shopDispatchRecord.findMany({
+                    where: { jobId: { in: jobs.map((job) => job.id) } },
+                });
+                const byId = new Map(ledgers.map((row) => [row.jobId, row]));
+                return jobs.map((job) => withDispatch(job, byId.get(job.id) ?? null));
+            } catch (error) {
+                if (isMissingLedger(error)) return jobs.map((job) => withDispatch(job, null));
+                throw error;
+            }
         },
         async getJob(id) {
             const row = await prisma.shopJob.findUnique({ where: { id } });
-            return row ? mapJob(row) : null;
+            if (!row) return null;
+            return withDispatch(mapJob(row), await ledgerRow(prisma, id));
         },
         async insertJob(job) {
             await prisma.shopJob.create({
@@ -134,6 +239,46 @@ export function prismaProductionRepo(prisma: PrismaClient): ProductionRepo {
             });
         },
         async patchJob(id, patch) {
+            const dispatchTouched =
+                patch.dispatchState !== undefined ||
+                patch.controllerJobId !== undefined ||
+                patch.dispatchAttempt !== undefined ||
+                patch.idempotencyKey !== undefined ||
+                patch.dispatchError !== undefined;
+            if (dispatchTouched) {
+                try {
+                    await prisma.shopDispatchRecord.upsert({
+                        where: { jobId: id },
+                        create: {
+                            jobId: id,
+                            dispatchState: patch.dispatchState ?? "none",
+                            controllerJobId: patch.controllerJobId ?? null,
+                            dispatchAttempt: patch.dispatchAttempt ?? 0,
+                            idempotencyKey: patch.idempotencyKey ?? null,
+                            dispatchError: patch.dispatchError ?? null,
+                        },
+                        update: {
+                            ...(patch.dispatchState !== undefined
+                                ? { dispatchState: patch.dispatchState }
+                                : {}),
+                            ...(patch.controllerJobId !== undefined
+                                ? { controllerJobId: patch.controllerJobId }
+                                : {}),
+                            ...(patch.dispatchAttempt !== undefined
+                                ? { dispatchAttempt: patch.dispatchAttempt }
+                                : {}),
+                            ...(patch.idempotencyKey !== undefined
+                                ? { idempotencyKey: patch.idempotencyKey }
+                                : {}),
+                            ...(patch.dispatchError !== undefined
+                                ? { dispatchError: patch.dispatchError }
+                                : {}),
+                        },
+                    });
+                } catch (error) {
+                    ledgerError(error);
+                }
+            }
             const data: Prisma.ShopJobUpdateInput = {};
             if (patch.designName !== undefined) data.designName = patch.designName;
             if (patch.status !== undefined) data.status = patch.status;
@@ -151,11 +296,15 @@ export function prismaProductionRepo(prisma: PrismaClient): ProductionRepo {
             if (patch.gcodeStoredAt !== undefined) data.gcodeStoredAt = dateOrNull(patch.gcodeStoredAt);
             if (patch.updatedAt !== undefined) data.updatedAt = new Date(patch.updatedAt);
             const row = await prisma.shopJob.update({ where: { id }, data });
-            return mapJob(row);
+            return withDispatch(mapJob(row), await ledgerRow(prisma, id));
         },
         async listPrinters() {
             const rows = await prisma.shopPrinter.findMany({ orderBy: { name: "asc" } });
-            return rows.map((row) => mapPrinter(row));
+            const printers: PrinterRecord[] = [];
+            for (const row of rows) {
+                printers.push(mapPrinter(row, await configRow(prisma, row.id)));
+            }
+            return printers;
         },
         async insertPrinter(printer) {
             await prisma.shopPrinter.create({
@@ -167,6 +316,146 @@ export function prismaProductionRepo(prisma: PrismaClient): ProductionRepo {
                     tenantId: printer.tenantId,
                 },
             });
+            if (printer.adapterMode !== "mock-only") return;
+            try {
+                await prisma.shopPrinterConfig.create({
+                    data: {
+                        printerId: printer.id,
+                        adapterMode: "mock-only",
+                        cancellation: "unsupported",
+                    },
+                });
+            } catch (error) {
+                if (!isMissingLedger(error)) throw error;
+            }
+        },
+        async getPrinterEndpoint(printerId) {
+            try {
+                const config = await prisma.shopPrinterConfig.findUnique({ where: { printerId } });
+                return config?.endpoint ?? null;
+            } catch (error) {
+                ledgerError(error);
+            }
+        },
+        async insertConfiguredPrinter(printer, binding: PrinterBinding) {
+            try {
+                await prisma.$transaction([
+                    prisma.shopPrinter.create({
+                        data: {
+                            id: printer.id,
+                            name: printer.name,
+                            state: printer.state,
+                            ownerId: printer.ownerId,
+                            tenantId: printer.tenantId,
+                        },
+                    }),
+                    prisma.shopPrinterConfig.create({
+                        data: {
+                            printerId: printer.id,
+                            adapterMode: "configured",
+                            protocolId: binding.protocolId,
+                            endpoint: binding.endpoint,
+                            credentialRef: binding.credentialRef,
+                            cancellation: binding.cancellation,
+                            lastSeenAt: binding.lastSeenAt ? new Date(binding.lastSeenAt) : null,
+                        },
+                    }),
+                ]);
+            } catch (error) {
+                ledgerError(error);
+            }
+        },
+        async patchPrinter(id, patch) {
+            if (patch.state !== undefined) {
+                await prisma.shopPrinter.update({ where: { id }, data: { state: patch.state } });
+            }
+            if (patch.lastSeenAt !== undefined) {
+                try {
+                    await prisma.shopPrinterConfig.update({
+                        where: { printerId: id },
+                        data: { lastSeenAt: patch.lastSeenAt ? new Date(patch.lastSeenAt) : null },
+                    });
+                } catch (error) {
+                    ledgerError(error);
+                }
+            }
+            const row = await prisma.shopPrinter.findUnique({ where: { id } });
+            if (!row) throw new ProductionError("NOT_FOUND", "Printer not found");
+            return mapPrinter(row, await configRow(prisma, id));
+        },
+        async claimDispatch(jobId, fields) {
+            try {
+                const existing = await prisma.shopDispatchRecord.findUnique({ where: { jobId } });
+                if (!existing) {
+                    await prisma.shopDispatchRecord.create({
+                        data: {
+                            jobId,
+                            dispatchState: "started",
+                            dispatchAttempt: fields.dispatchAttempt,
+                            idempotencyKey: fields.idempotencyKey,
+                        },
+                    });
+                } else if (existing.dispatchState !== "none") {
+                    return null;
+                } else {
+                    const updated = await prisma.shopDispatchRecord.updateMany({
+                        where: { jobId, dispatchState: "none" },
+                        data: {
+                            dispatchState: "started",
+                            dispatchAttempt: fields.dispatchAttempt,
+                            idempotencyKey: fields.idempotencyKey,
+                            controllerJobId: null,
+                            dispatchError: null,
+                        },
+                    });
+                    if (updated.count !== 1) return null;
+                }
+            } catch (error) {
+                if (
+                    typeof error === "object" &&
+                    error &&
+                    "code" in error &&
+                    (error as { code?: string }).code === "P2002"
+                ) {
+                    return null;
+                }
+                ledgerError(error);
+            }
+            return this.getJob(jobId);
+        },
+        async appendDispatchEvent(event: DispatchEvent) {
+            try {
+                await prisma.shopDispatchEvent.create({
+                    data: {
+                        id: event.id,
+                        jobId: event.jobId,
+                        printerId: event.printerId,
+                        kind: event.kind,
+                        detail: event.detail,
+                        createdAt: new Date(event.createdAt),
+                    },
+                });
+            } catch (error) {
+                ledgerError(error);
+            }
+        },
+        async listDispatchEvents(jobId) {
+            try {
+                const rows = await prisma.shopDispatchEvent.findMany({
+                    where: { jobId },
+                    orderBy: { createdAt: "asc" },
+                });
+                return rows.map((row) => ({
+                    id: row.id,
+                    jobId: row.jobId,
+                    printerId: row.printerId,
+                    kind: row.kind,
+                    detail: row.detail,
+                    createdAt: row.createdAt.toISOString(),
+                }));
+            } catch (error) {
+                ledgerError(error);
+            }
         },
         async getGcode(jobId) {
             const row = await prisma.jobGcode.findUnique({ where: { jobId } });

@@ -20,6 +20,7 @@ import {
     rerunJob,
     retryJob,
     sha256Hex,
+    UNCONFIGURED_PRINTER,
 } from "../../../shared/production-jobs";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
@@ -36,7 +37,14 @@ function empty() {
 }
 
 function printer(tenantId: string | null = ORG): PrinterRecord {
-    return { id: "printer-1", name: "Bay 1", state: "idle", tenantId, ownerId: "user-1" };
+    return {
+        id: "printer-1",
+        name: "Bay 1",
+        state: "idle",
+        tenantId,
+        ownerId: "user-1",
+        ...UNCONFIGURED_PRINTER,
+    };
 }
 
 describe("production jobs", () => {
