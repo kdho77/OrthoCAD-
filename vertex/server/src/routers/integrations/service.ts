@@ -300,6 +300,12 @@ export function createIntegrationService(deps: IntegrationDeps) {
             });
             if (existing) {
                 if (existing.tenantId !== input.tenantId) throw new IntegrationError(404, "Design not found");
+                if (existing.clientId !== input.clientId) {
+                    throw new IntegrationError(
+                        403,
+                        "client_id does not match the client already bound to this order",
+                    );
+                }
                 const upload_urls = await issueUploads(existing, input.scanSides);
                 return {
                     design_id: existing.designId,

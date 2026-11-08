@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { DogfoodUserQuestion } from "../../../shared/dogfood-manufacturing.js";
 import {
     gyroidInfillPctForHardness,
     isGyroidManufacturingPreset,
@@ -9,12 +10,7 @@ import {
     printRecipeV1Schema,
     resolveGyroidManufacturingPrintRecipe,
 } from "../../../shared/print-recipe/print-recipe.js";
-import { DogfoodUserQuestion } from "../../../shared/dogfood-manufacturing.js";
 import { SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
-import {
-    createDogfoodSavedDesign,
-    prismaDogfoodSavedDesignStore,
-} from "../lib/dogfood-saved-design.js";
 import {
     assertCadOperatorGcodeKey,
     buildCadOperatorGcodeKey,
@@ -22,6 +18,12 @@ import {
 } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { getSupabaseAdmin } from "../context.js";
+import { runtimeDogfoodOrderOwnerVerifier } from "../lib/dogfood-order-owner-wire.js";
+import {
+    createDogfoodSavedDesign,
+    DogfoodOrderIdentityError,
+    prismaDogfoodSavedDesignStore,
+} from "../lib/dogfood-saved-design.js";
 import { callManufacture } from "../lib/manufacturing-client.js";
 import {
     archiveManufacturingSourceStl,
@@ -252,25 +254,25 @@ export const manufacturingRouter = router({
                 let plan: Awaited<ReturnType<typeof planCadOperatorGenerate>>;
                 try {
                     plan = await planCadOperatorGenerate({
-                    prisma: ctx.prisma,
-                    principal: cadOperator,
-                    designId: input.designId,
-                    side: input.side,
-                    outputType: input.outputType,
-                    useSavedDesignMesh: input.useSavedDesignMesh === true,
-                    stlStorageKey,
-                    patientName: input.patientName,
-                    hardness: input.hardness,
-                    uploadStl: async (key, bytes) => {
-                        if (!supabaseForPlan) {
-                            throw new TRPCError({
-                                code: "INTERNAL_SERVER_ERROR",
-                                message: "Storage not available",
-                            });
-                        }
-                        await uploadAsset(supabaseForPlan, key, bytes, "model/stl", MANUFACTURING_BUCKET);
-                    },
-                });
+                        prisma: ctx.prisma,
+                        principal: cadOperator,
+                        designId: input.designId,
+                        side: input.side,
+                        outputType: input.outputType,
+                        useSavedDesignMesh: input.useSavedDesignMesh === true,
+                        stlStorageKey,
+                        patientName: input.patientName,
+                        hardness: input.hardness,
+                        uploadStl: async (key, bytes) => {
+                            if (!supabaseForPlan) {
+                                throw new TRPCError({
+                                    code: "INTERNAL_SERVER_ERROR",
+                                    message: "Storage not available",
+                                });
+                            }
+                            await uploadAsset(supabaseForPlan, key, bytes, "model/stl", MANUFACTURING_BUCKET);
+                        },
+                    });
                 } catch (error) {
                     if (error instanceof DogfoodUserQuestion) return error.payload;
                     throw error;
@@ -633,8 +635,8 @@ export const manufacturingRouter = router({
         }),
 
     /**
-     * Dogfood SAMPLE_Top design for an existing order. Creates one design when
-     * the order has none, and refreshes settingsJson when it already does.
+     * Refresh the dogfood SAMPLE_Top design already bound to a vo2 order.
+     * Does not create a client or a design. clientId only confirms the bound client.
      * No scan upload and no STL deliverable.
      */
     createSavedDesign: rateLimitedSessionOrCadProcedure(
@@ -645,7 +647,9 @@ export const manufacturingRouter = router({
         .input(
             z.object({
                 externalOrderId: z.string().trim().min(1).max(200),
-                clientId: z.string().uuid(),
+                clientId: z.string().uuid().optional(),
+                givenName: z.string().trim().min(1).max(100).optional(),
+                familyName: z.string().trim().min(1).max(100).optional(),
                 catalog: z.unknown().optional(),
             }),
         )
@@ -659,6 +663,8 @@ export const manufacturingRouter = router({
                     externalOrderId: input.externalOrderId,
                     clientId: input.clientId,
                     catalog: input.catalog,
+                    chart: { givenName: input.givenName, familyName: input.familyName },
+                    verifier: runtimeDogfoodOrderOwnerVerifier(process.env),
                     store: prismaDogfoodSavedDesignStore(ctx.prisma),
                     persist: (designId) =>
                         persistSavedDesignSnapshotOnDesign({
@@ -669,6 +675,18 @@ export const manufacturingRouter = router({
                         }),
                 });
             } catch (error) {
+                if (error instanceof DogfoodOrderIdentityError) {
+                    const forbidden =
+                        error.code === "order_client_mismatch" ||
+                        error.code === "order_client_cross_tenant" ||
+                        error.code === "verifier_revoked" ||
+                        error.code === "verifier_unauthorized" ||
+                        error.code === "verifier_untrusted";
+                    throw new TRPCError({
+                        code: forbidden ? "FORBIDDEN" : "PRECONDITION_FAILED",
+                        message: error.message,
+                    });
+                }
                 if (error instanceof DogfoodUserQuestion) return error.payload;
                 if (error instanceof SavedDesignSnapshotError) {
                     throw new TRPCError({ code: "UNPROCESSABLE_CONTENT", message: error.message });

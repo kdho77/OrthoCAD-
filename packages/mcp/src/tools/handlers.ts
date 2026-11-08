@@ -292,7 +292,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
         case "create_saved_design": {
             const input = createSavedDesignInputSchema.parse(args);
             assertToolNotHeld(input.external_order_id);
-            assertToolNotHeld(input.client_id);
+            if (input.client_id) assertToolNotHeld(input.client_id);
             const manufacturing =
                 deps.manufacturing ??
                 (await import("../clients/manufacturing-client.js")).createManufacturingClient({
@@ -303,6 +303,8 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                 return await manufacturing.createSavedDesign({
                     externalOrderId: input.external_order_id,
                     clientId: input.client_id,
+                    givenName: input.given_name,
+                    familyName: input.family_name,
                     catalog: input.catalog,
                 });
             } catch (error) {

@@ -73,7 +73,7 @@ Local dev: `npm run dev` (tsx stdio server).
 | `get_export_download` | tRPC `manufacturing.getGcodeDownloadUrl` |
 | `build_design_exported_payload` | VO handoff object (below) — **no VO order status writes** |
 | `persist_saved_design_snapshot` | tRPC `manufacturing.persistSavedDesignSnapshot` — writes `settingsJson` on an existing design |
-| `create_saved_design` | tRPC `manufacturing.createSavedDesign` — dogfood SAMPLE_Top for an existing order. No clinic tenant argument |
+| `create_saved_design` | tRPC `manufacturing.createSavedDesign` — refresh the dogfood SAMPLE_Top already bound to a vo2 order. Optional `client_id` only confirms that binding. No clinic tenant, no client create, no integration upsert |
 | `prepare_vo_attachment` | Live `attach_files` arguments (`orderId`, `external_order_id`, `source: vo2`, L/R G-code bytes or a short https URL). Storage key stays CAD provenance. Does not call VO |
 
 Saved-design belt flow: `generate_gcode` with `use_saved_design: true` and `design_id`. The server builds the canonical Export mesh internally and returns left and right G-code downloads. No STL file is returned. Omitting `side` requires both feet. The legacy STL upload path (`prepare_manufacturing_stl_upload` → `stl_storage_key`) remains for a mesh the operator already built.
