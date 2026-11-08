@@ -31,7 +31,9 @@ export type OrthocadMcpTrpcProxy = {
         createSavedDesign: {
             mutate: (input: {
                 externalOrderId: string;
-                clientId: string;
+                clientId?: string;
+                givenName?: string;
+                familyName?: string;
                 catalog?: unknown;
             }) => Promise<Record<string, unknown>>;
         };
@@ -141,8 +143,18 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
             });
         },
 
-        /** Dogfood SAMPLE_Top create/refresh. The server pins the dogfood tenant. */
-        createSavedDesign(input: { externalOrderId: string; clientId: string; catalog?: unknown }) {
+        /**
+         * Refresh the dogfood SAMPLE_Top design already bound to the order.
+         * clientId is a confirmation, not authority to create a client.
+         * The server pins source vo2 and the dogfood tenant.
+         */
+        createSavedDesign(input: {
+            externalOrderId: string;
+            clientId?: string;
+            givenName?: string;
+            familyName?: string;
+            catalog?: unknown;
+        }) {
             return trpc.manufacturing.createSavedDesign.mutate(input);
         },
     };

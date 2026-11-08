@@ -147,6 +147,7 @@
         {
             "index": 4,
             "files": [
+                "packages/mcp/test/dogfood-order-identity.test.ts",
                 "packages/mcp/test/tool-schemas.test.ts",
                 "tests/arch-wall-falloff.test.ts",
                 "tests/cnc/drop-cutter.test.ts",
@@ -159,6 +160,9 @@
                 "tests/text-marking-right-foot.test.ts",
                 "tests/toprim-extraction.test.ts",
                 "vertex/server/src/auth/dogfood-design-access.test.ts",
+                "vertex/server/src/lib/dogfood-order-owner-wire.test.ts",
+                "vertex/server/src/lib/dogfood-order-person-boundary.test.ts",
+                "vertex/server/src/lib/dogfood-order-person-verifier.test.ts",
                 "vertex/server/src/lib/dogfood-saved-design.test.ts",
                 "vertex/server/src/lib/production-jobs.dispatch.test.ts",
                 "vertex/server/src/routers/admin-access.test.ts",
