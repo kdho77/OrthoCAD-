@@ -16,8 +16,8 @@ import {
     nextLandmarkStep,
     skippedLandmarkIds,
 } from "@/lib/geometry/afo/landmark-frame";
+import { cameraViewForAfoMarkerId } from "@/lib/geometry/afo/marker-side";
 import type { AfoAnatomicalLandmarkId, AfoPlantarPointId, AfoScanWorkflow } from "@/lib/geometry/afo/types";
-import { medialSign } from "@/lib/geometry/handedness";
 import { getAfoState, useAfoStore } from "@/stores/afo-store";
 import type { CameraView } from "@/stores/design-store";
 import type { Side } from "@/types";
@@ -296,23 +296,14 @@ export function jumpToFirstMissingRequired(): void {
     }
 }
 
-/** Camera preset for the active marker; medial/lateral flip with foot side. */
 /** Stage 1 plantar clicks keep the user's camera; auto-frame runs for anatomical landmarks only. */
 export function afoScanAutoFrameAllowed(wf: AfoScanWorkflow): boolean {
     return wf.alignmentApplied;
 }
 
+/** Scan-marker camera. Side-specific ids use the shared anatomical-side rule. */
 export function cameraViewForAfoMarker(id: AfoMarkerKey, side: Side): CameraView {
-    if (id === "heel" || id === "m1p" || id === "m5p") return "bottom";
-    if (id === "posterior_calcaneus") return "back";
-    const sign = medialSign(side);
-    const medialView: CameraView = sign === 1 ? "left" : "right";
-    const lateralView: CameraView = sign === 1 ? "right" : "left";
-    if (id === "medial_malleolus" || id === "navicular") return medialView;
-    if (id === "lateral_malleolus" || id === "fifth_met_base" || id === "fibular_head") return lateralView;
-    if (id === "m1_mpj") return medialView;
-    if (id === "m5_mpj") return lateralView;
-    return "iso";
+    return cameraViewForAfoMarkerId(id, side);
 }
 
 const LANDMARK_IDS = new Set<string>(AFO_LANDMARK_STEPS.map((s) => s.id));

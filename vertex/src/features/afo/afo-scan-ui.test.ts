@@ -117,9 +117,9 @@ describe("afo scan ui", () => {
     });
 
     test("medial and lateral views flip with foot side", () => {
-        expect(cameraViewForAfoMarker("navicular", "left")).toBe("right");
-        expect(cameraViewForAfoMarker("fibular_head", "left")).toBe("left");
-        expect(cameraViewForAfoMarker("navicular", "right")).toBe("left");
-        expect(cameraViewForAfoMarker("fibular_head", "right")).toBe("right");
+        expect(cameraViewForAfoMarker("navicular", "left")).toBe("left");
+        expect(cameraViewForAfoMarker("fibular_head", "left")).toBe("right");
+        expect(cameraViewForAfoMarker("navicular", "right")).toBe("right");
+        expect(cameraViewForAfoMarker("fibular_head", "right")).toBe("left");
     });
 });
