@@ -1,4 +1,4 @@
-import { viteEnv } from "@/lib/vite-env";
+import { readViteConfig } from "@/lib/vite-env";
 import type { License, Role, UserProfile } from "@/types";
 
 /** Default super_admin test account for offline mode and local Supabase dev sign-in. */
@@ -21,7 +21,7 @@ export function isDevSuperAdminEmail(email: string | undefined | null): boolean 
 
 /** True when Vite dev server is running (auto sign-in + prefilled login form). */
 export function isLocalDevServer(): boolean {
-    return viteEnv().DEV === true;
+    return readViteConfig().DEV === true;
 }
 
 export function offlineUserProfile(): UserProfile {
