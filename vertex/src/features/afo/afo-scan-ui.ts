@@ -24,6 +24,126 @@ import type { Side } from "@/types";
 
 export const AFO_SCAN_GREY = "#C9CDD3";
 
+/** Light neutral cast/scan surface. Reads on the navy viewport from a side view. */
+export const AFO_CAST_SURFACE = "#E7EBF1";
+
+/** Body draws under markers. Markers use a higher order and ignore depth so they stay on top. */
+export const AFO_BODY_RENDER_ORDER = 1;
+export const AFO_MARKER_RENDER_ORDER = 60;
+export const AFO_MARKER_DEPTH_TEST = false;
+
+/** World-millimetre point size when a scan has no usable faces. */
+export const AFO_POINT_SIZE_MM = 2.4;
+
+export type AfoScanDrawMode = "surface" | "points";
+
+export interface AfoCastBodyStyle {
+    drawMode: AfoScanDrawMode;
+    /** Solid shaded surface, not a point sprite. */
+    shaded: boolean;
+    color: string;
+    opacity: number;
+    transparent: boolean;
+    roughness: number;
+    metalness: number;
+    vertexColors: boolean;
+    depthWrite: boolean;
+    pointSizeMm: number;
+    markerDepthTest: boolean;
+    markerRenderOrder: number;
+}
+
+/**
+ * A scan with no triangles, or almost only zero-area triangles, is a point cloud.
+ * Sequential indices invented for a vertex list still count as unusable faces.
+ */
+export function afoScanDrawMode(triangleCount: number, degenerateRatio: number): AfoScanDrawMode {
+    if (triangleCount <= 0 || degenerateRatio >= 0.8) return "points";
+    return "surface";
+}
+
+export function afoTriangleStats(
+    positions: ArrayLike<number>,
+    indices: ArrayLike<number>,
+): { triangles: number; degenerateRatio: number } {
+    const triangles = Math.floor(indices.length / 3);
+    if (triangles === 0) return { triangles: 0, degenerateRatio: 1 };
+    const step = Math.max(1, Math.floor(triangles / 2000));
+    let seen = 0;
+    let bad = 0;
+    for (let i = 0; i < triangles; i += step) {
+        seen += 1;
+        if (afoTriangleArea(positions, indices, i) < 1e-4) bad += 1;
+    }
+    return { triangles, degenerateRatio: bad / seen };
+}
+
+function afoTriangleArea(positions: ArrayLike<number>, indices: ArrayLike<number>, tri: number): number {
+    const ia = indices[tri * 3] ?? 0;
+    const ib = indices[tri * 3 + 1] ?? 0;
+    const ic = indices[tri * 3 + 2] ?? 0;
+    const ax = positions[ia * 3] ?? 0;
+    const ay = positions[ia * 3 + 1] ?? 0;
+    const az = positions[ia * 3 + 2] ?? 0;
+    const bx = (positions[ib * 3] ?? 0) - ax;
+    const by = (positions[ib * 3 + 1] ?? 0) - ay;
+    const bz = (positions[ib * 3 + 2] ?? 0) - az;
+    const cx = (positions[ic * 3] ?? 0) - ax;
+    const cy = (positions[ic * 3 + 1] ?? 0) - ay;
+    const cz = (positions[ic * 3 + 2] ?? 0) - az;
+    const nx = by * cz - bz * cy;
+    const ny = bz * cx - bx * cz;
+    const nz = bx * cy - by * cx;
+    return 0.5 * Math.hypot(nx, ny, nz);
+}
+
+/** Luminance ramp along Z so a point cloud still shows leg depth. Stays light on navy. */
+export function afoHeightColors(positions: ArrayLike<number>): Float32Array {
+    const n = Math.floor(positions.length / 3);
+    const colors = new Float32Array(n * 3);
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (let i = 0; i < n; i++) {
+        const z = positions[i * 3 + 2] ?? 0;
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
+    }
+    const span = Math.max(1e-6, maxZ - minZ);
+    for (let i = 0; i < n; i++) {
+        const t = ((positions[i * 3 + 2] ?? 0) - minZ) / span;
+        const l = 0.58 + 0.34 * t;
+        colors[i * 3] = l;
+        colors[i * 3 + 1] = l;
+        colors[i * 3 + 2] = Math.min(1, l + 0.04);
+    }
+    return colors;
+}
+
+/** Default Cast / landmark body: opaque shaded surface. Heightmap and Transparent still apply. */
+export function afoCastBodyStyle(opts: {
+    transparentOn: boolean;
+    heightmap: boolean;
+    triangleCount: number;
+    degenerateRatio: number;
+}): AfoCastBodyStyle {
+    const drawMode = afoScanDrawMode(opts.triangleCount, opts.degenerateRatio);
+    const transparent = opts.transparentOn && drawMode === "surface";
+    return {
+        drawMode,
+        shaded: drawMode === "surface",
+        color: opts.heightmap ? "#ffffff" : AFO_CAST_SURFACE,
+        opacity: transparent ? 0.45 : 1,
+        transparent,
+        roughness: 0.46,
+        metalness: 0,
+        vertexColors: opts.heightmap,
+        depthWrite: !transparent,
+        pointSizeMm: AFO_POINT_SIZE_MM,
+        markerDepthTest: AFO_MARKER_DEPTH_TEST,
+        markerRenderOrder: AFO_MARKER_RENDER_ORDER,
+    };
+}
+
 /**
  * The Stage-1 plantar scan is solid grey. Keep that for every later landmark,
  * and whenever the Transparent control is off.

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { AfoScanStage1Markers } from "@/components/viewer/AfoScanMarkers";
 import { scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
-import { AFO_SCAN_GREY, activeAfoTarget } from "@/features/afo/afo-scan-ui";
+import { AFO_CAST_SURFACE, activeAfoTarget } from "@/features/afo/afo-scan-ui";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { getMarkerFrame, mirrorBaseLandmarks } from "@/lib/geometry/marker-frame";
@@ -24,6 +24,7 @@ import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
 import { getScanRegistrationMatrix, useScanStore } from "@/stores/scan-store";
+import { AfoLitSurfaceMaterial } from "./AfoSurfaceMaterial";
 
 const CLINICIAN_MARKER_COLOR = "#f59e0b";
 const ARCH_MARKER_COLOR = "#d946ef";
@@ -223,7 +224,6 @@ function RegisteredScanMesh({
     const displayGeo = coloredGeo ?? depthGeo ?? geometry;
     const useVertexColors = !!coloredGeo || !!depthGeo;
     const afoSolidLook = Boolean(afoGreyScan) || Boolean(afoKeepSolid);
-    const afoFlatGrey = afoSolidLook && !useVertexColors;
     const usMenSize = useDesignStore((s) => s.design.usMenSize);
     const sizeSystem = useDesignStore((s) => s.design.sizeSystem);
     const ukSize = useDesignStore((s) => s.design.ukSize);
@@ -265,42 +265,38 @@ function RegisteredScanMesh({
                     mesh.matrixWorldNeedsUpdate = true;
                 }}
             >
-                <meshStandardMaterial
-                    color={
-                        afoFlatGrey
-                            ? AFO_SCAN_GREY
-                            : useVertexColors
-                              ? "#ffffff"
-                              : selected
-                                ? "#e9d5ff"
-                                : registered
-                                  ? "#c084fc"
-                                  : "#a78bfa"
-                    }
-                    emissive={selected && !useVertexColors && !afoSolidLook ? "#a855f7" : "#000000"}
-                    emissiveIntensity={selected && !useVertexColors && !afoSolidLook ? 0.35 : 0}
-                    metalness={afoSolidLook ? 0 : 0.05}
-                    roughness={afoSolidLook ? 0.85 : placingMarkers || depthGeo ? 0.55 : 0.8}
-                    transparent={
-                        afoSolidLook ? false : transparent || !!coloredGeo || (!registered && !depthGeo)
-                    }
-                    opacity={
-                        afoSolidLook
-                            ? 1
-                            : transparent
-                              ? 0.45
-                              : coloredGeo
-                                ? 0.9
-                                : depthGeo
-                                  ? 1
+                {afoSolidLook ? (
+                    <AfoLitSurfaceMaterial
+                        color={heightmap && useVertexColors ? "#ffffff" : AFO_CAST_SURFACE}
+                        opacity={1}
+                        transparent={false}
+                        roughness={0.46}
+                        metalness={0}
+                        vertexColors={Boolean(heightmap && useVertexColors)}
+                        depthWrite
+                    />
+                ) : (
+                    <meshStandardMaterial
+                        color={
+                            useVertexColors
+                                ? "#ffffff"
+                                : selected
+                                  ? "#e9d5ff"
                                   : registered
-                                    ? 1
-                                    : 0.75
-                    }
-                    side={THREE.DoubleSide}
-                    vertexColors={useVertexColors && !afoFlatGrey}
-                    flatShading={placingMarkers && !coloredGeo && !afoSolidLook}
-                />
+                                    ? "#c084fc"
+                                    : "#a78bfa"
+                        }
+                        emissive={selected && !useVertexColors ? "#a855f7" : "#000000"}
+                        emissiveIntensity={selected && !useVertexColors ? 0.35 : 0}
+                        metalness={0.05}
+                        roughness={placingMarkers || depthGeo ? 0.55 : 0.8}
+                        transparent={transparent || !!coloredGeo || (!registered && !depthGeo)}
+                        opacity={transparent ? 0.45 : coloredGeo ? 0.9 : depthGeo ? 1 : registered ? 1 : 0.75}
+                        side={THREE.DoubleSide}
+                        vertexColors={useVertexColors}
+                        flatShading={placingMarkers && !coloredGeo}
+                    />
+                )}
             </mesh>
             {edgeGeo ? (
                 <lineSegments

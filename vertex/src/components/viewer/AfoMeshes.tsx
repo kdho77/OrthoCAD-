@@ -1,8 +1,14 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { useEffect, useMemo } from "react";
-import { DoubleSide, Quaternion, Vector3 } from "three";
-import { AFO_SCAN_GREY, afoUploadedScanMaterial } from "@/features/afo/afo-scan-ui";
+import { BufferAttribute, DoubleSide, Quaternion, Vector3 } from "three";
+import { AfoLitSurfaceMaterial } from "@/components/viewer/AfoSurfaceMaterial";
+import {
+    afoCastBodyStyle,
+    afoHeightColors,
+    afoTriangleStats,
+    afoUploadedScanMaterial,
+} from "@/features/afo/afo-scan-ui";
 import { geodesicPolyline } from "@/lib/geometry/afo/geodesic";
 import { afoMeshToGeometry } from "@/lib/geometry/afo/mesh-ops";
 import { afoTrimPreview, cursorCrossSegments, fallbackTrimPolyline } from "@/lib/geometry/afo/trim-preview";
@@ -17,6 +23,7 @@ const TRIM_HALO = "#111827";
 export function AfoMeshes() {
     const afo = useDesignStore((s) => s.design.afo) ?? getAfoState();
     const viewerTransparent = useDesignStore((s) => s.viewer.transparent);
+    const heightmap = useDesignStore((s) => s.viewer.heightmap);
     const workflowStep = useClinicalWorkflowStore((s) => s.step);
     const placingScan = useAfoStore((s) => s.scanPlacement != null);
     const placingTrim = useAfoStore((s) => s.placingTrim);
@@ -76,30 +83,68 @@ export function AfoMeshes() {
         };
     }, [castGeo, correctedGeo, shellGeo, pickGeo]);
 
+    const bodyMesh = showCorrectedBody ? corrected : showSource ? (source ?? working) : null;
     const bodyGeo = showCorrectedBody ? correctedGeo : showSource ? castGeo : null;
     const bodyData = showCorrectedBody
         ? { isAfoCorrected: true, isAfoCast: true, isScanMesh: true }
         : { isAfoCast: true, isScanMesh: true };
+    const bodyStyle = useMemo(() => {
+        const stats = bodyMesh
+            ? afoTriangleStats(bodyMesh.positions, bodyMesh.indices)
+            : { triangles: 0, degenerateRatio: 1 };
+        return afoCastBodyStyle({
+            transparentOn: scanMat.transparent,
+            heightmap,
+            triangleCount: stats.triangles,
+            degenerateRatio: stats.degenerateRatio,
+        });
+    }, [bodyMesh, scanMat.transparent, heightmap]);
+    const shadedGeo = useMemo(() => {
+        if (!bodyGeo || !bodyStyle.vertexColors || !bodyMesh) return bodyGeo;
+        const g = bodyGeo.clone();
+        g.setAttribute("color", new BufferAttribute(afoHeightColors(bodyMesh.positions), 3));
+        return g;
+    }, [bodyGeo, bodyMesh, bodyStyle.vertexColors]);
+
+    useEffect(() => {
+        return () => {
+            if (shadedGeo && shadedGeo !== bodyGeo) shadedGeo.dispose();
+        };
+    }, [shadedGeo, bodyGeo]);
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
+            <ambientLight intensity={0.72} />
+            <directionalLight position={[90, 160, 70]} intensity={1.25} />
+            <directionalLight position={[-110, 50, -80]} intensity={0.55} />
             {pickGeo ? (
                 <mesh geometry={pickGeo} visible={false} userData={{ isAfoAlignPick: true }}>
                     <meshBasicMaterial />
                 </mesh>
             ) : null}
-            {bodyGeo ? (
-                <mesh geometry={bodyGeo} userData={bodyData}>
-                    <meshStandardMaterial
-                        color={AFO_SCAN_GREY}
-                        roughness={0.85}
-                        metalness={0}
-                        side={DoubleSide}
-                        transparent={scanMat.transparent}
-                        opacity={scanMat.opacity}
-                        depthWrite={!scanMat.transparent}
+            {shadedGeo && bodyStyle.drawMode === "surface" ? (
+                <mesh geometry={shadedGeo} renderOrder={1} userData={bodyData} castShadow receiveShadow>
+                    <AfoLitSurfaceMaterial
+                        color={bodyStyle.color}
+                        opacity={bodyStyle.opacity}
+                        transparent={bodyStyle.transparent}
+                        roughness={bodyStyle.roughness}
+                        metalness={bodyStyle.metalness}
+                        vertexColors={bodyStyle.vertexColors}
+                        depthWrite={bodyStyle.depthWrite}
                     />
                 </mesh>
+            ) : null}
+            {shadedGeo && bodyStyle.drawMode === "points" ? (
+                <points geometry={shadedGeo} renderOrder={1} userData={bodyData}>
+                    <pointsMaterial
+                        color={bodyStyle.color}
+                        size={bodyStyle.pointSizeMm}
+                        sizeAttenuation
+                        vertexColors={bodyStyle.vertexColors}
+                        toneMapped={false}
+                    />
+                </points>
             ) : null}
             {shellGeo ? (
                 <mesh geometry={shellGeo} userData={{ isAfoShell: true, isScanMesh: true }}>
@@ -122,20 +167,32 @@ export function AfoMeshes() {
                 <mesh
                     key={`c-${lm.id}`}
                     position={[lm.point.x, lm.point.y, lm.point.z]}
+                    renderOrder={bodyStyle.markerRenderOrder}
                     userData={{ isAfoClinical: true }}
                 >
                     <sphereGeometry args={[3, 12, 10]} />
-                    <meshStandardMaterial color="#f472b6" />
+                    <meshBasicMaterial
+                        color="#f472b6"
+                        depthTest={bodyStyle.markerDepthTest}
+                        depthWrite={false}
+                        toneMapped={false}
+                    />
                 </mesh>
             ))}
             {afo.landmarks.map((lm) => (
                 <mesh
                     key={lm.id}
                     position={[lm.point.x, lm.point.y, lm.point.z]}
+                    renderOrder={bodyStyle.markerRenderOrder}
                     userData={{ isAfoLandmark: true }}
                 >
                     <sphereGeometry args={[3.2, 12, 10]} />
-                    <meshStandardMaterial color="#fbbf24" />
+                    <meshBasicMaterial
+                        color="#fbbf24"
+                        depthTest={bodyStyle.markerDepthTest}
+                        depthWrite={false}
+                        toneMapped={false}
+                    />
                 </mesh>
             ))}
         </group>
