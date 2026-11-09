@@ -78,6 +78,8 @@
                 "vertex/src/lib/clinical/arch-class.test.ts",
                 "vertex/src/lib/clinical/one-click-adapter.test.ts",
                 "vertex/src/lib/dev-auth.test.ts",
+                "vertex/src/lib/vite-env.inline.test.ts",
+                "vertex/src/lib/vite-env.node.test.ts",
                 "vertex/src/lib/geometry/clinical-constraints.test.ts",
                 "vertex/src/lib/geometry/element-assets/library-thumbs.test.ts",
                 "vertex/src/lib/geometry/export-geometry.routing.test.ts",
