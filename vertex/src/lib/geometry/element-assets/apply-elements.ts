@@ -12,11 +12,11 @@ import {
     ELEMENT_OWNER_ATTRIBUTE,
 } from "@/lib/geometry/element-visualization";
 import { elementHeightAt } from "@/lib/geometry/elements";
-import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { heightFieldYFromMeshY } from "@/lib/geometry/handedness";
 import {
     EDGE_FEATHER_EASE_START_R,
+    type HeightFieldParams,
     quinticSmoothstep,
-    resolveOutlineHalfWidth,
 } from "@/lib/geometry/height-field";
 import { applySinkCutToGeometry, sinksActive } from "@/lib/geometry/sink";
 import type { PlacedElement } from "@/types";
@@ -237,35 +237,22 @@ function applyProceduralElements(
         (e) => e.side === field.side && e.kind !== "custom" && !assetKinds.has(e.kind),
     );
     if (procedural.length === 0) return;
-    // Morton's length is measured from the heel, same as elementHeightAt / heightAt.
-    // Other procedural kinds keep the historical center-relative sample.
-    const mortons = procedural.filter((e) => e.kind === "mortons_extension");
-    const others = procedural.filter((e) => e.kind !== "mortons_extension");
     const frame = getBaseFootprintFrame(base, field.side);
     const pos = geometry.getAttribute("position") as BufferAttribute;
     const basePos = base.getAttribute("position")!.array as Float32Array;
     const arr = pos.array as Float32Array;
     const ta = frame.thickAxis;
-    const halfW = field.widthMm / 2;
-    const centerX = frame.lenMin + frame.lenSize / 2;
     for (let i = 0; i < pos.count; i++) {
         const lenCoord = basePos[i * 3 + frame.lengthAxis]!;
         const widCoord = basePos[i * 3 + frame.widthAxis]!;
-        const xMm = lenCoord - centerX;
-        const vSigned = Math.max(
-            -1,
-            Math.min(1, (frame.widthSign * (widCoord - frame.widCenter)) / (frame.widSize / 2)),
-        );
-        const hw = resolveOutlineHalfWidth((lenCoord - frame.lenMin) / frame.lenSize, field) * halfW;
-        const yMm = vSigned * hw;
+        // Pose Y is footprint-frame mesh millimeters. Do not rescale by the
+        // local outline half-width: on the narrower forefoot that shoves a
+        // medial pad out to the rim (the soft edge seen in Top view).
+        const xFromHeel = ((lenCoord - frame.lenMin) / frame.lenSize) * field.lengthMm;
+        const yMm = heightFieldYFromMeshY(widCoord - frame.widCenter);
         const { u, vSigned: vs } = vertexFootprintAt(frame, basePos, i);
         if (rimBandClipFactor(u, vs, field) < 0.5) continue;
-        let h = 0;
-        if (others.length > 0) h += elementHeightAt(others, xMm, yMm, field.lengthMm);
-        if (mortons.length > 0) {
-            const uLen = (lenCoord - frame.lenMin) / frame.lenSize;
-            h += elementHeightAt(mortons, uLen * field.lengthMm, yMm, field.lengthMm);
-        }
+        const h = elementHeightAt(procedural, xFromHeel, yMm, field.lengthMm);
         if (h === 0) continue;
         const z0 = arr[i * 3 + ta]!;
         if (h > 0) arr[i * 3 + ta] = Math.max(z0, z0 + h);

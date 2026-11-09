@@ -125,8 +125,8 @@ function FootprintPatch({
             >
                 <meshBasicMaterial
                     color={style.color}
-                    transparent
-                    opacity={style.opacity}
+                    transparent={false}
+                    opacity={1}
                     depthTest={false}
                     depthWrite={false}
                     side={DoubleSide}
@@ -136,8 +136,7 @@ function FootprintPatch({
             <lineLoop geometry={ring} renderOrder={selected ? 7 : 5}>
                 <lineBasicMaterial
                     color={style.edge}
-                    transparent
-                    opacity={1}
+                    transparent={false}
                     depthTest={false}
                     depthWrite={false}
                 />

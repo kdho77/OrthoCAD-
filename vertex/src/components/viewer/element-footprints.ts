@@ -22,20 +22,20 @@ import type { DesignState, PlacedElement, PlacedSink, Side } from "@/types";
 export const SINK_FOOTPRINT_COLORS = {
     fill: "#e879f9",
     edge: "#e879f9",
-    opacity: 0.94,
+    opacity: 1,
     selectedFill: "#ff00ff",
     selectedEdge: "#ffffff",
-    selectedOpacity: 0.98,
+    selectedOpacity: 1,
 } as const;
 
 /** Solid design-element purple for Morton's extension, visible on the insole top. */
 export const DESIGN_FOOTPRINT_COLORS = {
     fill: DESIGN_ELEMENT_COLOR,
     edge: "#f5d0fe",
-    opacity: 0.92,
+    opacity: 1,
     selectedFill: "#22c55e",
     selectedEdge: "#ffffff",
-    selectedOpacity: 0.96,
+    selectedOpacity: 1,
 } as const;
 
 /** Library shapes that are sinks. Kinetic wedges and pads are not in this set. */

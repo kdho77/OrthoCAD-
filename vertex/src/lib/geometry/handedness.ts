@@ -21,7 +21,12 @@ export type AnatomicalSide = "medial" | "lateral" | "midline";
  * Anatomical +lateral (used inside sink ovals) is the opposite direction:
  * the smaller anatomical Y is medial. Convert with {@link meshYFromAnatomicalLateral}.
  * Height-field samples use the opposite sign of mesh Y ({@link heightFieldYFromMeshY}):
- * +Y is left-foot medial.
+ * +Y is left-foot medial. Pass that converted mesh millimeter straight through.
+ * Do not multiply by the local outline half-width — the forefoot is narrower
+ * than the reference width, and that scale drives a medial pad onto the rim.
+ *
+ * Top view (camera at +Y, up +X, viewer Rx(−90°), left foot at +local Y):
+ * mesh medial points at the other foot. Left −Y and right +Y face each other.
  */
 export function medialSign(side: Side): 1 | -1 {
     return side === "left" ? -1 : 1;

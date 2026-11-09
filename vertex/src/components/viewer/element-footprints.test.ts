@@ -71,9 +71,8 @@ describe("element footprint planforms", () => {
         expect(footprintStyle(true).color).toBe(SINK_FOOTPRINT_COLORS.selectedFill);
         expect(footprintStyle(false).color).toBe(SINK_FOOTPRINT_COLORS.fill);
         expect(footprintStyle(true).edge).toBe(SINK_FOOTPRINT_COLORS.selectedEdge);
-        expect(footprintStyle(true).opacity).toBeGreaterThan(footprintStyle(false).opacity);
-        expect(footprintStyle(false).opacity).toBeGreaterThan(0.4);
-        expect(footprintStyle(false).opacity).toBeLessThan(1);
+        expect(footprintStyle(true).opacity).toBeGreaterThanOrEqual(footprintStyle(false).opacity);
+        expect(footprintStyle(false).opacity).toBe(1);
     });
 
     test("only heel and navicular library elements are sink footprints", () => {
@@ -183,6 +182,8 @@ describe("element footprint planforms", () => {
         const src = readFileSync(repoFile("src/components/viewer/ElementMarkers.tsx"), "utf8");
         const math = readFileSync(repoFile("src/components/viewer/element-footprints.ts"), "utf8");
         expect(src).toMatch(/depthTest=\{false\}/);
+        expect(src).toMatch(/transparent=\{false\}/);
+        expect(src).toMatch(/opacity=\{1\}/);
         expect(src).toMatch(/DoubleSide/);
         expect(src).toMatch(/ElementFootprints/);
         expect(src).not.toMatch(/cylinderGeometry/i);
