@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useDesignStore } from "@/stores/design-store";
-import { useMeshEditStore } from "@/stores/mesh-edit-store";
+import { activeOutlineSession, leaveOutlineEdit, useMeshEditStore } from "@/stores/mesh-edit-store";
 import { useScanStore } from "@/stores/scan-store";
 
 export interface KeyboardShortcutHandlers {
@@ -45,13 +45,8 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers): void {
                 return;
             }
             if (e.key === "Escape") {
-                const meshEdit = useMeshEditStore.getState();
-                if (meshEdit.editMode === "edit-trimline" && meshEdit.trimlineEdit) {
-                    meshEdit.cancelTrimlineEdit();
-                    return;
-                }
-                if (meshEdit.editMode === "edit-bottom-pattern" && meshEdit.bottomPatternEdit) {
-                    meshEdit.cancelBottomPatternEdit();
+                if (activeOutlineSession()) {
+                    leaveOutlineEdit({ promptIfDirty: false });
                     return;
                 }
                 const scan = useScanStore.getState();

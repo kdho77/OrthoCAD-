@@ -12,9 +12,10 @@ import {
     softDeleteDesignFile,
     updateDesignMeta,
 } from "../../../shared/client-files.js";
+import { dogfoodDesignRead, publicDogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
 import { designStateSchema, settingsEnvelopeForSave } from "../lib/design-schema.js";
-import { protectedProcedure, router } from "../trpc.js";
+import { protectedProcedure, router, sessionOrCadOperatorProcedure } from "../trpc.js";
 
 const designKind = z.enum(["insole", "afo"]);
 
@@ -38,22 +39,75 @@ export const designRouter = router({
             }
         }),
 
-    get: protectedProcedure.input(z.object({ id: z.string().uuid() })).query(async ({ ctx, input }) => {
-        try {
-            const { repo, actor, storePhi } = await scope(ctx);
-            await getDesignFile(repo, actor, input.id, storePhi);
-            const document = await repo.loadDesignDocument(input.id);
-            if (!document) throw new TRPCError({ code: "NOT_FOUND" });
-            // settingsJson is the preferred parameter snapshot. Relational columns
-            // stay on the document so rows saved before that column still load.
-            if (!storePhi && typeof document === "object") {
-                return { ...(document as Record<string, unknown>), notes: "" };
+    get: sessionOrCadOperatorProcedure("design:read")
+        .input(z.object({ id: z.string().uuid() }))
+        .query(async ({ ctx, input }) => {
+            if (!ctx.user) {
+                if (!ctx.cadOperator) {
+                    throw new TRPCError({ code: "UNAUTHORIZED", message: "Authentication required" });
+                }
+                const row = await ctx.prisma.design.findUnique({
+                    where: { id: input.id },
+                    select: {
+                        id: true,
+                        ownerId: true,
+                        name: true,
+                        kind: true,
+                        pattern: true,
+                        method: true,
+                        thicknessMm: true,
+                        linked: true,
+                        unit: true,
+                        settingsJson: true,
+                        updatedAt: true,
+                        deletedAt: true,
+                        client: { select: { tenantId: true } },
+                        integrationLink: {
+                            select: { tenantId: true, source: true, externalOrderId: true, sides: true },
+                        },
+                    },
+                });
+                const read = dogfoodDesignRead(
+                    ctx.cadOperator,
+                    row
+                        ? {
+                              id: row.id,
+                              ownerId: row.ownerId,
+                              name: row.name,
+                              kind: row.kind,
+                              pattern: row.pattern,
+                              method: row.method,
+                              thicknessMm: row.thicknessMm,
+                              linked: row.linked,
+                              unit: row.unit,
+                              settingsJson: row.settingsJson,
+                              updatedAt: row.updatedAt,
+                              deletedAt: row.deletedAt,
+                              clientTenantId: row.client.tenantId,
+                              linkTenantId: row.integrationLink?.tenantId ?? null,
+                              source: row.integrationLink?.source ?? null,
+                              externalOrderId: row.integrationLink?.externalOrderId ?? null,
+                              sides: row.integrationLink?.sides ?? null,
+                          }
+                        : null,
+                );
+                return publicDogfoodDesignRead(read);
             }
-            return document;
-        } catch (error) {
-            rethrowClientFile(error);
-        }
-    }),
+            try {
+                const { repo, actor, storePhi } = await scope(ctx);
+                await getDesignFile(repo, actor, input.id, storePhi);
+                const document = await repo.loadDesignDocument(input.id);
+                if (!document) throw new TRPCError({ code: "NOT_FOUND" });
+                // settingsJson is the preferred parameter snapshot. Relational columns
+                // stay on the document so rows saved before that column still load.
+                if (!storePhi && typeof document === "object") {
+                    return { ...(document as Record<string, unknown>), notes: "" };
+                }
+                return document;
+            } catch (error) {
+                rethrowClientFile(error);
+            }
+        }),
 
     create: protectedProcedure
         .input(

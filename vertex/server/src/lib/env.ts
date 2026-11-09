@@ -23,6 +23,12 @@ export function validateServerEnv(): void {
     if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
         console.warn("[vertex] Supabase service credentials unset — auth/storage disabled");
     }
+    if (!process.env.VERTEXSLICE_SLICER_URL || !process.env.VERTEXSLICE_API_KEY) {
+        console.warn(
+            "[vertex] VERTEXSLICE_SLICER_URL and VERTEXSLICE_API_KEY must both be set for printer G-code. " +
+                "They are server-only — do not use VITE_ names (those ship in the client bundle).",
+        );
+    }
     if (!process.env.MANUFACTURING_SERVICE_URL && !process.env.PYTHON_MANUFACTURING_URL) {
         console.warn(
             "[vertex] MANUFACTURING_SERVICE_URL not set — manufacturing.generateSolid will fall back to " +

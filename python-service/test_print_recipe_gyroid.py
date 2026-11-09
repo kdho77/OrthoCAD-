@@ -44,6 +44,23 @@ class PrintRecipeGyroidTests(unittest.TestCase):
         self.assertTrue(gcode_has_infill_gyroid_blocks(gcode))
         self.assertNotIn(";infill_pattern=gyroid", gcode.lower())
 
+    def test_material_override_reaches_header_and_default_stays_tpu(self) -> None:
+        layers = [
+            {
+                "z": 0.3,
+                "contours": [],
+                "infill": [],
+                "is_solid": False,
+                "infill_pattern": "rectilinear",
+            }
+        ]
+        preset = {"name": "test", "nozzleMm": 0.4, "layerHeightMm": 0.3}
+        default = emit_gcode(layers, preset)
+        chosen = emit_gcode(layers, preset, {"material": "Apex Core"})
+        self.assertIn("material=TPU", default)
+        self.assertNotIn("material=Apex Core", default)
+        self.assertIn("material=Apex Core", chosen)
+
     def test_coerce_default_medium(self) -> None:
         self.assertEqual(coerce_print_recipe(None).default_hardness, "Medium")
         self.assertEqual(coerce_print_recipe(None).profile_id, "apex-belt-v2")

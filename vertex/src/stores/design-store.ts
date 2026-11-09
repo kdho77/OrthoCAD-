@@ -458,13 +458,13 @@ export interface ViewerSettings {
     view: CameraView;
     /**
      * Procedural walls rebuild from SAMPLE_Top + the faired bottom pattern.
-     * Default `'procedural'` (Grinding Straight). `'legacy'` is test-only via
+     * Default `'procedural'` (Grinding Round). `'legacy'` is test-only via
      * `?wallModel=legacy`. Not persisted; never touches modifiers/export.
      */
     wallModel?: "legacy" | "procedural";
     /**
-     * Print-step grinding dropdown → wall mid-style. Default `'straight'`.
-     * Applied only when `wallModel === "procedural"` (also `?wallStyle=`).
+     * Print-step grinding dropdown → wall mid-style. Unset resolves to Round
+     * (`resolveViewerWallStyle`). Applied only when `wallModel === "procedural"`.
      */
     wallStyle?: "straight" | "round" | "hybrid";
     /** Viewer-only device-type preset for the procedural wall. Not persisted. */
@@ -637,7 +637,6 @@ export const useDesignStore = create<DesignStore>()(
                 showScans: true,
                 view: "iso",
                 wallModel: "procedural",
-                wallStyle: "straight",
             },
             selectedElementId: null,
             transformMode: "translate",

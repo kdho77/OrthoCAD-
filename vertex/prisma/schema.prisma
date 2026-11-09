@@ -559,6 +559,7 @@ model ShopPrinter {
 
     owner  User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
     tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+    config ShopPrinterConfig?
 
     @@index([tenantId])
     @@map("shop_printers")
@@ -597,6 +598,8 @@ model ShopJob {
     owner  User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
     tenant Tenant?   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
     gcode  JobGcode?
+    dispatchRecord ShopDispatchRecord?
+    dispatchEvents ShopDispatchEvent[]
 
     @@index([tenantId])
     @@index([status])
@@ -614,6 +617,87 @@ model JobGcode {
     job ShopJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
 
     @@map("job_gcode")
+}
+
+// Dispatch ledger for the software seam. These models are not in prisma/migrations.
+// `prisma migrate deploy` (Render start) will not create the tables.
+// Review vertex/src/features/production/dispatch-ledger.review.sql. Do not apply it from this change.
+model ShopPrinterConfig {
+    printerId     String    @id @db.Uuid
+    adapterMode   String
+    protocolId    String?
+    endpoint      String?
+    credentialRef String?
+    cancellation  String    @default("unsupported")
+    lastSeenAt    DateTime?
+    enabled       Boolean   @default(true)
+    bridgeId      String?   @db.Uuid
+    configVersion Int       @default(1)
+
+    printer ShopPrinter @relation(fields: [printerId], references: [id], onDelete: Cascade)
+
+    @@map("shop_printer_configs")
+}
+
+model ShopDispatchRecord {
+    jobId           String   @id @db.Uuid
+    dispatchState   String   @default("none")
+    controllerJobId String?
+    dispatchAttempt Int      @default(0)
+    idempotencyKey  String?
+    dispatchError   String?
+    updatedAt       DateTime @updatedAt
+
+    job ShopJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+    @@map("shop_dispatch_records")
+}
+
+model ShopDispatchEvent {
+    id        String   @id @db.Uuid
+    jobId     String?  @db.Uuid
+    printerId String?  @db.Uuid
+    kind      String
+    detail    String
+    createdAt DateTime @default(now())
+
+    job ShopJob? @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+    @@index([jobId])
+    @@map("shop_dispatch_events")
+}
+
+/// Bridge enrollment hashes. Not created by prisma/migrations.
+/// See vertex/src/features/production/print-bridge.review.sql.
+model ShopBridge {
+    id             String    @id @db.Uuid
+    tenantId       String?   @db.Uuid
+    shopId         String
+    name           String
+    credentialHash String?
+    revokedAt      DateTime?
+    lastSeenAt     DateTime?
+    createdAt      DateTime  @default(now())
+
+    @@index([tenantId])
+    @@map("shop_bridges")
+}
+
+model ShopEnrollment {
+    id         String    @id @db.Uuid
+    proofHash  String    @unique
+    tenantId   String?   @db.Uuid
+    shopId     String
+    bridgeId   String    @db.Uuid
+    printerIds Json
+    audience   String
+    origin     String
+    expiresAt  DateTime
+    usedAt     DateTime?
+    createdAt  DateTime  @default(now())
+
+    @@index([bridgeId])
+    @@map("shop_enrollments")
 }
 
 // A token-consuming export of an STL or G-code artifact.

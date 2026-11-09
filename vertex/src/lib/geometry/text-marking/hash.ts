@@ -28,6 +28,7 @@ export function textMarkingHash(marking: TextMarking | null | undefined): string
             marking.differentOnLR ? "1" : "0",
             marking.textLeft ?? "",
             marking.textRight ?? "",
+            marking.surface === "bottom" && marking.addPatientName === true ? "addPatientName" : "",
             (marking.nudgeAlongMm ?? 0).toFixed(2),
             (marking.nudgeAcrossMm ?? 0).toFixed(2),
         ].join("|"),

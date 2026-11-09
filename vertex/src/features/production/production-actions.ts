@@ -3,7 +3,12 @@
 // Downloads are built in the browser from stored text. Nothing is written into the repo.
 
 import { isApiConfigured, trpc } from "@/lib/trpc";
+import { useClientStore } from "@/stores/client-store";
 import { useProductionStore } from "@/stores/production-store";
+import { formatClientName } from "../../../shared/client-files";
+import type { SaveMoonrakerPrinterInput } from "../../../shared/moonraker-farm";
+import { closedPrinterDispatch } from "../../../shared/printer-adapter";
+import type { EnqueueInput, RegisterConfiguredPrinterInput } from "../../../shared/production-jobs";
 
 export async function loadProduction(): Promise<void> {
     if (!isApiConfigured()) return;
@@ -15,7 +20,48 @@ export async function loadProduction(): Promise<void> {
     }
 }
 
-async function withServer(run: () => Promise<void>, local: () => Promise<void>): Promise<void> {
+function resolveEnqueueContext(): {
+    designId: string;
+    designName: string;
+    designKind: EnqueueInput["designKind"];
+    clientId: string;
+    clientLabel: string;
+} | null {
+    const { activeDesignId, designs, clients } = useClientStore.getState();
+    if (!activeDesignId) return null;
+    const dr = designs.find((d) => d.id === activeDesignId);
+    if (!dr) return null;
+    const client = clients.find((c) => c.id === dr.clientId);
+    const clientLabel =
+        client?.displayName?.trim() ||
+        formatClientName({ firstName: client?.firstName ?? "", lastName: client?.lastName ?? "" }).trim() ||
+        "Client";
+    return {
+        designId: dr.id,
+        designName: dr.name.trim() || "Design",
+        designKind: dr.kind,
+        clientId: dr.clientId,
+        clientLabel,
+    };
+}
+
+/** Queue a print job for the active persisted design. Requires API or returns false when there is no active design. */
+export async function enqueueCurrentDesignPrintFarm(gcode: string): Promise<boolean> {
+    const ctx = resolveEnqueueContext();
+    if (!ctx) return false;
+    const input: EnqueueInput = {
+        ...ctx,
+        process: "print",
+        gcode,
+    };
+    await withServer(
+        () => trpc.production.enqueue.mutate(input).then(() => undefined),
+        () => useProductionStore.getState().enqueuePrint(input),
+    );
+    return true;
+}
+
+async function withServer(run: () => Promise<unknown>, local: () => Promise<unknown>): Promise<void> {
     if (isApiConfigured()) {
         try {
             await run();
@@ -67,6 +113,84 @@ export function rerunProductionJob(id: string): Promise<void> {
     return withServer(
         () => trpc.production.rerun.mutate({ id }),
         () => useProductionStore.getState().rerun(id),
+    );
+}
+
+async function samePath(server: () => Promise<void>, local: () => Promise<void>): Promise<void> {
+    if (isApiConfigured()) {
+        await server();
+        await loadProduction();
+        return;
+    }
+    await local();
+}
+
+export function saveMoonrakerProductionPrinter(input: SaveMoonrakerPrinterInput): Promise<void> {
+    return samePath(
+        () => trpc.production.saveMoonrakerPrinter.mutate(input).then(() => undefined),
+        () => useProductionStore.getState().saveMoonraker(input),
+    );
+}
+
+export function createBridgeEnrollment(
+    bridgeName: string,
+): Promise<{ proof: string; bridgeId: string; expiresAt: string }> {
+    if (!isApiConfigured()) {
+        return Promise.reject(new Error("Production API is not configured."));
+    }
+    return trpc.production.createBridgeEnrollment.mutate({ bridgeName });
+}
+
+export function revokeBridgeEnrollment(bridgeId: string): Promise<void> {
+    if (!isApiConfigured()) {
+        return Promise.reject(new Error("Production API is not configured."));
+    }
+    return trpc.production.revokeBridge.mutate({ bridgeId }).then(() => undefined);
+}
+
+export function registerConfiguredProductionPrinter(input: RegisterConfiguredPrinterInput): Promise<void> {
+    return samePath(
+        () => trpc.production.registerConfiguredPrinter.mutate(input).then(() => undefined),
+        () => useProductionStore.getState().registerConfigured(input),
+    );
+}
+
+export function dispatchProductionJob(id: string): Promise<void> {
+    const closed = closedPrinterDispatch();
+    return samePath(
+        () => trpc.production.dispatch.mutate({ id }).then(() => undefined),
+        () => useProductionStore.getState().dispatch(id, closed),
+    );
+}
+
+export function reconcileProductionPrinter(printerId: string): Promise<void> {
+    const closed = closedPrinterDispatch();
+    return samePath(
+        () => trpc.production.reconcile.mutate({ printerId }).then(() => undefined),
+        () => useProductionStore.getState().reconcile(printerId, closed),
+    );
+}
+
+export function refreshProductionReadiness(printerId: string): Promise<void> {
+    const closed = closedPrinterDispatch();
+    return samePath(
+        () => trpc.production.refreshReadiness.mutate({ printerId }).then(() => undefined),
+        () => useProductionStore.getState().refreshReadiness(printerId, closed),
+    );
+}
+
+export function cancelDispatchedProductionJob(id: string): Promise<void> {
+    const closed = closedPrinterDispatch();
+    return samePath(
+        () => trpc.production.cancelDispatched.mutate({ id }).then(() => undefined),
+        () => useProductionStore.getState().cancelDispatched(id, closed),
+    );
+}
+
+export function registerMockProductionPrinter(name: string, moonrakerUrl: string): Promise<void> {
+    return withServer(
+        () => trpc.production.registerMockPrinter.mutate({ name, moonrakerUrl }).then(() => undefined),
+        () => useProductionStore.getState().registerMock(name, moonrakerUrl),
     );
 }
 

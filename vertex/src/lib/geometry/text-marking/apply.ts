@@ -3,6 +3,7 @@
 import type { BufferGeometry } from "three";
 import { booleanTextSolid } from "./boolean";
 import { type BottomOutlineWorld, engraveBottomPlanar } from "./bottom-engrave";
+import { composeMarkingTextForSide, hasActiveComposedTextMarking } from "./compose";
 import {
     hasActiveTextMarking,
     isSideText,
@@ -57,9 +58,15 @@ export async function applyTextMarkingToPrintSolid(
     host: BufferGeometry,
     marking: TextMarking | null | undefined,
     ctx: TextApplyContext,
+    patientDisplayName?: string | null,
 ): Promise<BufferGeometry> {
-    if (!hasActiveTextMarking(marking) || !marking) return host;
-    const forSide = markingForSide(marking, ctx.side);
+    if (!marking) return host;
+    if (!hasActiveComposedTextMarking(marking, patientDisplayName, ctx.side)) return host;
+    let forSide = markingForSide(marking, ctx.side);
+    if (forSide.surface === "bottom") {
+        const composed = composeMarkingTextForSide(marking, ctx.side, patientDisplayName);
+        forSide = { ...forSide, text: composed, differentOnLR: false, textLeft: "", textRight: "" };
+    }
     if (!hasActiveTextMarking(forSide)) return host;
     const hostCtx = extractHostTextContext(host);
     const wallH = bandWallHeightMm(hostCtx, forSide.surface);

@@ -15,6 +15,7 @@ import { CorrectionsPanel } from "@/features/corrections/CorrectionsPanel";
 import { ElementsPanel } from "@/features/elements/ElementsPanel";
 import { ExportPanel } from "@/features/exports/ExportPanel";
 import { CorrectionPresetsPanel } from "@/features/shape/CorrectionPresetsPanel";
+import { OutlineEditEntries } from "@/features/shape/OutlineEditEntries";
 import { TrimPresetsPanel } from "@/features/shape/TrimPresetsPanel";
 import { ShapeFinishPanel } from "@/features/shape-finish/ShapeFinishPanel";
 import { shouldShowShapeFinishOnShapeStep } from "@/features/shape-finish/shape-finish-mount";
@@ -48,6 +49,7 @@ export function RightPanel() {
                                 clinicalDeclutter="base"
                             />
                             <TrimPresetsPanel />
+                            <OutlineEditEntries />
                             {shouldShowShapeFinishOnShapeStep() ? <ShapeFinishPanel /> : null}
                         </div>
                     ) : null}

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { create } from "zustand";
+import { resetManufacturingSolidCache } from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
 import { cancelAllPreviewLofts } from "@/lib/geometry/procedural-wall/preview-loft-queue";
 import type { PreviewLoftPhase } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { terminateProceduralWallWorker } from "@/lib/geometry/procedural-wall/preview-loft-worker";
@@ -14,6 +15,8 @@ export interface PreviewLoftStatusStore {
     error: string | null;
     errorSide: Side | null;
     retryNonce: number;
+    /** Bumped when leaving Print/Export so re-entry always rebuilds walls. */
+    printLoftEpoch: number;
     startedAt: number | null;
     lastElapsedMs: number;
     /** User hit Cancel — do not auto-restart loft until Retry. */
@@ -34,6 +37,7 @@ export const usePreviewLoftStatusStore = create<PreviewLoftStatusStore>((set) =>
     error: null,
     errorSide: null,
     retryNonce: 0,
+    printLoftEpoch: 0,
     startedAt: null,
     lastElapsedMs: 0,
     cancelled: false,
@@ -80,8 +84,21 @@ export const usePreviewLoftStatusStore = create<PreviewLoftStatusStore>((set) =>
             startedAt: null,
             lastElapsedMs: 0,
             cancelled: false,
+            printLoftEpoch: 0,
         }),
 }));
+
+/** Leaving design-stage tabs invalidates cached print solids without blocking the next loft. */
+export function invalidateProceduralPrintLoftForDesignStep(): void {
+    cancelAllPreviewLofts();
+    // Epoch bump stays. Clearing the slot is extra; the new epoch already misses.
+    resetManufacturingSolidCache();
+    usePreviewLoftStatusStore.setState((s) => ({
+        phaseBySide: idlePhases(),
+        printLoftEpoch: s.printLoftEpoch + 1,
+        message: "",
+    }));
+}
 
 export function retryPreviewLoft(): void {
     const err = usePreviewLoftStatusStore.getState().error ?? "";

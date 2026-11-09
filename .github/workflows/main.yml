@@ -60,10 +60,58 @@ jobs:
             - name: Run unit tests (shard ${{ matrix.shard }}/6)
               run: node scripts/ci/run-unit-test-shard.mjs ${{ matrix.shard }}
 
+    # Required acceptance. The unit shards exclude *.optional.test.ts on purpose.
+    # This job runs that file against a synthetic local Postgres and fails closed.
+    isolated-postgres-acceptance:
+        if: github.event_name != 'workflow_dispatch'
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        services:
+            postgres:
+                image: postgres:16
+                env:
+                    POSTGRES_USER: orthocad_test
+                    POSTGRES_PASSWORD: orthocad_test
+                    POSTGRES_DB: orthocad_width
+                ports:
+                    - 54329:5432
+                options: >-
+                    --health-cmd "pg_isready -U orthocad_test -d orthocad_width"
+                    --health-interval 5s
+                    --health-timeout 5s
+                    --health-retries 12
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 24
+
+            - name: Install dependencies
+              run: npm install
+
+            - name: Install vertex app dependencies
+              run: npm install --prefix vertex
+
+            - name: Generate Prisma client (vertex)
+              run: npm run prisma:generate --prefix vertex
+
+            - name: Run isolated PostgreSQL acceptance
+              env:
+                  ORTHOCAD_ISOLATED_PG_ACCEPTANCE: "1"
+                  ORTHOCAD_ISOLATED_PG_URL: postgresql://orthocad_test:orthocad_test@127.0.0.1:54329/orthocad_width
+                  DATABASE_URL: ""
+                  DIRECT_URL: ""
+              run: node scripts/ci/isolated-postgres-acceptance.mjs run
+
     test-and-deploy:
-        # Branch protection gates on this job name; it aggregates shard results.
+        # Branch protection gates on this job name; it aggregates shard results
+        # and the isolated PostgreSQL acceptance job.
         if: always() && github.event_name != 'workflow_dispatch'
-        needs: unit-tests
+        needs: [unit-tests, isolated-postgres-acceptance]
         runs-on: ubuntu-latest
         timeout-minutes: 15
 
@@ -88,10 +136,11 @@ jobs:
             - name: Assert server entry boots under plain Node ESM
               run: node vertex/scripts/assert-server-esm-boot.mjs
 
-            - name: Require all unit test shards to pass
+            - name: Require unit shards and isolated PostgreSQL acceptance
               run: |
-                  if [ "${{ needs.unit-tests.result }}" != "success" ]; then
+                  if [ "${{ needs.unit-tests.result }}" != "success" ] || [ "${{ needs.isolated-postgres-acceptance.result }}" != "success" ]; then
                       echo "unit-tests result: ${{ needs.unit-tests.result }}"
+                      echo "isolated-postgres-acceptance result: ${{ needs.isolated-postgres-acceptance.result }}"
                       exit 1
                   fi
 

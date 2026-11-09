@@ -15,6 +15,11 @@ import {
     DEFAULT_GLB_CLOSED_BASELINE,
 } from "@/lib/geometry/mesh-close";
 import { resolveLiveBottomPattern } from "@/lib/geometry/procedural-wall/live-bottom-pattern";
+import {
+    dropManufacturingSolid,
+    manufacturingSolidFingerprint,
+} from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
+import { manufacturingCacheContext } from "@/lib/geometry/procedural-wall/manufacturing-solid-context";
 import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { printSolidOptions } from "@/lib/geometry/procedural-wall/print-solid-options";
 import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -59,38 +64,66 @@ function cutExportSinks(geometry: BufferGeometry, field: HeightFieldParams): Buf
     return geometry;
 }
 
+/** Same inputs buildExportStl lofts. Fingerprint and the solid must share this object. */
+function proceduralExportRequest(design: DesignState, side: Side) {
+    const base = getDesignBase(design, side);
+    if (!base) return null;
+    const viewer = useDesignStore.getState().viewer;
+    if (!wantsProceduralExportSolid(base, viewer?.wallModel)) return null;
+    const effThickness = design.paired
+        ? side === "left"
+            ? design.paired.leftThicknessMm
+            : design.paired.rightThicknessMm
+        : design.thicknessMm;
+    const field = baseModifierFieldAuthoritative(design, side, effThickness);
+    const edits = useMeshEditStore.getState();
+    const mirrored = Boolean(base.mirrored);
+    const solidOptions = {
+        ...printSolidOptions({
+            design,
+            side,
+            field,
+            viewer: viewer ?? {},
+            trimline: edits.getActiveDraftTrimline(side) ?? getDesignTrimline(design, side),
+            bottomPattern: resolveLiveBottomPattern({
+                draft: edits.getActiveDraftBottomPattern(side),
+                stored: useBottomPatternStore.getState().getPattern(side),
+            }),
+        }),
+        mirrored,
+    };
+    return {
+        solidOptions,
+        cache: manufacturingCacheContext({
+            design,
+            side,
+            baseAssetId: base.assetId ?? "",
+            mirrored,
+        }),
+    };
+}
+
+/** Freshness key for the active Export solid. Throws when the canonical loft is not the path. */
+export function manufacturingFingerprintForActiveExport(side: Side): string {
+    const request = proceduralExportRequest(useDesignStore.getState().design, side);
+    if (!request) {
+        throw new Error("Manufacturing fingerprint requires the canonical procedural export solid");
+    }
+    return manufacturingSolidFingerprint(request.solidOptions, request.cache);
+}
+
 async function buildModifiedBaseGeometry(
     design: DesignState,
     side: Side,
     smoothingIterations = 2,
 ): Promise<BufferGeometry | null> {
-    const base = getDesignBase(design, side);
-    if (!base) return null;
-    const viewer = useDesignStore.getState().viewer;
-    if (wantsProceduralExportSolid(base, viewer?.wallModel)) {
-        const effThickness = design.paired
-            ? side === "left"
-                ? design.paired.leftThicknessMm
-                : design.paired.rightThicknessMm
-            : design.thicknessMm;
-        const field = baseModifierFieldAuthoritative(design, side, effThickness);
-        const edits = useMeshEditStore.getState();
-        const preview = await buildProceduralExportSolid({
-            ...printSolidOptions({
-                design,
-                side,
-                field,
-                viewer: viewer ?? {},
-                trimline: edits.getActiveDraftTrimline(side) ?? getDesignTrimline(design, side),
-                bottomPattern: resolveLiveBottomPattern({
-                    draft: edits.getActiveDraftBottomPattern(side),
-                    stored: useBottomPatternStore.getState().getPattern(side),
-                }),
-            }),
-            mirrored: Boolean(base.mirrored),
-        });
+    const request = proceduralExportRequest(design, side);
+    if (request) {
+        const preview = await buildProceduralExportSolid(request.solidOptions, request.cache);
         return preview.geometry;
     }
+    const base = getDesignBase(design, side);
+    if (!base) return null;
     const raw = await loadBaseGeometry(base);
     if (!raw) return null;
     let sized: BufferGeometry | null = null;
@@ -182,8 +215,14 @@ export function mergeGeometries(parts: BufferGeometry[]): BufferGeometry {
     return g;
 }
 
-/** Build and validate the actual manufacturing mesh. Caller owns the geometry. */
-async function buildClosedExportGeometry(side: Side): Promise<BufferGeometry> {
+function solidCameFromManufacturingCache(geometry: BufferGeometry | undefined): boolean {
+    return Boolean(
+        (geometry?.userData as { fromManufacturingCache?: boolean } | undefined)?.fromManufacturingCache,
+    );
+}
+
+/** Close, watertight-check, and scale one foot. A bad cache entry is dropped and lofted once. */
+async function closeAndValidateExportGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
     if (design.productType === "afo") {
         const shell = useAfoStore.getState().shellMesh;
@@ -201,6 +240,7 @@ async function buildClosedExportGeometry(side: Side): Promise<BufferGeometry> {
             "[EXPORT] No GLB base geometry available. Load a stock base before exporting. Parametric export is not supported.",
         );
     }
+    const fromCache = solidCameFromManufacturingCache(geometry);
     let solid: BufferGeometry | undefined;
     try {
         solid = closeGlbInsoleToSolid(geometry);
@@ -224,9 +264,26 @@ async function buildClosedExportGeometry(side: Side): Promise<BufferGeometry> {
     } catch (error) {
         if (solid && solid !== geometry) solid.dispose();
         if (!solid || solid === geometry) geometry.dispose();
+        if (fromCache) {
+            dropManufacturingSolid(side);
+            if (error && typeof error === "object") {
+                (error as { fromManufacturingCache?: boolean }).fromManufacturingCache = true;
+            }
+        }
         throw error;
     } finally {
         if (solid && solid !== geometry) geometry.dispose();
+    }
+}
+
+/** Build and validate the actual manufacturing mesh. Caller owns the geometry. */
+async function buildClosedExportGeometry(side: Side): Promise<BufferGeometry> {
+    try {
+        return await closeAndValidateExportGeometry(side);
+    } catch (error) {
+        // A fresh loft that fails validation stays failed. printLoftEpoch is not bumped.
+        if (!(error as { fromManufacturingCache?: boolean } | null)?.fromManufacturingCache) throw error;
+        return closeAndValidateExportGeometry(side);
     }
 }
 

@@ -6,6 +6,15 @@ import { useDesignStore } from "@/stores/design-store";
 const WALL_MODELS = new Set<NonNullable<ViewerSettings["wallModel"]>>(["legacy", "procedural"]);
 const WALL_STYLES = new Set<NonNullable<ViewerSettings["wallStyle"]>>(["straight", "round", "hybrid"]);
 
+/** Kendon standing rule: round side walls unless the user explicitly picks another grind. */
+export const DEFAULT_PROCEDURAL_WALL_STYLE: NonNullable<ViewerSettings["wallStyle"]> = "round";
+
+export function resolveViewerWallStyle(
+    wallStyle: ViewerSettings["wallStyle"],
+): NonNullable<ViewerSettings["wallStyle"]> {
+    return wallStyle ?? DEFAULT_PROCEDURAL_WALL_STYLE;
+}
+
 function readSearch(search: string): URLSearchParams {
     const q = search.startsWith("?") ? search.slice(1) : search;
     return new URLSearchParams(q);

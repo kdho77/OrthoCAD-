@@ -7,10 +7,10 @@ import {
     stockResolveLog,
 } from "@/lib/geometry/stock-debug";
 import { getSupabase } from "@/lib/supabase";
+import { readViteConfig } from "@/lib/vite-env";
 
 /** Supabase Storage bucket for system stock base GLBs (matches server STOCK_STORAGE_BUCKET default). */
-export const STOCK_BASES_BUCKET =
-    (import.meta.env.VITE_STOCK_STORAGE_BUCKET as string | undefined)?.trim() || "stock-bases";
+export const STOCK_BASES_BUCKET = readViteConfig().VITE_STOCK_STORAGE_BUCKET?.trim() || "stock-bases";
 
 /**
  * Last-resort public URL for the default stock base GLB. The `stock-bases` bucket
@@ -21,7 +21,7 @@ export const DEFAULT_STOCK_PUBLIC_URL =
     "https://wstneucimlemaokoyjwh.supabase.co/storage/v1/object/public/stock-bases/Templates/Default.glb";
 
 function supabaseProjectUrl(): string | null {
-    const raw = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim().replace(/\/+$/, "");
+    const raw = readViteConfig().VITE_SUPABASE_URL?.trim().replace(/\/+$/, "");
     return raw || null;
 }
 

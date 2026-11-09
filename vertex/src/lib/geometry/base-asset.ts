@@ -35,6 +35,7 @@ import {
 } from "@/lib/library/loaders";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
+import { readViteConfig } from "@/lib/vite-env";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { mergeCorrections, mergeElementPreviews } from "@/stores/performance-store";
 import type { DesignBase, DesignState, Side } from "@/types";
@@ -658,7 +659,7 @@ export function getDesignStockAssetId(design: DesignState): string {
 export async function resolveDefaultStockBase(): Promise<DesignBase> {
     stockFixLog("resolveDefaultStockBase() start", {
         apiConfigured: isApiConfigured(),
-        apiUrl: import.meta.env.VITE_API_URL ?? "/trpc (same-origin)",
+        apiUrl: readViteConfig().VITE_API_URL ?? "/trpc (same-origin)",
     });
     return getSampleTopStockBase();
 }

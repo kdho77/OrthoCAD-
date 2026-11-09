@@ -1,0 +1,16 @@
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
+// Type stub for the generated Node ESM bundle. The .js file is emitted by
+// scripts/bundle-canonical-export-loft.mjs and is not source.
+
+export function buildFinalizedFootFromSavedSettings(input: {
+    settingsJson: unknown;
+    side: "left" | "right";
+    sampleTopBytes: ArrayBuffer;
+    includeLeader?: boolean;
+}): Promise<{
+    side: "left" | "right";
+    stl: ArrayBuffer;
+    solidTriangles: number;
+    uploadTriangles: number;
+    fingerprint: string;
+}>;

@@ -54,8 +54,10 @@ def verify_internal_key(authorization: str | None = Header(default=None)) -> Non
         raise HTTPException(status_code=401, detail="Invalid internal service credentials")
 
 
+@app.get("/")
 @app.get("/health")
 async def health() -> dict[str, str]:
+    """Liveness. `/` is required: a platform probe of `/` used to 404 and unpublish the service."""
     return {"status": "ok", "service": "hybrid-manufacturing"}
 
 
@@ -149,6 +151,8 @@ async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_intern
             perimeters=req.perimeters,
             print_recipe=print_recipe,
         )
+        if req.material:
+            overrides["material"] = req.material
         gcode = generate_gcode_from_solid(transformed, preset, overrides)
 
         logger.info("manufacture ok job=%s output=gcode bytes=%d", req.job_id, len(gcode))
@@ -168,6 +172,7 @@ async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_intern
                     "infillDensity": overrides["infillDensity"],
                     "perimeters": overrides["perimeters"],
                     "infillPattern": overrides.get("infillPattern"),
+                    "material": overrides.get("material"),
                     "printRecipe": print_recipe.model_dump() if print_recipe else None,
                 },
             }
@@ -189,4 +194,5 @@ async def manufacture(req: GenerateSolidRequest, _: None = Depends(verify_intern
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8001, reload=True)
+    port = int(os.environ.get("PORT", "8001"))
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=True)

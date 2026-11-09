@@ -233,6 +233,57 @@ export function enforceMinRimInset(
     });
 }
 
+function stationFailsRim(p: PolyPoint, rim: PolyPoint[], clearanceMm: number): boolean {
+    const d = minDistToLoopXY(p.x, p.y, rim);
+    if (!pointInPoly(p.x, p.y, rim) && d > 1e-4) return true;
+    return d < clearanceMm - 1e-6;
+}
+
+/**
+ * Move a station that sits outside the TopSheet rim (or closer than
+ * `clearanceMm`) onto the inward side of the nearest rim edge. Stations that
+ * already pass {@link assertInsideRim} are returned unchanged.
+ */
+export function projectStationsInsideRim(
+    pattern: PolyPoint[],
+    rim: PolyPoint[],
+    clearanceMm = 0,
+): PolyPoint[] {
+    if (pattern.length === 0 || rim.length < 3) return pattern;
+    const c = rimCentroid(rim);
+    const target = Math.max(clearanceMm, 0.05);
+    let changed = false;
+    const out = pattern.map((p) => {
+        if (!stationFailsRim(p, rim, clearanceMm)) return p;
+        changed = true;
+        let q = { x: p.x, y: p.y, z: 0 };
+        let inset = target;
+        for (let iter = 0; iter < 8; iter++) {
+            const near = nearestOnLoopXY(q, rim);
+            let vx = c.x - near.x;
+            let vy = c.y - near.y;
+            let vl = Math.hypot(vx, vy);
+            if (vl < 1e-6) {
+                vx = c.x - q.x;
+                vy = c.y - q.y;
+                vl = Math.hypot(vx, vy) || 1;
+            }
+            const ux = vx / vl;
+            const uy = vy / vl;
+            if (!pointInPoly(near.x + ux * 0.25, near.y + uy * 0.25, rim)) {
+                vx = -vx;
+                vy = -vy;
+            }
+            const vl2 = Math.hypot(vx, vy) || 1;
+            q = { x: near.x + (vx / vl2) * inset, y: near.y + (vy / vl2) * inset, z: 0 };
+            if (!stationFailsRim(q, rim, clearanceMm)) return q;
+            inset += Math.max(clearanceMm, 0.5);
+        }
+        return q;
+    });
+    return changed ? out : pattern;
+}
+
 export function assertInsideRim(
     pattern: PolyPoint[],
     rimPlan: PolyPoint[],
@@ -287,10 +338,13 @@ export function hygieneBottomPattern(
         if (opts.requireInsideRim && opts.rimPlan?.length) {
             const clearance = opts.clearanceMm ?? PATTERN_RIM_CLEARANCE_MM;
             const cleared = enforceMinRimInset(resampled, opts.rimPlan, clearance, { smooth: true });
-            assertInsideRim(cleared, opts.rimPlan, clearance);
+            // Scale keeps the faired shape. A station that is still outside the
+            // real rim is projected in; the containment check still runs.
+            const projected = projectStationsInsideRim(cleared, opts.rimPlan, clearance);
+            assertInsideRim(projected, opts.rimPlan, clearance);
             return {
-                loop: cleared,
-                turning: turningNumber(cleared),
+                loop: projected,
+                turning: turningNumber(projected),
                 minRadiusMm,
                 source: opts.source ?? "pattern",
             };

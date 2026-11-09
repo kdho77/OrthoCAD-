@@ -7,7 +7,7 @@ import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
 import { scaleSourceShapeToFootprint } from "@/lib/geometry/shoe-size";
-import { hasActiveTextMarking } from "@/lib/geometry/text-marking/constants";
+import { hasActiveComposedTextMarking } from "@/lib/geometry/text-marking/compose";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
     extractMergedGeometry,
@@ -19,6 +19,14 @@ import type { PlacedSink, ScanPattern, Side, SideCorrections, TextMarking } from
 import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern } from "./bottom-pattern";
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
+import {
+    type ManufacturingSolidContext,
+    manufacturingSolidFingerprint,
+    noteManufacturingSolidBuilt,
+    noteManufacturingSolidReused,
+    peekManufacturingSolid,
+    rememberManufacturingSolid,
+} from "./manufacturing-solid-cache";
 import { FOREFOOT_SHIFT_U_HOLD, forefootFeatureBoxes, offsetPlanLoopForefootWidthMm } from "./modifiers";
 import { composePrintSolidTop, fieldWithoutSinks, type PrintSolidShoeWidth } from "./print-solid-compose";
 import { hasCurveOrTopModifiers, reconstructProceduralWalls } from "./reconstruct";
@@ -51,6 +59,16 @@ export async function sampleTopFromArrayBuffer(buffer: ArrayBuffer): Promise<Buf
 export function resetSampleTopGeometryCache(): void {
     cachedNative?.dispose();
     cachedNative = null;
+    inflight = null;
+}
+
+/**
+ * Install SAMPLE_Top parsed by {@link sampleTopFromArrayBuffer}.
+ * loadSampleTopGeometry then clones this mesh instead of fetching.
+ */
+export function primeSampleTopGeometry(geometry: BufferGeometry): void {
+    cachedNative?.dispose();
+    cachedNative = geometry;
     inflight = null;
 }
 
@@ -124,10 +142,78 @@ export function followViewerPattern(
     });
 }
 
-/** Print / STL: loft the approved solid. Same reconstruct math as the frozen STLs. */
+function cacheHitModel(): StockWallModel {
+    return { id: "manufacturing-cache" } as StockWallModel;
+}
+
+function tagManufacturingSolid(geometry: BufferGeometry, fingerprint: string, fromCache: boolean): void {
+    geometry.userData = {
+        ...geometry.userData,
+        manufacturingFingerprint: fingerprint,
+        fromManufacturingCache: fromCache,
+    };
+}
+
+/** Leader is not applied here. Text runs once on a hit or a fresh loft. */
+async function applyExportText(
+    geometry: BufferGeometry,
+    options: ProceduralPreviewOptions & { mirrored?: boolean },
+): Promise<BufferGeometry> {
+    if (
+        !hasActiveComposedTextMarking(
+            options.textMarking,
+            options.patientDisplayName,
+            options.side ?? "right",
+        )
+    ) {
+        return geometry;
+    }
+    const { applyTextMarkingToPrintSolid } = await import("@/lib/geometry/text-marking/apply");
+    const { TextMarkingError } = await import("@/lib/geometry/text-marking/errors");
+    const { buildTextGuide } = await import("@/lib/geometry/text-marking/place");
+    const textGuide = buildTextGuide(geometry);
+    try {
+        const marked = await applyTextMarkingToPrintSolid(
+            geometry,
+            options.textMarking,
+            {
+                side: options.side ?? (options.mirrored ? "left" : "right"),
+            },
+            options.patientDisplayName,
+        );
+        if (marked !== geometry) geometry.dispose();
+        marked.userData = { ...marked.userData, textGuide };
+        return marked;
+    } catch (e) {
+        if (!(e instanceof TextMarkingError)) throw e;
+        geometry.userData = { ...geometry.userData, textFitError: e.message, textGuide };
+        return geometry;
+    }
+}
+
+/**
+ * Print / STL: loft the approved solid. Same reconstruct math as the frozen STLs.
+ * A cache hit skips reconstruct only. Text still runs once. The caller still
+ * closes and validates the mesh, then the G-code path adds the leader once.
+ */
 export async function buildProceduralExportSolid(
     options: ProceduralPreviewOptions & { mirrored?: boolean } = {},
+    cache?: ManufacturingSolidContext | null,
 ): Promise<{ model: StockWallModel; pattern: PolyPoint[]; geometry: BufferGeometry }> {
+    const side = cache?.side ?? options.side ?? (options.mirrored ? "left" : "right");
+    const fingerprint = cache ? manufacturingSolidFingerprint(options, cache) : "";
+    if (cache && fingerprint) {
+        const started = performance.now();
+        const cached = peekManufacturingSolid(fingerprint, side);
+        if (cached) {
+            const geometry = await applyExportText(cached, options);
+            tagManufacturingSolid(geometry, fingerprint, true);
+            noteManufacturingSolidReused(side, performance.now() - started);
+            return { model: cacheHitModel(), pattern: [], geometry };
+        }
+    }
+
+    noteManufacturingSolidBuilt(side);
     let raw = await loadSampleTopGeometry();
     if (options.mirrored) {
         const mirrored = mirrorGeometry(raw);
@@ -136,24 +222,12 @@ export async function buildProceduralExportSolid(
     }
     try {
         const preview = await reconstructProceduralPreview(raw, options);
-        if (!hasActiveTextMarking(options.textMarking)) return preview;
-        const { applyTextMarkingToPrintSolid } = await import("@/lib/geometry/text-marking/apply");
-        const { TextMarkingError } = await import("@/lib/geometry/text-marking/errors");
-        const { buildTextGuide } = await import("@/lib/geometry/text-marking/place");
-        const textGuide = buildTextGuide(preview.geometry);
-        let geometry = preview.geometry;
-        try {
-            geometry = await applyTextMarkingToPrintSolid(preview.geometry, options.textMarking, {
-                side: options.side ?? (options.mirrored ? "left" : "right"),
-            });
-        } catch (e) {
-            if (!(e instanceof TextMarkingError)) throw e;
-            geometry.userData = { ...geometry.userData, textFitError: e.message, textGuide };
-            return { ...preview, geometry };
+        if (cache && fingerprint) {
+            rememberManufacturingSolid(fingerprint, side, preview.geometry);
         }
-        if (geometry !== preview.geometry) preview.geometry.dispose();
-        geometry.userData = { ...geometry.userData, textGuide };
-        return { ...preview, geometry };
+        const geometry = await applyExportText(preview.geometry, options);
+        if (fingerprint) tagManufacturingSolid(geometry, fingerprint, false);
+        return geometry === preview.geometry ? preview : { ...preview, geometry };
     } finally {
         raw.dispose();
     }
@@ -166,6 +240,23 @@ function scalePlanLoop(points: PolyPoint[], scale: number, center: { x: number; 
         y: center.y + (p.y - center.y) * scale,
         z: 0,
     }));
+}
+
+/**
+ * The viewer stores the bottom pattern in the native SAMPLE_Top frame.
+ * Print scales the top sheet by `scale` about `center`; the pattern has to
+ * use that same map or lateral stations stay on the Men's 9 outline and
+ * fall outside a smaller TopSheet rim.
+ */
+export function scaleBottomPatternToFootprint(
+    pattern: PolyPoint[],
+    center: { x: number; y: number },
+    scale: number,
+): PolyPoint[] {
+    if (!pattern.length || !Number.isFinite(scale) || Math.abs(scale - 1) <= 1e-9) {
+        return pattern.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 }));
+    }
+    return scalePlanLoop(pattern, scale, center);
 }
 
 /** Fair the SAMPLE_Top rim: ~0 toe inset, heel ~8 mm, medial arch cut-in. */
@@ -208,6 +299,8 @@ export interface ProceduralPreviewOptions {
     composedTop?: boolean;
     /** Print-step custom text. Applied after loft; empty is a no-op. */
     textMarking?: TextMarking | null;
+    /** Linked client name for bottom addPatientName (not stored in textMarking.text). */
+    patientDisplayName?: string | null;
     /** Foot side for left/right placement (wall text is never glyph-mirrored). */
     side?: Side;
     /**
@@ -286,7 +379,19 @@ export async function reconstructProceduralPreview(
         if (!topGeo.boundingBox) topGeo.computeBoundingBox();
         const box = topGeo.boundingBox;
         const center = box ? { x: (box.min.x + box.max.x) / 2, y: (box.min.y + box.max.y) / 2 } : null;
-        if (center && !options.bottomPattern?.length && insetsForScanPattern(options.scanPattern) == null) {
+        if (center && options.bottomPattern?.length) {
+            // Live / edited pattern is in the pre-scale frame. Use a fresh
+            // bbox so the center matches scaleSourceShapeToFootprint.
+            topGeo.computeBoundingBox();
+            const live = topGeo.boundingBox;
+            if (live) {
+                scaledPattern = scaleBottomPatternToFootprint(
+                    options.bottomPattern,
+                    { x: (live.min.x + live.max.x) / 2, y: (live.min.y + live.max.y) / 2 },
+                    footprintScale,
+                );
+            }
+        } else if (center && insetsForScanPattern(options.scanPattern) == null) {
             const native = topGeo.clone();
             try {
                 const nativeModel = extractTopOnlyModel(native, {
@@ -338,9 +443,11 @@ export async function reconstructProceduralPreview(
     if (owned) discard.add(source);
     if (footprintClone) discard.add(footprintClone);
     for (const geo of discard) geo.dispose();
-    const requested = options.bottomPattern?.length
-        ? options.bottomPattern
-        : (scaledPattern ?? buildFairedPatternFromTop(model, options.scanPattern));
+    const requested =
+        scaledPattern ??
+        (options.bottomPattern?.length
+            ? options.bottomPattern
+            : buildFairedPatternFromTop(model, options.scanPattern));
     const loft = (pattern: PolyPoint[]) => {
         const thicknessMm =
             options.thicknessMm ?? options.sourceField?.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;

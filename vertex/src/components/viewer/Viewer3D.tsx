@@ -9,12 +9,9 @@ import {
     Layers,
     Maximize2,
     Move,
-    PencilLine,
     PenTool,
     Rotate3d,
     Scale3d,
-    Scissors,
-    Spline,
     Tag,
     X,
 } from "lucide-react";
@@ -116,8 +113,6 @@ export function Viewer3D() {
     const printPreview = workflowStep === "print" || workflowStep === "export";
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
-    const beginTrimlineEdit = useMeshEditStore((s) => s.beginTrimlineEdit);
-    const beginBottomPatternEdit = useMeshEditStore((s) => s.beginBottomPatternEdit);
     const target = useMeshEditStore((s) => s.target);
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const afoDraggingTrim = useAfoStore((s) => s.draggingTrimIndex != null);
@@ -129,6 +124,12 @@ export function Viewer3D() {
     const cancelBottomPatternEdit = useMeshEditStore((s) => s.cancelBottomPatternEdit);
     const wallModel = viewer.wallModel ?? "procedural";
     const editSide = resolveDefaultEditSide(viewer, target);
+    const outlineTool =
+        editMode === "edit-trimline" && trimlineEdit
+            ? "trimline"
+            : editMode === "edit-bottom-pattern" && bottomPatternEdit
+              ? "bottom-pattern"
+              : null;
     const designMode = resolveDesignMode(design);
     const showBase = designMode.mode === "base";
     const modifiersActive = hasActiveModifiers(design);
@@ -377,7 +378,7 @@ export function Viewer3D() {
 
             {/* View buttons — cross pad: Front | Left | Top/Bottom | Right | Back */}
             <div
-                className="absolute left-3 top-3 flex items-center gap-1"
+                className={cn("absolute left-3 flex items-center gap-1", outlineTool ? "top-12" : "top-3")}
                 role="group"
                 aria-label="Camera views"
             >
@@ -424,7 +425,12 @@ export function Viewer3D() {
             <PrintLoftSplash overlay={loftOverlay} />
 
             {/* Active view + edit-mode indicator (below the view pad) */}
-            <div className="pointer-events-none absolute left-3 top-[5.5rem] flex flex-col gap-1">
+            <div
+                className={cn(
+                    "pointer-events-none absolute left-3 flex flex-col gap-1",
+                    outlineTool ? "top-28" : "top-[5.5rem]",
+                )}
+            >
                 <span className="w-fit rounded bg-panel/80 px-2 py-0.5 text-[11px] font-medium text-foreground shadow backdrop-blur">
                     {VIEW_LABELS[viewer.view]} view
                 </span>
@@ -583,8 +589,43 @@ export function Viewer3D() {
                 </div>
             ) : null}
 
-            {/* Print selection edits hardness; placement tools remain in Design. */}
-            {printPreview ? null : selectedElementId ? (
+            {/* Outline edit docks a single-tool bar. Trim and Vertex are not offered. */}
+            {outlineTool ? (
+                <div
+                    data-testid="outline-edit-toolbar"
+                    role="toolbar"
+                    aria-label={outlineTool === "trimline" ? "Edit trimline" : "Edit bottom pattern"}
+                    className="absolute inset-x-0 top-0 z-30 flex h-10 items-center gap-2 border-b border-border bg-panel px-3"
+                >
+                    <span className="text-xs font-medium text-foreground">
+                        {outlineTool === "trimline" ? "Edit trimline" : "Edit bottom pattern"}
+                    </span>
+                    <div className="ml-auto flex items-center gap-1">
+                        <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 text-[11px]"
+                            onClick={
+                                outlineTool === "trimline" ? cancelTrimlineEdit : cancelBottomPatternEdit
+                            }
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            type="button"
+                            size="sm"
+                            variant="default"
+                            className="h-7 text-[11px]"
+                            onClick={
+                                outlineTool === "trimline" ? confirmTrimlineEdit : confirmBottomPatternEdit
+                            }
+                        >
+                            Done
+                        </Button>
+                    </div>
+                </div>
+            ) : printPreview || !selectedElementId ? null : (
                 <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-panel/90 p-1 shadow-lg backdrop-blur">
                     <ModeButton
                         active={editMode === "transform" && transformMode === "translate"}
@@ -613,102 +654,9 @@ export function Viewer3D() {
                         icon={<Scale3d className="h-3.5 w-3.5" />}
                         label="Scale"
                     />
-                    <ModeButton
-                        active={editMode === "trim"}
-                        onClick={() => {
-                            setEditMode("trim");
-                            setTarget({ type: "element", id: selectedElementId });
-                        }}
-                        icon={<Scissors className="h-3.5 w-3.5" />}
-                        label="Trim"
-                    />
-                    <ModeButton
-                        active={editMode === "vertex"}
-                        onClick={() => {
-                            setEditMode("vertex");
-                            setTarget({ type: "element", id: selectedElementId });
-                        }}
-                        icon={<PenTool className="h-3.5 w-3.5" />}
-                        label="Vertex"
-                    />
                     <Button size="sm" variant="ghost" className="h-7" onClick={() => selectElement(null)}>
                         <X className="h-3.5 w-3.5" />
                     </Button>
-                </div>
-            ) : (
-                <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-panel/90 p-1 shadow-lg backdrop-blur">
-                    <ModeButton
-                        active={editMode === "edit-trimline"}
-                        onClick={() => beginTrimlineEdit(editSide)}
-                        icon={<PencilLine className="h-3.5 w-3.5" />}
-                        label="Edit trimline"
-                    />
-                    {wallModel === "procedural" ? (
-                        <ModeButton
-                            active={editMode === "edit-bottom-pattern"}
-                            onClick={() => beginBottomPatternEdit(editSide)}
-                            icon={<Spline className="h-3.5 w-3.5" />}
-                            label="Edit bottom pattern"
-                        />
-                    ) : null}
-                    <ModeButton
-                        active={editMode === "trim"}
-                        onClick={() => {
-                            setEditMode("trim");
-                            setTarget({ type: "insole", side: editSide });
-                        }}
-                        icon={<Scissors className="h-3.5 w-3.5" />}
-                        label="Trim"
-                    />
-                    <ModeButton
-                        active={editMode === "vertex"}
-                        onClick={() => {
-                            setEditMode("vertex");
-                            setTarget({ type: "insole", side: editSide });
-                        }}
-                        icon={<PenTool className="h-3.5 w-3.5" />}
-                        label="Vertex"
-                    />
-                    {editMode === "edit-trimline" && trimlineEdit ? (
-                        <>
-                            <Button
-                                size="sm"
-                                variant="default"
-                                className="h-7 text-[11px]"
-                                onClick={confirmTrimlineEdit}
-                            >
-                                Confirm
-                            </Button>
-                            <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 text-[11px]"
-                                onClick={cancelTrimlineEdit}
-                            >
-                                Cancel
-                            </Button>
-                        </>
-                    ) : null}
-                    {editMode === "edit-bottom-pattern" && bottomPatternEdit ? (
-                        <>
-                            <Button
-                                size="sm"
-                                variant="default"
-                                className="h-7 text-[11px]"
-                                onClick={confirmBottomPatternEdit}
-                            >
-                                Confirm
-                            </Button>
-                            <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 text-[11px]"
-                                onClick={cancelBottomPatternEdit}
-                            >
-                                Cancel
-                            </Button>
-                        </>
-                    ) : null}
                 </div>
             )}
 

@@ -28,6 +28,8 @@ import {
     hashLiveBottomPattern,
     resolveLiveBottomPattern,
 } from "@/lib/geometry/procedural-wall/live-bottom-pattern";
+import { publishPreviewManufacturingSolid } from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
+import { manufacturingCacheContext } from "@/lib/geometry/procedural-wall/manufacturing-solid-context";
 import {
     applyForefootPlanShift,
     FOREFOOT_SHIFT_U_HOLD,
@@ -60,6 +62,7 @@ import {
     loadSampleTopGeometry,
     SAMPLE_TOP_ASSET_ID,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import { resolveViewerWallStyle } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
@@ -141,7 +144,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const stockBaseResolutionState = useDesignStore((s) => s.stockBaseResolutionState);
     const setBaseMeshLoading = useDesignStore((s) => s.setBaseMeshLoading);
     const wallModel = useDesignStore((s) => s.viewer.wallModel ?? "procedural");
-    const wallStyle = useDesignStore((s) => s.viewer.wallStyle ?? "straight");
+    const wallStyle = useDesignStore((s) => resolveViewerWallStyle(s.viewer.wallStyle));
     const deviceType = useDesignStore((s) => s.viewer.deviceType ?? "functional");
     const lateralFlangeHeightMm = useDesignStore((s) => s.viewer.lateralFlangeHeightMm ?? 0);
     const lateralFlangeLengthMm = useDesignStore((s) => s.viewer.lateralFlangeLengthMm ?? 40);
@@ -150,6 +153,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const generatedPatternKey = useBottomPatternStore((s) => s.generatedKey[side]);
     const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
     const retryNonce = usePreviewLoftStatusStore((s) => s.retryNonce);
+    const printLoftEpoch = usePreviewLoftStatusStore((s) => s.printLoftEpoch);
     const loftCancelled = usePreviewLoftStatusStore((s) => s.cancelled);
     const exportSide = useDesignStore((s) => s.exportSide);
     const showLeft = useDesignStore((s) => s.viewer.showLeft);
@@ -775,7 +779,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     scanPattern: design.pattern,
                     patternKind: draft ? "edited" : livePts ? "live" : "auto",
                     patternHash: livePts ? hashLiveBottomPattern(livePts) : patternKey,
-                    flanges: `${lateralFlangeHeightMm}:${lateralFlangeLengthMm}:${lateralFlangeAngleDeg}|r${retryNonce}`,
+                    flanges: `${lateralFlangeHeightMm}:${lateralFlangeLengthMm}:${lateralFlangeAngleDeg}|r${retryNonce}|p${printLoftEpoch}`,
                     sourceFieldJson: JSON.stringify({
                         side: field.side,
                         lengthMm: field.lengthMm,
@@ -831,24 +835,22 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         await yieldToPaint();
                         if (session.cancelled) return;
                         const started = performance.now();
+                        const solidOptions = printSolidOptions({
+                            design,
+                            side,
+                            field,
+                            viewer: {
+                                wallStyle,
+                                deviceType,
+                                lateralFlangeHeightMm,
+                                lateralFlangeLengthMm,
+                                lateralFlangeAngleDeg,
+                            },
+                            trimline: printTrim,
+                            bottomPattern: livePts,
+                        });
                         try {
-                            const preview = await reconstructProceduralPreviewInWorker(
-                                raw,
-                                printSolidOptions({
-                                    design,
-                                    side,
-                                    field,
-                                    viewer: {
-                                        wallStyle,
-                                        deviceType,
-                                        lateralFlangeHeightMm,
-                                        lateralFlangeLengthMm,
-                                        lateralFlangeAngleDeg,
-                                    },
-                                    trimline: printTrim,
-                                    bottomPattern: livePts,
-                                }),
-                            );
+                            const preview = await reconstructProceduralPreviewInWorker(raw, solidOptions);
                             let placementReference: BufferGeometry;
                             try {
                                 placementReference = await composeViewerPrintSolidTop({
@@ -874,6 +876,19 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                 preview.geometry.dispose();
                                 return;
                             }
+                            publishPreviewManufacturingSolid(
+                                solidOptions,
+                                {
+                                    ...manufacturingCacheContext({
+                                        design,
+                                        side,
+                                        baseAssetId: base?.assetId ?? "",
+                                        mirrored: isMirroredForLoad,
+                                    }),
+                                    printLoftEpoch,
+                                },
+                                preview.geometry,
+                            );
                             setElementReference(placementReference);
                             if (outRef.current && outRef.current !== workRef.current) {
                                 outRef.current.dispose();
@@ -995,6 +1010,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         generatedPatternKey,
         bottomPatternEdit,
         retryNonce,
+        printLoftEpoch,
         loftCancelled,
         activeReady,
         clinicalStep,

@@ -6,6 +6,8 @@ import {
     evaluateScanStepGate,
     scanGateBlocksLaterSteps,
 } from "@/lib/clinical/clinical-step-gates";
+import { leaveOutlineEdit } from "@/stores/mesh-edit-store";
+import { invalidateProceduralPrintLoftForDesignStep } from "@/stores/preview-loft-status-store";
 import type { ProductionMethod } from "@/types";
 
 export type ClinicalStepId =
@@ -179,6 +181,22 @@ function markCompleted(completed: ClinicalStepId[], step: ClinicalStepId): Clini
     return [...completed, step];
 }
 
+function isProceduralLoftClinicalStep(step: ClinicalStepId): boolean {
+    return step === "print" || step === "export";
+}
+
+function leaveProceduralLoftStep(prev: ClinicalStepId, next: ClinicalStepId): void {
+    if (isProceduralLoftClinicalStep(prev) && !isProceduralLoftClinicalStep(next)) {
+        invalidateProceduralPrintLoftForDesignStep();
+    }
+}
+
+/** Step changes leave outline edit, prompting only when the draft is unsaved. */
+function blockedByOutlineEdit(prev: ClinicalStepId, next: ClinicalStepId): boolean {
+    if (prev === next) return false;
+    return !leaveOutlineEdit({ promptIfDirty: true });
+}
+
 function applyScanStickyReason(step: ClinicalStepId, product: ClinicalProductType): string | null {
     if (stepIndex(step, product) <= stepIndex("scan", product)) {
         const gate = evaluateScanStepGate();
@@ -245,8 +263,11 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
             };
         }),
     setStep: (step) => {
+        const prev = get().step;
         const product = get().productType;
         const next = normalizeClinicalStep(step, product);
+        if (blockedByOutlineEdit(prev, next)) return;
+        leaveProceduralLoftStep(prev, next);
         const sticky = applyScanStickyReason(next, product);
         set({
             step: next,
@@ -256,16 +277,23 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         });
     },
     setElementPlacementFoot: (foot) => set({ elementPlacementFoot: foot }),
-    openTextEditor: () =>
+    openTextEditor: () => {
+        if (blockedByOutlineEdit(get().step, "elements")) return;
         set((s) => ({
             step: "elements",
             textFocusNonce: s.textFocusNonce + 1,
-        })),
+        }));
+    },
     goNext: () => {
         const current = get().step;
         const product = get().productType;
         const gate = evaluateNextGate(current);
-        if (!gate.ok) {
+        // Print → Export is the handoff for "Continue to Export" and the
+        // footer Next on Print. Reopened designs clear footSideExplicitlyChosen,
+        // and the rail still allows standing on Print. Re-applying the scan
+        // gate here used to send the user to Scan instead of Export.
+        if (!gate.ok && current !== "print") {
+            if (blockedByOutlineEdit(current, "scan")) return;
             set({
                 step: "scan",
                 nextBlockReason: gate.reason,
@@ -275,6 +303,8 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
             return;
         }
         const step = nextStep(current, product);
+        if (blockedByOutlineEdit(current, step)) return;
+        leaveProceduralLoftStep(current, step);
         const sticky = applyScanStickyReason(step, product);
         set((s) => ({
             step,
@@ -285,8 +315,11 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         }));
     },
     goBack: () => {
+        const current = get().step;
         const product = get().productType;
-        const step = prevStep(get().step, product);
+        const step = prevStep(current, product);
+        if (blockedByOutlineEdit(current, step)) return;
+        leaveProceduralLoftStep(current, step);
         const sticky = applyScanStickyReason(step, product);
         set({
             step,

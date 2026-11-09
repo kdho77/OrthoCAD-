@@ -1,7 +1,30 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { Side } from "@/types";
+import {
+    BOTTOM_ANCHOR_U,
+    BOTTOM_CAP,
+    BOTTOM_EMBOSS_HEIGHT,
+    BOTTOM_ENGRAVE,
+    BOTTOM_U,
+    defaultBottomTextMarking,
+    sanitizeText,
+    TEXT_ALLOWED_CHAR,
+    TEXT_DEPTH_STEP_MM,
+    TEXT_MAX_CHARS,
+    TEXT_MIN_LETTER_SPACING_MM,
+    TEXT_ROTATION_MAX_DEG,
+} from "../../../../shared/bottom-text-marking";
 import type { TextMarking, TextSurface } from "./types";
+
+export {
+    sanitizeText,
+    TEXT_ALLOWED_CHAR,
+    TEXT_DEPTH_STEP_MM,
+    TEXT_MAX_CHARS,
+    TEXT_MIN_LETTER_SPACING_MM,
+    TEXT_ROTATION_MAX_DEG,
+};
 
 export const TEXT_FONT_ID = "Inter-Bold";
 export const TEXT_FONT_PUBLIC_PATH = "/fonts/Inter-Bold.ttf";
@@ -13,14 +36,10 @@ export const TEXT_CLIPPER_PRECISION = 4;
 export const TEXT_MIN_LOOP_AREA_MM2 = 0.3;
 export const TEXT_BOLD_OFFSET_MM = 0.15;
 export const TEXT_MIN_STROKE_MM = 0.9;
-export const TEXT_MAX_CHARS = 24;
 /** Geometry will not cut side letters shorter than this, even though the slider starts at 2.5. */
 export const TEXT_WALL_FEATURE_MIN_MM = 5;
 /** 3-axis mill default. Fit warns when the stroke is narrower than this. */
 export const TEXT_CNC_TOOL_MM = 6;
-/** A–Z, digits, and the punctuation patient marks actually use. */
-export const TEXT_ALLOWED_CHAR = /[^A-Z0-9 .,/'’-]/;
-export const TEXT_MIN_LETTER_SPACING_MM = 0.6;
 export const TEXT_BOOLEAN_EPS_MM = 0.05;
 /** Uniform outer-cap poke along the smoothed host normal (mm). */
 export const TEXT_BOOLEAN_OUTSET_MM = 0.5;
@@ -88,7 +107,6 @@ export const TEXT_BOTTOM_INSET_MM = 4;
  */
 export const TEXT_WALL_EDGE_CLEARANCE_MM = 1.0;
 export const TEXT_WALL_MIN_THICK_MM = 2;
-export const TEXT_DEPTH_STEP_MM = 0.1;
 /**
  * Extra band below the rim, beyond the fillet clearance.
  * The measured top round is ~0.68 mm, not 1.84. Reserving 1.84 mm as well as the
@@ -100,22 +118,22 @@ export const TEXT_OUTSIDE_IDENT_MM = 1e-4;
 
 export const TEXT_CAP = {
     wall: { min: 2.5, default: 3.5, max: 12 },
-    bottom: { min: 2.5, default: 6, max: 12 },
+    bottom: BOTTOM_CAP,
 } as const;
 
 export const TEXT_ENGRAVE = {
     wall: { min: 0.3, default: 0.4, max: 1.2 },
-    bottom: { min: 0.3, default: 0.6, max: 1.2 },
+    bottom: BOTTOM_ENGRAVE,
 } as const;
 
-export const TEXT_EMBOSS_WALL = { min: 0.3, default: 0.4, max: 1.2 } as const;
+export const TEXT_EMBOSS_WALL = BOTTOM_EMBOSS_HEIGHT;
 
 export const TEXT_U = {
-    bottom: { min: 0.12, default: 0.32, max: 0.78 },
+    bottom: BOTTOM_U,
     wall: { min: 0.2, default: 0.42, max: 0.8 },
 } as const;
 
-export const TEXT_ANCHOR_U = { heel: 0.18, arch: 0.32, forefoot: 0.68 } as const;
+export const TEXT_ANCHOR_U = { heel: 0.18, arch: BOTTOM_ANCHOR_U, forefoot: 0.68 } as const;
 
 export function isSideText(surface: TextSurface): boolean {
     return surface === "wall" || surface === "medial";
@@ -127,25 +145,20 @@ export function unsupportedTextChars(text: string): string {
     return [...new Set(bad)].join(" ");
 }
 
-export function sanitizeText(text: string): string {
-    return text.toUpperCase().replace(new RegExp(TEXT_ALLOWED_CHAR.source, "g"), "").slice(0, TEXT_MAX_CHARS);
-}
-
-export const TEXT_ROTATION_MAX_DEG = 90;
-
 export function defaultTextMarking(surface: TextSurface = "bottom"): TextMarking {
-    const side = isSideText(surface);
+    if (surface === "bottom") return defaultBottomTextMarking();
     return {
         text: "",
+        addPatientName: false,
         surface,
         mode: "engrave",
         bold: true,
-        capHeightMm: side ? TEXT_CAP.wall.default : TEXT_CAP.bottom.default,
-        depthMm: side ? TEXT_ENGRAVE.wall.default : TEXT_ENGRAVE.bottom.default,
-        heightMm: side ? TEXT_EMBOSS_WALL.default : TEXT_ENGRAVE.bottom.default,
+        capHeightMm: TEXT_CAP.wall.default,
+        depthMm: TEXT_ENGRAVE.wall.default,
+        heightMm: TEXT_EMBOSS_WALL.default,
         letterSpacingMm: TEXT_MIN_LETTER_SPACING_MM,
         rotationDeg: 0,
-        placementU: side ? TEXT_U.wall.default : TEXT_ANCHOR_U.arch,
+        placementU: TEXT_U.wall.default,
         anchor: "arch",
         feet: "both",
         differentOnLR: false,
@@ -171,6 +184,10 @@ export function markingForSide(marking: TextMarking, side: Side): TextMarking {
 
 export function hasActiveTextMarking(marking: TextMarking | null | undefined): boolean {
     return Boolean(marking && marking.text.trim().length > 0);
+}
+
+export function bottomPatientNameRequested(marking: TextMarking | null | undefined): boolean {
+    return Boolean(marking && marking.surface === "bottom" && marking.addPatientName !== false);
 }
 
 export function snapTextStep(value: number, min: number, max: number, step: number): number {

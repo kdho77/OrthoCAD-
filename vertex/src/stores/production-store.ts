@@ -4,16 +4,28 @@
 import { create } from "zustand";
 import { useAuthStore } from "@/stores/auth-store";
 import type { Actor } from "../../shared/client-files";
+import { type SaveMoonrakerPrinterInput, saveMoonrakerPrinter } from "../../shared/moonraker-farm";
+import type { DispatchDeps, DispatchEvent, PrinterBinding } from "../../shared/production-jobs";
 import {
     assignJob,
+    cancelDispatchedPrint,
     cancelJob,
+    dispatchAssignedJob,
     downloadGcode,
+    EMPTY_DISPATCH,
+    type EnqueueInput,
+    enqueueJob,
     holdJob,
     markJobDone,
     type PrinterRecord,
     ProductionError,
     type ProductionJob,
     type ProductionRepo,
+    type RegisterConfiguredPrinterInput,
+    reconcilePrinter,
+    refreshPrinterReadiness,
+    registerConfiguredPrinter,
+    registerMockPrinter,
     rerunJob,
     retryJob,
     type StoredGcode,
@@ -31,6 +43,14 @@ interface ProductionStore {
     assign: (id: string, printerId: string) => Promise<void>;
     rerun: (id: string) => Promise<void>;
     download: (id: string) => Promise<{ filename: string; gcode: string; sha256: string }>;
+    registerMock: (name: string, moonrakerUrl: string) => Promise<void>;
+    registerConfigured: (input: RegisterConfiguredPrinterInput) => Promise<void>;
+    saveMoonraker: (input: SaveMoonrakerPrinterInput) => Promise<void>;
+    dispatch: (id: string, deps: DispatchDeps) => Promise<void>;
+    reconcile: (printerId: string, deps: DispatchDeps) => Promise<void>;
+    refreshReadiness: (printerId: string, deps: DispatchDeps) => Promise<void>;
+    cancelDispatched: (id: string, deps: DispatchDeps) => Promise<void>;
+    enqueuePrint: (input: EnqueueInput) => Promise<void>;
     /** Dev-only preview of the G-code countdown. Not used in production builds. */
     seedRetentionDemo: () => void;
 }
@@ -44,6 +64,9 @@ function actor(): Actor {
         tenantId: null,
     };
 }
+
+const endpointByPrinter = new Map<string, string>();
+const dispatchEvents: DispatchEvent[] = [];
 
 function repo(): ProductionRepo {
     return {
@@ -71,7 +94,78 @@ function repo(): ProductionRepo {
             return next;
         },
         async listPrinters() {
-            return useProductionStore.getState().printers;
+            return useProductionStore.getState().printers.map((printer) => ({
+                ...printer,
+                endpointConfigured: printer.endpointConfigured || endpointByPrinter.has(printer.id),
+                liveVerified: false as const,
+                protocolVerified: false as const,
+            }));
+        },
+        async insertPrinter(printer) {
+            useProductionStore.setState((state) => ({
+                printers: [
+                    ...state.printers.filter((row) => row.id !== printer.id),
+                    { ...printer, liveVerified: false as const, protocolVerified: false as const },
+                ],
+            }));
+        },
+        async getPrinterEndpoint(printerId) {
+            return endpointByPrinter.get(printerId) ?? null;
+        },
+        async insertConfiguredPrinter(printer, binding: PrinterBinding) {
+            endpointByPrinter.set(printer.id, binding.endpoint);
+            useProductionStore.setState((state) => ({
+                printers: [
+                    ...state.printers.filter((row) => row.id !== printer.id),
+                    {
+                        ...printer,
+                        endpointConfigured: true,
+                        liveVerified: false as const,
+                        protocolVerified: false as const,
+                    },
+                ],
+            }));
+        },
+        async patchPrinter(id, patch) {
+            let next: PrinterRecord | null = null;
+            useProductionStore.setState((state) => ({
+                printers: state.printers.map((printer) => {
+                    if (printer.id !== id) return printer;
+                    next = {
+                        ...printer,
+                        ...patch,
+                        liveVerified: false,
+                        protocolVerified: false,
+                    };
+                    return next;
+                }),
+            }));
+            if (!next) throw new ProductionError("NOT_FOUND", "Printer not found");
+            return next;
+        },
+        async claimDispatch(jobId, fields) {
+            let claimed: ProductionJob | null = null;
+            useProductionStore.setState((state) => ({
+                jobs: state.jobs.map((job) => {
+                    if (job.id !== jobId || (job.dispatchState ?? "none") !== "none") return job;
+                    claimed = {
+                        ...job,
+                        ...EMPTY_DISPATCH,
+                        ...fields,
+                        dispatchState: "started",
+                        controllerJobId: null,
+                        dispatchError: null,
+                    };
+                    return claimed;
+                }),
+            }));
+            return claimed;
+        },
+        async appendDispatchEvent(event) {
+            dispatchEvents.push(event);
+        },
+        async listDispatchEvents(jobId) {
+            return dispatchEvents.filter((event) => event.jobId === jobId);
         },
         async getGcode(jobId) {
             return useProductionStore.getState().gcode[jobId] ?? null;
@@ -99,7 +193,10 @@ export const useProductionStore = create<ProductionStore>((_set, _get) => ({
     jobs: [],
     printers: [],
     gcode: {},
-    replace: (jobs, printers) => useProductionStore.setState({ jobs, printers }),
+    replace: (jobs, printers) => {
+        endpointByPrinter.clear();
+        useProductionStore.setState({ jobs, printers });
+    },
     async hold(id) {
         remember(await holdJob(repo(), actor(), id));
     },
@@ -120,6 +217,45 @@ export const useProductionStore = create<ProductionStore>((_set, _get) => ({
     },
     download(id) {
         return downloadGcode(repo(), actor(), id);
+    },
+    async registerMock(name, moonrakerUrl) {
+        const result = await registerMockPrinter(repo(), actor(), { name, moonrakerUrl });
+        useProductionStore.setState((state) => ({
+            printers: [...state.printers.filter((row) => row.id !== result.printer.id), result.printer],
+        }));
+    },
+    async registerConfigured(input) {
+        const printer = await registerConfiguredPrinter(repo(), actor(), input);
+        useProductionStore.setState((state) => ({
+            printers: [...state.printers.filter((row) => row.id !== printer.id), printer],
+        }));
+    },
+    async saveMoonraker(input) {
+        const printer = await saveMoonrakerPrinter(repo(), actor(), input);
+        useProductionStore.setState((state) => ({
+            printers: [...state.printers.filter((row) => row.id !== printer.id), printer],
+        }));
+    },
+    async dispatch(id, deps) {
+        remember(await dispatchAssignedJob(repo(), actor(), id, deps));
+    },
+    async reconcile(printerId, deps) {
+        const jobs = await reconcilePrinter(repo(), actor(), printerId, deps);
+        useProductionStore.setState((state) => ({
+            jobs: [...jobs, ...state.jobs.filter((job) => !jobs.some((row) => row.id === job.id))],
+        }));
+    },
+    async refreshReadiness(printerId, deps) {
+        const printer = await refreshPrinterReadiness(repo(), actor(), printerId, deps);
+        useProductionStore.setState((state) => ({
+            printers: state.printers.map((row) => (row.id === printer.id ? printer : row)),
+        }));
+    },
+    async cancelDispatched(id, deps) {
+        remember(await cancelDispatchedPrint(repo(), actor(), id, deps));
+    },
+    async enqueuePrint(input) {
+        remember(await enqueueJob(repo(), actor(), input));
     },
     seedRetentionDemo() {
         const current = useProductionStore.getState();
@@ -152,6 +288,7 @@ export const useProductionStore = create<ProductionStore>((_set, _get) => ({
             progress: null,
             gcodeSha256: "e2e",
             gcodeStoredAt: storedAt,
+            ...EMPTY_DISPATCH,
         };
         useProductionStore.setState({
             jobs: [

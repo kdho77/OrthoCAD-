@@ -2,6 +2,7 @@
 
 import { describe, expect, test } from "@rstest/core";
 import type { Actor } from "../../../shared/client-files";
+import { normalizeMoonrakerBaseUrl } from "../../../shared/mock-moonraker";
 import {
     assignJob,
     cancelJob,
@@ -15,9 +16,11 @@ import {
     printerCards,
     queryHistory,
     queryQueue,
+    registerMockPrinter,
     rerunJob,
     retryJob,
     sha256Hex,
+    UNCONFIGURED_PRINTER,
 } from "../../../shared/production-jobs";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
@@ -34,7 +37,14 @@ function empty() {
 }
 
 function printer(tenantId: string | null = ORG): PrinterRecord {
-    return { id: "printer-1", name: "Bay 1", state: "idle", tenantId, ownerId: "user-1" };
+    return {
+        id: "printer-1",
+        name: "Bay 1",
+        state: "idle",
+        tenantId,
+        ownerId: "user-1",
+        ...UNCONFIGURED_PRINTER,
+    };
 }
 
 describe("production jobs", () => {
@@ -241,6 +251,49 @@ describe("production jobs", () => {
         expect(isGcodeRetained(stored, true, day120)).toBe(true);
         expect(isGcodeRetained(stored, false, new Date("2026-03-01T00:00:00.000Z"))).toBe(true);
         expect(isGcodeRetained(stored, false, day120)).toBe(false);
+    });
+
+    test("mock register adds an offline printer scoped to the org", async () => {
+        const repo = empty();
+        const me = actor("clinician", ORG);
+        const { printer, pairing } = await registerMockPrinter(repo, me, {
+            name: "Bay 1",
+            moonrakerUrl: "http://127.0.0.1:7125/",
+        });
+        expect(printer.state).toBe("offline");
+        expect(printer.name).toBe("Bay 1");
+        expect(pairing.adapter).toBe("mock-moonraker");
+        expect(pairing.mode).toBe("mock-only");
+        expect(pairing.liveVerified).toBe(false);
+        expect(normalizeMoonrakerBaseUrl("https://farm.example:7125/api/")).toBe(
+            "https://farm.example:7125/api",
+        );
+        expect((await repo.listPrinters()).map((row) => row.id)).toEqual([printer.id]);
+    });
+
+    test("enqueue dedupes the same design and G-code while the job is still queued", async () => {
+        const repo = empty();
+        const me = actor("clinician", ORG);
+        const first = await enqueueJob(repo, me, {
+            designId: "d1",
+            designName: "Insole",
+            designKind: "insole",
+            clientId: "c1",
+            clientLabel: "JD",
+            process: "print",
+            gcode: GCODE,
+        });
+        const second = await enqueueJob(repo, me, {
+            designId: "d1",
+            designName: "Insole",
+            designKind: "insole",
+            clientId: "c1",
+            clientLabel: "JD",
+            process: "print",
+            gcode: GCODE,
+        });
+        expect(second.id).toBe(first.id);
+        expect((await repo.listJobs()).filter((job) => job.designId === "d1")).toHaveLength(1);
     });
 
     test("printer cards show state, current job, and next job only", async () => {
