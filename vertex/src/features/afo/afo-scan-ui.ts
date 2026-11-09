@@ -17,7 +17,7 @@ import {
     skippedLandmarkIds,
 } from "@/lib/geometry/afo/landmark-frame";
 import type { AfoAnatomicalLandmarkId, AfoPlantarPointId, AfoScanWorkflow } from "@/lib/geometry/afo/types";
-import { medialSign } from "@/lib/pressure-map/placement";
+import { medialSign } from "@/lib/geometry/handedness";
 import { getAfoState, useAfoStore } from "@/stores/afo-store";
 import type { CameraView } from "@/stores/design-store";
 import type { Side } from "@/types";

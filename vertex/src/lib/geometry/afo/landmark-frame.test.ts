@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, test } from "@rstest/core";
 import { Matrix4 } from "three";
 import { evaluateScanStepGate } from "@/lib/clinical/clinical-step-gates";
 import { defaultAfoDesignState } from "@/lib/geometry/afo/defaults";
-import { medialSign } from "@/lib/pressure-map/placement";
+import { medialSign } from "@/lib/geometry/handedness";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useScanStore } from "@/stores/scan-store";

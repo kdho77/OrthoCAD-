@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { Matrix4 } from "three";
-import { medialSign } from "@/lib/pressure-map/placement";
+import { medialSign } from "@/lib/geometry/handedness";
 import type { Side } from "@/types";
 import { meshCentroid } from "./mesh-ops";
 import { applyMatrix } from "./orient";
