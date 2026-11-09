@@ -2,6 +2,10 @@
 // Headless caller for the UI Export loft. The mesh is internal. G-code is the deliverable.
 
 import { buildPrinterFootManufacturingStl } from "@/features/exports/export-service";
+import {
+    type ElementAssetReader,
+    injectElementAssetSource,
+} from "@/lib/geometry/element-assets/element-asset";
 import { manufacturingFingerprintForActiveExport } from "@/lib/geometry/export-geometry";
 import { binaryStlTriangleCount } from "@/lib/geometry/leader-block";
 import { resetManufacturingSolidCache } from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
@@ -10,6 +14,7 @@ import {
     resetSampleTopGeometryCache,
     sampleTopFromArrayBuffer,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import { primeTextFont } from "@/lib/geometry/text-marking/font";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -60,6 +65,11 @@ export async function buildFinalizedFootFromSavedDesign(input: {
     sampleTopBytes: ArrayBuffer;
     includeLeader?: boolean;
     printLoftEpoch?: number;
+    /** Bundled Inter Bold. When set, the loft does not fetch or search cwd. */
+    fontBytes?: ArrayBuffer;
+    /** Absolute public/elements directory. When set, element reads ignore cwd. */
+    elementsBaseDir?: string;
+    elementAssetReader?: ElementAssetReader;
 }): Promise<FinalizedFootMesh> {
     const includeLeader = input.includeLeader !== false;
     resetSampleTopGeometryCache();
@@ -67,6 +77,13 @@ export async function buildFinalizedFootFromSavedDesign(input: {
     primeSampleTopGeometry(native);
     installSavedDesign(input.design, input.printLoftEpoch ?? 0);
     const fingerprint = manufacturingFingerprintForActiveExport(input.side);
+    if (input.fontBytes) primeTextFont(input.fontBytes);
+    if (input.elementsBaseDir != null || input.elementAssetReader) {
+        injectElementAssetSource({
+            elementsBaseDir: input.elementsBaseDir ?? null,
+            reader: input.elementAssetReader ?? null,
+        });
+    }
     const built = await buildPrinterFootManufacturingStl(input.side, includeLeader);
     if (binaryStlTriangleCount(built.stl) !== built.uploadTriangles) {
         throw new SavedDesignMeshError(`Finalized ${input.side} mesh triangle count does not match the STL`);
@@ -88,6 +105,9 @@ export async function buildFinalizedFootFromSavedSettings(input: {
     side: Side;
     sampleTopBytes: ArrayBuffer;
     includeLeader?: boolean;
+    fontBytes?: ArrayBuffer;
+    elementsBaseDir?: string;
+    elementAssetReader?: ElementAssetReader;
 }): Promise<FinalizedFootMesh> {
     const settings = readStoredDesignSettings(input.settingsJson);
     if (settings?.method === "milling_3axis") {
@@ -98,6 +118,9 @@ export async function buildFinalizedFootFromSavedSettings(input: {
         side: input.side,
         sampleTopBytes: input.sampleTopBytes,
         includeLeader: input.includeLeader,
+        fontBytes: input.fontBytes,
+        elementsBaseDir: input.elementsBaseDir,
+        elementAssetReader: input.elementAssetReader,
     });
 }
 
@@ -105,6 +128,9 @@ export async function buildFinalizedFootFromSavedSettings(input: {
 export async function buildFinalizedBeltPairFromSavedSettings(input: {
     settingsJson: unknown;
     sampleTopBytes: ArrayBuffer;
+    fontBytes?: ArrayBuffer;
+    elementsBaseDir?: string;
+    elementAssetReader?: ElementAssetReader;
 }): Promise<{ left: FinalizedFootMesh; right: FinalizedFootMesh }> {
     const left = await buildFinalizedFootFromSavedSettings({ ...input, side: "left" });
     try {

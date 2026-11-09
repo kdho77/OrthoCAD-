@@ -18,12 +18,18 @@ interface FinalizedMeshModule {
         side: "left" | "right";
         sampleTopBytes: ArrayBuffer;
         includeLeader?: boolean;
+        fontBytes?: ArrayBuffer;
+        elementsBaseDir?: string;
     }): Promise<HeadlessFinalizedFoot>;
 }
 
 const SAMPLE_TOP_URL = new URL("../../../public/Templates/SAMPLE_Top.glb", import.meta.url);
+const TEXT_FONT_URL = new URL("../../../public/fonts/Inter-Bold.ttf", import.meta.url);
+const ELEMENTS_DIR_URL = new URL("../../../public/elements/", import.meta.url);
+const CANONICAL_EXPORT_LOFT_URL = new URL("./canonical-export-loft.js", import.meta.url);
 
 let sampleTopBytes: ArrayBuffer | null = null;
+let textFontBytes: ArrayBuffer | null = null;
 let meshModule: FinalizedMeshModule | null = null;
 
 async function ensureBrowserParser(): Promise<void> {
@@ -46,11 +52,22 @@ async function loadMeshModule(): Promise<FinalizedMeshModule> {
     return meshModule;
 }
 
+function arrayBufferOf(bytes: Buffer): ArrayBuffer {
+    const copy = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(copy).set(bytes);
+    return copy;
+}
+
 async function bundledSampleTop(): Promise<ArrayBuffer> {
     if (sampleTopBytes) return sampleTopBytes;
-    const bytes = await readFile(fileURLToPath(SAMPLE_TOP_URL));
-    sampleTopBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    sampleTopBytes = arrayBufferOf(await readFile(fileURLToPath(SAMPLE_TOP_URL)));
     return sampleTopBytes;
+}
+
+async function bundledTextFont(): Promise<ArrayBuffer> {
+    if (textFontBytes) return textFontBytes;
+    textFontBytes = arrayBufferOf(await readFile(fileURLToPath(TEXT_FONT_URL)));
+    return textFontBytes;
 }
 
 /**
@@ -64,20 +81,36 @@ export async function buildHeadlessFinalizedFoot(input: {
     try {
         const mod = await loadMeshModule();
         const sampleTop = await bundledSampleTop();
+        const fontBytes = await bundledTextFont();
         return await mod.buildFinalizedFootFromSavedSettings({
             settingsJson: input.settingsJson,
             side: input.side,
             sampleTopBytes: sampleTop,
             includeLeader: true,
+            fontBytes,
+            elementsBaseDir: fileURLToPath(ELEMENTS_DIR_URL),
         });
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(
             `Canonical Export mesh is not available headless (${message}). Refusing to substitute a different mesh.`,
+            { cause: error },
         );
     }
 }
 
 export function sampleTopFileUrl(): string {
     return SAMPLE_TOP_URL.href;
+}
+
+export function textFontFileUrl(): string {
+    return TEXT_FONT_URL.href;
+}
+
+export function elementsDirectoryUrl(): string {
+    return ELEMENTS_DIR_URL.href;
+}
+
+export function canonicalExportLoftUrl(): string {
+    return CANONICAL_EXPORT_LOFT_URL.href;
 }
