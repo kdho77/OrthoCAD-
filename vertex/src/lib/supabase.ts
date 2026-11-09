@@ -1,12 +1,12 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { viteEnv } from "./vite-env";
+import { readViteConfig } from "./vite-env";
 
 // Supabase Auth foundation. Credentials are injected at build time via Vite env
 // vars. We export a lazily-created singleton so the rest of the app can import
 // `getSupabase()` without crashing when env is not yet configured (Phase 0).
 
-const url = viteEnv().VITE_SUPABASE_URL;
-const anonKey = viteEnv().VITE_SUPABASE_ANON_KEY;
+const url = readViteConfig().VITE_SUPABASE_URL;
+const anonKey = readViteConfig().VITE_SUPABASE_ANON_KEY;
 
 let client: SupabaseClient | null = null;
 

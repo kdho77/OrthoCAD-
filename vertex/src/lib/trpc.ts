@@ -4,9 +4,9 @@ import type { AppRouter } from "../../server/src/routers";
 import { devAuthHeaderValue } from "./dev-auth";
 import { getSupabase, isSupabaseConfigured } from "./supabase";
 import { looksLikeJsonRpcBody, mapTrpcHttpFailure } from "./trpc-errors";
-import { viteEnv } from "./vite-env";
+import { readViteConfig } from "./vite-env";
 
-const rawApiUrl = viteEnv().VITE_API_URL;
+const rawApiUrl = readViteConfig().VITE_API_URL;
 
 /** Normalize VITE_API_URL so httpBatchLink always targets the tRPC mount (…/trpc). */
 function normalizeApiUrl(url: string | undefined): string | undefined {
