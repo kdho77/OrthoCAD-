@@ -40,9 +40,13 @@ export interface DesignRecord {
     state: DesignState;
 }
 
+export type DirectoryStatus = "idle" | "loading" | "ready";
+
 interface ClientStore {
     clients: ClientRecord[];
     designs: DesignRecord[];
+    /** `ready` once the session directory has been fetched, or when no API is configured. */
+    directoryStatus: DirectoryStatus;
     activeClientId: string | null;
     activeDesignId: string | null;
 
@@ -65,6 +69,8 @@ interface ClientStore {
     markExported: (id: string) => void;
     setActiveDesign: (id: string | null) => void;
     replaceDirectory: (clients: ClientRecord[], designs: DesignRecord[]) => void;
+    /** Fetch the session directory once. No-ops when it is already loaded or the API is off. */
+    loadDirectory: () => Promise<void>;
 }
 
 function actorIds(): { id: string; tenantId: string | null; tenantName?: string | null } {
@@ -85,9 +91,22 @@ function withoutPhi<
     return { ...row, dateOfBirth: null, mrn: null, email: null, phone: null, notes: null };
 }
 
+/**
+ * A deep link can render before `client.list` fills the in-memory directory.
+ * The id is unresolved only while that fetch can still produce the row.
+ */
+export function isDirectoryUnresolved(hasRecord: boolean, status: DirectoryStatus): boolean {
+    if (hasRecord || !isApiConfigured()) return false;
+    return status !== "ready";
+}
+
+let directoryEpoch = 0;
+let directoryRequest: Promise<void> | null = null;
+
 export const useClientStore = create<ClientStore>()((set, get) => ({
     clients: [],
     designs: [],
+    directoryStatus: "idle",
     activeClientId: null,
     activeDesignId: null,
 
@@ -280,5 +299,59 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
         set({
             clients: clients.map(withoutPhi),
             designs: designs.map((design) => (storePhiEnabled() ? design : { ...design, notes: "" })),
+            directoryStatus: "ready",
         }),
+    loadDirectory: () => {
+        if (!isApiConfigured()) {
+            if (get().directoryStatus !== "ready") set({ directoryStatus: "ready" });
+            return Promise.resolve();
+        }
+        if (get().directoryStatus === "ready") return Promise.resolve();
+        if (directoryRequest) return directoryRequest;
+        const epoch = directoryEpoch;
+        set({ directoryStatus: "loading" });
+        const request = (async () => {
+            try {
+                const items = await trpc.client.list.query();
+                if (epoch !== directoryEpoch || get().directoryStatus === "ready") return;
+                // design-store imports this module; keep the import lazy so init does not cycle.
+                const { createDesignWithStockPlaceholder } = await import("@/stores/design-store");
+                if (epoch !== directoryEpoch || get().directoryStatus === "ready") return;
+                const local = get().designs;
+                get().replaceDirectory(
+                    items.map((item) => item.client),
+                    items.flatMap((item) =>
+                        item.designs.map((design) => ({
+                            ...design,
+                            notes: design.notes ?? "",
+                            state:
+                                local.find((row) => row.id === design.id)?.state ??
+                                createDesignWithStockPlaceholder(),
+                        })),
+                    ),
+                );
+            } catch (error) {
+                console.warn("[clients] list failed", error);
+                if (epoch !== directoryEpoch) return;
+                if (get().directoryStatus !== "ready") set({ directoryStatus: "ready" });
+            } finally {
+                if (epoch === directoryEpoch) directoryRequest = null;
+            }
+        })();
+        directoryRequest = request;
+        return request;
+    },
 }));
+
+/** Drop an in-flight directory fetch so the next load starts clean. Used by tests. */
+export function resetClientDirectoryLoad(): void {
+    directoryEpoch += 1;
+    directoryRequest = null;
+    useClientStore.setState({
+        clients: [],
+        designs: [],
+        activeClientId: null,
+        activeDesignId: null,
+        directoryStatus: "idle",
+    });
+}
