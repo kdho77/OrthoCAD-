@@ -9,6 +9,7 @@ import {
     elementFootprintT,
     elementHeightAt,
     elementOutlineLocalMm,
+    mortonsMeshFrame,
 } from "./elements";
 import { instanceWorldPosition, projectViewNdcX } from "./viewport-side-layout";
 
@@ -63,6 +64,45 @@ describe("anatomical element footprints", () => {
         expect(rx).toBeGreaterThan(ry);
         expect(elementFootprintT("mortons_extension", rx * 0.7, 0, rx, ry)).toBeLessThan(1);
         expect(elementFootprintT("mortons_extension", 0, ry * 1.2, rx, ry)).toBeGreaterThan(1);
+    });
+
+    test("Morton's extension defaults to the medial 1st ray at 3 mm, mirrored left and right", () => {
+        expect(ELEMENT_PROFILES.mortons_extension.defaultHeightMm).toBe(3);
+        const length = 260;
+        const width = 95;
+        const left = defaultElementPose("mortons_extension", "left", length, width);
+        const right = defaultElementPose("mortons_extension", "right", length, width);
+        expect(left.heightMm).toBe(3);
+        expect(right.heightMm).toBe(3);
+        // Height-field medial is +Y on the left (medialYSign) and the mirror on the right.
+        expect(left.position.y).toBeGreaterThan(0);
+        expect(right.position.y).toBeLessThan(0);
+        expect(right.position.y).toBeCloseTo(-left.position.y, 5);
+        expect(right.position.x).toBeCloseTo(left.position.x, 5);
+        // Displayed mesh / gizmo: −Y left, +Y right, on the same strip.
+        expect(mortonsMeshFrame(left.position.y, 0).y).toBeLessThan(0);
+        expect(mortonsMeshFrame(right.position.y, 0).y).toBeGreaterThan(0);
+        expect(mortonsMeshFrame(left.position.y, 12).rotationDeg).toBe(-12);
+
+        for (const side of ["left", "right"] as const) {
+            const pose = side === "left" ? left : right;
+            const el: PlacedElement = {
+                id: side,
+                kind: "mortons_extension",
+                side,
+                position: pose.position,
+                rotationDeg: pose.rotationDeg,
+                scale: pose.scale,
+                heightMm: pose.heightMm,
+            };
+            const x = length / 2 + pose.position.x;
+            const onRay = elementHeightAt([el], x, pose.position.y, length);
+            const offRay = elementHeightAt([el], x, -pose.position.y, length);
+            expect(onRay).toBeGreaterThan(2);
+            expect(offRay).toBe(0);
+            // Anterior third, under the 1st ray rather than the midfoot.
+            expect(pose.position.x).toBeGreaterThan(length * 0.15);
+        }
     });
 
     test("Cluffy wedge tapers to a distal apex", () => {

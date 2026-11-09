@@ -199,7 +199,7 @@ const ELEMENT_PROFILES: Record<
     toe_crest: { defaultHeightMm: 2.47, defaultU: 0.7802, defaultMedial: -0.2859 },
     cuboid_pad: { defaultHeightMm: 6.37, defaultU: 0.3448, defaultMedial: -0.6865 },
     cluffy_wedge: { defaultHeightMm: 2.4, defaultU: 0.7744, defaultMedial: 0.6413 },
-    mortons_extension: { defaultHeightMm: 2, defaultU: 0.78, defaultMedial: 0.5 },
+    mortons_extension: { defaultHeightMm: 3, defaultU: 0.78, defaultMedial: 0.5 },
     reverse_mortons: { defaultHeightMm: 2.5, defaultU: 0.7, defaultMedial: -0.1 },
     kinetic_wedge: { defaultHeightMm: 2.5, defaultU: 0.72, defaultMedial: 0.48 },
     heel_sink: { defaultHeightMm: 2, defaultU: 0.12, defaultMedial: 0 },

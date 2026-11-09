@@ -9,6 +9,7 @@ import type {
 } from "three-stdlib";
 import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import { gizmoElementScale } from "@/lib/geometry/element-scale";
+import { mortonsMeshFrame } from "@/lib/geometry/elements";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { sinksForSide } from "@/lib/geometry/migrate-corrections";
 import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -21,11 +22,13 @@ import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { DesignState, PlacedElement, Side } from "@/types";
 import {
+    designFootprintStyle,
     elementFootprintPose,
     type FootprintPose,
     footprintStyle,
     footprintSurfaceZ,
     isLibrarySinkElement,
+    showsDesignFootprint,
     sinkFootprintPose,
 } from "./element-footprints";
 
@@ -33,9 +36,10 @@ import {
  * Elements-step viewer overlay.
  *
  * Each placed sink (MPJ, styloid, heel, navicular) is a semi-transparent
- * magenta planform on the insole top. The selected sink is brighter. Wedges
- * and pads are not drawn. Visible from the Top and Bottom cameras. The move
- * gizmo is still only the selected library element. Nothing here is exported.
+ * magenta planform on the insole top. Morton's extension is a purple planform
+ * on the medial 1st ray. The selected patch is brighter. Wedges and pads are
+ * not drawn. Visible from the Top and Bottom cameras. The move gizmo is still
+ * only the selected library element. Nothing here is exported.
  */
 export function ElementMarkers() {
     const print = useClinicalWorkflowStore((s) => s.step === "print" || s.step === "export");
@@ -89,7 +93,7 @@ function FootprintPatch({
     selected: boolean;
     onSelect: () => void;
 }) {
-    const style = footprintStyle(selected);
+    const style = pose.tone === "design" ? designFootprintStyle(selected) : footprintStyle(selected);
     const outlineKey = pose.outline.map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(";");
     // outlineKey serializes pose.outline so a new array with the same coordinates does not rebuild.
     // biome-ignore lint/correctness/useExhaustiveDependencies: outlineKey serializes pose.outline
@@ -161,8 +165,9 @@ function sinkOutlineForSide(
 }
 
 /**
- * Semi-transparent sink planforms. Drawn in the same Rx(−90°) frame as the
- * insole so Top and Bottom both see the patch. Wedges and pads are skipped.
+ * Sink planforms plus the Morton's extension strip. Drawn in the same Rx(−90°)
+ * frame as the insole so Top and Bottom both see the patch. Wedges and pads
+ * are skipped.
  */
 export function ElementFootprints() {
     const design = useDesignStore((s) => s.design);
@@ -180,36 +185,40 @@ export function ElementFootprints() {
         if (selectedId) setSelectedSink(null);
     }, [selectedId]);
 
-    const librarySinks = useMemo(
-        () =>
-            design.elements.flatMap((element) => {
-                if (!isLibrarySinkElement(element)) return [];
-                const preview = previews[element.id];
-                if (!preview) return [element];
-                return [
-                    {
-                        ...element,
-                        ...(preview.position ? { position: preview.position } : {}),
-                        ...(preview.rotationDeg !== undefined ? { rotationDeg: preview.rotationDeg } : {}),
-                        ...(preview.scale ? { scale: preview.scale } : {}),
-                        ...(preview.heightMm !== undefined ? { heightMm: preview.heightMm } : {}),
-                    },
-                ];
-            }),
-        [design.elements, previews],
+    const applyPreview = (element: PlacedElement): PlacedElement => {
+        const preview = previews[element.id];
+        if (!preview) return element;
+        return {
+            ...element,
+            ...(preview.position ? { position: preview.position } : {}),
+            ...(preview.rotationDeg !== undefined ? { rotationDeg: preview.rotationDeg } : {}),
+            ...(preview.scale ? { scale: preview.scale } : {}),
+            ...(preview.heightMm !== undefined ? { heightMm: preview.heightMm } : {}),
+        };
+    };
+    const librarySinks = design.elements.flatMap((element) =>
+        isLibrarySinkElement(element) ? [applyPreview(element)] : [],
+    );
+    const designFootprints = design.elements.flatMap((element) =>
+        showsDesignFootprint(element) ? [applyPreview(element)] : [],
     );
 
     const visible = (side: Side) => (side === "left" ? showLeft : showRight);
     const sides = (["left", "right"] as const).filter(visible);
     const anyPlacedSink = sides.some((side) => (sinksForSide(design, side)?.length ?? 0) > 0);
     const anyLibrarySink = librarySinks.some((element) => visible(element.side));
-    if (sides.length === 0 || (!anyLibrarySink && !anyPlacedSink)) return null;
+    const anyDesign = designFootprints.some((element) => visible(element.side));
+    if (sides.length === 0 || (!anyLibrarySink && !anyPlacedSink && !anyDesign)) return null;
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             {sides.map((side) => {
                 const poses: FootprintPose[] = [];
                 for (const element of librarySinks) {
+                    if (element.side !== side) continue;
+                    poses.push(elementFootprintPose(element, layout.lengthMm));
+                }
+                for (const element of designFootprints) {
                     if (element.side !== side) continue;
                     poses.push(elementFootprintPose(element, layout.lengthMm));
                 }
@@ -279,6 +288,10 @@ function SelectedElementGizmo({
     const orbitControls = useThree((s) => s.controls);
 
     const zTop = element.heightMm + 4;
+    const displayed =
+        element.kind === "mortons_extension"
+            ? mortonsMeshFrame(element.position.y, element.rotationDeg)
+            : null;
 
     const previewFrame = useRef<number | null>(null);
     const cancelPreview = useCallback(() => {
@@ -301,13 +314,17 @@ function SelectedElementGizmo({
                 : element.scale;
         // Keep the handles and rendered preview on the same constrained XY scale.
         node.scale.set(scale.x, scale.y, 1);
+        const meshY = node.position.y;
+        const meshRot = (node.rotation.z * 180) / Math.PI;
+        // The gizmo lives in mesh Y. Morton's pose is stored on the height-field axis.
+        const stored = element.kind === "mortons_extension" ? mortonsMeshFrame(meshY, meshRot) : null;
         return {
             id: element.id,
-            position: { x: node.position.x - centerX, y: node.position.y },
-            rotationDeg: (node.rotation.z * 180) / Math.PI,
+            position: { x: node.position.x - centerX, y: stored ? stored.y : meshY },
+            rotationDeg: stored ? stored.rotationDeg : meshRot,
             scale,
         };
-    }, [node, mode, element.scale, element.scaleLocked, element.id, centerX]);
+    }, [node, mode, element.scale, element.scaleLocked, element.id, element.kind, centerX]);
 
     const commitTransform = useCallback(() => {
         cancelPreview();
@@ -359,8 +376,16 @@ function SelectedElementGizmo({
                 <group position={[-centerX, sideOffsetX(element.side, widthMm), 0]}>
                     <group
                         ref={setNode}
-                        position={[centerX + element.position.x, element.position.y, zTop]}
-                        rotation={[0, 0, (element.rotationDeg * Math.PI) / 180]}
+                        position={[
+                            centerX + element.position.x,
+                            displayed ? displayed.y : element.position.y,
+                            zTop,
+                        ]}
+                        rotation={[
+                            0,
+                            0,
+                            ((displayed ? displayed.rotationDeg : element.rotationDeg) * Math.PI) / 180,
+                        ]}
                         scale={[element.scale.x, element.scale.y, 1]}
                     />
                 </group>

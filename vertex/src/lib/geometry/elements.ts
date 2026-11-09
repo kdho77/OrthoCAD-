@@ -100,13 +100,13 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultMedial: 0.6413,
     },
     // Morton's extension: rigid strip under 1st ray from met neck through
-    // hallux. Long AP, narrow ML. ~56 × 18 mm.
+    // hallux. Long AP, narrow ML. ~56 × 18 mm. Stock height is 3 mm.
     mortons_extension: {
         rxMm: 28,
         ryMm: 9,
         sign: 1,
         shape: "first_ray_strip",
-        defaultHeightMm: 2,
+        defaultHeightMm: 3,
         defaultU: 0.78,
         defaultMedial: 0.5,
     },
@@ -196,6 +196,17 @@ const DEG = Math.PI / 180;
 function medialYSign(side: Side): number {
     // Left: +y is medial; right: −y is medial (matches height-field convention).
     return side === "left" ? 1 : -1;
+}
+
+/**
+ * Morton's stored pose uses {@link medialYSign} (+Y = left-foot medial).
+ * The stock mesh, gizmo, and planform overlay use the opposite axis
+ * (medialSign: −Y left, +Y right). Reflect Y and rotation so the anchor
+ * sits on the same 1st-ray strip the height field raises. Applying this
+ * twice returns the clinical pose.
+ */
+export function mortonsMeshFrame(y: number, rotationDeg: number): { y: number; rotationDeg: number } {
+    return { y: -y, rotationDeg: -rotationDeg };
 }
 
 function clamp01(t: number): number {

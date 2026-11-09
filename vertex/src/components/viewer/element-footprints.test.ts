@@ -7,6 +7,7 @@ import * as React from "react";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Euler, Vector3 } from "three";
+import { DESIGN_ELEMENT_COLOR } from "@/lib/geometry/element-visualization";
 import { defaultElementPose } from "@/lib/geometry/elements";
 import { medialSign } from "@/lib/geometry/handedness";
 import { sideOffsetX } from "@/lib/geometry/layout";
@@ -19,12 +20,14 @@ import { usePerformanceStore } from "@/stores/performance-store";
 import type { PlacedElement, PlacedSink, Side } from "@/types";
 import { ElementFootprints, ElementMarkers } from "./ElementMarkers";
 import {
+    DESIGN_FOOTPRINT_COLORS,
     elementFootprintPose,
     footprintLocalToAnatomical,
     footprintStyle,
     footprintSurfaceZ,
     isLibrarySinkElement,
     SINK_FOOTPRINT_COLORS,
+    showsDesignFootprint,
     sinkFootprintPose,
 } from "./element-footprints";
 
@@ -80,6 +83,9 @@ describe("element footprint planforms", () => {
         expect(isLibrarySinkElement({ ...placed("met_pad", "left"), kind: "custom" })).toBe(false);
         expect(isLibrarySinkElement(placed("heel_sink", "left"))).toBe(true);
         expect(isLibrarySinkElement(placed("navicular_sink", "right"))).toBe(true);
+        expect(isLibrarySinkElement(placed("mortons_extension", "left"))).toBe(false);
+        expect(showsDesignFootprint(placed("mortons_extension", "right"))).toBe(true);
+        expect(showsDesignFootprint(placed("cluffy_wedge", "left"))).toBe(false);
 
         const heel = elementFootprintPose(placed("heel_sink", "left"), layout.lengthMm);
         expect(heel.kind).toBe("element");
@@ -282,6 +288,42 @@ describe("element footprint overlay", () => {
         expect(footprintNames().find((n) => n.includes("sink:sink-l"))).toContain(
             SINK_FOOTPRINT_COLORS.selectedFill,
         );
+    });
+
+    test("Morton's extension draws a purple medial planform and wedges stay hidden", async () => {
+        const design = JSON.parse(JSON.stringify(useDesignStore.getInitialState().design));
+        design.elements = [
+            placed("mortons_extension", "left", "mort-l"),
+            placed("mortons_extension", "right", "mort-r"),
+            placed("kinetic_wedge", "left", "wedge-l"),
+        ];
+        design.sinks = { left: [], right: [] };
+        useDesignStore.setState({
+            design,
+            selectedElementId: null,
+            viewer: { ...useDesignStore.getState().viewer, showLeft: true, showRight: true },
+        });
+        await act(async () => root.render(createElement(ElementFootprints)));
+        const names = footprintNames();
+        expect(names.some((n) => n.includes("element:mort-l") && n.includes(DESIGN_ELEMENT_COLOR))).toBe(
+            true,
+        );
+        expect(names.some((n) => n.includes("element:mort-r") && n.includes(DESIGN_ELEMENT_COLOR))).toBe(
+            true,
+        );
+        expect(names.some((n) => n.includes("wedge"))).toBe(false);
+        expect(DESIGN_FOOTPRINT_COLORS.fill).toBe(DESIGN_ELEMENT_COLOR);
+        const leftPose = elementFootprintPose(placed("mortons_extension", "left", "mort-l"), layout.lengthMm);
+        const rightPose = elementFootprintPose(
+            placed("mortons_extension", "right", "mort-r"),
+            layout.lengthMm,
+        );
+        expect(Math.sign(leftPose.y)).toBe(medialSign("left"));
+        expect(Math.sign(rightPose.y)).toBe(medialSign("right"));
+        expect(leftPose.y).toBeLessThan(0);
+        expect(rightPose.y).toBeGreaterThan(0);
+        expect(rightPose.y).toBeCloseTo(-leftPose.y, 5);
+        expect(leftPose.x).toBeGreaterThan(layout.lengthMm * 0.65);
     });
 
     test("print and export do not mount the overlay", async () => {

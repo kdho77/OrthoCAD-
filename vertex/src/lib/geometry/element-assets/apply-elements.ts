@@ -237,6 +237,10 @@ function applyProceduralElements(
         (e) => e.side === field.side && e.kind !== "custom" && !assetKinds.has(e.kind),
     );
     if (procedural.length === 0) return;
+    // Morton's length is measured from the heel, same as elementHeightAt / heightAt.
+    // Other procedural kinds keep the historical center-relative sample.
+    const mortons = procedural.filter((e) => e.kind === "mortons_extension");
+    const others = procedural.filter((e) => e.kind !== "mortons_extension");
     const frame = getBaseFootprintFrame(base, field.side);
     const pos = geometry.getAttribute("position") as BufferAttribute;
     const basePos = base.getAttribute("position")!.array as Float32Array;
@@ -256,7 +260,12 @@ function applyProceduralElements(
         const yMm = vSigned * hw;
         const { u, vSigned: vs } = vertexFootprintAt(frame, basePos, i);
         if (rimBandClipFactor(u, vs, field) < 0.5) continue;
-        const h = elementHeightAt(procedural, xMm, yMm, field.lengthMm);
+        let h = 0;
+        if (others.length > 0) h += elementHeightAt(others, xMm, yMm, field.lengthMm);
+        if (mortons.length > 0) {
+            const uLen = (lenCoord - frame.lenMin) / frame.lenSize;
+            h += elementHeightAt(mortons, uLen * field.lengthMm, yMm, field.lengthMm);
+        }
         if (h === 0) continue;
         const z0 = arr[i * 3 + ta]!;
         if (h > 0) arr[i * 3 + ta] = Math.max(z0, z0 + h);
