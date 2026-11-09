@@ -111,6 +111,14 @@ import {
     type WallStyleParams,
 } from "./wall-style";
 
+// Geometry debug only. Off unless ORTHOCAD_RND_DEBUG=1. Does not change mesh bytes.
+const rndConsoleLog = console.log.bind(console);
+console.log = ((...args: unknown[]) => {
+    const head = typeof args[0] === "string" ? args[0] : "";
+    if (head.includes("[RND-") && process.env.ORTHOCAD_RND_DEBUG !== "1") return;
+    rndConsoleLog(...(args as Parameters<typeof console.log>));
+}) as typeof console.log;
+
 export interface ColumnJunction {
     planeN: XYZ;
     slopeRad: number;

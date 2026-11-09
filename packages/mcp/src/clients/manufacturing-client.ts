@@ -25,6 +25,16 @@ export type OrthocadMcpTrpcProxy = {
                 productionId: string;
             }) => Promise<{ downloadUrl: string; productionId: string }>;
         };
+        getProduction: {
+            query: (input: { productionId: string }) => Promise<Record<string, unknown>>;
+        };
+        listProductionsByDesign: {
+            query: (input: {
+                designId: string;
+                side?: "left" | "right";
+                presetId?: string;
+            }) => Promise<Record<string, unknown>>;
+        };
         persistSavedDesignSnapshot: {
             mutate: (input: { designId: string; catalog?: unknown }) => Promise<Record<string, unknown>>;
         };
@@ -124,6 +134,16 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
         /** Call site: vertex/server/src/routers/manufacturing.ts getGcodeDownloadUrl */
         getGcodeDownloadUrl(productionId: string) {
             return trpc.manufacturing.getGcodeDownloadUrl.query({ productionId });
+        },
+
+        /** Status of one CAD-operator production. No G-code bytes. */
+        getProduction(productionId: string) {
+            return trpc.manufacturing.getProduction.query({ productionId });
+        },
+
+        /** Productions for one design. Optional side and preset filters. */
+        listProductionsByDesign(input: { designId: string; side?: "left" | "right"; presetId?: string }) {
+            return trpc.manufacturing.listProductionsByDesign.query(input);
         },
 
         /** Production parameter snapshot — settingsJson on the design document. */
