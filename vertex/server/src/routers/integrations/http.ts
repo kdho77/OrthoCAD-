@@ -221,6 +221,7 @@ export function createIntegrationHandler(deps: IntegrationDeps) {
                     orderedByAccount: parsed.data.ordered_by_account ?? null,
                     parentExternalOrderId: parsed.data.parent_external_order_id ?? null,
                     shoe,
+                    explicitShoeWidth: parsed.data.width ?? null,
                     scanSides,
                 });
                 return json(200, result);
