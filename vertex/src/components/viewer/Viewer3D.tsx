@@ -60,6 +60,15 @@ import { consumeScanMissDeselectSuppression, ScanTransformTool } from "./ScanTra
 import { SplitElementOverlays } from "./SplitElementOverlays";
 import { TrimlineEditTools } from "./TrimlineEditTools";
 
+/** Insole print step only. Hidden while scan markers cover the foot or the loft splash owns the viewport. */
+function showPrintSplitOverlays(
+    workflowStep: string,
+    hideInsoleForMarkers: boolean,
+    blockViewport: boolean,
+): boolean {
+    return workflowStep === "print" && !hideInsoleForMarkers && !blockViewport;
+}
+
 /** Cross-pad anatomical views (Left / Top / Bottom / Right / Front / Back). */
 const CROSS_VIEWS = {
     left: { name: "left" as const, label: "Left" },
@@ -327,9 +336,11 @@ export function Viewer3D() {
                             <ScanRotateTool />
                             <ScanTransformTool />
                             {!hideInsoleForMarkers && !loftOverlay.blockViewport ? <ElementMarkers /> : null}
-                            {workflowStep === "print" &&
-                            !hideInsoleForMarkers &&
-                            !loftOverlay.blockViewport ? (
+                            {showPrintSplitOverlays(
+                                workflowStep,
+                                hideInsoleForMarkers,
+                                loftOverlay.blockViewport,
+                            ) ? (
                                 <SplitElementOverlays />
                             ) : null}
                             {!printPreview ? <MeshEditTools /> : null}
