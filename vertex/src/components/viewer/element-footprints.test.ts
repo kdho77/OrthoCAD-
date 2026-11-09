@@ -9,10 +9,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { Euler, Vector3 } from "three";
 import { DESIGN_ELEMENT_COLOR } from "@/lib/geometry/element-visualization";
 import { defaultElementPose } from "@/lib/geometry/elements";
-import { medialSign } from "@/lib/geometry/handedness";
+import { medialSign, meshYSign } from "@/lib/geometry/handedness";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
-import { sinkCutMm, sinkFrame } from "@/lib/geometry/sink";
+import { SINK_KIND_ORDER, SINK_PROFILES, sinkCutMm, sinkFrame } from "@/lib/geometry/sink";
 import { projectViewNdcX, projectViewNdcY } from "@/lib/geometry/viewport-side-layout";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -324,6 +324,50 @@ describe("element footprint overlay", () => {
         expect(rightPose.y).toBeGreaterThan(0);
         expect(rightPose.y).toBeCloseTo(-leftPose.y, 5);
         expect(leftPose.x).toBeGreaterThan(layout.lengthMm * 0.65);
+    });
+
+    test("every registered sink draws a visible planform on its anatomical side", async () => {
+        const design = JSON.parse(JSON.stringify(useDesignStore.getInitialState().design));
+        design.elements = [];
+        design.sinks = {
+            left: SINK_KIND_ORDER.map((kind) => ({ id: `L-${kind}`, kind, depthMm: 2 })),
+            right: SINK_KIND_ORDER.map((kind) => ({ id: `R-${kind}`, kind, depthMm: 2 })),
+        };
+        useDesignStore.setState({
+            design,
+            selectedElementId: null,
+            viewer: { ...useDesignStore.getState().viewer, showLeft: true, showRight: true },
+        });
+        await act(async () => root.render(createElement(ElementFootprints)));
+        const names = footprintNames();
+        expect(footprintStyle(false).opacity).toBeGreaterThan(0.85);
+        expect(names.length).toBe(SINK_KIND_ORDER.length * 2);
+        for (const kind of SINK_KIND_ORDER) {
+            const fill = SINK_FOOTPRINT_COLORS.fill;
+            expect(names.some((n) => n.includes(`sink:L-${kind}`) && n.includes(fill))).toBe(true);
+            expect(names.some((n) => n.includes(`sink:R-${kind}`) && n.includes(fill))).toBe(true);
+            const anatomical = SINK_PROFILES[kind].anatomicalSide;
+            if (anatomical === "midline") continue;
+            const left = required(
+                sinkFootprintPose(
+                    { id: `L-${kind}`, kind, depthMm: 2 },
+                    "left",
+                    layout.lengthMm,
+                    layout.widthMm,
+                ),
+            );
+            const right = required(
+                sinkFootprintPose(
+                    { id: `R-${kind}`, kind, depthMm: 2 },
+                    "right",
+                    layout.lengthMm,
+                    layout.widthMm,
+                ),
+            );
+            expect(Math.sign(left.y)).toBe(meshYSign("left", anatomical));
+            expect(Math.sign(right.y)).toBe(meshYSign("right", anatomical));
+            expect(right.y).not.toBeCloseTo(left.y, 3);
+        }
     });
 
     test("print and export do not mount the overlay", async () => {

@@ -3,7 +3,6 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { isLibraryHeightFieldKind } from "@/lib/geometry/element-assets/types";
-import { mortonsMeshFrame } from "@/lib/geometry/elements";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { elementPreviewColor, splitOverlayOutline } from "@/lib/hardness/split-overlay";
@@ -44,9 +43,6 @@ function SplitPatch({
     const preview = usePerformanceStore((s) => s.elementPreviews[element.id]);
     const pos = preview?.position ?? element.position;
     const rot = preview?.rotationDeg ?? element.rotationDeg;
-    const mesh = element.kind === "mortons_extension" ? mortonsMeshFrame(pos.y, rot) : null;
-    const displayY = mesh ? mesh.y : pos.y;
-    const displayRot = mesh ? mesh.rotationDeg : rot;
     const heightMm = preview?.heightMm ?? element.heightMm;
     const selected = selectedId === element.id;
     const color = elementPreviewColor(element, true, selected, splitOn);
@@ -76,10 +72,7 @@ function SplitPatch({
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             <group position={[-centerX, sideOffsetX(element.side, widthMm), 0]}>
-                <group
-                    position={[centerX + pos.x, displayY, z]}
-                    rotation={[0, 0, (displayRot * Math.PI) / 180]}
-                >
+                <group position={[centerX + pos.x, pos.y, z]} rotation={[0, 0, (rot * Math.PI) / 180]}>
                     {/* biome-ignore lint/a11y/noStaticElementInteractions: R3F mesh pick target */}
                     <mesh
                         geometry={fill}

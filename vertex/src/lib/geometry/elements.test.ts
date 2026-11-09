@@ -9,8 +9,8 @@ import {
     elementFootprintT,
     elementHeightAt,
     elementOutlineLocalMm,
-    mortonsMeshFrame,
 } from "./elements";
+import { heightFieldYFromMeshY, meshYSign } from "./handedness";
 import { instanceWorldPosition, projectViewNdcX } from "./viewport-side-layout";
 
 const KINDS = Object.keys(ELEMENT_PROFILES) as ElementKind[];
@@ -74,15 +74,12 @@ describe("anatomical element footprints", () => {
         const right = defaultElementPose("mortons_extension", "right", length, width);
         expect(left.heightMm).toBe(3);
         expect(right.heightMm).toBe(3);
-        // Height-field medial is +Y on the left (medialYSign) and the mirror on the right.
-        expect(left.position.y).toBeGreaterThan(0);
-        expect(right.position.y).toBeLessThan(0);
+        expect(Math.sign(left.position.y)).toBe(meshYSign("left", "medial"));
+        expect(Math.sign(right.position.y)).toBe(meshYSign("right", "medial"));
         expect(right.position.y).toBeCloseTo(-left.position.y, 5);
         expect(right.position.x).toBeCloseTo(left.position.x, 5);
-        // Displayed mesh / gizmo: −Y left, +Y right, on the same strip.
-        expect(mortonsMeshFrame(left.position.y, 0).y).toBeLessThan(0);
-        expect(mortonsMeshFrame(right.position.y, 0).y).toBeGreaterThan(0);
-        expect(mortonsMeshFrame(left.position.y, 12).rotationDeg).toBe(-12);
+        expect(left.position.y).toBeLessThan(0);
+        expect(right.position.y).toBeGreaterThan(0);
 
         for (const side of ["left", "right"] as const) {
             const pose = side === "left" ? left : right;
@@ -96,11 +93,10 @@ describe("anatomical element footprints", () => {
                 heightMm: pose.heightMm,
             };
             const x = length / 2 + pose.position.x;
-            const onRay = elementHeightAt([el], x, pose.position.y, length);
-            const offRay = elementHeightAt([el], x, -pose.position.y, length);
+            const onRay = elementHeightAt([el], x, heightFieldYFromMeshY(pose.position.y), length);
+            const offRay = elementHeightAt([el], x, pose.position.y, length);
             expect(onRay).toBeGreaterThan(2);
             expect(offRay).toBe(0);
-            // Anterior third, under the 1st ray rather than the midfoot.
             expect(pose.position.x).toBeGreaterThan(length * 0.15);
         }
     });

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { DESIGN_ELEMENT_COLOR } from "@/lib/geometry/element-visualization";
-import { ELEMENT_PROFILES, type ElementShape, mortonsMeshFrame } from "@/lib/geometry/elements";
+import { ELEMENT_PROFILES, type ElementShape } from "@/lib/geometry/elements";
 import { medialSign, meshYFromAnatomicalLateral } from "@/lib/geometry/handedness";
 import { heightAt } from "@/lib/geometry/height-field";
 import { sinkStyloidThickenForSide, sinksForSide } from "@/lib/geometry/migrate-corrections";
@@ -22,10 +22,10 @@ import type { DesignState, PlacedElement, PlacedSink, Side } from "@/types";
 export const SINK_FOOTPRINT_COLORS = {
     fill: "#e879f9",
     edge: "#e879f9",
-    opacity: 0.72,
+    opacity: 0.94,
     selectedFill: "#ff00ff",
     selectedEdge: "#ffffff",
-    selectedOpacity: 0.9,
+    selectedOpacity: 0.98,
 } as const;
 
 /** Solid design-element purple for Morton's extension, visible on the insole top. */
@@ -155,17 +155,13 @@ function outlineHalfExtents(outline: { x: number; y: number }[]): {
 export function elementFootprintPose(element: PlacedElement, lengthMm: number): FootprintPose {
     const outline = splitOverlayOutline(element);
     const extents = outlineHalfExtents(outline);
-    const mesh =
-        element.kind === "mortons_extension"
-            ? mortonsMeshFrame(element.position.y, element.rotationDeg)
-            : null;
     return {
         id: element.id,
         side: element.side,
         kind: "element",
         x: lengthMm / 2 + element.position.x,
-        y: mesh ? mesh.y : element.position.y,
-        rotationDeg: mesh ? mesh.rotationDeg : element.rotationDeg,
+        y: element.position.y,
+        rotationDeg: element.rotationDeg,
         halfLengthMm: extents.halfLengthMm,
         halfWidthMm: extents.halfWidthMm,
         outline,

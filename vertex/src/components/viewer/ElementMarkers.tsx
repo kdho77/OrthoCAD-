@@ -9,7 +9,6 @@ import type {
 } from "three-stdlib";
 import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import { gizmoElementScale } from "@/lib/geometry/element-scale";
-import { mortonsMeshFrame } from "@/lib/geometry/elements";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { sinksForSide } from "@/lib/geometry/migrate-corrections";
 import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -288,10 +287,6 @@ function SelectedElementGizmo({
     const orbitControls = useThree((s) => s.controls);
 
     const zTop = element.heightMm + 4;
-    const displayed =
-        element.kind === "mortons_extension"
-            ? mortonsMeshFrame(element.position.y, element.rotationDeg)
-            : null;
 
     const previewFrame = useRef<number | null>(null);
     const cancelPreview = useCallback(() => {
@@ -314,17 +309,13 @@ function SelectedElementGizmo({
                 : element.scale;
         // Keep the handles and rendered preview on the same constrained XY scale.
         node.scale.set(scale.x, scale.y, 1);
-        const meshY = node.position.y;
-        const meshRot = (node.rotation.z * 180) / Math.PI;
-        // The gizmo lives in mesh Y. Morton's pose is stored on the height-field axis.
-        const stored = element.kind === "mortons_extension" ? mortonsMeshFrame(meshY, meshRot) : null;
         return {
             id: element.id,
-            position: { x: node.position.x - centerX, y: stored ? stored.y : meshY },
-            rotationDeg: stored ? stored.rotationDeg : meshRot,
+            position: { x: node.position.x - centerX, y: node.position.y },
+            rotationDeg: (node.rotation.z * 180) / Math.PI,
             scale,
         };
-    }, [node, mode, element.scale, element.scaleLocked, element.id, element.kind, centerX]);
+    }, [node, mode, element.scale, element.scaleLocked, element.id, centerX]);
 
     const commitTransform = useCallback(() => {
         cancelPreview();
@@ -376,16 +367,8 @@ function SelectedElementGizmo({
                 <group position={[-centerX, sideOffsetX(element.side, widthMm), 0]}>
                     <group
                         ref={setNode}
-                        position={[
-                            centerX + element.position.x,
-                            displayed ? displayed.y : element.position.y,
-                            zTop,
-                        ]}
-                        rotation={[
-                            0,
-                            0,
-                            ((displayed ? displayed.rotationDeg : element.rotationDeg) * Math.PI) / 180,
-                        ]}
+                        position={[centerX + element.position.x, element.position.y, zTop]}
+                        rotation={[0, 0, (element.rotationDeg * Math.PI) / 180]}
                         scale={[element.scale.x, element.scale.y, 1]}
                     />
                 </group>
