@@ -12,7 +12,11 @@
             "destination": "/api/integrations"
         },
         {
-            "source": "/((?!api/|trpc/|elements/|Templates/).*)",
+            "source": "/print-bridge/:path*",
+            "destination": "/api/print-bridge"
+        },
+        {
+            "source": "/((?!api/|trpc/|elements/|Templates/|print-bridge/).*)",
             "destination": "/index.html"
         }
     ],
