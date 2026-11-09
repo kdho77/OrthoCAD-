@@ -45,6 +45,14 @@ enum ProductionMethod {
     milling_3axis
 }
 
+/// CAD-operator async manufacturing. Human rows stay `succeeded` via the column default.
+enum CadProductionStatus {
+    pending
+    running
+    succeeded
+    failed
+}
+
 enum ScanPattern {
     full_contact
     prefab_3d
@@ -529,16 +537,27 @@ model Element {
 }
 
 // A manufacturing run: slicing/CAM settings + generated artifact references.
+// Status, side, and idempotencyKey are additive. Existing rows default to succeeded.
+// The human charge RPC does not set them. Null idempotency keys stay non-unique.
 model Production {
-    id              String           @id @default(uuid()) @db.Uuid
-    designId        String           @db.Uuid
-    method          ProductionMethod
-    presetId        String // printer/mill preset id (e.g. apex-belt-v2)
-    beltAngleDeg    Float?
-    layerHeightMm   Float?
-    material        String?
-    gcodeStorageKey String?
-    createdAt       DateTime         @default(now())
+    id                   String              @id @default(uuid()) @db.Uuid
+    designId             String              @db.Uuid
+    method               ProductionMethod
+    presetId             String // printer/mill preset id (e.g. apex-belt-v2)
+    beltAngleDeg         Float?
+    layerHeightMm        Float?
+    material             String?
+    gcodeStorageKey      String?
+    createdAt            DateTime            @default(now())
+    status               CadProductionStatus @default(succeeded)
+    side                 Side?
+    idempotencyKey       String?             @unique
+    settingsFingerprint  String?
+    error                String?
+    updatedAt            DateTime            @default(now()) @updatedAt
+    leaseExpiresAt       DateTime?
+    chargedAt            DateTime?
+    exportId             String?             @db.Uuid
 
     design Design @relation(fields: [designId], references: [id], onDelete: Cascade)
 

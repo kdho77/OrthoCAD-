@@ -29,10 +29,15 @@ validateServerEnv();
 const corsOrigin = process.env.CORS_ORIGIN ?? "*";
 
 // Disable body parsing so tRPC receives the raw JSON payload from httpBatchLink.
+// maxDuration covers CAD-operator waitUntil loft+slice. Pro serverless cap is 300s.
+// The HTTP response still returns as soon as the procedure finishes.
+export const maxDuration = 300;
+
 export const config = {
     api: {
         bodyParser: false,
     },
+    maxDuration: 300,
 };
 
 // ---------------------------------------------------------------------------
