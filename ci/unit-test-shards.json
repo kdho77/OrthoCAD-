@@ -121,6 +121,7 @@
                 "vertex/src/components/layout/AccountMenu.test.tsx",
                 "vertex/src/components/viewer/Viewer3D.print-selection.test.tsx",
                 "vertex/src/features/auth/session-profile.test.ts",
+                "vertex/src/features/clients/ClientFilePage.deeplink.test.tsx",
                 "vertex/src/features/clients/client-actions.test.ts",
                 "vertex/src/features/exports/ExportPanel.test.tsx",
                 "vertex/src/features/exports/saved-design-finalized-mesh.test.ts",
@@ -219,6 +220,7 @@
                 "vertex/src/components/layout/TopNav.test.tsx",
                 "vertex/src/components/viewer/element-markers-no-coin.test.ts",
                 "vertex/src/features/clients/DesignNotesField.test.tsx",
+                "vertex/src/features/clients/design-route.deeplink.test.tsx",
                 "vertex/src/features/clients/start-path.test.ts",
                 "vertex/src/features/exports/apex-print-material.test.ts",
                 "vertex/src/features/shape/OutlineEditEntries.test.tsx",
@@ -287,6 +289,7 @@
                 "vertex/src/lib/geometry/text-marking/compose.test.ts",
                 "vertex/src/lib/geometry/trim-presets.test.ts",
                 "vertex/src/lib/library/loaders-order.test.ts",
+                "vertex/src/stores/client-store.directory.test.ts",
                 "vertex/src/stores/clinical-workflow-print-loft.test.ts",
                 "vertex/src/stores/preview-loft-status-store.test.ts"
             ]
