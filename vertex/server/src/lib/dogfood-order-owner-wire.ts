@@ -214,17 +214,41 @@ export interface OrderOwnerFetchDeps {
     timeoutMs?: number;
 }
 
+/** Correlation only. A non-UUID request id is not logged. */
+export function verifierCorrelationRecord(
+    requestId: string,
+    outcome: string,
+): { request_id: string; outcome: string } {
+    return {
+        request_id: UUID.test(requestId) ? requestId : "invalid",
+        outcome,
+    };
+}
+
+function logVerifierCorrelation(requestId: string, outcome: string): void {
+    console.info(JSON.stringify(verifierCorrelationRecord(requestId, outcome)));
+}
+
+function correlationOutcome(result: OrderPersonVerification): string {
+    return result.ok ? "accepted" : result.code;
+}
+
 export async function postOrderOwnerVerify(
     config: { origin: string; bearer: string },
     orderId: string,
     deps: OrderOwnerFetchDeps,
 ): Promise<OrderPersonVerification> {
+    const requestId = deps.requestId();
+    const finish = (result: OrderPersonVerification): OrderPersonVerification => {
+        logVerifierCorrelation(requestId, correlationOutcome(result));
+        return result;
+    };
     const origin = httpsOrigin(config.origin);
-    if (!origin || !config.bearer.trim()) return failure("verifier_unauthorized");
-    if (!isUuid(orderId)) return failure("verifier_untrusted");
+    if (!origin || !config.bearer.trim()) return finish(failure("verifier_unauthorized"));
+    if (!isUuid(orderId)) return finish(failure("verifier_untrusted"));
     const now = deps.now();
-    const request = orderOwnerWireRequest(orderId, now, deps.requestId());
-    if (!freshSeconds(request.issued_at, now)) return failure("verifier_stale");
+    const request = orderOwnerWireRequest(orderId, now, requestId);
+    if (!freshSeconds(request.issued_at, now)) return finish(failure("verifier_stale"));
     const timeout = AbortSignal.timeout(deps.timeoutMs ?? 10_000);
     let response: Response;
     try {
@@ -243,25 +267,33 @@ export async function postOrderOwnerVerify(
         Object.assign(init, { cache: "no-store" });
         response = await deps.fetchImpl(`${origin}${ORDER_OWNER_VERIFY_PATH}`, init);
     } catch {
-        return failure("verifier_unavailable");
+        return finish(failure("verifier_unavailable"));
     }
-    if (response.status >= 300 && response.status < 400) return failure("verifier_untrusted");
-    if (response.redirected || response.type === "opaqueredirect") return failure("verifier_untrusted");
-    const text = await response.text();
-    if (text.length > 4_000) return failure("verifier_untrusted");
+    if (response.status >= 300 && response.status < 400) return finish(failure("verifier_untrusted"));
+    if (response.redirected || response.type === "opaqueredirect")
+        return finish(failure("verifier_untrusted"));
+    let text: string;
+    try {
+        text = await response.text();
+    } catch {
+        return finish(failure("verifier_unavailable"));
+    }
+    if (text.length > 4_000) return finish(failure("verifier_untrusted"));
     let body: unknown;
     try {
         body = JSON.parse(text) as unknown;
     } catch {
-        return failure("verifier_untrusted");
+        return finish(failure("verifier_untrusted"));
     }
-    return interpretOrderOwnerResponse({
-        status: response.status,
-        redirected: response.redirected,
-        body,
-        request,
-        now,
-    });
+    return finish(
+        interpretOrderOwnerResponse({
+            status: response.status,
+            redirected: response.redirected,
+            body,
+            request,
+            now,
+        }),
+    );
 }
 
 export function dogfoodOrderOwnerVerifierFromEnv(
