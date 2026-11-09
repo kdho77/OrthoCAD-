@@ -10,7 +10,7 @@ import {
     defaultAfoSideCorrection,
 } from "@/lib/geometry/afo/defaults";
 import { cloneMesh } from "@/lib/geometry/afo/mesh-ops";
-import type { AfoClinicalMarkerId, AfoScanWorkflow, AfoTriMesh } from "@/lib/geometry/afo/types";
+import type { AfoClinicalMarkerId, AfoScanWorkflow, AfoTriMesh, AfoVec3 } from "@/lib/geometry/afo/types";
 import { useDesignStore } from "@/stores/design-store";
 import type { Side } from "@/types";
 
@@ -35,6 +35,8 @@ interface AfoSessionStore {
     placingLandmarkIndex: number;
     placingClinicalId: AfoClinicalMarkerId | null;
     placingTrim: boolean;
+    /** Cursor sample on the working mesh while a trim line is being placed. */
+    trimHover: AfoVec3 | null;
     draggingTrimIndex: number | null;
     workerProgress: { pct: number; stage: string } | null;
     lastError: string | null;
@@ -54,6 +56,7 @@ interface AfoSessionStore {
     setPlacingLandmarkIndex: (index: number) => void;
     setPlacingClinicalId: (id: AfoClinicalMarkerId | null) => void;
     setPlacingTrim: (on: boolean) => void;
+    setTrimHover: (point: AfoVec3 | null) => void;
     setDraggingTrimIndex: (index: number | null) => void;
     setWorkerProgress: (p: { pct: number; stage: string } | null) => void;
     setLastError: (msg: string | null) => void;
@@ -209,6 +212,7 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
     placingLandmarkIndex: 0,
     placingClinicalId: null,
     placingTrim: false,
+    trimHover: null,
     draggingTrimIndex: null,
     workerProgress: null,
     lastError: null,
@@ -231,7 +235,8 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
     setScanHoverWorld: (point) => set({ scanHoverWorld: point }),
     setPlacingLandmarkIndex: (index) => set({ placingLandmarkIndex: index }),
     setPlacingClinicalId: (id) => set({ placingClinicalId: id }),
-    setPlacingTrim: (on) => set({ placingTrim: on }),
+    setPlacingTrim: (on) => set(on ? { placingTrim: true } : { placingTrim: false, trimHover: null }),
+    setTrimHover: (point) => set({ trimHover: point }),
     setDraggingTrimIndex: (index) => set({ draggingTrimIndex: index }),
     setWorkerProgress: (p) => set({ workerProgress: p }),
     setLastError: (msg) => set({ lastError: msg }),
@@ -253,6 +258,7 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
             placingLandmarkIndex: 0,
             placingClinicalId: null,
             placingTrim: false,
+            trimHover: null,
             draggingTrimIndex: null,
             workerProgress: null,
             lastError: null,

@@ -66,6 +66,20 @@ export function activeMarkerPlacementLayer(
     return isAfo && !placingScanMarkers ? "afo-design" : "scan";
 }
 
+/**
+ * Design trim and design landmarks must receive clicks even when a scan-marker
+ * session is still active. On the scan step, landmark placement keeps the scan layer.
+ */
+export function afoViewportPlacementLayer(
+    step: string,
+    isAfo: boolean,
+    placingScanMarkers: boolean,
+    placingAfoLandmarks = false,
+): "scan" | "afo-design" | "afo-scan" {
+    if (isAfo && step === "design") return "afo-design";
+    return activeMarkerPlacementLayer(isAfo, placingScanMarkers, placingAfoLandmarks);
+}
+
 export function afoFrameSide(scanSide: Side): Side {
     const editing = useClinicalWorkflowStore.getState().elementPlacementFoot;
     if (editing === "left" || editing === "right") return editing;

@@ -1,30 +1,41 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { useEffect, useMemo } from "react";
-import { BufferAttribute, BufferGeometry, DoubleSide, LineBasicMaterial, Line as ThreeLine } from "three";
-import { AFO_SCAN_GREY } from "@/features/afo/afo-scan-ui";
+import { DoubleSide, Quaternion, Vector3 } from "three";
+import { AFO_SCAN_GREY, afoUploadedScanMaterial } from "@/features/afo/afo-scan-ui";
 import { geodesicPolyline } from "@/lib/geometry/afo/geodesic";
 import { afoMeshToGeometry } from "@/lib/geometry/afo/mesh-ops";
+import { afoTrimPreview, cursorCrossSegments, fallbackTrimPolyline } from "@/lib/geometry/afo/trim-preview";
+import type { AfoVec3 } from "@/lib/geometry/afo/types";
 import { getAfoState, useAfoStore } from "@/stores/afo-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
+
+const TRIM_YELLOW = "#ffe14a";
+const TRIM_HALO = "#111827";
 
 export function AfoMeshes() {
     const afo = useDesignStore((s) => s.design.afo) ?? getAfoState();
     const viewerTransparent = useDesignStore((s) => s.viewer.transparent);
-    const scanWorkflow = useDesignStore((s) => s.design.afo?.scanWorkflow);
+    const workflowStep = useClinicalWorkflowStore((s) => s.step);
     const placingScan = useAfoStore((s) => s.scanPlacement != null);
-    const stage1Align = placingScan && !scanWorkflow?.alignmentApplied;
-    const transparent = stage1Align || placingScan ? false : viewerTransparent || afo.cast.transparent;
+    const placingTrim = useAfoStore((s) => s.placingTrim);
+    const trimHover = useAfoStore((s) => s.trimHover);
+    const placingLandmarks = workflowStep === "scan" && placingScan;
+    const scanMat = afoUploadedScanMaterial({
+        transparentOn: viewerTransparent || afo.cast.transparent,
+        placingLandmarks,
+    });
     const shell = useAfoStore((s) => s.shellMesh);
     const corrected = useAfoStore((s) => s.correctedMesh);
     const cast = useAfoStore((s) => s.castMesh);
     const source = useAfoStore((s) => s.sourceMesh);
     const show3d = afo.cast.show3dModel;
-    const showCorrected = afo.cast.showCorrected;
+    const working = corrected ?? cast;
 
-    const working = showCorrected ? (corrected ?? cast) : cast;
-    const showCast = Boolean(source ?? working) && show3d && !shell;
-    const showCorrectedMesh = Boolean(corrected) && show3d && !shell;
+    const showShell = Boolean(shell);
+    const showCorrectedBody = Boolean(corrected) && show3d && !showShell && !placingLandmarks;
+    const showSource = Boolean(source ?? working) && show3d && !showShell && !showCorrectedBody;
 
     const castGeo = useMemo(
         () => (source ? afoMeshToGeometry(source) : working ? afoMeshToGeometry(working) : null),
@@ -36,32 +47,25 @@ export function AfoMeshes() {
         () => (placingScan && source ? afoMeshToGeometry(source) : null),
         [placingScan, source],
     );
-    const trimLine = useMemo(() => {
-        const curve = afo.trimCurve ?? [];
-        const pts =
-            curve.length >= 2
-                ? curve
-                : !working || afo.trimPoints.length < 2
-                  ? []
-                  : geodesicPolyline(
-                        working,
-                        afo.trimPoints.map((p) => p.vertexIndex),
-                        afo.trimClosed,
-                    );
-        if (!pts || pts.length < 2) return null;
-        const arr = new Float32Array(pts.length * 3);
-        for (let i = 0; i < pts.length; i++) {
-            const pt = pts[i];
-            if (!pt) continue;
-            arr[i * 3] = pt.x;
-            arr[i * 3 + 1] = pt.y;
-            arr[i * 3 + 2] = pt.z;
-        }
-        const g = new BufferGeometry();
-        g.setAttribute("position", new BufferAttribute(arr, 3));
-        const mat = new LineBasicMaterial({ color: 0x38bdf8 });
-        return new ThreeLine(g, mat);
-    }, [working, afo.trimPoints, afo.trimClosed, afo.trimCurve]);
+    const onMesh = useMemo(() => {
+        const handles = afo.trimPoints.map((p) => p.point);
+        if (!placingTrim && (afo.trimCurve?.length ?? 0) >= 2) return afo.trimCurve ?? null;
+        if (!working || handles.length < 2) return null;
+        const geo = geodesicPolyline(
+            working,
+            afo.trimPoints.map((p) => p.vertexIndex),
+            afo.trimClosed,
+        );
+        return fallbackTrimPolyline(geo, handles);
+    }, [working, afo.trimPoints, afo.trimClosed, afo.trimCurve, placingTrim]);
+    const preview = afoTrimPreview({
+        points: afo.trimPoints.map((p) => p.point),
+        curve: afo.trimCurve ?? [],
+        hover: trimHover,
+        placing: placingTrim,
+        closed: afo.trimClosed,
+        onMesh,
+    });
 
     useEffect(() => {
         return () => {
@@ -69,26 +73,13 @@ export function AfoMeshes() {
             correctedGeo?.dispose();
             shellGeo?.dispose();
             pickGeo?.dispose();
-            trimLine?.geometry.dispose();
-            (trimLine?.material as LineBasicMaterial | undefined)?.dispose();
         };
-    }, [castGeo, correctedGeo, shellGeo, pickGeo, trimLine]);
+    }, [castGeo, correctedGeo, shellGeo, pickGeo]);
 
-    const scanMatProps = placingScan
-        ? {
-              color: AFO_SCAN_GREY,
-              roughness: 0.85,
-              metalness: 0,
-              transparent,
-              opacity: transparent ? 0.45 : 1,
-          }
-        : {
-              color: "#c4b5a0",
-              roughness: 0.55,
-              metalness: 0.05,
-              transparent,
-              opacity: transparent ? 0.45 : 1,
-          };
+    const bodyGeo = showCorrectedBody ? correctedGeo : showSource ? castGeo : null;
+    const bodyData = showCorrectedBody
+        ? { isAfoCorrected: true, isAfoCast: true, isScanMesh: true }
+        : { isAfoCast: true, isScanMesh: true };
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
@@ -97,37 +88,36 @@ export function AfoMeshes() {
                     <meshBasicMaterial />
                 </mesh>
             ) : null}
-            {showCast && castGeo ? (
-                <mesh geometry={castGeo} userData={{ isAfoCast: true, isScanMesh: true }}>
+            {bodyGeo ? (
+                <mesh geometry={bodyGeo} userData={bodyData}>
                     <meshStandardMaterial
+                        color={AFO_SCAN_GREY}
+                        roughness={0.85}
+                        metalness={0}
                         side={DoubleSide}
-                        {...scanMatProps}
-                        transparent={showCorrectedMesh || scanMatProps.transparent}
-                        opacity={showCorrectedMesh ? 0.35 : scanMatProps.opacity}
-                    />
-                </mesh>
-            ) : null}
-            {showCorrectedMesh && correctedGeo ? (
-                <mesh geometry={correctedGeo} userData={{ isAfoCorrected: true }}>
-                    <meshStandardMaterial
-                        color="#f4f1ea"
-                        roughness={0.5}
-                        metalness={0.02}
-                        side={DoubleSide}
+                        transparent={scanMat.transparent}
+                        opacity={scanMat.opacity}
+                        depthWrite={!scanMat.transparent}
                     />
                 </mesh>
             ) : null}
             {shellGeo ? (
-                <mesh geometry={shellGeo} userData={{ isAfoShell: true }}>
+                <mesh geometry={shellGeo} userData={{ isAfoShell: true, isScanMesh: true }}>
                     <meshStandardMaterial
                         color="#6ee7b7"
                         roughness={0.45}
                         metalness={0.05}
                         side={DoubleSide}
+                        transparent={scanMat.transparent}
+                        opacity={scanMat.transparent ? scanMat.opacity : 1}
                     />
                 </mesh>
             ) : null}
-            {trimLine ? <primitive object={trimLine} /> : null}
+            <AfoTrimOverlay
+                marks={preview.marks}
+                stroke={preview.stroke}
+                cursor={preview.marks.length === 0 ? preview.cursor : null}
+            />
             {afo.clinicalMarkers.map((lm) => (
                 <mesh
                     key={`c-${lm.id}`}
@@ -148,16 +138,92 @@ export function AfoMeshes() {
                     <meshStandardMaterial color="#fbbf24" />
                 </mesh>
             ))}
-            {afo.trimPoints.map((p, i) => (
-                <mesh
-                    key={`trim-${p.vertexIndex}-${p.point.x.toFixed(2)}-${p.point.y.toFixed(2)}-${p.point.z.toFixed(2)}`}
-                    position={[p.point.x, p.point.y, p.point.z]}
-                    userData={{ isAfoTrimHandle: true, trimIndex: i }}
-                >
-                    <sphereGeometry args={[2.8, 12, 10]} />
-                    <meshStandardMaterial color={i === 0 ? "#22c55e" : "#38bdf8"} />
-                </mesh>
+        </group>
+    );
+}
+
+function pointKey(pt: AfoVec3): string {
+    return `${pt.x.toFixed(2)},${pt.y.toFixed(2)},${pt.z.toFixed(2)}`;
+}
+
+function AfoTrimOverlay({
+    marks,
+    stroke,
+    cursor,
+}: {
+    marks: AfoVec3[];
+    stroke: AfoVec3[];
+    cursor: AfoVec3 | null;
+}) {
+    const [xArm, yArm, zArm] = cursor ? cursorCrossSegments(cursor) : [];
+    const segments: { a: AfoVec3; b: AfoVec3 }[] = [];
+    for (let i = 0; i < stroke.length - 1; i++) {
+        const a = stroke[i];
+        const b = stroke[i + 1];
+        if (a && b) segments.push({ a, b });
+    }
+    return (
+        <group>
+            {xArm ? <TrimSegment key="cursor-x" a={xArm[0]} b={xArm[1]} radius={1.1} /> : null}
+            {yArm ? <TrimSegment key="cursor-y" a={yArm[0]} b={yArm[1]} radius={1.1} /> : null}
+            {zArm ? <TrimSegment key="cursor-z" a={zArm[0]} b={zArm[1]} radius={1.1} /> : null}
+            {segments.map((seg) => (
+                <TrimSegment key={`${pointKey(seg.a)}>${pointKey(seg.b)}`} a={seg.a} b={seg.b} radius={1.7} />
             ))}
+            {marks.map((pt) => {
+                const handle = marks.indexOf(pt);
+                return (
+                    <mesh
+                        key={`${handle}:${pointKey(pt)}`}
+                        position={[pt.x, pt.y, pt.z]}
+                        renderOrder={46}
+                        frustumCulled={false}
+                        userData={{ isAfoTrimHandle: true, trimIndex: handle }}
+                    >
+                        <sphereGeometry args={[handle === 0 ? 5.2 : 4.2, 16, 12]} />
+                        <meshBasicMaterial
+                            color={handle === 0 ? "#4ade80" : TRIM_YELLOW}
+                            depthTest={false}
+                            depthWrite={false}
+                            toneMapped={false}
+                        />
+                    </mesh>
+                );
+            })}
+        </group>
+    );
+}
+
+function TrimSegment({ a, b, radius }: { a: AfoVec3; b: AfoVec3; radius: number }) {
+    const start = new Vector3(a.x, a.y, a.z);
+    const end = new Vector3(b.x, b.y, b.z);
+    const length = start.distanceTo(end);
+    if (length < 0.2) return null;
+    const mid = start.clone().add(end).multiplyScalar(0.5);
+    const quat = new Quaternion().setFromUnitVectors(
+        new Vector3(0, 1, 0),
+        end.clone().sub(start).normalize(),
+    );
+    return (
+        <group position={[mid.x, mid.y, mid.z]} quaternion={quat}>
+            <mesh renderOrder={40} frustumCulled={false}>
+                <cylinderGeometry args={[radius + 0.7, radius + 0.7, length, 6]} />
+                <meshBasicMaterial
+                    color={TRIM_HALO}
+                    depthTest={false}
+                    depthWrite={false}
+                    toneMapped={false}
+                />
+            </mesh>
+            <mesh renderOrder={41} frustumCulled={false}>
+                <cylinderGeometry args={[radius, radius, length, 6]} />
+                <meshBasicMaterial
+                    color={TRIM_YELLOW}
+                    depthTest={false}
+                    depthWrite={false}
+                    toneMapped={false}
+                />
+            </mesh>
         </group>
     );
 }

@@ -67,11 +67,14 @@ export const AFO_FLARE_RANGE: [number, number] = [0, 4];
 export const AFO_REAR_ROT_RANGE: [number, number] = [-10, 10];
 /** Sagittal (PF/DF) about the malleolar axis. */
 export const AFO_SIDE_ROT_RANGE: [number, number] = [-5, 10];
-export const AFO_HEEL_LIFT_RANGE: [number, number] = [0, 20];
+/** Signed heel offset (mm). Negative lowers the heel; the kernel adds this value. */
+export const AFO_HEEL_LIFT_RANGE: [number, number] = [-20, 20];
 export const AFO_HEEL_LIFT_WARN_MM = 12;
-export const AFO_TOE_RISE_RANGE: [number, number] = [0, 15];
+/** Signed toe offset (mm). Negative lowers the toes; the kernel adds this value. */
+export const AFO_TOE_RISE_RANGE: [number, number] = [-15, 15];
 export const AFO_FOOT_LIFT_RANGE: [number, number] = [0, 12];
-export const AFO_ARCH_RANGE: [number, number] = [0, 8];
+/** Signed medial arch (mm). Negative lowers the arch; the kernel adds this value. */
+export const AFO_ARCH_RANGE: [number, number] = [-8, 8];
 export const AFO_ARCH_WARN_MM = 5;
 export const AFO_HEEL_WIDTH_RANGE: [number, number] = [-4, 4];
 export const AFO_VOLUME_OFFSET_RANGE: [number, number] = [-3, 10];

@@ -2,6 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
+import { AfoScanStage1Markers } from "@/components/viewer/AfoScanMarkers";
+import { scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
+import { AFO_SCAN_GREY, activeAfoTarget } from "@/features/afo/afo-scan-ui";
+import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { getMarkerFrame, mirrorBaseLandmarks } from "@/lib/geometry/marker-frame";
 import { extractKeptGeometry, type ScanComponentLabeling } from "@/lib/geometry/scan-components";
@@ -17,13 +21,9 @@ import {
 } from "@/lib/geometry/scan-display";
 import { buildDecimatedPickGeometry, scanNeedsPickProxy } from "@/lib/geometry/scan-pick-mesh";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import { useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
 import { getScanRegistrationMatrix, useScanStore } from "@/stores/scan-store";
-import { scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
-import { AFO_SCAN_GREY, activeAfoTarget } from "@/features/afo/afo-scan-ui";
-import { AfoScanStage1Markers } from "@/components/viewer/AfoScanMarkers";
-import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
-import { useAfoStore } from "@/stores/afo-store";
 
 const CLINICIAN_MARKER_COLOR = "#f59e0b";
 const ARCH_MARKER_COLOR = "#d946ef";
@@ -94,6 +94,7 @@ function RegisteredScanMesh({
     heightmap,
     placingMarkers,
     afoGreyScan,
+    afoKeepSolid,
     afoPlantar,
     afoTargetId,
 }: {
@@ -108,6 +109,8 @@ function RegisteredScanMesh({
     heightmap: boolean;
     placingMarkers: boolean;
     afoGreyScan?: boolean;
+    /** AFO uploaded scan stays solid whenever Transparent is off, including an unregistered overlay. */
+    afoKeepSolid?: boolean;
     afoPlantar?: ReturnType<typeof defaultAfoScanWorkflow>["plantar"];
     afoTargetId?: string | null;
 }) {
@@ -219,6 +222,8 @@ function RegisteredScanMesh({
 
     const displayGeo = coloredGeo ?? depthGeo ?? geometry;
     const useVertexColors = !!coloredGeo || !!depthGeo;
+    const afoSolidLook = Boolean(afoGreyScan) || Boolean(afoKeepSolid);
+    const afoFlatGrey = afoSolidLook && !useVertexColors;
     const usMenSize = useDesignStore((s) => s.design.usMenSize);
     const sizeSystem = useDesignStore((s) => s.design.sizeSystem);
     const ukSize = useDesignStore((s) => s.design.ukSize);
@@ -262,7 +267,7 @@ function RegisteredScanMesh({
             >
                 <meshStandardMaterial
                     color={
-                        afoGreyScan
+                        afoFlatGrey
                             ? AFO_SCAN_GREY
                             : useVertexColors
                               ? "#ffffff"
@@ -272,15 +277,15 @@ function RegisteredScanMesh({
                                   ? "#c084fc"
                                   : "#a78bfa"
                     }
-                    emissive={selected && !useVertexColors && !afoGreyScan ? "#a855f7" : "#000000"}
-                    emissiveIntensity={selected && !useVertexColors && !afoGreyScan ? 0.35 : 0}
-                    metalness={afoGreyScan ? 0 : 0.05}
-                    roughness={afoGreyScan ? 0.85 : placingMarkers || depthGeo ? 0.55 : 0.8}
+                    emissive={selected && !useVertexColors && !afoSolidLook ? "#a855f7" : "#000000"}
+                    emissiveIntensity={selected && !useVertexColors && !afoSolidLook ? 0.35 : 0}
+                    metalness={afoSolidLook ? 0 : 0.05}
+                    roughness={afoSolidLook ? 0.85 : placingMarkers || depthGeo ? 0.55 : 0.8}
                     transparent={
-                        afoGreyScan ? false : transparent || !!coloredGeo || (!registered && !depthGeo)
+                        afoSolidLook ? false : transparent || !!coloredGeo || (!registered && !depthGeo)
                     }
                     opacity={
-                        afoGreyScan
+                        afoSolidLook
                             ? 1
                             : transparent
                               ? 0.45
@@ -293,8 +298,8 @@ function RegisteredScanMesh({
                                     : 0.75
                     }
                     side={THREE.DoubleSide}
-                    vertexColors={useVertexColors}
-                    flatShading={placingMarkers && !coloredGeo}
+                    vertexColors={useVertexColors && !afoFlatGrey}
+                    flatShading={placingMarkers && !coloredGeo && !afoSolidLook}
                 />
             </mesh>
             {edgeGeo ? (
@@ -415,11 +420,14 @@ export function ScanMeshes({
     transparent,
     heightmap = false,
     afoStage1Align = false,
+    afoLandmarkOpaque = false,
 }: {
     transparent: boolean;
     heightmap?: boolean;
     /** AFO Step 1 plantar alignment — solid grey scan before rigid fit is applied. */
     afoStage1Align?: boolean;
+    /** Every AFO landmark, not only the first three plantar points, keeps the solid scan. */
+    afoLandmarkOpaque?: boolean;
 }) {
     const scans = useScanStore((s) => s.scans);
     const registrationByScanId = useScanStore((s) => s.registrationByScanId);
@@ -459,10 +467,10 @@ export function ScanMeshes({
                         placingMarkers={placementScanId === s.id}
                         afoGreyScan={
                             isAfo &&
-                            afoStage1Align &&
-                            !afoWorkflow.alignmentApplied &&
+                            (afoLandmarkOpaque || afoStage1Align) &&
                             s.id === (afoAlignScanId ?? s.id)
                         }
+                        afoKeepSolid={isAfo && !transparent}
                         afoPlantar={afoWorkflow.plantar}
                         afoTargetId={afoTargetId}
                     />
