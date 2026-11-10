@@ -94,7 +94,9 @@ function workerRequest(
                 return;
             }
             if (msg.type === "geometry") {
-                resolve(geometryToAfoMesh(payloadToGeometry(msg.payload)));
+                const mesh = geometryToAfoMesh(payloadToGeometry(msg.payload));
+                if (typeof msg.rimFaceStart === "number") mesh.rimFaceStart = msg.rimFaceStart;
+                resolve(mesh);
                 return;
             }
             reject(new Error("Unexpected AFO worker response"));

@@ -114,9 +114,10 @@ export function closeShellWithRoundRim(input: {
     indices.set(input.innerIndices, 0);
     indices.set(input.outerIndices, input.innerIndices.length);
     indices.set(rim, input.innerIndices.length + input.outerIndices.length);
+    const rimFaceStart = (input.innerIndices.length + input.outerIndices.length) / 3;
     const baked = new Float32Array(positions);
-    fixReversedRimPairs(baked, indices, (input.innerIndices.length + input.outerIndices.length) / 3);
-    return { positions: baked, indices };
+    fixReversedRimPairs(baked, indices, rimFaceStart);
+    return { positions: baked, indices, rimFaceStart };
 }
 
 /** A flat wall with one triangle indexed backward reads as a 180° fold. Flip only that case. */
@@ -515,7 +516,7 @@ function wallNormal(p: AfoVec3, v: AfoVec3, up: AfoVec3, outHint: AfoVec3): AfoV
     return unit(n, outHint);
 }
 
-function boundaryLoops(edges: { a: number; b: number }[]): number[][] {
+export function boundaryLoops(edges: { a: number; b: number }[]): number[][] {
     const next = new Map<number, number[]>();
     for (const e of edges) {
         const list = next.get(e.a) ?? [];

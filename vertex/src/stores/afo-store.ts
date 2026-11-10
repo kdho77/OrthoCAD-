@@ -199,9 +199,10 @@ export function refreshAfoWorkingMesh(): void {
 }
 
 export function ingestOrientedScan(mesh: AfoTriMesh): void {
-    useAfoStore.getState().setSourceMesh(orientMeshOutward(mesh));
+    const oriented = orientMeshOutward(mesh);
+    useAfoStore.getState().setSourceMesh(oriented);
     const afo = getAfoState();
-    const crest = detectTibialCrest(mesh, afo.corrections.braceHeightMm, afo.clinicalMarkers);
+    const crest = detectTibialCrest(oriented, afo.corrections.braceHeightMm, afo.clinicalMarkers);
     patchAfoState({ crest }, "afo-crest");
     refreshAfoWorkingMesh();
 }

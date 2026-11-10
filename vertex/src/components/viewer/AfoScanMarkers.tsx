@@ -27,7 +27,13 @@ import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
 import { transformAfoPoint } from "@/lib/geometry/afo/landmark-frame";
 import { meshCentroid } from "@/lib/geometry/afo/mesh-ops";
 import { useAfoStore } from "@/stores/afo-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
+
+/** Design-step markers stay visible and cannot be dragged. Only the scan step places them. */
+export function afoScanMarkersInteractive(step: string, placingTrim: boolean): boolean {
+    return step === "scan" && !placingTrim;
+}
 
 function useReducedMotion(): boolean {
     if (typeof window === "undefined") return false;
@@ -306,6 +312,8 @@ export function AfoScanMarkers() {
     const workflow = useDesignStore((s) => s.design.afo?.scanWorkflow) ?? defaultAfoScanWorkflow();
     const placement = useAfoStore((s) => s.scanPlacement);
     const placingTrim = useAfoStore((s) => s.placingTrim);
+    const step = useClinicalWorkflowStore((s) => s.step);
+    const markersInteractive = afoScanMarkersInteractive(step, placingTrim);
     const showLabels = useAfoStore((s) => s.scanShowMarkerLabels);
     const source = useAfoStore((s) => s.sourceMesh);
     const targetId = activeAfoTarget(workflow, placement?.redo ?? null);
@@ -366,11 +374,11 @@ export function AfoScanMarkers() {
                     position={m.pos}
                     color={m.color}
                     opacity={m.opacity}
-                    isTarget={!placingTrim && targetId === m.id}
+                    isTarget={markersInteractive && targetId === m.id}
                     label={AFO_MARKER_PILL[m.id]}
                     showLabel={showLabels}
-                    onDragStart={placingTrim ? undefined : onDragStart}
-                    interactive={!placingTrim}
+                    onDragStart={markersInteractive ? onDragStart : undefined}
+                    interactive={markersInteractive}
                     centerLocal={centerLocal}
                     drawMode={drawMode}
                     depthCue

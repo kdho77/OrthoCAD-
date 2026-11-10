@@ -2,8 +2,9 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { analyzeManifoldBuffers } from "@/lib/geometry/manifold-core";
-import { ingestOrientedScan, useAfoStore } from "@/stores/afo-store";
+import { getAfoState, ingestOrientedScan, useAfoStore } from "@/stores/afo-store";
 import { cloneableWorkerOptions } from "./afo-engine";
+import { detectTibialCrest } from "./crest";
 import {
     AFO_EDGE_MM,
     AFO_FLARE_MM,
@@ -11,13 +12,7 @@ import {
     AFO_THICKNESS_MM,
     defaultAfoDesignState,
 } from "./defaults";
-import {
-    countMeshBodies,
-    duplicateDirectedEdgeCount,
-    meshProjector,
-    meshSignedVolume,
-    orientMeshOutward,
-} from "./mesh-ops";
+import { countMeshBodies, duplicateDirectedEdgeCount, meshProjector, meshSignedVolume } from "./mesh-ops";
 import { buildAfoShell, trimPolygonForShell } from "./shell";
 import { buildClinicalFixtureA, buildLiveFrameLeg, buildUnitSphereMesh } from "./synthetic-leg";
 import { AFO_TRIM_NO_MESH, designLandmarkPlacementActive, trimPointerIsClick } from "./trim-preview";
@@ -109,25 +104,14 @@ function innerRimLoops(shell: AfoTriMesh, source: AfoTriMesh): AfoVec3[][] {
     return loops;
 }
 
-function rimDihedralDeg(
-    shell: AfoTriMesh,
-    source: AfoTriMesh,
-): { deg: number; x: number; y: number; z: number } {
-    const projector = meshProjector(source);
-    const nAll = (shell.positions.length / 3) | 0;
-    const err: number[] = [];
-    for (let i = 0; i < nAll; i++) err.push(projector.closest(at(shell, i)).errorMm);
-    let n = 0;
-    // Inner vertices stay near the scan. The outer shell starts a full edge-thickness away,
-    // so the arc rings begin at twice that prefix.
-    while (n < nAll && (err[n] ?? 1) < 1) n++;
-    const arcAt = Math.max(0, n * 2);
+function rimDihedralDeg(shell: AfoTriMesh): { deg: number; x: number; y: number; z: number } {
+    const face0 = shell.rimFaceStart ?? (shell.indices.length / 3) | 0;
     const t = (shell.indices.length / 3) | 0;
     const normals: AfoVec3[] = [];
     const rim = new Uint8Array(t);
     for (let i = 0; i < t; i++) {
         const vs = [shell.indices[i * 3] ?? 0, shell.indices[i * 3 + 1] ?? 0, shell.indices[i * 3 + 2] ?? 0];
-        if (vs.some((v) => v >= arcAt)) rim[i] = 1;
+        if (i >= face0) rim[i] = 1;
         const a = at(shell, vs[0]!);
         const b = at(shell, vs[1]!);
         const c = at(shell, vs[2]!);
@@ -209,7 +193,10 @@ describe("AFO trim acceptance", () => {
         const stored = useAfoStore.getState().sourceMesh;
         expect(stored).not.toBeNull();
         expect(duplicateDirectedEdgeCount(stored!)).toBe(0);
-        expect(meshSignedVolume(orientMeshOutward(flipped))).toBeGreaterThan(0);
+        expect(meshSignedVolume(stored!)).toBeGreaterThan(0);
+        const afo = getAfoState();
+        const fromOriented = detectTibialCrest(stored!, afo.corrections.braceHeightMm, afo.clinicalMarkers);
+        expect(afo.crest.points).toEqual(fromOriented.points);
     });
 
     test("a pin is a click, not an orbit drag, and landmark mode is exclusive", () => {
@@ -306,7 +293,8 @@ describe("AFO trim acceptance", () => {
         const report = analyzeManifoldBuffers(shell.positions, shell.indices);
         expect(report.openEdges).toBe(0);
         expect(report.nonManifoldEdges).toBe(0);
-        const bend = rimDihedralDeg(shell, sphere);
+        const bend = rimDihedralDeg(shell);
+        expect(shell.rimFaceStart).toBeGreaterThan(0);
         expect(
             bend.deg,
             `sphere dihedral at ${bend.x.toFixed(1)},${bend.y.toFixed(1)},${bend.z.toFixed(1)}`,
@@ -338,11 +326,30 @@ describe("AFO trim acceptance", () => {
                     trimPolygon: polygon,
                     heelSeed: { x: leg.positions[0] ?? 0, y: 0, z: -10 },
                 });
-                const report = analyzeManifoldBuffers(plain.positions, plain.indices);
-                note(name, report.openEdges === 0, `open edges ${report.openEdges}`);
-                note(name, report.nonManifoldEdges === 0, `non-manifold edges ${report.nonManifoldEdges}`);
-                note(name, countMeshBodies(plain) === 1, `bodies ${countMeshBodies(plain)}`);
-                const dihedral = rimDihedralDeg(plain, leg);
+                const gateShell = (label: string, shell: AfoTriMesh) => {
+                    const report = analyzeManifoldBuffers(shell.positions, shell.indices);
+                    note(name, report.openEdges === 0, `${label} open edges ${report.openEdges}`);
+                    note(
+                        name,
+                        report.nonManifoldEdges === 0,
+                        `${label} non-manifold edges ${report.nonManifoldEdges}`,
+                    );
+                    note(name, countMeshBodies(shell) === 1, `${label} bodies ${countMeshBodies(shell)}`);
+                    note(
+                        name,
+                        shell.rimFaceStart != null && shell.rimFaceStart > 0,
+                        `${label} rim tagged at face ${shell.rimFaceStart ?? "missing"}`,
+                    );
+                    const dihedral = rimDihedralDeg(shell);
+                    const where = `(${dihedral.x.toFixed(1)}, ${dihedral.y.toFixed(1)}, ${dihedral.z.toFixed(1)})`;
+                    note(
+                        name,
+                        dihedral.deg <= 60,
+                        `${label} dihedral ${dihedral.deg.toFixed(2)}° at ${where}`,
+                    );
+                    return dihedral;
+                };
+                gateShell("plain", plain);
                 const rims = innerRimLoops(plain, leg);
                 const boundary = rims[0] ?? [];
                 let curveToEdge = 0;
@@ -352,14 +359,10 @@ describe("AFO trim acceptance", () => {
                     curveToEdge = Math.max(curveToEdge, d);
                     if (d <= 0.1) within++;
                 }
-                const where = `(${dihedral.x.toFixed(1)}, ${dihedral.y.toFixed(1)}, ${dihedral.z.toFixed(1)})`;
                 note(
                     name,
-                    rims.length === 1 &&
-                        within === polygon.length &&
-                        curveToEdge <= 0.1 &&
-                        dihedral.deg <= 60,
-                    `curve→edge ${curveToEdge.toFixed(3)} mm on ${within}/${polygon.length}, loops ${rims.length}, dihedral ${dihedral.deg.toFixed(2)}° at ${where}`,
+                    rims.length === 1 && within === polygon.length && curveToEdge <= 0.1,
+                    `curve→edge ${curveToEdge.toFixed(3)} mm on ${within}/${polygon.length}, loops ${rims.length}`,
                 );
                 const projector = meshProjector(leg);
                 let nInner = 0;
@@ -390,6 +393,7 @@ describe("AFO trim acceptance", () => {
                     flared.positions.length === plain.positions.length,
                     `flare vertex count ${flared.positions.length} vs ${plain.positions.length}`,
                 );
+                gateShell("flared", flared);
                 let minZ = Infinity;
                 for (let i = 0; i < leg.positions.length; i += 3)
                     minZ = Math.min(minZ, leg.positions[i + 2] ?? 0);

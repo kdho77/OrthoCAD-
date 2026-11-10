@@ -11,7 +11,7 @@ import { geodesicVertexPath } from "./geodesic";
 import { cloneMesh, computeVertexNormals, nearestVertex, vertexCount } from "./mesh-ops";
 import { offsetMeshAlongNormals } from "./sdf-offset";
 import { embedTrimPolyline } from "./shell-cut";
-import { closeShellWithRoundRim } from "./shell-rim";
+import { boundaryLoops, closeShellWithRoundRim } from "./shell-rim";
 import type { AfoShellOptions, AfoTriMesh, AfoVec3 } from "./types";
 
 /**
@@ -394,7 +394,7 @@ function cleanupBoundary(surface: OpenSurface): OpenSurface {
  * Pull just those vertices toward the chord of their two neighbours. The move
  * is a few hundredths of a millimetre, inside the curve tolerance.
  */
-function relaxSharpBoundaryTurns(mesh: AfoTriMesh): void {
+function relaxSharpBoundaryTurns(mesh: AfoTriMesh, maxEdgeMm = 0.2, minTurnDeg = 50): void {
     const at = (i: number) => ({
         x: mesh.positions[i * 3] ?? 0,
         y: mesh.positions[i * 3 + 1] ?? 0,
@@ -426,9 +426,9 @@ function relaxSharpBoundaryTurns(mesh: AfoTriMesh): void {
             const e1z = c.z - b.z;
             const l0 = Math.hypot(e0x, e0y, e0z);
             const l1 = Math.hypot(e1x, e1y, e1z);
-            if (l0 < 1e-6 || l1 < 1e-6 || l0 > 0.2 || l1 > 0.2) continue;
+            if (l0 < 1e-6 || l1 < 1e-6 || l0 > maxEdgeMm || l1 > maxEdgeMm) continue;
             const cos = Math.min(1, Math.max(-1, (e0x * e1x + e0y * e1y + e0z * e1z) / (l0 * l1)));
-            if ((Math.acos(cos) * 180) / Math.PI < 50) continue;
+            if ((Math.acos(cos) * 180) / Math.PI < minTurnDeg) continue;
             updates.push({
                 i: v,
                 x: b.x * 0.5 + (a.x + c.x) * 0.25,
@@ -666,6 +666,61 @@ function smoothBoundaryNormals(mesh: AfoTriMesh, nrm: Float32Array, edges: { a: 
     }
 }
 
+/**
+ * Neighbouring flare vectors on a short boundary step share one direction and
+ * keep their own lengths, so the footplate cap stays 1 mm and the wall stays
+ * at the full flare. A length jump (wall meeting footplate) is left alone.
+ */
+function shareFlareOnShortSteps(
+    positions: Float32Array,
+    edges: { a: number; b: number }[],
+    flare: Float32Array,
+): void {
+    const read = (i: number) => ({
+        x: flare[i * 3] ?? 0,
+        y: flare[i * 3 + 1] ?? 0,
+        z: flare[i * 3 + 2] ?? 0,
+    });
+    const write = (i: number, v: { x: number; y: number; z: number }) => {
+        flare[i * 3] = v.x;
+        flare[i * 3 + 1] = v.y;
+        flare[i * 3 + 2] = v.z;
+    };
+    const len3 = (v: { x: number; y: number; z: number }) => Math.hypot(v.x, v.y, v.z);
+    for (const loop of boundaryLoops(edges)) {
+        const count = loop.length;
+        if (count < 3) continue;
+        for (let iter = 0; iter < 24; iter++) {
+            let changed = false;
+            for (let i = 0; i < count; i++) {
+                const a = loop[i]!;
+                const b = loop[(i + 1) % count]!;
+                const ax = positions[a * 3] ?? 0;
+                const ay = positions[a * 3 + 1] ?? 0;
+                const az = positions[a * 3 + 2] ?? 0;
+                const edgeLen = Math.hypot(
+                    (positions[b * 3] ?? 0) - ax,
+                    (positions[b * 3 + 1] ?? 0) - ay,
+                    (positions[b * 3 + 2] ?? 0) - az,
+                );
+                const f0 = read(a);
+                const f1 = read(b);
+                const l0 = len3(f0);
+                const l1 = len3(f1);
+                if (Math.abs(l0 - l1) > 0.3) continue;
+                const delta = Math.hypot(f0.x - f1.x, f0.y - f1.y, f0.z - f1.z);
+                if (delta <= Math.max(edgeLen * 0.2, 1e-4)) continue;
+                const avg = { x: (f0.x + f1.x) * 0.5, y: (f0.y + f1.y) * 0.5, z: (f0.z + f1.z) * 0.5 };
+                const avgLen = len3(avg) || 1;
+                write(a, { x: (avg.x / avgLen) * l0, y: (avg.y / avgLen) * l0, z: (avg.z / avgLen) * l0 });
+                write(b, { x: (avg.x / avgLen) * l1, y: (avg.y / avgLen) * l1, z: (avg.z / avgLen) * l1 });
+                changed = true;
+            }
+            if (!changed) break;
+        }
+    }
+}
+
 function thickenOpenSurface(
     surfaceIn: OpenSurface,
     thicknessMm: number,
@@ -690,6 +745,7 @@ function thickenOpenSurface(
     let minZ = Infinity;
     for (let i = 0; i < n; i++) minZ = Math.min(minZ, inner.positions[i * 3 + 2] ?? 0);
     const blendAt: number[] = [];
+    const flareDisp = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
         const dist = distToRim[i] ?? 0;
         const rimT = clamp01(dist / AFO_RIM_BAND_MM);
@@ -701,12 +757,22 @@ function thickenOpenSurface(
         const flareCap = plantar ? Math.min(flareMm, AFO_FOOTPLATE_FLARE_CAP_MM) : flareMm;
         const flare = flareCap * (1 - blend);
         blendAt.push(blend);
-        // Skin-side rim lifts off the leg across the ramp band. The trim
-        // (distance 0) is the inner edge and takes the full flare.
-        inner.positions[i * 3] = (inner.positions[i * 3] ?? 0) + nx * flare;
-        inner.positions[i * 3 + 1] = (inner.positions[i * 3 + 1] ?? 0) + ny * flare;
-        inner.positions[i * 3 + 2] = (inner.positions[i * 3 + 2] ?? 0) + nz * flare;
+        flareDisp[i * 3] = nx * flare;
+        flareDisp[i * 3 + 1] = ny * flare;
+        flareDisp[i * 3 + 2] = nz * flare;
     }
+    // The same short-step share used by the rim offset. A 2.5 mm lift along
+    // neighbouring normals otherwise kinks the heel the thickness step used to.
+    shareFlareOnShortSteps(inner.positions, surface.boundaryEdges, flareDisp);
+    for (let i = 0; i < n; i++) {
+        inner.positions[i * 3] = (inner.positions[i * 3] ?? 0) + (flareDisp[i * 3] ?? 0);
+        inner.positions[i * 3 + 1] = (inner.positions[i * 3 + 1] ?? 0) + (flareDisp[i * 3 + 1] ?? 0);
+        inner.positions[i * 3 + 2] = (inner.positions[i * 3 + 2] ?? 0) + (flareDisp[i * 3 + 2] ?? 0);
+    }
+    relaxSharpBoundaryTurns(inner);
+    // The lift can leave a longer nick than the pre-flare pass. Smooth only
+    // the flared shell so the plain opening, which is the curve, stays put.
+    if (flareMm > 0) relaxSharpBoundaryTurns(inner, 0.4, 35);
     const outer = cloneMesh(inner);
     for (let i = 0; i < n; i++) {
         const blend = blendAt[i] ?? 0;
