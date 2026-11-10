@@ -97,6 +97,26 @@ export const AFO_RELIEF_RANGE: [number, number] = [-6, 0];
 export const AFO_TRIM_MIN_POINTS = 3;
 export const AFO_TRIM_MIN_LENGTH_MM = 20;
 export const AFO_TRIM_MIN_AREA_MM2 = 100;
+/** Close the loop by clicking the first pin inside this world radius. */
+export const AFO_TRIM_CLOSE_MM = 3;
+/** Close the loop when the click is this close to the first pin on screen. */
+export const AFO_TRIM_CLOSE_PX = 10;
+/** Drop a second pin that lands on an existing one. */
+export const AFO_TRIM_DEDUPE_MM = 1;
+/** Visible handle radius. The sphere is drawn with depth test off. */
+export const AFO_TRIM_PIN_RADIUS_MM = 1.5;
+/** Centripetal sample spacing along the trim. Never coarser than the max. */
+export const AFO_TRIM_SAMPLE_MM = 0.5;
+export const AFO_TRIM_SAMPLE_MAX_MM = 1;
+/** Lift the drawn stroke off the surface so it does not z-fight. */
+export const AFO_TRIM_DRAW_OFFSET_MM = 0.3;
+/** Reject a hit with no mesh point inside this distance. */
+export const AFO_TRIM_PROJECT_MAX_MM = 3;
+/** Local plane fit is allowed out to this distance when the mesh is farther than 3 mm. */
+export const AFO_TRIM_PLANE_MAX_MM = 5;
+export const AFO_TRIM_NORMAL_RAY_MM = 5;
+/** Adjacent projected samples farther than this multiple of the spacing are subdivided. */
+export const AFO_TRIM_JUMP_FACTOR = 3;
 
 export const AFO_DESIGN_MARKERS = [
     { id: "proximal_medial", label: "Proximal medial", view: "medial" },

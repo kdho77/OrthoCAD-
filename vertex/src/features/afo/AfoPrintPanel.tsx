@@ -15,6 +15,8 @@ import {
     correctionsForSide,
     defaultAfoPrint,
 } from "@/lib/geometry/afo/defaults";
+import { trimPolygonForShell } from "@/lib/geometry/afo/shell";
+import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import { evaluateAfoWarnings } from "@/lib/geometry/afo/warnings";
 import { getAfoState, patchAfoState, useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -52,6 +54,12 @@ export function AfoPrintPanel() {
                       })
                     : working;
             if (!positive) return;
+            const pinPoints = afo.trimPoints.map((p) => p.point);
+            const polygon =
+                trimPolygonForShell(afo.trimCurve ?? [], true) ??
+                (pinPoints.length >= 3
+                    ? trimPolygonForShell(fitSurfaceSpline(positive, pinPoints, { closed: true }).curve, true)
+                    : null);
             const shell = await runAfoShell(
                 positive,
                 afo.trimPoints.map((p) => p.vertexIndex),
@@ -59,6 +67,8 @@ export function AfoPrintPanel() {
                     thicknessMm: print.thicknessMm,
                     edgeMm: print.edgeMm,
                     flareMm: print.flareMm,
+                    trimPolygon: polygon ?? undefined,
+                    heelSeed: afo.scanWorkflow.derived?.heelCupCenter ?? undefined,
                     onProgress: (pct, stage) => setProgress({ pct, stage }),
                 },
             );

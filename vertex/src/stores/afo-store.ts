@@ -10,6 +10,7 @@ import {
     defaultAfoSideCorrection,
 } from "@/lib/geometry/afo/defaults";
 import { cloneMesh } from "@/lib/geometry/afo/mesh-ops";
+import { fitSurfaceSpline, reprojectTrimPins } from "@/lib/geometry/afo/trim-spline";
 import type { AfoClinicalMarkerId, AfoScanWorkflow, AfoTriMesh, AfoVec3 } from "@/lib/geometry/afo/types";
 import { useDesignStore } from "@/stores/design-store";
 import type { Side } from "@/types";
@@ -166,6 +167,30 @@ export function refreshAfoWorkingMesh(): void {
         correctionContextFromAfo(afo, { medialMal: medial, lateralMal: lateral }),
     );
     useAfoStore.getState().setCorrectedMesh(corrected);
+    if (!corrected || afo.trimPoints.length === 0) return;
+    const nextPins = reprojectTrimPins(corrected, afo.trimPoints);
+    const moved = nextPins.some((pin, i) => {
+        const prev = afo.trimPoints[i]?.point;
+        if (!prev) return true;
+        return Math.hypot(pin.point.x - prev.x, pin.point.y - prev.y, pin.point.z - prev.z) > 0.1;
+    });
+    if (!moved) return;
+    const trimCurve =
+        afo.trimClosed && nextPins.length >= 3
+            ? fitSurfaceSpline(
+                  corrected,
+                  nextPins.map((pin) => pin.point),
+                  { closed: true, quick: true },
+              ).curve
+            : afo.trimCurve;
+    const ds = useDesignStore.getState();
+    const current = ds.design.afo ?? defaultAfoDesignState();
+    useDesignStore.setState({
+        design: {
+            ...ds.design,
+            afo: { ...current, trimPoints: nextPins, trimCurve },
+        },
+    });
 }
 
 export function ingestOrientedScan(mesh: AfoTriMesh): void {
@@ -234,9 +259,18 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
     setScanLastUndoId: (id) => set({ scanLastUndoId: id }),
     setScanDraggingMarkerId: (id) => set({ scanDraggingMarkerId: id }),
     setScanHoverWorld: (point) => set({ scanHoverWorld: point }),
-    setPlacingLandmarkIndex: (index) => set({ placingLandmarkIndex: index }),
-    setPlacingClinicalId: (id) => set({ placingClinicalId: id }),
-    setPlacingTrim: (on) => set(on ? { placingTrim: true } : { placingTrim: false, trimHover: null }),
+    setPlacingLandmarkIndex: (index) =>
+        set({ placingLandmarkIndex: index, placingTrim: false, trimHover: null }),
+    setPlacingClinicalId: (id) =>
+        set(
+            id ? { placingClinicalId: id, placingTrim: false, trimHover: null } : { placingClinicalId: null },
+        ),
+    setPlacingTrim: (on) =>
+        set(
+            on
+                ? { placingTrim: true, placingClinicalId: null, scanPlacement: null, trimHover: null }
+                : { placingTrim: false, trimHover: null },
+        ),
     setTrimHover: (point) => set({ trimHover: point }),
     setDraggingTrimIndex: (index) => set({ draggingTrimIndex: index }),
     setWorkerProgress: (p) => set({ workerProgress: p }),

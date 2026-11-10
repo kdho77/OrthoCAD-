@@ -175,6 +175,383 @@ export function positionsEqual(a: Float32Array, b: Float32Array, eps = 1e-9): bo
     return true;
 }
 
+export interface MeshHit {
+    point: AfoVec3;
+    errorMm: number;
+    normal: AfoVec3;
+}
+
+export interface MeshProjector {
+    /** BVH closest point on the triangle mesh. */
+    closest(p: AfoVec3): MeshHit;
+    /**
+     * Closest point, replaced by a normal-ray hit within ±rayMm when that hit
+     * stays nearer the previous sample (stops the query jumping across a thin wall).
+     */
+    project(p: AfoVec3, prev: AfoVec3 | null, spacingMm: number, rayMm?: number): MeshHit;
+}
+
+interface ProjTri {
+    ax: number;
+    ay: number;
+    az: number;
+    bx: number;
+    by: number;
+    bz: number;
+    cx: number;
+    cy: number;
+    cz: number;
+    nx: number;
+    ny: number;
+    nz: number;
+    minX: number;
+    minY: number;
+    minZ: number;
+    maxX: number;
+    maxY: number;
+    maxZ: number;
+}
+
+interface BNode {
+    minX: number;
+    minY: number;
+    minZ: number;
+    maxX: number;
+    maxY: number;
+    maxZ: number;
+    left: number;
+    right: number;
+    start: number;
+    count: number;
+}
+
+const projectorCache = new WeakMap<object, MeshProjector>();
+
+export function meshProjector(mesh: AfoTriMesh): MeshProjector {
+    const cached = projectorCache.get(mesh);
+    if (cached) return cached;
+    const built = buildMeshProjector(mesh);
+    projectorCache.set(mesh, built);
+    return built;
+}
+
+function buildMeshProjector(mesh: AfoTriMesh): MeshProjector {
+    const tcount = triangleCount(mesh);
+    const tris: ProjTri[] = [];
+    const center = meshCentroid(mesh);
+    for (let t = 0; t < tcount; t++) {
+        const ia = mesh.indices[t * 3] ?? 0;
+        const ib = mesh.indices[t * 3 + 1] ?? 0;
+        const ic = mesh.indices[t * 3 + 2] ?? 0;
+        const a = vertAt(mesh, ia);
+        const b = vertAt(mesh, ib);
+        const c = vertAt(mesh, ic);
+        const ux = b.x - a.x;
+        const uy = b.y - a.y;
+        const uz = b.z - a.z;
+        const vx = c.x - a.x;
+        const vy = c.y - a.y;
+        const vz = c.z - a.z;
+        let nx = uy * vz - uz * vy;
+        let ny = uz * vx - ux * vz;
+        let nz = ux * vy - uy * vx;
+        const nl = Math.hypot(nx, ny, nz);
+        if (nl < 1e-12) continue;
+        nx /= nl;
+        ny /= nl;
+        nz /= nl;
+        const mx = (a.x + b.x + c.x) / 3;
+        const my = (a.y + b.y + c.y) / 3;
+        const mz = (a.z + b.z + c.z) / 3;
+        if (nx * (mx - center.x) + ny * (my - center.y) + nz * (mz - center.z) < 0) {
+            nx = -nx;
+            ny = -ny;
+            nz = -nz;
+        }
+        tris.push({
+            ax: a.x,
+            ay: a.y,
+            az: a.z,
+            bx: b.x,
+            by: b.y,
+            bz: b.z,
+            cx: c.x,
+            cy: c.y,
+            cz: c.z,
+            nx,
+            ny,
+            nz,
+            minX: Math.min(a.x, b.x, c.x),
+            minY: Math.min(a.y, b.y, c.y),
+            minZ: Math.min(a.z, b.z, c.z),
+            maxX: Math.max(a.x, b.x, c.x),
+            maxY: Math.max(a.y, b.y, c.y),
+            maxZ: Math.max(a.z, b.z, c.z),
+        });
+    }
+    const order = tris.map((_, i) => i);
+    const nodes: BNode[] = [];
+    const build = (start: number, count: number): number => {
+        let minX = Infinity;
+        let minY = Infinity;
+        let minZ = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let maxZ = -Infinity;
+        for (let i = 0; i < count; i++) {
+            const tri = tris[order[start + i]!]!;
+            if (tri.minX < minX) minX = tri.minX;
+            if (tri.minY < minY) minY = tri.minY;
+            if (tri.minZ < minZ) minZ = tri.minZ;
+            if (tri.maxX > maxX) maxX = tri.maxX;
+            if (tri.maxY > maxY) maxY = tri.maxY;
+            if (tri.maxZ > maxZ) maxZ = tri.maxZ;
+        }
+        const idx = nodes.length;
+        nodes.push({ minX, minY, minZ, maxX, maxY, maxZ, left: -1, right: -1, start, count });
+        if (count <= 8) return idx;
+        const ex = maxX - minX;
+        const ey = maxY - minY;
+        const ez = maxZ - minZ;
+        const axis = ex >= ey && ex >= ez ? 0 : ey >= ez ? 1 : 2;
+        const slice = order.slice(start, start + count);
+        slice.sort((ia, ib) => triMid(tris[ia]!, axis) - triMid(tris[ib]!, axis));
+        for (let i = 0; i < count; i++) order[start + i] = slice[i]!;
+        const mid = count >> 1;
+        const left = build(start, mid);
+        const right = build(start + mid, count - mid);
+        nodes[idx]!.left = left;
+        nodes[idx]!.right = right;
+        return idx;
+    };
+    if (order.length > 0) build(0, order.length);
+
+    const closest = (p: AfoVec3): MeshHit => {
+        if (nodes.length === 0) return { point: p, errorMm: Infinity, normal: { x: 0, y: 0, z: 1 } };
+        let bestD = Infinity;
+        let best = p;
+        let bestN = { x: 0, y: 0, z: 1 };
+        const stack = [0];
+        while (stack.length) {
+            const node = nodes[stack.pop()!]!;
+            if (boxDistSq(node, p) >= bestD) continue;
+            if (node.left < 0) {
+                for (let i = 0; i < node.count; i++) {
+                    const tri = tris[order[node.start + i]!]!;
+                    const q = closestOnTri(p, tri);
+                    const dx = p.x - q.x;
+                    const dy = p.y - q.y;
+                    const dz = p.z - q.z;
+                    const d = dx * dx + dy * dy + dz * dz;
+                    if (d < bestD) {
+                        bestD = d;
+                        best = q;
+                        bestN = { x: tri.nx, y: tri.ny, z: tri.nz };
+                    }
+                }
+            } else {
+                const dl = boxDistSq(nodes[node.left]!, p);
+                const dr = boxDistSq(nodes[node.right]!, p);
+                if (dl < dr) {
+                    stack.push(node.right, node.left);
+                } else {
+                    stack.push(node.left, node.right);
+                }
+            }
+        }
+        return { point: best, errorMm: Math.sqrt(bestD), normal: bestN };
+    };
+
+    const project = (p: AfoVec3, prev: AfoVec3 | null, spacingMm: number, rayMm = 5): MeshHit => {
+        const near = closest(p);
+        const ray = rayOnNormal(p, near.normal, rayMm, tris, order, nodes);
+        if (!ray || ray.errorMm > rayMm) return near;
+        if (!prev) return ray.errorMm <= near.errorMm ? ray : near;
+        if (dist3(near.point, prev) > dist3(ray.point, prev) + spacingMm * 0.25) return ray;
+        return near;
+    };
+
+    return { closest, project };
+}
+
+function vertAt(mesh: AfoTriMesh, i: number): AfoVec3 {
+    return {
+        x: mesh.positions[i * 3] ?? 0,
+        y: mesh.positions[i * 3 + 1] ?? 0,
+        z: mesh.positions[i * 3 + 2] ?? 0,
+    };
+}
+
+function triMid(tri: ProjTri, axis: number): number {
+    if (axis === 0) return (tri.minX + tri.maxX) * 0.5;
+    if (axis === 1) return (tri.minY + tri.maxY) * 0.5;
+    return (tri.minZ + tri.maxZ) * 0.5;
+}
+
+function boxDistSq(node: BNode, p: AfoVec3): number {
+    const dx = p.x < node.minX ? node.minX - p.x : p.x > node.maxX ? p.x - node.maxX : 0;
+    const dy = p.y < node.minY ? node.minY - p.y : p.y > node.maxY ? p.y - node.maxY : 0;
+    const dz = p.z < node.minZ ? node.minZ - p.z : p.z > node.maxZ ? p.z - node.maxZ : 0;
+    return dx * dx + dy * dy + dz * dz;
+}
+
+function dist3(a: AfoVec3, b: AfoVec3): number {
+    return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+function closestOnTri(p: AfoVec3, t: ProjTri): AfoVec3 {
+    const abx = t.bx - t.ax;
+    const aby = t.by - t.ay;
+    const abz = t.bz - t.az;
+    const acx = t.cx - t.ax;
+    const acy = t.cy - t.ay;
+    const acz = t.cz - t.az;
+    const apx = p.x - t.ax;
+    const apy = p.y - t.ay;
+    const apz = p.z - t.az;
+    const d1 = abx * apx + aby * apy + abz * apz;
+    const d2 = acx * apx + acy * apy + acz * apz;
+    if (d1 <= 0 && d2 <= 0) return { x: t.ax, y: t.ay, z: t.az };
+    const bpx = p.x - t.bx;
+    const bpy = p.y - t.by;
+    const bpz = p.z - t.bz;
+    const d3 = abx * bpx + aby * bpy + abz * bpz;
+    const d4 = acx * bpx + acy * bpy + acz * bpz;
+    if (d3 >= 0 && d4 <= d3) return { x: t.bx, y: t.by, z: t.bz };
+    const vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+        const v = d1 / (d1 - d3 || 1);
+        return { x: t.ax + abx * v, y: t.ay + aby * v, z: t.az + abz * v };
+    }
+    const cpx = p.x - t.cx;
+    const cpy = p.y - t.cy;
+    const cpz = p.z - t.cz;
+    const d5 = abx * cpx + aby * cpy + abz * cpz;
+    const d6 = acx * cpx + acy * cpy + acz * cpz;
+    if (d6 >= 0 && d5 <= d6) return { x: t.cx, y: t.cy, z: t.cz };
+    const vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+        const w = d2 / (d2 - d6 || 1);
+        return { x: t.ax + acx * w, y: t.ay + acy * w, z: t.az + acz * w };
+    }
+    const va = d3 * d6 - d5 * d4;
+    if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+        const w = (d4 - d3) / (d4 - d3 + (d5 - d6) || 1);
+        return {
+            x: t.bx + (t.cx - t.bx) * w,
+            y: t.by + (t.cy - t.by) * w,
+            z: t.bz + (t.cz - t.bz) * w,
+        };
+    }
+    const denom = 1 / (va + vb + vc || 1);
+    const v = vb * denom;
+    const w = vc * denom;
+    return { x: t.ax + abx * v + acx * w, y: t.ay + aby * v + acy * w, z: t.az + abz * v + acz * w };
+}
+
+function rayOnNormal(
+    p: AfoVec3,
+    normal: AfoVec3,
+    rayMm: number,
+    tris: ProjTri[],
+    order: number[],
+    nodes: BNode[],
+): MeshHit | null {
+    const origin = {
+        x: p.x - normal.x * rayMm,
+        y: p.y - normal.y * rayMm,
+        z: p.z - normal.z * rayMm,
+    };
+    const dir = { x: normal.x, y: normal.y, z: normal.z };
+    const span = rayMm * 2;
+    if (nodes.length === 0 || span < 1e-6) return null;
+    let bestT = Infinity;
+    let best: MeshHit | null = null;
+    const stack = [0];
+    while (stack.length) {
+        const node = nodes[stack.pop()!]!;
+        if (!rayBox(origin, dir, span, node)) continue;
+        if (node.left < 0) {
+            for (let i = 0; i < node.count; i++) {
+                const tri = tris[order[node.start + i]!]!;
+                const hit = rayTri(origin, dir, span, tri);
+                if (hit == null || hit >= bestT) continue;
+                bestT = hit;
+                const q = {
+                    x: origin.x + dir.x * hit,
+                    y: origin.y + dir.y * hit,
+                    z: origin.z + dir.z * hit,
+                };
+                best = {
+                    point: q,
+                    errorMm: Math.abs(hit - rayMm),
+                    normal: { x: tri.nx, y: tri.ny, z: tri.nz },
+                };
+            }
+        } else {
+            stack.push(node.left, node.right);
+        }
+    }
+    return best;
+}
+
+function rayBox(origin: AfoVec3, dir: AfoVec3, span: number, node: BNode): boolean {
+    let tMin = 0;
+    let tMax = span;
+    const mins = [node.minX, node.minY, node.minZ];
+    const maxs = [node.maxX, node.maxY, node.maxZ];
+    const o = [origin.x, origin.y, origin.z];
+    const d = [dir.x, dir.y, dir.z];
+    for (let a = 0; a < 3; a++) {
+        const da = d[a] ?? 0;
+        const oa = o[a] ?? 0;
+        if (Math.abs(da) < 1e-12) {
+            if (oa < (mins[a] ?? 0) || oa > (maxs[a] ?? 0)) return false;
+            continue;
+        }
+        let t1 = ((mins[a] ?? 0) - oa) / da;
+        let t2 = ((maxs[a] ?? 0) - oa) / da;
+        if (t1 > t2) {
+            const s = t1;
+            t1 = t2;
+            t2 = s;
+        }
+        if (t1 > tMin) tMin = t1;
+        if (t2 < tMax) tMax = t2;
+        if (tMin > tMax) return false;
+    }
+    return true;
+}
+
+function rayTri(origin: AfoVec3, dir: AfoVec3, span: number, t: ProjTri): number | null {
+    const eps = 1e-8;
+    const abx = t.bx - t.ax;
+    const aby = t.by - t.ay;
+    const abz = t.bz - t.az;
+    const acx = t.cx - t.ax;
+    const acy = t.cy - t.ay;
+    const acz = t.cz - t.az;
+    const px = dir.y * acz - dir.z * acy;
+    const py = dir.z * acx - dir.x * acz;
+    const pz = dir.x * acy - dir.y * acx;
+    const det = abx * px + aby * py + abz * pz;
+    if (det > -eps && det < eps) return null;
+    const inv = 1 / det;
+    const tx = origin.x - t.ax;
+    const ty = origin.y - t.ay;
+    const tz = origin.z - t.az;
+    const u = (tx * px + ty * py + tz * pz) * inv;
+    if (u < 0 || u > 1) return null;
+    const qx = ty * abz - tz * aby;
+    const qy = tz * abx - tx * abz;
+    const qz = tx * aby - ty * abx;
+    const v = (dir.x * qx + dir.y * qy + dir.z * qz) * inv;
+    if (v < 0 || u + v > 1) return null;
+    const hit = (acx * qx + acy * qy + acz * qz) * inv;
+    if (hit < 0 || hit > span) return null;
+    return hit;
+}
+
 export function nearestVertex(mesh: AfoTriMesh, p: AfoVec3): { index: number; distSq: number } {
     const n = vertexCount(mesh);
     let best = 0;

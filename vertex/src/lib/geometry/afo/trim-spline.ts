@@ -1,17 +1,40 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { nearestVertex, vertexCount } from "./mesh-ops";
+import {
+    AFO_TRIM_DRAW_OFFSET_MM,
+    AFO_TRIM_JUMP_FACTOR,
+    AFO_TRIM_PLANE_MAX_MM,
+    AFO_TRIM_PROJECT_MAX_MM,
+    AFO_TRIM_SAMPLE_MAX_MM,
+    AFO_TRIM_SAMPLE_MM,
+} from "./defaults";
+import { type MeshProjector, meshProjector, nearestVertex, vertexCount } from "./mesh-ops";
 import { polylineSelfIntersects } from "./trim-loop";
-import type { AfoDesignState, AfoLandmark, AfoTriMesh, AfoVec3 } from "./types";
+import type { AfoDesignState, AfoLandmark, AfoTriMesh, AfoTrimPoint, AfoVec3 } from "./types";
 
 export interface SurfaceSpline {
     ok: boolean;
     reasons: string[];
-    /** Curve samples on the mesh, at least one per 2 mm. */
+    /** Curve samples on the mesh. */
     curve: AfoVec3[];
+    /** Same samples lifted ~0.3 mm along the normal for drawing. */
+    display: AfoVec3[];
+    /** One array per pin-to-pin span. Clean spans keep their identity across a local drag. */
+    segments: AfoVec3[][];
     maxTurnDeg: number;
     maxChordErrorMm: number;
     maxSurfaceErrorMm: number;
+}
+
+export interface SurfaceSplineFitOptions {
+    spacingMm?: number;
+    /** Closed loop. Open placement still projects a contour through the pins. */
+    closed?: boolean;
+    /** Recompute only the spans that use this pin. */
+    dragIndex?: number;
+    previousSegments?: AfoVec3[][];
+    /** Skip the dense self-intersection sweep (live hover). */
+    quick?: boolean;
 }
 
 function sub(a: AfoVec3, b: AfoVec3): AfoVec3 {
@@ -73,122 +96,360 @@ export function snapPointToMesh(
     mesh: AfoTriMesh,
     p: AfoVec3,
 ): { point: AfoVec3; vertexIndex: number; errorMm: number } {
-    const face = closestOnMesh(mesh, p);
+    const face = meshProjector(mesh).closest(p);
     const vertex = nearestVertex(mesh, face.point);
-    const v = {
-        x: mesh.positions[vertex.index * 3] ?? 0,
-        y: mesh.positions[vertex.index * 3 + 1] ?? 0,
-        z: mesh.positions[vertex.index * 3 + 2] ?? 0,
-    };
-    if (dist(v, face.point) <= 0.1) return { point: v, vertexIndex: vertex.index, errorMm: face.errorMm };
     return { point: face.point, vertexIndex: vertex.index, errorMm: face.errorMm };
 }
 
-function closestOnMesh(mesh: AfoTriMesh, p: AfoVec3): { point: AfoVec3; errorMm: number } {
-    const t = (mesh.indices.length / 3) | 0;
-    let best = p;
-    let bestD = Infinity;
-    for (let i = 0; i < t; i++) {
-        const a = at(mesh, mesh.indices[i * 3] ?? 0);
-        const b = at(mesh, mesh.indices[i * 3 + 1] ?? 0);
-        const c = at(mesh, mesh.indices[i * 3 + 2] ?? 0);
-        const q = closestOnTriangle(p, a, b, c);
-        const d = dist(p, q);
-        if (d < bestD) {
-            bestD = d;
-            best = q;
-        }
+/**
+ * Accept a front-face hit. The stored pin is the surface point, never a vertex id.
+ * A miss farther than 3 mm is rejected. Between 3 mm and 5 mm, a local plane of
+ * nearby vertices is used. Farther than that, the click is dropped.
+ */
+export function acceptTrimHit(mesh: AfoTriMesh, hit: AfoVec3): AfoVec3 | null {
+    const near = meshProjector(mesh).closest(hit);
+    if (near.errorMm <= AFO_TRIM_PROJECT_MAX_MM) return near.point;
+    if (near.errorMm > AFO_TRIM_PLANE_MAX_MM) return null;
+    return localPlaneFit(mesh, hit, AFO_TRIM_PLANE_MAX_MM);
+}
+
+export function trimPinFromHit(mesh: AfoTriMesh, hit: AfoVec3): AfoTrimPoint | null {
+    const point = acceptTrimHit(mesh, hit);
+    if (!point) return null;
+    return { point, vertexIndex: nearestVertex(mesh, point).index };
+}
+
+/** Move stored pins back onto the mesh. Pins already within 0.1 mm stay put. */
+export function reprojectTrimPins(mesh: AfoTriMesh, pins: AfoTrimPoint[]): AfoTrimPoint[] {
+    const projector = meshProjector(mesh);
+    return pins.map((pin) => {
+        const face = projector.closest(pin.point);
+        if (face.errorMm > AFO_TRIM_PLANE_MAX_MM) return pin;
+        const point = face.errorMm <= 0.1 ? pin.point : face.point;
+        return { point, vertexIndex: nearestVertex(mesh, point).index };
+    });
+}
+
+function localPlaneFit(mesh: AfoTriMesh, p: AfoVec3, radiusMm: number): AfoVec3 | null {
+    const n = vertexCount(mesh);
+    const found: AfoVec3[] = [];
+    const r2 = radiusMm * radiusMm;
+    let nearest = Infinity;
+    for (let i = 0; i < n; i++) {
+        const v = {
+            x: mesh.positions[i * 3] ?? 0,
+            y: mesh.positions[i * 3 + 1] ?? 0,
+            z: mesh.positions[i * 3 + 2] ?? 0,
+        };
+        const d2 = dist(v, p) ** 2;
+        if (d2 < nearest) nearest = d2;
+        if (d2 <= r2) found.push(v);
+        if (found.length >= 24) break;
     }
-    return { point: best, errorMm: bestD };
-}
-
-function at(mesh: AfoTriMesh, i: number): AfoVec3 {
-    return {
-        x: mesh.positions[i * 3] ?? 0,
-        y: mesh.positions[i * 3 + 1] ?? 0,
-        z: mesh.positions[i * 3 + 2] ?? 0,
-    };
-}
-
-function closestOnTriangle(p: AfoVec3, a: AfoVec3, b: AfoVec3, c: AfoVec3): AfoVec3 {
-    const ab = sub(b, a);
-    const ac = sub(c, a);
-    const ap = sub(p, a);
-    const d1 = dot(ab, ap);
-    const d2 = dot(ac, ap);
-    if (d1 <= 0 && d2 <= 0) return a;
-    const bp = sub(p, b);
-    const d3 = dot(ab, bp);
-    const d4 = dot(ac, bp);
-    if (d3 >= 0 && d4 <= d3) return b;
-    const vc = d1 * d4 - d3 * d2;
-    if (vc <= 0 && d1 >= 0 && d3 <= 0) return lerp(a, b, d1 / (d1 - d3 || 1));
-    const cp = sub(p, c);
-    const d5 = dot(ab, cp);
-    const d6 = dot(ac, cp);
-    if (d6 >= 0 && d5 <= d6) return c;
-    const vb = d5 * d2 - d1 * d6;
-    if (vb <= 0 && d2 >= 0 && d6 <= 0) return lerp(a, c, d2 / (d2 - d6 || 1));
-    const va = d3 * d6 - d5 * d4;
-    if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) return lerp(b, c, (d4 - d3) / (d4 - d3 + (d5 - d6) || 1));
-    const denom = 1 / (va + vb + vc || 1);
-    return add(a, add(scale(ab, vb * denom), scale(ac, vc * denom)));
+    if (Math.sqrt(nearest) > AFO_TRIM_PROJECT_MAX_MM && found.length < 3) return null;
+    if (found.length < 3) return null;
+    let nx = 0;
+    let ny = 0;
+    let nz = 0;
+    const c = { x: 0, y: 0, z: 0 };
+    for (const v of found) {
+        c.x += v.x;
+        c.y += v.y;
+        c.z += v.z;
+    }
+    c.x /= found.length;
+    c.y /= found.length;
+    c.z /= found.length;
+    for (let i = 0; i < found.length; i++) {
+        const a = found[i]!;
+        const b = found[(i + 1) % found.length]!;
+        nx += (a.y - b.y) * (a.z + b.z);
+        ny += (a.z - b.z) * (a.x + b.x);
+        nz += (a.x - b.x) * (a.y + b.y);
+    }
+    const nl = Math.hypot(nx, ny, nz);
+    if (nl < 1e-8) return null;
+    nx /= nl;
+    ny /= nl;
+    nz /= nl;
+    const signed = nx * (p.x - c.x) + ny * (p.y - c.y) + nz * (p.z - c.z);
+    return { x: p.x - nx * signed, y: p.y - ny * signed, z: p.z - nz * signed };
 }
 
 function dot(a: AfoVec3, b: AfoVec3): number {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-export function fitSurfaceSpline(mesh: AfoTriMesh, pins: AfoVec3[], spacingMm = 2): SurfaceSpline {
+/** Segments whose centripetal span uses `dragIndex` (four spans on a closed loop). */
+export function affectedTrimSegments(pinCount: number, dragIndex: number, closed = true): number[] {
+    const n = pinCount;
+    if (n < 2 || dragIndex < 0 || dragIndex >= n) return [];
+    const segCount = closed ? n : n - 1;
+    const out: number[] = [];
+    for (const k of [-2, -1, 0, 1]) {
+        const seg = (dragIndex + k + n) % n;
+        if (seg >= 0 && seg < segCount && !out.includes(seg)) out.push(seg);
+    }
+    return out;
+}
+
+function emptySpline(reasons: string[]): SurfaceSpline {
+    return {
+        ok: false,
+        reasons,
+        curve: [],
+        display: [],
+        segments: [],
+        maxTurnDeg: 0,
+        maxChordErrorMm: 0,
+        maxSurfaceErrorMm: 0,
+    };
+}
+
+/** Centripetal Catmull-Rom (alpha 0.5) between p1 and p2. */
+export function centripetalCatmullRom(
+    p0: AfoVec3,
+    p1: AfoVec3,
+    p2: AfoVec3,
+    p3: AfoVec3,
+    t: number,
+    alpha = 0.5,
+): AfoVec3 {
+    const knot = (ti: number, a: AfoVec3, b: AfoVec3) => ti + Math.max(1e-4, dist(a, b)) ** alpha;
+    const t0 = 0;
+    const t1 = knot(t0, p0, p1);
+    const t2 = knot(t1, p1, p2);
+    const t3 = knot(t2, p2, p3);
+    const tt = t1 + (t2 - t1) * Math.min(1, Math.max(0, t));
+    const mix = (a: AfoVec3, b: AfoVec3, ta: number, tb: number, tc: number) => {
+        const den = tb - ta || 1e-4;
+        return lerp(a, b, (tc - ta) / den);
+    };
+    const a1 = mix(p0, p1, t0, t1, tt);
+    const a2 = mix(p1, p2, t1, t2, tt);
+    const a3 = mix(p2, p3, t2, t3, tt);
+    const b1 = mix(a1, a2, t0, t2, tt);
+    const b2 = mix(a2, a3, t1, t3, tt);
+    return mix(b1, b2, t1, t2, tt);
+}
+
+function resolveFitOptions(
+    spacingOrOptions: number | SurfaceSplineFitOptions,
+): Required<Pick<SurfaceSplineFitOptions, "spacingMm" | "closed" | "quick">> & SurfaceSplineFitOptions {
+    if (typeof spacingOrOptions === "number") {
+        return { spacingMm: spacingOrOptions, closed: true, quick: false };
+    }
+    return {
+        spacingMm: spacingOrOptions.spacingMm ?? AFO_TRIM_SAMPLE_MM,
+        closed: spacingOrOptions.closed ?? true,
+        quick: spacingOrOptions.quick ?? false,
+        dragIndex: spacingOrOptions.dragIndex,
+        previousSegments: spacingOrOptions.previousSegments,
+    };
+}
+
+export function fitSurfaceSpline(
+    mesh: AfoTriMesh,
+    pins: AfoVec3[],
+    spacingOrOptions: number | SurfaceSplineFitOptions = AFO_TRIM_SAMPLE_MM,
+): SurfaceSpline {
+    const opts = resolveFitOptions(spacingOrOptions);
     const reasons: string[] = [];
-    if (pins.length < 3) {
-        return {
-            ok: false,
-            reasons: ["Need at least 3 trim pins."],
-            curve: [],
-            maxTurnDeg: 0,
-            maxChordErrorMm: 0,
-            maxSurfaceErrorMm: 0,
-        };
+    const closed = opts.closed && pins.length >= 3;
+    if (pins.length < 2 || (opts.closed && pins.length < 3)) {
+        return emptySpline(["Need at least 3 trim pins."]);
     }
-    const snapped = pins.map((p) => snapPointToMesh(mesh, p).point);
-    const raw: AfoVec3[] = [];
-    for (let i = 0; i < snapped.length; i++) {
-        const a = snapped[i]!;
-        const b = snapped[(i + 1) % snapped.length]!;
-        const steps = Math.max(2, Math.ceil(dist(a, b) / spacingMm));
-        for (let s = 0; s < steps; s++) raw.push(catmullRomClosed(snapped, s / steps, i));
+    const projector = meshProjector(mesh);
+    const snapped = dedupePins(pins.map((p) => snapPointToMesh(mesh, p).point));
+    if (snapped.length < 2 || (closed && snapped.length < 3)) {
+        return emptySpline(["Need at least 3 trim pins."]);
     }
-    const curve = raw.map((p) => closestOnMesh(mesh, p).point);
+    const spacing = Math.min(AFO_TRIM_SAMPLE_MAX_MM, Math.max(0.2, opts.spacingMm));
+    const segCount = closed ? snapped.length : snapped.length - 1;
+    const dirty =
+        opts.dragIndex == null ? null : new Set(affectedTrimSegments(snapped.length, opts.dragIndex, closed));
+    const segments: AfoVec3[][] = [];
+    for (let i = 0; i < segCount; i++) {
+        const reused = dirty && !dirty.has(i) ? opts.previousSegments?.[i] : undefined;
+        if (reused && reused.length >= 2) segments.push(reused);
+        else segments.push(sampleSegment(snapped, i, closed, spacing, projector));
+    }
+    const counts = segments.map((seg) => seg.length);
+    const flat: AfoVec3[] = [];
+    for (const seg of segments) for (const p of seg) flat.push(p);
+    const dirtyIndex = dirtyIndexSet(counts, dirty);
+    const pinLocks = new Set<number>();
+    {
+        let offset = 0;
+        for (const count of counts) {
+            pinLocks.add(offset);
+            offset += count;
+        }
+    }
+    const smoothed = smoothAndReproject(flat, projector, dirtyIndex, closed, pinLocks);
+    const curve = smoothed.curve;
+    if (curve.length < 2) return emptySpline(["Need at least 3 trim pins."]);
     let maxSurface = 0;
-    for (const p of curve) maxSurface = Math.max(maxSurface, closestOnMesh(mesh, p).errorMm);
+    for (const p of curve) maxSurface = Math.max(maxSurface, projector.closest(p).errorMm);
     let maxTurn = 0;
     let maxChord = 0;
+    const turnCount = closed ? curve.length : Math.max(0, curve.length - 2);
     for (let i = 0; i < curve.length; i++) {
         const prev = curve[(i - 1 + curve.length) % curve.length]!;
         const cur = curve[i]!;
         const next = curve[(i + 1) % curve.length]!;
+        if (!closed && (i === 0 || i === curve.length - 1)) continue;
+        if (i >= turnCount && !closed) continue;
         const v1 = sub(cur, prev);
         const v2 = sub(next, cur);
         const l1 = len(v1) || 1;
         const l2 = len(v2) || 1;
         const c = Math.min(1, Math.max(-1, dot(v1, v2) / (l1 * l2)));
         maxTurn = Math.max(maxTurn, (Math.acos(c) * 180) / Math.PI);
-        const mid = lerp(prev, next, 0.5);
-        maxChord = Math.max(maxChord, dist(cur, mid));
+        maxChord = Math.max(maxChord, dist(cur, lerp(prev, next, 0.5)));
     }
-    if (maxTurn > 25) reasons.push(`Trim turning ${maxTurn.toFixed(1)}° exceeds 25°.`);
-    if (maxChord > 0.5) reasons.push(`Chord error ${maxChord.toFixed(2)} mm exceeds 0.5 mm.`);
+    if (closed && maxTurn > 25) reasons.push(`Trim turning ${maxTurn.toFixed(1)}° exceeds 25°.`);
+    if (closed && maxChord > 0.5) reasons.push(`Chord error ${maxChord.toFixed(2)} mm exceeds 0.5 mm.`);
     if (maxSurface > 0.1) reasons.push(`Curve leaves the surface by ${maxSurface.toFixed(2)} mm.`);
-    if (polylineSelfIntersects(curve) || segmentsCrowd(curve)) reasons.push("Trim loop self-intersects.");
+    if (closed && !opts.quick && (polylineSelfIntersects(curve) || segmentsCrowd(curve))) {
+        reasons.push("Trim loop self-intersects.");
+    }
+    const baked = resliceKeepingClean(smoothed.curve, counts, segments, dirty);
+    const ring =
+        closed && smoothed.curve.length > 2 ? [...smoothed.curve, { ...smoothed.curve[0]! }] : smoothed.curve;
     return {
-        ok: reasons.length === 0,
+        ok: reasons.length === 0 && (closed || snapped.length >= 2),
         reasons,
-        curve,
+        curve: ring,
+        display: offsetDisplay(projector, ring),
+        segments: baked,
         maxTurnDeg: maxTurn,
         maxChordErrorMm: maxChord,
         maxSurfaceErrorMm: maxSurface,
     };
+}
+
+function dedupePins(pins: AfoVec3[]): AfoVec3[] {
+    const out: AfoVec3[] = [];
+    for (const p of pins) {
+        if (out.some((q) => dist(q, p) < 1)) continue;
+        out.push(p);
+    }
+    return out;
+}
+
+function sampleSegment(
+    pins: AfoVec3[],
+    i: number,
+    closed: boolean,
+    spacing: number,
+    projector: MeshProjector,
+): AfoVec3[] {
+    const n = pins.length;
+    const at = (k: number) => pins[(k + n) % n]!;
+    const p1 = at(i);
+    const p2 = closed ? at(i + 1) : pins[i + 1]!;
+    const p0 = closed ? at(i - 1) : i > 0 ? pins[i - 1]! : p1;
+    const p3 = closed ? at(i + 2) : i + 2 < n ? pins[i + 2]! : p2;
+    const chord = Math.max(dist(p1, p2), 0.5);
+    const steps = Math.max(2, Math.ceil(chord / spacing));
+    const raw: AfoVec3[] = [];
+    for (let s = 0; s < steps; s++) raw.push(centripetalCatmullRom(p0, p1, p2, p3, s / steps));
+    return projectChain(raw, spacing, projector);
+}
+
+function projectChain(raw: AfoVec3[], spacing: number, projector: MeshProjector): AfoVec3[] {
+    const out: AfoVec3[] = [];
+    const limit = spacing * AFO_TRIM_JUMP_FACTOR;
+    const walk = (prevRaw: AfoVec3, sample: AfoVec3, depth: number) => {
+        const prev = out.length ? out[out.length - 1]! : null;
+        const hit = projector.project(sample, prev, spacing);
+        if (prev && dist(hit.point, prev) > limit && depth < 5) {
+            const mid = lerp(prevRaw, sample, 0.5);
+            walk(prevRaw, mid, depth + 1);
+            walk(mid, sample, depth + 1);
+            return;
+        }
+        out.push(hit.point);
+    };
+    const first = raw[0];
+    if (!first) return out;
+    out.push(projector.project(first, null, spacing).point);
+    for (let i = 1; i < raw.length; i++) walk(raw[i - 1]!, raw[i]!, 0);
+    return out;
+}
+
+function dirtyIndexSet(counts: number[], dirty: Set<number> | null): Set<number> | null {
+    if (!dirty) return null;
+    const out = new Set<number>();
+    let offset = 0;
+    counts.forEach((count, seg) => {
+        if (dirty.has(seg)) {
+            for (let i = 0; i < count; i++) out.add(offset + i);
+        }
+        offset += count;
+    });
+    return out;
+}
+
+function smoothAndReproject(
+    curve: AfoVec3[],
+    projector: MeshProjector,
+    dirty: Set<number> | null,
+    closed: boolean,
+    pinLocks: Set<number>,
+): { curve: AfoVec3[] } {
+    let cur = curve.map((p) => ({ ...p }));
+    const rounds = 2;
+    for (let r = 0; r < rounds; r++) {
+        const next = cur.map((p) => ({ ...p }));
+        const n = cur.length;
+        for (let i = 0; i < n; i++) {
+            if (pinLocks.has(i)) continue;
+            if (dirty && !dirty.has(i)) continue;
+            if (!closed && (i === 0 || i === n - 1)) continue;
+            const prev = cur[(i - 1 + n) % n]!;
+            const nxt = cur[(i + 1) % n]!;
+            const blended = {
+                x: cur[i]!.x * 0.5 + prev.x * 0.25 + nxt.x * 0.25,
+                y: cur[i]!.y * 0.5 + prev.y * 0.25 + nxt.y * 0.25,
+                z: cur[i]!.z * 0.5 + prev.z * 0.25 + nxt.z * 0.25,
+            };
+            next[i] = projector.project(blended, cur[i], AFO_TRIM_SAMPLE_MM).point;
+        }
+        cur = next;
+    }
+    return { curve: cur };
+}
+
+function resliceKeepingClean(
+    curve: AfoVec3[],
+    counts: number[],
+    original: AfoVec3[][],
+    dirty: Set<number> | null,
+): AfoVec3[][] {
+    const out: AfoVec3[][] = [];
+    let offset = 0;
+    counts.forEach((count, seg) => {
+        if (dirty && !dirty.has(seg) && original[seg]) out.push(original[seg]!);
+        else out.push(curve.slice(offset, offset + count).map((p) => ({ ...p })));
+        offset += count;
+    });
+    return out;
+}
+
+function offsetDisplay(projector: MeshProjector, curve: AfoVec3[]): AfoVec3[] {
+    return curve.map((p) => {
+        const hit = projector.closest(p);
+        let d = AFO_TRIM_DRAW_OFFSET_MM;
+        for (let k = 0; k < 4; k++) {
+            const q = add(p, scale(hit.normal, d));
+            const back = projector.closest(q);
+            if (dist(back.point, p) <= 0.35 && back.errorMm <= d + 0.08) return q;
+            d *= 0.5;
+        }
+        return { ...p };
+    });
 }
 
 function segmentsCrowd(points: AfoVec3[]): boolean {

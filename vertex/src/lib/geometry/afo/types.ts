@@ -243,6 +243,13 @@ export interface AfoShellOptions {
     flareMm: number;
     resolution?: number;
     onProgress?: (pct: number, stage: string) => void;
+    /**
+     * Closed on-surface trim. The inner (skin-side) boundary of the shell.
+     * Flare and edge thickness are built outward from this line.
+     */
+    trimPolygon?: AfoVec3[];
+    /** Plantar / heel seed for the kept posterior-leaf region, in mesh millimetres. */
+    heelSeed?: AfoVec3;
 }
 
 export interface TrimLoopValidation {

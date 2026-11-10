@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { describe, expect, test } from "@rstest/core";
-import { setProductType } from "./afo-store";
+import { setProductType, useAfoStore } from "./afo-store";
 import { AFO_STEPS, useClinicalWorkflowStore } from "./clinical-workflow-store";
 import { defaultDesign, useDesignStore } from "./design-store";
 
@@ -45,6 +45,18 @@ describe("AFO product workflow", () => {
             extraLengthMm: 15,
             enabled: false,
         });
+    });
+
+    test("trim placement turns marker placement off", () => {
+        useAfoStore.getState().resetSession();
+        useAfoStore.getState().setPlacingClinicalId("fibular_head");
+        useAfoStore.getState().setPlacingLandmarkIndex(1);
+        useAfoStore.getState().setPlacingTrim(true);
+        expect(useAfoStore.getState().placingTrim).toBe(true);
+        expect(useAfoStore.getState().placingClinicalId).toBeNull();
+        useAfoStore.getState().setPlacingLandmarkIndex(0);
+        expect(useAfoStore.getState().placingTrim).toBe(false);
+        expect(useAfoStore.getState().placingLandmarkIndex).toBe(0);
     });
 
     test("AFO Next from Scan with no mesh is blocked", () => {

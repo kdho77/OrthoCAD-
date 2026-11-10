@@ -23,6 +23,7 @@ import { afoViewportPlacementLayer, scanForAfoWorkflow } from "@/features/afo/af
 import { afoPlacementComplete, ensureAfoScanPlacement } from "@/features/afo/afo-scan-ui";
 import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
+import { afoDesignBaseLabel } from "@/lib/geometry/afo/trim-preview";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -446,7 +447,12 @@ export function Viewer3D() {
                     {VIEW_LABELS[viewer.view]} view
                 </span>
                 {/* Base vs parametric mode — makes it clear the user is modifying a base. */}
-                {designMode.mode === "base" ? (
+                {isAfo ? (
+                    <span className="flex w-fit items-center gap-1 rounded bg-violet-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        <Layers className="h-3 w-3" />
+                        {afoDesignBaseLabel(true, SAMPLE_TOP_NAME)}
+                    </span>
+                ) : designMode.mode === "base" ? (
                     <span className="flex w-fit items-center gap-1 rounded bg-violet-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         <Layers className="h-3 w-3" />
                         Base:{" "}

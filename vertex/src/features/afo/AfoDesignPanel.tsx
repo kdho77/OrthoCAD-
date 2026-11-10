@@ -18,14 +18,18 @@ export function AfoDesignPanel() {
     const castMesh = useAfoStore((s) => s.castMesh);
     const working = correctedMesh ?? castMesh;
 
-    const nextMarker = AFO_DESIGN_MARKERS[Math.min(placingIndex, AFO_DESIGN_MARKERS.length - 1)];
+    const nextMarker = AFO_DESIGN_MARKERS[Math.min(Math.max(placingIndex, 0), AFO_DESIGN_MARKERS.length - 1)];
     const landmarksDone = afo.landmarks.length >= AFO_DESIGN_MARKERS.length;
+    const trimHits = afo.trimPoints.map((p) => p.point);
     const validation = working
         ? validateTrimLoop(
               working,
               afo.trimPoints.map((p) => p.vertexIndex),
               afo.trimClosed,
-              { skipGeodesic: true },
+              {
+                  skipGeodesic: true,
+                  points: trimHits,
+              },
           )
         : { ok: false, reasons: ["No working mesh."] };
 
@@ -35,13 +39,32 @@ export function AfoDesignPanel() {
             working,
             afo.trimPoints.map((p) => p.vertexIndex),
             afo.trimClosed,
+            {
+                skipGeodesic: true,
+                points: trimHits,
+            },
         );
+        const fit =
+            afo.trimClosed && trimHits.length >= 3
+                ? fitSurfaceSpline(working, trimHits, { closed: true })
+                : null;
+        if (fit && !fit.ok) {
+            useAfoStore.getState().setLastError(fit.reasons.join(" "));
+            return;
+        }
         if (!full.ok) {
             useAfoStore.getState().setLastError(full.reasons.join(" "));
             return;
         }
         useAfoStore.getState().setLastError(null);
-        patchAfoState({ trimConfirmed: true }, "afo-trim-confirm");
+        patchAfoState({ trimConfirmed: true, trimCurve: fit?.curve ?? afo.trimCurve }, "afo-trim-confirm");
+    };
+
+    const closeLoop = () => {
+        if (!working || trimHits.length < 3) return;
+        const fit = fitSurfaceSpline(working, trimHits, { closed: true });
+        useAfoStore.getState().setLastError(fit.ok ? null : fit.reasons.join(" "));
+        patchAfoState({ trimClosed: true, trimCurve: fit.curve, trimConfirmed: false }, "afo-trim-close");
     };
 
     const fitSpline = () => {
@@ -136,7 +159,11 @@ export function AfoDesignPanel() {
                         );
                     })}
                 </ol>
-                {!landmarksDone && nextMarker ? (
+                {placingTrim ? (
+                    <p className="text-muted-foreground">
+                        Marker placement is off while the trimline is active.
+                    </p>
+                ) : !landmarksDone && nextMarker ? (
                     <p className="text-muted-foreground">
                         Click the mesh to place{" "}
                         <strong className="text-foreground">{nextMarker.label}</strong>. View auto-rotates.
@@ -204,7 +231,7 @@ export function AfoDesignPanel() {
                     type="button"
                     disabled={afo.trimPoints.length < 3 || afo.trimClosed}
                     className="h-8 w-full rounded-md border border-border bg-background"
-                    onClick={() => patchAfoState({ trimClosed: true }, "afo-trim-close")}
+                    onClick={closeLoop}
                 >
                     Close loop
                 </button>

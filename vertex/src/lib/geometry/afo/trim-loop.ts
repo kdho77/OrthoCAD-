@@ -1,6 +1,13 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { AFO_TRIM_MIN_AREA_MM2, AFO_TRIM_MIN_LENGTH_MM, AFO_TRIM_MIN_POINTS } from "./defaults";
+import {
+    AFO_TRIM_CLOSE_MM,
+    AFO_TRIM_CLOSE_PX,
+    AFO_TRIM_DEDUPE_MM,
+    AFO_TRIM_MIN_AREA_MM2,
+    AFO_TRIM_MIN_LENGTH_MM,
+    AFO_TRIM_MIN_POINTS,
+} from "./defaults";
 import { geodesicVertexPath } from "./geodesic";
 import type { AfoTriMesh, AfoVec3, TrimLoopValidation } from "./types";
 
@@ -53,16 +60,31 @@ export function polylineSelfIntersects(points: AfoVec3[]): boolean {
     return false;
 }
 
+export function countDistinctPoints(points: AfoVec3[], minSeparationMm = AFO_TRIM_DEDUPE_MM): number {
+    const kept: AfoVec3[] = [];
+    for (const p of points) {
+        if (kept.every((q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z) >= minSeparationMm)) kept.push(p);
+    }
+    return kept.length;
+}
+
 export function validateTrimLoop(
     mesh: AfoTriMesh,
     vertexIndices: number[],
     closed: boolean,
-    options: { skipGeodesic?: boolean } = {},
+    options: { skipGeodesic?: boolean; points?: AfoVec3[] } = {},
 ): TrimLoopValidation {
     const reasons: string[] = [];
-    const unique = new Set(vertexIndices);
-    if (unique.size < AFO_TRIM_MIN_POINTS) {
-        reasons.push(`Need at least ${AFO_TRIM_MIN_POINTS} distinct vertices.`);
+    const hitPoints = options.points;
+    if (hitPoints && hitPoints.length > 0) {
+        if (countDistinctPoints(hitPoints) < AFO_TRIM_MIN_POINTS) {
+            reasons.push(`Need at least ${AFO_TRIM_MIN_POINTS} distinct trim points.`);
+        }
+    } else {
+        const unique = new Set(vertexIndices);
+        if (unique.size < AFO_TRIM_MIN_POINTS) {
+            reasons.push(`Need at least ${AFO_TRIM_MIN_POINTS} distinct vertices.`);
+        }
     }
     if (!closed) {
         reasons.push("Loop is not closed (click the first point).");
@@ -81,11 +103,14 @@ export function validateTrimLoop(
             }
         }
     }
-    const pts = vertexIndices.map((i) => ({
-        x: mesh.positions[i * 3] ?? 0,
-        y: mesh.positions[i * 3 + 1] ?? 0,
-        z: mesh.positions[i * 3 + 2] ?? 0,
-    }));
+    const pts =
+        hitPoints && hitPoints.length > 0
+            ? hitPoints
+            : vertexIndices.map((i) => ({
+                  x: mesh.positions[i * 3] ?? 0,
+                  y: mesh.positions[i * 3 + 1] ?? 0,
+                  z: mesh.positions[i * 3 + 2] ?? 0,
+              }));
     if (closed && pts.length >= 3) {
         if (polylineLength(pts) < AFO_TRIM_MIN_LENGTH_MM) {
             reasons.push(`Loop shorter than ${AFO_TRIM_MIN_LENGTH_MM} mm.`);
@@ -105,8 +130,35 @@ function vertexCountSafe(mesh: AfoTriMesh): number {
 }
 
 /** Click is a close if it lands on the first handle (within radius mm). */
-export function isCloseClick(first: AfoVec3, click: AfoVec3, radiusMm = 12): boolean {
+export function isCloseClick(first: AfoVec3, click: AfoVec3, radiusMm = AFO_TRIM_CLOSE_MM): boolean {
     return Math.hypot(click.x - first.x, click.y - first.y, click.z - first.z) <= radiusMm;
+}
+
+export function isCloseOnScreen(px: number | null | undefined, limitPx = AFO_TRIM_CLOSE_PX): boolean {
+    return px != null && px <= limitPx;
+}
+
+/**
+ * Record one trim click as a hit point. Pins closer than 1 mm are ignored.
+ * The first pin closes the loop within 3 mm or when the caller reports a
+ * screen distance inside 10 px. Vertex ids are not used.
+ */
+export function registerTrimClick(
+    pins: AfoVec3[],
+    hit: AfoVec3,
+    screenPx: number | null = null,
+): { pins: AfoVec3[]; closed: boolean; added: boolean } {
+    if (
+        pins.length >= AFO_TRIM_MIN_POINTS &&
+        pins[0] &&
+        (isCloseClick(pins[0], hit) || isCloseOnScreen(screenPx))
+    ) {
+        return { pins, closed: true, added: false };
+    }
+    if (pins.some((p) => Math.hypot(hit.x - p.x, hit.y - p.y, hit.z - p.z) < AFO_TRIM_DEDUPE_MM)) {
+        return { pins, closed: false, added: false };
+    }
+    return { pins: [...pins, { x: hit.x, y: hit.y, z: hit.z }], closed: false, added: true };
 }
 
 /** Angularly ordered vertex loop near a target Z (brace opening). */
