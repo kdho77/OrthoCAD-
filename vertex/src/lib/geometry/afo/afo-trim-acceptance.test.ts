@@ -161,6 +161,151 @@ function rimDihedralDeg(shell: AfoTriMesh): { deg: number; x: number; y: number;
     return { deg: worst, ...where };
 }
 
+/** Skin-skin edges near the opening. The rim-to-skin junction is left out; it is meant to be about 90°. */
+function nearOpeningFold(
+    shell: AfoTriMesh,
+    opening: AfoVec3[],
+): { count: number; deg: number; x: number; y: number; z: number } {
+    const face0 = shell.rimFaceStart ?? (shell.indices.length / 3) | 0;
+    const t = (shell.indices.length / 3) | 0;
+    const normals: AfoVec3[] = [];
+    const areas: number[] = [];
+    for (let i = 0; i < t; i++) {
+        const ia = shell.indices[i * 3] ?? 0;
+        const ib = shell.indices[i * 3 + 1] ?? 0;
+        const ic = shell.indices[i * 3 + 2] ?? 0;
+        const a = at(shell, ia);
+        const b = at(shell, ib);
+        const c = at(shell, ic);
+        const nx = (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y);
+        const ny = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
+        const nz = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        const len = Math.hypot(nx, ny, nz);
+        areas.push(len * 0.5);
+        normals.push({ x: nx / (len || 1), y: ny / (len || 1), z: nz / (len || 1) });
+    }
+    const edgeFaces = new Map<string, number[]>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let i = 0; i < t; i++) {
+        const vs = [shell.indices[i * 3] ?? 0, shell.indices[i * 3 + 1] ?? 0, shell.indices[i * 3 + 2] ?? 0];
+        for (let e = 0; e < 3; e++) {
+            const k = key(vs[e]!, vs[(e + 1) % 3]!);
+            const list = edgeFaces.get(k);
+            if (list) list.push(i);
+            else edgeFaces.set(k, [i]);
+        }
+    }
+    let count = 0;
+    let worst = 0;
+    let worstArea = 0;
+    let worstSide = "";
+    let where = { x: 0, y: 0, z: 0 };
+    for (const [k, faces] of edgeFaces) {
+        if (faces.length !== 2) continue;
+        const f0 = faces[0]!;
+        const f1 = faces[1]!;
+        if (f0 >= face0 || f1 >= face0) continue;
+        const [sa, sb] = k.split("|").map(Number);
+        const pa = at(shell, sa!);
+        const pb = at(shell, sb!);
+        if (dist(pa, pb) < 0.05) continue;
+        const mid = { x: (pa.x + pb.x) * 0.5, y: (pa.y + pb.y) * 0.5, z: (pa.z + pb.z) * 0.5 };
+        if (distToPolyline(mid, opening) > 3) continue;
+        // A face under 0.1 mm² is a collapsed remnant; its normal is not a real fold.
+        if ((areas[f0] ?? 0) < 0.1 || (areas[f1] ?? 0) < 0.1) continue;
+        const n0 = normals[f0]!;
+        const n1 = normals[f1]!;
+        const dotN = Math.min(1, Math.max(-1, n0.x * n1.x + n0.y * n1.y + n0.z * n1.z));
+        const deg = (Math.acos(dotN) * 180) / Math.PI;
+        if (deg > 60) {
+            count++;
+            if (deg > worst) {
+                worst = deg;
+                worstArea = Math.min(areas[f0] ?? 0, areas[f1] ?? 0);
+                const n0v = shell.outerVertex0 ?? 0;
+                const small = (areas[f0] ?? 0) <= (areas[f1] ?? 0) ? f0 : f1;
+                const sv = [
+                    shell.indices[small * 3] ?? 0,
+                    shell.indices[small * 3 + 1] ?? 0,
+                    shell.indices[small * 3 + 2] ?? 0,
+                ];
+                worstSide = sv.every((v) => v < n0v)
+                    ? "inner"
+                    : sv.every((v) => v >= n0v && v < n0v * 2)
+                      ? "outer"
+                      : "other";
+                where = mid;
+            }
+        }
+    }
+    return { count, deg: worst, area: worstArea, side: worstSide, ...where };
+}
+
+function shellOpening(shell: AfoTriMesh): AfoVec3[] {
+    const n = shell.outerVertex0 ?? 0;
+    const face0 = shell.rimFaceStart ?? 0;
+    const count = new Map<string, { a: number; b: number; n: number }>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let f = 0; f < face0; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        if (!vs.every((v) => v < n)) continue;
+        for (let e = 0; e < 3; e++) {
+            const a = vs[e]!;
+            const b = vs[(e + 1) % 3]!;
+            const k = key(a, b);
+            const prev = count.get(k);
+            if (prev) prev.n += 1;
+            else count.set(k, { a, b, n: 1 });
+        }
+    }
+    const next = new Map<number, number[]>();
+    for (const e of count.values()) {
+        if (e.n !== 1) continue;
+        const ab = next.get(e.a) ?? [];
+        ab.push(e.b);
+        next.set(e.a, ab);
+        const ba = next.get(e.b) ?? [];
+        ba.push(e.a);
+        next.set(e.b, ba);
+    }
+    const start = next.keys().next().value as number | undefined;
+    if (start == null) return [];
+    const loop = [start];
+    const seen = new Set<number>([start]);
+    let cur = start;
+    for (let guard = 0; guard < n + 2; guard++) {
+        const nxt = (next.get(cur) ?? []).find((v) => !seen.has(v));
+        if (nxt == null) break;
+        loop.push(nxt);
+        seen.add(nxt);
+        cur = nxt;
+    }
+    return loop.map((i) => at(shell, i));
+}
+
+function minInteriorWall(shell: AfoTriMesh, opening: AfoVec3[]): number {
+    const n = shell.outerVertex0 ?? 0;
+    const face0 = shell.rimFaceStart ?? 0;
+    const innerIdx: number[] = [];
+    for (let f = 0; f < face0; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        if (!vs.every((v) => v < n)) continue;
+        innerIdx.push(vs[0]!, vs[1]!, vs[2]!);
+    }
+    const proj = meshProjector({
+        positions: shell.positions.subarray(0, n * 3),
+        indices: new Uint32Array(innerIdx),
+    });
+    let min = Infinity;
+    for (let i = 0; i < n; i++) {
+        const p = at(shell, i);
+        if (distToPolyline(p, opening) < 10) continue;
+        const outer = at(shell, n + i);
+        min = Math.min(min, proj.closest(outer).errorMm);
+    }
+    return min;
+}
+
 describe("AFO trim acceptance", () => {
     test("shell defaults match the Windows app and the footplate cap is named", () => {
         expect(AFO_THICKNESS_MM).toBe(4);
@@ -351,19 +496,36 @@ describe("AFO trim acceptance", () => {
                 };
                 gateShell("plain", plain);
                 const rims = innerRimLoops(plain, leg);
-                const boundary = rims[0] ?? [];
+                const boundary = rims[0] ?? shellOpening(plain);
                 let curveToEdge = 0;
-                let within = 0;
-                for (const p of polygon) {
-                    const d = distToPolyline(p, boundary);
-                    curveToEdge = Math.max(curveToEdge, d);
-                    if (d <= 0.1) within++;
+                let edgeToCurve = 0;
+                for (const p of polygon) curveToEdge = Math.max(curveToEdge, distToPolyline(p, boundary));
+                for (let i = 0; i < boundary.length; i++) {
+                    const a = boundary[i]!;
+                    const b = boundary[(i + 1) % boundary.length]!;
+                    edgeToCurve = Math.max(edgeToCurve, distToPolyline(a, polygon));
+                    edgeToCurve = Math.max(
+                        edgeToCurve,
+                        distToPolyline(
+                            { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5, z: (a.z + b.z) * 0.5 },
+                            polygon,
+                        ),
+                    );
                 }
                 note(
                     name,
-                    rims.length === 1 && within === polygon.length && curveToEdge <= 0.1,
-                    `curve→edge ${curveToEdge.toFixed(3)} mm on ${within}/${polygon.length}, loops ${rims.length}`,
+                    rims.length === 1 && curveToEdge <= 0.1 && edgeToCurve <= 0.1,
+                    `curve Hausdorff ${Math.max(curveToEdge, edgeToCurve).toFixed(3)} mm (${curveToEdge.toFixed(3)} / ${edgeToCurve.toFixed(3)}), loops ${rims.length}`,
                 );
+                const plainOpen = shellOpening(plain);
+                const plainFold = nearOpeningFold(plain, plainOpen);
+                note(
+                    name,
+                    plainFold.count === 0,
+                    `plain opening folds ${plainFold.count} worst ${plainFold.deg.toFixed(1)}° area ${plainFold.area.toFixed(3)} ${plainFold.side} at (${plainFold.x.toFixed(1)}, ${plainFold.y.toFixed(1)}, ${plainFold.z.toFixed(1)})`,
+                );
+                const plainWall = minInteriorWall(plain, plainOpen);
+                note(name, plainWall >= AFO_THICKNESS_MM - 0.1, `plain min wall ${plainWall.toFixed(3)} mm`);
                 const projector = meshProjector(leg);
                 let nInner = 0;
                 while (
@@ -394,6 +556,19 @@ describe("AFO trim acceptance", () => {
                     `flare vertex count ${flared.positions.length} vs ${plain.positions.length}`,
                 );
                 gateShell("flared", flared);
+                const flaredOpen = shellOpening(flared);
+                const flaredFold = nearOpeningFold(flared, flaredOpen);
+                note(
+                    name,
+                    flaredFold.count === 0,
+                    `flared opening folds ${flaredFold.count} worst ${flaredFold.deg.toFixed(1)}° area ${flaredFold.area.toFixed(3)} ${flaredFold.side} at (${flaredFold.x.toFixed(1)}, ${flaredFold.y.toFixed(1)}, ${flaredFold.z.toFixed(1)})`,
+                );
+                const flaredWall = minInteriorWall(flared, flaredOpen);
+                note(
+                    name,
+                    flaredWall >= AFO_THICKNESS_MM - 0.1,
+                    `flared min wall ${flaredWall.toFixed(3)} mm`,
+                );
                 let minZ = Infinity;
                 for (let i = 0; i < leg.positions.length; i += 3)
                     minZ = Math.min(minZ, leg.positions[i + 2] ?? 0);

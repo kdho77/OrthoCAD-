@@ -114,13 +114,208 @@ export function closeShellWithRoundRim(input: {
     indices.set(input.innerIndices, 0);
     indices.set(input.outerIndices, input.innerIndices.length);
     indices.set(rim, input.innerIndices.length + input.outerIndices.length);
-    const rimFaceStart = (input.innerIndices.length + input.outerIndices.length) / 3;
     const baked = new Float32Array(positions);
+    const rimFaceStart = (input.innerIndices.length + input.outerIndices.length) / 3;
     fixReversedRimPairs(baked, indices, rimFaceStart);
-    return { positions: baked, indices, rimFaceStart };
+    return {
+        positions: baked,
+        indices,
+        rimFaceStart,
+        outerVertex0: n,
+    };
 }
 
-/** A flat wall with one triangle indexed backward reads as a 180° fold. Flip only that case. */
+/**
+ * A thin triangle along the opening folds when its vertices take slightly
+ * different offsets. Flip a reversed winding, and collapse an edge that is
+ * already shorter than the dihedral gate looks at. Faces that used that edge
+ * are dropped, which is a manifold collapse when the edge had two skin faces.
+ */
+function repairOuterLipSlivers(
+    positions: Float32Array,
+    indices: Uint32Array,
+    n: number,
+    _rimFaceStart: number,
+    boundary: Set<number>,
+): { indices: Uint32Array; rimFaceStart: number } {
+    type Kind = 0 | 1 | 2;
+    const faces: { v: [number, number, number]; kind: Kind }[] = [];
+    const triCount = (indices.length / 3) | 0;
+    for (let f = 0; f < triCount; f++) {
+        const v: [number, number, number] = [
+            indices[f * 3] ?? 0,
+            indices[f * 3 + 1] ?? 0,
+            indices[f * 3 + 2] ?? 0,
+        ];
+        const onInner = v.every((id) => id < n);
+        const onOuter = v.every((id) => id >= n && id < n * 2);
+        const kind: Kind = onInner ? 0 : onOuter ? 1 : 2;
+        faces.push({ v, kind });
+    }
+    const at = (i: number): AfoVec3 => ({
+        x: positions[i * 3] ?? 0,
+        y: positions[i * 3 + 1] ?? 0,
+        z: positions[i * 3 + 2] ?? 0,
+    });
+    const span = (a: number, b: number) => {
+        const p = at(a);
+        const q = at(b);
+        return Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
+    };
+    const areaOf = (a: number, b: number, c: number) => {
+        const nrm = triNormal(at(a), at(b), at(c));
+        return Math.hypot(nrm.x, nrm.y, nrm.z) * 0.5;
+    };
+    const unitN = (a: number, b: number, c: number): AfoVec3 => {
+        const nrm = triNormal(at(a), at(b), at(c));
+        const len = Math.hypot(nrm.x, nrm.y, nrm.z) || 1;
+        return { x: nrm.x / len, y: nrm.y / len, z: nrm.z / len };
+    };
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    const cos60 = Math.cos((60 * Math.PI) / 180);
+    const alive = (f: { v: [number, number, number] }) =>
+        f.v[0] !== f.v[1] && f.v[1] !== f.v[2] && f.v[2] !== f.v[0];
+    for (let pass = 0; pass < 12; pass++) {
+        const edge = new Map<string, number[]>();
+        for (let f = 0; f < faces.length; f++) {
+            const face = faces[f]!;
+            if (!alive(face)) continue;
+            for (let e = 0; e < 3; e++) {
+                const k = key(face.v[e]!, face.v[(e + 1) % 3]!);
+                const list = edge.get(k);
+                if (list) list.push(f);
+                else edge.set(k, [f]);
+            }
+        }
+        let changed = false;
+        let collapsed = false;
+        for (let f = 0; f < faces.length; f++) {
+            const face = faces[f]!;
+            if (face.kind === 2 || !alive(face)) continue;
+            const [a, b, c] = face.v;
+            const onSkin =
+                face.kind === 0
+                    ? a < n && b < n && c < n
+                    : a >= n && a < n * 2 && b >= n && b < n * 2 && c >= n && c < n * 2;
+            if (!onSkin) continue;
+            const area = areaOf(a, b, c);
+            if (area < 1e-8) continue;
+            const mine = unitN(a, b, c);
+            let worst = 1;
+            let agree = 0;
+            let disagree = 0;
+            for (const [u, v] of [
+                [a, b],
+                [b, c],
+                [c, a],
+            ] as const) {
+                for (const nb of edge.get(key(u, v)) ?? []) {
+                    if (nb === f || faces[nb]!.kind !== face.kind || !alive(faces[nb]!)) continue;
+                    const nv = faces[nb]!.v;
+                    const nn = unitN(nv[0], nv[1], nv[2]);
+                    const dotN = mine.x * nn.x + mine.y * nn.y + mine.z * nn.z;
+                    worst = Math.min(worst, dotN);
+                    if (dotN < 0) disagree++;
+                    else agree++;
+                }
+            }
+            if (worst < -0.5 && area < 1.2) {
+                let smaller = true;
+                for (let e = 0; e < 3 && smaller; e++) {
+                    for (const nb of edge.get(key(face.v[e]!, face.v[(e + 1) % 3]!)) ?? []) {
+                        if (nb === f || faces[nb]!.kind !== face.kind || !alive(faces[nb]!)) continue;
+                        const nv = faces[nb]!.v;
+                        const nn = unitN(nv[0], nv[1], nv[2]);
+                        if (mine.x * nn.x + mine.y * nn.y + mine.z * nn.z >= -0.5) continue;
+                        if (areaOf(nv[0], nv[1], nv[2]) + 1e-6 < area) smaller = false;
+                    }
+                }
+                if (smaller) {
+                    const tmp = face.v[1];
+                    face.v[1] = face.v[2];
+                    face.v[2] = tmp;
+                    changed = true;
+                    continue;
+                }
+            }
+            if (disagree > 0 && agree === 0 && area < 2) {
+                const tmp = face.v[1];
+                face.v[1] = face.v[2];
+                face.v[2] = tmp;
+                changed = true;
+                continue;
+            }
+            if (area > 0.8 || worst >= cos60) continue;
+            const pairs: [number, number][] = [
+                [a, b],
+                [b, c],
+                [c, a],
+            ];
+            let short = pairs[0]!;
+            let shortLen = Infinity;
+            for (const pair of pairs) {
+                const len = span(pair[0], pair[1]);
+                if (len < shortLen) {
+                    shortLen = len;
+                    short = pair;
+                }
+            }
+            if (collapsed || shortLen > (area < 0.12 ? 0.45 : 0.15)) continue;
+            const from = short[0]! < short[1]! ? short[1]! : short[0]!;
+            const to = short[0]! < short[1]! ? short[0]! : short[1]!;
+            if (boundary.has(from) || boundary.has(to)) continue;
+            if (faces.some((other) => other.kind === 2 && other.v.includes(from))) continue;
+            const hosts = edge.get(key(short[0]!, short[1]!)) ?? [];
+            if (hosts.length !== 2) continue;
+            for (const other of faces) {
+                for (let k = 0; k < 3; k++) if (other.v[k] === from) other.v[k] = to;
+            }
+            collapsed = true;
+            changed = true;
+        }
+        if (!changed) break;
+    }
+    const kept = faces.filter((face) => alive(face) && areaOf(face.v[0], face.v[1], face.v[2]) > 1e-8);
+    kept.sort((p, q) => p.kind - q.kind);
+    const out = new Uint32Array(kept.length * 3);
+    let rimAt = kept.length;
+    for (let i = 0; i < kept.length; i++) {
+        const face = kept[i]!;
+        if (face.kind === 2 && rimAt === kept.length) rimAt = i;
+        out[i * 3] = face.v[0];
+        out[i * 3 + 1] = face.v[1];
+        out[i * 3 + 2] = face.v[2];
+    }
+    return { indices: out, rimFaceStart: rimAt };
+}
+
+/** Run the lip repair on a finished shell, after any later vertex moves. */
+export function finishShellLip(shell: AfoTriMesh): void {
+    const nv = shell.outerVertex0;
+    const face0 = shell.rimFaceStart;
+    if (nv == null || face0 == null) return;
+    const boundary = new Set<number>();
+    const seen = new Map<string, number>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let f = 0; f < face0; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        if (!vs.every((v) => v < nv)) continue;
+        for (let e = 0; e < 3; e++) {
+            const k = key(vs[e]!, vs[(e + 1) % 3]!);
+            seen.set(k, (seen.get(k) ?? 0) + 1);
+        }
+    }
+    for (const [k, count] of seen) {
+        if (count !== 1) continue;
+        const [a, b] = k.split("|").map(Number);
+        boundary.add(a!);
+        boundary.add(b!);
+    }
+    const repaired = repairOuterLipSlivers(shell.positions, shell.indices, nv, face0, boundary);
+    shell.indices = repaired.indices;
+    shell.rimFaceStart = repaired.rimFaceStart;
+}
+
 function fixReversedRimPairs(positions: Float32Array, indices: Uint32Array, face0: number): void {
     const faceCount = (indices.length / 3) | 0;
     const normalAt = (f: number): AfoVec3 => {

@@ -8,10 +8,10 @@ import {
     AFO_THICKNESS_MM,
 } from "./defaults";
 import { geodesicVertexPath } from "./geodesic";
-import { cloneMesh, computeVertexNormals, nearestVertex, vertexCount } from "./mesh-ops";
+import { cloneMesh, computeVertexNormals, meshProjector, nearestVertex, vertexCount } from "./mesh-ops";
 import { offsetMeshAlongNormals } from "./sdf-offset";
 import { embedTrimPolyline } from "./shell-cut";
-import { boundaryLoops, closeShellWithRoundRim } from "./shell-rim";
+import { boundaryLoops, closeShellWithRoundRim, finishShellLip } from "./shell-rim";
 import type { AfoShellOptions, AfoTriMesh, AfoVec3 } from "./types";
 
 /**
@@ -42,13 +42,83 @@ export function buildAfoShell(
         embedded && embedded.loop.length >= 3 ? embedded.loop : resolveShellTrimLoop(mesh, trimVertexIndices);
     // A projected trim is already a chain of mesh edges. Geodesic fill is only
     // for a vertex-id loop that was never split into the surface.
-    const keep = cleanupBoundary(
-        extractKeepRegion(surface, loop, options.heelSeed, !(embedded && embedded.loop.length >= 3)),
+    const keep = snapBoundaryToCurve(
+        cleanupBoundary(
+            extractKeepRegion(surface, loop, options.heelSeed, !(embedded && embedded.loop.length >= 3)),
+        ),
+        options.trimPolygon,
     );
     options.onProgress?.(0.25, "thicken");
     const shell = thickenOpenSurface(keep, options.thicknessMm, options.edgeMm, options.flareMm);
+    restoreFarWall(shell, options.thicknessMm);
+    tightenBoundaryToCurve(shell, options.trimPolygon);
+    finishShellLip(shell);
     options.onProgress?.(1, "done");
     return shell;
+}
+
+/** Nudge an opening vertex that the lip repair pulled off the trim back toward it. */
+function tightenBoundaryToCurve(shell: AfoTriMesh, curve: AfoVec3[] | undefined): void {
+    const n = shell.outerVertex0;
+    const face0 = shell.rimFaceStart;
+    if (!curve || curve.length < 3 || n == null || face0 == null) return;
+    const count = new Map<string, { a: number; b: number; n: number }>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let f = 0; f < face0; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        if (!vs.every((v) => v < n)) continue;
+        for (let e = 0; e < 3; e++) {
+            const a = vs[e]!;
+            const b = vs[(e + 1) % 3]!;
+            const k = key(a, b);
+            const prev = count.get(k);
+            if (prev) prev.n += 1;
+            else count.set(k, { a, b, n: 1 });
+        }
+    }
+    const boundary = new Set<number>();
+    for (const e of count.values()) {
+        if (e.n !== 1) continue;
+        boundary.add(e.a);
+        boundary.add(e.b);
+    }
+    for (const i of boundary) {
+        const px = shell.positions[i * 3] ?? 0;
+        const py = shell.positions[i * 3 + 1] ?? 0;
+        const pz = shell.positions[i * 3 + 2] ?? 0;
+        let best = Infinity;
+        let bx = px;
+        let by = py;
+        let bz = pz;
+        for (let k = 0; k < curve.length; k++) {
+            const a = curve[k]!;
+            const b = curve[(k + 1) % curve.length]!;
+            const abx = b.x - a.x;
+            const aby = b.y - a.y;
+            const abz = b.z - a.z;
+            const ab2 = abx * abx + aby * aby + abz * abz || 1;
+            const t = Math.min(
+                1,
+                Math.max(0, ((px - a.x) * abx + (py - a.y) * aby + (pz - a.z) * abz) / ab2),
+            );
+            const qx = a.x + abx * t;
+            const qy = a.y + aby * t;
+            const qz = a.z + abz * t;
+            const d = Math.hypot(px - qx, py - qy, pz - qz);
+            if (d < best) {
+                best = d;
+                bx = qx;
+                by = qy;
+                bz = qz;
+            }
+        }
+        if (best <= 0.05 || best > 0.8) continue;
+        const pull = best - 0.04;
+        const s = pull / best;
+        shell.positions[i * 3] = px + (bx - px) * s;
+        shell.positions[i * 3 + 1] = py + (by - py) * s;
+        shell.positions[i * 3 + 2] = pz + (bz - pz) * s;
+    }
 }
 
 interface OpenSurface {
@@ -718,6 +788,154 @@ function shareFlareOnShortSteps(
             }
             if (!changed) break;
         }
+    }
+}
+
+/** Pull a boundary vertex that has drifted off the trim polyline back onto it. */
+function snapBoundaryToCurve(surface: OpenSurface, curve: AfoVec3[] | undefined): OpenSurface {
+    if (!curve || curve.length < 3) return surface;
+    const boundary = new Set<number>();
+    for (const e of surface.boundaryEdges) {
+        boundary.add(e.a);
+        boundary.add(e.b);
+    }
+    const positions = new Float32Array(surface.positions);
+    for (const i of boundary) {
+        const px = positions[i * 3] ?? 0;
+        const py = positions[i * 3 + 1] ?? 0;
+        const pz = positions[i * 3 + 2] ?? 0;
+        let best = Infinity;
+        let bx = px;
+        let by = py;
+        let bz = pz;
+        for (let k = 0; k < curve.length; k++) {
+            const a = curve[k]!;
+            const b = curve[(k + 1) % curve.length]!;
+            const abx = b.x - a.x;
+            const aby = b.y - a.y;
+            const abz = b.z - a.z;
+            const ab2 = abx * abx + aby * aby + abz * abz || 1;
+            const t = Math.min(
+                1,
+                Math.max(0, ((px - a.x) * abx + (py - a.y) * aby + (pz - a.z) * abz) / ab2),
+            );
+            const qx = a.x + abx * t;
+            const qy = a.y + aby * t;
+            const qz = a.z + abz * t;
+            const d = Math.hypot(px - qx, py - qy, pz - qz);
+            if (d < best) {
+                best = d;
+                bx = qx;
+                by = qy;
+                bz = qz;
+            }
+        }
+        if (best > 0.02 && best < 0.25) {
+            positions[i * 3] = bx;
+            positions[i * 3 + 1] = by;
+            positions[i * 3 + 2] = bz;
+        }
+    }
+    return { ...surface, positions };
+}
+
+/**
+ * A vertex-normal offset of 4 mm can land inside a concavity, so another part
+ * of the inner skin is closer than the paired vertex. Slide that outer vertex
+ * along its offset ray to the distance whose true clearance is nearest 4 mm.
+ * Vertices inside the rim band keep the blended edge thickness.
+ */
+function restoreFarWall(shell: AfoTriMesh, thicknessMm: number): void {
+    const n = shell.outerVertex0;
+    const face0 = shell.rimFaceStart;
+    if (n == null || face0 == null || thicknessMm < 1) return;
+    const innerIdx: number[] = [];
+    const boundary = new Map<string, { a: number; b: number; n: number }>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let f = 0; f < face0; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        if (!vs.every((v) => v < n)) continue;
+        innerIdx.push(vs[0]!, vs[1]!, vs[2]!);
+        for (let e = 0; e < 3; e++) {
+            const a = vs[e]!;
+            const b = vs[(e + 1) % 3]!;
+            const k = key(a, b);
+            const prev = boundary.get(k);
+            if (prev) prev.n += 1;
+            else boundary.set(k, { a, b, n: 1 });
+        }
+    }
+    const opening: { a: AfoVec3; b: AfoVec3 }[] = [];
+    for (const e of boundary.values()) {
+        if (e.n !== 1) continue;
+        opening.push({
+            a: {
+                x: shell.positions[e.a * 3] ?? 0,
+                y: shell.positions[e.a * 3 + 1] ?? 0,
+                z: shell.positions[e.a * 3 + 2] ?? 0,
+            },
+            b: {
+                x: shell.positions[e.b * 3] ?? 0,
+                y: shell.positions[e.b * 3 + 1] ?? 0,
+                z: shell.positions[e.b * 3 + 2] ?? 0,
+            },
+        });
+    }
+    const distOpen = (p: AfoVec3) => {
+        let best = Infinity;
+        for (const e of opening) {
+            const abx = e.b.x - e.a.x;
+            const aby = e.b.y - e.a.y;
+            const abz = e.b.z - e.a.z;
+            const ab2 = abx * abx + aby * aby + abz * abz || 1;
+            const t = Math.min(
+                1,
+                Math.max(0, ((p.x - e.a.x) * abx + (p.y - e.a.y) * aby + (p.z - e.a.z) * abz) / ab2),
+            );
+            best = Math.min(
+                best,
+                Math.hypot(p.x - (e.a.x + abx * t), p.y - (e.a.y + aby * t), p.z - (e.a.z + abz * t)),
+            );
+        }
+        return best;
+    };
+    const innerMesh: AfoTriMesh = {
+        positions: shell.positions.subarray(0, n * 3),
+        indices: new Uint32Array(innerIdx),
+    };
+    const proj = meshProjector(innerMesh);
+    const floor = thicknessMm - 0.1;
+    for (let i = 0; i < n; i++) {
+        const ix = shell.positions[i * 3] ?? 0;
+        const iy = shell.positions[i * 3 + 1] ?? 0;
+        const iz = shell.positions[i * 3 + 2] ?? 0;
+        if (distOpen({ x: ix, y: iy, z: iz }) < AFO_RIM_BAND_MM) continue;
+        const ox = shell.positions[(n + i) * 3] ?? 0;
+        const oy = shell.positions[(n + i) * 3 + 1] ?? 0;
+        const oz = shell.positions[(n + i) * 3 + 2] ?? 0;
+        if (proj.closest({ x: ox, y: oy, z: oz }).errorMm >= floor) continue;
+        const dx = ox - ix;
+        const dy = oy - iy;
+        const dz = oz - iz;
+        const len = Math.hypot(dx, dy, dz) || 1;
+        const ux = dx / len;
+        const uy = dy / len;
+        const uz = dz / len;
+        let bestD = Math.hypot(dx, dy, dz);
+        let bestPenalty = Infinity;
+        for (let d = 1.5; d <= 12.01; d += 0.25) {
+            const c = proj.closest({ x: ix + ux * d, y: iy + uy * d, z: iz + uz * d }).errorMm;
+            if (c < floor) continue;
+            const penalty = Math.abs(c - thicknessMm);
+            if (penalty < bestPenalty) {
+                bestPenalty = penalty;
+                bestD = d;
+            }
+        }
+        if (bestPenalty === Infinity) continue;
+        shell.positions[(n + i) * 3] = ix + ux * bestD;
+        shell.positions[(n + i) * 3 + 1] = iy + uy * bestD;
+        shell.positions[(n + i) * 3 + 2] = iz + uz * bestD;
     }
 }
 
