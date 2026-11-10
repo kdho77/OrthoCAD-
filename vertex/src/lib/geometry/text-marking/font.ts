@@ -31,6 +31,23 @@ async function loadFromNode(): Promise<Font | null> {
     return null;
 }
 
+/**
+ * Headless loft: parse font bytes and cache them.
+ * The next loadTextFont returns this font and does not fetch.
+ */
+export function primeTextFont(bytes: ArrayBuffer): Font {
+    const font = parseFont(bytes);
+    cached = font;
+    inflight = null;
+    return font;
+}
+
+/** Clears the process font cache so a later load hits disk or fetch. */
+export function resetTextFontCacheForTests(): void {
+    cached = null;
+    inflight = null;
+}
+
 /** Bundled Inter Bold (OFL). Cached after the first successful load. */
 export async function loadTextFont(): Promise<Font> {
     if (cached) return cached;
