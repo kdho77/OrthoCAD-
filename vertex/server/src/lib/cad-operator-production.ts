@@ -210,6 +210,34 @@ export function publicProductionError(error: unknown): string {
     return "Manufacturing failed";
 }
 
+const ASSET_LOAD_CAUSE =
+    /\/fonts\/|Inter-Bold|\/elements\/|Element asset|Failed to parse URL|failed to (?:load|parse) /;
+
+/**
+ * Log-only inner cause. Font, element, and URL failures.
+ * A patient name or settings payload is not returned.
+ */
+export function assetLoadCauseForLog(error: unknown): string | null {
+    const messages: string[] = [];
+    const seen = new Set<unknown>();
+    let current: unknown = error;
+    while (current instanceof Error && !seen.has(current)) {
+        seen.add(current);
+        messages.push(current.message);
+        current = current.cause;
+    }
+    for (const message of messages) {
+        const wrapped = message.match(
+            /^Canonical Export mesh is not available headless \(([\s\S]*)\)\. Refusing to substitute a different mesh\.$/,
+        );
+        const candidate = (wrapped?.[1] ?? message).trim();
+        if (!candidate || candidate.length > 500) continue;
+        if (/settingsJson|firstName|lastName|patientName|"settings"/i.test(candidate)) continue;
+        if (ASSET_LOAD_CAUSE.test(candidate)) return candidate;
+    }
+    return null;
+}
+
 export interface PublicProduction {
     productionId: string;
     designId: string;
@@ -409,6 +437,8 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
             productionId: args.row.id,
             message: publicProductionError(error),
         });
+        const assetCause = assetLoadCauseForLog(error);
+        if (assetCause) console.error(assetCause);
     }
 }
 
