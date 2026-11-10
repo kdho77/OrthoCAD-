@@ -11,11 +11,8 @@ import type {
     Side,
     SideCorrections,
 } from "../src/types/index.js";
-import {
-    type HardnessName,
-    migratePrintRecipe,
-} from "./print-recipe/print-recipe.js";
 import { canonicalMaterialHardness } from "./dogfood-manufacturing.js";
+import { type HardnessName, migratePrintRecipe } from "./print-recipe/print-recipe.js";
 import {
     ARCH_HEIGHT_MM,
     FLEXIBLE_FOOT_APEX_MM,
@@ -202,16 +199,31 @@ const ELEMENT_PROFILES: Record<
     met_pad: { defaultHeightMm: 5, defaultU: 0.5473, defaultMedial: 0.0722, anatomicalSide: "medial" },
     met_bar: { defaultHeightMm: 3.47, defaultU: 0.5162, defaultMedial: -0.0387, anatomicalSide: "lateral" },
     toe_crest: { defaultHeightMm: 2.47, defaultU: 0.7802, defaultMedial: -0.2859, anatomicalSide: "lateral" },
-    cuboid_pad: { defaultHeightMm: 6.37, defaultU: 0.3448, defaultMedial: -0.6865, anatomicalSide: "lateral" },
+    cuboid_pad: {
+        defaultHeightMm: 6.37,
+        defaultU: 0.3448,
+        defaultMedial: -0.6865,
+        anatomicalSide: "lateral",
+    },
     cluffy_wedge: { defaultHeightMm: 2.4, defaultU: 0.7744, defaultMedial: 0.6413, anatomicalSide: "medial" },
-    mortons_extension: { defaultHeightMm: 3, defaultU: 0.78, defaultMedial: 0.5, anatomicalSide: "medial" },
+    mortons_extension: {
+        defaultHeightMm: 3,
+        defaultU: 0.81,
+        defaultMedial: 0.5984,
+        anatomicalSide: "medial",
+    },
     reverse_mortons: { defaultHeightMm: 2.5, defaultU: 0.7, defaultMedial: -0.1, anatomicalSide: "lateral" },
     kinetic_wedge: { defaultHeightMm: 2.5, defaultU: 0.72, defaultMedial: 0.48, anatomicalSide: "medial" },
     heel_sink: { defaultHeightMm: 2, defaultU: 0.12, defaultMedial: 0, anatomicalSide: "midline" },
     navicular_sink: { defaultHeightMm: 2, defaultU: 0.38, defaultMedial: 0.55, anatomicalSide: "medial" },
     scaphoid_pad: { defaultHeightMm: 4, defaultU: 0.42, defaultMedial: 0.62, anatomicalSide: "medial" },
     heel_cushion: { defaultHeightMm: 3, defaultU: 0.14, defaultMedial: 0, anatomicalSide: "midline" },
-    dancers_pad: { defaultHeightMm: 2.5, defaultU: 0.6496, defaultMedial: -0.0196, anatomicalSide: "midline" },
+    dancers_pad: {
+        defaultHeightMm: 2.5,
+        defaultU: 0.6496,
+        defaultMedial: -0.0196,
+        anatomicalSide: "midline",
+    },
 };
 
 /** Same mesh-Y rule as meshYForAnatomicalSide in geometry/handedness.ts. */

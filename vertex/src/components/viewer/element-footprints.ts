@@ -1,10 +1,13 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import { DESIGN_ELEMENT_COLOR } from "@/lib/geometry/element-visualization";
 import { ELEMENT_PROFILES, type ElementShape } from "@/lib/geometry/elements";
 import { medialSign, meshYFromAnatomicalLateral } from "@/lib/geometry/handedness";
 import { heightAt } from "@/lib/geometry/height-field";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { sinkStyloidThickenForSide, sinksForSide } from "@/lib/geometry/migrate-corrections";
+import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-id";
 import {
     type SinkOutlinePoint,
     type SinkOvalFrame,
@@ -151,9 +154,38 @@ function outlineHalfExtents(outline: { x: number; y: number }[]): {
     return { halfLengthMm: (maxX - minX) / 2, halfWidthMm: (maxY - minY) / 2 };
 }
 
+/**
+ * Mesh outline in the base's footprint frame, when the viewer has published one.
+ * Morton's uses it so the medial edge sits on the insole that is on screen.
+ */
+export function footOutlineForSide(
+    design: DesignState,
+    side: Side,
+    outlines: Record<string, { points: { x: number; y: number }[] } | undefined>,
+): { x: number; y: number }[] | null {
+    const wallModel = design.viewer?.wallModel ?? "procedural";
+    const base = getDesignBase(design, side);
+    const proceduralKey =
+        wallModel === "procedural" && base
+            ? `${SAMPLE_TOP_ASSET_ID}:${side}:${base.mirrored ? "m" : "p"}`
+            : null;
+    const baseKey = getBaseCacheKey(base) ?? base?.assetId ?? null;
+    const curve = (proceduralKey ? outlines[proceduralKey] : null) ?? (baseKey ? outlines[baseKey] : null);
+    if (!curve || curve.points.length < 6) return null;
+    return curve.points.map((p) => ({ x: p.x, y: p.y }));
+}
+
 /** Clinical planform of a library heel or navicular sink. Scale and side are already applied. */
-export function elementFootprintPose(element: PlacedElement, lengthMm: number): FootprintPose {
-    const outline = splitOverlayOutline(element);
+export function elementFootprintPose(
+    element: PlacedElement,
+    lengthMm: number,
+    widthMm = (lengthMm / INSOLE_LENGTH_MM) * INSOLE_WIDTH_MM,
+    footOutline?: { x: number; y: number }[] | null,
+): FootprintPose {
+    const outline = splitOverlayOutline(
+        element,
+        element.kind === "mortons_extension" ? { lengthMm, widthMm, outline: footOutline } : undefined,
+    );
     const extents = outlineHalfExtents(outline);
     return {
         id: element.id,

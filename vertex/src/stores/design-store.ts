@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { footOutlineForSide } from "@/components/viewer/element-footprints";
 import {
     applyCorrectionPresetToDesign,
     type CorrectionPresetApplyMode,
@@ -55,6 +56,7 @@ import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/triml
 import { applyDefaultSplitHardness, defaultSplitHardnessPatch } from "@/lib/hardness/split-overlay";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
+import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useClientStore } from "@/stores/client-store";
 import { buildEffectiveTrimlines, useIssuesStore } from "@/stores/issues-store";
@@ -998,7 +1000,12 @@ export const useDesignStore = create<DesignStore>()(
                 get().checkpoint("add-element");
                 set((s) => {
                     const layout = insoleLayoutFromDesign(s.design);
-                    const pose = defaultElementPose(kind, side, layout.lengthMm, layout.widthMm);
+                    const outline = footOutlineForSide(
+                        s.design,
+                        side,
+                        useBaseOutlineStore.getState().outlines,
+                    );
+                    const pose = defaultElementPose(kind, side, layout.lengthMm, layout.widthMm, outline);
                     const id = crypto.randomUUID();
                     const el: PlacedElement = {
                         id,

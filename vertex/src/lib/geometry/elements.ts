@@ -6,6 +6,21 @@ import {
     meshYForAnatomicalSide,
     meshYSign,
 } from "@/lib/geometry/handedness";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
+import {
+    MORTONS_DEFAULT_MEDIAL,
+    MORTONS_DEFAULT_U,
+    MORTONS_HEIGHT_DEFAULT_MM,
+    MORTONS_HEIGHT_MAX_MM,
+    MORTONS_REFERENCE_RX_MM,
+    MORTONS_REFERENCE_RY_MM,
+    type MortonsOutlinePoint,
+    mortonsAnchorMm,
+    mortonsFootprintT,
+    mortonsHeightMm,
+    mortonsLocalOutline,
+    mortonsReferenceWidthMm,
+} from "@/lib/geometry/mortons-extension";
 import type { ElementKind, PlacedElement, Side } from "@/types";
 
 /**
@@ -112,16 +127,17 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultMedial: 0.6413,
         anatomicalSide: "medial",
     },
-    // Morton's extension: rigid strip under 1st ray from met neck through
-    // hallux. Long AP, narrow ML. ~56 × 18 mm. Stock height is 3 mm.
+    // Morton's extension: 1st ray from the met head (u 0.62–0.63) to the toe
+    // edge, flush to the medial border, lateral border at v 0.40 of local
+    // width. Reference half-extents are the Men's 9 pad. Height stays 3 mm.
     mortons_extension: {
-        rxMm: 28,
-        ryMm: 9,
+        rxMm: MORTONS_REFERENCE_RX_MM,
+        ryMm: MORTONS_REFERENCE_RY_MM,
         sign: 1,
         shape: "first_ray_strip",
-        defaultHeightMm: 3,
-        defaultU: 0.78,
-        defaultMedial: 0.5,
+        defaultHeightMm: MORTONS_HEIGHT_DEFAULT_MM,
+        defaultU: MORTONS_DEFAULT_U,
+        defaultMedial: MORTONS_DEFAULT_MEDIAL,
         anatomicalSide: "medial",
     },
     // Reverse Morton's: additive platform under mets 2–5 with a medial
@@ -209,6 +225,7 @@ export const ELEMENT_HEIGHT_LIMITS: Partial<Record<ElementKind, { min: number; m
     scaphoid_pad: { min: 0, max: 8 },
     heel_cushion: { min: 0, max: 6 },
     dancers_pad: { min: 0, max: 6 },
+    mortons_extension: { min: 0, max: MORTONS_HEIGHT_MAX_MM },
 };
 
 const DEG = Math.PI / 180;
@@ -367,7 +384,7 @@ export function elementFootprintT(
         case "hallux_wedge":
             return halluxWedgeT(lx, ly, rx, ry);
         case "first_ray_strip":
-            return superEllipseT(lx, ly, rx, ry, 4);
+            return mortonsFootprintT(lx, ly, rx, ry, side);
         case "reverse_mortons":
             return reverseMortonsT(lx, ly, rx, ry, medial);
         case "kinetic_oval":
@@ -397,7 +414,13 @@ export function elementOutlineLocalMm(
     scaleY: number,
     side: Side = "left",
     segments = 48,
+    frame?: { lengthMm: number; widthMm: number; outline?: MortonsOutlinePoint[] | null },
 ): { x: number; y: number }[] {
+    if (kind === "mortons_extension") {
+        const lengthMm = frame?.lengthMm ?? INSOLE_LENGTH_MM;
+        const widthMm = frame?.widthMm ?? INSOLE_WIDTH_MM;
+        return mortonsLocalOutline(side, lengthMm, widthMm, scaleX, scaleY, frame?.outline);
+    }
     const profile = ELEMENT_PROFILES[kind];
     const rx = Math.max(2, profile.rxMm * scaleX);
     const ry = Math.max(2, profile.ryMm * scaleY);
@@ -439,13 +462,21 @@ export function defaultElementPose(
     side: Side,
     lengthMm = 260,
     widthMm = 95,
+    outline?: MortonsOutlinePoint[] | null,
 ): Pick<PlacedElement, "position" | "rotationDeg" | "scale" | "heightMm" | "placementMode"> {
     const p = ELEMENT_PROFILES[kind];
+    const mortons = kind === "mortons_extension" ? mortonsAnchorMm(side, lengthMm, widthMm, outline) : null;
     return {
-        position: {
-            x: p.defaultU * lengthMm - lengthMm / 2,
-            y: meshYForAnatomicalSide(side, p.anatomicalSide, Math.abs(p.defaultMedial) * (widthMm / 2)),
-        },
+        position: mortons
+            ? { x: mortons.x - lengthMm / 2, y: mortons.y }
+            : {
+                  x: p.defaultU * lengthMm - lengthMm / 2,
+                  y: meshYForAnatomicalSide(
+                      side,
+                      p.anatomicalSide,
+                      Math.abs(p.defaultMedial) * (widthMm / 2),
+                  ),
+              },
         rotationDeg: 0,
         scale: { x: 1, y: 1 },
         heightMm: p.defaultHeightMm,
@@ -470,6 +501,7 @@ export function elementHeightAt(
     xMm: number,
     yMm: number,
     lengthMm: number,
+    widthMm = mortonsReferenceWidthMm(lengthMm),
 ): number {
     if (elements.length === 0) return 0;
     const centerX = lengthMm / 2;
@@ -477,6 +509,25 @@ export function elementHeightAt(
 
     for (const el of elements) {
         if (el.kind === "custom") continue;
+        if (el.kind === "mortons_extension") {
+            const anchorX = centerX + el.position.x;
+            const anchorY = el.position.y;
+            // yMm is height-field Y. The pad is authored in mesh Y.
+            sum += mortonsHeightMm(
+                el.side,
+                lengthMm,
+                widthMm,
+                anchorX,
+                anchorY,
+                xMm,
+                -yMm,
+                el.rotationDeg,
+                el.scale.x,
+                el.scale.y,
+                el.heightMm,
+            );
+            continue;
+        }
         const cx = centerX + el.position.x;
         // Stored Y is footprint-frame mesh Y. This sample is height-field Y.
         const cy = heightFieldYFromMeshY(el.position.y);

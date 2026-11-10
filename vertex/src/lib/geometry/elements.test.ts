@@ -5,12 +5,37 @@ import { Euler, Vector3 } from "three";
 import type { ElementKind, PlacedElement } from "@/types";
 import {
     defaultElementPose,
+    ELEMENT_HEIGHT_LIMITS,
     ELEMENT_PROFILES,
     elementFootprintT,
     elementHeightAt,
     elementOutlineLocalMm,
 } from "./elements";
 import { heightFieldYFromMeshY, meshYSign } from "./handedness";
+import {
+    MORTONS_FILLET_MM,
+    MORTONS_HEIGHT_DEFAULT_MM,
+    MORTONS_HEIGHT_MAX_MM,
+    MORTONS_HEIGHT_WARN_MM,
+    MORTONS_NARROW_LENGTH_MM,
+    MORTONS_NARROW_WARN_MM,
+    MORTONS_SCALE_MIN,
+    MORTONS_TAPER_LATERAL_MM,
+    MORTONS_TAPER_PROXIMAL_MM,
+    MORTONS_U_CORNER,
+    MORTONS_U_DIP,
+    MORTONS_V_LATERAL,
+    mortonsExtensionMetrics,
+    mortonsExtensionWarnings,
+    mortonsFilletRadiusMm,
+    mortonsLocalOutline,
+    mortonsLocalWidthMm,
+    mortonsPlanScale,
+    mortonsProximalU,
+    mortonsWeightAtUV,
+} from "./mortons-extension";
+import { insoleLayoutForUsMenSize } from "./shoe-size";
+import { SINK_PROFILES } from "./sink";
 import { instanceWorldPosition, projectViewNdcX } from "./viewport-side-layout";
 
 const KINDS = Object.keys(ELEMENT_PROFILES) as ElementKind[];
@@ -201,6 +226,187 @@ describe("anatomical element footprints", () => {
         const outside = elementHeightAt([el], cx + 40, 0, lengthMm);
         expect(inside).toBeGreaterThan(1);
         expect(outside).toBe(0);
+    });
+
+    test("Morton's default footprint follows the 1st-ray u/v spec on both feet", () => {
+        const sizes: Array<[number, number]> = [
+            [230, 85],
+            [260, 95],
+            [320, 117],
+        ];
+        for (const [length, width] of sizes) {
+            for (const side of ["left", "right"] as const) {
+                const metrics = mortonsExtensionMetrics(length, width, side);
+                const forefoot = mortonsLocalWidthMm(0.7, width, side);
+                expect(metrics.forefootPadMm / forefoot).toBeGreaterThanOrEqual(0.35);
+                expect(metrics.forefootPadMm / forefoot).toBeLessThan(0.45);
+                expect(metrics.minU).toBeLessThanOrEqual(MORTONS_U_CORNER + 0.005);
+                expect(metrics.minU).toBeGreaterThanOrEqual(MORTONS_U_DIP - 0.01);
+                expect(metrics.maxU).toBeGreaterThanOrEqual(0.999);
+                expect(metrics.lengthMm / length).toBeCloseTo(1 - MORTONS_U_DIP, 2);
+                const pose = defaultElementPose("mortons_extension", side, length, width);
+                expect(pose.heightMm).toBe(MORTONS_HEIGHT_DEFAULT_MM);
+                expect(Math.sign(pose.position.y)).toBe(meshYSign(side, "medial"));
+            }
+            const left = mortonsLocalOutline("left", length, width);
+            const right = mortonsLocalOutline("right", length, width);
+            expect(right.length).toBe(left.length);
+            for (let i = 0; i < left.length; i++) {
+                const l = left[i];
+                const r = right[i];
+                if (!l || !r) throw new Error("missing outline point");
+                expect(r.x).toBeCloseTo(l.x, 4);
+                expect(r.y).toBeCloseTo(-l.y, 4);
+            }
+        }
+    });
+
+    test("Morton's scales length by u and width by local v, with fixed fillet, taper, and thickness", () => {
+        const adult = [240, 280, 320];
+        const pads = adult.map((length) => {
+            const width = 95 * (length / 260);
+            return mortonsExtensionMetrics(length, width);
+        });
+        expect(pads[1]!.lengthMm / pads[0]!.lengthMm).toBeCloseTo(280 / 240, 2);
+        expect(pads[2]!.forefootPadMm / pads[0]!.forefootPadMm).toBeCloseTo(320 / 240, 2);
+        for (const length of adult) {
+            expect(mortonsFilletRadiusMm(length, 95 * (length / 260))).toBeCloseTo(MORTONS_FILLET_MM, 0);
+            const width = 95 * (length / 260);
+            const span = mortonsLocalWidthMm(0.75, width);
+            const vHalf = MORTONS_V_LATERAL - MORTONS_TAPER_LATERAL_MM / 2 / span;
+            const half = mortonsWeightAtUV("left", length, width, 0.75, vHalf);
+            expect(mortonsWeightAtUV("left", length, width, 0.75, MORTONS_V_LATERAL)).toBeLessThan(0.05);
+            expect(half).toBeGreaterThan(0.4);
+            expect(half).toBeLessThan(0.7);
+            expect(
+                mortonsWeightAtUV(
+                    "left",
+                    length,
+                    width,
+                    0.75,
+                    MORTONS_V_LATERAL - (MORTONS_TAPER_LATERAL_MM + 1) / span,
+                ),
+            ).toBeGreaterThan(0.95);
+            const uFull = mortonsProximalU(0.2, length) + (MORTONS_TAPER_PROXIMAL_MM + 2) / length;
+            expect(mortonsWeightAtUV("left", length, width, uFull, 0.2)).toBeGreaterThan(0.95);
+            const uFade = mortonsProximalU(0.2, length) + MORTONS_TAPER_PROXIMAL_MM / (2 * length);
+            const fade = mortonsWeightAtUV("left", length, width, uFade, 0.2);
+            expect(fade).toBeGreaterThan(0.3);
+            expect(fade).toBeLessThan(0.8);
+            expect(mortonsWeightAtUV("left", length, width, 0.85, 0.02)).toBeGreaterThan(0.95);
+            expect(mortonsWeightAtUV("left", length, width, 0.995, 0.2)).toBeGreaterThan(0.95);
+            expect(mortonsWeightAtUV("left", length, width, 0.2, 0.02)).toBe(0);
+            expect(defaultElementPose("mortons_extension", "left", length, width).heightMm).toBe(3);
+        }
+        expect(ELEMENT_PROFILES.mortons_extension.defaultHeightMm).toBe(3);
+        expect(ELEMENT_HEIGHT_LIMITS.mortons_extension?.max).toBe(MORTONS_HEIGHT_MAX_MM);
+        const tall = mortonsExtensionWarnings({
+            heightMm: MORTONS_HEIGHT_WARN_MM + 0.5,
+            lengthMm: 260,
+            padWidthMm: 40,
+        });
+        expect(tall.some((w) => w.includes("above 5"))).toBe(true);
+        expect(mortonsExtensionWarnings({ heightMm: 3, lengthMm: 260, padWidthMm: 40 })).toEqual([]);
+        // Thickness above the max is clamped in the solid.
+        const pose = defaultElementPose("mortons_extension", "left", 260, 95);
+        const el: PlacedElement = {
+            id: "m",
+            kind: "mortons_extension",
+            side: "left",
+            ...pose,
+            heightMm: 8,
+        };
+        const x = 260 / 2 + pose.position.x;
+        const raised = elementHeightAt([el], x, heightFieldYFromMeshY(pose.position.y), 260, 95);
+        expect(raised).toBeLessThanOrEqual(MORTONS_HEIGHT_MAX_MM + 1e-6);
+        expect(raised).toBeGreaterThan(MORTONS_HEIGHT_WARN_MM);
+    });
+
+    test("US M11.5 forefoot pad is about 40 mm, and a 300 mm insole is about 40×113 mm", () => {
+        const live = insoleLayoutForUsMenSize(11.5);
+        const livePad = mortonsExtensionMetrics(live.lengthMm, live.widthMm);
+        expect(livePad.forefootPadMm).toBeGreaterThanOrEqual(38);
+        expect(livePad.forefootPadMm).toBeLessThanOrEqual(42);
+        expect(livePad.minU).toBeLessThanOrEqual(0.63);
+        expect(livePad.maxU).toBeGreaterThanOrEqual(0.999);
+        expect(livePad.forefootPadMm / livePad.forefootLocalWidthMm).toBeGreaterThanOrEqual(0.35);
+
+        const length = 300;
+        const spanAtUnit = mortonsLocalWidthMm(0.7, 100);
+        const width = 100 * (100 / spanAtUnit);
+        const pad = mortonsExtensionMetrics(length, width);
+        expect(pad.proximalMm).toBeGreaterThanOrEqual(186);
+        expect(pad.proximalMm).toBeLessThanOrEqual(189);
+        expect(pad.lengthMm).toBeGreaterThanOrEqual(112);
+        expect(pad.lengthMm).toBeLessThanOrEqual(114);
+        expect(pad.forefootPadMm).toBeGreaterThanOrEqual(38);
+        expect(pad.forefootPadMm).toBeLessThanOrEqual(42);
+        expect(pad.forefootLocalWidthMm).toBeGreaterThanOrEqual(95);
+        expect(pad.forefootLocalWidthMm).toBeLessThanOrEqual(105);
+    });
+
+    test("Morton's lateral border stays off the MPJ2 center and mirrors by the medial edge", () => {
+        const length = 300;
+        const width = 100 * (100 / mortonsLocalWidthMm(0.7, 100));
+        const forefoot = mortonsLocalWidthMm(SINK_PROFILES.mpj2.u, width);
+        const rimV = SINK_PROFILES.mpj2.v + SINK_PROFILES.mpj2.widthMm / 2 / forefoot;
+        expect(MORTONS_V_LATERAL).toBeLessThan(rimV);
+        expect(Math.abs(MORTONS_V_LATERAL - SINK_PROFILES.mpj2.v)).toBeGreaterThan(0.02);
+        expect(MORTONS_V_LATERAL).toBeGreaterThan(SINK_PROFILES.mpj1.v);
+        expect(MORTONS_V_LATERAL).toBeLessThan(0.5);
+        const left = defaultElementPose("mortons_extension", "left", length, width);
+        const right = defaultElementPose("mortons_extension", "right", length, width);
+        expect(right.position.y).toBeCloseTo(-left.position.y, 5);
+        expect(right.position.x).toBeCloseTo(left.position.x, 5);
+        expect(left.position.y).toBeLessThan(0);
+        expect(right.position.y).toBeGreaterThan(0);
+    });
+
+    test("a sparse insole outline does not pull the Morton's edge off the border", () => {
+        const outline: { x: number; y: number }[] = [];
+        for (let i = 0; i <= 16; i++) {
+            const x = (i / 16) * 272;
+            const half = 28 + 14 * Math.sin((i / 16) * Math.PI);
+            outline.push({ x, y: -half });
+        }
+        for (let i = 16; i >= 0; i--) {
+            const x = (i / 16) * 272;
+            const half = 28 + 14 * Math.sin((i / 16) * Math.PI);
+            outline.push({ x, y: half });
+        }
+        const pts = mortonsLocalOutline("left", 281, 103, 1, 1, outline);
+        for (let i = 1; i < 12; i++) {
+            const a = pts[i - 1];
+            const b = pts[i];
+            if (!a || !b) throw new Error("missing outline point");
+            expect(Math.abs(b.y - a.y)).toBeLessThan(6);
+        }
+        const metrics = mortonsExtensionMetrics(281, 103, "left", outline);
+        expect(metrics.maxU).toBeGreaterThan(0.98);
+        expect(metrics.forefootPadMm / metrics.forefootLocalWidthMm).toBeGreaterThan(0.35);
+    });
+
+    test("pediatric Morton's plan scale floors at 0.65 and a narrow pad warns under 200 mm", () => {
+        expect(mortonsPlanScale(260)).toBeCloseTo(1, 6);
+        expect(mortonsPlanScale(300)).toBeCloseTo(300 / 260, 6);
+        expect(mortonsPlanScale(100)).toBe(MORTONS_SCALE_MIN);
+        expect(mortonsPlanScale(0.65 * 260)).toBeCloseTo(MORTONS_SCALE_MIN, 6);
+        const floorLen = (1 - MORTONS_U_DIP) * MORTONS_SCALE_MIN * 260;
+        const tiny = mortonsExtensionMetrics(140, 95 * (140 / 260));
+        const natural = (1 - MORTONS_U_DIP) * 140;
+        expect(tiny.lengthMm).toBeGreaterThan(natural + 4);
+        expect(tiny.lengthMm).toBeCloseTo(floorLen, 0);
+        const short = mortonsExtensionMetrics(170, 95 * (170 / 260));
+        expect(short.lengthMm).toBeLessThan(MORTONS_NARROW_LENGTH_MM);
+        const narrow = mortonsExtensionWarnings({
+            heightMm: 3,
+            lengthMm: 170,
+            padWidthMm: short.forefootPadMm,
+        });
+        expect(short.forefootPadMm).toBeLessThan(MORTONS_NARROW_WARN_MM);
+        expect(narrow.some((w) => w.includes("under 25"))).toBe(true);
+        const adult = mortonsExtensionWarnings({ heightMm: 3, lengthMm: 220, padWidthMm: 22 });
+        expect(adult).toEqual([]);
     });
 
     test("kinetic wedge and sinks are subtractive", () => {

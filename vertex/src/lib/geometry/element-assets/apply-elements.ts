@@ -252,7 +252,7 @@ function applyProceduralElements(
         const yMm = heightFieldYFromMeshY(widCoord - frame.widCenter);
         const { u, vSigned: vs } = vertexFootprintAt(frame, basePos, i);
         if (rimBandClipFactor(u, vs, field) < 0.5) continue;
-        const h = elementHeightAt(procedural, xFromHeel, yMm, field.lengthMm);
+        const h = elementHeightAt(procedural, xFromHeel, yMm, field.lengthMm, field.widthMm);
         if (h === 0) continue;
         const z0 = arr[i * 3 + ta]!;
         if (h > 0) arr[i * 3 + ta] = Math.max(z0, z0 + h);

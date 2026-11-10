@@ -19,6 +19,7 @@ import { loadElementManifest } from "@/lib/geometry/element-assets/element-asset
 import type { ElementManifestEntry } from "@/lib/geometry/element-assets/types";
 import { ELEMENT_HEIGHT_LIMITS } from "@/lib/geometry/elements";
 import { sinkStyloidThickenForSide, sinksForSide } from "@/lib/geometry/migrate-corrections";
+import { mortonsExtensionMetrics, mortonsExtensionWarnings } from "@/lib/geometry/mortons-extension";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { SINK_KIND_ORDER, SINK_PROFILES } from "@/lib/geometry/sink";
 import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
@@ -463,6 +464,13 @@ export function ElementsPanel() {
                         }}
                         unit="mm"
                     />
+                    {displaySelected.kind === "mortons_extension" ? (
+                        <MortonsWarnings
+                            heightMm={displaySelected.heightMm}
+                            lengthMm={layoutLength}
+                            widthMm={layoutWidth}
+                        />
+                    ) : null}
                     <SliderField
                         label="Rotation"
                         value={displaySelected.rotationDeg}
@@ -567,6 +575,23 @@ export function ElementsPanel() {
                 side={displaySelected?.side}
             />
         </div>
+    );
+}
+
+function MortonsWarnings(props: { heightMm: number; lengthMm: number; widthMm: number }) {
+    const padWidth = mortonsExtensionMetrics(props.lengthMm, props.widthMm).forefootPadMm;
+    const warnings = mortonsExtensionWarnings({
+        heightMm: props.heightMm,
+        lengthMm: props.lengthMm,
+        padWidthMm: padWidth,
+    });
+    if (warnings.length === 0) return null;
+    return (
+        <ul className="space-y-0.5 text-[10px] text-amber-600">
+            {warnings.map((message) => (
+                <li key={message}>{message}</li>
+            ))}
+        </ul>
     );
 }
 

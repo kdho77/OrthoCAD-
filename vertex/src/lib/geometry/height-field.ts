@@ -446,7 +446,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     const includeElements = params.includeElements ?? true;
     if (includeElements) {
         const hw = resolveOutlineHalfWidth(u, params) * halfW;
-        shaped += elementHeightAt(elements, u * lengthMm, vSigned * hw, lengthMm);
+        shaped += elementHeightAt(elements, u * lengthMm, vSigned * hw, lengthMm, widthMm);
     }
 
     // --- Natural edge feathering ----------------------------------------------
