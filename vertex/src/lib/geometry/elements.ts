@@ -1,5 +1,11 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import {
+    type AnatomicalSide,
+    heightFieldYFromMeshY,
+    meshYForAnatomicalSide,
+    meshYSign,
+} from "@/lib/geometry/handedness";
 import type { ElementKind, PlacedElement, Side } from "@/types";
 
 /**
@@ -41,10 +47,12 @@ export interface ElementProfile {
      */
     defaultU: number;
     /**
-     * Default ML offset as a fraction of half-width. Positive = medial
-     * (flipped per side). 0 = midline.
+     * Distance from the width center as a fraction of half-width.
+     * The border it sits on is {@link anatomicalSide}. 0 = midline.
      */
     defaultMedial: number;
+    /** Registered border. Both feet use {@link meshYForAnatomicalSide}. */
+    anatomicalSide: AnatomicalSide;
 }
 
 export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
@@ -58,6 +66,7 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultHeightMm: 5,
         defaultU: 0.5473,
         defaultMedial: 0.0722,
+        anatomicalSide: "medial",
     },
     // Transverse metatarsal bar: short AP, long ML, gentle anterior bow
     // following the metatarsal parabola. ~20 × 64 mm.
@@ -69,6 +78,7 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultHeightMm: 3.47,
         defaultU: 0.5162,
         defaultMedial: -0.0387,
+        anatomicalSide: "lateral",
     },
     toe_crest: {
         rxMm: 12,
@@ -78,6 +88,7 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultHeightMm: 2.47,
         defaultU: 0.7802,
         defaultMedial: -0.2859,
+        anatomicalSide: "lateral",
     },
     cuboid_pad: {
         rxMm: 16,
@@ -87,6 +98,7 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultHeightMm: 6.37,
         defaultU: 0.3448,
         defaultMedial: -0.6865,
+        anatomicalSide: "lateral",
     },
     // Cluffy wedge under the hallux — raises the distal phalanx to promote
     // 1st MPJ dorsiflexion. Apex distal, base at IPJ. Library GLB (29 × 26 mm).
@@ -98,17 +110,19 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultHeightMm: 2.4,
         defaultU: 0.7744,
         defaultMedial: 0.6413,
+        anatomicalSide: "medial",
     },
     // Morton's extension: rigid strip under 1st ray from met neck through
-    // hallux. Long AP, narrow ML. ~56 × 18 mm.
+    // hallux. Long AP, narrow ML. ~56 × 18 mm. Stock height is 3 mm.
     mortons_extension: {
         rxMm: 28,
         ryMm: 9,
         sign: 1,
         shape: "first_ray_strip",
-        defaultHeightMm: 2,
+        defaultHeightMm: 3,
         defaultU: 0.78,
         defaultMedial: 0.5,
+        anatomicalSide: "medial",
     },
     // Reverse Morton's: additive platform under mets 2–5 with a medial
     // notch so the 1st ray can plantarflex. ~28 × 48 mm outer.
@@ -120,6 +134,7 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultHeightMm: 2.5,
         defaultU: 0.7,
         defaultMedial: -0.1,
+        anatomicalSide: "lateral",
     },
     // Kinetic wedge (Dananberg): plantar cutout under 1st met head.
     kinetic_wedge: {
@@ -130,6 +145,7 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultHeightMm: 2.5,
         defaultU: 0.72,
         defaultMedial: 0.48,
+        anatomicalSide: "medial",
     },
     // Circular heel seat relief.
     heel_sink: {
@@ -140,6 +156,7 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultHeightMm: 2,
         defaultU: 0.12,
         defaultMedial: 0,
+        anatomicalSide: "midline",
     },
     // Oval relief under the navicular / medial midfoot prominence.
     navicular_sink: {
@@ -150,6 +167,7 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultHeightMm: 2,
         defaultU: 0.38,
         defaultMedial: 0.55,
+        anatomicalSide: "medial",
     },
     // Scaphoid / navicular accommodative pad — medial midfoot, 0–8 mm.
     scaphoid_pad: {
@@ -160,6 +178,7 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultHeightMm: 4,
         defaultU: 0.42,
         defaultMedial: 0.62,
+        anatomicalSide: "medial",
     },
     // Heel cushion — full heel accommodative layer, 0–6 mm.
     heel_cushion: {
@@ -170,6 +189,7 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultHeightMm: 3,
         defaultU: 0.14,
         defaultMedial: 0,
+        anatomicalSide: "midline",
     },
     // Dancer's pad — 1st MPJ relief (mitten + sesamoid notch), 0–6 mm.
     dancers_pad: {
@@ -180,6 +200,7 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultHeightMm: 2.5,
         defaultU: 0.6496,
         defaultMedial: -0.0196,
+        anatomicalSide: "midline",
     },
 };
 
@@ -191,12 +212,6 @@ export const ELEMENT_HEIGHT_LIMITS: Partial<Record<ElementKind, { min: number; m
 };
 
 const DEG = Math.PI / 180;
-
-/** Medial direction in element-local +Y for this foot side. */
-function medialYSign(side: Side): number {
-    // Left: +y is medial; right: −y is medial (matches height-field convention).
-    return side === "left" ? 1 : -1;
-}
 
 function clamp01(t: number): number {
     return Math.max(0, Math.min(1, t));
@@ -340,9 +355,8 @@ export function elementFootprintT(
     ry: number,
     side: Side = "left",
 ): number {
-    // Match the GLB dancer-pad contour orientation in the displayed pair.
-    // Reflect only the local shape; default/saved placement anchors stay fixed.
-    const medial = side === "left" ? -1 : 1;
+    // Notch and other medial shape details use the footprint-frame medial sign.
+    const medial = meshYSign(side, "medial");
     const profile = ELEMENT_PROFILES[kind];
 
     switch (profile.shape) {
@@ -427,13 +441,10 @@ export function defaultElementPose(
     widthMm = 95,
 ): Pick<PlacedElement, "position" | "rotationDeg" | "scale" | "heightMm" | "placementMode"> {
     const p = ELEMENT_PROFILES[kind];
-    // Cluffy belongs under the hallux: inward is -Y on left, +Y on right.
-    // Keep the other library anchors unchanged; their positions are already approved.
-    const medial = medialYSign(side) * (kind === "cluffy_wedge" ? -1 : 1);
     return {
         position: {
             x: p.defaultU * lengthMm - lengthMm / 2,
-            y: p.defaultMedial * (widthMm / 2) * medial,
+            y: meshYForAnatomicalSide(side, p.anatomicalSide, Math.abs(p.defaultMedial) * (widthMm / 2)),
         },
         rotationDeg: 0,
         scale: { x: 1, y: 1 },
@@ -467,12 +478,13 @@ export function elementHeightAt(
     for (const el of elements) {
         if (el.kind === "custom") continue;
         const cx = centerX + el.position.x;
-        const cy = el.position.y;
+        // Stored Y is footprint-frame mesh Y. This sample is height-field Y.
+        const cy = heightFieldYFromMeshY(el.position.y);
         const dx = xMm - cx;
         const dy = yMm - cy;
 
-        // Rotate into the element's local frame.
-        const a = -el.rotationDeg * DEG;
+        // Y reflection reverses rotation, so a mesh +θ is a height-field −θ.
+        const a = el.rotationDeg * DEG;
         const lx = dx * Math.cos(a) - dy * Math.sin(a);
         const ly = dx * Math.sin(a) + dy * Math.cos(a);
 

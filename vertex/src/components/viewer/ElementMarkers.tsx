@@ -21,11 +21,13 @@ import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { DesignState, PlacedElement, Side } from "@/types";
 import {
+    designFootprintStyle,
     elementFootprintPose,
     type FootprintPose,
     footprintStyle,
     footprintSurfaceZ,
     isLibrarySinkElement,
+    showsDesignFootprint,
     sinkFootprintPose,
 } from "./element-footprints";
 
@@ -33,9 +35,10 @@ import {
  * Elements-step viewer overlay.
  *
  * Each placed sink (MPJ, styloid, heel, navicular) is a semi-transparent
- * magenta planform on the insole top. The selected sink is brighter. Wedges
- * and pads are not drawn. Visible from the Top and Bottom cameras. The move
- * gizmo is still only the selected library element. Nothing here is exported.
+ * magenta planform on the insole top. Morton's extension is a purple planform
+ * on the medial 1st ray. The selected patch is brighter. Wedges and pads are
+ * not drawn. Visible from the Top and Bottom cameras. The move gizmo is still
+ * only the selected library element. Nothing here is exported.
  */
 export function ElementMarkers() {
     const print = useClinicalWorkflowStore((s) => s.step === "print" || s.step === "export");
@@ -89,7 +92,7 @@ function FootprintPatch({
     selected: boolean;
     onSelect: () => void;
 }) {
-    const style = footprintStyle(selected);
+    const style = pose.tone === "design" ? designFootprintStyle(selected) : footprintStyle(selected);
     const outlineKey = pose.outline.map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(";");
     // outlineKey serializes pose.outline so a new array with the same coordinates does not rebuild.
     // biome-ignore lint/correctness/useExhaustiveDependencies: outlineKey serializes pose.outline
@@ -122,8 +125,8 @@ function FootprintPatch({
             >
                 <meshBasicMaterial
                     color={style.color}
-                    transparent
-                    opacity={style.opacity}
+                    transparent={false}
+                    opacity={1}
                     depthTest={false}
                     depthWrite={false}
                     side={DoubleSide}
@@ -133,8 +136,7 @@ function FootprintPatch({
             <lineLoop geometry={ring} renderOrder={selected ? 7 : 5}>
                 <lineBasicMaterial
                     color={style.edge}
-                    transparent
-                    opacity={1}
+                    transparent={false}
                     depthTest={false}
                     depthWrite={false}
                 />
@@ -161,8 +163,9 @@ function sinkOutlineForSide(
 }
 
 /**
- * Semi-transparent sink planforms. Drawn in the same Rx(−90°) frame as the
- * insole so Top and Bottom both see the patch. Wedges and pads are skipped.
+ * Sink planforms plus the Morton's extension strip. Drawn in the same Rx(−90°)
+ * frame as the insole so Top and Bottom both see the patch. Wedges and pads
+ * are skipped.
  */
 export function ElementFootprints() {
     const design = useDesignStore((s) => s.design);
@@ -180,36 +183,40 @@ export function ElementFootprints() {
         if (selectedId) setSelectedSink(null);
     }, [selectedId]);
 
-    const librarySinks = useMemo(
-        () =>
-            design.elements.flatMap((element) => {
-                if (!isLibrarySinkElement(element)) return [];
-                const preview = previews[element.id];
-                if (!preview) return [element];
-                return [
-                    {
-                        ...element,
-                        ...(preview.position ? { position: preview.position } : {}),
-                        ...(preview.rotationDeg !== undefined ? { rotationDeg: preview.rotationDeg } : {}),
-                        ...(preview.scale ? { scale: preview.scale } : {}),
-                        ...(preview.heightMm !== undefined ? { heightMm: preview.heightMm } : {}),
-                    },
-                ];
-            }),
-        [design.elements, previews],
+    const applyPreview = (element: PlacedElement): PlacedElement => {
+        const preview = previews[element.id];
+        if (!preview) return element;
+        return {
+            ...element,
+            ...(preview.position ? { position: preview.position } : {}),
+            ...(preview.rotationDeg !== undefined ? { rotationDeg: preview.rotationDeg } : {}),
+            ...(preview.scale ? { scale: preview.scale } : {}),
+            ...(preview.heightMm !== undefined ? { heightMm: preview.heightMm } : {}),
+        };
+    };
+    const librarySinks = design.elements.flatMap((element) =>
+        isLibrarySinkElement(element) ? [applyPreview(element)] : [],
+    );
+    const designFootprints = design.elements.flatMap((element) =>
+        showsDesignFootprint(element) ? [applyPreview(element)] : [],
     );
 
     const visible = (side: Side) => (side === "left" ? showLeft : showRight);
     const sides = (["left", "right"] as const).filter(visible);
     const anyPlacedSink = sides.some((side) => (sinksForSide(design, side)?.length ?? 0) > 0);
     const anyLibrarySink = librarySinks.some((element) => visible(element.side));
-    if (sides.length === 0 || (!anyLibrarySink && !anyPlacedSink)) return null;
+    const anyDesign = designFootprints.some((element) => visible(element.side));
+    if (sides.length === 0 || (!anyLibrarySink && !anyPlacedSink && !anyDesign)) return null;
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             {sides.map((side) => {
                 const poses: FootprintPose[] = [];
                 for (const element of librarySinks) {
+                    if (element.side !== side) continue;
+                    poses.push(elementFootprintPose(element, layout.lengthMm));
+                }
+                for (const element of designFootprints) {
                     if (element.side !== side) continue;
                     poses.push(elementFootprintPose(element, layout.lengthMm));
                 }

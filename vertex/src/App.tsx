@@ -85,8 +85,8 @@ function ClinicalRoutes({ pathname }: { pathname: string }) {
     return <CadApp clientId={route.clientId} designId={route.designId} />;
 }
 
-function CadApp({ clientId, designId }: { clientId: string; designId: string }) {
-    const { record } = useDesignRoute(clientId, designId);
+export function CadApp({ clientId, designId }: { clientId: string; designId: string }) {
+    const { record, resolving } = useDesignRoute(clientId, designId);
     const [rxOpen, setRxOpen] = useState(false);
     const applyPrescription = useDesignStore((s) => s.applyPrescription);
     const method = useDesignStore((s) => s.design.method);
@@ -161,7 +161,13 @@ function CadApp({ clientId, designId }: { clientId: string; designId: string }) 
                 onOpenPrescription={() => setRxOpen(true)}
                 leading={<EditorChrome clientId={clientId} designId={designId} />}
             />
-            {afo || !record ? (
+            {resolving ? (
+                <div className="flex min-h-0 flex-1 flex-col">
+                    <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+                        Loading…
+                    </div>
+                </div>
+            ) : afo || !record ? (
                 <div className="flex min-h-0 flex-1 flex-col">
                     {record ? (
                         <AfoPlaceholder />

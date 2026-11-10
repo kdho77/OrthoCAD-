@@ -11,7 +11,12 @@ import { storePhiEnabled } from "@/lib/phi-policy";
 import { isApiConfigured, trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
-import { type ClientInput, type DesignRecord, useClientStore } from "@/stores/client-store";
+import {
+    type ClientInput,
+    type DesignRecord,
+    isDirectoryUnresolved,
+    useClientStore,
+} from "@/stores/client-store";
 import {
     canRestoreDesign,
     type DesignKind,
@@ -37,19 +42,22 @@ import { DirectoryHeader } from "./DirectoryHeader";
 import { NewClientDialog } from "./NewClientDialog";
 import { RowMenu } from "./RowMenu";
 import { designPath } from "./routes";
-import type { InsoleDesignStartPath } from "./start-path";
 import { ScanStart, ShoeChartPanel, StartChoice } from "./StartInsole";
+import type { InsoleDesignStartPath } from "./start-path";
 import { TypePickerDialog } from "./TypePickerDialog";
 
 export function ClientFilePage({ clientId }: { clientId: string }) {
     const clients = useClientStore((s) => s.clients);
     const allDesigns = useClientStore((s) => s.designs);
+    const directoryStatus = useClientStore((s) => s.directoryStatus);
     const client = clients.find((row) => row.id === clientId) ?? null;
     const designs = useMemo(
         () => allDesigns.filter((row) => row.clientId === clientId),
         [allDesigns, clientId],
     );
     const user = useAuthStore((s) => s.user);
+    const authLoading = useAuthStore((s) => s.loading);
+    const resolving = authLoading || isDirectoryUnresolved(client !== null, directoryStatus);
     const [editing, setEditing] = useState(false);
     const [picker, setPicker] = useState(false);
     const [showArchived, setShowArchived] = useState(false);
@@ -69,6 +77,11 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
             .then((policy) => setStorePhi(policy.storePhi))
             .catch(() => undefined);
     }, []);
+
+    useEffect(() => {
+        if (!resolving || authLoading) return;
+        void useClientStore.getState().loadDirectory();
+    }, [resolving, authLoading]);
     const admin = user
         ? isOrgAdmin({ id: user.id, email: user.email, role: user.role, tenantId: null })
         : false;
@@ -81,6 +94,15 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
     }, [designs, showArchived, sort, dir]);
     const deleted = designs.filter((design) => design.deletedAt);
     const archivedCount = designs.filter((design) => design.archivedAt && !design.deletedAt).length;
+
+    if (resolving) {
+        return (
+            <div className="flex h-full flex-col">
+                <DirectoryHeader active="Clients" />
+                <div className="p-6 text-sm text-muted-foreground">Loading…</div>
+            </div>
+        );
+    }
 
     if (!client) {
         return (
@@ -194,7 +216,9 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                 </section>
                 {flow === "choice" ? (
                     <StartChoice
-                        onTemplate={() => void openDesign("insole", designStateForKind("insole", chart), "template")}
+                        onTemplate={() =>
+                            void openDesign("insole", designStateForKind("insole", chart), "template")
+                        }
                         onScan={() => setFlow("scan")}
                         onAiGenerate={async (text) => {
                             const base = designStateForKind("insole", chart);
