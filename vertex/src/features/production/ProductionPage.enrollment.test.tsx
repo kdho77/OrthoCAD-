@@ -13,10 +13,14 @@ import { ProductionPage } from "./ProductionPage";
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const enrollmentSpy = rs.fn(async (bridgeName: string) => ({
-    proof: `proof-shown-once-${bridgeName}`,
+const SECRET_PROOF = "proof-shown-once-Bay-press";
+const SECRET_CREDENTIAL = "credential-not-for-display";
+
+const approveSpy = rs.fn(async () => ({
     bridgeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-    expiresAt: "2026-11-09T20:10:00.000Z",
+    bridgeName: "Bay press",
+    proof: SECRET_PROOF,
+    credential: SECRET_CREDENTIAL,
 }));
 
 rs.mock("./production-actions", () => {
@@ -30,8 +34,16 @@ rs.mock("./production-actions", () => {
         assignProductionJob: noop,
         rerunProductionJob: noop,
         saveMoonrakerProductionPrinter: noop,
-        createBridgeEnrollment: (bridgeName: string) => enrollmentSpy(bridgeName),
+        createBridgeEnrollment: noop,
         revokeBridgeEnrollment: noop,
+        approveBridgePairing: () => approveSpy(),
+        listBridgeDiscovery: async () => ({ candidates: [], lastTest: null }),
+        requestPrinterConnectionTest: async () => ({
+            pending: true as const,
+            address: "http://192.168.1.20:7125",
+            method: "GET" as const,
+            path: "/server/info" as const,
+        }),
         registerConfiguredProductionPrinter: noop,
         dispatchProductionJob: noop,
         reconcileProductionPrinter: noop,
@@ -138,8 +150,13 @@ describe("production printers enrollment", () => {
     const written: string[] = [];
 
     beforeEach(() => {
-        enrollmentSpy.mockClear();
+        approveSpy.mockClear();
         written.length = 0;
+        Object.defineProperty(navigator, "userAgent", {
+            configurable: true,
+            value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        });
+        Object.defineProperty(navigator, "platform", { configurable: true, value: "Win32" });
         localStorage.clear();
         sessionStorage.clear();
         useProductionStore.setState({
@@ -203,18 +220,37 @@ describe("production printers enrollment", () => {
         await act(async () => root?.unmount());
         await render("printers");
         const printers = container.querySelector('[data-testid="production-printers"]');
-        expect(headings(printers)).toEqual(["Register mock printer", "Configure Moonraker printer", "Bay 1"]);
+        expect(headings(printers)).toEqual([
+            "Install the print bridge",
+            "How setup works",
+            "Add a printer",
+            "Register mock printer",
+            "Configure Moonraker printer",
+            "Bay 1",
+        ]);
         expect(buttonLabels(printers)).toEqual([
+            "Test connection",
             "Register",
             "Save configuration",
             "Check readiness",
             "Reconcile status",
         ]);
+        expect(printers?.querySelector('[data-testid="installer-primary"]')?.textContent).toContain(
+            "Download for Windows",
+        );
+        expect(printers?.querySelector('[data-testid="installer-alternate"]')?.textContent).toContain(
+            "Download for Mac instead",
+        );
+        expect(printers?.querySelector('[data-testid="bridge-setup-guide"]')?.textContent).toContain(
+            "Online means the bridge has checked in",
+        );
         expect(printers?.querySelector('[aria-label="Bridge id"]')).toBeTruthy();
+        expect(printers?.querySelector('[aria-label="Printer address"]')).toBeTruthy();
         expect(printers?.querySelector('[aria-label="Moonraker URL"]')).toBeTruthy();
         expect(printers?.querySelector('[data-testid="create-bridge-enrollment"]')).toBeNull();
         expect(printers?.textContent).toContain("Mock only. Not a live printer.");
-        expect(enrollmentSpy).not.toHaveBeenCalled();
+        expect(printers?.textContent).not.toContain(SECRET_PROOF);
+        expect(approveSpy).not.toHaveBeenCalled();
     });
 
     test("an admin sees the enrollment once, and a signed-out viewer does not", async () => {
@@ -227,46 +263,48 @@ describe("production printers enrollment", () => {
         await render("printers");
         const printers = container.querySelector('[data-testid="production-printers"]');
         expect(headings(printers)).toEqual([
+            "Install the print bridge",
+            "How setup works",
+            "Approve a print bridge",
+            "Add a printer",
             "Register mock printer",
             "Configure Moonraker printer",
-            "Create bridge enrollment",
             "Bay 1",
         ]);
         expect(buttonLabels(printers)).toEqual([
+            "Approve bridge",
+            "Test connection",
             "Register",
             "Save configuration",
-            "Create bridge enrollment",
             "Check readiness",
             "Reconcile status",
         ]);
         const name = printers?.querySelector('[aria-label="Bridge name"]') as HTMLInputElement;
-        const create = [...(printers?.querySelectorAll("button") ?? [])].find(
-            (button) => button.textContent === "Create bridge enrollment",
+        const code = printers?.querySelector('[aria-label="Pairing code"]') as HTMLInputElement;
+        const approve = [...(printers?.querySelectorAll("button") ?? [])].find(
+            (button) => button.textContent === "Approve bridge",
         ) as HTMLButtonElement;
-        expect(create.disabled).toBe(true);
-        await act(async () => setInputValue(name, "Bay press"));
-        expect(create.disabled).toBe(false);
+        expect(approve.disabled).toBe(true);
         await act(async () => {
-            create.click();
+            setInputValue(code, "ABCD-EFGH");
+            setInputValue(name, "Bay press");
         });
-        const shown = container.querySelector('[data-testid="bridge-enrollment-proof"]');
+        expect(approve.disabled).toBe(false);
+        await act(async () => {
+            approve.click();
+        });
+        const shown = container.querySelector('[data-testid="bridge-pairing-approved"]');
         expect(shown?.textContent).toContain("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
-        expect(shown?.textContent).toContain("proof-shown-once-Bay press");
-        expect(shown?.textContent).toContain("expires in 10 minutes");
-        expect((printers?.querySelector('[aria-label="Bridge id"]') as HTMLInputElement).value).toBe("");
-        expect(JSON.stringify(localStorage)).not.toContain("proof-shown-once");
-        expect(JSON.stringify(sessionStorage)).not.toContain("proof-shown-once");
-        expect(JSON.stringify(useProductionStore.getState().jobs)).not.toContain("proof-shown-once");
-        await act(async () => {
-            (container.querySelector('[data-testid="copy-bridge-proof"]') as HTMLButtonElement).click();
-        });
-        expect(written.join("\n")).toContain("proof-shown-once-Bay press");
-        expect(written.join("\n")).toContain("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
-
-        await act(async () => root?.unmount());
-        await render("printers");
+        expect(container.textContent).not.toContain(SECRET_PROOF);
+        expect(container.textContent).not.toContain(SECRET_CREDENTIAL);
         expect(container.querySelector('[data-testid="bridge-enrollment-proof"]')).toBeNull();
-        expect(container.textContent).not.toContain("proof-shown-once-Bay press");
+        expect(container.querySelector('[data-testid="copy-bridge-proof"]')).toBeNull();
+        expect((printers?.querySelector('[aria-label="Bridge id"]') as HTMLInputElement).value).toBe("");
+        expect(JSON.stringify(localStorage)).not.toContain(SECRET_PROOF);
+        expect(JSON.stringify(sessionStorage)).not.toContain(SECRET_PROOF);
+        expect(JSON.stringify(useProductionStore.getState().jobs)).not.toContain(SECRET_PROOF);
+        expect(written.join("\n")).not.toContain(SECRET_PROOF);
+        expect(written.join("\n")).not.toContain(SECRET_CREDENTIAL);
     });
 
     test("a super admin sees the same control", async () => {

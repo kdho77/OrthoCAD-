@@ -1,0 +1,28 @@
+name: Print bridge package
+
+on:
+    pull_request:
+        branches: ["main"]
+        paths:
+            - "vertex/print-bridge/**"
+            - "vertex/shared/print-bridge-*"
+            - "vertex/shared/print-bridge-*.ts"
+            - ".github/workflows/print-bridge-package.yml"
+    workflow_dispatch:
+
+jobs:
+    package-check:
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+            - name: Setup node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+            - name: Install vertex app dependencies
+              run: npm install --prefix vertex
+            - name: Check installer sources and sign a throwaway manifest
+              working-directory: vertex
+              run: node print-bridge/packaging/check-packaging.mjs

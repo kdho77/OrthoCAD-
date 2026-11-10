@@ -8,7 +8,6 @@ import { navigate } from "@/features/admin/admin-nav";
 import { DirectoryHeader } from "@/features/clients/DirectoryHeader";
 import { designPath } from "@/features/clients/routes";
 import { cn } from "@/lib/utils";
-import { useAuthStore } from "@/stores/auth-store";
 import { useProductionStore } from "@/stores/production-store";
 import { formatRelative } from "../../../shared/client-files";
 import {
@@ -30,11 +29,12 @@ import {
     statusLabel,
 } from "../../../shared/production-jobs";
 import { gcodeRetentionLabel } from "../../../shared/retention";
+import { AddPrinterPanel } from "./add-printer-panel";
+import { BridgeSetupPanel } from "./bridge-setup-panel";
 import {
     assignProductionJob,
     cancelDispatchedProductionJob,
     cancelProductionJob,
-    createBridgeEnrollment,
     dispatchProductionJob,
     downloadProductionGcode,
     holdProductionJob,
@@ -339,6 +339,15 @@ function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: Prin
                 Queue state for two or more printers. Mock registration is not a live printer. A configured
                 printer stays unverified, and this page does not open a socket.
             </p>
+            <BridgeSetupPanel />
+            <AddPrinterPanel
+                bridgeId={bridgeId}
+                address={endpoint}
+                onUseAddress={(address) => {
+                    setEndpoint(address);
+                    setNotice("");
+                }}
+            />
             <div className="rounded-xl border border-border bg-panel p-3">
                 <h2 className="text-sm font-medium">Register mock printer</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -446,7 +455,6 @@ function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: Prin
                     </button>
                 </div>
             </div>
-            <BridgeEnrollmentCard />
             {notice ? <p className="text-sm text-amber-300">{notice}</p> : null}
             {cards.length === 0 ? <p className="text-sm text-muted-foreground">No printers yet.</p> : null}
             <div className="grid gap-3 md:grid-cols-2">
@@ -491,110 +499,6 @@ function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: Prin
                 ))}
             </div>
         </section>
-    );
-}
-
-function isProductionAdmin(role: string | undefined): boolean {
-    return role === "admin" || role === "super_admin";
-}
-
-function BridgeEnrollmentCard() {
-    const role = useAuthStore((state) => state.user?.role);
-    const [bridgeName, setBridgeName] = useState("");
-    const [pending, setPending] = useState(false);
-    const [notice, setNotice] = useState("");
-    const [copied, setCopied] = useState(false);
-    const [enrollment, setEnrollment] = useState<{
-        bridgeId: string;
-        proof: string;
-        expiresAt: string;
-    } | null>(null);
-    if (!isProductionAdmin(role)) return null;
-
-    const create = () => {
-        const name = bridgeName.trim();
-        if (!name || pending) return;
-        setNotice("");
-        setCopied(false);
-        setPending(true);
-        void createBridgeEnrollment(name)
-            .then((result) => {
-                setEnrollment({
-                    bridgeId: result.bridgeId,
-                    proof: result.proof,
-                    expiresAt: result.expiresAt,
-                });
-                setBridgeName("");
-            })
-            .catch((error: unknown) => {
-                setNotice(error instanceof Error ? error.message : "Enrollment failed");
-            })
-            .finally(() => setPending(false));
-    };
-
-    const copy = () => {
-        if (!enrollment) return;
-        const text = `${enrollment.bridgeId}\n${enrollment.proof}`;
-        const clipboard = navigator.clipboard;
-        if (!clipboard?.writeText) {
-            setNotice("Copy is not available in this browser.");
-            return;
-        }
-        void clipboard.writeText(text).then(
-            () => setCopied(true),
-            () => setNotice("Copy failed."),
-        );
-    };
-
-    return (
-        <div className="rounded-xl border border-border bg-panel p-3" data-testid="create-bridge-enrollment">
-            <h2 className="text-sm font-medium">Create bridge enrollment</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-                Creates a bridge id and a one-time proof for the shop computer. The proof is shown once and is
-                not saved in this browser.
-            </p>
-            <div className="mt-3 flex flex-col gap-2 md:flex-row md:flex-wrap">
-                <label className="min-w-0 flex-1 text-xs text-muted-foreground">
-                    Bridge name
-                    <input
-                        aria-label="Bridge name"
-                        value={bridgeName}
-                        maxLength={80}
-                        autoComplete="off"
-                        className="mt-1 block min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
-                        onChange={(event) => setBridgeName(event.target.value)}
-                    />
-                </label>
-                <button
-                    type="button"
-                    className="min-h-11 self-end rounded-md bg-primary px-4 text-sm text-primary-foreground disabled:opacity-50"
-                    disabled={pending || bridgeName.trim().length === 0}
-                    onClick={create}
-                >
-                    Create bridge enrollment
-                </button>
-            </div>
-            {enrollment ? (
-                <div className="mt-3 text-sm" data-testid="bridge-enrollment-proof">
-                    <p>
-                        Bridge id <span className="font-mono">{enrollment.bridgeId}</span>
-                    </p>
-                    <p className="mt-1 break-all font-mono">{enrollment.proof}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                        Expires {enrollment.expiresAt}. This proof expires in 10 minutes.
-                    </p>
-                    <button
-                        type="button"
-                        className="mt-2 min-h-11 rounded-md bg-secondary px-3 text-xs"
-                        data-testid="copy-bridge-proof"
-                        onClick={copy}
-                    >
-                        {copied ? "Copied" : "Copy"}
-                    </button>
-                </div>
-            ) : null}
-            {notice ? <p className="mt-2 text-sm text-amber-300">{notice}</p> : null}
-        </div>
     );
 }
 

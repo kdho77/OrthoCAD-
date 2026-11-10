@@ -1,0 +1,17 @@
+#!/bin/bash
+# Installed by the macOS package. The shop user does not open Terminal.
+set -euo pipefail
+APP="/Library/Application Support/OrthoCAD/PrintBridge"
+install -d -m 755 "/Library/Logs/OrthoCAD"
+install -d -m 755 "$APP/state"
+cp "$APP/com.orthocad.print-bridge.plist" /Library/LaunchAgents/com.orthocad.print-bridge.plist
+chmod 644 /Library/LaunchAgents/com.orthocad.print-bridge.plist
+CONSOLE_USER="$(stat -f '%Su' /dev/console || true)"
+if [ -n "${CONSOLE_USER}" ] && [ "${CONSOLE_USER}" != "root" ]; then
+    CONSOLE_UID="$(id -u "${CONSOLE_USER}")"
+    launchctl bootout "gui/${CONSOLE_UID}/com.orthocad.print-bridge" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/${CONSOLE_UID}" /Library/LaunchAgents/com.orthocad.print-bridge.plist
+    launchctl enable "gui/${CONSOLE_UID}/com.orthocad.print-bridge"
+    launchctl kickstart -k "gui/${CONSOLE_UID}/com.orthocad.print-bridge"
+fi
+exit 0
