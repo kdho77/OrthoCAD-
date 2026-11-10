@@ -3,6 +3,7 @@
 import { useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
+import { markerPlacementBlocked } from "@/features/measure/exclusive-mode";
 import { AFO_DESIGN_MARKERS, AFO_TRIM_CLOSE_PX } from "@/lib/geometry/afo/defaults";
 import {
     type AfoOrientedSides,
@@ -23,6 +24,7 @@ import type { AfoVec3 } from "@/lib/geometry/afo/types";
 import { applyCameraViewPreset, type CameraViewControls } from "@/lib/geometry/viewport-side-layout";
 import { getAfoState, patchAfoState, refreshAfoWorkingMesh, useAfoStore } from "@/stores/afo-store";
 import { type CameraView, useDesignStore } from "@/stores/design-store";
+import { measureToolArmed } from "@/stores/measure-store";
 
 /** Same matrix and M1/M5 values share one key, even when the arrays are new objects. */
 export function orientedSidesKey(
@@ -192,6 +194,7 @@ export function AfoMarkerPlacement() {
         };
 
         const onDown = (ev: PointerEvent) => {
+            if (markerPlacementBlocked(measureToolArmed())) return;
             lastClient.current = { x: ev.clientX, y: ev.clientY };
             down = { x: ev.clientX, y: ev.clientY };
             pointerDist = 0;
@@ -211,6 +214,7 @@ export function AfoMarkerPlacement() {
         };
 
         const onMove = (ev: PointerEvent) => {
+            if (markerPlacementBlocked(measureToolArmed())) return;
             lastClient.current = { x: ev.clientX, y: ev.clientY };
             if (down) pointerDist = Math.hypot(ev.clientX - down.x, ev.clientY - down.y);
             if (useAfoStore.getState().placingTrim) publishHover(ev.clientX, ev.clientY);
@@ -240,6 +244,7 @@ export function AfoMarkerPlacement() {
         };
 
         const onUp = (ev: PointerEvent) => {
+            if (markerPlacementBlocked(measureToolArmed())) return;
             if (orbit) orbit.enabled = true;
             setDragging(null);
             const dist = down

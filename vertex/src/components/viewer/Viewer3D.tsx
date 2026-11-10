@@ -22,6 +22,7 @@ import { AfoScanGuidedCard } from "@/features/afo/AfoScanGuidedCard";
 import { afoViewportPlacementLayer, scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
 import { afoPlacementComplete, ensureAfoScanPlacement } from "@/features/afo/afo-scan-ui";
 import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
+import { MeasureOverlay } from "@/features/measure/MeasureOverlay";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
 import { afoDesignBaseLabel } from "@/lib/geometry/afo/trim-preview";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
@@ -349,6 +350,7 @@ export function Viewer3D() {
                             {!printPreview && !loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
                         </>
                     )}
+                    <MeasureOverlay />
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
