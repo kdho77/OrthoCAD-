@@ -2,28 +2,71 @@
 
 import { Html } from "@react-three/drei";
 import { useFrame, useThree } from "@react-three/fiber";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { AFO_LANDMARK_STEPS, AFO_PLANTAR_STEPS } from "@/features/afo/afo-scan-markers";
 import {
+    AFO_MARKER_MIN_PX,
     AFO_MARKER_OUTLINE,
     AFO_MARKER_PILL,
     AFO_MARKER_WORLD_MM,
-    AFO_MARKER_MIN_PX,
     AFO_OPTIONAL_MARKER,
     AFO_REQUIRED_MARKER,
     AFO_STAGE1_MARKER,
-    activeAfoTarget,
+    type AfoMarkerDisplayCue,
     type AfoMarkerKey,
+    type AfoScanDrawMode,
+    type AfoViewPoint,
+    activeAfoTarget,
+    afoMarkerDisplayCue,
+    afoMarkerOnCameraSide,
+    afoScanDrawMode,
+    afoTriangleStats,
 } from "@/features/afo/afo-scan-ui";
-import { transformAfoPoint } from "@/lib/geometry/afo/landmark-frame";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
+import { transformAfoPoint } from "@/lib/geometry/afo/landmark-frame";
+import { meshCentroid } from "@/lib/geometry/afo/mesh-ops";
 import { useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
 
 function useReducedMotion(): boolean {
     if (typeof window === "undefined") return false;
     return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+const cueWorld = new THREE.Vector3();
+const cueCenter = new THREE.Vector3();
+
+function useAfoFacingCue(
+    enabled: boolean,
+    drawMode: AfoScanDrawMode,
+    baseOpacity: number,
+    sample: () => { marker: THREE.Vector3; center: THREE.Vector3 } | null,
+): AfoMarkerDisplayCue {
+    const { camera } = useThree();
+    const full = afoMarkerDisplayCue({ drawMode, facesCamera: true, baseOpacity });
+    const [cue, setCue] = useState<AfoMarkerDisplayCue>(full);
+    const cueRef = useRef(full);
+    useFrame(() => {
+        if (!enabled) return;
+        const sampled = sample();
+        if (!sampled) return;
+        const faces = afoMarkerOnCameraSide(sampled.marker, camera.position, sampled.center);
+        const next = afoMarkerDisplayCue({ drawMode, facesCamera: faces, baseOpacity });
+        const prev = cueRef.current;
+        if (
+            prev.opacity === next.opacity &&
+            prev.depthTest === next.depthTest &&
+            prev.occluded === next.occluded &&
+            prev.dimmed === next.dimmed
+        ) {
+            return;
+        }
+        cueRef.current = next;
+        setCue(next);
+    });
+    if (!enabled) return { opacity: baseOpacity, depthTest: false, occluded: false, dimmed: false };
+    return cue;
 }
 
 export function AfoScanMarkerDot({
@@ -35,6 +78,9 @@ export function AfoScanMarkerDot({
     showLabel,
     markerId,
     onDragStart,
+    centerLocal = { x: 0, y: 0, z: 0 },
+    drawMode = "surface",
+    depthCue = false,
 }: {
     position: [number, number, number];
     color: string;
@@ -44,11 +90,24 @@ export function AfoScanMarkerDot({
     showLabel: boolean;
     markerId: string;
     onDragStart?: (id: string) => void;
+    /** Oriented-mesh centroid. Stage 1 leaves the cue off; its scan matrix is not this frame. */
+    centerLocal?: AfoViewPoint;
+    drawMode?: AfoScanDrawMode;
+    depthCue?: boolean;
 }) {
     const groupRef = useRef<THREE.Group>(null);
     const ringRef = useRef<THREE.Mesh>(null);
     const { camera, size } = useThree();
     const reducedMotion = useReducedMotion();
+    const cue = useAfoFacingCue(depthCue, drawMode, opacity, () => {
+        const group = groupRef.current;
+        if (!group?.parent) return null;
+        const marker = group.getWorldPosition(cueWorld);
+        const center = group.parent.localToWorld(cueCenter.set(centerLocal.x, centerLocal.y, centerLocal.z));
+        return { marker, center };
+    });
+    const haloDepthTest = depthCue ? cue.depthTest : false;
+    const pointOffset = depthCue && drawMode === "points";
 
     useFrame((state) => {
         const group = groupRef.current;
@@ -67,29 +126,71 @@ export function AfoScanMarkerDot({
 
     return (
         <group ref={groupRef} position={position}>
-            <mesh renderOrder={22} userData={{ afoScanMarkerId: markerId }} onPointerDown={(e) => {
-                e.stopPropagation();
-                onDragStart?.(markerId);
-            }}>
+            <mesh
+                renderOrder={22}
+                userData={{ afoScanMarkerId: markerId }}
+                onPointerDown={(e) => {
+                    e.stopPropagation();
+                    onDragStart?.(markerId);
+                }}
+            >
                 <sphereGeometry args={[AFO_MARKER_WORLD_MM, 20, 16]} />
-                <meshBasicMaterial color={color} transparent opacity={opacity * 0.3} depthTest={false} />
+                <meshBasicMaterial
+                    color={color}
+                    transparent
+                    opacity={cue.opacity * 0.3}
+                    depthTest={haloDepthTest}
+                    depthWrite={false}
+                    polygonOffset={pointOffset}
+                    polygonOffsetFactor={-4}
+                    polygonOffsetUnits={-4}
+                />
             </mesh>
             <mesh renderOrder={21}>
                 <sphereGeometry args={[AFO_MARKER_WORLD_MM * 1.08, 20, 16]} />
-                <meshBasicMaterial color={AFO_MARKER_OUTLINE} side={THREE.BackSide} depthTest />
+                <meshBasicMaterial
+                    color={AFO_MARKER_OUTLINE}
+                    side={THREE.BackSide}
+                    transparent={cue.opacity < 0.999}
+                    opacity={cue.opacity}
+                    depthTest
+                    depthWrite={false}
+                    polygonOffset={pointOffset}
+                    polygonOffsetFactor={-4}
+                    polygonOffsetUnits={-4}
+                />
             </mesh>
             <mesh renderOrder={23} userData={{ afoScanMarkerId: markerId }}>
                 <sphereGeometry args={[AFO_MARKER_WORLD_MM, 20, 16]} />
-                <meshBasicMaterial color={color} transparent opacity={opacity} depthTest />
+                <meshBasicMaterial
+                    color={color}
+                    transparent
+                    opacity={cue.opacity}
+                    depthTest
+                    depthWrite={false}
+                    polygonOffset={pointOffset}
+                    polygonOffsetFactor={-4}
+                    polygonOffsetUnits={-4}
+                />
             </mesh>
             {isTarget ? (
                 <mesh ref={ringRef} rotation={[Math.PI / 2, 0, 0]} renderOrder={24}>
                     <ringGeometry args={[AFO_MARKER_WORLD_MM * 1.35, AFO_MARKER_WORLD_MM * 1.55, 48]} />
-                    <meshBasicMaterial color="#ffffff" transparent opacity={0.85} depthTest={false} />
+                    <meshBasicMaterial
+                        color="#ffffff"
+                        transparent
+                        opacity={0.85 * (cue.dimmed ? cue.opacity : 1)}
+                        depthTest={haloDepthTest}
+                        depthWrite={false}
+                    />
                 </mesh>
             ) : null}
-            {showLabel ? (
-                <Html center distanceFactor={12} style={{ pointerEvents: "none", transform: "translateY(-18px)" }}>
+            {showLabel && !cue.dimmed ? (
+                <Html
+                    center
+                    distanceFactor={12}
+                    style={{ pointerEvents: "none", transform: "translateY(-18px)" }}
+                >
                     <span
                         title={label}
                         className="whitespace-nowrap rounded-full border border-black/40 bg-black/70 px-1.5 py-0.5 text-[10px] font-medium text-white"
@@ -99,6 +200,50 @@ export function AfoScanMarkerDot({
                 </Html>
             ) : null}
         </group>
+    );
+}
+
+/** Design and clinical markers. Same near/far cue as the scan dots. */
+export function AfoCueSphere({
+    position,
+    color,
+    radius,
+    renderOrder,
+    userData,
+    centerLocal,
+    drawMode,
+}: {
+    position: [number, number, number];
+    color: string;
+    radius: number;
+    renderOrder: number;
+    userData: Record<string, unknown>;
+    centerLocal: AfoViewPoint;
+    drawMode: AfoScanDrawMode;
+}) {
+    const meshRef = useRef<THREE.Mesh>(null);
+    const cue = useAfoFacingCue(true, drawMode, 1, () => {
+        const mesh = meshRef.current;
+        if (!mesh?.parent) return null;
+        const marker = mesh.getWorldPosition(cueWorld);
+        const center = mesh.parent.localToWorld(cueCenter.set(centerLocal.x, centerLocal.y, centerLocal.z));
+        return { marker, center };
+    });
+    return (
+        <mesh ref={meshRef} position={position} renderOrder={renderOrder} userData={userData}>
+            <sphereGeometry args={[radius, 12, 10]} />
+            <meshBasicMaterial
+                color={color}
+                transparent={cue.opacity < 0.999}
+                opacity={cue.opacity}
+                depthTest={drawMode === "points" ? true : cue.depthTest}
+                depthWrite={false}
+                polygonOffset={drawMode === "points"}
+                polygonOffsetFactor={-4}
+                polygonOffsetUnits={-4}
+                toneMapped={false}
+            />
+        </mesh>
     );
 }
 
@@ -149,7 +294,14 @@ export function AfoScanMarkers() {
     const workflow = useDesignStore((s) => s.design.afo?.scanWorkflow) ?? defaultAfoScanWorkflow();
     const placement = useAfoStore((s) => s.scanPlacement);
     const showLabels = useAfoStore((s) => s.scanShowMarkerLabels);
+    const source = useAfoStore((s) => s.sourceMesh);
     const targetId = activeAfoTarget(workflow, placement?.redo ?? null);
+    const centerLocal = useMemo(() => (source ? meshCentroid(source) : { x: 0, y: 0, z: 0 }), [source]);
+    const drawMode = useMemo(() => {
+        if (!source) return "surface" as const;
+        const stats = afoTriangleStats(source.positions, source.indices);
+        return afoScanDrawMode(stats.triangles, stats.degenerateRatio);
+    }, [source]);
 
     const markers = useMemo(() => {
         if (!workflow.alignmentApplied || !workflow.matrixElements) return [];
@@ -205,6 +357,9 @@ export function AfoScanMarkers() {
                     label={AFO_MARKER_PILL[m.id]}
                     showLabel={showLabels}
                     onDragStart={onDragStart}
+                    centerLocal={centerLocal}
+                    drawMode={drawMode}
+                    depthCue
                 />
             ))}
         </group>

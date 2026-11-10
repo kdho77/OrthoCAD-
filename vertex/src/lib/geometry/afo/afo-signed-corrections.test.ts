@@ -23,9 +23,9 @@ function sheet(): AfoTriMesh {
         18,
         70,
         5, // medial arch
+        180,
         0,
-        130,
-        5, // toe
+        5, // toe, anterior on +X
         -10,
         40,
         5,

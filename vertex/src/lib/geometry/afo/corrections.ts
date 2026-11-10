@@ -112,62 +112,56 @@ export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections, axes?: 
     const frontDeg = clampFrontalDeg(c.legRearDeg);
     const medial = axes?.medialMal ?? { x: 35, y: 40, z: 80 };
     const lateral = axes?.lateralMal ?? { x: -35, y: 40, z: 80 };
-    const ax = malleolarAxes(medial, lateral);
-    const ySpan = spanY(out);
-    const footLen = Math.max(1, ySpan.yMax - ySpan.yMin);
+    const length = footLengthX(out);
+    // Aligned frame: medial is medialSign along Y. Do not read malleolar X;
+    // that offset is anterior-posterior and is the same sign on both feet.
+    const medialY = axes?.side === "left" || axes?.side === "right" ? medialSign(axes.side) : null;
 
-    if (axes?.anatomical && (sagDeg !== 0 || frontDeg !== 0)) {
-        applyAnatomicalRotation(out, sagDeg, frontDeg, axes);
+    // One spin for both paths. The old malleolar cross product plantarflexed a
+    // right foot when +side asked for dorsiflexion (readout about −7.9° at +10°).
+    if (sagDeg !== 0 || frontDeg !== 0) {
+        applyAnatomicalRotation(out, sagDeg, frontDeg, {
+            ...axes,
+            medialMal: medial,
+            lateralMal: lateral,
+        });
     }
 
-    const sag = sagDeg * DEG;
-    const front = frontDeg * DEG;
     const nav = axes?.navicular ?? null;
-    const medialSign = axes?.side === "left" ? 1 : -1;
 
     for (let i = 0; i < n; i++) {
-        let x = out.positions[i * 3] ?? 0;
+        const x = out.positions[i * 3] ?? 0;
         let y = out.positions[i * 3 + 1] ?? 0;
         let z = out.positions[i * 3 + 2] ?? 0;
-        if (!axes?.anatomical) {
-            const w = smoothstep(ax.origin.z - 15, ax.origin.z + 25, z);
-            if (w > 0 && (sag !== 0 || front !== 0)) {
-                let p = { x, y, z };
-                if (sag !== 0) p = rotateAround(p, ax.origin, ax.sagittal, sag * w);
-                if (front !== 0) p = rotateAround(p, ax.origin, ax.frontal, front * w);
-                x = p.x;
-                y = p.y;
-                z = p.z;
-            }
-        }
+        const fromHeel = x - length.min;
 
         if (c.heelLiftMm) {
-            const t = clamp01(1 - y / 140);
+            const t = clamp01(1 - fromHeel / 140);
             z += c.heelLiftMm * t;
         }
         if (c.toeRiseMm) {
-            const yNorm = (y - ySpan.yMin) / footLen;
-            if (yNorm > 0.6) z += c.toeRiseMm * smoothstep(0.6, 0.85, yNorm);
+            const xNorm = fromHeel / length.span;
+            if (xNorm > 0.6) z += c.toeRiseMm * smoothstep(0.6, 0.85, xNorm);
         }
-        if (c.footLiftMedMm && x > 0) {
-            z += c.footLiftMedMm * clamp01(x / 40) * clamp01(1 - z / 50);
+        if (medialY != null && c.footLiftMedMm && y * medialY > 0) {
+            z += c.footLiftMedMm * clamp01(Math.abs(y) / 40) * clamp01(1 - z / 50);
         }
-        if (c.footLiftLatMm && x < 0) {
-            z += c.footLiftLatMm * clamp01(-x / 40) * clamp01(1 - z / 50);
+        if (medialY != null && c.footLiftLatMm && y * medialY < 0) {
+            z += c.footLiftLatMm * clamp01(Math.abs(y) / 40) * clamp01(1 - z / 50);
         }
         if (c.medialArchMm) {
             if (nav) {
                 const gy = Math.exp(-((y - nav.y) ** 2) / (2 * 28 * 28));
                 const gx = Math.exp(-((x - nav.x) ** 2) / (2 * 18 * 18));
                 z += c.medialArchMm * gy * gx;
-            } else if (x * (axes?.side ? medialSign : 1) > 0) {
-                const gy = Math.exp(-((y - 70) ** 2) / (2 * 28 * 28));
-                z += c.medialArchMm * gy * clamp01(Math.abs(x) / 30);
+            } else if (medialY != null && y * medialY > 0) {
+                const gx = Math.exp(-((x - (length.min + 70)) ** 2) / (2 * 28 * 28));
+                z += c.medialArchMm * gx * clamp01(Math.abs(y) / 30);
             }
         }
         if (c.heelWidthMm) {
-            const gh = Math.exp(-(y * y) / (2 * 35 * 35)) * clamp01(1 - z / 50);
-            x += Math.sign(x || 1) * c.heelWidthMm * 0.5 * gh;
+            const gh = Math.exp(-(fromHeel * fromHeel) / (2 * 35 * 35)) * clamp01(1 - z / 50);
+            y += Math.sign(y || 1) * c.heelWidthMm * 0.5 * gh;
         }
         if (c.braceHeightMm > 0 && z > c.braceHeightMm) {
             z = c.braceHeightMm + (z - c.braceHeightMm) * 0.05;
@@ -189,16 +183,26 @@ export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections, axes?: 
     return out;
 }
 
-function spanY(mesh: AfoTriMesh): { yMin: number; yMax: number } {
+/** Heel→toe span. Aligned scans put the heel at low X and the toes at +X. */
+function footLengthX(mesh: AfoTriMesh): { min: number; span: number } {
     const n = vertexCount(mesh);
-    let yMin = Infinity;
-    let yMax = -Infinity;
+    let min = Infinity;
+    let max = -Infinity;
     for (let i = 0; i < n; i++) {
-        const y = mesh.positions[i * 3 + 1] ?? 0;
-        if (y < yMin) yMin = y;
-        if (y > yMax) yMax = y;
+        const x = mesh.positions[i * 3] ?? 0;
+        if (x < min) min = x;
+        if (x > max) max = x;
     }
-    return { yMin, yMax };
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return { min: 0, span: 1 };
+    return { min, span: Math.max(1, max - min) };
+}
+
+/**
+ * Sign of Y that is medial in the aligned plantar frame.
+ * This is {@link medialSign}: left −1, right +1. Malleolar X is not width.
+ */
+export function medialWidthSign(side: Side): 1 | -1 {
+    return medialSign(side);
 }
 
 /** +X is lateral on the right. The left side mirrors so +varus stays medial. */
@@ -286,7 +290,7 @@ export function measureShankAngles(mesh: AfoTriMesh, axes: AfoRotationAxes): Sha
     const frame = afoFootAxes(axes);
     const origin = frame.origin;
     const headZ = axes.fibularHead?.z ?? origin.z + 110;
-    const centroid = sectionCentroid(mesh, headZ) ?? { x: origin.x, y: origin.y, z: headZ };
+    const centroid = shankSection(mesh, headZ, origin.z) ?? { x: origin.x, y: origin.y, z: headZ };
     const sx = centroid.x - origin.x;
     const sy = centroid.y - origin.y;
     const sz = centroid.z - origin.z;
@@ -297,6 +301,20 @@ export function measureShankAngles(mesh: AfoTriMesh, axes: AfoRotationAxes): Sha
         frontalDeg: (Math.atan2(dot3(axis, frame.medial), axis.z) * 180) / Math.PI,
         axis,
     };
+}
+
+/** Prefer the fibular band. If a brace clamp emptied it, use the highest band that is still there. */
+function shankSection(mesh: AfoTriMesh, headZ: number, originZ: number): AfoVec3 | null {
+    const direct = sectionCentroid(mesh, headZ);
+    if (direct) return direct;
+    let top = -Infinity;
+    const n = vertexCount(mesh);
+    for (let i = 0; i < n; i++) top = Math.max(top, mesh.positions[i * 3 + 2] ?? 0);
+    for (let z = top - 6; z > originZ + 25; z -= 12) {
+        const found = sectionCentroid(mesh, z);
+        if (found) return found;
+    }
+    return null;
 }
 
 function sectionCentroid(mesh: AfoTriMesh, z: number): AfoVec3 | null {
@@ -337,15 +355,36 @@ function applyAnatomicalRotation(
 ): void {
     const frame = afoFootAxes(axes);
     const origin = frame.origin;
+    const baseline = measureShankAngles(mesh, axes);
+    spinShank(mesh, frame, origin, axes, sideDeg, rearDeg);
+    // A skewed malleolar axis overshoots the footplate angle. One correction pass
+    // brings the measured change back onto the slider.
+    const once = measureShankAngles(mesh, axes);
+    const sideErr = sideDeg === 0 ? 0 : sideDeg - (once.sagittalDeg - baseline.sagittalDeg);
+    const rearErr = rearDeg === 0 ? 0 : rearDeg - (once.frontalDeg - baseline.frontalDeg);
+    if (Math.abs(sideErr) > 0.35 || Math.abs(rearErr) > 0.35) {
+        spinShank(mesh, frame, origin, axes, sideErr, rearErr);
+    }
+}
+
+function spinShank(
+    mesh: AfoTriMesh,
+    frame: AfoFootAxes,
+    origin: AfoVec3,
+    axes: AfoRotationAxes,
+    sideDeg: number,
+    rearDeg: number,
+): void {
     const measured = measureShankAngles(mesh, axes);
     const sideTotal = clampSagittalDeg(measured.sagittalDeg + sideDeg);
     const rearTotal = clampFrontalDeg(measured.frontalDeg + rearDeg);
-    const dSide = sideDeg === 0 ? 0 : sideTotal - measured.sagittalDeg;
-    const dRear = rearDeg === 0 ? 0 : rearTotal - measured.frontalDeg;
+    const dSide = Math.abs(sideDeg) < 1e-6 ? 0 : sideTotal - measured.sagittalDeg;
+    const dRear = Math.abs(rearDeg) < 1e-6 ? 0 : rearTotal - measured.frontalDeg;
     if (Math.abs(dSide) < 1e-6 && Math.abs(dRear) < 1e-6) return;
 
-    // Full clinical degrees. Do not scale by the malleolar X component — in the
-    // plantar frame that axis lies along Y, and the old scale cancelled the spin.
+    // chirality makes +side dorsiflexion and +rear varus on both feet.
+    // Do not scale by the malleolar X component — in the plantar frame that
+    // axis lies along Y, and the old scale cancelled the spin.
     const rearAngle = frame.chirality * dRear * DEG;
     const sideAngle = frame.chirality * dSide * DEG;
     const n = vertexCount(mesh);
@@ -353,6 +392,8 @@ function applyAnatomicalRotation(
         axes.heel ?? { x: 0, y: 0, z: 0 },
         axes.m1 ?? { x: 0, y: 120, z: 0 },
         axes.m5 ?? { x: 0, y: 120, z: 0 },
+        axes.medialMal,
+        axes.lateralMal,
     ];
     for (let i = 0; i < n; i++) {
         const p = {

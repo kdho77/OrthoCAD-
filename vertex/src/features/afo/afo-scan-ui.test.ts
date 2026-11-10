@@ -1,17 +1,24 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { describe, expect, test } from "@rstest/core";
+import { ShaderLib } from "three";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
 import { afoViewportPlacementLayer } from "./afo-scan-markers";
 import {
     AFO_CAST_SURFACE,
+    AFO_FAR_MARKER_OPACITY,
     AFO_MARKER_DEPTH_TEST,
+    AFO_POINT_BRIGHTNESS_MIN,
+    type AfoPointCloudShader,
     afoCastBodyStyle,
     afoHeightColors,
+    afoMarkerDisplayCue,
+    afoPointCloudGlsl,
     afoScanAutoFrameAllowed,
     afoTriangleStats,
     afoUploadedScanMaterial,
     cameraViewForAfoMarker,
+    patchAfoPointCloudShaders,
 } from "./afo-scan-ui";
 
 describe("afo scan ui", () => {
@@ -114,6 +121,30 @@ describe("afo scan ui", () => {
             degenerateRatio: 1,
         });
         expect(empty.drawMode).toBe("points");
+        expect(style.pointDistanceShade).toBe(true);
+        expect(style.pointDepthWrite).toBe(true);
+        expect(style.pointDepthSplatScale).toBeGreaterThan(1);
+        expect(style.markerDepthTest).toBe(true);
+        const far = afoMarkerDisplayCue({ drawMode: "points", facesCamera: false, baseOpacity: 1 });
+        expect(far.occluded).toBe(true);
+        expect(far.opacity).toBeCloseTo(AFO_FAR_MARKER_OPACITY);
+        expect(afoMarkerDisplayCue({ drawMode: "surface", facesCamera: true }).dimmed).toBe(false);
+    });
+
+    test("point clouds shade by camera distance in the real points shader", () => {
+        const shader: AfoPointCloudShader = {
+            vertexShader: ShaderLib.points?.vertexShader ?? "",
+            fragmentShader: ShaderLib.points?.fragmentShader ?? "",
+            uniforms: {},
+        };
+        expect(shader.vertexShader).toContain("gl_PointSize = size;");
+        patchAfoPointCloudShaders(shader);
+        expect(shader.vertexShader).toContain(afoPointCloudGlsl().sizeScale);
+        expect(shader.fragmentShader).toContain(afoPointCloudGlsl().brightness);
+        expect(shader.fragmentShader).toContain(AFO_POINT_BRIGHTNESS_MIN.toFixed(2));
+        expect(shader.vertexShader).toContain("vAfoViewZ");
+        expect(shader.uniforms.afoNear?.value).toBeGreaterThan(0);
+        expect(shader.uniforms.afoFar?.value).toBeGreaterThan(shader.uniforms.afoNear?.value ?? 0);
     });
 
     test("medial and lateral views flip with foot side", () => {
