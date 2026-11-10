@@ -1,7 +1,11 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { useThree } from "@react-three/fiber";
 import { useEffect, useMemo } from "react";
-import { BufferAttribute, DoubleSide, Quaternion, Vector3 } from "three";
+import { BufferAttribute, DoubleSide, FrontSide } from "three";
+import { Line2 } from "three/examples/jsm/lines/Line2.js";
+import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { AfoLitSurfaceMaterial } from "@/components/viewer/AfoSurfaceMaterial";
 import {
     afoCastBodyStyle,
@@ -9,16 +13,17 @@ import {
     afoTriangleStats,
     afoUploadedScanMaterial,
 } from "@/features/afo/afo-scan-ui";
-import { geodesicPolyline } from "@/lib/geometry/afo/geodesic";
+import { AFO_TRIM_PIN_RADIUS_MM } from "@/lib/geometry/afo/defaults";
 import { afoMeshToGeometry } from "@/lib/geometry/afo/mesh-ops";
-import { afoTrimPreview, cursorCrossSegments, fallbackTrimPolyline } from "@/lib/geometry/afo/trim-preview";
+import { afoTrimPreview, cursorCrossSegments } from "@/lib/geometry/afo/trim-preview";
+import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import type { AfoVec3 } from "@/lib/geometry/afo/types";
 import { getAfoState, useAfoStore } from "@/stores/afo-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 
-const TRIM_YELLOW = "#ffe14a";
-const TRIM_HALO = "#111827";
+const TRIM_YELLOW_GREEN = "#c6ef3a";
+const TRIM_FIRST = "#7dff6a";
 
 export function AfoMeshes() {
     const afo = useDesignStore((s) => s.design.afo) ?? getAfoState();
@@ -28,6 +33,7 @@ export function AfoMeshes() {
     const placingScan = useAfoStore((s) => s.scanPlacement != null);
     const placingTrim = useAfoStore((s) => s.placingTrim);
     const trimHover = useAfoStore((s) => s.trimHover);
+    const draggingTrim = useAfoStore((s) => s.draggingTrimIndex != null);
     const placingLandmarks = workflowStep === "scan" && placingScan;
     const scanMat = afoUploadedScanMaterial({
         transparentOn: viewerTransparent || afo.cast.transparent,
@@ -54,24 +60,32 @@ export function AfoMeshes() {
         () => (placingScan && source ? afoMeshToGeometry(source) : null),
         [placingScan, source],
     );
-    const onMesh = useMemo(() => {
-        const handles = afo.trimPoints.map((p) => p.point);
-        if (!placingTrim && (afo.trimCurve?.length ?? 0) >= 2) return afo.trimCurve ?? null;
-        if (!working || handles.length < 2) return null;
-        const geo = geodesicPolyline(
-            working,
-            afo.trimPoints.map((p) => p.vertexIndex),
-            afo.trimClosed,
-        );
-        return fallbackTrimPolyline(geo, handles);
-    }, [working, afo.trimPoints, afo.trimClosed, afo.trimCurve, placingTrim]);
+    const trimPickGeo = useMemo(() => (working ? afoMeshToGeometry(working) : null), [working]);
+    const trimStroke = useMemo(() => {
+        if (!working) return afo.trimCurve ?? [];
+        const base = afo.trimPoints.map((p) => p.point);
+        const extend = placingTrim && trimHover && !afo.trimClosed && !draggingTrim;
+        const live = extend && trimHover ? [...base, trimHover] : base;
+        if (live.length < 2) return afo.trimCurve ?? [];
+        const closed = afo.trimClosed && !extend;
+        if (!closed && live.length < 3) {
+            const open = fitSurfaceSpline(working, live, { closed: false, spacingMm: 0.5, quick: true });
+            return open.display.length >= 2 ? open.display : open.curve;
+        }
+        if (live.length < 3) return [];
+        const fit = fitSurfaceSpline(working, live, {
+            closed,
+            spacingMm: 0.5,
+            quick: placingTrim,
+        });
+        return fit.display.length >= 2 ? fit.display : fit.curve;
+    }, [working, afo.trimPoints, afo.trimClosed, afo.trimCurve, placingTrim, trimHover, draggingTrim]);
     const preview = afoTrimPreview({
         points: afo.trimPoints.map((p) => p.point),
-        curve: afo.trimCurve ?? [],
+        curve: trimStroke,
         hover: trimHover,
         placing: placingTrim,
         closed: afo.trimClosed,
-        onMesh,
     });
 
     useEffect(() => {
@@ -80,8 +94,9 @@ export function AfoMeshes() {
             correctedGeo?.dispose();
             shellGeo?.dispose();
             pickGeo?.dispose();
+            trimPickGeo?.dispose();
         };
-    }, [castGeo, correctedGeo, shellGeo, pickGeo]);
+    }, [castGeo, correctedGeo, shellGeo, pickGeo, trimPickGeo]);
 
     const bodyMesh = showCorrectedBody ? corrected : showSource ? (source ?? working) : null;
     const bodyGeo = showCorrectedBody ? correctedGeo : showSource ? castGeo : null;
@@ -120,6 +135,15 @@ export function AfoMeshes() {
             {pickGeo ? (
                 <mesh geometry={pickGeo} visible={false} userData={{ isAfoAlignPick: true }}>
                     <meshBasicMaterial />
+                </mesh>
+            ) : null}
+            {trimPickGeo ? (
+                <mesh
+                    geometry={trimPickGeo}
+                    visible={false}
+                    userData={{ isAfoTrimPick: true, isAfoCast: true }}
+                >
+                    <meshBasicMaterial side={FrontSide} />
                 </mesh>
             ) : null}
             {shadedGeo && bodyStyle.drawMode === "surface" ? (
@@ -212,75 +236,68 @@ function AfoTrimOverlay({
     stroke: AfoVec3[];
     cursor: AfoVec3 | null;
 }) {
-    const [xArm, yArm, zArm] = cursor ? cursorCrossSegments(cursor) : [];
-    const segments: { a: AfoVec3; b: AfoVec3 }[] = [];
-    for (let i = 0; i < stroke.length - 1; i++) {
-        const a = stroke[i];
-        const b = stroke[i + 1];
-        if (a && b) segments.push({ a, b });
-    }
+    const arms = cursor ? cursorCrossSegments(cursor) : [];
     return (
         <group>
-            {xArm ? <TrimSegment key="cursor-x" a={xArm[0]} b={xArm[1]} radius={1.1} /> : null}
-            {yArm ? <TrimSegment key="cursor-y" a={yArm[0]} b={yArm[1]} radius={1.1} /> : null}
-            {zArm ? <TrimSegment key="cursor-z" a={zArm[0]} b={zArm[1]} radius={1.1} /> : null}
-            {segments.map((seg) => (
-                <TrimSegment key={`${pointKey(seg.a)}>${pointKey(seg.b)}`} a={seg.a} b={seg.b} radius={1.7} />
+            {arms.map((arm) => (
+                <FatTrimLine key={pointKey(arm[0])} points={arm} />
             ))}
-            {marks.map((pt) => {
-                const handle = marks.indexOf(pt);
-                return (
-                    <mesh
-                        key={`${handle}:${pointKey(pt)}`}
-                        position={[pt.x, pt.y, pt.z]}
-                        renderOrder={46}
-                        frustumCulled={false}
-                        userData={{ isAfoTrimHandle: true, trimIndex: handle }}
-                    >
-                        <sphereGeometry args={[handle === 0 ? 5.2 : 4.2, 16, 12]} />
-                        <meshBasicMaterial
-                            color={handle === 0 ? "#4ade80" : TRIM_YELLOW}
-                            depthTest={false}
-                            depthWrite={false}
-                            toneMapped={false}
-                        />
-                    </mesh>
-                );
-            })}
+            {stroke.length >= 2 ? <FatTrimLine points={stroke} /> : null}
+            {marks.map((pt, handle) => (
+                <mesh
+                    key={pointKey(pt)}
+                    position={[pt.x, pt.y, pt.z]}
+                    renderOrder={60}
+                    frustumCulled={false}
+                    userData={{ isAfoTrimHandle: true, trimIndex: handle }}
+                >
+                    <sphereGeometry args={[AFO_TRIM_PIN_RADIUS_MM, 12, 10]} />
+                    <meshBasicMaterial
+                        color={handle === 0 ? TRIM_FIRST : TRIM_YELLOW_GREEN}
+                        depthTest={false}
+                        depthWrite={false}
+                        toneMapped={false}
+                    />
+                </mesh>
+            ))}
         </group>
     );
 }
 
-function TrimSegment({ a, b, radius }: { a: AfoVec3; b: AfoVec3; radius: number }) {
-    const start = new Vector3(a.x, a.y, a.z);
-    const end = new Vector3(b.x, b.y, b.z);
-    const length = start.distanceTo(end);
-    if (length < 0.2) return null;
-    const mid = start.clone().add(end).multiplyScalar(0.5);
-    const quat = new Quaternion().setFromUnitVectors(
-        new Vector3(0, 1, 0),
-        end.clone().sub(start).normalize(),
+function FatTrimLine({ points }: { points: AfoVec3[] }) {
+    const { size } = useThree();
+    const line = useMemo(() => {
+        const geometry = new LineGeometry();
+        const material = new LineMaterial({
+            color: TRIM_YELLOW_GREEN,
+            linewidth: 2.5,
+            depthTest: false,
+            depthWrite: false,
+            transparent: true,
+            toneMapped: false,
+        });
+        const obj = new Line2(geometry, material);
+        obj.renderOrder = 55;
+        obj.frustumCulled = false;
+        return obj;
+    }, []);
+    useEffect(() => {
+        if (points.length < 2) return;
+        const positions: number[] = [];
+        for (const p of points) positions.push(p.x, p.y, p.z);
+        (line.geometry as LineGeometry).setPositions(positions);
+        line.computeLineDistances();
+    }, [line, points]);
+    useEffect(() => {
+        (line.material as LineMaterial).resolution.set(size.width, size.height);
+    }, [line, size.height, size.width]);
+    useEffect(
+        () => () => {
+            line.geometry.dispose();
+            (line.material as LineMaterial).dispose();
+        },
+        [line],
     );
-    return (
-        <group position={[mid.x, mid.y, mid.z]} quaternion={quat}>
-            <mesh renderOrder={40} frustumCulled={false}>
-                <cylinderGeometry args={[radius + 0.7, radius + 0.7, length, 6]} />
-                <meshBasicMaterial
-                    color={TRIM_HALO}
-                    depthTest={false}
-                    depthWrite={false}
-                    toneMapped={false}
-                />
-            </mesh>
-            <mesh renderOrder={41} frustumCulled={false}>
-                <cylinderGeometry args={[radius, radius, length, 6]} />
-                <meshBasicMaterial
-                    color={TRIM_YELLOW}
-                    depthTest={false}
-                    depthWrite={false}
-                    toneMapped={false}
-                />
-            </mesh>
-        </group>
-    );
+    if (points.length < 2) return null;
+    return <primitive object={line} />;
 }

@@ -3,10 +3,12 @@
 import { useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
-import { AFO_DESIGN_MARKERS } from "@/lib/geometry/afo/defaults";
+import { AFO_DESIGN_MARKERS, AFO_TRIM_CLOSE_PX } from "@/lib/geometry/afo/defaults";
 import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
-import { isCloseClick } from "@/lib/geometry/afo/trim-loop";
-import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
+import { registerTrimClick } from "@/lib/geometry/afo/trim-loop";
+import { isAfoCastTrimPick } from "@/lib/geometry/afo/trim-preview";
+import { fitSurfaceSpline, type SurfaceSpline, trimPinFromHit } from "@/lib/geometry/afo/trim-spline";
+import type { AfoVec3 } from "@/lib/geometry/afo/types";
 import { applyCameraViewPreset, type CameraViewControls } from "@/lib/geometry/viewport-side-layout";
 import { getAfoState, patchAfoState, refreshAfoWorkingMesh, useAfoStore } from "@/stores/afo-store";
 import { type CameraView, useDesignStore } from "@/stores/design-store";
@@ -30,6 +32,7 @@ export function AfoMarkerPlacement() {
     const setPlacing = useAfoStore((s) => s.setPlacingLandmarkIndex);
     const setDragging = useAfoStore((s) => s.setDraggingTrimIndex);
     const lastClient = useRef<{ x: number; y: number } | null>(null);
+    const spanRef = useRef<AfoVec3[][] | null>(null);
 
     const applyView = useCallback(
         (view: CameraView) => {
@@ -47,10 +50,17 @@ export function AfoMarkerPlacement() {
     }, [placingIndex, placingTrim, afo.side, applyView]);
 
     useEffect(() => {
-        const hitWorking = (
-            clientX: number,
-            clientY: number,
-        ): { point: THREE.Vector3; index: number } | null => {
+        const trimPick = (): THREE.Mesh | null => {
+            let found: THREE.Mesh | null = null;
+            scene.traverse((obj) => {
+                const mesh = obj as THREE.Mesh;
+                if (!mesh.isMesh || !isAfoCastTrimPick(mesh.userData)) return;
+                found = mesh;
+            });
+            return found;
+        };
+
+        const hitWorking = (clientX: number, clientY: number): { point: AfoVec3; index: number } | null => {
             if (!working) return null;
             const rect = gl.domElement.getBoundingClientRect();
             if (rect.width < 1 || rect.height < 1) return null;
@@ -59,40 +69,50 @@ export function AfoMarkerPlacement() {
                 -((clientY - rect.top) / rect.height) * 2 + 1,
             );
             raycaster.setFromCamera(ndc, camera);
-            const targets: THREE.Object3D[] = [];
-            let surface: THREE.Mesh | null = null;
-            scene.traverse((obj) => {
-                const mesh = obj as THREE.Mesh;
-                if (!mesh.isMesh || mesh.visible === false) return;
-                const data = mesh.userData ?? {};
-                if (data.isAfoTrimHandle || data.isScanPickMesh || data.isScanHoverHighlight) return;
-                if (data.isAfoCorrected || data.isAfoCast || data.isAfoShell) {
-                    targets.push(mesh);
-                    if (!surface || data.isAfoCorrected) surface = mesh;
-                    return;
-                }
-                if (data.isScanMesh && data.scanId) targets.push(mesh);
+            const pick = trimPick();
+            if (!pick) return null;
+            const hits = raycaster.intersectObject(pick, false);
+            const first = hits.find((hit) => {
+                const face = hit.face?.normal;
+                if (!face) return true;
+                const worldN = face.clone().transformDirection(pick.matrixWorld);
+                return worldN.dot(raycaster.ray.direction) < 0;
             });
-            const hits = raycaster.intersectObjects(targets, false);
-            const first = hits.find((hit) => hit.object.visible !== false);
             if (!first) return null;
-            const hitMesh = first.object as THREE.Mesh;
-            const hitData = hitMesh.userData ?? {};
-            const space =
-                hitData.isAfoCast || hitData.isAfoCorrected || hitData.isAfoShell
-                    ? hitMesh
-                    : (surface ?? hitMesh);
-            space.updateWorldMatrix(true, false);
-            const local = space.worldToLocal(first.point.clone());
-            const snap = nearestVertex(working, { x: local.x, y: local.y, z: local.z });
-            return {
-                point: new THREE.Vector3(
-                    working.positions[snap.index * 3] ?? local.x,
-                    working.positions[snap.index * 3 + 1] ?? local.y,
-                    working.positions[snap.index * 3 + 2] ?? local.z,
-                ),
-                index: snap.index,
-            };
+            pick.updateWorldMatrix(true, false);
+            const local = pick.worldToLocal(first.point.clone());
+            const pin = trimPinFromHit(working, { x: local.x, y: local.y, z: local.z });
+            if (!pin) return null;
+            return { point: pin.point, index: pin.vertexIndex };
+        };
+
+        const pinScreenPx = (point: AfoVec3, clientX: number, clientY: number): number | null => {
+            const pick = trimPick();
+            const rect = gl.domElement.getBoundingClientRect();
+            if (!pick || rect.width < 1 || rect.height < 1) return null;
+            const v = new THREE.Vector3(point.x, point.y, point.z);
+            pick.updateWorldMatrix(true, false);
+            pick.localToWorld(v);
+            v.project(camera);
+            if (v.z < -1 || v.z > 1) return null;
+            const sx = (v.x * 0.5 + 0.5) * rect.width;
+            const sy = (-v.y * 0.5 + 0.5) * rect.height;
+            return Math.hypot(sx - (clientX - rect.left), sy - (clientY - rect.top));
+        };
+
+        const nearestPinPx = (clientX: number, clientY: number): { index: number; px: number } | null => {
+            const pins = (useDesignStore.getState().design.afo ?? getAfoState()).trimPoints;
+            let best: { index: number; px: number } | null = null;
+            pins.forEach((pin, index) => {
+                const px = pinScreenPx(pin.point, clientX, clientY);
+                if (px == null) return;
+                if (!best || px < best.px) best = { index, px };
+            });
+            return best;
+        };
+
+        const rememberFit = (fit: SurfaceSpline | null) => {
+            spanRef.current = fit?.segments ?? null;
         };
 
         const publishHover = (clientX: number, clientY: number) => {
@@ -109,34 +129,28 @@ export function AfoMarkerPlacement() {
             publishHover(lastClient.current.x, lastClient.current.y);
         }
 
-        const hitHandle = (clientX: number, clientY: number): number | null => {
-            const rect = gl.domElement.getBoundingClientRect();
-            const ndc = new THREE.Vector2(
-                ((clientX - rect.left) / rect.width) * 2 - 1,
-                -((clientY - rect.top) / rect.height) * 2 + 1,
-            );
-            raycaster.setFromCamera(ndc, camera);
-            const handles: THREE.Object3D[] = [];
-            scene.traverse((obj) => {
-                if ((obj as THREE.Mesh).isMesh && obj.userData?.isAfoTrimHandle) handles.push(obj);
-            });
-            const hits = raycaster.intersectObjects(handles, false);
-            const idx = hits[0]?.object.userData?.trimIndex;
-            return typeof idx === "number" ? idx : null;
-        };
-
         const onDown = (ev: PointerEvent) => {
             lastClient.current = { x: ev.clientX, y: ev.clientY };
             if (!working) return;
             if (placingTrim || afo.trimPoints.length > 0) {
-                const handle = hitHandle(ev.clientX, ev.clientY);
-                if (handle != null && !afo.trimConfirmed) {
-                    if (placingTrim && handle === 0 && afo.trimPoints.length >= 3) {
-                        patchAfoState({ trimClosed: true }, "afo-trim-close");
+                const near = nearestPinPx(ev.clientX, ev.clientY);
+                if (near && near.px <= AFO_TRIM_CLOSE_PX && !afo.trimConfirmed) {
+                    if (placingTrim && near.index === 0 && afo.trimPoints.length >= 3) {
+                        const fit = fitSurfaceSpline(
+                            working,
+                            afo.trimPoints.map((p) => p.point),
+                            { closed: true, previousSegments: spanRef.current ?? undefined },
+                        );
+                        rememberFit(fit);
+                        useAfoStore.getState().setLastError(fit.ok ? null : fit.reasons.join(" "));
+                        patchAfoState(
+                            { trimClosed: true, trimCurve: fit.curve, trimConfirmed: false },
+                            "afo-trim-close",
+                        );
                         ev.preventDefault();
                         return;
                     }
-                    setDragging(handle);
+                    setDragging(near.index);
                     ev.preventDefault();
                     return;
                 }
@@ -147,13 +161,42 @@ export function AfoMarkerPlacement() {
             const point = { x: hit.point.x, y: hit.point.y, z: hit.point.z };
 
             if (placingTrim) {
-                const first = afo.trimPoints[0];
-                if (first && isCloseClick(first.point, point) && afo.trimPoints.length >= 3) {
-                    patchAfoState({ trimClosed: true }, "afo-trim-close");
+                const firstPx = afo.trimPoints[0]
+                    ? pinScreenPx(afo.trimPoints[0].point, ev.clientX, ev.clientY)
+                    : null;
+                const registered = registerTrimClick(
+                    afo.trimPoints.map((p) => p.point),
+                    point,
+                    firstPx,
+                );
+                if (registered.closed) {
+                    const fit = fitSurfaceSpline(working, registered.pins, { closed: true });
+                    rememberFit(fit);
+                    useAfoStore.getState().setLastError(fit.ok ? null : fit.reasons.join(" "));
+                    patchAfoState(
+                        { trimClosed: true, trimCurve: fit.curve, trimConfirmed: false },
+                        "afo-trim-close",
+                    );
                     return;
                 }
+                if (!registered.added) return;
+                const fit =
+                    registered.pins.length >= 2
+                        ? fitSurfaceSpline(working, registered.pins, { closed: false, quick: true })
+                        : null;
+                rememberFit(fit);
+                if (fit && !fit.ok && fit.reasons.length)
+                    useAfoStore.getState().setLastError(fit.reasons.join(" "));
                 patchAfoState(
-                    { trimPoints: [...afo.trimPoints, { point, vertexIndex: hit.index }], trimClosed: false },
+                    {
+                        trimPoints: registered.pins.map((p) => ({
+                            point: p,
+                            vertexIndex: nearestVertex(working, p).index,
+                        })),
+                        trimCurve: fit?.curve ?? [],
+                        trimClosed: false,
+                        trimConfirmed: false,
+                    },
                     "afo-trim-point",
                 );
                 return;
@@ -196,29 +239,24 @@ export function AfoMarkerPlacement() {
             const next = current.trimPoints.slice();
             if (!next[drag]) return;
             const point = { x: hit.point.x, y: hit.point.y, z: hit.point.z };
-            const snapped = nearestVertex(working, point);
-            next[drag] = {
-                point: {
-                    x: working.positions[snapped.index * 3] ?? point.x,
-                    y: working.positions[snapped.index * 3 + 1] ?? point.y,
-                    z: working.positions[snapped.index * 3 + 2] ?? point.z,
+            next[drag] = { point, vertexIndex: nearestVertex(working, point).index };
+            const fit = fitSurfaceSpline(
+                working,
+                next.map((p) => p.point),
+                {
+                    closed: current.trimClosed,
+                    dragIndex: drag,
+                    previousSegments: spanRef.current ?? undefined,
+                    quick: !current.trimClosed,
                 },
-                vertexIndex: snapped.index,
-            };
-            const fit = current.trimClosed
-                ? fitSurfaceSpline(
-                      working,
-                      next.map((p) => p.point),
-                  )
-                : null;
-            if (fit && !fit.ok) {
-                useAfoStore.getState().setLastError(fit.reasons.join(" "));
-                return;
-            }
+            );
+            rememberFit(fit);
+            if (fit.reasons.length) useAfoStore.getState().setLastError(fit.reasons.join(" "));
+            else useAfoStore.getState().setLastError(null);
             patchAfoState(
                 {
                     trimPoints: next,
-                    trimCurve: fit?.curve ?? current.trimCurve ?? [],
+                    trimCurve: fit.curve,
                     trimConfirmed: false,
                 },
                 "afo-trim-drag",
