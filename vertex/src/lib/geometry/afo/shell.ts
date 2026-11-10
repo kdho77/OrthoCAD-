@@ -2,9 +2,9 @@
 
 import { AFO_EDGE_MM, AFO_FLARE_MM, AFO_RIM_BAND_MM, AFO_THICKNESS_MM } from "./defaults";
 import { geodesicVertexPath } from "./geodesic";
-import { cloneMesh, computeVertexNormals, vertexCount } from "./mesh-ops";
+import { cloneMesh, computeVertexNormals, nearestVertex, vertexCount } from "./mesh-ops";
 import { offsetMeshAlongNormals } from "./sdf-offset";
-import type { AfoShellOptions, AfoTriMesh } from "./types";
+import type { AfoShellOptions, AfoTriMesh, AfoVec3 } from "./types";
 
 /**
  * Build a watertight AFO shell from a closed positive and a closed vertex loop.
@@ -25,7 +25,8 @@ export function buildAfoShell(
     },
 ): AfoTriMesh {
     options.onProgress?.(0.05, "keep-region");
-    const keep = extractKeepRegion(mesh, trimVertexIndices);
+    const loop = resolveShellTrimLoop(mesh, trimVertexIndices, options.trimPolygon);
+    const keep = extractKeepRegion(mesh, loop, options.heelSeed);
     options.onProgress?.(0.25, "thicken");
     const shell = thickenOpenSurface(keep, options.thicknessMm, options.edgeMm, options.flareMm);
     options.onProgress?.(1, "done");
@@ -41,7 +42,30 @@ interface OpenSurface {
     boundaryEdges: { a: number; b: number }[];
 }
 
-function extractKeepRegion(mesh: AfoTriMesh, loop: number[]): OpenSurface {
+/** Closed on-surface trim passed into the shell as the inner boundary. */
+export function trimPolygonForShell(curve: AfoVec3[], closed: boolean): AfoVec3[] | null {
+    if (!closed || curve.length < 3) return null;
+    return curve.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+}
+
+/**
+ * Vertex loop the shell cut follows. A trim polygon is resampled onto the same
+ * mesh (not raw scan points) so the kept region tracks the drawn contour.
+ */
+export function resolveShellTrimLoop(mesh: AfoTriMesh, fallback: number[], polygon?: AfoVec3[]): number[] {
+    if (!polygon || polygon.length < 3) return fallback;
+    const cap = 36;
+    const step = Math.max(1, Math.floor(polygon.length / cap));
+    const ids: number[] = [];
+    for (let i = 0; i < polygon.length; i += step) {
+        const idx = nearestVertex(mesh, polygon[i]!).index;
+        if (ids[ids.length - 1] !== idx) ids.push(idx);
+    }
+    if (ids.length >= 2 && ids[0] === ids[ids.length - 1]) ids.pop();
+    return ids.length >= 3 ? ids : fallback;
+}
+
+function extractKeepRegion(mesh: AfoTriMesh, loop: number[], heelSeed?: AfoVec3): OpenSurface {
     const expanded = expandLoop(mesh, loop);
     const cut = new Set<string>();
     const edgeKey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -86,11 +110,15 @@ function extractKeepRegion(mesh: AfoTriMesh, loop: number[]): OpenSurface {
     let minZ = Infinity;
     let minVert = 0;
     const n = vertexCount(mesh);
-    for (let i = 0; i < n; i++) {
-        const z = mesh.positions[i * 3 + 2] ?? 0;
-        if (z < minZ) {
-            minZ = z;
-            minVert = i;
+    if (heelSeed) {
+        minVert = nearestVertex(mesh, heelSeed).index;
+    } else {
+        for (let i = 0; i < n; i++) {
+            const z = mesh.positions[i * 3 + 2] ?? 0;
+            if (z < minZ) {
+                minZ = z;
+                minVert = i;
+            }
         }
     }
     const faceOfVert = new Map<number, number[]>();
