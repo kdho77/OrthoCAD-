@@ -24,6 +24,9 @@ function usePublishedSolids() {
     return useSyncExternalStore(subscribeMeasureRegistry, getMeasureSolidsSnapshot, getMeasureSolidsSnapshot);
 }
 
+/** Let a slider or outline drag settle before lofting another print mesh. */
+const EXPORT_REBUILD_DEBOUNCE_MS = 200;
+
 function overallLabel(product: MeasureProduct, overall: MeasureOverall): string {
     const length = formatMeasureMm(overall.lengthMm);
     const width = formatMeasureMm(overall.widthMm);
@@ -60,25 +63,39 @@ export function MeasurementsPanel({ product = "insole" }: { product?: MeasurePro
         });
     const [exportRows, setExportRows] = useState<ExportMeasureRow[] | null>(null);
     const [exportError, setExportError] = useState<string | null>(null);
+    const exportRebuildArmed = React.useRef(false);
     useEffect(() => {
         if (product !== "insole") return;
         let cancel = false;
         void exportKey;
-        setExportRows(null);
-        setExportError(null);
-        void (async () => {
-            try {
-                const next = await loadInsoleExportRows(includeLeader);
-                if (!cancel) setExportRows(next);
-            } catch (error) {
-                if (!cancel) {
-                    setExportRows([]);
-                    setExportError(error instanceof Error ? error.message : "Print size unavailable");
+        const delay = exportRebuildArmed.current ? EXPORT_REBUILD_DEBOUNCE_MS : 0;
+        exportRebuildArmed.current = true;
+        const run = () => {
+            if (cancel) return;
+            setExportRows(null);
+            setExportError(null);
+            void (async () => {
+                try {
+                    const next = await loadInsoleExportRows(includeLeader);
+                    if (!cancel) setExportRows(next);
+                } catch (error) {
+                    if (!cancel) {
+                        setExportRows([]);
+                        setExportError(error instanceof Error ? error.message : "Print size unavailable");
+                    }
                 }
-            }
-        })();
+            })();
+        };
+        if (delay === 0) {
+            run();
+            return () => {
+                cancel = true;
+            };
+        }
+        const timer = window.setTimeout(run, delay);
         return () => {
             cancel = true;
+            window.clearTimeout(timer);
         };
     }, [product, exportKey, includeLeader]);
     const shownRows =

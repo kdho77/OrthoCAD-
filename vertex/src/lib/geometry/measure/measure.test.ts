@@ -33,6 +33,34 @@ function nearly(actual: number, expected: number, tol = 1e-4): void {
     expect(Math.abs(actual - expected)).toBeLessThanOrEqual(tol);
 }
 
+/** XY size of the top-sheet vertices [0, topVertexCount). Not the solid bbox. */
+function topSheetPrintSize(geometry: BufferGeometry): {
+    topVertexCount: number;
+    lengthMm: number;
+    widthMm: number;
+} {
+    const topVertexCount = (geometry.userData as { topVertexCount?: number }).topVertexCount ?? 0;
+    const pos = geometry.getAttribute("position");
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const n = Math.min(topVertexCount, pos?.count ?? 0);
+    for (let i = 0; i < n; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+    }
+    return {
+        topVertexCount,
+        lengthMm: Number.isFinite(minX) ? maxX - minX : Number.NaN,
+        widthMm: Number.isFinite(minY) ? maxY - minY : Number.NaN,
+    };
+}
+
 function mergeMeshes(a: MeasureTriangleMesh, b: MeasureTriangleMesh): MeasureTriangleMesh {
     const positions = new Float32Array(a.positions.length + b.positions.length);
     positions.set(a.positions, 0);
@@ -248,9 +276,15 @@ describe("export-frame measurements", () => {
                         detail,
                     ).toBeLessThanOrEqual(0.05);
                     expect(Math.abs(overall.widthMm - (stlBox.maxY - stlBox.minY))).toBeLessThanOrEqual(0.05);
-                    // Kendon 10/23: SAMPLE_Top scaled evenly in XY by 1.011290.
-                    expect(Math.abs(overall.lengthMm - 275), detail).toBeLessThanOrEqual(0.1);
-                    expect(Math.abs(overall.widthMm - 92.73), detail).toBeLessThanOrEqual(0.1);
+                    // Men's 9 gate is the TOP sheet [0, topVertexCount), not the solid bbox.
+                    // Kendon 10/23: scale SAMPLE_Top evenly in XY by 275/271.9346 = 1.011273.
+                    // At the lock the solid reads about 276.18 × 93.73; the sheet is 275.0 × 92.73.
+                    const top = topSheetPrintSize(geometry);
+                    const topDetail = `${side} topVertexCount=${top.topVertexCount} L=${top.lengthMm.toFixed(3)} W=${top.widthMm.toFixed(3)}`;
+                    expect(top.topVertexCount, topDetail).toBeGreaterThan(0);
+                    expect(top.topVertexCount, topDetail).toBeLessThan(pos.count);
+                    expect(Math.abs(top.lengthMm - 275.0), topDetail).toBeLessThanOrEqual(0.05);
+                    expect(Math.abs(top.widthMm - 92.73), topDetail).toBeLessThanOrEqual(0.05);
                 } finally {
                     geometry.dispose();
                 }

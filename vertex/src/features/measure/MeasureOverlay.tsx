@@ -15,6 +15,9 @@ import { getExportMeasureMesh } from "@/lib/geometry/measure/registry";
 import type { MeasureVec3 } from "@/lib/geometry/measure/types";
 import { useMeasureStore } from "@/stores/measure-store";
 
+/** Refuse a print-surface snap that would jump farther than this. */
+const EXPORT_SNAP_CAP_MM = 1;
+
 /**
  * On-mesh dimension line. Clicks hit `userData.measureSolid` triangle meshes
  * only (front faces). The hit is converted with `worldToLocal`, which undoes
@@ -76,7 +79,12 @@ export function MeasureOverlay() {
                 return;
             }
             const snapped = nearestSurfacePoint(exportMesh, picked.local);
-            if (!snapped) return;
+            if (!snapped || snapped.distance > EXPORT_SNAP_CAP_MM) {
+                if (snapped) {
+                    useMeasureStore.getState().setNotice("Snap is farther than 1 mm from the print surface.");
+                }
+                return;
+            }
             event.stopPropagation();
             event.preventDefault();
             const worldV = new Vector3(snapped.point.x, snapped.point.y, snapped.point.z);
