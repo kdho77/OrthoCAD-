@@ -436,22 +436,21 @@ describe("anatomical element footprints", () => {
     });
 
     test("kinetic wedge is an elongated medial oval and a second one does not stack", () => {
-        const length = 260;
-        const width = 95;
-        const plan = rkwPlanMm(length);
-        expect(plan.lengthMm).toBeCloseTo(39, 4);
-        expect(plan.widthMm).toBeCloseTo(28, 4);
-        const m115 = rkwPlanMm(300);
-        expect(m115.lengthMm).toBeCloseTo(45, 0);
-        expect(m115.widthMm).toBeCloseTo(32, 0);
+        const length = 300;
+        const width = 100;
+        const edge = mortonsEdgeMm(0.665, width, "left");
+        const span = Math.abs(edge.lateral - edge.medial);
+        const plan = rkwPlanMm(length, span);
+        expect(plan.lengthMm).toBeCloseTo(45, 3);
+        expect(plan.widthMm).toBeCloseTo(Math.max(20, 0.32 * span), 3);
         const pose = defaultElementPose("kinetic_wedge", "left", length, width);
         const right = defaultElementPose("kinetic_wedge", "right", length, width);
         expect(pose.position.x).toBeCloseTo((0.665 - 0.5) * length, 4);
         expect(right.position.y).toBeCloseTo(-pose.position.y, 4);
         expect(pose.heightMm).toBe(2);
-        const edge = mortonsEdgeMm(0.665, width, "left");
         const off = edge.medial - (pose.position.y - plan.widthMm / 2);
-        expect(off / plan.widthMm).toBeCloseTo(1 / 3, 1);
+        expect(off).toBeGreaterThanOrEqual(-0.05);
+        expect(off).toBeLessThanOrEqual(2.05);
         const one: PlacedElement = {
             id: "a",
             kind: "kinetic_wedge",

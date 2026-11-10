@@ -36,13 +36,13 @@ import type { ElementKind, PlacedElement, Side } from "@/types";
  * Morton's, kinetic wedge) flip across Y for the right foot.
  */
 
-/** Elongated 1st-MPJ trough. Length is along the foot at the 260 mm reference. */
-export const RKW_REFERENCE_LENGTH_MM = 39;
-export const RKW_REFERENCE_WIDTH_MM = 28;
+/** Elongated 1st-MPJ trough. Length is 45 mm at 300 mm. Width is 0.32 of local width. */
+export const RKW_LENGTH_AT_300_MM = 45;
 export const RKW_CENTER_U = 0.665;
+export const RKW_CENTER_V = 0.15;
+export const RKW_WIDTH_OF_LOCAL = 0.32;
 export const RKW_DEEPEST_PROXIMAL_MM = 3;
-/** Share of the oval that runs past the medial border. */
-export const RKW_OFF_EDGE_FRACTION = 1 / 3;
+export const RKW_MAX_OVERHANG_MM = 2;
 export const RKW_TAPER_MM = 6;
 export const RKW_MEDIAL_RAMP_MM = 5;
 export const RKW_BORDER_DEPTH_FRACTION = 0.5;
@@ -50,7 +50,6 @@ export const RKW_DEPTH_DEFAULT_MM = 2;
 export const RKW_DEPTH_WARN_MM = 3;
 export const RKW_DEPTH_MAX_MM = 4;
 export const RKW_PLAN_SCALE_MIN = 0.65;
-export const RKW_PEDIATRIC_LENGTH_MM = 200;
 export const RKW_MIN_LENGTH_MM = 30;
 export const RKW_MIN_WIDTH_MM = 20;
 /** No lowering element or sink may leave less than this much material. */
@@ -176,8 +175,8 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
     // Reverse kinetic wedge: medially offset elongated oval under the 1st MPJ.
     // 39 × 28 mm at the 260 mm reference. About one third sits off the medial edge.
     kinetic_wedge: {
-        rxMm: RKW_REFERENCE_LENGTH_MM / 2,
-        ryMm: RKW_REFERENCE_WIDTH_MM / 2,
+        rxMm: RKW_LENGTH_AT_300_MM / 2,
+        ryMm: 16,
         sign: -1,
         shape: "kinetic_oval",
         defaultHeightMm: RKW_DEPTH_DEFAULT_MM,
@@ -253,20 +252,17 @@ export const ELEMENT_HEIGHT_LIMITS: Partial<Record<ElementKind, { min: number; m
 };
 
 export function rkwPlanScale(lengthMm: number): number {
-    const raw = lengthMm / INSOLE_LENGTH_MM;
+    const raw = lengthMm / 300;
     if (!(raw > 0)) return RKW_PLAN_SCALE_MIN;
     return Math.max(RKW_PLAN_SCALE_MIN, raw);
 }
 
-export function rkwPlanMm(lengthMm: number): { lengthMm: number; widthMm: number } {
+export function rkwPlanMm(lengthMm: number, localWidthMm: number): { lengthMm: number; widthMm: number } {
     const scale = rkwPlanScale(lengthMm);
-    let length = RKW_REFERENCE_LENGTH_MM * scale;
-    let width = RKW_REFERENCE_WIDTH_MM * scale;
-    if (lengthMm < RKW_PEDIATRIC_LENGTH_MM) {
-        length = Math.max(length, RKW_MIN_LENGTH_MM);
-        width = Math.max(width, RKW_MIN_WIDTH_MM);
-    }
-    return { lengthMm: length, widthMm: width };
+    return {
+        lengthMm: Math.max(RKW_MIN_LENGTH_MM, RKW_LENGTH_AT_300_MM * scale),
+        widthMm: Math.max(RKW_MIN_WIDTH_MM, RKW_WIDTH_OF_LOCAL * Math.max(localWidthMm, 0)),
+    };
 }
 
 function smoothstep01(t: number): number {
@@ -285,10 +281,11 @@ export function rkwOvalWeight(localX: number, localY: number, halfLength: number
 
 export function kineticWedgeLocalOutline(
     lengthMm: number,
+    localWidthMm: number,
     scaleX = 1,
     scaleY = 1,
 ): { x: number; y: number }[] {
-    const plan = rkwPlanMm(lengthMm);
+    const plan = rkwPlanMm(lengthMm, localWidthMm);
     const rx = (plan.lengthMm / 2) * (scaleX > 1e-6 ? scaleX : 1);
     const ry = (plan.widthMm / 2) * (scaleY > 1e-6 ? scaleY : 1);
     const pts: { x: number; y: number }[] = [];
@@ -494,7 +491,11 @@ export function elementOutlineLocalMm(
         return mortonsLocalOutline(side, lengthMm, widthMm, scaleX, scaleY, frame?.outline);
     }
     if (kind === "kinetic_wedge") {
-        return kineticWedgeLocalOutline(frame?.lengthMm ?? INSOLE_LENGTH_MM, scaleX, scaleY);
+        const lengthMm = frame?.lengthMm ?? INSOLE_LENGTH_MM;
+        const widthMm = frame?.widthMm ?? INSOLE_WIDTH_MM;
+        const edge = mortonsEdgeMm(RKW_CENTER_U, widthMm, side, frame?.outline);
+        const span = Math.abs(edge.lateral - edge.medial);
+        return kineticWedgeLocalOutline(lengthMm, span, scaleX, scaleY);
     }
     const profile = ELEMENT_PROFILES[kind];
     const rx = Math.max(2, profile.rxMm * scaleX);
@@ -537,12 +538,16 @@ function kineticWedgeAnchor(
     widthMm: number,
     outline?: MortonsOutlinePoint[] | null,
 ): { x: number; y: number } {
-    const plan = rkwPlanMm(lengthMm);
     const edge = mortonsEdgeMm(RKW_CENTER_U, widthMm, side, outline);
-    const inward = meshYSign(side, "lateral");
+    const span = Math.abs(edge.lateral - edge.medial);
+    const plan = rkwPlanMm(lengthMm, span);
+    const inwardSign = meshYSign(side, "lateral");
+    let inside = RKW_CENTER_V * span;
+    const overhang = plan.widthMm / 2 - inside;
+    if (overhang > RKW_MAX_OVERHANG_MM) inside = plan.widthMm / 2 - RKW_MAX_OVERHANG_MM;
     return {
         x: RKW_CENTER_U * lengthMm,
-        y: edge.medial + inward * (plan.widthMm / 6),
+        y: edge.medial + inwardSign * inside,
     };
 }
 
@@ -670,7 +675,10 @@ function kineticWedgeDelta(
     lengthMm: number,
     widthMm: number,
 ): number {
-    const plan = rkwPlanMm(lengthMm);
+    const edgeAt = mortonsEdgeMm(Math.max(0, Math.min(1, xMm / Math.max(lengthMm, 1e-6))), widthMm, el.side);
+    const centerEdge = mortonsEdgeMm(RKW_CENTER_U, widthMm, el.side);
+    const span = Math.abs(centerEdge.lateral - centerEdge.medial);
+    const plan = rkwPlanMm(lengthMm, span);
     const halfLength = (plan.lengthMm / 2) * (el.scale.x > 1e-6 ? el.scale.x : 1);
     const halfWidth = (plan.widthMm / 2) * (el.scale.y > 1e-6 ? el.scale.y : 1);
     const anchorX = lengthMm / 2 + el.position.x;
@@ -682,11 +690,12 @@ function kineticWedgeDelta(
     const ly = dx * Math.sin(a) + dy * Math.cos(a);
     const oval = rkwOvalWeight(lx, ly, halfLength, halfWidth);
     if (oval <= 0) return 0;
-    const edge = mortonsEdgeMm(Math.max(0, Math.min(1, xMm / Math.max(lengthMm, 1e-6))), widthMm, el.side);
     const inward = meshYSign(el.side, "lateral");
-    const distInside = (meshY - edge.medial) * inward;
+    const centerInside = (el.position.y - centerEdge.medial) * inward;
+    const overhang = halfWidth - centerInside;
+    const distInside = (meshY - edgeAt.medial) * inward;
     let ramp = 1;
-    if (distInside < RKW_MEDIAL_RAMP_MM) {
+    if (overhang > 0.05 && distInside < RKW_MEDIAL_RAMP_MM) {
         const t = distInside / RKW_MEDIAL_RAMP_MM;
         ramp =
             t <= 0

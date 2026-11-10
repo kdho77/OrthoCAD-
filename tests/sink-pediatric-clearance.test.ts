@@ -94,15 +94,23 @@ function stampLabel(
     }
 }
 
-/** Men's 9 SAMPLE_Top with every sink at max depth. Re-recorded for the zonal shell. */
+/**
+ * Men's 9 SAMPLE_Top with the default non-RKW sinks at max depth.
+ * The previous constants were recorded with rkw included via SINK_KIND_ORDER.
+ * The pin is the MPJ1–5 + styloid meshes, which are unchanged from main.
+ */
 const US9_SINK_SHA256: Record<string, string> = {
-    "left-straight": "bfe32857e2ed5c5d58c7fef97e196f18ece552f4ec92c99642d8f852915804b2",
-    "left-round": "c986d3ee3015fd25037fe0cb69b3add7af72634f3aab15e33ee0f05c26c1f72e",
-    "left-hybrid": "dde015ff5cfc5a01e49a8bb1a54f9238da4b5c885d5adbc025a60e329f0fd8d1",
-    "right-straight": "32a80cc9cccde74f82f523e94ddaf0482121a1850bc04090fa8af6be75853a0b",
-    "right-round": "20ceaa4a926d19fea6b1edfdd79e0d486dfe1240ca07a0543fe4f53eaaa3e457",
-    "right-hybrid": "2c1ce98a844f3fc3e05f6d37ebf7ffba15944a3b0c419738c49199449595cc8f",
+    "left-straight": "b18ad57b72b82cd0080380733b796a738e6285790283280ef30a3da889164de0",
+    "left-round": "05dd65d7f363d689a807754bb87f0a0409ffd954089eb1a34aba5986477f650c",
+    "left-hybrid": "09279f8fb8973c25bda4dd7a550a70db84e942c8733b4452ffa6a4da63a686ea",
+    "right-straight": "b4429222a09d9498db8ca4469e0277a0f22c835e6fff0a87c595e4a3f0717fd3",
+    "right-round": "696c0be112bf0eb6589db9650e45abf3051a955eb073028d98e78a01ac8b3b63",
+    "right-hybrid": "fd6b57aee23ad1639cadd17ad7ffb8fae43f3554d3c22ade7646a1705fb36447",
 };
+
+function nonRkwSinks(): PlacedSink[] {
+    return maxSinks().filter((sink) => sink.kind !== "rkw");
+}
 
 const report: Record<string, unknown> = {};
 
@@ -664,7 +672,7 @@ describe("pediatric sink scale and sulcus clearance", () => {
             buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
         );
         const right = mirrorGeometry(left);
-        const sinks = maxSinks();
+        const sinks = nonRkwSinks();
         const hashes: Record<string, string> = {};
         try {
             for (const side of ["left", "right"] as const) {
