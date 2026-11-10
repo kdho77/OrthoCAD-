@@ -1,20 +1,23 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { useThree } from "@react-three/fiber";
-import { useEffect, useMemo } from "react";
-import { BufferAttribute, DoubleSide, FrontSide } from "three";
+import { useFrame, useThree } from "@react-three/fiber";
+import { useEffect, useMemo, useRef } from "react";
+import { BufferAttribute, type BufferGeometry, DoubleSide, FrontSide, type Points, Vector3 } from "three";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
-import { AfoLitSurfaceMaterial } from "@/components/viewer/AfoSurfaceMaterial";
+import { AfoCueSphere } from "@/components/viewer/AfoScanMarkers";
+import { AfoLitSurfaceMaterial, AfoPointCloudMaterial } from "@/components/viewer/AfoSurfaceMaterial";
 import {
+    AFO_POINT_DEPTH_WINDOW_MM,
     afoCastBodyStyle,
     afoHeightColors,
     afoTriangleStats,
     afoUploadedScanMaterial,
+    setAfoPointCloudRange,
 } from "@/features/afo/afo-scan-ui";
 import { AFO_TRIM_PIN_RADIUS_MM } from "@/lib/geometry/afo/defaults";
-import { afoMeshToGeometry } from "@/lib/geometry/afo/mesh-ops";
+import { afoMeshToGeometry, meshCentroid } from "@/lib/geometry/afo/mesh-ops";
 import { afoTrimPreview, cursorCrossSegments } from "@/lib/geometry/afo/trim-preview";
 import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import type { AfoVec3 } from "@/lib/geometry/afo/types";
@@ -99,6 +102,10 @@ export function AfoMeshes() {
     }, [castGeo, correctedGeo, shellGeo, pickGeo, trimPickGeo]);
 
     const bodyMesh = showCorrectedBody ? corrected : showSource ? (source ?? working) : null;
+    const markerCenter = useMemo(
+        () => (bodyMesh ? meshCentroid(bodyMesh) : { x: 0, y: 0, z: 0 }),
+        [bodyMesh],
+    );
     const bodyGeo = showCorrectedBody ? correctedGeo : showSource ? castGeo : null;
     const bodyData = showCorrectedBody
         ? { isAfoCorrected: true, isAfoCast: true, isScanMesh: true }
@@ -114,6 +121,7 @@ export function AfoMeshes() {
             degenerateRatio: stats.degenerateRatio,
         });
     }, [bodyMesh, scanMat.transparent, heightmap]);
+    const markerDrawMode = bodyMesh ? bodyStyle.drawMode : "surface";
     const shadedGeo = useMemo(() => {
         if (!bodyGeo || !bodyStyle.vertexColors || !bodyMesh) return bodyGeo;
         const g = bodyGeo.clone();
@@ -160,15 +168,14 @@ export function AfoMeshes() {
                 </mesh>
             ) : null}
             {shadedGeo && bodyStyle.drawMode === "points" ? (
-                <points geometry={shadedGeo} renderOrder={1} userData={bodyData}>
-                    <pointsMaterial
-                        color={bodyStyle.color}
-                        size={bodyStyle.pointSizeMm}
-                        sizeAttenuation
-                        vertexColors={bodyStyle.vertexColors}
-                        toneMapped={false}
-                    />
-                </points>
+                <AfoDepthPoints
+                    geometry={shadedGeo}
+                    color={bodyStyle.color}
+                    size={bodyStyle.pointSizeMm}
+                    vertexColors={bodyStyle.vertexColors}
+                    splatScale={bodyStyle.pointDepthSplatScale}
+                    userData={bodyData}
+                />
             ) : null}
             {shellGeo ? (
                 <mesh geometry={shellGeo} userData={{ isAfoShell: true, isScanMesh: true }}>
@@ -188,37 +195,94 @@ export function AfoMeshes() {
                 cursor={preview.marks.length === 0 ? preview.cursor : null}
             />
             {afo.clinicalMarkers.map((lm) => (
-                <mesh
+                <AfoCueSphere
                     key={`c-${lm.id}`}
                     position={[lm.point.x, lm.point.y, lm.point.z]}
+                    color="#f472b6"
+                    radius={3}
                     renderOrder={bodyStyle.markerRenderOrder}
                     userData={{ isAfoClinical: true }}
-                >
-                    <sphereGeometry args={[3, 12, 10]} />
-                    <meshBasicMaterial
-                        color="#f472b6"
-                        depthTest={bodyStyle.markerDepthTest}
-                        depthWrite={false}
-                        toneMapped={false}
-                    />
-                </mesh>
+                    centerLocal={markerCenter}
+                    drawMode={markerDrawMode}
+                />
             ))}
             {afo.landmarks.map((lm) => (
-                <mesh
+                <AfoCueSphere
                     key={lm.id}
                     position={[lm.point.x, lm.point.y, lm.point.z]}
+                    color="#fbbf24"
+                    radius={3.2}
                     renderOrder={bodyStyle.markerRenderOrder}
                     userData={{ isAfoLandmark: true }}
-                >
-                    <sphereGeometry args={[3.2, 12, 10]} />
-                    <meshBasicMaterial
-                        color="#fbbf24"
-                        depthTest={bodyStyle.markerDepthTest}
-                        depthWrite={false}
-                        toneMapped={false}
-                    />
-                </mesh>
+                    centerLocal={markerCenter}
+                    drawMode={markerDrawMode}
+                />
             ))}
+        </group>
+    );
+}
+
+const depthCorner = new Vector3();
+
+function AfoDepthPoints({
+    geometry,
+    color,
+    size,
+    vertexColors,
+    splatScale,
+    userData,
+}: {
+    geometry: BufferGeometry;
+    color: string;
+    size: number;
+    vertexColors: boolean;
+    splatScale: number;
+    userData: Record<string, unknown>;
+}) {
+    const points = useRef<Points>(null);
+    useFrame(({ camera }) => {
+        const obj = points.current;
+        const material = obj?.material;
+        if (!obj || !material || Array.isArray(material)) return;
+        if (!geometry.boundingBox) geometry.computeBoundingBox();
+        const box = geometry.boundingBox;
+        if (!box) return;
+        obj.updateWorldMatrix(true, false);
+        camera.updateMatrixWorld();
+        let nearest = Infinity;
+        for (const x of [box.min.x, box.max.x]) {
+            for (const y of [box.min.y, box.max.y]) {
+                for (const z of [box.min.z, box.max.z]) {
+                    depthCorner.set(x, y, z).applyMatrix4(obj.matrixWorld);
+                    depthCorner.applyMatrix4(camera.matrixWorldInverse);
+                    const depth = -depthCorner.z;
+                    if (depth < nearest) nearest = depth;
+                }
+            }
+        }
+        setAfoPointCloudRange(material, nearest, nearest + AFO_POINT_DEPTH_WINDOW_MM);
+    });
+    return (
+        <group>
+            <points geometry={geometry} renderOrder={0} frustumCulled={false}>
+                <pointsMaterial
+                    size={size * splatScale}
+                    sizeAttenuation
+                    depthWrite
+                    depthTest
+                    colorWrite={false}
+                    toneMapped={false}
+                />
+            </points>
+            <points
+                ref={points}
+                geometry={geometry}
+                renderOrder={1}
+                frustumCulled={false}
+                userData={userData}
+            >
+                <AfoPointCloudMaterial color={color} size={size} vertexColors={vertexColors} />
+            </points>
         </group>
     );
 }

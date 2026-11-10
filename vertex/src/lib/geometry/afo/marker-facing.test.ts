@@ -2,12 +2,22 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { Euler, Matrix4, Vector3 } from "three";
+import {
+    afoCameraProximity,
+    afoCastBodyStyle,
+    afoMarkerDisplayCue,
+    afoMarkerOnCameraSide,
+    afoPointBrightness,
+    afoScanDrawMode,
+    afoTriangleStats,
+} from "@/features/afo/afo-scan-ui";
 import { medialSign } from "@/lib/geometry/handedness";
 import { cameraForView, projectViewNdcX, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
 import type { CameraView } from "@/stores/design-store";
 import type { Side } from "@/types";
 import { alignScanToPlantarFrame, PlantarFrameError, transformAfoPoint } from "./landmark-frame";
 import { afoViewerWorld, cameraViewForAfoMarkerId } from "./marker-side";
+import { meshCentroid } from "./mesh-ops";
 import type { AfoTriMesh, AfoVec3 } from "./types";
 
 /**
@@ -204,6 +214,17 @@ const POSES: { euler: Euler; translation: Vector3 }[] = [
     { euler: new Euler(-2.05, 0.55, -1.25), translation: new Vector3(-30, 90, -70) },
 ];
 
+function markerAt(markers: Record<string, AfoVec3>, id: string): AfoVec3 {
+    const point = markers[id];
+    if (!point) throw new Error(`missing marker ${id}`);
+    return point;
+}
+
+function cameraPoint(view: CameraView): AfoVec3 {
+    const position = VIEW_CAMERA_POS[view];
+    return { x: position[0], y: position[1], z: position[2] };
+}
+
 describe("AFO marker cameras on a tumbled foot+leg scan", () => {
     test("every marker faces its anatomical side for a left leg and a right leg", () => {
         for (const side of ["left", "right"] as const) {
@@ -215,15 +236,15 @@ describe("AFO marker cameras on a tumbled foot+leg scan", () => {
                 const aligned = alignScanToPlantarFrame(
                     scanned.mesh,
                     {
-                        heel: scanned.markers.heel!,
-                        m1p: scanned.markers.m1p!,
-                        m5p: scanned.markers.m5p!,
+                        heel: markerAt(scanned.markers, "heel"),
+                        m1p: markerAt(scanned.markers, "m1p"),
+                        m5p: markerAt(scanned.markers, "m5p"),
                     },
                     side,
                 );
                 expect(new Matrix4().fromArray(aligned.matrixElements).determinant()).toBeCloseTo(1, 4);
                 const orient = (id: string) =>
-                    transformAfoPoint(scanned.markers[id]!, aligned.matrixElements);
+                    transformAfoPoint(markerAt(scanned.markers, id), aligned.matrixElements);
                 const world = (id: string) => afoViewerWorld(orient(id));
                 const sign = medialSign(side);
 
@@ -235,6 +256,9 @@ describe("AFO marker cameras on a tumbled foot+leg scan", () => {
                 expect(orient("m1_mpj").x).toBeGreaterThan(orient("posterior_calcaneus").x);
 
                 const placed = { medial: orient("m1p"), lateral: orient("m5p") };
+                const center = afoViewerWorld(meshCentroid(aligned.mesh));
+                const onSide = (id: string, view: CameraView) =>
+                    afoMarkerOnCameraSide(world(id), cameraPoint(view), center);
                 expect(nearer("back", world("posterior_calcaneus"), world("tibial_tuberosity"))).toBe(true);
                 expect(nearer("back", world("heel"), world("m1_mpj"))).toBe(true);
                 expect(nearer("front", world("tibial_tuberosity"), world("posterior_calcaneus"))).toBe(true);
@@ -264,17 +288,62 @@ describe("AFO marker cameras on a tumbled foot+leg scan", () => {
                 expect(cameraSpaceZ(medialView, world("navicular"))).toBeGreaterThan(
                     cameraSpaceZ(medialView, world("fibular_head")),
                 );
+
+                expect(onSide("posterior_calcaneus", "back")).toBe(true);
+                expect(onSide("heel", "back")).toBe(true);
+                expect(onSide("tibial_tuberosity", "back")).toBe(false);
+                expect(onSide("m1_mpj", "back")).toBe(false);
+                expect(onSide("tibial_tuberosity", "front")).toBe(true);
+                expect(onSide("distal_crest", "front")).toBe(true);
+                expect(onSide("posterior_calcaneus", "front")).toBe(false);
+                expect(onSide("heel", "bottom")).toBe(true);
+                expect(onSide("m1p", "bottom")).toBe(true);
+                expect(onSide("fibular_head", "bottom")).toBe(false);
+                for (const pair of [...SIDE_PAIRS, ...SAGITTAL]) {
+                    const view = cameraViewForAfoMarkerId(pair.id, side, placed);
+                    expect(onSide(pair.id, view), `${side} ${pair.id} on ${view}`).toBe(true);
+                    expect(onSide(pair.opposite, view), `${side} ${pair.opposite} off ${view}`).toBe(false);
+                }
+                const far = afoMarkerDisplayCue({ drawMode: "points", facesCamera: false });
+                const nearCue = afoMarkerDisplayCue({ drawMode: "points", facesCamera: true });
+                expect(far.occluded).toBe(true);
+                expect(far.dimmed).toBe(true);
+                expect(far.depthTest).toBe(true);
+                expect(far.opacity).toBeLessThan(nearCue.opacity * 0.5);
+                expect(nearCue.occluded).toBe(false);
+                const degenerate = afoTriangleStats(aligned.mesh.positions, new Uint32Array([0, 0, 0]));
+                expect(afoScanDrawMode(degenerate.triangles, degenerate.degenerateRatio)).toBe("points");
+                const pointStyle = afoCastBodyStyle({
+                    transparentOn: false,
+                    heightmap: false,
+                    triangleCount: degenerate.triangles,
+                    degenerateRatio: degenerate.degenerateRatio,
+                });
+                expect(pointStyle.drawMode).toBe("points");
+                expect(pointStyle.pointDistanceShade).toBe(true);
+                expect(pointStyle.pointDepthWrite).toBe(true);
+                expect(pointStyle.pointDepthSplatScale).toBeGreaterThan(1);
+                expect(pointStyle.markerDepthTest).toBe(true);
+                expect(afoPointBrightness(afoCameraProximity(120, 80, 500))).toBeGreaterThan(
+                    afoPointBrightness(afoCameraProximity(460, 80, 500)) + 0.2,
+                );
             }
         }
     });
 
     test("a side label that disagrees with M1p and M5p is rejected", () => {
         const built = buildAnatomicalScan("left");
-        const scanned = applyScannerPose(built.mesh, built.markers, POSES[0]!.euler, POSES[0]!.translation);
+        const pose = POSES[0];
+        if (!pose) throw new Error("missing scanner pose");
+        const scanned = applyScannerPose(built.mesh, built.markers, pose.euler, pose.translation);
         expect(() =>
             alignScanToPlantarFrame(
                 scanned.mesh,
-                { heel: scanned.markers.heel!, m1p: scanned.markers.m1p!, m5p: scanned.markers.m5p! },
+                {
+                    heel: markerAt(scanned.markers, "heel"),
+                    m1p: markerAt(scanned.markers, "m1p"),
+                    m5p: markerAt(scanned.markers, "m5p"),
+                },
                 "right",
             ),
         ).toThrow(PlantarFrameError);

@@ -26,13 +26,32 @@ export const AFO_SCAN_GREY = "#C9CDD3";
 /** Light neutral cast/scan surface. Reads on the navy viewport from a side view. */
 export const AFO_CAST_SURFACE = "#E7EBF1";
 
-/** Body draws under markers. Markers use a higher order and ignore depth so they stay on top. */
+/**
+ * Body draws under markers. A solid surface keeps near markers readable
+ * through the shell. A point cloud writes depth and dims the far side:
+ * without that, the cloud is the mirror of the opposite view.
+ */
 export const AFO_BODY_RENDER_ORDER = 1;
 export const AFO_MARKER_RENDER_ORDER = 60;
+/** Solid cast / shell. Point clouds turn depth testing on in {@link afoCastBodyStyle}. */
 export const AFO_MARKER_DEPTH_TEST = false;
 
 /** World-millimetre point size when a scan has no usable faces. */
 export const AFO_POINT_SIZE_MM = 2.4;
+/** Far point-cloud markers stay faintly visible where the depth splat has a hole. */
+export const AFO_FAR_MARKER_OPACITY = 0.16;
+/** Hidden splats overlap neighbouring samples so the cloud occludes the far side. */
+export const AFO_POINT_DEPTH_SPLAT_SCALE = 2.6;
+/**
+ * Depth window for point-cloud shading. A sample one leg-width behind the
+ * nearest surface is fully dim, so the far side cannot be read as the near side.
+ */
+export const AFO_POINT_DEPTH_WINDOW_MM = 90;
+/** Near samples stay the material colour. Far samples drop to this fraction. */
+export const AFO_POINT_BRIGHTNESS_MIN = 0.2;
+export const AFO_POINT_BRIGHTNESS_SPAN = 0.8;
+export const AFO_POINT_SIZE_MIN = 0.55;
+export const AFO_POINT_SIZE_SPAN = 0.8;
 
 export type AfoScanDrawMode = "surface" | "points";
 
@@ -48,6 +67,12 @@ export interface AfoCastBodyStyle {
     vertexColors: boolean;
     depthWrite: boolean;
     pointSizeMm: number;
+    /** Point clouds write depth. Surfaces do too, unless Transparent is on. */
+    pointDepthWrite: boolean;
+    /** Camera-distance brightness and size. Point clouds only. */
+    pointDistanceShade: boolean;
+    /** 1 for a surface. Point clouds draw a larger depth-only splat under the visible points. */
+    pointDepthSplatScale: number;
     markerDepthTest: boolean;
     markerRenderOrder: number;
 }
@@ -59,6 +84,168 @@ export interface AfoCastBodyStyle {
 export function afoScanDrawMode(triangleCount: number, degenerateRatio: number): AfoScanDrawMode {
     if (triangleCount <= 0 || degenerateRatio >= 0.8) return "points";
     return "surface";
+}
+
+export interface AfoViewPoint {
+    x: number;
+    y: number;
+    z: number;
+}
+
+/** 1 at the nearest sample, 0 at the farthest. Shared with the point-cloud shader. */
+export function afoCameraProximity(distance: number, nearest: number, farthest: number): number {
+    const span = Math.max(1, farthest - nearest);
+    const t = (distance - nearest) / span;
+    return 1 - Math.min(1, Math.max(0, t));
+}
+
+export function afoPointBrightness(proximity: number): number {
+    const clamped = Math.min(1, Math.max(0, proximity));
+    return AFO_POINT_BRIGHTNESS_MIN + AFO_POINT_BRIGHTNESS_SPAN * clamped;
+}
+
+export function afoPointSizeScale(proximity: number): number {
+    const clamped = Math.min(1, Math.max(0, proximity));
+    return AFO_POINT_SIZE_MIN + AFO_POINT_SIZE_SPAN * clamped;
+}
+
+export function afoPointCloudGlsl(): { sizeScale: string; brightness: string } {
+    return {
+        sizeScale: `${AFO_POINT_SIZE_MIN.toFixed(2)} + ${AFO_POINT_SIZE_SPAN.toFixed(2)} * afoProx`,
+        brightness: `${AFO_POINT_BRIGHTNESS_MIN.toFixed(2)} + ${AFO_POINT_BRIGHTNESS_SPAN.toFixed(2)} * afoProx`,
+    };
+}
+
+function axisValue(point: AfoViewPoint, axis: 0 | 1 | 2): number {
+    if (axis === 0) return point.x;
+    if (axis === 1) return point.y;
+    return point.z;
+}
+
+/**
+ * Preset axis the camera sits on. Presets look at the origin, so the camera
+ * position is the view direction: X front/back, Y up/down, Z left/right.
+ */
+export function afoCameraDominantAxis(camera: AfoViewPoint): 0 | 1 | 2 {
+    const ax = Math.abs(camera.x);
+    const ay = Math.abs(camera.y);
+    const az = Math.abs(camera.z);
+    if (ax >= ay && ax >= az) return 0;
+    if (ay >= ax && ay >= az) return 1;
+    return 2;
+}
+
+/**
+ * True when the marker is on the camera's side of the body center.
+ * Every scan, design, and clinical marker uses this. It does not know the
+ * marker id, so it cannot flip one landmark and leave the others behind.
+ */
+export function afoMarkerOnCameraSide(
+    marker: AfoViewPoint,
+    camera: AfoViewPoint,
+    bodyCenter: AfoViewPoint,
+): boolean {
+    if (Math.hypot(camera.x, camera.y, camera.z) < 1) return true;
+    const axis = afoCameraDominantAxis(camera);
+    const cam = axisValue(camera, axis);
+    const mid = axisValue(bodyCenter, axis);
+    const at = axisValue(marker, axis);
+    return cam >= mid ? at >= mid : at <= mid;
+}
+
+export interface AfoMarkerDisplayCue {
+    opacity: number;
+    /** Depth-test against the cloud or the surface. */
+    depthTest: boolean;
+    /** Far point-cloud markers are occluded, not only dimmed. */
+    occluded: boolean;
+    dimmed: boolean;
+}
+
+/** Display cue for one marker. Placement and the camera preset stay on the shared side rule. */
+export function afoMarkerDisplayCue(opts: {
+    drawMode: AfoScanDrawMode;
+    facesCamera: boolean;
+    baseOpacity?: number;
+}): AfoMarkerDisplayCue {
+    const base = opts.baseOpacity ?? 1;
+    const far = !opts.facesCamera;
+    if (opts.drawMode === "points") {
+        return {
+            opacity: far ? base * AFO_FAR_MARKER_OPACITY : base,
+            depthTest: true,
+            occluded: far,
+            dimmed: far,
+        };
+    }
+    return {
+        opacity: far ? base * AFO_FAR_MARKER_OPACITY : base,
+        depthTest: far,
+        occluded: false,
+        dimmed: far,
+    };
+}
+
+export interface AfoPointCloudShader {
+    vertexShader: string;
+    fragmentShader: string;
+    uniforms: Record<string, { value: number }>;
+}
+
+/** Camera-distance size and brightness. Near samples read as the near surface. */
+export function patchAfoPointCloudShaders(shader: AfoPointCloudShader): void {
+    const glsl = afoPointCloudGlsl();
+    if (!shader.vertexShader.includes("gl_PointSize = size;")) {
+        throw new Error("AFO point cloud shader is missing gl_PointSize.");
+    }
+    if (!shader.fragmentShader.includes("#include <color_fragment>")) {
+        throw new Error("AFO point cloud shader is missing color_fragment.");
+    }
+    shader.uniforms.afoNear = { value: 80 };
+    shader.uniforms.afoFar = { value: 900 };
+    shader.vertexShader = shader.vertexShader
+        .replace(
+            "uniform float size;",
+            `uniform float size;
+uniform float afoNear;
+uniform float afoFar;
+varying float vAfoViewZ;`,
+        )
+        .replace(
+            "#include <project_vertex>",
+            `#include <project_vertex>
+	vAfoViewZ = -mvPosition.z;`,
+        )
+        .replace(
+            "gl_PointSize = size;",
+            `float afoProx = 1.0 - clamp((vAfoViewZ - afoNear) / max(1.0, afoFar - afoNear), 0.0, 1.0);
+	gl_PointSize = size * (${glsl.sizeScale});`,
+        );
+    shader.fragmentShader = shader.fragmentShader
+        .replace(
+            "uniform float opacity;",
+            `uniform float opacity;
+uniform float afoNear;
+uniform float afoFar;
+varying float vAfoViewZ;`,
+        )
+        .replace(
+            "#include <color_fragment>",
+            `#include <color_fragment>
+	float afoProx = 1.0 - clamp((vAfoViewZ - afoNear) / max(1.0, afoFar - afoNear), 0.0, 1.0);
+	diffuseColor.rgb *= (${glsl.brightness});`,
+        );
+}
+
+export function setAfoPointCloudRange(
+    material: { userData: { afoShader?: AfoPointCloudShader } },
+    nearest: number,
+    farthest: number,
+): void {
+    const shader = material.userData.afoShader;
+    if (!shader?.uniforms.afoNear || !shader.uniforms.afoFar) return;
+    shader.uniforms.afoNear.value = nearest;
+    shader.uniforms.afoFar.value = Math.max(farthest, nearest + 1);
 }
 
 export function afoTriangleStats(
@@ -138,7 +325,10 @@ export function afoCastBodyStyle(opts: {
         vertexColors: opts.heightmap,
         depthWrite: !transparent,
         pointSizeMm: AFO_POINT_SIZE_MM,
-        markerDepthTest: AFO_MARKER_DEPTH_TEST,
+        pointDepthWrite: true,
+        pointDistanceShade: drawMode === "points",
+        pointDepthSplatScale: drawMode === "points" ? AFO_POINT_DEPTH_SPLAT_SCALE : 1,
+        markerDepthTest: drawMode === "points" ? true : AFO_MARKER_DEPTH_TEST,
         markerRenderOrder: AFO_MARKER_RENDER_ORDER,
     };
 }
