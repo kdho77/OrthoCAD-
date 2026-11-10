@@ -18,7 +18,12 @@ import {
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import { resetSampleTopGeometryCache } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { defaultSideShapeFinish } from "@/lib/geometry/shape-finish-modifiers";
-import { insoleLayoutForUsMenSize, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
+import {
+    insoleLayoutForUsMenSize,
+    SAMPLE_TOP_NATIVE_LENGTH_MM,
+    scaleSourceShapeToFootprint,
+    topSheetXyScale,
+} from "@/lib/geometry/shoe-size";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { parseBinaryStl } from "@/lib/hardness/mesh";
 import { generateGcode, PRINTER_PRESETS } from "@/lib/kiri";
@@ -142,7 +147,8 @@ async function orderPrintTop(
 /** Same compose path as {@link workpiecesFromDesign} (scaled sheet + composePrintSolidTop). */
 async function orderCncTop(design: DesignState, side: Side, raw: BufferGeometry, width: "medium" | "wide") {
     const layout = insoleLayoutForUsMenSize(design.usMenSize ?? 9);
-    const sized = scaleGeometryToInsoleSize(raw, layout.lengthMm, layout.widthMm);
+    const sized = raw.clone();
+    scaleSourceShapeToFootprint(sized, layout.scale);
     const thickness = design.paired
         ? side === "left"
             ? design.paired.leftThicknessMm
@@ -340,8 +346,9 @@ describe("downloads match the order build", () => {
             const box = span(part.mesh!);
             expect(Math.abs(box.length - cncBox.length)).toBeLessThan(1.5);
             expect(Math.abs(box.width - cncBox.width)).toBeLessThan(1.5);
-            expect(outlineLengthMm(part.outline)).toBeGreaterThan(layout.lengthMm * 0.9);
-            expect(outlineLengthMm(part.outline)).toBeLessThan(layout.lengthMm + 2);
+            const sheet = SAMPLE_TOP_NATIVE_LENGTH_MM * topSheetXyScale(layout.scale);
+            expect(outlineLengthMm(part.outline)).toBeGreaterThan(sheet * 0.9);
+            expect(outlineLengthMm(part.outline)).toBeLessThan(sheet + 2);
         }
         const job = generateCncJob(profile, parts);
         expect(job.gcode).toContain("; foot: left+right");
