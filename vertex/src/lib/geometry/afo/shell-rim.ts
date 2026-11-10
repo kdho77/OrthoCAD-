@@ -809,6 +809,522 @@ function arcPoint(I: AfoVec3, O: AfoVec3, _out: AfoVec3, t: number): AfoVec3 {
     };
 }
 
+const COLLINEAR_TURN_RAD = (2 * Math.PI) / 180;
+const COLLINEAR_CHORD_MM = 0.01;
+const MIN_FACE_AREA_MM2 = 0.01;
+
+/**
+ * Drop a boundary vertex that already lies on the chord of its two neighbours,
+ * and the matching outer and rim vertices, so the ruled pairing stays 1:1.
+ * Interior needles flip the edge opposite a near-180° corner when that edge is interior.
+ */
+export function straightenFeatureLoops(shell: AfoTriMesh): void {
+    const n = shell.outerVertex0;
+    if (n == null) return;
+    const protect = n * 2 - 1;
+    for (let pass = 0; pass < 1; pass++) {
+        if (!collapseOneCollinear(shell, n, protect)) break;
+    }
+    for (let pass = 0; pass < 8; pass++) {
+        if (!flipInteriorNeedles(shell, n)) break;
+    }
+    repackSkinRim(shell);
+}
+
+/** An outer offset that points against its neighbours is put back on their average, then the ring is relaxed. */
+export function repairFlippedOffsets(shell: AfoTriMesh): void {
+    const n = shell.outerVertex0;
+    const face0 = shell.rimFaceStart;
+    if (n == null || face0 == null) return;
+    const adj: number[][] = Array.from({ length: n }, () => []);
+    const seen = new Set<string>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let f = 0; f < face0; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        if (!vs.every((v) => v >= n && v < n * 2)) continue;
+        for (let e = 0; e < 3; e++) {
+            const a = (vs[e] ?? 0) - n;
+            const b = (vs[(e + 1) % 3] ?? 0) - n;
+            const id = key(a, b);
+            if (seen.has(id)) continue;
+            seen.add(id);
+            adj[a]!.push(b);
+            adj[b]!.push(a);
+        }
+    }
+    const offsetOf = (i: number) => ({
+        x: (shell.positions[(n + i) * 3] ?? 0) - (shell.positions[i * 3] ?? 0),
+        y: (shell.positions[(n + i) * 3 + 1] ?? 0) - (shell.positions[i * 3 + 1] ?? 0),
+        z: (shell.positions[(n + i) * 3 + 2] ?? 0) - (shell.positions[i * 3 + 2] ?? 0),
+    });
+    const bad: number[] = [];
+    for (let i = 0; i < n; i++) {
+        if ((adj[i]?.length ?? 0) === 0) continue;
+        const off = offsetOf(i);
+        const ol = Math.hypot(off.x, off.y, off.z);
+        if (ol < 1e-6) continue;
+        let ax = 0;
+        let ay = 0;
+        let az = 0;
+        for (const j of adj[i] ?? []) {
+            const o = offsetOf(j);
+            ax += o.x;
+            ay += o.y;
+            az += o.z;
+        }
+        const al = Math.hypot(ax, ay, az);
+        if (al < 1e-6) continue;
+        if ((off.x * ax + off.y * ay + off.z * az) / (ol * al) < 0) bad.push(i);
+    }
+    if (bad.length === 0) return;
+    const ring = new Set<number>();
+    for (const i of bad) {
+        const off = offsetOf(i);
+        const t = Math.hypot(off.x, off.y, off.z);
+        let ax = 0;
+        let ay = 0;
+        let az = 0;
+        for (const j of adj[i] ?? []) {
+            const o = offsetOf(j);
+            ax += o.x;
+            ay += o.y;
+            az += o.z;
+        }
+        const al = Math.hypot(ax, ay, az) || 1;
+        shell.positions[(n + i) * 3] = (shell.positions[i * 3] ?? 0) + (ax / al) * t;
+        shell.positions[(n + i) * 3 + 1] = (shell.positions[i * 3 + 1] ?? 0) + (ay / al) * t;
+        shell.positions[(n + i) * 3 + 2] = (shell.positions[i * 3 + 2] ?? 0) + (az / al) * t;
+        ring.add(i);
+        for (const j of adj[i] ?? []) {
+            ring.add(j);
+            for (const k of adj[j] ?? []) ring.add(k);
+        }
+    }
+    for (let iter = 0; iter < 2; iter++) {
+        const next = new Map<number, AfoVec3>();
+        for (const i of ring) {
+            const nbrs = adj[i] ?? [];
+            if (nbrs.length === 0) continue;
+            let ax = 0;
+            let ay = 0;
+            let az = 0;
+            for (const j of nbrs) {
+                ax += shell.positions[(n + j) * 3] ?? 0;
+                ay += shell.positions[(n + j) * 3 + 1] ?? 0;
+                az += shell.positions[(n + j) * 3 + 2] ?? 0;
+            }
+            ax /= nbrs.length;
+            ay /= nbrs.length;
+            az /= nbrs.length;
+            const px = shell.positions[(n + i) * 3] ?? 0;
+            const py = shell.positions[(n + i) * 3 + 1] ?? 0;
+            const pz = shell.positions[(n + i) * 3 + 2] ?? 0;
+            const qx = px * 0.65 + ax * 0.35;
+            const qy = py * 0.65 + ay * 0.35;
+            const qz = pz * 0.65 + az * 0.35;
+            const ix = shell.positions[i * 3] ?? 0;
+            const iy = shell.positions[i * 3 + 1] ?? 0;
+            const iz = shell.positions[i * 3 + 2] ?? 0;
+            const t = Math.hypot(px - ix, py - iy, pz - iz) || 1;
+            const dx = qx - ix;
+            const dy = qy - iy;
+            const dz = qz - iz;
+            const dl = Math.hypot(dx, dy, dz) || 1;
+            next.set(i, { x: ix + (dx / dl) * t, y: iy + (dy / dl) * t, z: iz + (dz / dl) * t });
+        }
+        for (const [i, p] of next) {
+            shell.positions[(n + i) * 3] = p.x;
+            shell.positions[(n + i) * 3 + 1] = p.y;
+            shell.positions[(n + i) * 3 + 2] = p.z;
+        }
+    }
+}
+
+function boundaryPairs(
+    shell: AfoTriMesh,
+    n: number,
+): { pairs: Map<number, number[]>; arcOf: Map<number, number> } {
+    const use = new Map<number, number>();
+    const arcsOfInner = new Map<number, number[]>();
+    const arcsOfOuter = new Map<number, number[]>();
+    const pack = (a: number, b: number) => (a < b ? a * 1000003 + b : b * 1000003 + a);
+    const faceCount = (shell.indices.length / 3) | 0;
+    const limit = n * 2;
+    const remember = (map: Map<number, number[]>, key: number, arc: number) => {
+        const list = map.get(key);
+        if (list) {
+            if (!list.includes(arc)) list.push(arc);
+        } else map.set(key, [arc]);
+    };
+    for (let f = 0; f < faceCount; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        const inner = vs[0]! < n && vs[1]! < n && vs[2]! < n;
+        const outer =
+            vs[0]! >= n && vs[0]! < limit && vs[1]! >= n && vs[1]! < limit && vs[2]! >= n && vs[2]! < limit;
+        if (inner || outer) {
+            for (let e = 0; e < 3; e++) {
+                const k = pack(vs[e]!, vs[(e + 1) % 3]!);
+                use.set(k, (use.get(k) ?? 0) + 1);
+            }
+            continue;
+        }
+        for (let e = 0; e < 3; e++) {
+            const a = vs[e]!;
+            const b = vs[(e + 1) % 3]!;
+            if (a >= limit && b < n) remember(arcsOfInner, b, a);
+            else if (b >= limit && a < n) remember(arcsOfInner, a, b);
+            else if (a >= limit && b >= n && b < limit) remember(arcsOfOuter, b - n, a);
+            else if (b >= limit && a >= n && a < limit) remember(arcsOfOuter, a - n, b);
+        }
+    }
+    const pairs = new Map<number, number[]>();
+    const link = (a: number, b: number) => {
+        const list = pairs.get(a);
+        if (list) list.push(b);
+        else pairs.set(a, [b]);
+    };
+    for (const [k, used] of use) {
+        if (used !== 1) continue;
+        const b = k % 1000003;
+        const a = (k - b) / 1000003;
+        link(a, b);
+        link(b, a);
+    }
+    const arcOf = new Map<number, number>();
+    for (const [v, arcs] of arcsOfInner) {
+        const hit = arcs.filter((arc) => arcsOfOuter.get(v)?.includes(arc));
+        if (hit.length === 1) arcOf.set(v, hit[0]!);
+    }
+    return { pairs, arcOf };
+}
+
+function collapseOneCollinear(shell: AfoTriMesh, n: number, protect: number): boolean {
+    const { pairs: boundary, arcOf } = boundaryPairs(shell, n);
+    const byVert = faceIndex(shell);
+    const directed = directedEdges(shell);
+    const maps: Map<number, number>[] = [];
+    const used = new Set<number>();
+    for (const [v, pair] of boundary) {
+        if (v >= n || pair.length !== 2) continue;
+        const left = pair[0]!;
+        const right = pair[1]!;
+        if (v === protect || n + v === protect) continue;
+        if (!onChord(shell, left, v, right)) continue;
+        const outer = n + v;
+        const oNbr = boundary.get(outer);
+        if (oNbr == null || oNbr.length !== 2 || !oNbr.includes(n + left) || !oNbr.includes(n + right))
+            continue;
+        if (!onChord(shell, n + left, outer, n + right)) continue;
+        const arc = arcOf.get(v) ?? null;
+        const arcLeft = arcOf.get(left) ?? null;
+        const arcRight = arcOf.get(right) ?? null;
+        if (arc != null && arcLeft != null && arcRight != null && !onChord(shell, arcLeft, arc, arcRight))
+            continue;
+        const ends: number[] = [];
+        const leftOk = collapseKeepsFaces(
+            shell,
+            byVert,
+            stationMap(n, v, left, arc, arcLeft),
+            protect,
+            directed,
+        );
+        const rightOk = collapseKeepsFaces(
+            shell,
+            byVert,
+            stationMap(n, v, right, arc, arcRight),
+            protect,
+            directed,
+        );
+        if (leftOk) ends.push(left);
+        if (rightOk) ends.push(right);
+        if (ends.length === 0) continue;
+        const end =
+            ends.length === 1 ? ends[0]! : betterEnd(shell, byVert, arcOf, n, v, ends[0]!, ends[1]!, arc);
+        const arcEnd = end === left ? arcLeft : arcRight;
+        const map = stationMap(n, v, end, arc, arcEnd);
+        const blocked = [v, end, n + v, n + end, left, right, n + left, n + right];
+        if (arc != null) blocked.push(arc);
+        if (arcEnd != null) blocked.push(arcEnd);
+        if (blocked.some((id) => used.has(id))) continue;
+        for (const id of blocked) used.add(id);
+        maps.push(map);
+    }
+    if (maps.length === 0) return false;
+    const combined = new Map<number, number>();
+    for (const map of maps) for (const [from, to] of map) combined.set(from, to);
+    applyCollapse(shell, combined);
+    return true;
+}
+
+function stationMap(
+    n: number,
+    v: number,
+    end: number,
+    arc: number | null,
+    arcEnd: number | null,
+): Map<number, number> {
+    const map = new Map<number, number>();
+    map.set(v, end);
+    map.set(n + v, n + end);
+    if (arc != null && arcEnd != null && arc !== arcEnd) map.set(arc, arcEnd);
+    return map;
+}
+
+function betterEnd(
+    shell: AfoTriMesh,
+    byVert: number[][],
+    arcOf: Map<number, number>,
+    n: number,
+    v: number,
+    a: number,
+    b: number,
+    arc: number | null,
+): number {
+    const score = (end: number) => {
+        const arcEnd = arcOf.get(end) ?? null;
+        const map = stationMap(n, v, end, arc, arcEnd);
+        let minArea = Infinity;
+        for (const f of facesTouching(byVert, [...map.keys()])) {
+            const vs = remapped(shell, f, map);
+            if (new Set(vs).size < 3) continue;
+            minArea = Math.min(minArea, faceArea(shell, vs));
+        }
+        return minArea;
+    };
+    return score(a) >= score(b) ? a : b;
+}
+
+function onChord(shell: AfoTriMesh, left: number, v: number, right: number): boolean {
+    if (left === v || v === right || left === right) return false;
+    const a = atV(shell, left);
+    const b = atV(shell, v);
+    const c = atV(shell, right);
+    const va = sub(a, b);
+    const vc = sub(c, b);
+    const la = Math.hypot(va.x, va.y, va.z);
+    const lc = Math.hypot(vc.x, vc.y, vc.z);
+    if (la < 1e-8 || lc < 1e-8) return true;
+    const cos = Math.min(1, Math.max(-1, dot(va, vc) / (la * lc)));
+    const turn = Math.PI - Math.acos(cos);
+    if (turn > COLLINEAR_TURN_RAD) return false;
+    const chord = sub(c, a);
+    const ab2 = dot(chord, chord) || 1;
+    const t = Math.min(1, Math.max(0, dot(sub(b, a), chord) / ab2));
+    if (t <= 0.02 || t >= 0.98) return false;
+    const foot = { x: a.x + chord.x * t, y: a.y + chord.y * t, z: a.z + chord.z * t };
+    return Math.hypot(b.x - foot.x, b.y - foot.y, b.z - foot.z) <= COLLINEAR_CHORD_MM;
+}
+
+function collapseKeepsFaces(
+    shell: AfoTriMesh,
+    byVert: number[][],
+    map: Map<number, number>,
+    protect: number,
+    directedIn?: Set<number>,
+): boolean {
+    const directed = directedIn ?? directedEdges(shell);
+    for (const from of map.keys()) if (from === protect) return false;
+    const affected = facesTouching(byVert, [...map.keys()]);
+    const pack = (a: number, b: number) => a * 1000003 + b;
+    const owned = new Set<number>();
+    for (const f of affected) {
+        const a = shell.indices[f * 3] ?? 0;
+        const b = shell.indices[f * 3 + 1] ?? 0;
+        const c = shell.indices[f * 3 + 2] ?? 0;
+        if (a === b || b === c || a === c) continue;
+        owned.add(pack(a, b));
+        owned.add(pack(b, c));
+        owned.add(pack(c, a));
+    }
+    const taken = new Set<number>();
+    const pos = shell.positions;
+    const cross = (a: number, b: number, c: number) => {
+        const ax = pos[a * 3] ?? 0;
+        const ay = pos[a * 3 + 1] ?? 0;
+        const az = pos[a * 3 + 2] ?? 0;
+        const bx = (pos[b * 3] ?? 0) - ax;
+        const by = (pos[b * 3 + 1] ?? 0) - ay;
+        const bz = (pos[b * 3 + 2] ?? 0) - az;
+        const cx = (pos[c * 3] ?? 0) - ax;
+        const cy = (pos[c * 3 + 1] ?? 0) - ay;
+        const cz = (pos[c * 3 + 2] ?? 0) - az;
+        return { x: by * cz - bz * cy, y: bz * cx - bx * cz, z: bx * cy - by * cx };
+    };
+    for (const f of affected) {
+        const a0 = shell.indices[f * 3] ?? 0;
+        const b0 = shell.indices[f * 3 + 1] ?? 0;
+        const c0 = shell.indices[f * 3 + 2] ?? 0;
+        const a = map.get(a0) ?? a0;
+        const b = map.get(b0) ?? b0;
+        const c = map.get(c0) ?? c0;
+        if (a === b || b === c || a === c) continue;
+        const oldN = cross(a0, b0, c0);
+        const newN = cross(a, b, c);
+        const area2 = newN.x * newN.x + newN.y * newN.y + newN.z * newN.z;
+        if (area2 < MIN_FACE_AREA_MM2 * MIN_FACE_AREA_MM2 * 4) return false;
+        if (oldN.x * newN.x + oldN.y * newN.y + oldN.z * newN.z <= 0) return false;
+        const edges = [pack(a, b), pack(b, c), pack(c, a)];
+        for (const d of edges) {
+            if ((directed.has(d) && !owned.has(d)) || taken.has(d)) return false;
+            taken.add(d);
+        }
+    }
+    return affected.size > 0;
+}
+
+function directedEdges(shell: AfoTriMesh): Set<number> {
+    const directed = new Set<number>();
+    const faceCount = (shell.indices.length / 3) | 0;
+    for (let f = 0; f < faceCount; f++) {
+        const a = shell.indices[f * 3] ?? 0;
+        const b = shell.indices[f * 3 + 1] ?? 0;
+        const c = shell.indices[f * 3 + 2] ?? 0;
+        if (a === b || b === c || a === c) continue;
+        directed.add(a * 1000003 + b);
+        directed.add(b * 1000003 + c);
+        directed.add(c * 1000003 + a);
+    }
+    return directed;
+}
+
+function applyCollapse(shell: AfoTriMesh, map: Map<number, number>): void {
+    for (let i = 0; i < shell.indices.length; i++) {
+        const to = map.get(shell.indices[i] ?? 0);
+        if (to != null) shell.indices[i] = to;
+    }
+    repackSkinRim(shell);
+}
+
+function flipInteriorNeedles(shell: AfoTriMesh, n: number): boolean {
+    const face0 = shell.rimFaceStart ?? (shell.indices.length / 3) | 0;
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    const boundary = new Set<string>();
+    const edgeFaces = new Map<string, number[]>();
+    const countSkin = (f: number, vs: number[]) => {
+        for (let e = 0; e < 3; e++) {
+            const k = key(vs[e]!, vs[(e + 1) % 3]!);
+            const list = edgeFaces.get(k);
+            if (list) list.push(f);
+            else edgeFaces.set(k, [f]);
+        }
+    };
+    for (let f = 0; f < face0; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        if (vs.some((v) => v >= n * 2)) continue;
+        countSkin(f, vs);
+    }
+    for (const [k, faces] of edgeFaces) if (faces.length === 1) boundary.add(k);
+    for (let f = 0; f < face0; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        if (new Set(vs).size < 3 || vs.some((v) => v >= n * 2)) continue;
+        for (let c = 0; c < 3; c++) {
+            const prev = vs[(c + 2) % 3]!;
+            const v = vs[c]!;
+            const next = vs[(c + 1) % 3]!;
+            const angle = cornerAngle(shell, prev, v, next);
+            if (angle < (175 * Math.PI) / 180) continue;
+            const oppA = prev;
+            const oppB = next;
+            const k = key(oppA, oppB);
+            if (boundary.has(k)) continue;
+            const hosts = edgeFaces.get(k) ?? [];
+            if (hosts.length !== 2) continue;
+            const other = hosts[0] === f ? hosts[1]! : hosts[0]!;
+            const ov = [
+                shell.indices[other * 3] ?? 0,
+                shell.indices[other * 3 + 1] ?? 0,
+                shell.indices[other * 3 + 2] ?? 0,
+            ];
+            if (ov.some((p) => boundary.has(key(p, ov[(ov.indexOf(p) + 1) % 3]!)))) continue;
+            const opp = ov.find((p) => p !== oppA && p !== oppB);
+            if (opp == null || edgeFaces.has(key(v, opp))) continue;
+            let u = oppA;
+            let w = oppB;
+            for (let e = 0; e < 3; e++) {
+                const a = ov[e]!;
+                const b = ov[(e + 1) % 3]!;
+                if ((a === oppA && b === oppB) || (a === oppB && b === oppA)) {
+                    u = a;
+                    w = b;
+                    break;
+                }
+            }
+            const na0 = triNormal(atV(shell, u), atV(shell, w), atV(shell, v));
+            const nb0 = triNormal(atV(shell, w), atV(shell, u), atV(shell, opp));
+            const na1 = triNormal(atV(shell, u), atV(shell, opp), atV(shell, v));
+            const nb1 = triNormal(atV(shell, opp), atV(shell, u), atV(shell, w));
+            if (dot(na0, na1) <= 0 || dot(nb0, nb1) <= 0) continue;
+            const areaA = Math.hypot(na1.x, na1.y, na1.z) * 0.5;
+            const areaB = Math.hypot(nb1.x, nb1.y, nb1.z) * 0.5;
+            if (areaA < MIN_FACE_AREA_MM2 || areaB < MIN_FACE_AREA_MM2) continue;
+            shell.indices[f * 3] = u;
+            shell.indices[f * 3 + 1] = opp;
+            shell.indices[f * 3 + 2] = v;
+            shell.indices[other * 3] = opp;
+            shell.indices[other * 3 + 1] = u;
+            shell.indices[other * 3 + 2] = w;
+            return true;
+        }
+    }
+    return false;
+}
+
+function faceIndex(shell: AfoTriMesh): number[][] {
+    const by: number[][] = Array.from({ length: (shell.positions.length / 3) | 0 }, () => []);
+    const faceCount = (shell.indices.length / 3) | 0;
+    for (let f = 0; f < faceCount; f++) {
+        for (let k = 0; k < 3; k++) by[shell.indices[f * 3 + k] ?? 0]?.push(f);
+    }
+    return by;
+}
+
+function facesTouching(byVert: number[][], verts: number[]): Set<number> {
+    const faces = new Set<number>();
+    for (const v of verts) for (const f of byVert[v] ?? []) faces.add(f);
+    return faces;
+}
+
+function remapped(shell: AfoTriMesh, f: number, map: Map<number, number>): number[] {
+    return [0, 1, 2].map((k) => map.get(shell.indices[f * 3 + k] ?? 0) ?? shell.indices[f * 3 + k] ?? 0);
+}
+
+function faceArea(shell: AfoTriMesh, vs: number[]): number {
+    const n = triNormal(atV(shell, vs[0]!), atV(shell, vs[1]!), atV(shell, vs[2]!));
+    return Math.hypot(n.x, n.y, n.z) * 0.5;
+}
+
+function cornerAngle(shell: AfoTriMesh, prev: number, v: number, next: number): number {
+    const a = sub(atV(shell, prev), atV(shell, v));
+    const b = sub(atV(shell, next), atV(shell, v));
+    const la = Math.hypot(a.x, a.y, a.z);
+    const lb = Math.hypot(b.x, b.y, b.z);
+    if (la < 1e-8 || lb < 1e-8) return Math.PI;
+    return Math.acos(Math.min(1, Math.max(-1, dot(a, b) / (la * lb))));
+}
+
+function atV(shell: AfoTriMesh, i: number): AfoVec3 {
+    return {
+        x: shell.positions[i * 3] ?? 0,
+        y: shell.positions[i * 3 + 1] ?? 0,
+        z: shell.positions[i * 3 + 2] ?? 0,
+    };
+}
+
+function repackSkinRim(shell: AfoTriMesh): void {
+    const n = shell.outerVertex0;
+    const skin: number[] = [];
+    const rim: number[] = [];
+    const faceCount = (shell.indices.length / 3) | 0;
+    for (let f = 0; f < faceCount; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        if (new Set(vs).size < 3) continue;
+        const bucket = n != null && vs.some((v) => v >= n * 2) ? rim : skin;
+        bucket.push(vs[0]!, vs[1]!, vs[2]!);
+    }
+    shell.indices = new Uint32Array(skin.concat(rim));
+    if (n != null) shell.rimFaceStart = skin.length / 3;
+}
+
 function triNormal(a: AfoVec3, b: AfoVec3, c: AfoVec3): AfoVec3 {
     return cross(sub(b, a), sub(c, a));
 }

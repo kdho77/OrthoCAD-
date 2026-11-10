@@ -11,7 +11,13 @@ import { geodesicVertexPath } from "./geodesic";
 import { cloneMesh, computeVertexNormals, meshProjector, nearestVertex, vertexCount } from "./mesh-ops";
 import { offsetMeshAlongNormals } from "./sdf-offset";
 import { embedTrimPolyline } from "./shell-cut";
-import { boundaryLoops, closeShellWithRoundRim, finishShellLip } from "./shell-rim";
+import {
+    boundaryLoops,
+    closeShellWithRoundRim,
+    finishShellLip,
+    repairFlippedOffsets,
+    straightenFeatureLoops,
+} from "./shell-rim";
 import type { AfoShellOptions, AfoTriMesh, AfoVec3 } from "./types";
 
 /**
@@ -53,6 +59,8 @@ export function buildAfoShell(
     tightenBoundaryToCurve(shell, options.trimPolygon);
     finishShellLip(shell);
     enforceShellClearance(shell, options.thicknessMm, options.edgeMm);
+    repairFlippedOffsets(shell);
+    straightenFeatureLoops(shell);
     options.onProgress?.(1, "done");
     return shell;
 }
