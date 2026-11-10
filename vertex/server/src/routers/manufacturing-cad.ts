@@ -189,16 +189,20 @@ export async function materializeCadOperatorStl(args: {
     credentialId: string;
     side: "left" | "right";
     uploadStl: (key: string, bytes: Buffer) => Promise<void>;
+    /** Test seam. Production uses the headless Export loft. */
+    buildFoot?: typeof buildHeadlessFinalizedFoot;
 }): Promise<{ stlStorageKey: string; meshFingerprint: string | null }> {
     if (!args.plan.useSavedDesignMesh) {
         if (!args.plan.stlStorageKey) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid manufacturing STL storage key" });
         }
+        console.log("[manufacturing] materialize done", { stlBytes: null });
         return { stlStorageKey: args.plan.stlStorageKey, meshFingerprint: null };
     }
+    const buildFoot = args.buildFoot ?? buildHeadlessFinalizedFoot;
     let foot: Awaited<ReturnType<typeof buildHeadlessFinalizedFoot>>;
     try {
-        foot = await buildHeadlessFinalizedFoot({
+        foot = await buildFoot({
             settingsJson: args.plan.settingsJson,
             side: args.side,
         });
@@ -209,7 +213,10 @@ export async function materializeCadOperatorStl(args: {
             message,
         });
     }
+    const stlBytes = foot.stl.byteLength;
+    console.log("[manufacturing] materialize done", { stlBytes });
     const stlStorageKey = buildCadOperatorTempStlKey(args.credentialId);
     await args.uploadStl(stlStorageKey, Buffer.from(foot.stl));
+    console.log("[manufacturing] upload complete", { stlBytes });
     return { stlStorageKey, meshFingerprint: foot.fingerprint };
 }

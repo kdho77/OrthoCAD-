@@ -185,10 +185,84 @@ export async function expireStaleProduction(
     return updated ?? (await store.findById(id));
 }
 
+/**
+ * Storage and VertexSlice stage failures. The public row keeps the prefix and,
+ * when present, an HTTP status. The rest of the message is dropped.
+ */
+export const PUBLIC_IO_ERROR_PREFIXES = [
+    "Storage upload failed",
+    "Signed URL failed",
+    "Could not download manufacturing STL",
+    "Could not reach VertexSlice",
+    "VertexSlice error",
+] as const;
+
+/** One attempt plus one retry. A second failure is returned, not tried again. */
+export const TRANSIENT_IO_MAX_ATTEMPTS = 2;
+
+/** Delay before the single retry. Geometry and slice errors never reach this. */
+export const TRANSIENT_IO_BACKOFF_MS = 400;
+
+const NETWORK_FAILURE =
+    /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|EPIPE|UND_ERR|socket hang up|fetch failed|network ?error|timed out|timeout|temporarily unavailable|service unavailable|bad gateway|gateway timeout|too many requests/i;
+
+const NON_RETRYABLE =
+    /Canonical Export|not available headless|not available on slicer|Printer G-code requires|PrintRecipe|empty G-code|empty output|Insufficient export tokens|No valid license|Invalid manufacturing STL|already exists|Object not found|Invalid key|Payload too large|duplicate/i;
+
+export function productionErrorName(error: unknown): string {
+    return error instanceof Error && error.name ? error.name : "Error";
+}
+
+/** Drop URLs, query strings, tokens, and settings text from a transport detail. */
+export function sanitizeTransportDetail(detail: string): string {
+    return detail
+        .replace(/https?:\/\/\S+/gi, "[url]")
+        .replace(/\?[^\s)]*/g, "")
+        .replace(/\bBearer\s+\S+/gi, "")
+        .replace(/(?:token|access_token|signature|sig|api[_-]?key)=[^\s&)]+/gi, "")
+        .replace(/\bsettingsJson\b[\s\S]*/gi, "")
+        .replace(/\b(firstName|lastName|patientName)\b[^,)]*/gi, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 120);
+}
+
+function containsPhiOrSecret(value: string): boolean {
+    return (
+        /https?:\/\//i.test(value) ||
+        value.includes("?") ||
+        /(?:^|[?&\s])token(?:=|\b)/i.test(value) ||
+        /\bBearer\b/i.test(value) ||
+        /settingsJson|firstName|lastName|patientName/i.test(value)
+    );
+}
+
+function matchesPrefix(message: string, prefix: string): boolean {
+    return (
+        message === prefix ||
+        message.startsWith(`${prefix}:`) ||
+        message.startsWith(`${prefix} `) ||
+        message.startsWith(`${prefix}(`)
+    );
+}
+
+/** Prefix, plus a 3-digit HTTP status when the failure carried one. Nothing else. */
+function publicIoMessage(prefix: string, message: string): string {
+    const status = message.match(/\((\d{3})\)/);
+    if (!status) return prefix;
+    const code = Number(status[1]);
+    if (!Number.isInteger(code) || code < 100 || code > 599) return prefix;
+    const candidate = `${prefix} (${code})`;
+    return containsPhiOrSecret(candidate) ? prefix : candidate;
+}
+
 export function publicProductionError(error: unknown): string {
     const message = error instanceof Error ? error.message : "";
     if (message.startsWith("Canonical Export mesh is not available headless")) {
         return "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.";
+    }
+    for (const prefix of PUBLIC_IO_ERROR_PREFIXES) {
+        if (matchesPrefix(message, prefix)) return publicIoMessage(prefix, message);
     }
     const allowed = [
         "Insufficient export tokens",
@@ -203,11 +277,58 @@ export function publicProductionError(error: unknown): string {
         "Manufacturing charge failed",
     ];
     for (const item of allowed) {
-        if (message === item || message.startsWith(`${item}:`) || message.startsWith(`${item} `)) {
-            return item;
-        }
+        if (matchesPrefix(message, item)) return item;
     }
     return "Manufacturing failed";
+}
+
+/**
+ * Transient storage or network failure. Geometry, slice, and 4xx application
+ * errors are false so a retry cannot run them a second time.
+ */
+export function isTransientStorageOrNetworkError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    if (NON_RETRYABLE.test(message)) return false;
+    if (/\((?!408\)|429\))4\d\d\)/.test(message)) return false;
+    if (message.startsWith("Could not reach VertexSlice")) return true;
+    if (NETWORK_FAILURE.test(message)) return true;
+    if (/\((408|429|500|502|503|504)\)/.test(message)) return true;
+    return false;
+}
+
+export interface TransientRetryOptions {
+    sleep?: (ms: number) => Promise<void>;
+    backoffMs?: number;
+    opName?: string;
+}
+
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
+
+/**
+ * At most two calls. The second failure propagates, so this cannot loop.
+ * Callers must not put a token charge inside `op`.
+ */
+export async function withOneTransientRetry<T>(
+    op: () => Promise<T>,
+    options?: TransientRetryOptions,
+): Promise<T> {
+    try {
+        return await op();
+    } catch (error) {
+        if (!isTransientStorageOrNetworkError(error)) throw error;
+        console.warn("[manufacturing] transient io retry", {
+            op: options?.opName ?? "io",
+            name: productionErrorName(error),
+            message: publicProductionError(error),
+        });
+        const sleep = options?.sleep ?? delay;
+        await sleep(options?.backoffMs ?? TRANSIENT_IO_BACKOFF_MS);
+        return await op();
+    }
 }
 
 const ASSET_LOAD_CAUSE =
@@ -233,6 +354,7 @@ export function assetLoadCauseForLog(error: unknown): string | null {
         const candidate = (wrapped?.[1] ?? message).trim();
         if (!candidate || candidate.length > 500) continue;
         if (/settingsJson|firstName|lastName|patientName|"settings"/i.test(candidate)) continue;
+        if (containsPhiOrSecret(candidate)) continue;
         if (ASSET_LOAD_CAUSE.test(candidate)) return candidate;
     }
     return null;
@@ -435,6 +557,7 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
         await markFailed(args.store, args.row.id, error, args.now());
         console.error("[manufacturing] cad production failed", {
             productionId: args.row.id,
+            name: productionErrorName(error),
             message: publicProductionError(error),
         });
         const assetCause = assetLoadCauseForLog(error);
@@ -475,10 +598,20 @@ export async function beginCadOperatorProduction(args: {
 export function scheduleCadProduction(work: Promise<void>): void {
     const guarded = work.catch((error: unknown) => {
         console.error("[manufacturing] background production failed", {
+            name: productionErrorName(error),
             message: publicProductionError(error),
         });
     });
-    waitUntil(guarded);
+    try {
+        waitUntil(guarded);
+    } catch (error) {
+        // The work promise is already running. A missing request context must not
+        // turn the pending response into a failure.
+        console.error("[manufacturing] waitUntil unavailable", {
+            name: productionErrorName(error),
+            message: publicProductionError(error),
+        });
+    }
 }
 
 function cloneRow(row: CadProductionRow): CadProductionRow {

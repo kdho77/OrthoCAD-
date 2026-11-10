@@ -12,10 +12,14 @@ import {
     executeCadOperatorProduction,
     expireStaleProduction,
     infillPctForCadSlice,
+    isTransientStorageOrNetworkError,
     MemoryCadProductionStore,
     publicProductionError,
+    TRANSIENT_IO_BACKOFF_MS,
     toPublicProduction,
+    withOneTransientRetry,
 } from "./cad-operator-production.js";
+import { signedDownloadUrl, uploadAsset } from "./storage.js";
 
 const recipe: PrintRecipeV1 = {
     version: 1,
@@ -324,5 +328,300 @@ describe("CAD-operator production claim", () => {
         expect(left.idempotencyKey).not.toBe(right.idempotencyKey);
         expect(left.idempotencyKey).toContain(":left:");
         expect(left.idempotencyKey).toContain("apex-v2-insole-95a");
+    });
+});
+
+const SECRET =
+    'settingsJson {"firstName":"Jane Doe"} patientName Jane Doe ' +
+    "https://proj.supabase.co/storage/v1/object/sign/bucket/file.stl?token=sekret-token Bearer sk_live_secret";
+
+function expectRedacted(value: string): void {
+    expect(value).not.toMatch(
+        /settingsJson|Jane Doe|sekret|sk_live|https?:\/\/|\?|Bearer|patientName|firstName/,
+    );
+}
+
+function capture(method: "error" | "warn" | "log"): { lines: string[]; restore: () => void } {
+    const lines: string[] = [];
+    const original = console[method];
+    console[method] = (...args: unknown[]) => {
+        lines.push(args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "));
+    };
+    return {
+        lines,
+        restore() {
+            console[method] = original;
+        },
+    };
+}
+
+describe("PHI-safe manufacturing errors", () => {
+    test("storage and VertexSlice prefixes replace Manufacturing failed and drop secrets", () => {
+        const cases: Array<[string, string]> = [
+            ["Storage upload failed", `Storage upload failed: ${SECRET}`],
+            ["Signed URL failed", `Signed URL failed: ${SECRET}`],
+            ["Could not download manufacturing STL", `Could not download manufacturing STL: ${SECRET}`],
+            [
+                "Could not download manufacturing STL (404)",
+                `Could not download manufacturing STL (404): ${SECRET}`,
+            ],
+            [
+                "Could not reach VertexSlice",
+                "Could not reach VertexSlice (https://slicer.example/v1/materials?token=sekret-token): fetch failed",
+            ],
+            ["VertexSlice error (503)", `VertexSlice error (503): ${SECRET}`],
+        ];
+        for (const [expected, raw] of cases) {
+            const pub = publicProductionError(new Error(raw));
+            expect(pub).toBe(expected);
+            expectRedacted(pub);
+        }
+        expect(publicProductionError(new Error(`patient Jane Doe loft exploded ${SECRET}`))).toBe(
+            "Manufacturing failed",
+        );
+    });
+
+    test("a storage failure records error.name and a redacted public message", async () => {
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(
+            store,
+            insert("left", "storage-error"),
+            new Date("2026-11-09T00:00:00.000Z"),
+        );
+        const failure = new Error(`Storage upload failed: ${SECRET}`);
+        failure.name = "StorageError";
+        const logged = capture("error");
+        const warned = capture("warn");
+        try {
+            await executeCadOperatorProduction({
+                row: (await store.findById(claimed.row.id)) ?? claimed.row,
+                store,
+                now: () => new Date("2026-11-09T00:00:01.000Z"),
+                materialize: async () => {
+                    throw failure;
+                },
+                slice: async () => ({ gcode: "G1\n", jobId: "job" }),
+                uploadGcode: async () => ({ storageKey: "gcode/cad-operator/t/c/d/left.gcode" }),
+                charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+            });
+        } finally {
+            logged.restore();
+            warned.restore();
+        }
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toBe("Storage upload failed");
+        expectRedacted(row?.error ?? "");
+        const text = [...logged.lines, ...warned.lines].join("\n");
+        expect(text).toContain("StorageError");
+        expect(text).toContain("Storage upload failed");
+        expectRedacted(text);
+    });
+
+    test("a VertexSlice failure records error.name and the status code", async () => {
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(
+            store,
+            insert("left", "slice-error"),
+            new Date("2026-11-09T00:00:00.000Z"),
+        );
+        const failure = new Error(`VertexSlice error (503): ${SECRET}`);
+        failure.name = "TRPCError";
+        const logged = capture("error");
+        try {
+            await executeCadOperatorProduction({
+                row: (await store.findById(claimed.row.id)) ?? claimed.row,
+                store,
+                now: () => new Date("2026-11-09T00:00:01.000Z"),
+                materialize: async () => ({ stlStorageKey: "tmp/a.stl", meshFingerprint: null }),
+                slice: async () => {
+                    throw failure;
+                },
+                uploadGcode: async () => ({ storageKey: "gcode/cad-operator/t/c/d/left.gcode" }),
+                charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+            });
+        } finally {
+            logged.restore();
+        }
+        const row = await store.findById(claimed.row.id);
+        expect(row?.error).toBe("VertexSlice error (503)");
+        expectRedacted(row?.error ?? "");
+        expect(logged.lines.join("\n")).toContain("TRPCError");
+        expectRedacted(logged.lines.join("\n"));
+    });
+});
+
+describe("transient manufacturing io retry", () => {
+    test("classifies network and 5xx as transient and refuses geometry and 4xx", () => {
+        expect(isTransientStorageOrNetworkError(new Error("Storage upload failed: fetch failed"))).toBe(true);
+        expect(isTransientStorageOrNetworkError(new Error("Signed URL failed: socket hang up"))).toBe(true);
+        expect(isTransientStorageOrNetworkError(new Error("Could not reach VertexSlice: ENOTFOUND"))).toBe(
+            true,
+        );
+        expect(isTransientStorageOrNetworkError(new Error("VertexSlice error (503): bad gateway"))).toBe(
+            true,
+        );
+        expect(isTransientStorageOrNetworkError(new Error("VertexSlice error (429): slow"))).toBe(true);
+        expect(
+            isTransientStorageOrNetworkError(new Error("Could not download manufacturing STL (404): no")),
+        ).toBe(false);
+        expect(isTransientStorageOrNetworkError(new Error("VertexSlice error (400): bad mesh"))).toBe(false);
+        expect(isTransientStorageOrNetworkError(new Error("VertexSlice error (401): no"))).toBe(false);
+        expect(
+            isTransientStorageOrNetworkError(
+                new Error("Canonical Export mesh is not available headless (Jane Doe)"),
+            ),
+        ).toBe(false);
+        expect(isTransientStorageOrNetworkError(new Error("patient Jane Doe loft exploded"))).toBe(false);
+        expect(
+            isTransientStorageOrNetworkError(new Error("Material apex_light not available on slicer")),
+        ).toBe(false);
+        expect(
+            isTransientStorageOrNetworkError(new Error("Storage upload failed: The resource already exists")),
+        ).toBe(false);
+    });
+
+    test("a successful upload retry charges once and a second failure does not charge or try again", async () => {
+        const store = new MemoryCadProductionStore();
+        const now = new Date("2026-11-09T00:00:00.000Z");
+        const success = await claimProduction(store, insert("left", "retry-ok"), now);
+        let uploads = 0;
+        let charges = 0;
+        const slept: number[] = [];
+        const warned = capture("warn");
+        try {
+            await executeCadOperatorProduction({
+                row: (await store.findById(success.row.id)) ?? success.row,
+                store,
+                now: () => new Date("2026-11-09T00:00:02.000Z"),
+                materialize: async () => ({ stlStorageKey: "tmp/a.stl", meshFingerprint: null }),
+                slice: async () => ({ gcode: "G1 X0\n", jobId: "job-once" }),
+                uploadGcode: () =>
+                    withOneTransientRetry(
+                        async () => {
+                            uploads += 1;
+                            if (uploads === 1)
+                                throw new Error(`Storage upload failed: fetch failed ${SECRET}`);
+                            return { storageKey: "gcode/cad-operator/t/c/d/left.gcode" };
+                        },
+                        {
+                            sleep: async (ms) => {
+                                slept.push(ms);
+                            },
+                            opName: "gcode-upload",
+                        },
+                    ),
+                charge: async () => {
+                    charges += 1;
+                    return { exportId: "exp-1", balance: 4, alreadyCharged: false };
+                },
+            });
+        } finally {
+            warned.restore();
+        }
+        expect(uploads).toBe(2);
+        expect(slept).toEqual([TRANSIENT_IO_BACKOFF_MS]);
+        expect(charges).toBe(1);
+        expect((await store.findById(success.row.id))?.status).toBe("succeeded");
+        expectRedacted(warned.lines.join("\n"));
+
+        const failed = await claimProduction(store, insert("right", "retry-fail"), now);
+        let attempts = 0;
+        let failedCharges = 0;
+        await executeCadOperatorProduction({
+            row: (await store.findById(failed.row.id)) ?? failed.row,
+            store,
+            now: () => new Date("2026-11-09T00:00:03.000Z"),
+            materialize: async () => ({ stlStorageKey: "tmp/b.stl", meshFingerprint: null }),
+            slice: async () => ({ gcode: "G1 X0\n", jobId: "job-fail" }),
+            uploadGcode: () =>
+                withOneTransientRetry(
+                    async () => {
+                        attempts += 1;
+                        throw new Error("Storage upload failed: timeout");
+                    },
+                    { sleep: async () => undefined, opName: "gcode-upload" },
+                ),
+            charge: async () => {
+                failedCharges += 1;
+                return { exportId: "exp-2", balance: 1, alreadyCharged: false };
+            },
+        });
+        expect(attempts).toBe(2);
+        expect(failedCharges).toBe(0);
+        expect((await store.findById(failed.row.id))?.error).toBe("Storage upload failed");
+    });
+
+    test("signed URL and storage upload retry once through the storage client", async () => {
+        let uploads = 0;
+        let signs = 0;
+        const supabase = {
+            storage: {
+                from() {
+                    return {
+                        async upload() {
+                            uploads += 1;
+                            if (uploads === 1) {
+                                return { error: { message: `fetch failed ${SECRET}` } };
+                            }
+                            return { error: null };
+                        },
+                        async createSignedUrl() {
+                            signs += 1;
+                            if (signs === 1) return { data: null, error: { message: "socket hang up" } };
+                            return {
+                                data: { signedUrl: "https://files.example.test/a.stl?token=sekret-token" },
+                                error: null,
+                            };
+                        },
+                    };
+                },
+            },
+        };
+        const warned = capture("warn");
+        try {
+            const uploaded = await withOneTransientRetry(
+                () =>
+                    uploadAsset(
+                        supabase as never,
+                        "manufacturing-temp/a.stl",
+                        Buffer.from("stl"),
+                        "model/stl",
+                    ),
+                { sleep: async () => undefined, opName: "stl-upload" },
+            );
+            const signed = await withOneTransientRetry(
+                () => signedDownloadUrl(supabase as never, "manufacturing-temp/a.stl", 60),
+                { sleep: async () => undefined, opName: "signed-url" },
+            );
+            expect(uploaded.sizeBytes).toBe(3);
+            expect(signed).toContain("token=sekret-token");
+            expect(uploads).toBe(2);
+            expect(signs).toBe(2);
+            expectRedacted(warned.lines.join("\n"));
+        } finally {
+            warned.restore();
+        }
+
+        let rejected = 0;
+        const once = {
+            storage: {
+                from() {
+                    return {
+                        async upload() {
+                            rejected += 1;
+                            return { error: { message: "The resource already exists" } };
+                        },
+                    };
+                },
+            },
+        };
+        await expect(
+            withOneTransientRetry(
+                () => uploadAsset(once as never, "manufacturing-temp/a.stl", Buffer.from("stl"), "model/stl"),
+                { sleep: async () => undefined, opName: "stl-upload" },
+            ),
+        ).rejects.toThrow(/Storage upload failed: The resource already exists/);
+        expect(rejected).toBe(1);
     });
 });

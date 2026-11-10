@@ -6,6 +6,7 @@ import { SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.j
 import { assertCadOperatorGcodeKey, buildCadOperatorTempStlKey } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { getSupabaseAdmin } from "../context.js";
+import { withOneTransientRetry } from "../lib/cad-operator-production.js";
 import { runtimeDogfoodOrderOwnerVerifier } from "../lib/dogfood-order-owner-wire.js";
 import {
     createDogfoodSavedDesign,
@@ -124,7 +125,10 @@ function sessionManufacturingIo(): SessionManufacturingIo {
             if (!supabase) {
                 throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
             }
-            return signedDownloadUrl(supabase, storageKey, 3600, MANUFACTURING_BUCKET);
+            return withOneTransientRetry(
+                () => signedDownloadUrl(supabase, storageKey, 3600, MANUFACTURING_BUCKET),
+                { opName: "signed-url" },
+            );
         },
         downloadStl: downloadManufacturingStl,
         sliceWithVertexSlice,
@@ -163,13 +167,19 @@ function sessionManufacturingIo(): SessionManufacturingIo {
             if (!supabase) {
                 throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
             }
-            await uploadAsset(supabase, storageKey, bytes, contentType, MANUFACTURING_BUCKET);
+            await withOneTransientRetry(
+                () => uploadAsset(supabase, storageKey, bytes, contentType, MANUFACTURING_BUCKET),
+                { opName: "gcode-upload" },
+            );
         },
         async signedOutputUrl(storageKey) {
             if (!supabase) {
                 throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
             }
-            return signedDownloadUrl(supabase, storageKey, 3600, MANUFACTURING_BUCKET);
+            return withOneTransientRetry(
+                () => signedDownloadUrl(supabase, storageKey, 3600, MANUFACTURING_BUCKET),
+                { opName: "signed-url" },
+            );
         },
         async updateExportStorage(exportId, storageKey) {
             if (!supabase) return;
@@ -285,8 +295,14 @@ export const manufacturingRouter = router({
             }
 
             const key = buildManufacturingTempStlKey(ctx.user.id);
-            await uploadAsset(supabase, key, bytes, "model/stl", MANUFACTURING_BUCKET);
-            const stlUrl = await signedDownloadUrl(supabase, key, 3600, MANUFACTURING_BUCKET);
+            await withOneTransientRetry(
+                () => uploadAsset(supabase, key, bytes, "model/stl", MANUFACTURING_BUCKET),
+                { opName: "stl-upload" },
+            );
+            const stlUrl = await withOneTransientRetry(
+                () => signedDownloadUrl(supabase, key, 3600, MANUFACTURING_BUCKET),
+                { opName: "signed-url" },
+            );
 
             return { ok: true as const, stlUrl, storageKey: key };
         }),

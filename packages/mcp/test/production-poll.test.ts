@@ -60,6 +60,54 @@ describe("CAD-operator production tools", () => {
         expect(result.content[0]?.text).not.toMatch(/Jane Doe|G1 X0|content_base64/);
     });
 
+    test("generate_gcode request and response contract stays a pending production id", async () => {
+        const requests: unknown[] = [];
+        const manufacturing = {
+            generateFromSavedDesign: async (input: Record<string, unknown>) => {
+                requests.push(input);
+                return {
+                    ok: true,
+                    outputType: "gcode",
+                    productionId: leftId,
+                    status: "pending",
+                    side: input.side,
+                    gcode: "G1 SHOULD NOT LEAK",
+                    patientName: "Jane Doe",
+                    settingsJson: { firstName: "Jane Doe" },
+                };
+            },
+        } as unknown as ManufacturingClient;
+        const result = await handleOrthocadTool(
+            "generate_gcode",
+            {
+                preset_id: "apex-v2-insole-95a",
+                use_saved_design: true,
+                design_id: designId,
+                side: "left",
+                patient_name: "Jane Doe",
+                hardness: "Hard",
+            },
+            { config, manufacturing },
+        );
+        expect(result.isError).toBeUndefined();
+        expect(requests).toEqual([
+            {
+                designId,
+                side: "left",
+                presetId: "apex-v2-insole-95a",
+                fileName: "left.gcode",
+                patientName: "Jane Doe",
+                hardness: "Hard",
+            },
+        ]);
+        expect(toolJson(result)).toEqual({
+            ok: true,
+            format: "gcode",
+            files: [{ side: "left", production_id: leftId, status: "pending" }],
+        });
+        expect(result.content[0]?.text).not.toMatch(/G1 SHOULD NOT LEAK|Jane Doe|settingsJson/);
+    });
+
     test("an in-flight or succeeded id is returned again, and a failed one can come back pending", async () => {
         const script: Array<{ productionId: string; status: string }> = [
             { productionId: leftId, status: "running" },

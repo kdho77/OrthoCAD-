@@ -19,6 +19,7 @@ import {
     type PublicProduction,
     scheduleCadProduction,
     toPublicProduction,
+    withOneTransientRetry,
 } from "../lib/cad-operator-production.js";
 import { chargeExistingProduction, PrismaCadProductionStore } from "../lib/cad-operator-production-prisma.js";
 import { downloadManufacturingStl } from "../lib/manufacturing-stl-download.js";
@@ -141,22 +142,24 @@ export async function runCadOperatorGenerateRequest(args: {
                         credentialId: args.principal.credentialId,
                         side: input.side,
                         uploadStl: async (key, bytes) => {
-                            await uploadAsset(
-                                requireStorage(),
-                                key,
-                                bytes,
-                                "model/stl",
-                                MANUFACTURING_BUCKET,
+                            await withOneTransientRetry(
+                                () =>
+                                    uploadAsset(
+                                        requireStorage(),
+                                        key,
+                                        bytes,
+                                        "model/stl",
+                                        MANUFACTURING_BUCKET,
+                                    ),
+                                { opName: "stl-upload" },
                             );
                         },
                     }),
                 slice: async (stlStorageKey) => {
                     const supabase = requireStorage();
-                    const stlUrl = await signedDownloadUrl(
-                        supabase,
-                        stlStorageKey,
-                        3600,
-                        MANUFACTURING_BUCKET,
+                    const stlUrl = await withOneTransientRetry(
+                        () => signedDownloadUrl(supabase, stlStorageKey, 3600, MANUFACTURING_BUCKET),
+                        { opName: "signed-url" },
                     );
                     const stlBytes = await downloadManufacturingStl(stlUrl);
                     const infillDensityPct = infillPctForCadSlice(plan.presetId, plan.printRecipe);
@@ -180,12 +183,16 @@ export async function runCadOperatorGenerateRequest(args: {
                         input.designId,
                         `${input.side}-${Date.now()}-${safeName}`,
                     );
-                    await uploadAsset(
-                        requireStorage(),
-                        storageKey,
-                        Buffer.from(gcode, "utf-8"),
-                        "text/plain",
-                        MANUFACTURING_BUCKET,
+                    await withOneTransientRetry(
+                        () =>
+                            uploadAsset(
+                                requireStorage(),
+                                storageKey,
+                                Buffer.from(gcode, "utf-8"),
+                                "text/plain",
+                                MANUFACTURING_BUCKET,
+                            ),
+                        { opName: "gcode-upload" },
                     );
                     return { storageKey };
                 },

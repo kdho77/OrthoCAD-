@@ -5,6 +5,7 @@ import { TRPCError } from "@trpc/server";
 import { APEX_V2_INSOLE_LOCKED_PROFILE_ID } from "../../../shared/print-recipe/print-recipe";
 import {
     assertEnabledVertexSliceMaterial,
+    listVertexSliceMaterials,
     manufacturingBackendForOutput,
     materialIdsFromPayload,
     sliceWithVertexSlice,
@@ -174,5 +175,100 @@ describe("VertexSlice printer G-code client", () => {
         const sliceCalls = calls.filter((call) => call.url.endsWith("/v1/slice"));
         expect(sliceCalls).toHaveLength(1);
         expect((sliceCalls[0]?.init.body as FormData).get("material")).toBe("apex_light");
+    });
+
+    test("GET /v1/materials is logged and retried once; POST /v1/slice is not retried", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const order: string[] = [];
+        let materials = 0;
+        let slices = 0;
+        const calls = installFetch((url) => {
+            order.push(url.endsWith("/v1/materials") ? "fetch-materials" : "fetch-slice");
+            if (url.endsWith("/v1/materials")) {
+                materials += 1;
+                if (materials === 1) {
+                    return new Response(
+                        JSON.stringify({ detail: "token=sekret-token Jane Doe settingsJson" }),
+                        {
+                            status: 503,
+                        },
+                    );
+                }
+                return new Response(JSON.stringify(["apex_core", "apex_light"]), { status: 200 });
+            }
+            slices += 1;
+            return new Response("G1 X0\n", { status: 200 });
+        });
+        const lines: string[] = [];
+        const originalLog = console.log;
+        const originalError = console.error;
+        const originalWarn = console.warn;
+        const push = (...args: unknown[]) => {
+            lines.push(args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "));
+        };
+        console.log = (...args: unknown[]) => {
+            order.push(String(args[0]));
+            push(...args);
+        };
+        console.error = push;
+        console.warn = push;
+        try {
+            const gcode = await sliceWithVertexSlice({
+                profileId: "apex-v2-insole-95a",
+                material: "apex_core",
+                model: new Uint8Array([1, 2, 3, 4]),
+                infillDensityPct: 32,
+            });
+            expect(gcode).toContain("G1");
+        } finally {
+            console.log = originalLog;
+            console.error = originalError;
+            console.warn = originalWarn;
+        }
+        expect(materials).toBe(2);
+        expect(slices).toBe(1);
+        expect(calls.filter((call) => call.url.endsWith("/v1/slice"))).toHaveLength(1);
+        expect(order[0]).toBe("[vertexslice] -> GET /v1/materials");
+        expect(order).toContain("[vertexslice] <- GET /v1/materials");
+        const text = lines.join("\n");
+        expect(text).toContain('"ok":true');
+        expect(text).toContain('"count":2');
+        expect(text).not.toMatch(/sekret|Jane Doe|settingsJson|super-secret-key|\?/);
+    });
+
+    test("a slice HTTP failure is a single POST and a materials 401 is a single GET", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        let materials = 0;
+        let slices = 0;
+        installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                materials += 1;
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            slices += 1;
+            return new Response("nope token=sekret-token", { status: 500 });
+        });
+        await expect(
+            sliceWithVertexSlice({
+                profileId: "apex-v2-insole-95a",
+                material: "apex_core",
+                model: new Uint8Array([1]),
+                infillDensityPct: 32,
+            }),
+        ).rejects.toThrow(/VertexSlice error \(500\)/);
+        expect(materials).toBe(1);
+        expect(slices).toBe(1);
+
+        materials = 0;
+        installFetch(() => {
+            materials += 1;
+            return new Response(JSON.stringify({ detail: "bad token=sekret-token" }), { status: 401 });
+        });
+        await expect(listVertexSliceMaterials({ sleep: async () => undefined })).rejects.toThrow(
+            /VertexSlice error \(401\)/,
+        );
+        expect(materials).toBe(1);
     });
 });
