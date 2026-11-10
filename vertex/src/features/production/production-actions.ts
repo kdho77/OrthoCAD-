@@ -180,6 +180,65 @@ export function revokeBridgeEnrollment(bridgeId: string, shop?: ProductionShop):
     return trpc.production.revokeBridge.mutate({ bridgeId, ...shopInput(shop) }).then(() => undefined);
 }
 
+export function approveBridgePairing(input: {
+    code: string;
+    bridgeName: string;
+    replaceBridgeId?: string;
+    shop?: ProductionShop;
+}): Promise<{ bridgeId: string; bridgeName: string }> {
+    if (!isApiConfigured()) {
+        return Promise.reject(new Error("Production API is not configured."));
+    }
+    const { shop, ...rest } = input;
+    return trpc.production.approveBridgePairing.mutate({ ...rest, ...shopInput(shop) });
+}
+
+export function listEnrolledBridges(shop?: ProductionShop): Promise<{
+    bridges: { id: string; name: string }[];
+}> {
+    if (!isApiConfigured()) return Promise.resolve({ bridges: [] });
+    return trpc.production.listEnrolledBridges.query(shopInput(shop));
+}
+
+export function listBridgeDiscovery(): Promise<{
+    candidates: Array<{
+        bridgeId: string;
+        host: string;
+        port: number;
+        address: string;
+        source: "mdns" | "scan";
+        info: {
+            hostname: string | null;
+            moonrakerVersion: string | null;
+            klippyState: string | null;
+            apiVersion: string | null;
+        } | null;
+    }>;
+    lastTest: {
+        address: string;
+        info: {
+            hostname: string | null;
+            moonrakerVersion: string | null;
+            klippyState: string | null;
+            apiVersion: string | null;
+        } | null;
+        checkedAt: string;
+    } | null;
+}> {
+    if (!isApiConfigured()) return Promise.resolve({ candidates: [], lastTest: null });
+    return trpc.production.listBridgeDiscovery.query();
+}
+
+export function requestPrinterConnectionTest(input: {
+    bridgeId: string;
+    address: string;
+}): Promise<{ pending: true; address: string; method: "GET"; path: "/server/info" }> {
+    if (!isApiConfigured()) {
+        return Promise.reject(new Error("Production API is not configured."));
+    }
+    return trpc.production.requestPrinterConnectionTest.mutate(input);
+}
+
 export function registerConfiguredProductionPrinter(input: RegisterConfiguredPrinterInput): Promise<void> {
     return samePath(
         () => trpc.production.registerConfiguredPrinter.mutate(input).then(() => undefined),

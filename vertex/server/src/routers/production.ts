@@ -9,8 +9,10 @@ import {
     saveMoonrakerPrinter,
     setMoonrakerPrinterEnabled,
 } from "../../../shared/moonraker-farm.js";
+import { readOnlyInfoRequest } from "../../../shared/print-bridge-discovery.js";
 import { createEnrollment } from "../../../shared/print-bridge-enrollment.js";
 import { closedPrinterDispatch } from "../../../shared/printer-adapter.js";
+import { productionAddressPolicy } from "../../../shared/printer-address-policy.js";
 import {
     assignJob,
     cancelDispatchedPrint,
@@ -335,6 +337,95 @@ export const productionRouter = router({
                 );
                 if (!ok) throw new ProductionError("NOT_FOUND", "Bridge not found.");
                 return { revoked: true };
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    approveBridgePairing: bridgeAdminProcedure
+        .input(
+            z.object({
+                code: z.string().min(4).max(32),
+                bridgeName: z.string().min(1).max(80),
+                replaceBridgeId: z.string().uuid().optional(),
+                ...shopSelection,
+            }),
+        )
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { actor } = await scopeShop(ctx, input, "require");
+                if (!actor.tenantId) throw new ProductionError("BAD_REQUEST", "A tenant is required.");
+                const result = await serverBridgeDirectory.approvePairing({
+                    code: input.code,
+                    tenantId: actor.tenantId,
+                    shopId: actor.tenantId,
+                    bridgeName: input.bridgeName,
+                    now: new Date(),
+                    replaceBridgeId: input.replaceBridgeId,
+                });
+                if (!result.ok) {
+                    const message =
+                        result.reason === "expired"
+                            ? "That pairing code is expired."
+                            : result.reason === "used"
+                              ? "That pairing code was already used."
+                              : "That pairing code was not found.";
+                    throw new ProductionError("BAD_REQUEST", message);
+                }
+                return { bridgeId: result.bridgeId, bridgeName: input.bridgeName.trim() };
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    listEnrolledBridges: bridgeAdminProcedure
+        .input(z.object(shopSelection).optional())
+        .query(async ({ ctx, input }) => {
+            try {
+                const { actor } = await scopeShop(ctx, input, "optional");
+                if (!actor.tenantId) return { bridges: [] };
+                return { bridges: await serverBridgeDirectory.listEnrolledBridges(actor.tenantId) };
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    listBridgeDiscovery: protectedProcedure.query(async ({ ctx }) => {
+        try {
+            const { actor } = await scope(ctx);
+            if (!actor.tenantId) return { candidates: [], lastTest: null };
+            return await serverBridgeDirectory.listDiscovery(actor.tenantId);
+        } catch (error) {
+            rethrowProduction(error);
+        }
+    }),
+
+    requestPrinterConnectionTest: protectedProcedure
+        .input(z.object({ bridgeId: z.string().uuid(), address: z.string().min(1).max(500) }))
+        .mutation(async ({ ctx, input }) => {
+            try {
+                const { actor } = await scope(ctx);
+                if (!actor.tenantId) throw new ProductionError("BAD_REQUEST", "A tenant is required.");
+                const decision = productionAddressPolicy().decide(input.address);
+                if (!decision.ok) throw new ProductionError("BAD_REQUEST", decision.reason);
+                const probe = readOnlyInfoRequest(input.address, productionAddressPolicy());
+                if ("error" in probe) throw new ProductionError("BAD_REQUEST", probe.error);
+                if (probe.method !== "GET" || probe.url.pathname !== "/server/info") {
+                    throw new ProductionError("BAD_REQUEST", "Connection test is read-only.");
+                }
+                const result = await serverBridgeDirectory.requestConnectionTest({
+                    tenantId: actor.tenantId,
+                    bridgeId: input.bridgeId,
+                    address: input.address,
+                    now: new Date(),
+                });
+                if (!result.ok) throw new ProductionError("BAD_REQUEST", result.reason);
+                return {
+                    pending: true as const,
+                    address: result.address,
+                    method: "GET" as const,
+                    path: "/server/info" as const,
+                };
             } catch (error) {
                 rethrowProduction(error);
             }

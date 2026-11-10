@@ -85,7 +85,17 @@ Do not drop `shop_jobs`, `shop_printers`, or `job_gcode` as part of that rollbac
 
 ## Local Moonraker bridge
 
-The shop computer runs `vertex/print-bridge/main.ts`. It opens an outbound HTTPS connection to `ORTHOCAD_BRIDGE_CLOUD_ORIGIN` and then talks to Moonraker on the LAN. It does not listen for inbound printer traffic. Moonraker is not given a public port.
+The shop computer installs the print bridge by opening a Windows setup file or a macOS package. It does not type a command. See `vertex/print-bridge/PACKAGING.md`. The installed service (Windows) or LaunchAgent (macOS) opens an outbound HTTPS connection to the OrthoCAD origin and then talks to Moonraker on the LAN. It does not listen for inbound printer traffic. Moonraker is not given a public port.
+
+After install, the bridge shows a short pairing code and opens Production, Printers. An admin approves that code. The code is not a credential. The bridge then receives a credential and stores it with Windows DPAPI or the macOS Keychain. The product UI does not display an enrollment proof or a credential. `POST /print-bridge/v1/enroll` still redeems a one-time proof for an already scripted bridge, and the database still stores only hashes.
+
+An already enrolled bridge keeps its credential. The installer imports a plaintext `credential` file into the OS store, deletes that file, and does not force pairing. Heartbeats with `Authorization: Bearer` and a body of `{bridgeId}` still authenticate. The installed process loops those heartbeats itself. `runBridgeSession` still defaults to one cycle for tests and `vertex/print-bridge/main.ts`.
+
+The bridge reports LAN printers from `_moonraker._tcp` and a port-7125 scan, then `GET /server/info` only. The Printers page can request that same read-only check. Discovery and the connection test do not upload, start, pause, resume, cancel, heat, move, or send `printer.gcode.script`.
+
+Installed bridges apply a signed update manifest when the version is newer. Unsigned, tampered, expired, and downgrade manifests are rejected. That is how per-printer Moonraker status reaches a bridge that is already installed. No private signing key is in this repo.
+
+`vertex/print-bridge/main.ts` remains for development. It is not the shop install path.
 
 Documented Moonraker calls, and only these: `POST /server/files/upload` with `print=false`, `POST /printer/print/start`, `GET /printer/objects/query?webhooks&virtual_sdcard&print_stats`, JSON-RPC `printer.objects.query` on `/websocket`, and `POST /printer/print/pause|resume|cancel` when the operator asked and cancellation is explicit. `printer.gcode.script` is not called. Upload and start are separate. A timeout after a possible start stays uncertain and is not sent again.
 
@@ -96,15 +106,15 @@ Config names:
 - `ORTHOCAD_CLOUD_ORIGIN` — server only. The https origin that serves `/print-bridge/v1`. It must be the same string as the bridge's `ORTHOCAD_BRIDGE_CLOUD_ORIGIN`. `production.createBridgeEnrollment` refuses with "Cloud origin is not configured." when this is unset or not https. It is not set on the hosted project by this change.
 - `ORTHOCAD_BRIDGE_CLOUD_ORIGIN` — bridge. Must equal `ORTHOCAD_CLOUD_ORIGIN`.
 - `ORTHOCAD_BRIDGE_ID` — bridge.
-- `ORTHOCAD_BRIDGE_STATE_DIR` — bridge. The credential file is written here, mode 0600.
-- `ORTHOCAD_BRIDGE_ENROLLMENT_PROOF` — bridge, one enroll only.
+- `ORTHOCAD_BRIDGE_STATE_DIR` — bridge. The installed bridge keeps config here. The credential is not a plaintext file. A legacy `credential` file in this directory is imported into DPAPI or the Keychain and removed.
+- `ORTHOCAD_BRIDGE_ENROLLMENT_PROOF` — legacy command-line enroll only. The product UI does not display it.
 - `ORTHOCAD_MOONRAKER_API_KEY_FILE` — bridge, optional filesystem path. The bridge reads that file once at startup and sends the contents as `X-Api-Key` on Moonraker HTTP calls only. The key is not sent to the cloud, not written into the credential file, and not logged. If the variable is set and the file is missing, empty, or unreadable, the bridge exits before it dials anything. If the variable is unset, Moonraker is called without a key and the shop should use Moonraker `[authorization] trusted_clients`. The websocket status query does not put the key on the URL; authenticated status uses the HTTP query.
 
 Founder example addresses are not stored in this repo.
 
 `/print-bridge/v1/enroll`, `heartbeat`, `report`, and `artifact` are served by the Vercel function `vertex/api/print-bridge` and by the standalone Node server. Both call `handlePrintBridgeNode`. Enrollments and credential hashes persist in `shop_bridges` and `shop_enrollments`. A proof is redeemed once. Artifact reads are ranges of 1 MiB so a multi-megabyte insole G-code stays under Vercel's response limit. The bridge checks sha256 after it reassembles the ranges.
 
-Start, from `vertex/`: `npx tsx print-bridge/main.ts`. Node 22. Revocation makes the next heartbeat fail and stops new work. An in-flight print is not cancelled automatically and is not sent again.
+Shop start is the installer built by `.github/workflows/print-bridge-package.yml` and published by `.github/workflows/print-bridge-release.yml`. The release origin is `https://orthocad.vertexorthopedic.com`. An existing enrolled bridge is found from Task Scheduler XML, `%PROGRAMDATA%\OrthoCAD\PrintBridge`, or the user profile, imported into DPAPI or the Keychain, and the old scheduled task is disabled by the installer. If no credential is found, browser pairing is used and an admin can replace an existing bridge instead of creating a new one. Development start, from `vertex/`, remains `npx tsx print-bridge/main.ts` with Node 22. Revocation makes the next heartbeat fail and stops new work. An in-flight print is not cancelled automatically and is not sent again.
 
 `print-bridge.review.sql` is not under `prisma/migrations`. `shop-rls.review.sql` enables row level security on `shop_printers`, `shop_jobs`, and `job_gcode` and is also not under `prisma/migrations`. Neither file is applied by this change. Apply only with Founder approval, after the foundation migration. The five ledger and bridge tables already have row level security on. The API reaches these tables through Prisma as the table owner.
 
