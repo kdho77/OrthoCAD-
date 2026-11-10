@@ -50,7 +50,10 @@ export function defaultSplitHardnessPatch(
 }
 
 /** Closed XY outline in element-local mm (scale already applied). */
-export function splitOverlayOutline(el: PlacedElement): { x: number; y: number }[] {
+export function splitOverlayOutline(
+    el: PlacedElement,
+    frame?: { lengthMm: number; widthMm: number; outline?: { x: number; y: number }[] | null },
+): { x: number; y: number }[] {
     if (el.kind === "custom") {
         const rx = Math.max(4, 12 * el.scale.x);
         const ry = Math.max(4, 12 * el.scale.y);
@@ -61,7 +64,7 @@ export function splitOverlayOutline(el: PlacedElement): { x: number; y: number }
         }
         return pts;
     }
-    return elementOutlineLocalMm(el.kind, el.scale.x, el.scale.y, el.side, 36);
+    return elementOutlineLocalMm(el.kind, el.scale.x, el.scale.y, el.side, 36, frame);
 }
 
 export function applyDefaultSplitHardness(elements: PlacedElement[]): PlacedElement[] {

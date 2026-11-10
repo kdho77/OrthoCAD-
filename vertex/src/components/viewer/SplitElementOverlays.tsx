@@ -48,16 +48,19 @@ function SplitPatch({
     const color = elementPreviewColor(element, true, selected, splitOn);
 
     const { fill, ring } = useMemo(() => {
-        const pts = splitOverlayOutline({
-            ...element,
-            scale: preview?.scale ?? element.scale,
-        });
+        const pts = splitOverlayOutline(
+            {
+                ...element,
+                scale: preview?.scale ?? element.scale,
+            },
+            { lengthMm: centerX * 2, widthMm },
+        );
         const fillGeo = outlineGeometry(pts);
         const ringPts = pts.map((p) => new THREE.Vector3(p.x, p.y, 0.15));
         if (ringPts[0]) ringPts.push(ringPts[0].clone());
         const ringGeo = new THREE.BufferGeometry().setFromPoints(ringPts);
         return { fill: fillGeo, ring: ringGeo };
-    }, [element, preview?.scale]);
+    }, [element, preview?.scale, centerX, widthMm]);
 
     useEffect(
         () => () => {

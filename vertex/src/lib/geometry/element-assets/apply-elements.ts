@@ -11,7 +11,7 @@ import {
     ELEMENT_LIFT_ATTRIBUTE,
     ELEMENT_OWNER_ATTRIBUTE,
 } from "@/lib/geometry/element-visualization";
-import { elementHeightAt } from "@/lib/geometry/elements";
+import { elementHeightAt, REMAINING_MATERIAL_MM } from "@/lib/geometry/elements";
 import { heightFieldYFromMeshY } from "@/lib/geometry/handedness";
 import {
     EDGE_FEATHER_EASE_START_R,
@@ -252,11 +252,11 @@ function applyProceduralElements(
         const yMm = heightFieldYFromMeshY(widCoord - frame.widCenter);
         const { u, vSigned: vs } = vertexFootprintAt(frame, basePos, i);
         if (rimBandClipFactor(u, vs, field) < 0.5) continue;
-        const h = elementHeightAt(procedural, xFromHeel, yMm, field.lengthMm);
+        const h = elementHeightAt(procedural, xFromHeel, yMm, field.lengthMm, field.widthMm);
         if (h === 0) continue;
         const z0 = arr[i * 3 + ta]!;
         if (h > 0) arr[i * 3 + ta] = Math.max(z0, z0 + h);
-        else arr[i * 3 + ta] = Math.min(z0, z0 + h);
+        else arr[i * 3 + ta] = Math.max(REMAINING_MATERIAL_MM, z0 + h);
     }
 }
 

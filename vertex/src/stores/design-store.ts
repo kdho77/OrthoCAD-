@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { footOutlineForSide } from "@/components/viewer/element-footprints";
 import {
     applyCorrectionPresetToDesign,
     type CorrectionPresetApplyMode,
@@ -19,7 +20,7 @@ import {
 } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
-import { defaultElementPose } from "@/lib/geometry/elements";
+import { defaultElementPose, elementPlacementRefusal } from "@/lib/geometry/elements";
 import {
     migrateCorrections,
     migrateDesignSinks,
@@ -55,6 +56,7 @@ import { serializeTrimlineCurve, type TrimlineCurve } from "@/lib/geometry/triml
 import { applyDefaultSplitHardness, defaultSplitHardnessPatch } from "@/lib/hardness/split-overlay";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
+import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useClientStore } from "@/stores/client-store";
 import { buildEffectiveTrimlines, useIssuesStore } from "@/stores/issues-store";
@@ -527,7 +529,10 @@ export interface DesignStore {
     /** Live production constraint violations for the current design (derived). */
     getActiveViolations: () => ConstraintViolation[];
 
-    addElement: (kind: ElementKind, side: Side) => void;
+    /** Shown when a library element is refused (duplicate wedge, exclusivity). */
+    elementNotice: string | null;
+    clearElementNotice: () => void;
+    addElement: (kind: ElementKind, side: Side, options?: { allowReverseMortonsWithRkw?: boolean }) => void;
     addCustomElement: (customElementId: string, customName: string, side: Side) => void;
     updateElement: (id: string, patch: Partial<PlacedElement>) => void;
     setElementHardness: (id: string, hardness: NamedHardnessClass) => void;
@@ -634,6 +639,7 @@ export const useDesignStore = create<DesignStore>()(
                 wallModel: "procedural",
             },
             selectedElementId: null,
+            elementNotice: null,
             transformMode: "translate",
             history: [],
             future: [],
@@ -994,11 +1000,29 @@ export const useDesignStore = create<DesignStore>()(
                     };
                 }),
 
-            addElement: (kind, side) => {
+            clearElementNotice: () => set({ elementNotice: null }),
+
+            addElement: (kind, side, options) => {
+                const refusal = elementPlacementRefusal(
+                    kind,
+                    side,
+                    get().design.elements,
+                    (get().design.sinks?.[side] ?? []).map((sink) => sink.kind),
+                    options,
+                );
+                if (refusal) {
+                    set({ elementNotice: refusal });
+                    return;
+                }
                 get().checkpoint("add-element");
                 set((s) => {
                     const layout = insoleLayoutFromDesign(s.design);
-                    const pose = defaultElementPose(kind, side, layout.lengthMm, layout.widthMm);
+                    const outline = footOutlineForSide(
+                        s.design,
+                        side,
+                        useBaseOutlineStore.getState().outlines,
+                    );
+                    const pose = defaultElementPose(kind, side, layout.lengthMm, layout.widthMm, outline);
                     const id = crypto.randomUUID();
                     const el: PlacedElement = {
                         id,
@@ -1010,7 +1034,7 @@ export const useDesignStore = create<DesignStore>()(
                     const next = { ...s.design, elements: [...s.design.elements, el] };
                     const eff = buildEffectiveTrimlines(next);
                     useIssuesStore.getState().recompute(next, eff);
-                    return { design: next, selectedElementId: el.id };
+                    return { design: next, selectedElementId: el.id, elementNotice: null };
                 });
             },
 
@@ -1199,6 +1223,15 @@ export const useDesignStore = create<DesignStore>()(
             addSink: (kind, side) => {
                 const current = sinksForSide(get().design, side) ?? [];
                 if (current.some((s) => s.kind === kind)) return;
+                if (
+                    kind === "rkw" &&
+                    get().design.elements.some((el) => el.side === side && el.kind === "mortons_extension")
+                ) {
+                    set({
+                        elementNotice: "Morton's and the reverse kinetic wedge cannot be on the same foot.",
+                    });
+                    return;
+                }
                 get().checkpoint("add-sink");
                 set((s) => {
                     const list = sinksForSide(s.design, side) ?? [];

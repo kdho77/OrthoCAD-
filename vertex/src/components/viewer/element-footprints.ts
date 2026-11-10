@@ -1,10 +1,13 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import { DESIGN_ELEMENT_COLOR } from "@/lib/geometry/element-visualization";
 import { ELEMENT_PROFILES, type ElementShape } from "@/lib/geometry/elements";
 import { medialSign, meshYFromAnatomicalLateral } from "@/lib/geometry/handedness";
 import { heightAt } from "@/lib/geometry/height-field";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { sinkStyloidThickenForSide, sinksForSide } from "@/lib/geometry/migrate-corrections";
+import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-id";
 import {
     type SinkOutlinePoint,
     type SinkOvalFrame,
@@ -26,6 +29,16 @@ export const SINK_FOOTPRINT_COLORS = {
     selectedFill: "#ff00ff",
     selectedEdge: "#ffffff",
     selectedOpacity: 1,
+} as const;
+
+/** Visible recess for Reverse Morton's and the kinetic wedge. */
+export const RECESS_FOOTPRINT_COLORS = {
+    fill: "#38bdf8",
+    edge: "#e0f2fe",
+    opacity: 0.85,
+    selectedFill: "#22c55e",
+    selectedEdge: "#ffffff",
+    selectedOpacity: 0.9,
 } as const;
 
 /** Solid design-element purple for Morton's extension, visible on the insole top. */
@@ -56,7 +69,7 @@ export interface FootprintPose {
     /** Closed ring in element-local mm, centered on the pose. */
     outline: { x: number; y: number }[];
     /** Design additions use the purple element color. Sinks stay magenta. */
-    tone?: "sink" | "design";
+    tone?: "sink" | "design" | "recess";
 }
 
 export function footprintStyle(selected: boolean): { color: string; opacity: number; edge: string } {
@@ -87,9 +100,27 @@ export function designFootprintStyle(selected: boolean): { color: string; opacit
           };
 }
 
-/** Morton's extension is drawn as a colored planform. Pads and wedges are not. */
+export function recessFootprintStyle(selected: boolean): { color: string; opacity: number; edge: string } {
+    return selected
+        ? {
+              color: RECESS_FOOTPRINT_COLORS.selectedFill,
+              opacity: RECESS_FOOTPRINT_COLORS.selectedOpacity,
+              edge: RECESS_FOOTPRINT_COLORS.selectedEdge,
+          }
+        : {
+              color: RECESS_FOOTPRINT_COLORS.fill,
+              opacity: RECESS_FOOTPRINT_COLORS.opacity,
+              edge: RECESS_FOOTPRINT_COLORS.edge,
+          };
+}
+
+/** Raising Morton's and the lowering 1st-ray / kinetic-wedge recesses. */
 export function showsDesignFootprint(element: PlacedElement): boolean {
-    return element.kind === "mortons_extension";
+    return (
+        element.kind === "mortons_extension" ||
+        element.kind === "reverse_mortons" ||
+        element.kind === "kinetic_wedge"
+    );
 }
 
 /** Heel and navicular library elements. Wedges, pads, and other additions are not sinks. */
@@ -151,9 +182,38 @@ function outlineHalfExtents(outline: { x: number; y: number }[]): {
     return { halfLengthMm: (maxX - minX) / 2, halfWidthMm: (maxY - minY) / 2 };
 }
 
+/**
+ * Mesh outline in the base's footprint frame, when the viewer has published one.
+ * Morton's uses it so the medial edge sits on the insole that is on screen.
+ */
+export function footOutlineForSide(
+    design: DesignState,
+    side: Side,
+    outlines: Record<string, { points: { x: number; y: number }[] } | undefined>,
+): { x: number; y: number }[] | null {
+    const wallModel = design.viewer?.wallModel ?? "procedural";
+    const base = getDesignBase(design, side);
+    const proceduralKey =
+        wallModel === "procedural" && base
+            ? `${SAMPLE_TOP_ASSET_ID}:${side}:${base.mirrored ? "m" : "p"}`
+            : null;
+    const baseKey = getBaseCacheKey(base) ?? base?.assetId ?? null;
+    const curve = (proceduralKey ? outlines[proceduralKey] : null) ?? (baseKey ? outlines[baseKey] : null);
+    if (!curve || curve.points.length < 6) return null;
+    return curve.points.map((p) => ({ x: p.x, y: p.y }));
+}
+
 /** Clinical planform of a library heel or navicular sink. Scale and side are already applied. */
-export function elementFootprintPose(element: PlacedElement, lengthMm: number): FootprintPose {
-    const outline = splitOverlayOutline(element);
+export function elementFootprintPose(
+    element: PlacedElement,
+    lengthMm: number,
+    widthMm = (lengthMm / INSOLE_LENGTH_MM) * INSOLE_WIDTH_MM,
+    footOutline?: { x: number; y: number }[] | null,
+): FootprintPose {
+    const outline = splitOverlayOutline(
+        element,
+        element.kind === "mortons_extension" ? { lengthMm, widthMm, outline: footOutline } : undefined,
+    );
     const extents = outlineHalfExtents(outline);
     return {
         id: element.id,
@@ -165,7 +225,12 @@ export function elementFootprintPose(element: PlacedElement, lengthMm: number): 
         halfLengthMm: extents.halfLengthMm,
         halfWidthMm: extents.halfWidthMm,
         outline,
-        tone: element.kind === "mortons_extension" ? "design" : "sink",
+        tone:
+            element.kind === "mortons_extension"
+                ? "design"
+                : element.kind === "reverse_mortons" || element.kind === "kinetic_wedge"
+                  ? "recess"
+                  : "sink",
     };
 }
 

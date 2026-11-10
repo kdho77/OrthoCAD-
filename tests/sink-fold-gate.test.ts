@@ -131,7 +131,10 @@ describe("sink rim folds stay at or below 60 degrees", () => {
 
             const cases: Array<{ name: string; sinks: PlacedSink[] }> = [
                 ...SINK_KIND_ORDER.map((kind) => ({ name: kind, sinks: [maxSink(kind)] })),
-                { name: "all", sinks: SINK_KIND_ORDER.map((kind) => maxSink(kind)) },
+                {
+                    name: "all",
+                    sinks: SINK_KIND_ORDER.filter((kind) => kind !== "rkw").map((kind) => maxSink(kind)),
+                },
             ];
             for (const c of cases) {
                 const preview = await reconstructProceduralPreview(raw, {

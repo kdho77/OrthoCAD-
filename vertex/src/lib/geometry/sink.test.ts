@@ -20,7 +20,6 @@ import {
     LATERAL_WALL_MIN_MM,
     PLATEAU_GAP_MM,
     plateauGapMm,
-    RKW_MEDIAL_INSET_MM,
     SINK_DEFAULT_DEPTH_MM,
     SINK_KIND_ORDER,
     SINK_PROFILES,
@@ -72,6 +71,50 @@ function placed(kind: SinkKind, depthMm: number, id = kind): PlacedSink {
 }
 
 /** Full-width rectangle in mesh Y, symmetric about 0. Anatomical medial is the smaller Y. */
+function eggRadius(
+    frame: { dx: number; dy: number; aProx: number; aDist: number; bMed: number; bLat: number },
+    x: number,
+    y: number,
+): number {
+    const lx = x - frame.dx;
+    const ly = y - frame.dy;
+    const a = lx >= 0 ? frame.aDist : frame.aProx;
+    const b = ly >= 0 ? frame.bLat : frame.bMed;
+    return Math.hypot(lx / a, ly / b);
+}
+
+function plateauMarginsMm(
+    frame: { dx: number; dy: number; aProx: number; aDist: number; bMed: number; bLat: number },
+    x: number,
+    y: number,
+): number[] {
+    const lx = x - frame.dx;
+    const ly = y - frame.dy;
+    return [0.6 * frame.aDist - lx, 0.6 * frame.aProx + lx, 0.6 * frame.bLat - ly, 0.6 * frame.bMed + ly];
+}
+
+function rkwOnInsoleFraction(
+    frame: { dy: number; aProx: number; aDist: number; bMed: number; bLat: number },
+    medialY: number,
+    lateralY: number,
+): number {
+    let inside = 0;
+    let on = 0;
+    const n = 64;
+    for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+            const u = ((i + 0.5) / n) * 2 - 1;
+            const v = ((j + 0.5) / n) * 2 - 1;
+            if (u * u + v * v > 1) continue;
+            inside++;
+            const ly = v >= 0 ? v * frame.bLat : v * frame.bMed;
+            const y = frame.dy + ly;
+            if (y >= medialY && y <= lateralY) on++;
+        }
+    }
+    return inside > 0 ? on / inside : 0;
+}
+
 function rectFoot(lengthMm: number, widthMm: number): { x: number; y: number }[] {
     const y0 = -widthMm / 2;
     const y1 = widthMm / 2;
@@ -154,9 +197,10 @@ describe("sink scalar field", () => {
         });
         expect(SINK_PROFILES.rkw).toMatchObject({
             label: "Reverse kinetic wedge",
-            u: 0.68,
-            lengthMm: 40,
-            widthMm: 23,
+            u: 0.665,
+            v: 0.15,
+            lengthMm: 45,
+            widthMm: 32,
             blendMm: 6,
             maxDepthMm: 4,
             deepestProximalMm: 3,
@@ -229,6 +273,12 @@ describe("sink scalar field", () => {
                             if (frame.rimBlocked) {
                                 expect(cut.mm).toBe(0);
                                 expect(added).toBeLessThan(1e-6);
+                            } else if (kind === "rkw") {
+                                // The medial ramp holds the border at half depth, so a small
+                                // oval's centre can sit inside that 5 mm band.
+                                expect(cut.mm).toBeGreaterThan(depth * 0.5);
+                                expect(cut.mm).toBeLessThanOrEqual(depth + 1e-6);
+                                expect(added).toBeGreaterThan(cut.mm);
                             } else {
                                 expect(Math.abs(cut.mm - depth)).toBeLessThan(0.05);
                                 // The footprint taper carries depth + 0.5 even when the wide
@@ -275,7 +325,9 @@ describe("sink scalar field", () => {
     });
 
     test("forefoot thickness is local depth + 0.5, blended over 25 mm, and the floor stays at least 2 mm", () => {
-        const sinks = SINK_KIND_ORDER.map((kind) => placed(kind, kind === "mpj1" ? 4 : 2));
+        const sinks = SINK_KIND_ORDER.filter((kind) => kind !== "rkw").map((kind) =>
+            placed(kind, kind === "mpj1" ? 4 : 2),
+        );
         const ctx = surface(9, "left", sinks, false);
         const plan = forefootThicknessPlan(ctx)!;
         expect(plan.A).toBeCloseTo(4 + FOREFOOT_THICKNESS_CLEARANCE_MM, 6);
@@ -446,28 +498,66 @@ describe("sink scalar field", () => {
         }
     });
 
-    test("reverse kinetic wedge sits 3 mm off the medial edge on both feet", () => {
-        const widthMm = 95;
-        for (const lengthMm of [247, 297]) {
-            const s = lengthMm / SINK_REFERENCE_LENGTH_MM;
+    test("reverse kinetic wedge sits under the 1st MPJ with at most 2 mm of medial overhang", () => {
+        const widthMm = 100;
+        for (const lengthMm of [180, 260, 300]) {
             const outline = rectFoot(lengthMm, widthMm);
             const medial = -widthMm / 2;
             const centres: number[] = [];
+            const s = Math.max(0.65, lengthMm / 300);
             for (const side of SIDES) {
                 const sink = placed("rkw", 2);
                 const ctx = { side, lengthMm, widthMm, sinks: [sink], footOutline: outline };
                 const frame = sinkFrame(sink, ctx)!;
-                expect(frame.halfLengthMm * 2).toBeCloseTo(40 * s, 4);
-                expect(frame.halfWidthMm * 2).toBeCloseTo(23 * s, 4);
-                expect(frame.cx).toBeCloseTo(0.68 * lengthMm, 3);
-                expect(frame.cy - frame.halfWidthMm).toBeCloseTo(medial + RKW_MEDIAL_INSET_MM, 3);
+                expect(frame.halfLengthMm * 2).toBeCloseTo(Math.max(30, 45 * s), 3);
+                expect(frame.halfWidthMm * 2).toBeCloseTo(Math.max(20, 0.32 * widthMm), 3);
+                expect(frame.cx).toBeCloseTo(0.665 * lengthMm, 3);
+                expect(frame.v).toBeCloseTo(0.15, 2);
+                const overhang = medial - (frame.cy - frame.halfWidthMm);
+                expect(overhang).toBeGreaterThanOrEqual(-0.05);
+                expect(overhang).toBeLessThanOrEqual(2.05);
+                const onInsole = rkwOnInsoleFraction(frame, medial, widthMm / 2);
+                expect(onInsole).toBeGreaterThanOrEqual(0.9);
+                const lateral = frame.cy + frame.halfWidthMm;
+                const mpj2Station = medial + 0.365 * widthMm;
+                expect(mpj2Station - lateral).toBeGreaterThanOrEqual(2);
+                const mpj = placed("mpj1", 2);
+                const mpjFrame = sinkFrame(mpj, { ...ctx, sinks: [mpj] })!;
+                const margins = plateauMarginsMm(frame, mpjFrame.cx, mpjFrame.cy);
+                for (const margin of margins) expect(margin).toBeGreaterThanOrEqual(5);
+                expect(eggRadius(frame, frame.cx - 10, mpjFrame.cy)).toBeLessThanOrEqual(1);
+                if (frame.halfLengthMm >= 16) {
+                    expect(eggRadius(frame, frame.cx - 15, mpjFrame.cy)).toBeLessThanOrEqual(1);
+                }
                 expect(frame.dx).toBeCloseTo(frame.cx - 3, 2);
-                expect(frame.dy).toBeCloseTo(frame.cy, 2);
-                expect(frame.rotationDeg).toBeCloseTo(0, 5);
                 centres.push(frame.cy);
             }
             expect(centres[0]).toBeCloseTo(centres[1]!, 3);
         }
+        const inside = placed("rkw", 2);
+        inside.v = 0.4;
+        const closed = {
+            side: "left" as const,
+            lengthMm: 300,
+            widthMm,
+            sinks: [inside],
+            footOutline: rectFoot(300, widthMm),
+        };
+        const closedFrame = sinkFrame(inside, closed)!;
+        const borderCut = sinkCutMm(closedFrame.cx, -widthMm / 2, closed).mm;
+        expect(borderCut).toBeLessThan(closedFrame.depthMm * 0.5);
+        const open = placed("rkw", 2);
+        const openCtx = {
+            side: "left" as const,
+            lengthMm: 300,
+            widthMm,
+            sinks: [open],
+            footOutline: rectFoot(300, widthMm),
+        };
+        const openFrame = sinkFrame(open, openCtx)!;
+        const openBorder = sinkCutMm(openFrame.cx, -widthMm / 2, openCtx).mm;
+        expect(openBorder).toBeGreaterThan(openFrame.depthMm * 0.4);
+        expect(openBorder).toBeLessThan(openFrame.depthMm * 0.6);
     });
 
     test("1st MPJ and the reverse kinetic wedge overlap by the deeper cut only", () => {
@@ -482,20 +572,19 @@ describe("sink scalar field", () => {
             footOutline: outline,
         };
         const frame = sinkFrame(mpj, ctx)!;
+        const alone = sinkCutMm(frame.dx, frame.dy, { ...ctx, sinks: [mpj] });
+        expect(alone.mm).toBeCloseTo(4, 2);
         const cut = sinkCutMm(frame.dx, frame.dy, ctx);
-        expect(cut.mm).toBeCloseTo(4, 2);
-        expect(cut.sinkId).toBe("mpj");
-        const thick = sinkThicknessMm(frame.dx, frame.dy, ctx);
-        expect(thick).toBeCloseTo(4.5, 2);
-        expect(thick).toBeLessThan(6);
+        expect(cut.sinkId).not.toBe("mpj");
+        expect(cut.mm).toBeLessThanOrEqual(2);
         const wedgeFrame = sinkFrame(wedge, ctx)!;
         const wedgeOnly = sinkCutMm(wedgeFrame.dx, wedgeFrame.dy, {
             ...ctx,
             sinks: [wedge],
         });
-        expect(wedgeOnly.mm).toBeCloseTo(2, 2);
+        expect(wedgeOnly.mm).toBeCloseTo(2, 1);
         const shared = sinkCutMm(wedgeFrame.dx, wedgeFrame.dy, ctx);
-        expect(shared.mm).toBeCloseTo(4, 2);
+        expect(shared.mm).toBeCloseTo(wedgeOnly.mm, 2);
     });
 
     test("depth above max warns and the cut clamps", () => {

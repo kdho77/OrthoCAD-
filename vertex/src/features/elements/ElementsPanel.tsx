@@ -17,8 +17,9 @@ import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
 import { evaluateSinkConstraints } from "@/lib/geometry/clinical-constraints";
 import { loadElementManifest } from "@/lib/geometry/element-assets/element-asset";
 import type { ElementManifestEntry } from "@/lib/geometry/element-assets/types";
-import { ELEMENT_HEIGHT_LIMITS } from "@/lib/geometry/elements";
+import { ELEMENT_HEIGHT_LIMITS, loweringMaterialWarning } from "@/lib/geometry/elements";
 import { sinkStyloidThickenForSide, sinksForSide } from "@/lib/geometry/migrate-corrections";
+import { mortonsExtensionMetrics, mortonsExtensionWarnings } from "@/lib/geometry/mortons-extension";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { SINK_KIND_ORDER, SINK_PROFILES } from "@/lib/geometry/sink";
 import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
@@ -109,9 +110,12 @@ export function ElementsPanel() {
 
     const libraryKinds = useMemo(() => new Set(libraryEntries.map((e) => e.kind)), [libraryEntries]);
 
-    const placeStockElement = (kind: ElementKind) => {
+    const elementNotice = useDesignStore((s) => s.elementNotice);
+    const clearElementNotice = useDesignStore((s) => s.clearElementNotice);
+    const placeStockElement = (kind: ElementKind, options?: { allowReverseMortonsWithRkw?: boolean }) => {
+        clearElementNotice();
         for (const side of elementPlacementSides()) {
-            addElement(kind, side);
+            addElement(kind, side, options);
         }
     };
 
@@ -205,6 +209,22 @@ export function ElementsPanel() {
                     }
                 }}
             />
+            {elementNotice ? (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-200">
+                    <p>{elementNotice}</p>
+                    {elementNotice.includes("explicit override") ? (
+                        <button
+                            type="button"
+                            className="mt-1 underline"
+                            onClick={() =>
+                                placeStockElement("reverse_mortons", { allowReverseMortonsWithRkw: true })
+                            }
+                        >
+                            Place anyway
+                        </button>
+                    ) : null}
+                </div>
+            ) : null}
             <div>
                 <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     Stock Library
@@ -463,6 +483,18 @@ export function ElementsPanel() {
                         }}
                         unit="mm"
                     />
+                    {displaySelected.kind === "mortons_extension" ||
+                    displaySelected.kind === "reverse_mortons" ? (
+                        <MortonsWarnings
+                            heightMm={displaySelected.heightMm}
+                            lengthMm={layoutLength}
+                            widthMm={layoutWidth}
+                        />
+                    ) : null}
+                    {displaySelected.kind === "kinetic_wedge" ||
+                    displaySelected.kind === "reverse_mortons" ? (
+                        <LoweringWarning heightMm={displaySelected.heightMm} topMm={design.thicknessMm} />
+                    ) : null}
                     <SliderField
                         label="Rotation"
                         value={displaySelected.rotationDeg}
@@ -567,6 +599,29 @@ export function ElementsPanel() {
                 side={displaySelected?.side}
             />
         </div>
+    );
+}
+
+function LoweringWarning(props: { heightMm: number; topMm: number }) {
+    const message = loweringMaterialWarning(props.topMm, props.heightMm);
+    if (!message) return null;
+    return <p className="text-[10px] text-amber-600">{message}</p>;
+}
+
+function MortonsWarnings(props: { heightMm: number; lengthMm: number; widthMm: number }) {
+    const padWidth = mortonsExtensionMetrics(props.lengthMm, props.widthMm).forefootPadMm;
+    const warnings = mortonsExtensionWarnings({
+        heightMm: props.heightMm,
+        lengthMm: props.lengthMm,
+        padWidthMm: padWidth,
+    });
+    if (warnings.length === 0) return null;
+    return (
+        <ul className="space-y-0.5 text-[10px] text-amber-600">
+            {warnings.map((message) => (
+                <li key={message}>{message}</li>
+            ))}
+        </ul>
     );
 }
 
