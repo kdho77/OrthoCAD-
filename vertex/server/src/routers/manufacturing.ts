@@ -1,30 +1,20 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { DogfoodUserQuestion } from "../../../shared/dogfood-manufacturing.js";
-import {
-    gyroidInfillPctForHardness,
-    isGyroidManufacturingPreset,
-    migratePrintRecipe,
-    PrintRecipeProfileRequiredError,
-    printRecipeToSnake,
-    printRecipeV1Schema,
-    resolveGyroidManufacturingPrintRecipe,
-} from "../../../shared/print-recipe/print-recipe.js";
+import { printRecipeV1Schema } from "../../../shared/print-recipe/print-recipe.js";
 import { SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
-import {
-    assertCadOperatorGcodeKey,
-    buildCadOperatorGcodeKey,
-    buildCadOperatorTempStlKey,
-} from "../auth/cad-operator.js";
+import { assertCadOperatorGcodeKey, buildCadOperatorTempStlKey } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { getSupabaseAdmin } from "../context.js";
 import { runtimeDogfoodOrderOwnerVerifier } from "../lib/dogfood-order-owner-wire.js";
 import {
     createDogfoodSavedDesign,
     DogfoodOrderIdentityError,
+    IntegrationShoeWidthError,
     prismaDogfoodSavedDesignStore,
 } from "../lib/dogfood-saved-design.js";
 import { callManufacture } from "../lib/manufacturing-client.js";
+import { downloadManufacturingStl } from "../lib/manufacturing-stl-download.js";
 import {
     archiveManufacturingSourceStl,
     deleteManufacturingTempBestEffort,
@@ -32,7 +22,6 @@ import {
 import { RATE_LIMITS } from "../lib/rate-limit.js";
 import { persistSavedDesignSnapshotOnDesign } from "../lib/saved-design-snapshot.js";
 import {
-    assertManufacturingTempKeyForUser,
     buildManufacturingTempStlKey,
     createSignedUpload,
     MANUFACTURING_BUCKET,
@@ -40,17 +29,20 @@ import {
     uploadAsset,
 } from "../lib/storage.js";
 import { assertActiveLicense, getUserTokenBalance, requireSupabaseAdmin } from "../lib/supabase-db.js";
-import { readUpstreamErrorText } from "../lib/upstream-error.js";
-import { manufacturingBackendForOutput, sliceWithVertexSlice } from "../lib/vertexslice-client.js";
+import { sliceWithVertexSlice } from "../lib/vertexslice-client.js";
 import {
     rateLimitedProcedure,
     rateLimitedSessionOrCadProcedure,
     router,
     sessionOrCadOperatorProcedure,
 } from "../trpc.js";
-import { planCadOperatorGenerate } from "./manufacturing-cad.js";
+import {
+    listCadOperatorProductions,
+    readCadOperatorProduction,
+    runCadOperatorGenerateRequest,
+} from "./cad-operator-generate.js";
+import { runSessionGenerateSolid, type SessionManufacturingIo } from "./manufacturing-session.js";
 
-const HYBRID_GCODE_COST = 3;
 const MAX_INLINE_STL_BYTES = 8 * 1024 * 1024;
 
 const grindingStyleSchema = z.object({
@@ -88,27 +80,6 @@ const manufactureInputSchema = z.object({
         .optional(),
 });
 
-async function downloadManufacturingStl(url: string): Promise<Uint8Array> {
-    let response: Response;
-    try {
-        response = await fetch(url);
-    } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: `Could not download manufacturing STL: ${message}`,
-        });
-    }
-    if (!response.ok) {
-        const detail = await readUpstreamErrorText(response);
-        throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: `Could not download manufacturing STL (${response.status}): ${detail}`,
-        });
-    }
-    return new Uint8Array(await response.arrayBuffer());
-}
-
 const uploadStlInputSchema = z.object({
     side: z.enum(["left", "right"]),
     stlBase64: z.string().min(1),
@@ -118,6 +89,104 @@ const uploadStlInputSchema = z.object({
 async function assertActiveLicenseForUser(userId: string): Promise<void> {
     const supabase = requireSupabaseAdmin();
     await assertActiveLicense(supabase, userId);
+}
+
+function sessionManufacturingIo(): SessionManufacturingIo {
+    const supabase = getSupabaseAdmin();
+    return {
+        assertActiveLicense: assertActiveLicenseForUser,
+        async verifyDesignOwner(designId, userId) {
+            const admin = requireSupabaseAdmin();
+            const { data: design, error: designError } = await admin
+                .from("designs")
+                .select("id")
+                .eq("id", designId)
+                .eq("ownerId", userId)
+                .maybeSingle();
+            if (designError) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Failed to verify design ownership: ${designError.message}`,
+                });
+            }
+            if (!design) {
+                throw new TRPCError({
+                    code: "FORBIDDEN",
+                    message: "Design not found or access denied",
+                });
+            }
+        },
+        async getTokenBalance(userId) {
+            return getUserTokenBalance(requireSupabaseAdmin(), userId);
+        },
+        storageAvailable: () => Boolean(supabase),
+        async signedDownloadUrl(storageKey) {
+            if (!supabase) {
+                throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
+            }
+            return signedDownloadUrl(supabase, storageKey, 3600, MANUFACTURING_BUCKET);
+        },
+        downloadStl: downloadManufacturingStl,
+        sliceWithVertexSlice,
+        callManufacture,
+        async charge(chargeArgs) {
+            if (!supabase) {
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: "Supabase admin client not configured",
+                });
+            }
+            const { data: chargeData, error: chargeError } = await supabase.rpc(
+                "vertex_charge_manufacturing_hybrid",
+                chargeArgs,
+            );
+            if (chargeError) {
+                if (chargeError.message.includes("INSUFFICIENT_TOKENS")) {
+                    throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
+                }
+                if (chargeError.message.includes("NO_VALID_LICENSE")) {
+                    throw new TRPCError({ code: "FORBIDDEN", message: "No valid license" });
+                }
+                throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message: `Manufacturing charge failed: ${chargeError.message}`,
+                });
+            }
+            return chargeData as {
+                productionId: string | null;
+                exportId: string;
+                balance: number;
+                jobId: string;
+            };
+        },
+        async uploadOutput(storageKey, bytes, contentType) {
+            if (!supabase) {
+                throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
+            }
+            await uploadAsset(supabase, storageKey, bytes, contentType, MANUFACTURING_BUCKET);
+        },
+        async signedOutputUrl(storageKey) {
+            if (!supabase) {
+                throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
+            }
+            return signedDownloadUrl(supabase, storageKey, 3600, MANUFACTURING_BUCKET);
+        },
+        async updateExportStorage(exportId, storageKey) {
+            if (!supabase) return;
+            await supabase.from("exports").update({ storageKey }).eq("id", exportId);
+        },
+        async updateProductionGcode(productionId, storageKey) {
+            if (!supabase) return;
+            await supabase.from("productions").update({ gcodeStorageKey: storageKey }).eq("id", productionId);
+        },
+        async archiveSourceStl(archiveArgs) {
+            if (!supabase) return;
+            await archiveManufacturingSourceStl(supabase, archiveArgs);
+        },
+        async deleteTemp(storageKey) {
+            deleteManufacturingTempBestEffort(supabase, storageKey);
+        },
+    };
 }
 
 export const manufacturingRouter = router({
@@ -233,371 +302,76 @@ export const manufacturingRouter = router({
             if (!ctx.user && !cadOperator) {
                 throw new TRPCError({ code: "UNAUTHORIZED", message: "Authentication required" });
             }
-            if (cadOperator && (!input.designId || !input.side)) {
-                throw new TRPCError({
-                    code: "BAD_REQUEST",
-                    message: "CAD-operator G-code requires designId and side",
-                });
-            }
-
-            let stlStorageKey = input.stlStorageKey;
-            let presetId = input.presetId;
-            let printRecipe = input.printRecipe;
-            let material = input.material;
-            let beltAngleDeg = input.beltAngleDeg;
-            let requestedOutputType = input.outputType;
-            let actorUserId = ctx.user?.id ?? "";
-            let manufacturingFingerprint: string | null = null;
-
-            if (cadOperator && input.designId && input.side) {
-                const supabaseForPlan = getSupabaseAdmin();
-                let plan: Awaited<ReturnType<typeof planCadOperatorGenerate>>;
+            if (cadOperator) {
+                if (!input.designId || !input.side) {
+                    throw new TRPCError({
+                        code: "BAD_REQUEST",
+                        message: "CAD-operator G-code requires designId and side",
+                    });
+                }
                 try {
-                    plan = await planCadOperatorGenerate({
+                    return await runCadOperatorGenerateRequest({
                         prisma: ctx.prisma,
                         principal: cadOperator,
-                        designId: input.designId,
-                        side: input.side,
-                        outputType: input.outputType,
-                        useSavedDesignMesh: input.useSavedDesignMesh === true,
-                        stlStorageKey,
-                        patientName: input.patientName,
-                        hardness: input.hardness,
-                        uploadStl: async (key, bytes) => {
-                            if (!supabaseForPlan) {
-                                throw new TRPCError({
-                                    code: "INTERNAL_SERVER_ERROR",
-                                    message: "Storage not available",
-                                });
-                            }
-                            await uploadAsset(supabaseForPlan, key, bytes, "model/stl", MANUFACTURING_BUCKET);
+                        ip: ctx.ip,
+                        input: {
+                            designId: input.designId,
+                            side: input.side,
+                            presetId: input.presetId,
+                            stlStorageKey: input.stlStorageKey,
+                            outputType: input.outputType,
+                            beltAngleDeg: input.beltAngleDeg,
+                            layerHeightMm: input.layerHeightMm,
+                            fileName: input.fileName,
+                            useSavedDesignMesh: input.useSavedDesignMesh,
+                            patientName: input.patientName,
+                            hardness: input.hardness,
                         },
                     });
                 } catch (error) {
                     if (error instanceof DogfoodUserQuestion) return error.payload;
                     throw error;
                 }
-                stlStorageKey = plan.stlStorageKey;
-                presetId = plan.presetId;
-                printRecipe = plan.printRecipe;
-                material = plan.material;
-                beltAngleDeg = plan.beltAngleDeg;
-                requestedOutputType = "gcode";
-                actorUserId = plan.ownerId;
-                manufacturingFingerprint = plan.fingerprint;
             }
-
-            console.log("[manufacturing] generateSolid request", {
-                userId: actorUserId,
-                cadOperator: cadOperator?.credentialId ?? null,
-                designId: input.designId ?? null,
-                side: input.side ?? null,
-                presetId,
-                outputType: requestedOutputType,
-                beltAngleDeg,
-                stlStorageKey,
-                useSavedDesignMesh: input.useSavedDesignMesh === true,
+            if (!ctx.user) {
+                throw new TRPCError({ code: "UNAUTHORIZED", message: "Authentication required" });
+            }
+            return runSessionGenerateSolid({
+                userId: ctx.user.id,
+                ip: ctx.ip,
+                input,
+                io: sessionManufacturingIo(),
             });
+        }),
 
-            if (!presetId || !stlStorageKey) {
-                throw new TRPCError({
-                    code: "BAD_REQUEST",
-                    message: "Missing required manufacturing parameters (stlStorageKey, presetId)",
-                });
-            }
+    getProduction: sessionOrCadOperatorProcedure("manufacturing:download")
+        .input(z.object({ productionId: z.string().uuid() }))
+        .query(async ({ ctx, input }) => {
+            return readCadOperatorProduction({
+                prisma: ctx.prisma,
+                principal: ctx.user ? null : (ctx.cadOperator ?? null),
+                userId: ctx.user?.id ?? null,
+                productionId: input.productionId,
+            });
+        }),
 
-            const gyroidPreset = isGyroidManufacturingPreset(presetId);
-            if (gyroidPreset && input.infillDensity !== undefined && !printRecipe) {
-                throw new TRPCError({
-                    code: "BAD_REQUEST",
-                    message:
-                        "Legacy infillDensity is not accepted for gyroid manufacturing presets. " +
-                        "Upgrade the design with PrintRecipeV1 (named hardness) and resend printRecipe.",
-                });
-            }
-
-            let resolvedPrintRecipe: ReturnType<typeof migratePrintRecipe> | undefined;
-            if (gyroidPreset) {
-                try {
-                    resolvedPrintRecipe = resolveGyroidManufacturingPrintRecipe(presetId, printRecipe);
-                } catch (e) {
-                    if (e instanceof PrintRecipeProfileRequiredError) {
-                        throw new TRPCError({ code: "BAD_REQUEST", message: e.message });
-                    }
-                    throw e;
-                }
-                if (presetId !== resolvedPrintRecipe.profileId) {
-                    throw new TRPCError({
-                        code: "BAD_REQUEST",
-                        message:
-                            "presetId must match PrintRecipeV1.profileId for production gyroid manufacturing.",
-                    });
-                }
-            } else if (printRecipe) {
-                resolvedPrintRecipe = migratePrintRecipe(printRecipe);
-            }
-
-            if (!cadOperator) {
-                if (!ctx.user) {
-                    throw new TRPCError({ code: "UNAUTHORIZED", message: "Authentication required" });
-                }
-                try {
-                    assertManufacturingTempKeyForUser(stlStorageKey, ctx.user.id);
-                } catch {
-                    throw new TRPCError({
-                        code: "BAD_REQUEST",
-                        message: "Invalid manufacturing STL storage key",
-                    });
-                }
-            }
-
-            const tempStlKey = stlStorageKey;
-            const supabase = getSupabaseAdmin();
-
-            try {
-                await assertActiveLicenseForUser(actorUserId);
-
-                const cost = HYBRID_GCODE_COST;
-
-                if (input.designId) {
-                    const supabase = requireSupabaseAdmin();
-                    const { data: design, error: designError } = await supabase
-                        .from("designs")
-                        .select("id")
-                        .eq("id", input.designId)
-                        .eq("ownerId", actorUserId)
-                        .maybeSingle();
-
-                    if (designError) {
-                        throw new TRPCError({
-                            code: "INTERNAL_SERVER_ERROR",
-                            message: `Failed to verify design ownership: ${designError.message}`,
-                        });
-                    }
-                    if (!design) {
-                        throw new TRPCError({
-                            code: "FORBIDDEN",
-                            message: "Design not found or access denied",
-                        });
-                    }
-                }
-
-                const balance = await getUserTokenBalance(requireSupabaseAdmin(), actorUserId);
-                if (balance < cost) {
-                    throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
-                }
-
-                let stlUrl = input.stlUrl;
-                if (!stlUrl) {
-                    if (!supabase) {
-                        throw new TRPCError({
-                            code: "INTERNAL_SERVER_ERROR",
-                            message: "Storage not available",
-                        });
-                    }
-                    stlUrl = await signedDownloadUrl(supabase, stlStorageKey, 3600, MANUFACTURING_BUCKET);
-                }
-
-                const jobStamp = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-                let outputBytes: Buffer;
-                let outputType: "gcode" | "stl";
-                let jobId: string;
-                let inlineGcode: string | undefined;
-                let inlineStl: string | undefined;
-
-                if (manufacturingBackendForOutput(requestedOutputType) === "vertexslice") {
-                    if (!resolvedPrintRecipe) {
-                        throw new TRPCError({
-                            code: "BAD_REQUEST",
-                            message:
-                                "Printer G-code requires PrintRecipe hardness so gyroid infill stays on the locked profile.",
-                        });
-                    }
-                    const infillDensityPct = gyroidInfillPctForHardness(
-                        resolvedPrintRecipe.defaultHardness,
-                        resolvedPrintRecipe.hardnessToInfillPct,
-                    );
-                    const stlBytes = await downloadManufacturingStl(stlUrl);
-                    const gcode = await sliceWithVertexSlice({
-                        profileId: presetId,
-                        material: material ?? "",
-                        model: stlBytes,
-                        filename: `${input.side ?? "model"}.stl`,
-                        infillDensityPct,
-                    });
-                    outputBytes = Buffer.from(gcode, "utf-8");
-                    outputType = "gcode";
-                    jobId = `vs_${jobStamp}`;
-                    inlineGcode = gcode;
-                } else {
-                    const pythonResult = await callManufacture({
-                        job_id: jobStamp,
-                        design_id: input.designId ?? "adhoc",
-                        preset_id: presetId,
-                        stl_url: stlUrl,
-                        output_type: requestedOutputType,
-                        belt_angle_deg: beltAngleDeg,
-                        side: input.side ?? null,
-                        layer_height_mm: input.layerHeightMm,
-                        infill_density: resolvedPrintRecipe ? undefined : input.infillDensity,
-                        perimeters: input.perimeters,
-                        grinding_style: input.grindingStyle,
-                        print_recipe: resolvedPrintRecipe
-                            ? printRecipeToSnake(resolvedPrintRecipe)
-                            : undefined,
-                        ...(material ? { material } : {}),
-                    });
-                    outputType = pythonResult.output_type ?? requestedOutputType;
-                    inlineGcode = pythonResult.gcode;
-                    inlineStl = pythonResult.stl_base64;
-                    jobId = pythonResult.job_id ?? jobStamp;
-                    outputBytes =
-                        outputType === "gcode"
-                            ? Buffer.from(pythonResult.gcode ?? "", "utf-8")
-                            : Buffer.from(pythonResult.stl_base64 ?? "", "base64");
-                }
-
-                const isGcode = outputType === "gcode";
-                if (cadOperator && !isGcode) {
-                    throw new TRPCError({
-                        code: "INTERNAL_SERVER_ERROR",
-                        message: "CAD-operator manufacturing returns G-code only",
-                    });
-                }
-                const exportFormat = isGcode ? "gcode" : "stl";
-
-                if (outputBytes.length === 0) {
-                    throw new TRPCError({
-                        code: "INTERNAL_SERVER_ERROR",
-                        message: "Manufacturing service returned empty output",
-                    });
-                }
-
-                const defaultName = isGcode ? `hybrid-${presetId}.gcode` : `hybrid-${presetId}.stl`;
-                const safeName = (input.fileName || defaultName).replace(/[^a-zA-Z0-9_.-]/g, "_");
-                const storagePrefix = isGcode ? "gcode" : "manufacturing-output";
-                const storageKey =
-                    cadOperator && input.designId
-                        ? buildCadOperatorGcodeKey(
-                              cadOperator.credentialId,
-                              input.designId,
-                              `${input.side ?? "foot"}-${Date.now()}-${safeName}`,
-                          )
-                        : `${storagePrefix}/${input.designId || "adhoc"}/${Date.now()}-${safeName}`;
-                const contentType = isGcode ? "text/plain" : "model/stl";
-
-                // License re-check + token deduction happen atomically via RPC BEFORE output upload.
-                if (!supabase) {
-                    throw new TRPCError({
-                        code: "INTERNAL_SERVER_ERROR",
-                        message: "Supabase admin client not configured",
-                    });
-                }
-
-                const { data: chargeData, error: chargeError } = await supabase.rpc(
-                    "vertex_charge_manufacturing_hybrid",
-                    {
-                        p_user_id: actorUserId,
-                        p_cost: cost,
-                        p_design_id: input.designId ?? null,
-                        p_export_format: exportFormat,
-                        p_side: input.side ?? null,
-                        p_file_name: safeName,
-                        p_preset_id: presetId,
-                        p_belt_angle_deg: beltAngleDeg,
-                        p_layer_height_mm: input.layerHeightMm ?? null,
-                        p_is_gcode: isGcode,
-                        p_storage_key: isGcode ? storageKey : null,
-                        p_job_id: jobId,
-                        p_ip: ctx.ip,
-                        p_metadata: {
-                            kind: "manufacturing_hybrid",
-                            outputType,
-                            presetId,
-                            beltAngleDeg,
-                            grindingStyle: input.grindingStyle?.type ?? null,
-                            material: material ?? null,
-                            manufacturingFingerprint,
-                            cadOperatorCredentialId: cadOperator?.credentialId ?? null,
-                            slicer: isGcode ? "vertexslice" : "python",
-                            side: input.side ?? null,
-                            layerHeightMm: input.layerHeightMm ?? null,
-                            infillDensity: resolvedPrintRecipe ? null : (input.infillDensity ?? null),
-                            printRecipe: resolvedPrintRecipe ?? null,
-                            perimeters: input.perimeters ?? null,
-                            sourceStlTempKey: tempStlKey,
-                        },
-                    },
-                );
-
-                if (chargeError) {
-                    if (chargeError.message.includes("INSUFFICIENT_TOKENS")) {
-                        throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
-                    }
-                    if (chargeError.message.includes("NO_VALID_LICENSE")) {
-                        throw new TRPCError({ code: "FORBIDDEN", message: "No valid license" });
-                    }
-                    throw new TRPCError({
-                        code: "INTERNAL_SERVER_ERROR",
-                        message: `Manufacturing charge failed: ${chargeError.message}`,
-                    });
-                }
-
-                const result = chargeData as {
-                    productionId: string | null;
-                    exportId: string;
-                    balance: number;
-                    jobId: string;
-                };
-
-                let downloadUrl: string | undefined;
-                if (supabase) {
-                    await uploadAsset(supabase, storageKey, outputBytes, contentType, MANUFACTURING_BUCKET);
-                    downloadUrl = await signedDownloadUrl(supabase, storageKey, 3600, MANUFACTURING_BUCKET);
-                    await supabase.from("exports").update({ storageKey }).eq("id", result.exportId);
-                    if (result.productionId && isGcode) {
-                        await supabase
-                            .from("productions")
-                            .update({ gcodeStorageKey: storageKey })
-                            .eq("id", result.productionId);
-                    }
-                }
-
-                if (supabase) {
-                    await archiveManufacturingSourceStl(supabase, {
-                        userId: actorUserId,
-                        exportId: result.exportId,
-                        tempStlKey,
-                    });
-                }
-
-                console.log("[manufacturing] generateSolid success", {
-                    userId: actorUserId,
-                    productionId: result.productionId,
-                    exportId: result.exportId,
-                    balance: result.balance,
-                    outputType,
-                    stored: Boolean(downloadUrl),
-                });
-
-                return {
-                    ok: true as const,
-                    outputType,
-                    ...result,
-                    downloadUrl,
-                    gcode: isGcode && !downloadUrl ? inlineGcode : undefined,
-                    stlBase64: cadOperator || isGcode || downloadUrl ? undefined : inlineStl,
-                    gcodeDownloadUrl: isGcode ? downloadUrl : undefined,
-                    gcodeStorageKey: isGcode ? storageKey : undefined,
-                    gcodeBase64:
-                        cadOperator && isGcode && inlineGcode
-                            ? Buffer.from(inlineGcode, "utf8").toString("base64")
-                            : undefined,
-                };
-            } catch (err) {
-                deleteManufacturingTempBestEffort(supabase, tempStlKey);
-                throw err;
-            }
+    listProductionsByDesign: sessionOrCadOperatorProcedure("manufacturing:download")
+        .input(
+            z.object({
+                designId: z.string().uuid(),
+                side: z.enum(["left", "right"]).optional(),
+                presetId: z.string().min(1).optional(),
+            }),
+        )
+        .query(async ({ ctx, input }) => {
+            return listCadOperatorProductions({
+                prisma: ctx.prisma,
+                principal: ctx.user ? null : (ctx.cadOperator ?? null),
+                userId: ctx.user?.id ?? null,
+                designId: input.designId,
+                side: input.side,
+                presetId: input.presetId,
+            });
         }),
 
     /**
@@ -688,7 +462,7 @@ export const manufacturingRouter = router({
                     });
                 }
                 if (error instanceof DogfoodUserQuestion) return error.payload;
-                if (error instanceof SavedDesignSnapshotError) {
+                if (error instanceof SavedDesignSnapshotError || error instanceof IntegrationShoeWidthError) {
                     throw new TRPCError({ code: "UNPROCESSABLE_CONTENT", message: error.message });
                 }
                 if (error instanceof Error && error.name === "DogfoodHoldError") {

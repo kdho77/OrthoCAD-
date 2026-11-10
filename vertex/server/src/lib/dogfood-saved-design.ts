@@ -76,10 +76,20 @@ interface DogfoodClient {
     tenantId: string;
 }
 
+export interface DogfoodPersonShoe {
+    system: "US_M" | "US_W" | "EU";
+    size: number;
+    left: number | null;
+    right: number | null;
+    width: string;
+}
+
 export interface DogfoodPersonLink {
     clientId: string;
     givenName: string;
     familyName: string;
+    /** Stored integration-client shoe. Absent width is not a width. */
+    shoe?: DogfoodPersonShoe;
 }
 
 export interface EstablishVerifiedOrderInput {
@@ -91,7 +101,10 @@ export interface EstablishVerifiedOrderInput {
     now: Date;
     settingsJson: unknown;
     linkShoe: { system: "US_M" | "US_W"; size: number; left: number | null; right: number | null };
-    /** Empty when width was defaulted. The settings snapshot keeps the provenance. */
+    /**
+     * Integration-link width. Absent width is medium. The settings snapshot
+     * keeps defaulted provenance and is not rewritten here.
+     */
     linkShoeWidth: string;
     chartWidth: "narrow" | "medium" | "wide";
 }
@@ -182,10 +195,52 @@ function identityError(code: DogfoodOrderIdentityCode): DogfoodOrderIdentityErro
     return new DogfoodOrderIdentityError(code, refusalMessage(code));
 }
 
-function chartWidth(width: string, source: "prescribed" | "defaulted"): "narrow" | "medium" | "wide" {
-    if (source === "prescribed" && (width === "narrow" || width === "medium" || width === "wide"))
-        return width;
-    return "medium";
+/** Detail text for one refusal. The code prefix is added by {@link DogfoodOrderIdentityError}. */
+export function dogfoodOrderIdentityDetail(code: DogfoodOrderIdentityCode): string {
+    return refusalMessage(code);
+}
+
+/** Same refusal create_saved_design throws. No row is written by the throw itself. */
+export function dogfoodOrderIdentityRefusal(code: DogfoodOrderIdentityCode): DogfoodOrderIdentityError {
+    return identityError(code);
+}
+
+/** Order id check shared with first-sight auto-bind. Caller ids are not accepted here. */
+export function requireDogfoodExternalOrderId(value: string): string {
+    return requireOrderId(value);
+}
+
+const INTEGRATION_LINK_WIDTHS = ["narrow", "medium", "wide"] as const;
+type IntegrationLinkWidth = (typeof INTEGRATION_LINK_WIDTHS)[number];
+
+/**
+ * Thrown before the establishment transaction. extra_narrow and extra_wide
+ * stay legal on the human chart and CAD design. They are not integration-link widths.
+ */
+export class IntegrationShoeWidthError extends Error {
+    readonly code = "integration_width_unsupported" as const;
+
+    constructor() {
+        super(
+            "integration_width_unsupported: integration design links accept narrow, medium, or wide. No client or design was written.",
+        );
+        this.name = "IntegrationShoeWidthError";
+    }
+}
+
+/**
+ * Integration establishment only. Omitted width becomes medium. Explicit
+ * narrow, medium, and wide pass through. Any other width is refused before
+ * a transaction starts. Human chart and CAD acceptance are unchanged.
+ */
+export function integrationLinkShoeWidth(
+    width: string,
+    source: "prescribed" | "defaulted" = "prescribed",
+): IntegrationLinkWidth {
+    if (source === "defaulted") return "medium";
+    if (width === "narrow" || width === "medium" || width === "wide") return width;
+    if (width.trim() === "") return "medium";
+    throw new IntegrationShoeWidthError();
 }
 
 function envelopeFor(built: SavedDesignSnapshotBuild): unknown {
@@ -333,6 +388,7 @@ async function bindVerifiedPerson(
     const built = await snapshotForNewDesign(args.catalog, args.buildSnapshot);
     const settingsJson = envelopeFor(built);
     if (!orderPersonStillFresh(person, now)) throw identityError("verifier_stale");
+    const linkShoeWidth = integrationLinkShoeWidth(built.shoeWidth, built.shoeWidthSource);
     const established = await commitVerified(args.store, {
         externalOrderId,
         externalPersonId: person.externalPersonId,
@@ -342,8 +398,8 @@ async function bindVerifiedPerson(
         now,
         settingsJson,
         linkShoe: built.linkShoe,
-        linkShoeWidth: built.shoeWidthSource === "prescribed" ? built.shoeWidth : "",
-        chartWidth: chartWidth(built.shoeWidth, built.shoeWidthSource),
+        linkShoeWidth,
+        chartWidth: linkShoeWidth,
     });
     if (established.outcome === "created") {
         return {
@@ -440,6 +496,11 @@ export function prismaDogfoodSavedDesignStore(prisma: PrismaClient): DogfoodSave
                 where: { source: "vo2", tenantId: DOGFOOD_TENANT_ID, externalClientId: externalPersonId },
                 select: {
                     clientId: true,
+                    shoeSizeSystem: true,
+                    shoeSize: true,
+                    shoeSizeLeft: true,
+                    shoeSizeRight: true,
+                    shoeWidth: true,
                     client: { select: { firstName: true, lastName: true, tenantId: true } },
                 },
                 take: 2,
@@ -450,9 +511,18 @@ export function prismaDogfoodSavedDesignStore(prisma: PrismaClient): DogfoodSave
                     clientId: row.clientId,
                     givenName: row.client.firstName,
                     familyName: row.client.lastName,
+                    shoe: {
+                        system: row.shoeSizeSystem,
+                        size: row.shoeSize,
+                        left: row.shoeSizeLeft,
+                        right: row.shoeSizeRight,
+                        width: row.shoeWidth,
+                    },
                 }));
         },
         async establishVerifiedOrder(input) {
+            const linkShoeWidth = integrationLinkShoeWidth(input.linkShoeWidth);
+            const chartWidth = integrationLinkShoeWidth(input.chartWidth);
             if (
                 !orderPersonStillFresh(
                     {
@@ -541,7 +611,7 @@ export function prismaDogfoodSavedDesignStore(prisma: PrismaClient): DogfoodSave
                                 shoeSizesSplit: input.linkShoe.left != null || input.linkShoe.right != null,
                                 shoeSizeLeftUs: input.linkShoe.left ?? input.linkShoe.size,
                                 shoeSizeRightUs: input.linkShoe.right ?? input.linkShoe.size,
-                                shoeWidth: input.chartWidth,
+                                shoeWidth: chartWidth,
                             },
                         });
                         await tx.integrationClient.create({
@@ -554,7 +624,7 @@ export function prismaDogfoodSavedDesignStore(prisma: PrismaClient): DogfoodSave
                                 shoeSize: input.linkShoe.size,
                                 shoeSizeLeft: input.linkShoe.left,
                                 shoeSizeRight: input.linkShoe.right,
-                                shoeWidth: input.chartWidth,
+                                shoeWidth: chartWidth,
                             },
                         });
                     }
@@ -583,7 +653,7 @@ export function prismaDogfoodSavedDesignStore(prisma: PrismaClient): DogfoodSave
                             shoeSize: input.linkShoe.size,
                             shoeSizeLeft: input.linkShoe.left,
                             shoeSizeRight: input.linkShoe.right,
-                            shoeWidth: input.linkShoeWidth,
+                            shoeWidth: linkShoeWidth,
                         },
                     });
                     return { outcome: "created" as const, clientId, designId, createdClient: !person };

@@ -6,6 +6,16 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 
 import { DOGFOOD_TENANT_ID } from "../../auth/cad-operator.js";
 import { hashIntegrationKey } from "../../auth/integration-keys.js";
+import {
+    DogfoodOrderAutoBindUnconfiguredError,
+    type DogfoodOrderIntake,
+    runtimeAutoBindDogfoodOrder,
+} from "../../lib/dogfood-order-auto-bind.js";
+import {
+    type DogfoodOrderIdentityCode,
+    DogfoodOrderIdentityError,
+    dogfoodOrderIdentityRefusal,
+} from "../../lib/dogfood-saved-design.js";
 import { patientDisplayName, settingsEnvelopeForPatientName } from "../../lib/integration-text-marking.js";
 import type { DesignExportedEvent, ExportedFile } from "../../webhooks/design-exported.js";
 import { buildDesignExportedEvent } from "../../webhooks/design-exported.js";
@@ -53,6 +63,15 @@ export interface IntegrationDeps {
     uploadBaseUrl: string;
     appOrigin: string;
     log?: (event: string, fields: Record<string, string | number>) => void;
+    /**
+     * Test seam for first-sight order bind. Production uses the runtime verifier.
+     * A caller client id is not an argument.
+     */
+    bindDogfoodOrder?: (input: {
+        externalOrderId: string;
+        intake: DogfoodOrderIntake | null;
+        now?: () => Date;
+    }) => Promise<unknown>;
 }
 
 export interface UpsertClientInput {
@@ -78,6 +97,11 @@ export interface CreateDesignInput {
     orderedByAccount: string | null;
     parentExternalOrderId: string | null;
     shoe: ShoeSize | null;
+    /**
+     * Width named on the authenticated payload. Omitted width is not prescribed.
+     * The legacy shoe.width default is unchanged when auto-bind is unconfigured.
+     */
+    explicitShoeWidth?: "narrow" | "medium" | "wide" | null;
     scanSides: ScanSide[];
 }
 
@@ -219,6 +243,58 @@ export function createIntegrationService(deps: IntegrationDeps) {
         return urls;
     }
 
+    function identityStatus(code: DogfoodOrderIdentityCode): 403 | 422 {
+        if (
+            code === "order_client_mismatch" ||
+            code === "order_client_cross_tenant" ||
+            code === "verifier_revoked" ||
+            code === "verifier_unauthorized" ||
+            code === "verifier_untrusted"
+        ) {
+            return 403;
+        }
+        return 422;
+    }
+
+    /**
+     * Verified order→person bind. Caller client ids are not sent.
+     * Unconfigured keeps today's create and empty-list behavior.
+     * Any other refusal writes nothing and does not fall through.
+     */
+    async function bindFirstSightVo2Order(input: {
+        externalOrderId: string;
+        intake: DogfoodOrderIntake | null;
+    }): Promise<"bound" | "unconfigured"> {
+        const bind = deps.bindDogfoodOrder ?? runtimeAutoBindDogfoodOrder;
+        try {
+            await bind({
+                externalOrderId: input.externalOrderId,
+                intake: input.intake,
+                now: deps.now,
+            });
+            return "bound";
+        } catch (error) {
+            if (error instanceof DogfoodOrderAutoBindUnconfiguredError) return "unconfigured";
+            if (error instanceof DogfoodOrderIdentityError) {
+                throw new IntegrationError(identityStatus(error.code), error.message);
+            }
+            if (error instanceof Error && error.name === "SavedDesignSnapshotError") {
+                throw new IntegrationError(422, error.message);
+            }
+            if (error instanceof Error && error.name === "DogfoodHoldError") {
+                throw new IntegrationError(403, error.message);
+            }
+            if (
+                error instanceof Error &&
+                "code" in error &&
+                (error as { code?: unknown }).code === "integration_width_unsupported"
+            ) {
+                throw new IntegrationError(422, error.message);
+            }
+            throw error;
+        }
+    }
+
     return {
         async upsertClient(authorization: string | undefined, input: UpsertClientInput) {
             const credential = await requireCredential(authorization);
@@ -312,6 +388,41 @@ export function createIntegrationService(deps: IntegrationDeps) {
                     upload_urls,
                     shoe_size_mismatch: existing.shoeSizeMismatch,
                 };
+            }
+
+            if (
+                input.source === "vo2" &&
+                input.tenantId === DOGFOOD_TENANT_ID &&
+                input.type === "insole" &&
+                input.sides === "pair"
+            ) {
+                const sight = await bindFirstSightVo2Order({
+                    externalOrderId: input.externalOrderId,
+                    intake: {
+                        names: null,
+                        shoe: input.shoe,
+                        explicitWidth: input.explicitShoeWidth ?? null,
+                    },
+                });
+                if (sight === "bound") {
+                    const linked = await store.findDesignLink({
+                        source: input.source,
+                        tenantId: input.tenantId,
+                        externalOrderId: input.externalOrderId,
+                    });
+                    if (!linked || linked.tenantId !== input.tenantId) {
+                        throw new IntegrationError(
+                            422,
+                            dogfoodOrderIdentityRefusal("order_person_unbound").message,
+                        );
+                    }
+                    const upload_urls = await issueUploads(linked, input.scanSides);
+                    return {
+                        design_id: linked.designId,
+                        upload_urls,
+                        shoe_size_mismatch: linked.shoeSizeMismatch,
+                    };
+                }
             }
 
             let parentDesignId: string | null = null;
@@ -547,11 +658,25 @@ export function createIntegrationService(deps: IntegrationDeps) {
             if (!query.externalOrderId.trim()) {
                 throw new IntegrationError(422, "external_order_id is required");
             }
-            const link = await store.findDesignLink({
+            const externalOrderId = query.externalOrderId.trim();
+            let link = await store.findDesignLink({
                 source,
                 tenantId: DOGFOOD_TENANT_ID,
-                externalOrderId: query.externalOrderId.trim(),
+                externalOrderId,
             });
+            if (!link && source === "vo2") {
+                const sight = await bindFirstSightVo2Order({
+                    externalOrderId,
+                    intake: null,
+                });
+                if (sight === "bound") {
+                    link = await store.findDesignLink({
+                        source,
+                        tenantId: DOGFOOD_TENANT_ID,
+                        externalOrderId,
+                    });
+                }
+            }
             if (!link) return { designs: [] };
             const design = await store.getDesign(link.designId);
             if (!design || design.tenantId !== DOGFOOD_TENANT_ID) return { designs: [] };

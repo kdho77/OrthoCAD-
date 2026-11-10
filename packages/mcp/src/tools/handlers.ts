@@ -12,7 +12,9 @@ import {
     getDesignInputSchema,
     getDesignParamsInputSchema,
     getExportDownloadInputSchema,
+    getProductionInputSchema,
     listDesignsByOrderInputSchema,
+    listProductionsByDesignInputSchema,
     persistSavedDesignSnapshotInputSchema,
     prepareManufacturingStlUploadInputSchema,
     prepareVoAttachmentInputSchema,
@@ -86,7 +88,71 @@ function assertToolNotHeld(value: string): void {
     }
 }
 
-function gcodeFileFromResult(side: "left" | "right", result: Record<string, unknown>): SavedDesignGcodeFile {
+const PRODUCTION_STATUSES = new Set(["pending", "running", "succeeded", "failed"]);
+
+function textField(result: Record<string, unknown>, ...keys: string[]): string | null {
+    for (const key of keys) {
+        const value = result[key];
+        if (typeof value === "string") return value;
+    }
+    return null;
+}
+
+/** Only the public production fields. Drops names, settings, and G-code bytes. */
+export function publicProductionFromResult(result: Record<string, unknown>): {
+    production_id: string | null;
+    design_id: string | null;
+    side: "left" | "right" | null;
+    preset_id: string | null;
+    status: string | null;
+    created_at: string | null;
+    updated_at: string | null;
+    gcode_storage_key: string | null;
+    error: string | null;
+    download: { tool: "get_export_download"; production_id: string } | null;
+} {
+    const productionId = textField(result, "productionId", "production_id");
+    const side = result.side === "left" || result.side === "right" ? result.side : null;
+    const status =
+        typeof result.status === "string" && PRODUCTION_STATUSES.has(result.status) ? result.status : null;
+    const downloadRecord =
+        result.download && typeof result.download === "object"
+            ? (result.download as Record<string, unknown>)
+            : null;
+    const downloadId = downloadRecord ? textField(downloadRecord, "productionId", "production_id") : null;
+    return {
+        production_id: productionId,
+        design_id: textField(result, "designId", "design_id"),
+        side,
+        preset_id: textField(result, "presetId", "preset_id"),
+        status,
+        created_at: textField(result, "createdAt", "created_at"),
+        updated_at: textField(result, "updatedAt", "updated_at"),
+        gcode_storage_key: textField(result, "gcodeStorageKey", "gcode_storage_key"),
+        error: textField(result, "error"),
+        download:
+            status === "succeeded" && productionId
+                ? { tool: "get_export_download", production_id: downloadId ?? productionId }
+                : null,
+    };
+}
+
+function gcodeFileFromResult(
+    side: "left" | "right",
+    result: Record<string, unknown>,
+):
+    | SavedDesignGcodeFile
+    | {
+          side: "left" | "right";
+          production_id: string | null;
+          status: string;
+      } {
+    const status =
+        typeof result.status === "string" && PRODUCTION_STATUSES.has(result.status) ? result.status : null;
+    if (status) {
+        const productionId = textField(result, "productionId", "production_id");
+        return { side, production_id: productionId, status };
+    }
     const productionId = typeof result.productionId === "string" ? result.productionId : null;
     const download =
         typeof result.gcodeDownloadUrl === "string"
@@ -204,7 +270,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                     throw new Error("Saved-design manufacturing returns G-code only");
                 }
                 const sides = input.side ? [input.side] : (["left", "right"] as const);
-                const files: SavedDesignGcodeFile[] = [];
+                const files: Array<ReturnType<typeof gcodeFileFromResult>> = [];
                 for (const side of sides) {
                     try {
                         const result = await manufacturing.generateFromSavedDesign({
@@ -243,7 +309,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
             if (!input.stl_storage_key) {
                 throw new Error("stl_storage_key is required unless use_saved_design");
             }
-            return manufacturing.generateGcode({
+            const legacy = await manufacturing.generateGcode({
                 designId: input.design_id,
                 side: input.side,
                 presetId: input.preset_id,
@@ -254,6 +320,59 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                 material: input.material,
                 patientName: input.patient_name,
             });
+            if (isUserQuestion(legacy)) return legacy;
+            const legacyStatus =
+                typeof legacy.status === "string" && PRODUCTION_STATUSES.has(legacy.status)
+                    ? legacy.status
+                    : null;
+            if (legacyStatus) {
+                return {
+                    ok: true,
+                    format: "gcode",
+                    files: [
+                        {
+                            side: input.side ?? null,
+                            production_id: textField(legacy, "productionId", "production_id"),
+                            status: legacyStatus,
+                        },
+                    ],
+                };
+            }
+            return legacy;
+        }
+        case "get_production": {
+            const input = getProductionInputSchema.parse(args);
+            const manufacturing =
+                deps.manufacturing ??
+                (await import("../clients/manufacturing-client.js")).createManufacturingClient({
+                    trpcUrl: deps.config.trpcUrl,
+                    cadOperatorKey: requireCadOperatorKey(deps.config),
+                });
+            return publicProductionFromResult(await manufacturing.getProduction(input.production_id));
+        }
+        case "list_productions_by_design": {
+            const input = listProductionsByDesignInputSchema.parse(args);
+            const manufacturing =
+                deps.manufacturing ??
+                (await import("../clients/manufacturing-client.js")).createManufacturingClient({
+                    trpcUrl: deps.config.trpcUrl,
+                    cadOperatorKey: requireCadOperatorKey(deps.config),
+                });
+            const listed = await manufacturing.listProductionsByDesign({
+                designId: input.design_id,
+                side: input.side,
+                presetId: input.preset_id,
+            });
+            const rows = Array.isArray(listed)
+                ? listed
+                : Array.isArray((listed as { productions?: unknown }).productions)
+                  ? (listed as { productions: unknown[] }).productions
+                  : [];
+            return {
+                productions: rows
+                    .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object")
+                    .map((row) => publicProductionFromResult(row)),
+            };
         }
         case "get_export_download": {
             const input = getExportDownloadInputSchema.parse(args);
