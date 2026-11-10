@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import { baseModifierField } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
-import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
+import { insoleLayoutForUsMenSize, topSheetXyScale } from "@/lib/geometry/shoe-size";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import { defaultDesign } from "@/stores/design-store";
 import type { Side } from "@/types";
@@ -107,8 +107,9 @@ describe("S1 pattern stations stay inside the sized TopSheet rim", () => {
                     corrections: field.corrections,
                 });
                 const usedHeel = preview.pattern.reduce((a, p) => (p.x < a.x ? p : a));
-                expect(usedHeel.x).toBeCloseTo(center.x + (heel.x - center.x) * layout.scale, 2);
-                expect(usedHeel.y).toBeCloseTo(center.y + (heel.y - center.y) * layout.scale, 2);
+                const xy = topSheetXyScale(layout.scale);
+                expect(usedHeel.x).toBeCloseTo(center.x + (heel.x - center.x) * xy, 2);
+                expect(usedHeel.y).toBeCloseTo(center.y + (heel.y - center.y) * xy, 2);
                 preview.geometry.dispose();
                 geo.dispose();
             }

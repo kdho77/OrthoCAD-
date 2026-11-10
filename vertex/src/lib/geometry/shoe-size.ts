@@ -408,19 +408,37 @@ export function scaleFootprintUniform(geometry: THREE.BufferGeometry, scale: num
 }
 
 /**
+ * Even XY anchor on the native SAMPLE_Top sheet.
+ * 275 / 271.9346 = 1.011273. Restores the 10/23 Men's 9 top-sheet length.
+ * Relief Z does not use this factor. `layout.scale` stays the Brannock scale.
+ */
+export const TOP_SHEET_XY_ANCHOR_SCALE = 1.011273;
+
+/** Footprint scale composed with {@link TOP_SHEET_XY_ANCHOR_SCALE}. Even in X and Y. */
+export function topSheetXyScale(footprintScale: number): number {
+    return footprintScale * TOP_SHEET_XY_ANCHOR_SCALE;
+}
+
+/**
  * Size a top sheet to its footprint before compose and loft.
  *
- * XY uses the same center as {@link scaleFootprintUniform}. Z relief above
- * `floorMm` (the 2 mm reference floor) uses that same scale. The floor stays
- * in absolute millimetres, and this pass does not touch a shell that compose
- * adds afterwards. Scale 1 does not write vertices.
+ * XY uses the same center as {@link scaleFootprintUniform}, then the Men's 9
+ * anchor ({@link topSheetXyScale}). Z relief above `floorMm` (the 2 mm
+ * reference floor) uses `scale` alone, so Men's 9 height stays on the native
+ * sheet. The floor stays in absolute millimetres, and this pass does not
+ * touch a shell that compose adds afterwards.
  */
 export function scaleSourceShapeToFootprint(
     geometry: THREE.BufferGeometry,
     scale: number,
     floorMm = 2,
 ): THREE.BufferGeometry {
-    if (!Number.isFinite(scale) || Math.abs(scale - 1) <= 1e-9) return geometry;
+    const xyScale = topSheetXyScale(scale);
+    const zScale = scale;
+    if (!Number.isFinite(scale) || !Number.isFinite(xyScale)) return geometry;
+    const writeXy = Math.abs(xyScale - 1) > 1e-9;
+    const writeZ = Math.abs(zScale - 1) > 1e-9;
+    if (!writeXy && !writeZ) return geometry;
     geometry.computeBoundingBox();
     const box = geometry.boundingBox;
     const pos = geometry.getAttribute("position");
@@ -428,10 +446,14 @@ export function scaleSourceShapeToFootprint(
     const cx = (box.min.x + box.max.x) / 2;
     const cy = (box.min.y + box.max.y) / 2;
     for (let i = 0; i < pos.count; i++) {
-        pos.setX(i, cx + (pos.getX(i) - cx) * scale);
-        pos.setY(i, cy + (pos.getY(i) - cy) * scale);
-        const z = pos.getZ(i);
-        pos.setZ(i, floorMm + (z - floorMm) * scale);
+        if (writeXy) {
+            pos.setX(i, cx + (pos.getX(i) - cx) * xyScale);
+            pos.setY(i, cy + (pos.getY(i) - cy) * xyScale);
+        }
+        if (writeZ) {
+            const z = pos.getZ(i);
+            pos.setZ(i, floorMm + (z - floorMm) * zScale);
+        }
     }
     pos.needsUpdate = true;
     geometry.computeBoundingBox();

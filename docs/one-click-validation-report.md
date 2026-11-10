@@ -23,9 +23,11 @@ On a Standard arch the height-field bump is multiplied by an arch delta of 0, so
 |------|--------|
 | Main pin commit | `53ebd8e5` |
 | Export settings | SAMPLE_Top procedural wall, `straight`, manufacturing STL, mesh closed after the loft |
-| US men's 9 | Left `6c67e279aa33ea15bd6ffb0c9ba8feecee907d73dfdc5eacadda24e09052df14`, right `cd57887c45189bce39b0ead2fbcc959e1bdfebe12a11256f05751ff670d76c99` |
-| US men's 8 / 10 / 11 | Distinct hashes. XY scale is applied to the closed solid. The loft still runs on the native sheet. |
-| Left length (maxX − minX) | US 8 **264.3 mm**, US 9 **273.1 mm**, US 10 **281.9 mm**, US 11 **290.7 mm** |
+| US men's 9 | Left `74b041bf3d9a9db9bc5f1914d66eaebb84c6a20d11758bee4ee8fa185bbbc4ce`, right `92dc3ce3440a77c14d6575e21f12da208d9007be7ea37a23c8edde764642b4d0` |
+| US men's 8 / 10 / 11 | Distinct hashes. Each size composes its Brannock `layout.scale` with the same even XY anchor. Relief Z uses `layout.scale` only. |
+| Men's 9 top sheet | **275.0 × 92.73 mm** on the top-sheet vertices (`topVertexCount`), left and right. Anchor `1.011273` (`275 / 271.9346`) on native SAMPLE_Top 271.9346 × 91.692. `layout.scale` stays 1. |
+| Men's 9 relief | Crest **25.81 mm** (unchanged). The anchor is not applied to Z. |
+| Men's 9 closed solid | Left **276.18 × 93.75 mm**, right **276.18 × 93.74 mm**. The solid is the top sheet plus the loft. It is not the 275 mm lock. The previous 273.1 mm figure was this unanchored solid. |
 
 ## Sample export (gen.design)
 
@@ -34,12 +36,12 @@ US men's 9. Both scans 24 mm (Standard). Flexible foot checked on both. No other
 | Item | Result |
 |------|--------|
 | Class / correction | Standard, `archHeightMm` **0**, `apexMoveMm` **+4** on both feet |
-| Left STL SHA-256 | `1f1f0267b68371f7bade1402392c56530bf1102df253855ed3a6d1b21ea28dd9` |
-| Right STL SHA-256 | `742d5e03645de10032b991a8e9db888856f3cda9090b922c2f4806f403ecd9bd` |
-| Default US 9 hashes | Still the pins above (non-flexible export unchanged) |
-| Peak vs default | Left and right **+4.006 mm** in X, **0.000 mm** in Z |
-| Arch apex | Left Y **−37.19** (medial −Y), right Y **+37.19** (medial +Y), Z **25.240** |
-| Bbox | Z min **0**. X about −0.7→272.4. Outline XY within 0.02 mm of the default |
+| Left STL SHA-256 | `5aec58aeffcba310aabb2ddcc713136a328c8b2291d10f654fa0d19eb45fe518` |
+| Right STL SHA-256 | `42bda8052c1aa71c2dffdb48bf1287fb7975f02ed6b98d8bf824401e64869053` |
+| Default US 9 hashes | Still the pins above (non-flexible export is the anchored top sheet) |
+| Peak vs default | Left and right **+4.052 mm** in X, **−0.039 mm** in Z |
+| Arch apex | Left Y **−37.61** (medial −Y), right Y **+37.61** (medial +Y), Z **25.773** |
+| Bbox | Z min **0**. X about −2.23→273.95. Crest height stays on the unanchored relief |
 | Medial wall vs surface | Wall-top change minus rim change **≤ 0.007 mm** |
 | Two-face fold | Straight export worst edge **58.319°**. Matrix worst **59.078°** (Low, flex off) |
 

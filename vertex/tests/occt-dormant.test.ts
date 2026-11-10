@@ -38,8 +38,8 @@ const SAMPLE_TOP_FIXTURE_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_To
 const STL_SHA256 = {
     defaultLeft: "28fdbe3eac13d4615f95606e2270760c8201602d422955601939662cd398d9b9",
     defaultRight: "e63506f7ae4d7b305228269144465aa9b629f8ffda8ad37843ceaaf8dc2c76ca",
-    sampleTopLeft: "4c0e3fa857504ddf81f2722737c83f47b20eac9b642e406656e06ed3deab13e1",
-    sampleTopRight: "ccd6fd7f92b381334c1fd7f90bd62869884ae58c38bafb539806ccbd832dada1",
+    sampleTopLeft: "74b041bf3d9a9db9bc5f1914d66eaebb84c6a20d11758bee4ee8fa185bbbc4ce",
+    sampleTopRight: "92dc3ce3440a77c14d6575e21f12da208d9007be7ea37a23c8edde764642b4d0",
 } as const;
 
 const mockEnsureKernelReady = rs.fn<() => Promise<boolean>>();

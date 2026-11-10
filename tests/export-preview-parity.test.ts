@@ -253,7 +253,7 @@ describe("export / preview parity at defaults", () => {
         resetSampleTopGeometryCache();
     });
 
-    test("US 9 and US 1 preview match the print solid; forefoot default is a no-op; shell is on", async () => {
+    test("print preview matches export; forefoot default is a no-op; shell is on", async () => {
         const raw = await loadNative();
         const design9 = createDesignWithStockPlaceholder(defaultDesign());
         const field9 = baseModifierFieldAuthoritative(design9, "left", design9.thicknessMm);
@@ -338,13 +338,15 @@ describe("export / preview parity at defaults", () => {
         }) as typeof fetch;
 
         const cases: Array<{ usMen: number; side: Side; wall: WallStyle; identity: boolean }> = [
-            { usMen: 9, side: "left", wall: "straight", identity: true },
+            // Men's 9 layout.scale is 1. The print solid still applies the XY
+            // anchor, so a bare native loft is not that sheet.
+            { usMen: 9, side: "left", wall: "straight", identity: false },
             { usMen: 9, side: "left", wall: "round", identity: false },
             { usMen: 9, side: "left", wall: "hybrid", identity: false },
             { usMen: 1, side: "left", wall: "straight", identity: false },
             { usMen: 1, side: "left", wall: "round", identity: false },
             { usMen: 1, side: "left", wall: "hybrid", identity: false },
-            { usMen: 9, side: "right", wall: "straight", identity: true },
+            { usMen: 9, side: "right", wall: "straight", identity: false },
             { usMen: 1, side: "right", wall: "straight", identity: false },
             { usMen: 8, side: "left", wall: "straight", identity: false },
             { usMen: 8, side: "right", wall: "straight", identity: false },
