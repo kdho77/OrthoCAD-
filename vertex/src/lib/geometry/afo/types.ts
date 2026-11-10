@@ -179,7 +179,7 @@ export type AfoAnatomicalLandmarkId =
 /** Values derived from the landmark frame. Shell/trim geometry does not read these yet. */
 export interface AfoScanDerived {
     forefootToRearfootDeg: number | null;
-    /** Malleolar apices in the oriented frame. The future Cast-tab DF/PF pivot. */
+    /** Malleolar apices in the oriented frame. Rear and side rotation pivot on their midpoint. */
     ankleAxis: { medial: AfoVec3; lateral: AfoVec3 } | null;
     /** Null when that optional marker was not placed. */
     plannedReliefsMm: { malleoli: number; navicular: number | null; styloid: number | null };

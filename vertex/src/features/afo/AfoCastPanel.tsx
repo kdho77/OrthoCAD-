@@ -16,9 +16,11 @@ import {
     defaultAfoCast,
     defaultAfoCorrections,
     defaultAfoReliefs,
+    writeAfoSideCorrection,
 } from "@/lib/geometry/afo/defaults";
 import { evaluateAfoWarnings } from "@/lib/geometry/afo/warnings";
 import { getAfoState, patchAfoState, refreshAfoWorkingMesh, useAfoStore } from "@/stores/afo-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import type { ProductionMethod } from "@/types";
 
@@ -196,15 +198,15 @@ export function AfoCastPanel() {
                 unit="°"
                 defaultValue={0}
                 onChange={(v) => {
-                    const nextSide = { ...active, legRearDeg: v };
+                    const linked = useClinicalWorkflowStore.getState().elementPlacementFoot === "both";
                     patchAfoState(
                         {
-                            corrections: {
-                                ...corrections,
-                                ...nextSide,
-                                left: afo.side === "left" ? nextSide : corrections.left,
-                                right: afo.side === "right" ? nextSide : corrections.right,
-                            },
+                            corrections: writeAfoSideCorrection(
+                                corrections,
+                                afo.side === "right" ? "right" : "left",
+                                { legRearDeg: v },
+                                { linked, promote: true },
+                            ),
                         },
                         "afo-rotation",
                     );
@@ -220,14 +222,18 @@ export function AfoCastPanel() {
                 unit="°"
                 defaultValue={0}
                 onChange={(v) => {
-                    const nextSide = { ...active, legSideDeg: v };
-                    const next = {
-                        ...corrections,
-                        ...nextSide,
-                        left: afo.side === "left" ? nextSide : corrections.left,
-                        right: afo.side === "right" ? nextSide : corrections.right,
-                    };
-                    patchAfoState({ corrections: next }, "afo-rotation");
+                    const linked = useClinicalWorkflowStore.getState().elementPlacementFoot === "both";
+                    patchAfoState(
+                        {
+                            corrections: writeAfoSideCorrection(
+                                corrections,
+                                afo.side === "right" ? "right" : "left",
+                                { legSideDeg: v },
+                                { linked, promote: true },
+                            ),
+                        },
+                        "afo-rotation",
+                    );
                     refreshAfoWorkingMesh();
                 }}
             />

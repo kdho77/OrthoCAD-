@@ -348,10 +348,13 @@ describe("AFO clinical addendum (tests a–l)", () => {
         const axes = malleolarAxes(med, lat);
         expect(axisOrthogonalityDeg(axes.sagittal, axes.frontal)).toBeLessThanOrEqual(0.1);
         expect(axisOrthogonalityDeg(axes.frontal, axes.leg)).toBeLessThanOrEqual(0.1);
-        expect(clampSagittalDeg(15)).toBe(10);
-        expect(clampSagittalDeg(-9)).toBe(-5);
-        expect(clampFrontalDeg(12)).toBe(10);
-        expect(clampFrontalDeg(-12)).toBe(-10);
+        expect(clampSagittalDeg(15)).toBe(15);
+        expect(clampSagittalDeg(-9)).toBe(-9);
+        expect(clampSagittalDeg(40)).toBe(30);
+        expect(clampSagittalDeg(-40)).toBe(-30);
+        expect(clampFrontalDeg(12)).toBe(12);
+        expect(clampFrontalDeg(40)).toBe(30);
+        expect(clampFrontalDeg(-40)).toBe(-30);
 
         const c = defaultAfoCorrections();
         c.legSideDeg = 10;

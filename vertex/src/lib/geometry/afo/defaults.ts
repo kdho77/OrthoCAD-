@@ -63,10 +63,16 @@ export const AFO_THICKNESS_RANGE: [number, number] = [2.5, 6];
 export const AFO_THICKNESS_WARN_MM = 2;
 export const AFO_EDGE_RANGE: [number, number] = [1.5, 3];
 export const AFO_FLARE_RANGE: [number, number] = [0, 4];
-/** Frontal (varus/valgus) about the mid-malleolar frontal axis. */
-export const AFO_REAR_ROT_RANGE: [number, number] = [-10, 10];
-/** Sagittal (PF/DF) about the malleolar axis. */
-export const AFO_SIDE_ROT_RANGE: [number, number] = [-5, 10];
+/**
+ * Frontal varus (+) / valgus, degrees. Soft warnings still fire past ±5°.
+ * No tighter clinical stop is documented for the slider.
+ */
+export const AFO_REAR_ROT_RANGE: [number, number] = [-30, 30];
+/**
+ * Sagittal dorsiflexion (+) / plantarflexion, degrees. Soft warnings still
+ * fire outside −3° to +7°. No tighter clinical stop is documented for the slider.
+ */
+export const AFO_SIDE_ROT_RANGE: [number, number] = [-30, 30];
 /** Signed heel offset (mm). Negative lowers the heel; the kernel adds this value. */
 export const AFO_HEEL_LIFT_RANGE: [number, number] = [-20, 20];
 export const AFO_HEEL_LIFT_WARN_MM = 12;
@@ -140,6 +146,31 @@ export function defaultAfoCorrections(): AfoCorrections {
         smoothRegions: [],
         text: null,
         patientName: "PATIENT",
+    };
+}
+
+/**
+ * Store a clinical correction on one side. Both (linked) copies that same
+ * clinical value onto the other side — varus stays varus, not a world-axis sign.
+ * Other fields on the untouched side stay put. `promote` mirrors the edited
+ * side onto the legacy top-level fields (the foot currently shown).
+ */
+export function writeAfoSideCorrection(
+    c: AfoCorrections,
+    editSide: "left" | "right",
+    partial: Partial<AfoSideCorrection>,
+    opts: { linked: boolean; promote: boolean },
+): AfoCorrections {
+    const leftBase = c.left ?? c;
+    const rightBase = c.right ?? c;
+    const nextEdited = { ...(editSide === "right" ? rightBase : leftBase), ...partial };
+    const left = editSide === "left" ? nextEdited : opts.linked ? { ...leftBase, ...partial } : leftBase;
+    const right = editSide === "right" ? nextEdited : opts.linked ? { ...rightBase, ...partial } : rightBase;
+    return {
+        ...c,
+        ...(opts.promote ? nextEdited : {}),
+        left,
+        right,
     };
 }
 
