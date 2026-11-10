@@ -4,18 +4,13 @@ import { useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
 import { AFO_DESIGN_MARKERS } from "@/lib/geometry/afo/defaults";
+import { cameraViewForAfoMarkerId } from "@/lib/geometry/afo/marker-side";
 import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
 import { isCloseClick } from "@/lib/geometry/afo/trim-loop";
 import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import { applyCameraViewPreset, type CameraViewControls } from "@/lib/geometry/viewport-side-layout";
 import { getAfoState, patchAfoState, refreshAfoWorkingMesh, useAfoStore } from "@/stores/afo-store";
 import { type CameraView, useDesignStore } from "@/stores/design-store";
-
-function viewForMarker(side: "left" | "right", view: "medial" | "lateral" | "bottom"): CameraView {
-    if (view === "bottom") return "bottom";
-    if (view === "medial") return side === "left" ? "right" : "left";
-    return side === "left" ? "left" : "right";
-}
 
 export function AfoMarkerPlacement() {
     const { gl, camera, raycaster, scene, controls } = useThree();
@@ -43,7 +38,7 @@ export function AfoMarkerPlacement() {
         if (placingTrim) return;
         const marker = AFO_DESIGN_MARKERS[Math.min(placingIndex, AFO_DESIGN_MARKERS.length - 1)];
         if (!marker) return;
-        applyView(viewForMarker(afo.side, marker.view));
+        applyView(cameraViewForAfoMarkerId(marker.id, afo.side));
     }, [placingIndex, placingTrim, afo.side, applyView]);
 
     useEffect(() => {
@@ -182,7 +177,7 @@ export function AfoMarkerPlacement() {
             const next = placingIndex + 1;
             setPlacing(next);
             const upcoming = AFO_DESIGN_MARKERS[Math.min(next, AFO_DESIGN_MARKERS.length - 1)];
-            if (upcoming) applyView(viewForMarker(afo.side, upcoming.view));
+            if (upcoming) applyView(cameraViewForAfoMarkerId(upcoming.id, afo.side));
         };
 
         const onMove = (ev: PointerEvent) => {

@@ -259,10 +259,10 @@ describe("AFO marker placement helpers", () => {
     });
 
     test("camera presets follow medialSign for left and right", () => {
-        expect(cameraViewForAfoMarker("medial_malleolus", "left")).toBe("right");
-        expect(cameraViewForAfoMarker("lateral_malleolus", "left")).toBe("left");
-        expect(cameraViewForAfoMarker("medial_malleolus", "right")).toBe("left");
-        expect(cameraViewForAfoMarker("lateral_malleolus", "right")).toBe("right");
+        expect(cameraViewForAfoMarker("medial_malleolus", "left")).toBe("left");
+        expect(cameraViewForAfoMarker("lateral_malleolus", "left")).toBe("right");
+        expect(cameraViewForAfoMarker("medial_malleolus", "right")).toBe("right");
+        expect(cameraViewForAfoMarker("lateral_malleolus", "right")).toBe("left");
         expect(cameraViewForAfoMarker("heel", "left")).toBe("bottom");
         expect(cameraViewForAfoMarker("posterior_calcaneus", "right")).toBe("back");
     });
