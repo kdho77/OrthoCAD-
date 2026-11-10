@@ -277,13 +277,26 @@ export function prismaBridgeDirectory(prisma: PrismaClient): BridgeDirectory {
             if (!live) return { ok: false, reason: matches.some((row) => row.usedAt) ? "used" : "expired" };
             const meta = readPairingMeta(live.printerIds);
             if (!meta || meta.approved) return { ok: false, reason: "used" };
+            let adoptedBridgeId = live.bridgeId;
+            if (input.replaceBridgeId) {
+                const target = await prisma.shopBridge.findUnique({ where: { id: input.replaceBridgeId } });
+                if (!target?.credentialHash || target.revokedAt || target.tenantId !== input.tenantId) {
+                    return { ok: false, reason: "mismatch" };
+                }
+                adoptedBridgeId = target.id;
+            }
             await prisma.$transaction(async (tx) => {
                 await tx.shopEnrollment.update({
                     where: { id: live.id },
                     data: {
                         tenantId: input.tenantId,
                         shopId: input.shopId,
-                        printerIds: { kind: "pairing", codeHash, approved: true },
+                        printerIds: {
+                            kind: "pairing",
+                            codeHash,
+                            approved: true,
+                            adoptedBridgeId,
+                        },
                     },
                 });
                 await tx.shopBridge.update({
@@ -291,7 +304,7 @@ export function prismaBridgeDirectory(prisma: PrismaClient): BridgeDirectory {
                     data: { tenantId: input.tenantId, shopId: input.shopId, name: bridgeName },
                 });
             });
-            return { ok: true, bridgeId: live.bridgeId };
+            return { ok: true, bridgeId: adoptedBridgeId };
         },
 
         async pollPairing(input) {
@@ -311,6 +324,7 @@ export function prismaBridgeDirectory(prisma: PrismaClient): BridgeDirectory {
             const meta = readPairingMeta(row.printerIds);
             if (!meta?.approved || !row.tenantId || row.shopId === PENDING_SHOP_ID)
                 return { status: "pending" };
+            const targetBridgeId = meta.adoptedBridgeId || row.bridgeId;
             const claimed = await prisma.$transaction(async (tx) => {
                 const updated = await tx.shopEnrollment.updateMany({
                     where: { id: row.id, usedAt: null },
@@ -319,13 +333,13 @@ export function prismaBridgeDirectory(prisma: PrismaClient): BridgeDirectory {
                 if (updated.count !== 1) return null;
                 const issued = issueCredential();
                 await tx.shopBridge.update({
-                    where: { id: row.bridgeId },
+                    where: { id: targetBridgeId },
                     data: { credentialHash: issued.credentialHash },
                 });
-                return issued.credential;
+                return { credential: issued.credential, bridgeId: targetBridgeId };
             });
             if (!claimed) return { status: "consumed" };
-            return { status: "ready", credential: claimed };
+            return { status: "ready", credential: claimed.credential, bridgeId: claimed.bridgeId };
         },
 
         async reportDiscovery(input) {
@@ -432,6 +446,15 @@ export function prismaBridgeDirectory(prisma: PrismaClient): BridgeDirectory {
             });
             const probe = row ? readDiscoveryMeta(row.printerIds)?.probe : null;
             return probe ? { address: probe.address } : null;
+        },
+
+        async listEnrolledBridges(tenantId) {
+            const rows = await prisma.shopBridge.findMany({
+                where: { tenantId, revokedAt: null },
+            });
+            return rows
+                .filter((row) => Boolean(row.credentialHash))
+                .map((row) => ({ id: row.id, name: row.name }));
         },
     };
 }

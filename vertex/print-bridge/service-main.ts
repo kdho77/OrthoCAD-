@@ -143,10 +143,10 @@ const result = await runInstalledBridge({
     store,
     post: (path, body, credential) => postJson(config.origin, path, body, credential),
     openPairing: (_code, pageUrl) => openBrowser(pageUrl),
-    runSession: (credential) =>
+    runSession: (credential, bridgeId) =>
         runBridgeSession({
             origin: config.origin,
-            bridgeId: config.bridgeId,
+            bridgeId,
             stateDir: dir,
             credential,
             policy: productionBridgePolicy(),

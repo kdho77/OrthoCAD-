@@ -4,9 +4,10 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { importExistingInstall } from "./import-existing-install.js";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { importExistingInstall, takeoverLegacyBridge, windowsLegacyDirs } from "./import-existing-install.js";
 import { type CommandRunner, createPlatformSecretStore } from "./secret-store.js";
 
 function stateDir(): string {
@@ -29,12 +30,25 @@ const runner: CommandRunner = (command, args, input) =>
         child.stdin.end(input);
     });
 
+function bakedOrigin(): string {
+    const fromEnv = (process.env.ORTHOCAD_BRIDGE_CLOUD_ORIGIN ?? "").trim();
+    if (fromEnv.startsWith("https://") && !fromEnv.includes("REPLACE_WITH")) return fromEnv;
+    const nextToBundle = join(dirname(fileURLToPath(import.meta.url)), "cloud-origin.txt");
+    try {
+        const file = readFileSync(nextToBundle, "utf8").trim();
+        if (file.startsWith("https://")) return file;
+    } catch {
+        return "";
+    }
+    return "";
+}
+
 const dir = stateDir();
 mkdirSync(dir, { recursive: true });
 const configPath = join(dir, "bridge.json");
+const origin = bakedOrigin();
 if (!existsSync(configPath)) {
-    const origin = (process.env.ORTHOCAD_BRIDGE_CLOUD_ORIGIN ?? "").trim();
-    if (!origin.startsWith("https://") || origin.includes("REPLACE_WITH")) {
+    if (!origin.startsWith("https://")) {
         console.error(
             "The installer is missing its OrthoCAD address. Download a current installer from the Printers page.",
         );
@@ -57,10 +71,26 @@ if (!existsSync(configPath)) {
 
 if (process.platform === "win32" || process.platform === "darwin") {
     const store = createPlatformSecretStore({ platform: process.platform, stateDir: dir, run: runner });
+    const programData = process.env.PROGRAMDATA || "C:\\ProgramData";
+    const userProfile = process.env.USERPROFILE || process.env.HOME || "";
+    const candidates = process.platform === "win32" ? windowsLegacyDirs({ programData, userProfile }) : [dir];
     const taskXmlPath = join(dir, "previous-task.xml");
-    const taskXml = existsSync(taskXmlPath) ? readFileSync(taskXmlPath, "utf8") : undefined;
-    const imported = await importExistingInstall({ stateDir: dir, store, taskXml });
-    if (imported?.bridgeId) {
+    const tasks = existsSync(taskXmlPath)
+        ? [{ name: "OrthoCAD Print Bridge", xml: readFileSync(taskXmlPath, "utf8") }]
+        : [];
+    const imported = await takeoverLegacyBridge({
+        store,
+        candidateDirs: candidates,
+        tasks,
+        readFile: (path) => readFileSync(path, "utf8"),
+        unlink: unlinkSync,
+        disableTask: async (name) => {
+            await runner("schtasks.exe", ["/Change", "/TN", name, "/DISABLE"], "");
+        },
+    });
+    if (!imported) {
+        await importExistingInstall({ stateDir: dir, store, taskXml: tasks[0]?.xml });
+    } else if (imported.bridgeId) {
         const current = JSON.parse(readFileSync(configPath, "utf8")) as {
             origin?: string;
             updateManifestUrl?: string;
@@ -69,7 +99,7 @@ if (process.platform === "win32" || process.platform === "darwin") {
             configPath,
             JSON.stringify(
                 {
-                    origin: imported.origin || current.origin,
+                    origin: current.origin || origin,
                     bridgeId: imported.bridgeId,
                     updateManifestUrl: current.updateManifestUrl ?? "",
                 },

@@ -31,4 +31,10 @@ for (const [entry, outfile] of [
     });
 }
 
+const origin = (process.env.ORTHOCAD_BRIDGE_CLOUD_ORIGIN ?? "").trim();
+if (origin.startsWith("https://")) {
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(resolve(out, "cloud-origin.txt"), `${origin}\n`);
+}
+
 console.log(`Bundled print bridge payload in ${out}`);

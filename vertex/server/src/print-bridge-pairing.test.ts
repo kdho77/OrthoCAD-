@@ -153,4 +153,54 @@ describe("print bridge pairing http", () => {
         expect(containsSecret(stored, created.proof)).toBe(false);
         expect(containsSecret(stored, credential)).toBe(false);
     });
+
+    test("approval can attach the computer to an already enrolled bridge", async () => {
+        const directory = memoryBridgeDirectory();
+        const existingId = "5598afcd-2222-4222-8222-222222222222";
+        const created = createEnrollment({
+            tenantId: TENANT,
+            shopId: TENANT,
+            bridgeId: existingId,
+            printerIds: [],
+            origin: ORIGIN,
+            now: NOW,
+        });
+        await directory.putEnrollment(created.record, { name: "Existing press" });
+        const enrolled = await invoke(directory, "/print-bridge/v1/enroll", {
+            proof: created.proof,
+            bridgeId: existingId,
+            origin: ORIGIN,
+        });
+        const previous = String(enrolled.json.credential ?? "");
+        const freshId = "33333333-3333-4333-8333-333333333333";
+        const deviceProof = "freshDeviceProofSecretValueNotStoredAnywhere1";
+        const began = await invoke(directory, "/print-bridge/v1/pair/begin", {
+            bridgeId: freshId,
+            deviceProof,
+            origin: ORIGIN,
+        });
+        const approved = await directory.approvePairing({
+            code: String(began.json.pairingCode ?? ""),
+            tenantId: TENANT,
+            shopId: TENANT,
+            bridgeName: "Replacement computer",
+            now: NOW,
+            replaceBridgeId: existingId,
+        });
+        expect(approved).toEqual({ ok: true, bridgeId: existingId });
+        const ready = await invoke(directory, "/print-bridge/v1/pair/poll", {
+            bridgeId: freshId,
+            deviceProof,
+            origin: ORIGIN,
+        });
+        expect(ready.json.bridgeId).toBe(existingId);
+        const next = String(ready.json.credential ?? "");
+        expect(await directory.authenticate(previous, existingId)).toBeNull();
+        expect(await directory.authenticate(next, existingId)).not.toBeNull();
+        expect(await directory.authenticate(next, freshId)).toBeNull();
+        const rendered = directory.inspect();
+        expect(containsSecret(rendered, previous)).toBe(false);
+        expect(containsSecret(rendered, next)).toBe(false);
+        expect(containsSecret(rendered, deviceProof)).toBe(false);
+    });
 });

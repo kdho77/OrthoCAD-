@@ -19,6 +19,8 @@ rs.mock("./production-actions", () => {
     const noop = async () => undefined;
     return {
         loadProduction: noop,
+        loadProductionShops: async () => [],
+        listEnrolledBridges: async () => ({ bridges: [] }),
         holdProductionJob: noop,
         cancelProductionJob: noop,
         retryProductionJob: noop,
@@ -83,6 +85,17 @@ describe("printer setup screens", () => {
     let root: Root | null = null;
 
     beforeEach(() => {
+        globalThis.fetch = async () =>
+            new Response(
+                JSON.stringify({
+                    assets: [
+                        { name: "OrthoCAD-Print-Bridge-Setup.exe" },
+                        { name: "OrthoCAD-Print-Bridge.pkg" },
+                        { name: "OrthoCAD-Print-Bridge.dmg" },
+                    ],
+                }),
+                { status: 200 },
+            );
         useProductionStore.setState({ jobs: [], printers: [] });
         container = document.createElement("div");
         document.body.appendChild(container);
@@ -154,5 +167,21 @@ describe("printer setup screens", () => {
         expect(container.textContent).not.toContain(SECRET_CREDENTIAL);
         expect(container.querySelector('[data-testid="create-bridge-enrollment"]')).toBeNull();
         expect(container.querySelector('[aria-label="Bridge id"]')).toBeTruthy();
+    });
+
+    test("an unpublished release shows a notice instead of a download that would 404", async () => {
+        globalThis.fetch = async () => new Response("missing", { status: 404 });
+        Object.defineProperty(navigator, "userAgent", {
+            configurable: true,
+            value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        });
+        Object.defineProperty(navigator, "platform", { configurable: true, value: "Win32" });
+        user("clinician");
+        await render();
+        expect(container.querySelector('[data-testid="installer-unpublished"]')?.textContent).toContain(
+            "not published yet",
+        );
+        expect(container.querySelector('[data-testid="installer-primary"]')).toBeNull();
+        expect(container.textContent).not.toContain("npx tsx");
     });
 });

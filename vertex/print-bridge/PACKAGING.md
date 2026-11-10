@@ -21,6 +21,16 @@ Already-enrolled bridges keep working. If a plaintext `credential` file and a br
 
 Do not log proofs, credentials, Moonraker API keys, or signing private keys.
 
+## Required secrets
+
+These names are repository or organization secrets. None of them are committed.
+
+- `ORTHOCAD_AUTHENTICODE_THUMBPRINT` — Windows Authenticode. When it is absent, the Windows job still uploads `OrthoCAD-Print-Bridge-Setup.exe` and adds `SHORT-UNSIGNED.txt`.
+- `ORTHOCAD_APPLE_ID`, `ORTHOCAD_APPLE_TEAM_ID`, `ORTHOCAD_APPLE_APP_PASSWORD` — macOS notarization. When any of them is absent, the macOS job still uploads `OrthoCAD-Print-Bridge.pkg` and `OrthoCAD-Print-Bridge.dmg` and adds `SHORT-UNSIGNED.txt`.
+- `ORTHOCAD_BRIDGE_UPDATE_PRIVATE_KEY` — Ed25519 private key PEM for the update manifest. The release job writes it to a temporary file, passes `ORTHOCAD_BRIDGE_UPDATE_PRIVATE_KEY_FILE`, then deletes the file. When the secret is absent, the manifest is published unsigned and the log says signing was skipped.
+
+Release and CI installer builds set `ORTHOCAD_BRIDGE_CLOUD_ORIGIN=https://orthocad.vertexorthopedic.com` and copy that address into `cloud-origin.txt` beside the bridge. A shop install reads that file. Local development can still set a different origin in the environment.
+
 ## What this repository builds on Linux
 
 `node print-bridge/packaging/check-packaging.mjs` bundles `bridge.mjs` and `prepare-config.mjs` with esbuild and checks the installer scripts. It signs a throwaway update manifest with an ephemeral key and deletes that key. It does not produce a signed `.exe` or a notarized `.pkg`.

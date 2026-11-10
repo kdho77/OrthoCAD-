@@ -56,7 +56,9 @@ export async function migratePlaintextCredential(
         unlink: (path) => unlinkSync(path),
     },
 ): Promise<"imported" | "removed" | "absent"> {
-    const file = join(stateDir, "credential");
+    const file = stateDir.includes("\\")
+        ? `${stateDir.replace(/[\\/]+$/, "")}\\credential`
+        : join(stateDir, "credential");
     let plaintext: string | null = null;
     try {
         plaintext = io.readFile(file).trim() || null;

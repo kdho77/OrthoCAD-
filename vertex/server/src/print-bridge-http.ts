@@ -222,7 +222,11 @@ export async function handlePrintBridgeNode(
                 return;
             }
             if (result.status === "ready") {
-                send(res, 200, { status: "ready", credential: result.credential });
+                send(res, 200, {
+                    status: "ready",
+                    credential: result.credential,
+                    bridgeId: result.bridgeId,
+                });
                 return;
             }
             send(res, 200, { status: result.status });

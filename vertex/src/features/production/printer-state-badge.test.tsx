@@ -17,6 +17,7 @@ rs.mock("./production-actions", () => {
     const noop = async () => undefined;
     return {
         loadProduction: noop,
+        loadProductionShops: async () => [],
         holdProductionJob: noop,
         cancelProductionJob: noop,
         retryProductionJob: noop,
@@ -64,6 +65,13 @@ describe("printer state badges", () => {
     let root: Root | null = null;
 
     beforeEach(() => {
+        globalThis.fetch = async () =>
+            new Response(
+                JSON.stringify({
+                    assets: [{ name: "OrthoCAD-Print-Bridge-Setup.exe" }],
+                }),
+                { status: 200 },
+            );
         useAuthStore.setState({
             user: {
                 id: "u1",

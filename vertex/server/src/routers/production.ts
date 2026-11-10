@@ -3,6 +3,7 @@
 
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { isSuperAdmin } from "../../../shared/client-files.js";
 import {
     releaseAssignedJobToBridge,
     saveMoonrakerPrinter,
@@ -30,7 +31,12 @@ import {
     retryJob,
 } from "../../../shared/production-jobs.js";
 import { ensureAppUser } from "../lib/ensure-user.js";
-import { openProduction, rethrowProduction } from "../lib/production-access.js";
+import {
+    findActiveTenant,
+    openProduction,
+    resolveProductionShop,
+    rethrowProduction,
+} from "../lib/production-access.js";
 import { serverBridgeDirectory } from "../print-bridge-state.js";
 import { protectedProcedure, publicProcedure, router } from "../trpc.js";
 
@@ -49,6 +55,52 @@ const bridgeAdminProcedure = publicProcedure.use(async ({ ctx, next }) => {
 
 const idInput = z.object({ id: z.string().uuid() });
 
+const shopSelection = {
+    tenantId: z.string().uuid().optional(),
+    shopId: z.string().uuid().optional(),
+};
+
+async function scope(ctx: { user: { id: string; email: string; role: string } }) {
+    return openProduction(ctx.user);
+}
+
+/**
+ * Super-admins enroll and manage printers for the shop they pass in.
+ * Everyone else keeps the tenant already on the actor. `optional` list calls
+ * with no shop id stay on the actor's current visibility.
+ */
+async function scopeShop(
+    ctx: { user: { id: string; email: string; role: string } },
+    input: { tenantId?: string; shopId?: string } | undefined,
+    mode: "require" | "optional",
+) {
+    const opened = await scope(ctx);
+    const asked = Boolean(input?.tenantId || input?.shopId);
+    if (mode === "optional" && !asked) return opened;
+    const shop = resolveProductionShop(opened.actor, input);
+    if (!isSuperAdmin(opened.actor)) return opened;
+    if (!shop.tenantId) throw new ProductionError("BAD_REQUEST", "A tenant is required.");
+    if (shop.tenantId === opened.actor.tenantId) return opened;
+    const tenant = await findActiveTenant(shop.tenantId);
+    if (!tenant) throw new ProductionError("BAD_REQUEST", "Shop not found.");
+    return {
+        repo: opened.repo,
+        actor: { ...opened.actor, tenantId: tenant.id, tenantName: tenant.name },
+    };
+}
+
+async function requireOwnedShopPrinter(
+    repo: { listPrinters: () => Promise<{ id: string; tenantId: string | null }[]> },
+    actor: { role: string; tenantId: string | null },
+    printerId: string,
+) {
+    if (!isSuperAdmin(actor)) return;
+    const existing = (await repo.listPrinters()).find((printer) => printer.id === printerId);
+    if (!existing?.tenantId || existing.tenantId !== actor.tenantId) {
+        throw new ProductionError("NOT_FOUND", "Printer not found");
+    }
+}
+
 const enqueueInput = z.object({
     designId: z.string().uuid(),
     designName: z.string().min(1).max(120),
@@ -63,15 +115,16 @@ const enqueueInput = z.object({
     gcode: z.string().min(1).max(5_000_000),
 });
 
-async function scope(ctx: { user: { id: string; email: string; role: string } }) {
-    return openProduction(ctx.user);
-}
-
 export const productionRouter = router({
-    list: protectedProcedure.query(async ({ ctx }) => {
+    list: protectedProcedure.input(z.object(shopSelection).optional()).query(async ({ ctx, input }) => {
         try {
-            const { repo, actor } = await scope(ctx);
-            return await listProduction(repo, actor);
+            const { repo, actor } = await scopeShop(ctx, input, "optional");
+            const result = await listProduction(repo, actor);
+            if (!isSuperAdmin(actor) || !(input?.tenantId || input?.shopId)) return result;
+            return {
+                jobs: result.jobs.filter((job) => job.tenantId === actor.tenantId),
+                printers: result.printers.filter((printer) => printer.tenantId === actor.tenantId),
+            };
         } catch (error) {
             rethrowProduction(error);
         }
@@ -199,33 +252,50 @@ export const productionRouter = router({
                 bridgeId: z.string().uuid(),
                 cancellation: z.enum(["unsupported", "explicit"]),
                 enabled: z.boolean(),
+                ...shopSelection,
             }),
         )
         .mutation(async ({ ctx, input }) => {
             try {
-                const { repo, actor } = await scope(ctx);
-                return await saveMoonrakerPrinter(repo, actor, input);
+                const { repo, actor } = await scopeShop(ctx, input, "require");
+                if (isSuperAdmin(actor) && !actor.tenantId) {
+                    throw new ProductionError("BAD_REQUEST", "A tenant is required.");
+                }
+                if (input.id) await requireOwnedShopPrinter(repo, actor, input.id);
+                const printer = await saveMoonrakerPrinter(repo, actor, input);
+                if (isSuperAdmin(actor) && printer.tenantId !== actor.tenantId) {
+                    throw new ProductionError("BAD_REQUEST", "A tenant is required.");
+                }
+                return printer;
             } catch (error) {
                 rethrowProduction(error);
             }
         }),
 
     setMoonrakerPrinterEnabled: protectedProcedure
-        .input(z.object({ id: z.string().uuid(), enabled: z.boolean() }))
+        .input(z.object({ id: z.string().uuid(), enabled: z.boolean(), ...shopSelection }))
         .mutation(async ({ ctx, input }) => {
             try {
-                const { repo, actor } = await scope(ctx);
-                return await setMoonrakerPrinterEnabled(repo, actor, input.id, input.enabled);
+                const { repo, actor } = await scopeShop(ctx, input, "require");
+                if (isSuperAdmin(actor) && !actor.tenantId) {
+                    throw new ProductionError("BAD_REQUEST", "A tenant is required.");
+                }
+                await requireOwnedShopPrinter(repo, actor, input.id);
+                const printer = await setMoonrakerPrinterEnabled(repo, actor, input.id, input.enabled);
+                if (isSuperAdmin(actor) && printer.tenantId !== actor.tenantId) {
+                    throw new ProductionError("BAD_REQUEST", "A tenant is required.");
+                }
+                return printer;
             } catch (error) {
                 rethrowProduction(error);
             }
         }),
 
     createBridgeEnrollment: bridgeAdminProcedure
-        .input(z.object({ bridgeName: z.string().min(1).max(80) }))
+        .input(z.object({ bridgeName: z.string().min(1).max(80), ...shopSelection }))
         .mutation(async ({ ctx, input }) => {
             try {
-                const { actor } = await scope(ctx);
+                const { actor } = await scopeShop(ctx, input, "require");
                 const bridgeName = input.bridgeName.trim();
                 if (!bridgeName) throw new ProductionError("BAD_REQUEST", "A bridge name is required.");
                 const origin = process.env.ORTHOCAD_CLOUD_ORIGIN?.trim() ?? "";
@@ -255,10 +325,10 @@ export const productionRouter = router({
         }),
 
     revokeBridge: bridgeAdminProcedure
-        .input(z.object({ bridgeId: z.string().uuid() }))
+        .input(z.object({ bridgeId: z.string().uuid(), ...shopSelection }))
         .mutation(async ({ ctx, input }) => {
             try {
-                const { actor } = await scope(ctx);
+                const { actor } = await scopeShop(ctx, input, "require");
                 if (!actor.tenantId) throw new ProductionError("BAD_REQUEST", "A tenant is required.");
                 const ok = await serverBridgeDirectory.revoke(
                     input.bridgeId,
@@ -273,10 +343,17 @@ export const productionRouter = router({
         }),
 
     approveBridgePairing: bridgeAdminProcedure
-        .input(z.object({ code: z.string().min(4).max(32), bridgeName: z.string().min(1).max(80) }))
+        .input(
+            z.object({
+                code: z.string().min(4).max(32),
+                bridgeName: z.string().min(1).max(80),
+                replaceBridgeId: z.string().uuid().optional(),
+                ...shopSelection,
+            }),
+        )
         .mutation(async ({ ctx, input }) => {
             try {
-                const { actor } = await scope(ctx);
+                const { actor } = await scopeShop(ctx, input, "require");
                 if (!actor.tenantId) throw new ProductionError("BAD_REQUEST", "A tenant is required.");
                 const result = await serverBridgeDirectory.approvePairing({
                     code: input.code,
@@ -284,6 +361,7 @@ export const productionRouter = router({
                     shopId: actor.tenantId,
                     bridgeName: input.bridgeName,
                     now: new Date(),
+                    replaceBridgeId: input.replaceBridgeId,
                 });
                 if (!result.ok) {
                     const message =
@@ -295,6 +373,18 @@ export const productionRouter = router({
                     throw new ProductionError("BAD_REQUEST", message);
                 }
                 return { bridgeId: result.bridgeId, bridgeName: input.bridgeName.trim() };
+            } catch (error) {
+                rethrowProduction(error);
+            }
+        }),
+
+    listEnrolledBridges: bridgeAdminProcedure
+        .input(z.object(shopSelection).optional())
+        .query(async ({ ctx, input }) => {
+            try {
+                const { actor } = await scopeShop(ctx, input, "optional");
+                if (!actor.tenantId) return { bridges: [] };
+                return { bridges: await serverBridgeDirectory.listEnrolledBridges(actor.tenantId) };
             } catch (error) {
                 rethrowProduction(error);
             }
@@ -379,12 +469,20 @@ export const productionRouter = router({
             z.object({
                 name: z.string().min(1).max(80),
                 moonrakerUrl: z.string().min(1).max(500),
+                ...shopSelection,
             }),
         )
         .mutation(async ({ ctx, input }) => {
             try {
-                const { repo, actor } = await scope(ctx);
-                return await registerMockPrinter(repo, actor, input);
+                const { repo, actor } = await scopeShop(ctx, input, "require");
+                if (isSuperAdmin(actor) && !actor.tenantId) {
+                    throw new ProductionError("BAD_REQUEST", "A tenant is required.");
+                }
+                const result = await registerMockPrinter(repo, actor, input);
+                if (isSuperAdmin(actor) && result.printer.tenantId !== actor.tenantId) {
+                    throw new ProductionError("BAD_REQUEST", "A tenant is required.");
+                }
+                return result;
             } catch (error) {
                 rethrowProduction(error);
             }

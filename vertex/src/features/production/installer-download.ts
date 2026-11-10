@@ -41,6 +41,39 @@ export function detectInstallerOs(hints: { userAgent?: string; platform?: string
     return "other";
 }
 
+export const RELEASE_CLOUD_ORIGIN = "https://orthocad.vertexorthopedic.com";
+
+export const INSTALLER_UNPUBLISHED_NOTICE =
+    "The installer is not published yet. It will appear here when the release is ready. You do not need to type a command.";
+
+export interface InstallerPublication {
+    known: boolean;
+    windows: boolean;
+    macos: boolean;
+    dmg: boolean;
+}
+
+export async function lookupPublishedInstallers(
+    fetchImpl: typeof fetch = fetch,
+): Promise<InstallerPublication> {
+    const missing = { known: true, windows: false, macos: false, dmg: false };
+    try {
+        const response = await fetchImpl("https://api.github.com/repos/kdho77/OrthoCAD-/releases/latest", {
+            headers: { accept: "application/vnd.github+json" },
+        });
+        if (!response.ok) return missing;
+        const body = (await response.json()) as { assets?: { name?: string }[] };
+        const names = new Set((body.assets ?? []).map((asset) => asset.name).filter(Boolean));
+        return {
+            known: true,
+            windows: names.has(INSTALLERS.windows.filename),
+            macos: names.has(INSTALLERS.macos.filename),
+            dmg: names.has(INSTALLERS["macos-dmg"].filename),
+        };
+    } catch {
+        return missing;
+    }
+}
 export function installerChoices(os: InstallerOs): {
     primary: InstallerDownload | null;
     alternate: InstallerDownload | null;

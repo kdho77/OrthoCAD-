@@ -7,6 +7,9 @@ STAGE="$(mktemp -d)"
 APP="$STAGE/Library/Application Support/OrthoCAD/PrintBridge"
 mkdir -p "$APP/state"
 cp "$ROOT/print-bridge/packaging/dist/bridge.mjs" "$APP/bridge.mjs"
+if [ -f "$ROOT/print-bridge/packaging/dist/cloud-origin.txt" ]; then
+    cp "$ROOT/print-bridge/packaging/dist/cloud-origin.txt" "$APP/cloud-origin.txt"
+fi
 cp "$ROOT/print-bridge/packaging/macos/com.orthocad.print-bridge.plist" "$APP/com.orthocad.print-bridge.plist"
 cp "$ROOT/print-bridge/packaging/macos/keychain-store.swift" "$APP/keychain-store.swift"
 if [ -x "$ROOT/print-bridge/packaging/dist/node-universal" ]; then

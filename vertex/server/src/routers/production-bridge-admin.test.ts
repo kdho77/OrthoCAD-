@@ -25,7 +25,12 @@ describe("bridge enrollment admin guard", () => {
     test("bridge enrollment and pairing approval use the admin guard", () => {
         const source = readFileSync("vertex/server/src/routers/production.ts", "utf8");
         const guarded = [...source.matchAll(/(\w+):\s*bridgeAdminProcedure/g)].map((match) => match[1]);
-        expect(guarded).toEqual(["createBridgeEnrollment", "revokeBridge", "approveBridgePairing"]);
+        expect(guarded).toEqual([
+            "createBridgeEnrollment",
+            "revokeBridge",
+            "approveBridgePairing",
+            "listEnrolledBridges",
+        ]);
         expect(source).toContain("saveMoonrakerPrinter: protectedProcedure");
         expect(source).toContain('message: "Admin access required"');
         expect(source).toContain("Cloud origin is not configured.");

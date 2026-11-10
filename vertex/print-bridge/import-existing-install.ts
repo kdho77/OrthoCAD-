@@ -45,6 +45,86 @@ export async function importExistingInstall(input: {
     };
 }
 
+function childPath(dir: string, name: string): string {
+    const sep = dir.includes("\\") ? "\\" : "/";
+    return `${dir.replace(/[\\/]+$/, "")}${sep}${name}`;
+}
+
+export function windowsLegacyDirs(env: { programData: string; userProfile: string }): string[] {
+    const root = (base: string, ...parts: string[]) => [base.replace(/[\\/]+$/, ""), ...parts].join("\\");
+    return [
+        root(env.programData, "OrthoCAD", "PrintBridge"),
+        root(env.userProfile, "OrthoCAD", "PrintBridge"),
+        root(env.userProfile, "AppData", "Roaming", "OrthoCAD", "PrintBridge"),
+        root(env.userProfile, "AppData", "Local", "OrthoCAD", "PrintBridge"),
+    ];
+}
+
+export function scheduledTasksToReplace(tasks: { name: string; xml: string }[]): string[] {
+    return tasks
+        .filter((task) =>
+            /ORTHOCAD_BRIDGE_ID|ORTHOCAD_BRIDGE_STATE_DIR|print-bridge[/\\]main\.ts/.test(task.xml),
+        )
+        .map((task) => task.name);
+}
+
+export function discoverLegacyBridge(input: {
+    candidateDirs: string[];
+    tasks: { name: string; xml: string }[];
+    readFile: (path: string) => string;
+}): { bridgeId: string; stateDir: string } | null {
+    const dirs = [...input.candidateDirs];
+    for (const task of input.tasks) {
+        const parsed = readBridgeIdFromTaskXml(task.xml);
+        if (parsed?.stateDir) dirs.unshift(parsed.stateDir);
+    }
+    const seen = new Set<string>();
+    for (const dir of dirs) {
+        if (seen.has(dir)) continue;
+        seen.add(dir);
+        const credentialPath = childPath(dir, "credential");
+        let credential = "";
+        try {
+            credential = input.readFile(credentialPath).trim();
+        } catch {
+            credential = "";
+        }
+        if (!credential) continue;
+        const fromJson = readJson(input.readFile, childPath(dir, "bridge.json"));
+        const fromId = readText(input.readFile, childPath(dir, "bridge-id"));
+        const fromTask = input.tasks
+            .map((task) => readBridgeIdFromTaskXml(task.xml))
+            .find((item) => item && (!item.stateDir || item.stateDir === dir));
+        const bridgeId = fromJson?.bridgeId || fromId || fromTask?.bridgeId || "";
+        if (!bridgeId) continue;
+        return { bridgeId, stateDir: dir };
+    }
+    return null;
+}
+
+export async function takeoverLegacyBridge(input: {
+    store: SecretStore;
+    candidateDirs: string[];
+    tasks: { name: string; xml: string }[];
+    readFile: (path: string) => string;
+    unlink: (path: string) => void;
+    disableTask: (name: string) => Promise<void>;
+}): Promise<{ bridgeId: string; importedCredential: boolean; disabledTasks: string[] } | null> {
+    const found = discoverLegacyBridge(input);
+    if (!found) return null;
+    const migration = await migratePlaintextCredential(input.store, found.stateDir, {
+        readFile: input.readFile,
+        unlink: input.unlink,
+    });
+    const names = scheduledTasksToReplace(input.tasks);
+    for (const name of names) await input.disableTask(name);
+    return {
+        bridgeId: found.bridgeId,
+        importedCredential: migration === "imported",
+        disabledTasks: names,
+    };
+}
+
 function readJson(
     readFile: (path: string) => string,
     path: string,

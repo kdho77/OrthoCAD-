@@ -1,16 +1,23 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 // Install, pair, and guide. Enrollment proofs and bridge credentials are not rendered.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuthStore } from "@/stores/auth-store";
-import { detectInstallerOs, INSTALLERS, installerChoices } from "./installer-download";
-import { approveBridgePairing } from "./production-actions";
+import {
+    detectInstallerOs,
+    INSTALLER_UNPUBLISHED_NOTICE,
+    INSTALLERS,
+    type InstallerPublication,
+    installerChoices,
+    lookupPublishedInstallers,
+} from "./installer-download";
+import { approveBridgePairing, listEnrolledBridges, type ProductionShop } from "./production-actions";
 
 function isProductionAdmin(role: string | undefined): boolean {
     return role === "admin" || role === "super_admin";
 }
 
-export function BridgeSetupPanel() {
+export function BridgeSetupPanel({ shop }: { shop?: ProductionShop }) {
     const role = useAuthStore((state) => state.user?.role);
     const os = detectInstallerOs({
         userAgent: typeof navigator === "undefined" ? "" : navigator.userAgent,
@@ -18,24 +25,70 @@ export function BridgeSetupPanel() {
     });
     const choices = installerChoices(os);
     const admin = isProductionAdmin(role);
+    const needsShop = role === "super_admin";
     const initialCode =
         typeof window === "undefined" ? "" : (new URLSearchParams(window.location.search).get("pair") ?? "");
     const [code, setCode] = useState(initialCode);
     const [bridgeName, setBridgeName] = useState("");
+    const [replaceBridgeId, setReplaceBridgeId] = useState("");
+    const [bridges, setBridges] = useState<{ id: string; name: string }[]>([]);
     const [pending, setPending] = useState(false);
     const [notice, setNotice] = useState("");
     const [approvedId, setApprovedId] = useState("");
+    const [published, setPublished] = useState<InstallerPublication | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        void lookupPublishedInstallers()
+            .then((result) => {
+                if (!cancelled) setPublished(result);
+            })
+            .catch(() => {
+                if (!cancelled) setPublished({ known: true, windows: false, macos: false, dmg: false });
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    const shopId = shop?.tenantId ?? "";
+    useEffect(() => {
+        if (!admin || (needsShop && !shopId)) {
+            setBridges([]);
+            return;
+        }
+        let cancelled = false;
+        void listEnrolledBridges(shopId ? { tenantId: shopId, shopId } : undefined)
+            .then((result) => {
+                if (!cancelled) setBridges(result?.bridges ?? []);
+            })
+            .catch(() => {
+                if (!cancelled) setBridges([]);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [admin, needsShop, shopId]);
 
     const approve = () => {
-        if (!admin || pending) return;
+        if (!admin || pending || (needsShop && !shop)) return;
         setNotice("");
         setPending(true);
-        void approveBridgePairing({ code, bridgeName })
+        void approveBridgePairing({
+            code,
+            bridgeName,
+            replaceBridgeId: replaceBridgeId || undefined,
+            shop,
+        })
             .then((result) => {
                 setApprovedId(result.bridgeId);
                 setCode("");
                 setBridgeName("");
-                setNotice("This computer is approved. It will come online when pairing finishes.");
+                setNotice(
+                    replaceBridgeId
+                        ? "This computer replaces the existing bridge. It will come online when pairing finishes."
+                        : "This computer is approved. It will come online when pairing finishes.",
+                );
             })
             .catch((error: unknown) => {
                 setApprovedId("");
@@ -43,6 +96,17 @@ export function BridgeSetupPanel() {
             })
             .finally(() => setPending(false));
     };
+
+    const primaryReady = choices.primary
+        ? choices.primary.os === "windows"
+            ? published?.windows
+            : published?.macos
+        : false;
+    const alternateReady = choices.alternate
+        ? choices.alternate.os === "windows"
+            ? published?.windows
+            : published?.macos
+        : false;
 
     return (
         <div className="flex flex-col gap-3">
@@ -56,7 +120,12 @@ export function BridgeSetupPanel() {
                     type in a command window.
                 </p>
                 <div className="mt-3 flex flex-col gap-2 md:flex-row md:flex-wrap">
-                    {choices.primary ? (
+                    {published && choices.primary && !primaryReady ? (
+                        <p className="text-sm text-muted-foreground" data-testid="installer-unpublished">
+                            {INSTALLER_UNPUBLISHED_NOTICE}
+                        </p>
+                    ) : null}
+                    {choices.primary && primaryReady ? (
                         <a
                             className="inline-flex min-h-11 items-center rounded-md bg-primary px-4 text-sm text-primary-foreground"
                             href={choices.primary.href}
@@ -65,12 +134,13 @@ export function BridgeSetupPanel() {
                         >
                             {choices.primary.label}
                         </a>
-                    ) : (
+                    ) : null}
+                    {!choices.primary && published ? (
                         <p className="text-sm text-muted-foreground" data-testid="installer-other-os">
                             Choose Windows or Mac. This browser is not one of those installers.
                         </p>
-                    )}
-                    {choices.alternate ? (
+                    ) : null}
+                    {choices.alternate && alternateReady ? (
                         <a
                             className="inline-flex min-h-11 items-center rounded-md bg-secondary px-4 text-sm"
                             href={choices.alternate.href}
@@ -81,30 +151,38 @@ export function BridgeSetupPanel() {
                                 ? "Download for Windows instead"
                                 : "Download for Mac instead"}
                         </a>
-                    ) : (
-                        <>
-                            <a
-                                className="inline-flex min-h-11 items-center rounded-md bg-secondary px-4 text-sm"
-                                href={INSTALLERS.windows.href}
-                                data-testid="installer-choice-windows"
-                            >
-                                Download for Windows
-                            </a>
-                            <a
-                                className="inline-flex min-h-11 items-center rounded-md bg-secondary px-4 text-sm"
-                                href={INSTALLERS.macos.href}
-                                data-testid="installer-choice-mac"
-                            >
-                                Download for Mac
-                            </a>
-                        </>
-                    )}
-                    <a
-                        className="inline-flex min-h-11 items-center text-sm text-muted-foreground underline"
-                        href={INSTALLERS["macos-dmg"].href}
-                    >
-                        {INSTALLERS["macos-dmg"].label}
-                    </a>
+                    ) : null}
+                    {!choices.primary && published && !published.windows && !published.macos ? (
+                        <p className="text-sm text-muted-foreground" data-testid="installer-unpublished">
+                            {INSTALLER_UNPUBLISHED_NOTICE}
+                        </p>
+                    ) : null}
+                    {!choices.primary && published?.windows ? (
+                        <a
+                            className="inline-flex min-h-11 items-center rounded-md bg-secondary px-4 text-sm"
+                            href={INSTALLERS.windows.href}
+                            data-testid="installer-choice-windows"
+                        >
+                            Download for Windows
+                        </a>
+                    ) : null}
+                    {!choices.primary && published?.macos ? (
+                        <a
+                            className="inline-flex min-h-11 items-center rounded-md bg-secondary px-4 text-sm"
+                            href={INSTALLERS.macos.href}
+                            data-testid="installer-choice-mac"
+                        >
+                            Download for Mac
+                        </a>
+                    ) : null}
+                    {published?.dmg ? (
+                        <a
+                            className="inline-flex min-h-11 items-center text-sm text-muted-foreground underline"
+                            href={INSTALLERS["macos-dmg"].href}
+                        >
+                            {INSTALLERS["macos-dmg"].label}
+                        </a>
+                    ) : null}
                 </div>
             </div>
             <div className="rounded-xl border border-border bg-panel p-3" data-testid="bridge-setup-guide">
@@ -157,12 +235,35 @@ export function BridgeSetupPanel() {
                         <button
                             type="button"
                             className="min-h-11 self-end rounded-md bg-primary px-4 text-sm text-primary-foreground disabled:opacity-50"
-                            disabled={pending || code.trim().length < 4 || bridgeName.trim().length === 0}
+                            disabled={
+                                pending ||
+                                code.trim().length < 4 ||
+                                bridgeName.trim().length === 0 ||
+                                (needsShop && !shop)
+                            }
                             onClick={approve}
                         >
                             Approve bridge
                         </button>
                     </div>
+                    {bridges.length > 0 ? (
+                        <label className="mt-3 block text-xs text-muted-foreground">
+                            Existing bridge
+                            <select
+                                aria-label="Existing bridge"
+                                value={replaceBridgeId}
+                                className="mt-1 block min-h-11 w-full max-w-md rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                                onChange={(event) => setReplaceBridgeId(event.target.value)}
+                            >
+                                <option value="">New bridge</option>
+                                {bridges.map((bridge) => (
+                                    <option key={bridge.id} value={bridge.id}>
+                                        Replace {bridge.name} ({bridge.id.slice(0, 8)})
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    ) : null}
                     {approvedId ? (
                         <p className="mt-3 text-sm" data-testid="bridge-pairing-approved">
                             Approved bridge <span className="font-mono">{approvedId}</span>

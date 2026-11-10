@@ -4,7 +4,7 @@
 // Secrets are not written to the log callback.
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DiscoveryCandidateRecord } from "../shared/print-bridge-pairing.js";
 import { verifySignedManifest } from "../shared/print-bridge-update.js";
@@ -31,7 +31,7 @@ export interface InstalledBridgeOptions {
     signal?: AbortSignal;
     log?: (line: string) => void;
     post?: (path: string, body: unknown, credential: string | null) => Promise<InstalledCloudResponse>;
-    runSession?: (credential: string) => Promise<{ cycles: number; stopped: string }>;
+    runSession?: (credential: string, bridgeId: string) => Promise<{ cycles: number; stopped: string }>;
     openPairing?: (code: string, pageUrl: string) => void;
     sleep?: (ms: number) => Promise<void>;
     pollLimit?: number;
@@ -51,10 +51,12 @@ export async function runInstalledBridge(
     mkdirSync(options.stateDir, { recursive: true });
     await migratePlaintextCredential(options.store, options.stateDir);
     let credential = await options.store.get(CREDENTIAL_ACCOUNT);
+    let bridgeId = options.bridgeId;
     if (!credential) {
         const paired = await pairUntilReady(options, log);
         if (!paired.ok) return { stopped: paired.stopped, cycles: 0 };
         credential = paired.credential;
+        bridgeId = paired.bridgeId;
     }
     let cycles = 0;
     const limit = options.maxCycles ?? Number.POSITIVE_INFINITY;
@@ -63,7 +65,7 @@ export async function runInstalledBridge(
         const update = await considerUpdate(options, log);
         if (update === "installed") return { stopped: "updating", cycles };
         const session = options.runSession
-            ? await options.runSession(credential)
+            ? await options.runSession(credential, bridgeId)
             : { cycles: 1, stopped: "cycles" as const };
         if (session.stopped === "revoked") {
             await options.store.delete(CREDENTIAL_ACCOUNT);
@@ -71,11 +73,7 @@ export async function runInstalledBridge(
         }
         if (options.discover && options.post) {
             const candidates = await options.discover();
-            await options.post(
-                "/print-bridge/v1/discovery",
-                { bridgeId: options.bridgeId, candidates },
-                credential,
-            );
+            await options.post("/print-bridge/v1/discovery", { bridgeId, candidates }, credential);
         }
         if (options.sleep && cycles < limit) await options.sleep(200);
     }
@@ -119,8 +117,13 @@ async function pairUntilReady(
             await options.store.set(CREDENTIAL_ACCOUNT, polled.json.credential);
             await options.store.delete(DEVICE_PROOF_ACCOUNT);
             rmSync(join(options.stateDir, "pairing.html"), { force: true });
+            const adopted =
+                typeof polled.json.bridgeId === "string" && polled.json.bridgeId !== options.bridgeId
+                    ? polled.json.bridgeId
+                    : "";
+            if (adopted) writeBridgeId(options.stateDir, options.origin, adopted);
             log("bridge pairing finished");
-            return { ok: true, credential: polled.json.credential };
+            return { ok: true, credential: polled.json.credential, bridgeId: adopted || options.bridgeId };
         }
         if (status === "expired" || status === "consumed" || polled.status === 401) {
             log(`bridge pairing ${status || "rejected"}`);
@@ -129,6 +132,18 @@ async function pairUntilReady(
         if (options.sleep) await options.sleep(50);
     }
     return { ok: false, stopped: "enrollment-required" };
+}
+
+function writeBridgeId(stateDir: string, origin: string, bridgeId: string): void {
+    const path = join(stateDir, "bridge.json");
+    let current: Record<string, unknown> = { origin };
+    try {
+        current = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    } catch {
+        current = { origin };
+    }
+    current.bridgeId = bridgeId;
+    writeFileSync(path, JSON.stringify(current), { mode: 0o600 });
 }
 
 function pairingPage(origin: string, code: string): string {

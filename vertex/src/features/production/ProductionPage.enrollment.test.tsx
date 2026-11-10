@@ -15,6 +15,8 @@ import { ProductionPage } from "./ProductionPage";
 
 const SECRET_PROOF = "proof-shown-once-Bay-press";
 const SECRET_CREDENTIAL = "credential-not-for-display";
+const NORTH = "11111111-1111-4111-8111-111111111111";
+const SOUTH = "22222222-2222-4222-8222-222222222222";
 
 const approveSpy = rs.fn(async () => ({
     bridgeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -22,21 +24,31 @@ const approveSpy = rs.fn(async () => ({
     proof: SECRET_PROOF,
     credential: SECRET_CREDENTIAL,
 }));
+const shopsSpy = rs.fn(async (): Promise<{ id: string; name: string }[]> => []);
+const saveSpy = rs.fn(async (_input?: unknown, _shop?: unknown) => undefined);
 
 rs.mock("./production-actions", () => {
     const noop = async () => undefined;
     return {
         loadProduction: noop,
+        loadProductionShops: () => shopsSpy(),
         holdProductionJob: noop,
         cancelProductionJob: noop,
         retryProductionJob: noop,
         markProductionJobDone: noop,
         assignProductionJob: noop,
         rerunProductionJob: noop,
-        saveMoonrakerProductionPrinter: noop,
-        createBridgeEnrollment: noop,
+        saveMoonrakerProductionPrinter: (input: unknown, shop?: unknown) => saveSpy(input, shop),
+        createBridgeEnrollment: async () => ({
+            bridgeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            proof: SECRET_PROOF,
+            expiresAt: "2026-11-10T12:10:00.000Z",
+        }),
         revokeBridgeEnrollment: noop,
-        approveBridgePairing: () => approveSpy(),
+        listEnrolledBridges: async () => ({
+            bridges: [{ id: "5598afcd-1111-4111-8111-111111111111", name: "Existing press" }],
+        }),
+        approveBridgePairing: (input: unknown) => approveSpy(input),
         listBridgeDiscovery: async () => ({ candidates: [], lastTest: null }),
         requestPrinterConnectionTest: async () => ({
             pending: true as const,
@@ -132,6 +144,12 @@ function setInputValue(input: HTMLInputElement, value: string) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function setSelectValue(select: HTMLSelectElement, value: string) {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+    descriptor?.set?.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function buttonLabels(root: ParentNode | null): string[] {
     return [...(root?.querySelectorAll("button") ?? [])].map((button) =>
         (button.textContent ?? "").replace(/\s+/g, " ").trim(),
@@ -151,6 +169,9 @@ describe("production printers enrollment", () => {
 
     beforeEach(() => {
         approveSpy.mockClear();
+        saveSpy.mockClear();
+        shopsSpy.mockReset();
+        shopsSpy.mockResolvedValue([]);
         written.length = 0;
         Object.defineProperty(navigator, "userAgent", {
             configurable: true,
@@ -159,6 +180,22 @@ describe("production printers enrollment", () => {
         Object.defineProperty(navigator, "platform", { configurable: true, value: "Win32" });
         localStorage.clear();
         sessionStorage.clear();
+        globalThis.fetch = async (input) => {
+            const url = String(input);
+            if (url.includes("releases/latest")) {
+                return new Response(
+                    JSON.stringify({
+                        assets: [
+                            { name: "OrthoCAD-Print-Bridge-Setup.exe" },
+                            { name: "OrthoCAD-Print-Bridge.pkg" },
+                            { name: "OrthoCAD-Print-Bridge.dmg" },
+                        ],
+                    }),
+                    { status: 200 },
+                );
+            }
+            return new Response("", { status: 404 });
+        };
         useProductionStore.setState({
             jobs: [job("waiting", "Left shell"), job("done", "Right shell")],
             printers: [printer],
@@ -248,6 +285,7 @@ describe("production printers enrollment", () => {
         expect(printers?.querySelector('[aria-label="Printer address"]')).toBeTruthy();
         expect(printers?.querySelector('[aria-label="Moonraker URL"]')).toBeTruthy();
         expect(printers?.querySelector('[data-testid="create-bridge-enrollment"]')).toBeNull();
+        expect(printers?.querySelector('[data-testid="production-shop-picker"]')).toBeNull();
         expect(printers?.textContent).toContain("Mock only. Not a live printer.");
         expect(printers?.textContent).not.toContain(SECRET_PROOF);
         expect(approveSpy).not.toHaveBeenCalled();
@@ -262,6 +300,8 @@ describe("production printers enrollment", () => {
         user("admin");
         await render("printers");
         const printers = container.querySelector('[data-testid="production-printers"]');
+        expect(printers?.querySelector('[data-testid="production-shop-picker"]')).toBeNull();
+        expect(printers?.querySelector('[aria-label="Shop"]')).toBeNull();
         expect(headings(printers)).toEqual([
             "Install the print bridge",
             "How setup works",
@@ -311,7 +351,105 @@ describe("production printers enrollment", () => {
         user("super_admin");
         await render("printers");
         expect(container.querySelector('[data-testid="create-bridge-enrollment"]')).toBeTruthy();
+        expect(container.querySelector('[data-testid="production-shop-picker"]')).toBeTruthy();
+        expect(container.querySelector('[aria-label="Shop"]')).toBeTruthy();
         expect(container.querySelector('[aria-label="Bridge id"]')).toBeTruthy();
         expect(container.querySelector('[aria-label="Moonraker URL"]')).toBeTruthy();
+    });
+
+    test("a super admin must pick a shop, and that picker stays hidden for an admin", async () => {
+        shopsSpy.mockResolvedValue([
+            { id: NORTH, name: "North clinic" },
+            { id: SOUTH, name: "South clinic" },
+        ]);
+        useProductionStore.setState({
+            jobs: [job("waiting", "Left shell")],
+            printers: [
+                printer,
+                {
+                    ...printer,
+                    id: "qqqqqqqq-qqqq-4qqq-8qqq-qqqqqqqqqqqq",
+                    name: "North press",
+                    tenantId: NORTH,
+                },
+                {
+                    ...printer,
+                    id: "rrrrrrrr-rrrr-4rrr-8rrr-rrrrrrrrrrrr",
+                    name: "South press",
+                    tenantId: SOUTH,
+                },
+            ],
+        });
+
+        user("admin");
+        await render("printers");
+        expect(container.querySelector('[data-testid="production-shop-picker"]')).toBeNull();
+        expect(container.textContent).toContain("Bay 1");
+
+        await act(async () => root?.unmount());
+        user("super_admin");
+        await render("printers");
+        const picker = container.querySelector('[data-testid="production-shop-picker"]');
+        expect(picker).toBeTruthy();
+        const select = picker?.querySelector('[aria-label="Shop"]') as HTMLSelectElement;
+        const optionText = [...select.options].map((option) => option.textContent);
+        expect(optionText).toEqual(["Choose a shop", "North clinic", "South clinic"]);
+        expect(select.value).toBe("");
+        expect(container.textContent).not.toContain("North press");
+        expect(container.textContent).not.toContain("South press");
+        expect(container.textContent).not.toContain("Bay 1");
+
+        const printers = container.querySelector('[data-testid="production-printers"]');
+        const name = printers?.querySelector('[aria-label="Bridge name"]') as HTMLInputElement;
+        const code = printers?.querySelector('[aria-label="Pairing code"]') as HTMLInputElement;
+        const approve = [...(printers?.querySelectorAll("button") ?? [])].find(
+            (button) => button.textContent === "Approve bridge",
+        ) as HTMLButtonElement;
+        const save = [...(printers?.querySelectorAll("button") ?? [])].find(
+            (button) => button.textContent === "Save configuration",
+        ) as HTMLButtonElement;
+        await act(async () => {
+            setInputValue(code, "ABCD-EFGH");
+            setInputValue(name, "Bay press");
+        });
+        expect(approve.disabled).toBe(true);
+        expect(save.disabled).toBe(true);
+        await act(async () => {
+            approve.click();
+            save.click();
+        });
+        expect(approveSpy).not.toHaveBeenCalled();
+        expect(saveSpy).not.toHaveBeenCalled();
+
+        await act(async () => setSelectValue(select, NORTH));
+        expect(container.textContent).toContain("North press");
+        expect(container.textContent).not.toContain("South press");
+        expect(container.textContent).not.toContain("Bay 1");
+        expect(approve.disabled).toBe(false);
+        const existing = printers?.querySelector('[aria-label="Existing bridge"]') as HTMLSelectElement;
+        await act(async () => setSelectValue(existing, "5598afcd-1111-4111-8111-111111111111"));
+        await act(async () => {
+            approve.click();
+        });
+        expect(approveSpy).toHaveBeenCalledTimes(1);
+        expect(approveSpy.mock.calls[0]?.[0]).toMatchObject({
+            code: "ABCD-EFGH",
+            bridgeName: "Bay press",
+            replaceBridgeId: "5598afcd-1111-4111-8111-111111111111",
+            shop: { tenantId: NORTH, shopId: NORTH },
+        });
+        expect(container.querySelector('[data-testid="bridge-enrollment-proof"]')).toBeNull();
+        expect(container.textContent).not.toContain(SECRET_PROOF);
+        expect(container.textContent).not.toContain(SECRET_CREDENTIAL);
+
+        const configName = printers?.querySelector(
+            '[aria-label="Configured printer name"]',
+        ) as HTMLInputElement;
+        await act(async () => setInputValue(configName, "North bay"));
+        await act(async () => {
+            save.click();
+        });
+        expect(saveSpy).toHaveBeenCalledTimes(1);
+        expect(saveSpy.mock.calls[0]?.[1]).toEqual({ tenantId: NORTH, shopId: NORTH });
     });
 });

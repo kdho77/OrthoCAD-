@@ -61,6 +61,7 @@ export interface BridgeDirectory {
         shopId: string;
         bridgeName: string;
         now: Date;
+        replaceBridgeId?: string;
     }): Promise<{ ok: true; bridgeId: string } | { ok: false; reason: "expired" | "used" | "mismatch" }>;
     pollPairing(input: {
         bridgeId: string;
@@ -69,7 +70,7 @@ export interface BridgeDirectory {
         now: Date;
     }): Promise<
         | { status: "pending" | "expired" | "consumed" }
-        | { status: "ready"; credential: string }
+        | { status: "ready"; credential: string; bridgeId: string }
         | { status: "rejected" }
     >;
     reportDiscovery(input: {
@@ -86,6 +87,7 @@ export interface BridgeDirectory {
         now: Date;
     }): Promise<{ ok: true; address: string } | { ok: false; reason: string }>;
     pendingDiscoveryProbe(bridgeId: string): Promise<{ address: string } | null>;
+    listEnrolledBridges(tenantId: string): Promise<{ id: string; name: string }[]>;
 }
 
 interface MemoryBridge {
@@ -276,7 +278,31 @@ export function memoryBridgeDirectory(): BridgeDirectory & { inspect(): string }
             }
             const meta = live.name ? readPairingMeta(JSON.parse(live.name) as unknown) : null;
             if (!meta || meta.approved) return { ok: false, reason: "used" };
-            live.name = JSON.stringify({ kind: "pairing", codeHash, approved: true });
+            let adoptedBridgeId = live.record.bridgeId;
+            if (input.replaceBridgeId) {
+                const target =
+                    bridges.find(
+                        (item) =>
+                            item.id === input.replaceBridgeId &&
+                            item.tenantId === input.tenantId &&
+                            Boolean(item.credentialHash) &&
+                            !item.revokedAt,
+                    ) ??
+                    credentials.find(
+                        (item) =>
+                            item.bridgeId === input.replaceBridgeId &&
+                            item.tenantId === input.tenantId &&
+                            !item.revokedAt,
+                    );
+                if (!target) return { ok: false, reason: "mismatch" };
+                adoptedBridgeId = input.replaceBridgeId;
+            }
+            live.name = JSON.stringify({
+                kind: "pairing",
+                codeHash,
+                approved: true,
+                adoptedBridgeId,
+            });
             live.record.tenantId = input.tenantId;
             live.record.shopId = input.shopId;
             const bridge = bridgeById(live.record.bridgeId);
@@ -285,7 +311,7 @@ export function memoryBridgeDirectory(): BridgeDirectory & { inspect(): string }
                 bridge.shopId = input.shopId;
                 bridge.name = name;
             }
-            return { ok: true, bridgeId: live.record.bridgeId };
+            return { ok: true, bridgeId: adoptedBridgeId };
         },
         async pollPairing(input) {
             const proofHash = deviceProofHash(input.deviceProof);
@@ -307,8 +333,9 @@ export function memoryBridgeDirectory(): BridgeDirectory & { inspect(): string }
             }
             const issued = issueCredential();
             live.record.usedAt = input.now.toISOString();
+            const bridgeId = meta.adoptedBridgeId || live.record.bridgeId;
             const stored: BridgeCredential = {
-                bridgeId: live.record.bridgeId,
+                bridgeId,
                 tenantId: live.record.tenantId,
                 shopId: live.record.shopId,
                 printerIds: [],
@@ -317,10 +344,12 @@ export function memoryBridgeDirectory(): BridgeDirectory & { inspect(): string }
                 lastSeenAt: null,
                 origin: live.record.origin,
             };
-            credentials.push(stored);
-            const bridge = bridgeById(live.record.bridgeId);
-            if (bridge) bridge.credentialHash = issued.credentialHash;
-            return { status: "ready", credential: issued.credential };
+            const existing = credentials.find((item) => item.bridgeId === bridgeId && !item.revokedAt);
+            if (existing) existing.credentialHash = issued.credentialHash;
+            else credentials.push(stored);
+            const bridge = bridgeById(bridgeId) ?? bridgeById(live.record.bridgeId);
+            if (bridge && bridge.id === bridgeId) bridge.credentialHash = issued.credentialHash;
+            return { status: "ready", credential: issued.credential, bridgeId };
         },
         async reportDiscovery(input) {
             const candidates = sanitizeCandidates(input.candidates);
@@ -377,6 +406,21 @@ export function memoryBridgeDirectory(): BridgeDirectory & { inspect(): string }
         async pendingDiscoveryProbe(bridgeId) {
             const probe = discoveries.get(bridgeId)?.meta.probe;
             return probe ? { address: probe.address } : null;
+        },
+        async listEnrolledBridges(tenantId) {
+            const seen = new Set<string>();
+            const rows: { id: string; name: string }[] = [];
+            for (const bridge of bridges) {
+                if (bridge.tenantId !== tenantId || !bridge.credentialHash || bridge.revokedAt) continue;
+                seen.add(bridge.id);
+                rows.push({ id: bridge.id, name: bridge.name });
+            }
+            for (const credential of credentials) {
+                if (credential.tenantId !== tenantId || credential.revokedAt || seen.has(credential.bridgeId))
+                    continue;
+                rows.push({ id: credential.bridgeId, name: credential.bridgeId.slice(0, 8) });
+            }
+            return rows;
         },
         inspect() {
             return JSON.stringify({

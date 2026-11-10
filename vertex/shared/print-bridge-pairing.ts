@@ -21,6 +21,7 @@ export interface PairingMeta {
     kind: "pairing";
     codeHash: string;
     approved: boolean;
+    adoptedBridgeId?: string;
 }
 
 export interface DiscoveryProbe {
@@ -82,7 +83,14 @@ export function readPairingMeta(value: unknown): PairingMeta | null {
     const approved = "approved" in value ? value.approved : null;
     if (kind !== "pairing" || typeof codeHash !== "string" || codeHash.length !== 64) return null;
     if (typeof approved !== "boolean") return null;
-    return { kind: "pairing", codeHash, approved };
+    const adopted =
+        "adoptedBridgeId" in value && typeof value.adoptedBridgeId === "string" ? value.adoptedBridgeId : "";
+    return {
+        kind: "pairing",
+        codeHash,
+        approved,
+        ...(adopted ? { adoptedBridgeId: adopted } : {}),
+    };
 }
 
 export function readDiscoveryMeta(value: unknown): DiscoveryMeta | null {
