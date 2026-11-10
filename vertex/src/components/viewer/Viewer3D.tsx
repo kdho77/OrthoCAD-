@@ -16,6 +16,8 @@ import {
 import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
+import { AmputationDrawOverlay } from "@/features/amputation/AmputationDrawOverlay";
+import { useAmputationDrawStore } from "@/features/amputation/amputation-draw-store";
 import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
@@ -102,6 +104,7 @@ export function Viewer3D() {
     const target = useMeshEditStore((s) => s.target);
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
+    const drawingSide = useAmputationDrawStore((s) => s.side);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
     const cancelTrimlineEdit = useMeshEditStore((s) => s.cancelTrimlineEdit);
     const confirmBottomPatternEdit = useMeshEditStore((s) => s.confirmBottomPatternEdit);
@@ -270,9 +273,14 @@ export function Viewer3D() {
                     ) : null}
                     {/* Invisible pick meshes can start geometry edits on pointer-down,
                         before an element's click opens its hardness selector. */}
-                    {!printPreview ? <MeshEditTools /> : null}
-                    {!printPreview && !loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
-                    {!printPreview && !loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
+                    {!printPreview && !drawingSide ? <MeshEditTools /> : null}
+                    {!printPreview && !loftOverlay.blockViewport && !drawingSide ? (
+                        <TrimlineEditTools />
+                    ) : null}
+                    {!printPreview && !loftOverlay.blockViewport && !drawingSide ? (
+                        <BottomPatternEditTools />
+                    ) : null}
+                    {drawingSide && !loftOverlay.blockViewport ? <AmputationDrawOverlay /> : null}
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
@@ -370,6 +378,11 @@ export function Viewer3D() {
                 {editMode === "edit-bottom-pattern" && bottomPatternEdit ? (
                     <span className="w-fit rounded bg-teal-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         Editing bottom pattern · {bottomPatternEdit.side}
+                    </span>
+                ) : null}
+                {drawingSide ? (
+                    <span className="w-fit rounded bg-rose-600/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
+                        Drawing amputation · {drawingSide}
                     </span>
                 ) : null}
                 {hideInsoleForMarkers && !placingArchOnly ? (

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
+import { amputationFillerActive, normalizeSideAmputation } from "@/lib/geometry/amputee-filler";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleParamsFromDesign } from "@/lib/geometry/kernel-build";
@@ -933,6 +934,10 @@ export function baseModifierField(design: DesignState, side: Side, thicknessMm: 
         },
         // Omit the keys when this foot has no sink so the field shape matches main.
         ...(sinks ? { sinks, sinkStyloidThicken: sinkStyloidThickenForSide(design, side) } : {}),
+        // Omit when the filler is off so a stock field matches main byte for byte.
+        ...(amputationFillerActive(design.amputation?.[side])
+            ? { amputation: normalizeSideAmputation(design.amputation?.[side]) }
+            : {}),
     };
 }
 

@@ -92,6 +92,22 @@ const placedElement = z
 
 const shoeWidth = z.enum(["extra_narrow", "narrow", "medium", "wide", "extra_wide"]);
 
+const amputationPoint = z.object({
+    x: z.number(),
+    y: z.number(),
+});
+
+const sideAmputation = z
+    .object({
+        enabled: z.boolean(),
+        points: z.array(amputationPoint).max(64),
+        height: z.number(),
+        filletInside: z.number(),
+        filletOutside: z.number(),
+        interfaceFillet: z.boolean(),
+    })
+    .passthrough();
+
 const designBase = z
     .object({
         assetId: z.string().min(1),
@@ -238,6 +254,13 @@ export const designStateSchema = z
             .object({
                 left: z.any().optional(),
                 right: z.any().optional(),
+            })
+            .passthrough()
+            .optional(),
+        amputation: z
+            .object({
+                left: sideAmputation.optional(),
+                right: sideAmputation.optional(),
             })
             .passthrough()
             .optional(),
