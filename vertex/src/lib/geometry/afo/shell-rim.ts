@@ -126,10 +126,88 @@ export function closeShellWithRoundRim(input: {
 }
 
 /**
+ * Replace the long edge of a sliver with the diagonal to the neighbour across
+ * it. Positions stay put, so the opening does not move, and both new faces
+ * keep the old orientation.
+ */
+function flipLongEdge(
+    faces: { v: [number, number, number]; kind: number }[],
+    edge: Map<string, number[]>,
+    face: { v: [number, number, number]; kind: number },
+    longA: number,
+    longB: number,
+    peak: number,
+    n: number,
+    positions: Float32Array,
+    key: (a: number, b: number) => string,
+): boolean {
+    const hosts = edge.get(key(longA, longB)) ?? [];
+    if (hosts.length !== 2) return false;
+    const self = hosts.find((f) => faces[f] === face);
+    const otherIndex = hosts[0] === self ? hosts[1]! : hosts[0]!;
+    const other = faces[otherIndex];
+    if (!other || other.kind !== face.kind) return false;
+    const opp = other.v.find((v) => v !== longA && v !== longB);
+    if (opp == null || opp === peak) return false;
+    if (edge.has(key(peak, opp))) return false;
+    const skin = (v: number) => (face.kind === 0 ? v < n : v >= n && v < n * 2);
+    if (!skin(opp) || !skin(peak)) return false;
+    const at = (i: number) => ({
+        x: positions[i * 3] ?? 0,
+        y: positions[i * 3 + 1] ?? 0,
+        z: positions[i * 3 + 2] ?? 0,
+    });
+    const nrm = (a: number, b: number, c: number) => triNormal(at(a), at(b), at(c));
+    const oldA = nrm(face.v[0], face.v[1], face.v[2]);
+    const oldB = nrm(other.v[0], other.v[1], other.v[2]);
+    const ref = { x: oldA.x + oldB.x, y: oldA.y + oldB.y, z: oldA.z + oldB.z };
+    const area = (v: AfoVec3) => Math.hypot(v.x, v.y, v.z) * 0.5;
+    const agree = (v: AfoVec3) => v.x * ref.x + v.y * ref.y + v.z * ref.z > 0;
+    const options: [number, number, number, number, number, number][] = [
+        [longA, opp, peak, opp, longB, peak],
+        [longA, peak, opp, peak, longB, opp],
+    ];
+    const sameDir = (u: number, v: number) => {
+        for (const fi of edge.get(key(u, v)) ?? []) {
+            const host = faces[fi];
+            if (!host || host === face || host === other) continue;
+            const vs = host.v;
+            for (let e = 0; e < 3; e++) if (vs[e] === u && vs[(e + 1) % 3] === v) return true;
+        }
+        return false;
+    };
+    for (const c of options) {
+        const na = nrm(c[0], c[1], c[2]);
+        const nb = nrm(c[3], c[4], c[5]);
+        if (area(na) < 1e-6 || area(nb) < 1e-6) continue;
+        if (!agree(na) || !agree(nb)) continue;
+        const lena = Math.hypot(na.x, na.y, na.z) || 1;
+        const lenb = Math.hypot(nb.x, nb.y, nb.z) || 1;
+        const dot = (na.x * nb.x + na.y * nb.y + na.z * nb.z) / (lena * lenb);
+        if (dot < Math.cos((60 * Math.PI) / 180)) continue;
+        const dirs: [number, number][] = [
+            [c[0], c[1]],
+            [c[1], c[2]],
+            [c[2], c[0]],
+            [c[3], c[4]],
+            [c[4], c[5]],
+            [c[5], c[3]],
+        ];
+        if (dirs.some(([u, v]) => sameDir(u, v))) continue;
+        face.v = [c[0], c[1], c[2]];
+        other.v = [c[3], c[4], c[5]];
+        edge.delete(key(longA, longB));
+        edge.set(key(peak, opp), [hosts[0]!, hosts[1]!]);
+        return true;
+    }
+    return false;
+}
+
+/**
  * A thin triangle along the opening folds when its vertices take slightly
- * different offsets. Flip a reversed winding, and collapse an edge that is
- * already shorter than the dihedral gate looks at. Faces that used that edge
- * are dropped, which is a manifold collapse when the edge had two skin faces.
+ * different offsets. Collapse a short edge at its midpoint, or flip the long
+ * edge with its neighbour. Moving a vertex onto the long edge is not used:
+ * that leaves a zero-area triangle.
  */
 function repairOuterLipSlivers(
     positions: Float32Array,
@@ -271,10 +349,22 @@ function repairOuterLipSlivers(
             }
             const altitude = longLen > 1e-6 ? (2 * area) / longLen : 0;
             const peak = long[2]!;
-            const onOpening = boundary.has(peak) || (peak >= n && boundary.has(peak - n));
+            const onOpening = (id: number) => boundary.has(id) || (id >= n && boundary.has(id - n));
+            let short = pairs[0]!;
+            let shortLen = Infinity;
+            for (const pair of pairs) {
+                const len = span(pair[0], pair[1]);
+                if (len < shortLen) {
+                    shortLen = len;
+                    short = pair;
+                }
+            }
+            // The old repair slid the peak onto the long edge and left a
+            // zero-area triangle. Collapse a short edge, or flip the long
+            // edge with its neighbour, and leave the surface where it is.
             if (
                 area < 0.3 &&
-                altitude < (onOpening ? 0.1 : 0.22) &&
+                altitude < (onOpening(peak) ? 0.1 : 0.22) &&
                 altitude > 1e-4 &&
                 near.has(peak) &&
                 peak !== n * 2 - 1 &&
@@ -287,24 +377,53 @@ function repairOuterLipSlivers(
                 const ey = pw.y - pu.y;
                 const ez = pw.z - pu.z;
                 const el2 = ex * ex + ey * ey + ez * ez || 1;
-                let t = ((po.x - pu.x) * ex + (po.y - pu.y) * ey + (po.z - pu.z) * ez) / el2;
-                t = Math.min(1, Math.max(0, t));
+                const t = Math.min(
+                    1,
+                    Math.max(0, ((po.x - pu.x) * ex + (po.y - pu.y) * ey + (po.z - pu.z) * ez) / el2),
+                );
                 const endGap = Math.min(t, 1 - t) * longLen;
-                if (endGap > 0.02) {
-                    positions[peak * 3] = pu.x + ex * t;
-                    positions[peak * 3 + 1] = pu.y + ey * t;
-                    positions[peak * 3 + 2] = pu.z + ez * t;
+                let repaired = false;
+                if (endGap > 0.02 && shortLen < 0.05 && shortLen > 1e-8) {
+                    let from = short[0]!;
+                    let to = short[1]!;
+                    if (onOpening(from) && !onOpening(to)) {
+                        const swap = from;
+                        from = to;
+                        to = swap;
+                    }
+                    const hosts = edge.get(key(short[0]!, short[1]!)) ?? [];
+                    if (
+                        hosts.length === 2 &&
+                        !onOpening(from) &&
+                        from !== n * 2 - 1 &&
+                        to !== n * 2 - 1 &&
+                        !rimVerts.has(from) &&
+                        near.has(from)
+                    ) {
+                        if (!onOpening(to)) {
+                            const mx = ((positions[from * 3] ?? 0) + (positions[to * 3] ?? 0)) * 0.5;
+                            const my = ((positions[from * 3 + 1] ?? 0) + (positions[to * 3 + 1] ?? 0)) * 0.5;
+                            const mz = ((positions[from * 3 + 2] ?? 0) + (positions[to * 3 + 2] ?? 0)) * 0.5;
+                            positions[to * 3] = mx;
+                            positions[to * 3 + 1] = my;
+                            positions[to * 3 + 2] = mz;
+                        }
+                        for (const other of faces) {
+                            for (let k = 0; k < 3; k++) if (other.v[k] === from) other.v[k] = to;
+                        }
+                        repaired = true;
+                    }
+                }
+                if (
+                    !repaired &&
+                    endGap > 0.02 &&
+                    flipLongEdge(faces, edge, face, long[0]!, long[1]!, peak, n, positions, key)
+                ) {
+                    repaired = true;
+                }
+                if (repaired) {
                     changed = true;
                     continue;
-                }
-            }
-            let short = pairs[0]!;
-            let shortLen = Infinity;
-            for (const pair of pairs) {
-                const len = span(pair[0], pair[1]);
-                if (len < shortLen) {
-                    shortLen = len;
-                    short = pair;
                 }
             }
             if (shortLen > (area < 0.25 ? 0.6 : 0.15)) continue;
@@ -330,7 +449,7 @@ function repairOuterLipSlivers(
         }
         if (!changed) break;
     }
-    const kept = faces.filter((face) => alive(face) && areaOf(face.v[0], face.v[1], face.v[2]) > 1e-8);
+    const kept = faces.filter((face) => alive(face));
     kept.sort((p, q) => p.kind - q.kind);
     const out = new Uint32Array(kept.length * 3);
     let rimAt = kept.length;

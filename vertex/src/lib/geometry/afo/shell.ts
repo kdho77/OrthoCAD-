@@ -90,6 +90,31 @@ function tightenBoundaryToCurve(shell: AfoTriMesh, curve: AfoVec3[] | undefined)
         boundary.add(e.a);
         boundary.add(e.b);
     }
+    // Only a vertex already within 0.22 mm can move, so the closest curve
+    // segment is in the same 4 mm cell or a neighbour.
+    const cell = 4;
+    const buckets = new Map<string, number[]>();
+    const cellOf = (v: number) => Math.floor(v / cell);
+    for (let k = 0; k < curve.length; k++) {
+        const a = curve[k]!;
+        const b = curve[(k + 1) % curve.length]!;
+        const x0 = cellOf(Math.min(a.x, b.x));
+        const x1 = cellOf(Math.max(a.x, b.x));
+        const y0 = cellOf(Math.min(a.y, b.y));
+        const y1 = cellOf(Math.max(a.y, b.y));
+        const z0 = cellOf(Math.min(a.z, b.z));
+        const z1 = cellOf(Math.max(a.z, b.z));
+        for (let ix = x0; ix <= x1; ix++) {
+            for (let iy = y0; iy <= y1; iy++) {
+                for (let iz = z0; iz <= z1; iz++) {
+                    const id = `${ix}|${iy}|${iz}`;
+                    const list = buckets.get(id);
+                    if (list) list.push(k);
+                    else buckets.set(id, [k]);
+                }
+            }
+        }
+    }
     for (const i of boundary) {
         const px = shell.positions[i * 3] ?? 0;
         const py = shell.positions[i * 3 + 1] ?? 0;
@@ -98,26 +123,37 @@ function tightenBoundaryToCurve(shell: AfoTriMesh, curve: AfoVec3[] | undefined)
         let bx = px;
         let by = py;
         let bz = pz;
-        for (let k = 0; k < curve.length; k++) {
-            const a = curve[k]!;
-            const b = curve[(k + 1) % curve.length]!;
-            const abx = b.x - a.x;
-            const aby = b.y - a.y;
-            const abz = b.z - a.z;
-            const ab2 = abx * abx + aby * aby + abz * abz || 1;
-            const t = Math.min(
-                1,
-                Math.max(0, ((px - a.x) * abx + (py - a.y) * aby + (pz - a.z) * abz) / ab2),
-            );
-            const qx = a.x + abx * t;
-            const qy = a.y + aby * t;
-            const qz = a.z + abz * t;
-            const d = Math.hypot(px - qx, py - qy, pz - qz);
-            if (d < best) {
-                best = d;
-                bx = qx;
-                by = qy;
-                bz = qz;
+        const ix = cellOf(px);
+        const iy = cellOf(py);
+        const iz = cellOf(pz);
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    const list = buckets.get(`${ix + dx}|${iy + dy}|${iz + dz}`);
+                    if (!list) continue;
+                    for (const k of list) {
+                        const a = curve[k]!;
+                        const b = curve[(k + 1) % curve.length]!;
+                        const abx = b.x - a.x;
+                        const aby = b.y - a.y;
+                        const abz = b.z - a.z;
+                        const ab2 = abx * abx + aby * aby + abz * abz || 1;
+                        const t = Math.min(
+                            1,
+                            Math.max(0, ((px - a.x) * abx + (py - a.y) * aby + (pz - a.z) * abz) / ab2),
+                        );
+                        const qx = a.x + abx * t;
+                        const qy = a.y + aby * t;
+                        const qz = a.z + abz * t;
+                        const d = Math.hypot(px - qx, py - qy, pz - qz);
+                        if (d < best) {
+                            best = d;
+                            bx = qx;
+                            by = qy;
+                            bz = qz;
+                        }
+                    }
+                }
             }
         }
         // A footplate flare of about 1 mm is intentional. Only pull back a lip
@@ -751,6 +787,52 @@ function smoothNormalSet(mesh: AfoTriMesh, nrm: Float32Array, origins: Iterable<
 }
 
 /**
+ * Average flare directions across the opening band and put each vector back
+ * at its own length. The footplate lip stays in the plane. Sole contact,
+ * which has no flare, is not pulled into the average.
+ */
+function smoothFlareDirections(
+    mesh: AfoTriMesh,
+    flare: Float32Array,
+    band: number[],
+    soleLip: Set<number>,
+): void {
+    const n = vertexCount(mesh);
+    const adj = adjacency(mesh, n);
+    const lenAt = (buf: Float32Array, i: number) =>
+        Math.hypot(buf[i * 3] ?? 0, buf[i * 3 + 1] ?? 0, buf[i * 3 + 2] ?? 0);
+    let src = flare;
+    for (let iter = 0; iter < 8; iter++) {
+        const next = new Float32Array(src);
+        for (const i of band) {
+            const l = lenAt(src, i);
+            if (l < 1e-4) continue;
+            let ax = (src[i * 3] ?? 0) / l;
+            let ay = (src[i * 3 + 1] ?? 0) / l;
+            let az = (src[i * 3 + 2] ?? 0) / l;
+            let samples = 1;
+            for (const j of adj[i] ?? []) {
+                const lj = lenAt(src, j);
+                if (lj < 1e-4) continue;
+                ax += (src[j * 3] ?? 0) / lj;
+                ay += (src[j * 3 + 1] ?? 0) / lj;
+                az += (src[j * 3 + 2] ?? 0) / lj;
+                samples++;
+            }
+            if (soleLip.has(i) || az < 0) az = 0;
+            const dl = Math.hypot(ax, ay, az);
+            // No local consensus: leave the flare where the ramp put it.
+            if (dl < 0.35 * samples) continue;
+            next[i * 3] = (ax / dl) * l;
+            next[i * 3 + 1] = (ay / dl) * l;
+            next[i * 3 + 2] = (az / dl) * l;
+        }
+        src = next;
+    }
+    if (src !== flare) flare.set(src);
+}
+
+/**
  * Neighbouring flare vectors on a short boundary step share one direction and
  * keep their own lengths, so the footplate cap stays 1 mm and the wall stays
  * at the full flare. A length jump (wall meeting footplate) is left alone.
@@ -892,9 +974,41 @@ function enforceShellClearance(shell: AfoTriMesh, thicknessMm: number, edgeMm: n
             bz: shell.positions[e.b * 3 + 2] ?? 0,
         });
     }
+    // Distances past the rim band all take the full thickness. Each opening
+    // segment is stored in every cell within that band, so a vertex reads
+    // one list and still sees every segment that can be closer.
+    const cell = 5;
+    const reach = Math.ceil(AFO_RIM_BAND_MM / cell) + 1;
+    const cellOf = (v: number) => Math.floor(v / cell);
+    const pack = (ix: number, iy: number, iz: number) =>
+        (ix + 512) * 1000000 + (iy + 512) * 1000 + (iz + 512);
+    const buckets = new Map<number, number[]>();
+    for (let s = 0; s < opening.length; s++) {
+        const e = opening[s]!;
+        const x0 = cellOf(Math.min(e.ax, e.bx)) - reach;
+        const x1 = cellOf(Math.max(e.ax, e.bx)) + reach;
+        const y0 = cellOf(Math.min(e.ay, e.by)) - reach;
+        const y1 = cellOf(Math.max(e.ay, e.by)) + reach;
+        const z0 = cellOf(Math.min(e.az, e.bz)) - reach;
+        const z1 = cellOf(Math.max(e.az, e.bz)) + reach;
+        for (let ix = x0; ix <= x1; ix++) {
+            for (let iy = y0; iy <= y1; iy++) {
+                for (let iz = z0; iz <= z1; iz++) {
+                    const id = pack(ix, iy, iz);
+                    const list = buckets.get(id);
+                    if (list) list.push(s);
+                    else buckets.set(id, [s]);
+                }
+            }
+        }
+    }
+    const cap2 = AFO_RIM_BAND_MM * AFO_RIM_BAND_MM;
     const distOpen = (x: number, y: number, z: number) => {
-        let best = Infinity;
-        for (const e of opening) {
+        const list = buckets.get(pack(cellOf(x), cellOf(y), cellOf(z)));
+        if (!list) return AFO_RIM_BAND_MM;
+        let best = cap2;
+        for (const s of list) {
+            const e = opening[s]!;
             const abx = e.bx - e.ax;
             const aby = e.by - e.ay;
             const abz = e.bz - e.az;
@@ -903,10 +1017,10 @@ function enforceShellClearance(shell: AfoTriMesh, thicknessMm: number, edgeMm: n
                 1,
                 Math.max(0, ((x - e.ax) * abx + (y - e.ay) * aby + (z - e.az) * abz) / ab2),
             );
-            const dx = x - (e.ax + abx * t);
-            const dy = y - (e.ay + aby * t);
-            const dz = z - (e.az + abz * t);
-            const d2 = dx * dx + dy * dy + dz * dz;
+            const ddx = x - (e.ax + abx * t);
+            const ddy = y - (e.ay + aby * t);
+            const ddz = z - (e.az + abz * t);
+            const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
             if (d2 < best) best = d2;
         }
         return Math.sqrt(best);
@@ -1046,6 +1160,11 @@ function thickenOpenSurface(
     // Share direction across a short step once the lengths already agree. The
     // cap ramp is a smooth field, so a 1 mm edge only changes length a little.
     shareFlareOnShortSteps(inner.positions, surface.boundaryEdges, flareDisp);
+    if (flareMm > 0) {
+        const soleLip = new Set<number>();
+        for (const i of plantar) if ((distToRim[i] ?? 1e9) < 0.5) soleLip.add(i);
+        smoothFlareDirections(inner, flareDisp, band, soleLip);
+    }
     for (let i = 0; i < n; i++) {
         inner.positions[i * 3] = (inner.positions[i * 3] ?? 0) + (flareDisp[i * 3] ?? 0);
         inner.positions[i * 3 + 1] = (inner.positions[i * 3 + 1] ?? 0) + (flareDisp[i * 3 + 1] ?? 0);
