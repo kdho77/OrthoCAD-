@@ -379,6 +379,7 @@ function cleanupBoundary(surface: OpenSurface): OpenSurface {
     for (let n = 0; n < 24; n++) {
         if (!flipSkinnyBoundary(mesh, boundaryVerts)) break;
     }
+    relaxSharpBoundaryTurns(mesh);
     const edges = findBoundaryEdges(mesh);
     return {
         positions: mesh.positions,
@@ -386,6 +387,62 @@ function cleanupBoundary(surface: OpenSurface): OpenSurface {
         boundary: orderBoundary(edges, [], vertexCount(mesh)),
         boundaryEdges: edges,
     };
+}
+
+/**
+ * A one-triangle nick in the cut leaves a ~100° turn on a sub-0.2 mm edge.
+ * Pull just those vertices toward the chord of their two neighbours. The move
+ * is a few hundredths of a millimetre, inside the curve tolerance.
+ */
+function relaxSharpBoundaryTurns(mesh: AfoTriMesh): void {
+    const at = (i: number) => ({
+        x: mesh.positions[i * 3] ?? 0,
+        y: mesh.positions[i * 3 + 1] ?? 0,
+        z: mesh.positions[i * 3 + 2] ?? 0,
+    });
+    for (let pass = 0; pass < 6; pass++) {
+        const edges = findBoundaryEdges(mesh);
+        const nbrs = new Map<number, number[]>();
+        for (const e of edges) {
+            const ab = nbrs.get(e.a) ?? [];
+            ab.push(e.b);
+            nbrs.set(e.a, ab);
+            const ba = nbrs.get(e.b) ?? [];
+            ba.push(e.a);
+            nbrs.set(e.b, ba);
+        }
+        const updates: { i: number; x: number; y: number; z: number }[] = [];
+        for (const [v, ns] of nbrs) {
+            const uniq = [...new Set(ns)];
+            if (uniq.length !== 2) continue;
+            const a = at(uniq[0]!);
+            const b = at(v);
+            const c = at(uniq[1]!);
+            const e0x = b.x - a.x;
+            const e0y = b.y - a.y;
+            const e0z = b.z - a.z;
+            const e1x = c.x - b.x;
+            const e1y = c.y - b.y;
+            const e1z = c.z - b.z;
+            const l0 = Math.hypot(e0x, e0y, e0z);
+            const l1 = Math.hypot(e1x, e1y, e1z);
+            if (l0 < 1e-6 || l1 < 1e-6 || l0 > 0.2 || l1 > 0.2) continue;
+            const cos = Math.min(1, Math.max(-1, (e0x * e1x + e0y * e1y + e0z * e1z) / (l0 * l1)));
+            if ((Math.acos(cos) * 180) / Math.PI < 50) continue;
+            updates.push({
+                i: v,
+                x: b.x * 0.5 + (a.x + c.x) * 0.25,
+                y: b.y * 0.5 + (a.y + c.y) * 0.25,
+                z: b.z * 0.5 + (a.z + c.z) * 0.25,
+            });
+        }
+        if (updates.length === 0) break;
+        for (const u of updates) {
+            mesh.positions[u.i * 3] = u.x;
+            mesh.positions[u.i * 3 + 1] = u.y;
+            mesh.positions[u.i * 3 + 2] = u.z;
+        }
+    }
 }
 
 function vertexDist(mesh: AfoTriMesh, a: number, b: number): number {
@@ -539,48 +596,73 @@ function minTriAngle(
     return worst;
 }
 
-/** Keep thickness directions from flipping along the opening, which bowties the rim. */
-function smoothBoundaryNormals(nrm: Float32Array, edges: { a: number; b: number }[]): void {
-    const next = new Map<number, number[]>();
+/** Normals for the rim offset are averaged over this geodesic radius, not taken per face. */
+const AFO_RIM_NORMAL_WINDOW_MM = 2.5;
+
+/**
+ * Replace each opening vertex's normal with the average of per-vertex normals
+ * inside a 2.5 mm geodesic ball. A noisy per-face normal is what folds the heel.
+ */
+function smoothBoundaryNormals(mesh: AfoTriMesh, nrm: Float32Array, edges: { a: number; b: number }[]): void {
+    const boundary = new Set<number>();
     for (const e of edges) {
-        const list = next.get(e.a) ?? [];
-        list.push(e.b);
-        next.set(e.a, list);
+        boundary.add(e.a);
+        boundary.add(e.b);
     }
-    const unused = new Set(edges.map((e) => `${e.a}>${e.b}`));
-    const read = (i: number) => ({ x: nrm[i * 3] ?? 0, y: nrm[i * 3 + 1] ?? 0, z: nrm[i * 3 + 2] ?? 0 });
-    for (const e of edges) {
-        if (!unused.has(`${e.a}>${e.b}`)) continue;
-        const loop = [e.a];
-        let cur = e.a;
-        let guard = 0;
-        while (guard++ < edges.length + 2) {
-            const opts = (next.get(cur) ?? []).filter((b) => unused.has(`${cur}>${b}`));
-            if (opts.length === 0) break;
-            const nxt = opts[0]!;
-            unused.delete(`${cur}>${nxt}`);
-            if (nxt === loop[0]) break;
-            loop.push(nxt);
-            cur = nxt;
-        }
-        for (let pass = 0; pass < 12; pass++) {
-            const averaged = loop.map((_, i) => {
-                const p = read(loop[(i - 1 + loop.length) % loop.length]!);
-                const c = read(loop[i]!);
-                const q = read(loop[(i + 1) % loop.length]!);
-                const s = { x: p.x + c.x + q.x, y: p.y + c.y + q.y, z: p.z + c.z + q.z };
-                const L = Math.hypot(s.x, s.y, s.z);
-                if (L < 1e-8) return c;
-                return { x: s.x / L, y: s.y / L, z: s.z / L };
-            });
-            for (let i = 0; i < loop.length; i++) {
-                const u = averaged[i]!;
-                const id = loop[i]!;
-                nrm[id * 3] = u.x;
-                nrm[id * 3 + 1] = u.y;
-                nrm[id * 3 + 2] = u.z;
+    if (boundary.size === 0) return;
+    const n = vertexCount(mesh);
+    const adj = adjacency(mesh, n);
+    const src = new Float32Array(nrm);
+    const read = (buf: Float32Array, i: number) => ({
+        x: buf[i * 3] ?? 0,
+        y: buf[i * 3 + 1] ?? 0,
+        z: buf[i * 3 + 2] ?? 0,
+    });
+    const dist3 = (a: number, b: number) => {
+        const p = read(mesh.positions, a);
+        const q = read(mesh.positions, b);
+        return Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
+    };
+    const windowMm = AFO_RIM_NORMAL_WINDOW_MM;
+    for (const origin of boundary) {
+        const reached = new Map<number, number>([[origin, 0]]);
+        const stack = [origin];
+        while (stack.length) {
+            let best = 0;
+            for (let k = 1; k < stack.length; k++) {
+                if ((reached.get(stack[k]!) ?? 0) < (reached.get(stack[best]!) ?? 0)) best = k;
+            }
+            const u = stack.splice(best, 1)[0]!;
+            const du = reached.get(u) ?? 0;
+            for (const w of adj[u] ?? []) {
+                const nd = du + dist3(u, w);
+                if (nd > windowMm) continue;
+                const prev = reached.get(w);
+                if (prev !== undefined && nd >= prev) continue;
+                reached.set(w, nd);
+                stack.push(w);
             }
         }
+        const base = read(src, origin);
+        let ax = 0;
+        let ay = 0;
+        let az = 0;
+        for (const [v, d] of reached) {
+            const sample = read(src, v);
+            const aligned =
+                sample.x * base.x + sample.y * base.y + sample.z * base.z < 0
+                    ? { x: -sample.x, y: -sample.y, z: -sample.z }
+                    : sample;
+            const weight = 1 - d / windowMm;
+            ax += aligned.x * weight;
+            ay += aligned.y * weight;
+            az += aligned.z * weight;
+        }
+        const len = Math.hypot(ax, ay, az);
+        if (len < 1e-8) continue;
+        nrm[origin * 3] = ax / len;
+        nrm[origin * 3 + 1] = ay / len;
+        nrm[origin * 3 + 2] = az / len;
     }
 }
 
@@ -597,7 +679,7 @@ function thickenOpenSurface(
     };
     const n = vertexCount(inner);
     const nrm = computeVertexNormals(inner);
-    smoothBoundaryNormals(nrm, surface.boundaryEdges);
+    smoothBoundaryNormals(inner, nrm, surface.boundaryEdges);
     const boundarySet = new Set<number>(surface.boundary);
     for (const e of surface.boundaryEdges) {
         boundarySet.add(e.a);

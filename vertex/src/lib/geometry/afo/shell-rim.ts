@@ -5,17 +5,10 @@ import type { AfoTriMesh, AfoVec3 } from "./types";
 /** Bands in the ruled rim. A straight offset stays well under the 60° cap. */
 export const AFO_RIM_ARC_SEGMENTS = 2;
 
-interface Col {
-    out: AfoVec3;
-    /** Vertex id at each ring. Ring 0 is the inner vertex; the last ring is the outer. */
-    id: number[];
-}
-
 /**
- * Close an open shell with a convex roundover.
- * The profile is a half-circle from the inner edge to the outer edge, bulging
- * away from the brace, so the strip never folds back on itself. Sharp plan
- * corners are fanned so adjacent rim faces turn at most 45°.
+ * Close an open shell with a ruled rim from the inner boundary to the outer
+ * boundary. Offset steps that would twist a quad share one normal, and the
+ * intermediate ring is smoothed without moving either boundary loop.
  */
 export function closeShellWithRoundRim(input: {
     innerPositions: Float32Array;
@@ -52,77 +45,10 @@ export function closeShellWithRoundRim(input: {
         if (L < 1e-8) return { x: 0, y: 0, z: 1 };
         return { x: x / L, y: y / L, z: z / L };
     };
-    const makeCols = (i: number, dirs: AfoVec3[]): Col[] => {
-        const I = innerAt(i);
-        const O = outerAt(i);
-        const cols: Col[] = dirs.map((out) => ({ out, id: new Array(seg + 1).fill(-1) }));
-        for (const col of cols) {
-            col.id[0] = i;
-            col.id[seg] = n + i;
-            for (let r = 1; r < seg; r++) col.id[r] = add(arcPoint(I, O, col.out, r / seg));
-        }
-        return cols;
-    };
     const loops = boundaryLoops(input.edges);
-    const covered = new Set<string>();
-    const edgeEnds = new Map<string, { start: Col; end: Col }>();
-    const fans: Col[][] = [];
-    for (const loop of loops) {
-        const len = loop.length;
-        const outward: AfoVec3[] = [];
-        for (let i = 0; i < len; i++) {
-            const v = loop[i]!;
-            const nxt = loop[(i + 1) % len]!;
-            const N = unit(sub(outerAt(v), innerAt(v)), hintOf(v));
-            // Exterior is to the right of a boundary edge whose face sits on the left.
-            outward.push(unit(cross(sub(innerAt(nxt), innerAt(v)), N), hintOf(v)));
-        }
-        if (len > 0 && dot(outward[0]!, hintOf(loop[0]!)) < 0) {
-            for (let i = 0; i < len; i++) {
-                const o = outward[i]!;
-                outward[i] = { x: -o.x, y: -o.y, z: -o.z };
-            }
-        }
-        for (let i = 1; i < len; i++) {
-            const raw = outward[i]!;
-            const flipped = { x: -raw.x, y: -raw.y, z: -raw.z };
-            const hint = hintOf(loop[i]!);
-            const rawHint = dot(raw, hint);
-            const flipHint = dot(flipped, hint);
-            if (Math.abs(rawHint - flipHint) < 0.25) {
-                outward[i] = dot(raw, outward[i - 1]!) >= 0 ? raw : flipped;
-            } else {
-                outward[i] = rawHint >= flipHint ? raw : flipped;
-            }
-        }
-        for (let i = 1; i < len; i++) {
-            if (dot(outward[i]!, outward[i - 1]!) < 0) {
-                const o = outward[i]!;
-                outward[i] = { x: -o.x, y: -o.y, z: -o.z };
-            }
-        }
-        const occ: Col[][] = [];
-        for (let i = 0; i < len; i++) {
-            const v = loop[i]!;
-            const incoming = outward[(i - 1 + len) % len]!;
-            const outgoing = outward[i]!;
-            const dirs = fanDirs(incoming, outgoing);
-            const cols = makeCols(v, dirs);
-            occ.push(cols);
-            if (cols.length > 1) fans.push(cols);
-        }
-        for (let i = 0; i < len; i++) {
-            const a = loop[i]!;
-            const b = loop[(i + 1) % len]!;
-            const key = `${a}>${b}`;
-            if (covered.has(key)) continue;
-            covered.add(key);
-            const start = occ[i]![occ[i]!.length - 1]!;
-            const end = occ[(i + 1) % len]![0]!;
-            edgeEnds.set(key, { start, end });
-        }
-    }
+    for (const loop of loops) clampConcaveOffset(positions, n, loop);
     const rim: number[] = [];
+    const smoothRings: number[][][] = [];
     const pushTri = (a: number, b: number, c: number, expected: AfoVec3) => {
         if (a === b || b === c || c === a) return;
         const nrm = triNormal(at(a), at(b), at(c));
@@ -155,44 +81,34 @@ export function closeShellWithRoundRim(input: {
             else rim.push(a, b, d, d, b, c);
             return;
         }
-        const pa = at(a);
-        const pb = at(b);
-        const pc = at(c);
-        const pd = at(d);
-        const id = add({
-            x: (pa.x + pb.x + pc.x + pd.x) / 4,
-            y: (pa.y + pb.y + pc.y + pd.y) / 4,
-            z: (pa.z + pb.z + pc.z + pd.z) / 4,
-        });
-        pushTri(a, b, id, expected);
-        pushTri(b, c, id, expected);
-        pushTri(c, d, id, expected);
-        pushTri(d, a, id, expected);
+        const nrm = triNormal(at(a), at(b), at(c));
+        if (dot(nrm, expected) < 0) rim.push(a, d, c, a, c, b);
+        else rim.push(a, b, c, a, c, d);
     };
-    for (const e of input.edges) {
-        const key = `${e.a}>${e.b}`;
-        const ends = edgeEnds.get(key) ?? {
-            start: makeCols(e.a, [hintOf(e.a)])[0]!,
-            end: makeCols(e.b, [hintOf(e.b)])[0]!,
-        };
-        const pCol = ends.start;
-        const vCol = ends.end;
-        const expected = wallNormal(innerAt(e.a), innerAt(e.b), outerAt(e.a), pCol.out);
-        for (let r = 0; r < seg; r++) {
-            pushQuad(pCol.id[r]!, vCol.id[r]!, vCol.id[r + 1]!, pCol.id[r + 1]!, expected);
+    for (const loop of loops) {
+        if (loop.length < 3) continue;
+        const len = loop.length;
+        const rings: number[][] = Array.from({ length: seg + 1 }, () => new Array<number>(len));
+        for (let i = 0; i < len; i++) {
+            const v = loop[i]!;
+            const I = innerAt(v);
+            const O = outerAt(v);
+            const Out = hintOf(v);
+            rings[0]![i] = v;
+            rings[seg]![i] = n + v;
+            for (let r = 1; r < seg; r++) rings[r]![i] = add(arcPoint(I, O, Out, r / seg));
         }
-    }
-    for (const cols of fans) {
-        if (cols.length < 2) continue;
-        for (let j = 0; j < cols.length - 1; j++) {
-            const left = cols[j]!;
-            const right = cols[j + 1]!;
+        for (let i = 0; i < len; i++) {
+            const i1 = (i + 1) % len;
+            const hint = hintOf(loop[i]!);
+            const expected = wallNormal(at(rings[0]![i]!), at(rings[0]![i1]!), at(rings[seg]![i]!), hint);
             for (let r = 0; r < seg; r++) {
-                const expected = wallNormal(at(left.id[r]!), at(right.id[r]!), at(left.id[r + 1]!), left.out);
-                pushQuad(left.id[r]!, left.id[r + 1]!, right.id[r + 1]!, right.id[r]!, expected);
+                pushQuad(rings[r]![i]!, rings[r]![i1]!, rings[r + 1]![i1]!, rings[r + 1]![i]!, expected);
             }
         }
+        smoothRings.push(rings);
     }
+    for (const rings of smoothRings) tangentialSmooth(positions, rings, 2);
     collapseRimSlivers(positions, rim, ((input.innerPositions.length / 3) | 0) * 2);
     const indices = new Uint32Array(input.innerIndices.length + input.outerIndices.length + rim.length);
     indices.set(input.innerIndices, 0);
@@ -297,7 +213,7 @@ function collapseRimSlivers(positions: number[], rim: number[], arc0: number): v
             for (let e = 0; e < 3; e++) {
                 const u = vs[e]!;
                 const v = vs[(e + 1) % 3]!;
-                if (u === v || u < arc0 || v < arc0 || span(at(u), at(v)) >= 0.12) continue;
+                if (u === v || u < arc0 || v < arc0 || span(at(u), at(v)) >= 0.05) continue;
                 const from = Math.max(u, v);
                 const to = Math.min(u, v);
                 parent.set(from, canon(to));
@@ -331,7 +247,7 @@ function collapseRimSlivers(positions: number[], rim: number[], arc0: number): v
             if (opp < arc0) continue;
             const target =
                 span(at(opp), at(longest[0]!)) <= span(at(opp), at(longest[1]!)) ? longest[0]! : longest[1]!;
-            if (span(at(opp), at(target)) > 0.5) continue;
+            if (span(at(opp), at(target)) > 0.05) continue;
             parent.set(opp, canon(target));
             snaps++;
         }
@@ -349,6 +265,248 @@ function collapseRimSlivers(positions: number[], rim: number[], arc0: number): v
     }
     rim.length = 0;
     for (const id of kept) rim.push(id);
+}
+
+/**
+ * Shorten the outer offset where the heel is concave enough that a full
+ * edge-thickness step would make adjacent offset segments cross.
+ * The radius check is the circumradius of three consecutive rim points.
+ */
+function clampConcaveOffset(positions: number[], n: number, loop: number[]): void {
+    const len = loop.length;
+    if (len < 3) return;
+    const at = (id: number): AfoVec3 => ({
+        x: positions[id * 3] ?? 0,
+        y: positions[id * 3 + 1] ?? 0,
+        z: positions[id * 3 + 2] ?? 0,
+    });
+    const P = loop.map((id) => at(id));
+    const target = loop.map((id, i) =>
+        Math.hypot(
+            (positions[(n + id) * 3] ?? 0) - P[i]!.x,
+            (positions[(n + id) * 3 + 1] ?? 0) - P[i]!.y,
+            (positions[(n + id) * 3 + 2] ?? 0) - P[i]!.z,
+        ),
+    );
+    const N = loop.map((id, i) =>
+        unit(
+            {
+                x: (positions[(n + id) * 3] ?? 0) - P[i]!.x,
+                y: (positions[(n + id) * 3 + 1] ?? 0) - P[i]!.y,
+                z: (positions[(n + id) * 3 + 2] ?? 0) - P[i]!.z,
+            },
+            { x: 0, y: 0, z: 1 },
+        ),
+    );
+    const d = target.slice();
+    const placed = () =>
+        P.map((p, i) => ({
+            x: p.x + N[i]!.x * d[i]!,
+            y: p.y + N[i]!.y * d[i]!,
+            z: p.z + N[i]!.z * d[i]!,
+        }));
+    // A short boundary step amplifies a small normal change into a twisted quad:
+    // the outer edge is the inner edge plus the offset difference. Share one
+    // offset wherever that difference is more than a fifth of the step.
+    const shareTwistedSteps = () => {
+        let changed = false;
+        for (let i = 0; i < len; i++) {
+            const i1 = (i + 1) % len;
+            const edgeLen = Math.hypot(P[i1]!.x - P[i]!.x, P[i1]!.y - P[i]!.y, P[i1]!.z - P[i]!.z);
+            const o0 = { x: N[i]!.x * d[i]!, y: N[i]!.y * d[i]!, z: N[i]!.z * d[i]! };
+            const o1 = { x: N[i1]!.x * d[i1]!, y: N[i1]!.y * d[i1]!, z: N[i1]!.z * d[i1]! };
+            const delta = Math.hypot(o0.x - o1.x, o0.y - o1.y, o0.z - o1.z);
+            if (delta <= Math.max(edgeLen * 0.2, 1e-4)) continue;
+            const avg = { x: (o0.x + o1.x) * 0.5, y: (o0.y + o1.y) * 0.5, z: (o0.z + o1.z) * 0.5 };
+            const dir = unit(avg, N[i]!);
+            const cap = Math.min(target[i] ?? 0, target[i1] ?? 0);
+            const floor = Math.max(0, cap - 0.08);
+            const sharedLen = Math.min(cap, Math.max(floor, Math.hypot(avg.x, avg.y, avg.z)));
+            N[i] = { x: dir.x, y: dir.y, z: dir.z };
+            N[i1] = { x: dir.x, y: dir.y, z: dir.z };
+            d[i] = sharedLen;
+            d[i1] = sharedLen;
+            changed = true;
+        }
+        return changed;
+    };
+    for (let iter = 0; iter < 48; iter++) {
+        if (!shareTwistedSteps()) break;
+    }
+    for (let iter = 0; iter < 8; iter++) {
+        const Q = placed();
+        let changed = false;
+        for (let i = 0; i < len; i++) {
+            const i0 = (i - 1 + len) % len;
+            const i1 = (i + 1) % len;
+            const edge = sub(P[i1]!, P[i]!);
+            const offsetEdge = sub(Q[i1]!, Q[i]!);
+            const radius = circumradius(P[i0]!, P[i]!, P[i1]!);
+            const center = circumcenter(P[i0]!, P[i]!, P[i1]!);
+            let concave = false;
+            if (center && radius < 1e5 && radius > 1e-4) {
+                const toward = unit(sub(center, P[i]!), N[i]!);
+                concave = dot(N[i]!, toward) > 0;
+                if (concave && d[i]! > radius * 0.85) {
+                    d[i] = Math.max(target[i]! - 0.08, radius * 0.85);
+                    changed = true;
+                }
+            }
+            if (dot(edge, offsetEdge) < 0 || segmentsCross(P[i]!, Q[i]!, P[i1]!, Q[i1]!)) {
+                const floor = Math.max(target[i]! - 0.08, 0);
+                const floor1 = Math.max(target[i1]! - 0.08, 0);
+                if (d[i]! > floor + 1e-4 || d[i1]! > floor1 + 1e-4) {
+                    d[i] = Math.max(floor, d[i]! * 0.8);
+                    d[i1] = Math.max(floor1, d[i1]! * 0.8);
+                    changed = true;
+                }
+            }
+        }
+        if (!changed) break;
+    }
+    for (let iter = 0; iter < 48; iter++) {
+        if (!shareTwistedSteps()) break;
+    }
+    for (let iter = 0; iter < 8; iter++) {
+        const placedNow = placed();
+        let changed = false;
+        for (let i = 0; i < len; i++) {
+            const i1 = (i + 1) % len;
+            const crossed =
+                segmentsCross(P[i]!, placedNow[i]!, P[i1]!, placedNow[i1]!, 0.02) ||
+                segmentsCross(P[i]!, P[i1]!, placedNow[i]!, placedNow[i1]!, 0.02);
+            if (!crossed) continue;
+            const floor = Math.max((target[i] ?? 0) - 0.08, 0);
+            const floor1 = Math.max((target[i1] ?? 0) - 0.08, 0);
+            if ((d[i] ?? 0) <= floor + 1e-4 && (d[i1] ?? 0) <= floor1 + 1e-4) continue;
+            d[i] = Math.max(floor, (d[i] ?? 0) * 0.85);
+            d[i1] = Math.max(floor1, (d[i1] ?? 0) * 0.85);
+            changed = true;
+        }
+        if (!changed) break;
+    }
+    const Q = placed();
+    let twists = 0;
+    let twistAt = "";
+    for (let i = 0; i < len; i++) {
+        const i1 = (i + 1) % len;
+        // Rulings of one step, and the two boundary edges of that step, must not cross.
+        const ruling = segmentsCross(P[i]!, Q[i]!, P[i1]!, Q[i1]!, 1e-3);
+        const edges = segmentsCross(P[i]!, P[i1]!, Q[i]!, Q[i1]!, 1e-3);
+        if (ruling || edges) {
+            twists++;
+            if (!twistAt) {
+                twistAt = `(${P[i]!.x.toFixed(1)}, ${P[i]!.y.toFixed(1)}, ${P[i]!.z.toFixed(1)}) ${ruling ? "ruling" : "edges"}`;
+            }
+        }
+    }
+    if (twists > 0) throw new Error(`rim loop has ${twists} twisted rulings at ${twistAt}`);
+    for (let i = 0; i < len; i++) {
+        const id = n + loop[i]!;
+        positions[id * 3] = Q[i]!.x;
+        positions[id * 3 + 1] = Q[i]!.y;
+        positions[id * 3 + 2] = Q[i]!.z;
+    }
+}
+
+/** Move interior rim rings along the strip, leaving both boundary loops fixed so E does not change. */
+function tangentialSmooth(positions: number[], rings: number[][], iterations: number): void {
+    const bands = rings.length - 1;
+    const len = rings[0]?.length ?? 0;
+    if (bands < 2 || len < 3) return;
+    const at = (id: number): AfoVec3 => ({
+        x: positions[id * 3] ?? 0,
+        y: positions[id * 3 + 1] ?? 0,
+        z: positions[id * 3 + 2] ?? 0,
+    });
+    for (let iter = 0; iter < iterations; iter++) {
+        const next = new Map<number, AfoVec3>();
+        for (let r = 1; r < bands; r++) {
+            for (let i = 0; i < len; i++) {
+                const id = rings[r]![i]!;
+                const nbrs = [
+                    rings[r]![(i - 1 + len) % len]!,
+                    rings[r]![(i + 1) % len]!,
+                    rings[r - 1]![i]!,
+                    rings[r + 1]![i]!,
+                ];
+                let ax = 0;
+                let ay = 0;
+                let az = 0;
+                for (const nb of nbrs) {
+                    const p = at(nb);
+                    ax += p.x;
+                    ay += p.y;
+                    az += p.z;
+                }
+                ax /= nbrs.length;
+                ay /= nbrs.length;
+                az /= nbrs.length;
+                const cur = at(id);
+                let dx = ax - cur.x;
+                let dy = ay - cur.y;
+                let dz = az - cur.z;
+                const axis = unit(sub(at(rings[bands]![i]!), at(rings[0]![i]!)), { x: 0, y: 0, z: 1 });
+                const along = dx * axis.x + dy * axis.y + dz * axis.z;
+                dx -= axis.x * along;
+                dy -= axis.y * along;
+                dz -= axis.z * along;
+                next.set(id, { x: cur.x + dx * 0.35, y: cur.y + dy * 0.35, z: cur.z + dz * 0.35 });
+            }
+        }
+        for (const [id, p] of next) {
+            positions[id * 3] = p.x;
+            positions[id * 3 + 1] = p.y;
+            positions[id * 3 + 2] = p.z;
+        }
+    }
+}
+
+function circumradius(a: AfoVec3, b: AfoVec3, c: AfoVec3): number {
+    const ab = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    const bc = Math.hypot(c.x - b.x, c.y - b.y, c.z - b.z);
+    const ca = Math.hypot(a.x - c.x, a.y - c.y, a.z - c.z);
+    const n = triNormal(a, b, c);
+    const area = Math.hypot(n.x, n.y, n.z) * 0.5;
+    if (area < 1e-8) return Number.POSITIVE_INFINITY;
+    return (ab * bc * ca) / (4 * area);
+}
+
+function circumcenter(a: AfoVec3, b: AfoVec3, c: AfoVec3): AfoVec3 | null {
+    const ab = sub(b, a);
+    const ac = sub(c, a);
+    const n = cross(ab, ac);
+    const n2 = dot(n, n);
+    if (n2 < 1e-12) return null;
+    const ab2 = dot(ab, ab);
+    const ac2 = dot(ac, ac);
+    const abn = cross(ab, n);
+    const nac = cross(n, ac);
+    return {
+        x: a.x + (ac2 * abn.x + ab2 * nac.x) / (2 * n2),
+        y: a.y + (ac2 * abn.y + ab2 * nac.y) / (2 * n2),
+        z: a.z + (ac2 * abn.z + ab2 * nac.z) / (2 * n2),
+    };
+}
+
+function segmentsCross(a: AfoVec3, b: AfoVec3, c: AfoVec3, d: AfoVec3, gapMm = 0.05): boolean {
+    const u = sub(b, a);
+    const v = sub(d, c);
+    const w = sub(a, c);
+    const uu = dot(u, u);
+    const uv = dot(u, v);
+    const vv = dot(v, v);
+    const uw = dot(u, w);
+    const vw = dot(v, w);
+    const denom = uu * vv - uv * uv;
+    let s = denom < 1e-12 ? 0 : (uv * vw - vv * uw) / denom;
+    let t = denom < 1e-12 ? 0 : (uu * vw - uv * uw) / denom;
+    s = Math.min(1, Math.max(0, s));
+    t = Math.min(1, Math.max(0, t));
+    const p = { x: a.x + u.x * s, y: a.y + u.y * s, z: a.z + u.z * s };
+    const q = { x: c.x + v.x * t, y: c.y + v.y * t, z: c.z + v.z * t };
+    const gap = Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
+    return gap < gapMm && s > 0.08 && s < 0.92 && t > 0.08 && t < 0.92;
 }
 
 function wallNormal(p: AfoVec3, v: AfoVec3, up: AfoVec3, outHint: AfoVec3): AfoVec3 {
@@ -390,19 +548,14 @@ function boundaryLoops(edges: { a: number; b: number }[]): number[][] {
  * with a small exterior bulge so a pinched vertex's two passes do not coincide.
  * The bulge is << 1 mm, so adjacent bands stay nearly parallel.
  */
-function arcPoint(I: AfoVec3, O: AfoVec3, Out: AfoVec3, t: number): AfoVec3 {
-    const bulge = Math.sin(Math.PI * t) * 0.05;
+function arcPoint(I: AfoVec3, O: AfoVec3, _out: AfoVec3, t: number): AfoVec3 {
+    // Stay on the ruling. A lateral bulge on a sub-millimetre boundary step
+    // twists the quad by tens of degrees.
     return {
-        x: I.x + (O.x - I.x) * t + Out.x * bulge,
-        y: I.y + (O.y - I.y) * t + Out.y * bulge,
-        z: I.z + (O.z - I.z) * t + Out.z * bulge,
+        x: I.x + (O.x - I.x) * t,
+        y: I.y + (O.y - I.y) * t,
+        z: I.z + (O.z - I.z) * t,
     };
-}
-
-/** Split a corner so each fan step stays at or under 40°. */
-function fanDirs(from: AfoVec3, to: AfoVec3): AfoVec3[] {
-    void from;
-    return [to];
 }
 
 function triNormal(a: AfoVec3, b: AfoVec3, c: AfoVec3): AfoVec3 {

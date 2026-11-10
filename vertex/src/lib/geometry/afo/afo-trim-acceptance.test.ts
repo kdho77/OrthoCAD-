@@ -314,12 +314,22 @@ describe("AFO trim acceptance", () => {
     });
 
     test("balance-brace and posterior-leaf shells are watertight, on the curve, and flared", () => {
+        const failures: string[] = [];
+        const note = (name: string, ok: boolean, detail: string) => {
+            if (!ok) failures.push(`${name}: ${detail}`);
+        };
         for (const side of ["left", "right"] as const) {
             const leg = buildLiveFrameLeg(side, 32);
             const afo = defaultAfoDesignState(side);
-            for (const placed of [balanceBracePins(leg, afo), posteriorLeafPins(leg, afo)]) {
+            const presets = [
+                ["balance-brace", balanceBracePins(leg, afo)],
+                ["posterior-leaf", posteriorLeafPins(leg, afo)],
+            ] as const;
+            for (const [preset, placed] of presets) {
+                const name = `${side} ${preset}`;
                 const fit = fitSurfaceSpline(leg, placed.pins, { closed: true });
-                expect(fit.ok, `${side} ${fit.reasons.join(" | ")}`).toBe(true);
+                note(name, fit.ok, fit.ok ? "spline ok" : fit.reasons.join(" | "));
+                if (!fit.ok) continue;
                 const polygon = trimPolygonForShell(fit.curve, true)!;
                 const plain = buildAfoShell(leg, [0, 1, 2], {
                     thicknessMm: AFO_THICKNESS_MM,
@@ -329,12 +339,11 @@ describe("AFO trim acceptance", () => {
                     heelSeed: { x: leg.positions[0] ?? 0, y: 0, z: -10 },
                 });
                 const report = analyzeManifoldBuffers(plain.positions, plain.indices);
-                expect(report.openEdges, side).toBe(0);
-                expect(report.nonManifoldEdges, side).toBe(0);
-                expect(countMeshBodies(plain), side).toBe(1);
+                note(name, report.openEdges === 0, `open edges ${report.openEdges}`);
+                note(name, report.nonManifoldEdges === 0, `non-manifold edges ${report.nonManifoldEdges}`);
+                note(name, countMeshBodies(plain) === 1, `bodies ${countMeshBodies(plain)}`);
                 const dihedral = rimDihedralDeg(plain, leg);
                 const rims = innerRimLoops(plain, leg);
-                expect(rims.length, `${side} boundary loops`).toBe(1);
                 const boundary = rims[0] ?? [];
                 let curveToEdge = 0;
                 let within = 0;
@@ -343,15 +352,15 @@ describe("AFO trim acceptance", () => {
                     curveToEdge = Math.max(curveToEdge, d);
                     if (d <= 0.1) within++;
                 }
-                console.log(
-                    `${side} curve→edge ${curveToEdge.toFixed(3)} mm on ${within}/${polygon.length} samples, loops ${rims.length}, dihedral ${dihedral.deg.toFixed(2)}° at (${dihedral.x.toFixed(1)}, ${dihedral.y.toFixed(1)}, ${dihedral.z.toFixed(1)})`,
+                const where = `(${dihedral.x.toFixed(1)}, ${dihedral.y.toFixed(1)}, ${dihedral.z.toFixed(1)})`;
+                note(
+                    name,
+                    rims.length === 1 &&
+                        within === polygon.length &&
+                        curveToEdge <= 0.1 &&
+                        dihedral.deg <= 60,
+                    `curve→edge ${curveToEdge.toFixed(3)} mm on ${within}/${polygon.length}, loops ${rims.length}, dihedral ${dihedral.deg.toFixed(2)}° at ${where}`,
                 );
-                expect(within, `${side} samples on the boundary`).toBe(polygon.length);
-                expect(curveToEdge, `${side} curve→edge`).toBeLessThanOrEqual(0.1);
-                expect(
-                    dihedral.deg,
-                    `${side} dihedral ${dihedral.deg.toFixed(2)}° at ${dihedral.x.toFixed(1)},${dihedral.y.toFixed(1)},${dihedral.z.toFixed(1)}`,
-                ).toBeLessThanOrEqual(60);
                 const projector = meshProjector(leg);
                 let nInner = 0;
                 while (
@@ -368,7 +377,7 @@ describe("AFO trim acceptance", () => {
                     const thickness = dist(v, outer);
                     edgeErr = Math.max(edgeErr, Math.abs(thickness - AFO_EDGE_MM));
                 }
-                expect(edgeErr, `${side} edge`).toBeLessThanOrEqual(0.1);
+                note(name, edgeErr <= 0.1, `edge error ${edgeErr.toFixed(3)} mm`);
                 const flared = buildAfoShell(leg, [0, 1, 2], {
                     thicknessMm: AFO_THICKNESS_MM,
                     edgeMm: AFO_EDGE_MM,
@@ -376,34 +385,47 @@ describe("AFO trim acceptance", () => {
                     trimPolygon: polygon,
                     heelSeed: { x: 0, y: 0, z: -10 },
                 });
-                expect(flared.positions.length).toBe(plain.positions.length);
+                note(
+                    name,
+                    flared.positions.length === plain.positions.length,
+                    `flare vertex count ${flared.positions.length} vs ${plain.positions.length}`,
+                );
                 let minZ = Infinity;
                 for (let i = 0; i < leg.positions.length; i += 3)
                     minZ = Math.min(minZ, leg.positions[i + 2] ?? 0);
-                const moved: { d: number; foot: boolean }[] = [];
-                for (let i = 0; i < plain.positions.length / 3; i++) {
+                let wallErr = 0;
+                let footErr = 0;
+                let walls = 0;
+                let feet = 0;
+                const limit = Math.min(plain.positions.length, flared.positions.length) / 3;
+                for (let i = 0; i < limit; i++) {
                     const p = at(plain, i);
                     if (distToPolyline(p, polygon) > 0.12) continue;
                     const q = at(flared, i);
                     const d = dist(p, q);
                     const hit = projector.closest(p);
                     const foot = hit.normal.z < -0.65 && p.z < minZ + 8;
-                    moved.push({ d, foot });
+                    if (foot) {
+                        feet++;
+                        footErr = Math.max(footErr, Math.abs(d - AFO_FOOTPLATE_FLARE_CAP_MM));
+                    } else {
+                        walls++;
+                        wallErr = Math.max(wallErr, Math.abs(d - AFO_FLARE_MM));
+                    }
                 }
-                const feet = moved.filter((m) => m.foot);
-                const walls = moved.filter((m) => !m.foot);
-                expect(walls.length, side).toBeGreaterThan(0);
-                for (const m of walls) {
-                    expect(Math.abs(m.d - AFO_FLARE_MM), `${side} flare`).toBeLessThanOrEqual(0.2);
-                }
-                for (const m of feet) {
-                    expect(
-                        Math.abs(m.d - AFO_FOOTPLATE_FLARE_CAP_MM),
-                        `${side} footplate`,
-                    ).toBeLessThanOrEqual(0.2);
-                }
+                note(
+                    name,
+                    walls > 0 && wallErr <= 0.2,
+                    `flare error ${wallErr.toFixed(3)} mm on ${walls} wall verts`,
+                );
+                note(
+                    name,
+                    feet === 0 || footErr <= 0.2,
+                    `footplate error ${footErr.toFixed(3)} mm on ${feet} verts`,
+                );
             }
         }
+        expect(failures, failures.join("\n")).toEqual([]);
     });
 
     test("a 100k-triangle shell builds in under 5 seconds", () => {
