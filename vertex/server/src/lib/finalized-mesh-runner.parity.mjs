@@ -4,14 +4,18 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
-import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
     buildHeadlessFinalizedFoot,
-    canonicalExportLoftUrl,
     elementsDirectoryUrl,
     sampleTopFileUrl,
     textFontFileUrl,
 } from "./finalized-mesh-runner.ts";
+
+// Join, not new URL("./canonical-export-loft.js"). Rstest resolves that form at load.
+const loftPath = join(dirname(fileURLToPath(import.meta.url)), "canonical-export-loft.js");
+const loftHref = pathToFileURL(loftPath).href;
 
 const [nameSettingsPath, elementSettingsPath, reportPath] = process.argv.slice(2);
 if (!nameSettingsPath || !elementSettingsPath || !reportPath) {
@@ -31,11 +35,11 @@ const vertexCwd = fileURLToPath(new URL("../../..", import.meta.url));
 const nameSettings = JSON.parse(readFileSync(nameSettingsPath, "utf8"));
 const elementSettings = JSON.parse(readFileSync(elementSettingsPath, "utf8"));
 const sampleTopBytes = copyFileBytes(fileURLToPath(sampleTopFileUrl()));
-const loft = await import(canonicalExportLoftUrl());
+const loft = await import(loftHref);
 
 const report = {
     fontPath: fileURLToPath(textFontFileUrl()),
-    loftPath: fileURLToPath(canonicalExportLoftUrl()),
+    loftPath,
     elementsPath: fileURLToPath(elementsDirectoryUrl()),
     vertexCwd,
 };

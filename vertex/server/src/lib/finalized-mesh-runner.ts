@@ -26,7 +26,6 @@ interface FinalizedMeshModule {
 const SAMPLE_TOP_URL = new URL("../../../public/Templates/SAMPLE_Top.glb", import.meta.url);
 const TEXT_FONT_URL = new URL("../../../public/fonts/Inter-Bold.ttf", import.meta.url);
 const ELEMENTS_DIR_URL = new URL("../../../public/elements/", import.meta.url);
-const CANONICAL_EXPORT_LOFT_URL = new URL("./canonical-export-loft.js", import.meta.url);
 
 let sampleTopBytes: ArrayBuffer | null = null;
 let textFontBytes: ArrayBuffer | null = null;
@@ -109,8 +108,4 @@ export function textFontFileUrl(): string {
 
 export function elementsDirectoryUrl(): string {
     return ELEMENTS_DIR_URL.href;
-}
-
-export function canonicalExportLoftUrl(): string {
-    return CANONICAL_EXPORT_LOFT_URL.href;
 }
