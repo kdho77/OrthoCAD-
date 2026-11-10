@@ -635,8 +635,12 @@ describe("pediatric sink scale and sulcus clearance", () => {
                         );
                     }
                     expect(medialYs.length, `${item.label} ${side} 1st station`).toBeGreaterThan(0);
+                    const mpjOnly = {
+                        ...ctx,
+                        sinks: (ctx.sinks ?? []).filter((sink) => sink.kind !== "rkw"),
+                    };
                     expect(
-                        sinkCutMm(first.cx, Math.min(...medialYs), ctx).mm,
+                        sinkCutMm(first.cx, Math.min(...medialYs), mpjOnly).mm,
                         `${item.label} ${side} 1st taper`,
                     ).toBeGreaterThan(0);
                     const sty = sinkFrame(maxSinks().find((s) => s.kind === "styloid")!, ctx)!;

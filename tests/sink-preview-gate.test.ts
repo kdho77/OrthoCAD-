@@ -149,16 +149,20 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
             Math.abs((composedFloor.mpj1?.dz ?? NaN) - FOREFOOT_THICKNESS_CLEARANCE_MM),
         ).toBeLessThanOrEqual(0.05);
 
-        const six = SINK_KIND_ORDER.map((kind) => ({ id: kind, kind, depthMm: SINK_DEFAULT_DEPTH_MM }));
+        const nonRkw = SINK_KIND_ORDER.filter((kind) => kind !== "rkw").map((kind) => ({
+            id: kind,
+            kind,
+            depthMm: SINK_DEFAULT_DEPTH_MM,
+        }));
         const floors: Record<string, Record<string, { dz: number; weight: number }>> = {};
         for (const wallStyle of ["straight", "round", "hybrid"] as const) {
             const all = await reconstructProceduralPreview(raw, {
                 wallStyle,
                 side: "left",
-                sinks: six,
+                sinks: nonRkw,
             });
             const solid = compareSolids(plains[wallStyle]!, all.geometry);
-            const perSink = deepestFloor(plains[wallStyle]!, all.geometry, six);
+            const perSink = deepestFloor(plains[wallStyle]!, all.geometry, nonRkw);
             floors[wallStyle] = perSink;
             console.log(
                 "[SINK-F4-FLOOR]",
@@ -168,13 +172,33 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
             expect(solid.vertexCount).toBe(solid.baseVertexCount);
             expect(solid.outlineMm).toBeLessThanOrEqual(0.02);
             for (const kind of SINK_KIND_ORDER) {
-                if (!SINK_PROFILES[kind].forefoot) continue;
+                if (kind === "rkw" || !SINK_PROFILES[kind].forefoot) continue;
                 const hit = perSink[kind];
                 expect(hit, `${wallStyle} ${kind}`).toBeTruthy();
                 expect(Math.abs(hit!.dz - FOREFOOT_THICKNESS_CLEARANCE_MM)).toBeLessThanOrEqual(0.05);
             }
             all.geometry.dispose();
         }
+
+        const withRkw = [...nonRkw, { id: "rkw", kind: "rkw" as const, depthMm: SINK_DEFAULT_DEPTH_MM }];
+        const suppressed = await reconstructProceduralPreview(raw, {
+            wallStyle: "straight",
+            side: "left",
+            sinks: withRkw,
+        });
+        const whileOn = deepestFloor(plains.straight!, suppressed.geometry, withRkw);
+        expect(whileOn.mpj1, "RKW suppresses the MPJ1 floor hit").toBeUndefined();
+        expect(whileOn.rkw, "RKW still cuts").toBeTruthy();
+        const restoredSinks = withRkw.filter((sink) => sink.kind !== "rkw");
+        const restored = await reconstructProceduralPreview(raw, {
+            wallStyle: "straight",
+            side: "left",
+            sinks: restoredSinks,
+        });
+        const after = deepestFloor(plains.straight!, restored.geometry, restoredSinks);
+        expect(after.mpj1, "removing RKW restores the MPJ1 floor hit").toBeTruthy();
+        suppressed.geometry.dispose();
+        restored.geometry.dispose();
 
         const styloid2 = await reconstructProceduralPreview(raw, {
             wallStyle: "straight",
