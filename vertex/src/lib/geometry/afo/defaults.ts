@@ -19,10 +19,15 @@ import type {
 export const AFO_C_MM = 0;
 /** [K] Print wall thickness (mm). */
 export const AFO_THICKNESS_MM = 4;
-/** [K] Rim thickness (mm). Interior wall stays AFO_THICKNESS_MM. */
-export const AFO_EDGE_MM = 2;
-/** [K] Outward flare at the trim opening (mm). Footplate flanges cap at 1. */
-export const AFO_FLARE_MM = 1.5;
+/** [K] Rim thickness (mm). Interior wall stays AFO_THICKNESS_MM. Windows app: 2.5. */
+export const AFO_EDGE_MM = 2.5;
+/** [K] Outward flare at the trim opening (mm). Windows app: 2.5. */
+export const AFO_FLARE_MM = 2.5;
+/**
+ * Plantar footplate flare (mm). The opening uses {@link AFO_FLARE_MM};
+ * the sole never flares more than this, matching the Windows footplate.
+ */
+export const AFO_FOOTPLATE_FLARE_CAP_MM = 1;
 /** [K] Brace height from plantar origin when the fibular head is unknown (mm). */
 export const AFO_BRACE_HEIGHT_MM = 220;
 /** Proximal trim sits this far below the fibular head when height is automatic. */

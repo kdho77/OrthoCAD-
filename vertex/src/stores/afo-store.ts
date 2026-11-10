@@ -5,12 +5,13 @@ import { applyClinicalCast } from "@/lib/geometry/afo/cast";
 import { applyAfoCorrections, correctionContextFromAfo } from "@/lib/geometry/afo/corrections";
 import { detectTibialCrest } from "@/lib/geometry/afo/crest";
 import {
+    AFO_DESIGN_MARKERS,
     afoPrintParams,
     correctionsForSide,
     defaultAfoDesignState,
     defaultAfoSideCorrection,
 } from "@/lib/geometry/afo/defaults";
-import { cloneMesh } from "@/lib/geometry/afo/mesh-ops";
+import { cloneMesh, orientMeshOutward } from "@/lib/geometry/afo/mesh-ops";
 import { fitSurfaceSpline, reprojectTrimPins } from "@/lib/geometry/afo/trim-spline";
 import type { AfoClinicalMarkerId, AfoScanWorkflow, AfoTriMesh, AfoVec3 } from "@/lib/geometry/afo/types";
 import { useDesignStore } from "@/stores/design-store";
@@ -35,6 +36,8 @@ interface AfoSessionStore {
     scanDraggingMarkerId: string | null;
     scanHoverWorld: { x: number; y: number; z: number } | null;
     placingLandmarkIndex: number;
+    /** Design-step landmark clicks. Off during trim, cast markers, and after the five are placed. */
+    placingDesignLandmarks: boolean;
     placingClinicalId: AfoClinicalMarkerId | null;
     placingTrim: boolean;
     /** Cursor sample on the working mesh while a trim line is being placed. */
@@ -56,6 +59,7 @@ interface AfoSessionStore {
     setScanDraggingMarkerId: (id: string | null) => void;
     setScanHoverWorld: (point: { x: number; y: number; z: number } | null) => void;
     setPlacingLandmarkIndex: (index: number) => void;
+    setPlacingDesignLandmarks: (on: boolean) => void;
     setPlacingClinicalId: (id: AfoClinicalMarkerId | null) => void;
     setPlacingTrim: (on: boolean) => void;
     setTrimHover: (point: AfoVec3 | null) => void;
@@ -195,7 +199,7 @@ export function refreshAfoWorkingMesh(): void {
 }
 
 export function ingestOrientedScan(mesh: AfoTriMesh): void {
-    useAfoStore.getState().setSourceMesh(mesh);
+    useAfoStore.getState().setSourceMesh(orientMeshOutward(mesh));
     const afo = getAfoState();
     const crest = detectTibialCrest(mesh, afo.corrections.braceHeightMm, afo.clinicalMarkers);
     patchAfoState({ crest }, "afo-crest");
@@ -222,7 +226,7 @@ export function setProductType(productType: "insole" | "afo", side: Side = "left
     });
 }
 
-export const useAfoStore = create<AfoSessionStore>((set) => ({
+export const useAfoStore = create<AfoSessionStore>((set, get) => ({
     sourceMesh: null,
     castMesh: null,
     correctedMesh: null,
@@ -237,6 +241,7 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
     scanDraggingMarkerId: null,
     scanHoverWorld: null,
     placingLandmarkIndex: 0,
+    placingDesignLandmarks: false,
     placingClinicalId: null,
     placingTrim: false,
     trimHover: null,
@@ -262,16 +267,43 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
     setScanHoverWorld: (point) => set({ scanHoverWorld: point }),
     setPlacingLandmarkIndex: (index) =>
         set({ placingLandmarkIndex: index, placingTrim: false, trimHover: null }),
-    setPlacingClinicalId: (id) =>
-        set(
-            id ? { placingClinicalId: id, placingTrim: false, trimHover: null } : { placingClinicalId: null },
-        ),
-    setPlacingTrim: (on) =>
+    setPlacingDesignLandmarks: (on) =>
         set(
             on
-                ? { placingTrim: true, placingClinicalId: null, scanPlacement: null, trimHover: null }
-                : { placingTrim: false, trimHover: null },
+                ? {
+                      placingDesignLandmarks: true,
+                      placingTrim: false,
+                      placingClinicalId: null,
+                      trimHover: null,
+                  }
+                : { placingDesignLandmarks: false },
         ),
+    setPlacingClinicalId: (id) =>
+        set(
+            id
+                ? {
+                      placingClinicalId: id,
+                      placingTrim: false,
+                      placingDesignLandmarks: false,
+                      trimHover: null,
+                  }
+                : { placingClinicalId: null },
+        ),
+    setPlacingTrim: (on) => {
+        if (on) {
+            set({
+                placingTrim: true,
+                placingClinicalId: null,
+                placingDesignLandmarks: false,
+                trimHover: null,
+            });
+            return;
+        }
+        const index = get().placingLandmarkIndex;
+        const count = getAfoState().landmarks.length;
+        const resume = count < AFO_DESIGN_MARKERS.length && index < AFO_DESIGN_MARKERS.length;
+        set({ placingTrim: false, trimHover: null, placingDesignLandmarks: resume });
+    },
     setTrimHover: (point) => set({ trimHover: point }),
     setDraggingTrimIndex: (index) => set({ draggingTrimIndex: index }),
     setWorkerProgress: (p) => set({ workerProgress: p }),
@@ -292,6 +324,7 @@ export const useAfoStore = create<AfoSessionStore>((set) => ({
             scanDraggingMarkerId: null,
             scanHoverWorld: null,
             placingLandmarkIndex: 0,
+            placingDesignLandmarks: false,
             placingClinicalId: null,
             placingTrim: false,
             trimHover: null,

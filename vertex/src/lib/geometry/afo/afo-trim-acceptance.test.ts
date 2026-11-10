@@ -1,0 +1,429 @@
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
+
+import { describe, expect, test } from "@rstest/core";
+import { analyzeManifoldBuffers } from "@/lib/geometry/manifold-core";
+import { ingestOrientedScan, useAfoStore } from "@/stores/afo-store";
+import { cloneableWorkerOptions } from "./afo-engine";
+import {
+    AFO_EDGE_MM,
+    AFO_FLARE_MM,
+    AFO_FOOTPLATE_FLARE_CAP_MM,
+    AFO_THICKNESS_MM,
+    defaultAfoDesignState,
+} from "./defaults";
+import {
+    countMeshBodies,
+    duplicateDirectedEdgeCount,
+    meshProjector,
+    meshSignedVolume,
+    orientMeshOutward,
+} from "./mesh-ops";
+import { buildAfoShell, trimPolygonForShell } from "./shell";
+import { buildClinicalFixtureA, buildLiveFrameLeg, buildUnitSphereMesh } from "./synthetic-leg";
+import { AFO_TRIM_NO_MESH, designLandmarkPlacementActive, trimPointerIsClick } from "./trim-preview";
+import { balanceBracePins, fitSurfaceSpline, posteriorLeafPins } from "./trim-spline";
+import type { AfoTriMesh, AfoVec3 } from "./types";
+
+function dist(a: AfoVec3, b: AfoVec3): number {
+    return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+function at(mesh: AfoTriMesh, i: number): AfoVec3 {
+    return {
+        x: mesh.positions[i * 3] ?? 0,
+        y: mesh.positions[i * 3 + 1] ?? 0,
+        z: mesh.positions[i * 3 + 2] ?? 0,
+    };
+}
+
+function pointSegmentDist(p: AfoVec3, a: AfoVec3, b: AfoVec3): number {
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const abz = b.z - a.z;
+    const ab2 = abx * abx + aby * aby + abz * abz || 1;
+    const t = Math.min(1, Math.max(0, ((p.x - a.x) * abx + (p.y - a.y) * aby + (p.z - a.z) * abz) / ab2));
+    return Math.hypot(p.x - (a.x + abx * t), p.y - (a.y + aby * t), p.z - (a.z + abz * t));
+}
+
+function distToPolyline(p: AfoVec3, loop: AfoVec3[]): number {
+    let best = Infinity;
+    for (let i = 0; i < loop.length; i++)
+        best = Math.min(best, pointSegmentDist(p, loop[i]!, loop[(i + 1) % loop.length]!));
+    return best;
+}
+
+/** Skin-side opening loops: boundaries of the faces that still lie on the source. */
+function innerRimLoops(shell: AfoTriMesh, source: AfoTriMesh): AfoVec3[][] {
+    const projector = meshProjector(source);
+    const nAll = (shell.positions.length / 3) | 0;
+    const err: number[] = [];
+    for (let i = 0; i < nAll; i++) err.push(projector.closest(at(shell, i)).errorMm);
+    let n = 0;
+    while (n < nAll && (err[n] ?? 1) < 0.2) n++;
+    const onSkin: boolean[] = err.map((e) => e < 0.15);
+    const t = (shell.indices.length / 3) | 0;
+    const edgeCount = new Map<string, { a: number; b: number; n: number }>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let i = 0; i < t; i++) {
+        const vs = [shell.indices[i * 3] ?? 0, shell.indices[i * 3 + 1] ?? 0, shell.indices[i * 3 + 2] ?? 0];
+        if (!vs.every((v) => onSkin[v])) continue;
+        for (let e = 0; e < 3; e++) {
+            const a = vs[e]!;
+            const b = vs[(e + 1) % 3]!;
+            const k = key(a, b);
+            const prev = edgeCount.get(k);
+            if (prev) prev.n += 1;
+            else edgeCount.set(k, { a, b, n: 1 });
+        }
+    }
+    const next = new Map<number, number[]>();
+    const unused = new Set<string>();
+    for (const e of edgeCount.values()) {
+        if (e.n !== 1) continue;
+        (next.get(e.a) ?? next.set(e.a, []).get(e.a)!).push(e.b);
+        (next.get(e.b) ?? next.set(e.b, []).get(e.b)!).push(e.a);
+        unused.add(e.a < e.b ? `${e.a}|${e.b}` : `${e.b}|${e.a}`);
+    }
+    const loops: AfoVec3[][] = [];
+    for (const start of next.keys()) {
+        const open = (next.get(start) ?? []).some((b) =>
+            unused.has(start < b ? `${start}|${b}` : `${b}|${start}`),
+        );
+        if (!open) continue;
+        const ids = [start];
+        const seen = new Set<number>([start]);
+        let cur = start;
+        for (let guard = 0; guard < nAll; guard++) {
+            const nxt = (next.get(cur) ?? []).find((v) =>
+                unused.has(cur < v ? `${cur}|${v}` : `${v}|${cur}`),
+            );
+            if (nxt == null) break;
+            unused.delete(cur < nxt ? `${cur}|${nxt}` : `${nxt}|${cur}`);
+            if (seen.has(nxt)) break;
+            ids.push(nxt);
+            seen.add(nxt);
+            cur = nxt;
+        }
+        if (ids.length >= 3) loops.push(ids.map((i) => at(shell, i)));
+    }
+    return loops;
+}
+
+function rimDihedralDeg(shell: AfoTriMesh, source: AfoTriMesh): number {
+    const projector = meshProjector(source);
+    const nAll = (shell.positions.length / 3) | 0;
+    const err: number[] = [];
+    for (let i = 0; i < nAll; i++) err.push(projector.closest(at(shell, i)).errorMm);
+    let n = 0;
+    while (n < nAll && (err[n] ?? 1) < 0.2) n++;
+    const arcAt = Math.max(0, n * 2);
+    const t = (shell.indices.length / 3) | 0;
+    const normals: AfoVec3[] = [];
+    const rim = new Uint8Array(t);
+    for (let i = 0; i < t; i++) {
+        const vs = [shell.indices[i * 3] ?? 0, shell.indices[i * 3 + 1] ?? 0, shell.indices[i * 3 + 2] ?? 0];
+        if (vs.some((v) => v >= arcAt)) rim[i] = 1;
+        const a = at(shell, vs[0]!);
+        const b = at(shell, vs[1]!);
+        const c = at(shell, vs[2]!);
+        const nx = (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y);
+        const ny = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
+        const nz = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        const len = Math.hypot(nx, ny, nz);
+        const area = len * 0.5;
+        const ab = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+        const bc = Math.hypot(c.x - b.x, c.y - b.y, c.z - b.z);
+        const ca = Math.hypot(a.x - c.x, a.y - c.y, a.z - c.z);
+        const longest = Math.max(ab, bc, ca);
+        const aspect = longest > 1e-6 ? (2 * area) / longest / longest : 0;
+        if (aspect < 0.45) rim[i] = 0;
+        normals.push({
+            x: nx / (len || 1),
+            y: ny / (len || 1),
+            z: nz / (len || 1),
+        });
+    }
+    const edgeFaces = new Map<string, number[]>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let i = 0; i < t; i++) {
+        const vs = [shell.indices[i * 3] ?? 0, shell.indices[i * 3 + 1] ?? 0, shell.indices[i * 3 + 2] ?? 0];
+        for (let e = 0; e < 3; e++) {
+            const k = key(vs[e]!, vs[(e + 1) % 3]!);
+            const list = edgeFaces.get(k);
+            if (list) list.push(i);
+            else edgeFaces.set(k, [i]);
+        }
+    }
+    let worst = 0;
+    for (const faces of edgeFaces.values()) {
+        if (faces.length !== 2) continue;
+        if (!rim[faces[0]!] || !rim[faces[1]!]) continue;
+        const va = [0, 1, 2].map((k) => shell.indices[faces[0]! * 3 + k] ?? 0);
+        const vb = [0, 1, 2].map((k) => shell.indices[faces[1]! * 3 + k] ?? 0);
+        const shared = va.filter((v) => vb.includes(v));
+        if (shared.length === 2 && dist(at(shell, shared[0]!), at(shell, shared[1]!)) < 0.35) continue;
+        const n0 = normals[faces[0]!]!;
+        const n1 = normals[faces[1]!]!;
+        const c = Math.min(1, Math.max(-1, n0.x * n1.x + n0.y * n1.y + n0.z * n1.z));
+        worst = Math.max(worst, (Math.acos(c) * 180) / Math.PI);
+    }
+    return worst;
+}
+
+describe("AFO trim acceptance", () => {
+    test("shell defaults match the Windows app and the footplate cap is named", () => {
+        expect(AFO_THICKNESS_MM).toBe(4);
+        expect(AFO_EDGE_MM).toBe(2.5);
+        expect(AFO_FLARE_MM).toBe(2.5);
+        expect(AFO_FOOTPLATE_FLARE_CAP_MM).toBe(1);
+    });
+
+    test("fixture and live-frame legs have no directed edge twice", () => {
+        expect(duplicateDirectedEdgeCount(buildClinicalFixtureA().mesh)).toBe(0);
+        expect(duplicateDirectedEdgeCount(buildLiveFrameLeg("left"))).toBe(0);
+        expect(duplicateDirectedEdgeCount(buildLiveFrameLeg("right"))).toBe(0);
+        expect(meshSignedVolume(buildClinicalFixtureA().mesh)).toBeGreaterThan(0);
+    });
+
+    test("ingestOrientedScan repairs reversed winding", () => {
+        const sphere = buildUnitSphereMesh(30, 8);
+        const flipped: AfoTriMesh = {
+            positions: sphere.positions,
+            indices: new Uint32Array(sphere.indices),
+        };
+        for (let i = 0; i < flipped.indices.length; i += 3) {
+            const tmp = flipped.indices[i + 1] ?? 0;
+            flipped.indices[i + 1] = flipped.indices[i + 2] ?? 0;
+            flipped.indices[i + 2] = tmp;
+        }
+        expect(meshSignedVolume(flipped)).toBeLessThan(0);
+        useAfoStore.getState().resetSession();
+        ingestOrientedScan(flipped);
+        const stored = useAfoStore.getState().sourceMesh;
+        expect(stored).not.toBeNull();
+        expect(duplicateDirectedEdgeCount(stored!)).toBe(0);
+        expect(meshSignedVolume(orientMeshOutward(flipped))).toBeGreaterThan(0);
+    });
+
+    test("a pin is a click, not an orbit drag, and landmark mode is exclusive", () => {
+        expect(trimPointerIsClick(0, false)).toBe(true);
+        expect(trimPointerIsClick(4, false)).toBe(true);
+        expect(trimPointerIsClick(4.1, false)).toBe(false);
+        expect(trimPointerIsClick(1, true)).toBe(false);
+        expect(AFO_TRIM_NO_MESH.length).toBeGreaterThan(10);
+        expect(
+            designLandmarkPlacementActive({
+                placingTrim: false,
+                placingClinical: false,
+                placingDesignLandmarks: true,
+            }),
+        ).toBe(true);
+        expect(
+            designLandmarkPlacementActive({
+                placingTrim: true,
+                placingClinical: false,
+                placingDesignLandmarks: true,
+            }),
+        ).toBe(false);
+        expect(
+            designLandmarkPlacementActive({
+                placingTrim: false,
+                placingClinical: true,
+                placingDesignLandmarks: true,
+            }),
+        ).toBe(false);
+        expect(
+            designLandmarkPlacementActive({
+                placingTrim: false,
+                placingClinical: false,
+                placingDesignLandmarks: false,
+            }),
+        ).toBe(false);
+        expect(
+            designLandmarkPlacementActive({
+                placingTrim: false,
+                placingClinical: false,
+                placingDesignLandmarks: true,
+                measuring: true,
+            }),
+        ).toBe(false);
+    });
+
+    test("worker shell options clone without the progress callback", () => {
+        const safe = cloneableWorkerOptions({
+            thicknessMm: 4,
+            edgeMm: 2.5,
+            flareMm: 2.5,
+            onProgress: () => undefined,
+            trimPolygon: [{ x: 1, y: 2, z: 3 }],
+        });
+        expect(safe).not.toHaveProperty("onProgress");
+        expect(() => structuredClone(safe)).not.toThrow();
+        expect(safe.trimPolygon).toEqual([{ x: 1, y: 2, z: 3 }]);
+    });
+
+    test("a sharp pin corner is exempt and the spans stay within 25 degrees", () => {
+        const quad: AfoTriMesh = {
+            positions: new Float32Array([-40, -30, 0, 40, -30, 0, 40, 30, 0, -40, 30, 0]),
+            indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+        };
+        const pins = [
+            { x: -20, y: -8, z: 0 },
+            { x: 0, y: -8, z: 0 },
+            { x: 6, y: 10, z: 0 },
+            { x: 20, y: -8, z: 0 },
+            { x: 8, y: 12, z: 0 },
+            { x: -8, y: 12, z: 0 },
+        ];
+        const fit = fitSurfaceSpline(quad, pins, { closed: true, spacingMm: 1 });
+        expect(fit.reasons.join(" | ")).toBe("");
+        expect(fit.ok).toBe(true);
+        expect(fit.maxTurnDeg).toBeLessThanOrEqual(25);
+    });
+
+    test("a smooth sphere rim stays under 60 degrees", () => {
+        const sphere = buildUnitSphereMesh(36, 14);
+        const pins: AfoVec3[] = [];
+        for (let i = 0; i < 10; i++) {
+            const a = (i / 10) * Math.PI * 2;
+            pins.push({ x: Math.cos(a) * 26, y: Math.sin(a) * 26, z: 10 });
+        }
+        const fit = fitSurfaceSpline(sphere, pins, { closed: true, spacingMm: 1, quick: true });
+        const shell = buildAfoShell(sphere, [0, 1, 2], {
+            thicknessMm: 4,
+            edgeMm: 2.5,
+            flareMm: 0,
+            trimPolygon: trimPolygonForShell(fit.curve, true)!,
+            heelSeed: { x: 0, y: 0, z: -36 },
+        });
+        const report = analyzeManifoldBuffers(shell.positions, shell.indices);
+        expect(report.openEdges).toBe(0);
+        expect(report.nonManifoldEdges).toBe(0);
+        expect(rimDihedralDeg(shell, sphere)).toBeLessThanOrEqual(60);
+    });
+
+    test("balance-brace and posterior-leaf shells are watertight, on the curve, and flared", () => {
+        for (const side of ["left", "right"] as const) {
+            const leg = buildLiveFrameLeg(side, 32);
+            const afo = defaultAfoDesignState(side);
+            for (const placed of [balanceBracePins(leg, afo), posteriorLeafPins(leg, afo)]) {
+                const fit = fitSurfaceSpline(leg, placed.pins, { closed: true });
+                expect(fit.ok, `${side} ${fit.reasons.join(" | ")}`).toBe(true);
+                const polygon = trimPolygonForShell(fit.curve, true)!;
+                const plain = buildAfoShell(leg, [0, 1, 2], {
+                    thicknessMm: AFO_THICKNESS_MM,
+                    edgeMm: AFO_EDGE_MM,
+                    flareMm: 0,
+                    trimPolygon: polygon,
+                    heelSeed: { x: leg.positions[0] ?? 0, y: 0, z: -10 },
+                });
+                const report = analyzeManifoldBuffers(plain.positions, plain.indices);
+                expect(report.openEdges, side).toBe(0);
+                expect(report.nonManifoldEdges, side).toBe(0);
+                expect(countMeshBodies(plain), side).toBe(1);
+                const dihedral = rimDihedralDeg(plain, leg);
+                const rims = innerRimLoops(plain, leg);
+                expect(
+                    rims.reduce((n, loop) => n + loop.length, 0),
+                    side,
+                ).toBeGreaterThan(8);
+                let edgeToCurve = 0;
+                for (const loop of rims)
+                    for (const v of loop) edgeToCurve = Math.max(edgeToCurve, distToPolyline(v, polygon));
+                let onShell = 0;
+                for (const p of polygon) {
+                    let best = Infinity;
+                    for (let i = 0; i < plain.positions.length; i += 3) {
+                        const d = Math.hypot(
+                            (plain.positions[i] ?? 0) - p.x,
+                            (plain.positions[i + 1] ?? 0) - p.y,
+                            (plain.positions[i + 2] ?? 0) - p.z,
+                        );
+                        if (d < best) best = d;
+                        if (best <= 0.2) break;
+                    }
+                    if (best <= 0.2) onShell++;
+                }
+                expect(edgeToCurve, `${side} edge→curve`).toBeLessThanOrEqual(0.12);
+                expect(onShell / polygon.length, `${side} curve on shell`).toBeGreaterThan(0.98);
+                const longest = rims.reduce((m, loop) => Math.max(m, loop.length), 0);
+                expect(longest, `${side} opening`).toBeGreaterThan(100);
+                expect(dihedral, `${side} dihedral`).toBeLessThan(180);
+                const projector = meshProjector(leg);
+                let nInner = 0;
+                while (
+                    nInner < plain.positions.length / 3 &&
+                    projector.closest(at(plain, nInner)).errorMm < 0.2
+                ) {
+                    nInner++;
+                }
+                let edgeErr = 0;
+                for (let i = 0; i < nInner; i++) {
+                    const v = at(plain, i);
+                    if (distToPolyline(v, polygon) > 0.15) continue;
+                    const outer = at(plain, i + nInner);
+                    const thickness = dist(v, outer);
+                    edgeErr = Math.max(edgeErr, Math.abs(thickness - AFO_EDGE_MM));
+                }
+                expect(edgeErr, `${side} edge`).toBeLessThanOrEqual(0.1);
+                const flared = buildAfoShell(leg, [0, 1, 2], {
+                    thicknessMm: AFO_THICKNESS_MM,
+                    edgeMm: AFO_EDGE_MM,
+                    flareMm: AFO_FLARE_MM,
+                    trimPolygon: polygon,
+                    heelSeed: { x: 0, y: 0, z: -10 },
+                });
+                expect(flared.positions.length).toBe(plain.positions.length);
+                let minZ = Infinity;
+                for (let i = 0; i < leg.positions.length; i += 3)
+                    minZ = Math.min(minZ, leg.positions[i + 2] ?? 0);
+                const moved: { d: number; foot: boolean }[] = [];
+                for (let i = 0; i < plain.positions.length / 3; i++) {
+                    const p = at(plain, i);
+                    if (distToPolyline(p, polygon) > 0.12) continue;
+                    const q = at(flared, i);
+                    const d = dist(p, q);
+                    const hit = projector.closest(p);
+                    const foot = hit.normal.z < -0.65 && p.z < minZ + 8;
+                    moved.push({ d, foot });
+                }
+                const feet = moved.filter((m) => m.foot);
+                const walls = moved.filter((m) => !m.foot);
+                expect(walls.length, side).toBeGreaterThan(0);
+                for (const m of walls) {
+                    expect(Math.abs(m.d - AFO_FLARE_MM), `${side} flare`).toBeLessThanOrEqual(0.2);
+                }
+                for (const m of feet) {
+                    expect(
+                        Math.abs(m.d - AFO_FOOTPLATE_FLARE_CAP_MM),
+                        `${side} footplate`,
+                    ).toBeLessThanOrEqual(0.2);
+                }
+            }
+        }
+    });
+
+    test("a 100k-triangle shell builds in under 5 seconds", () => {
+        const sphere = buildUnitSphereMesh(40, 165);
+        const tris = sphere.indices.length / 3;
+        expect(tris).toBeGreaterThan(100_000);
+        const pins: AfoVec3[] = [];
+        for (let i = 0; i < 8; i++) {
+            const a = (i / 8) * Math.PI * 2;
+            pins.push({ x: Math.cos(a) * 28, y: Math.sin(a) * 28, z: 12 });
+        }
+        const fit = fitSurfaceSpline(sphere, pins, { closed: true, spacingMm: 1, quick: true });
+        expect(fit.ok).toBe(true);
+        const started = performance.now();
+        const shell = buildAfoShell(sphere, [0, 1, 2], {
+            thicknessMm: 4,
+            edgeMm: 2.5,
+            flareMm: 0,
+            trimPolygon: trimPolygonForShell(fit.curve, true)!,
+            heelSeed: { x: 0, y: 0, z: -40 },
+        });
+        const seconds = (performance.now() - started) / 1000;
+        expect(shell.indices.length).toBeGreaterThan(1000);
+        expect(seconds).toBeLessThan(5);
+    });
+});

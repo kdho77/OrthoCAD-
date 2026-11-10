@@ -11,7 +11,13 @@ import {
 } from "@/lib/geometry/afo/marker-side";
 import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
 import { registerTrimClick } from "@/lib/geometry/afo/trim-loop";
-import { isAfoCastTrimPick } from "@/lib/geometry/afo/trim-preview";
+import {
+    AFO_TRIM_CLICK_PX,
+    AFO_TRIM_NO_MESH,
+    designLandmarkPlacementActive,
+    isAfoCastTrimPick,
+    trimPointerIsClick,
+} from "@/lib/geometry/afo/trim-preview";
 import { fitSurfaceSpline, type SurfaceSpline, trimPinFromHit } from "@/lib/geometry/afo/trim-spline";
 import type { AfoVec3 } from "@/lib/geometry/afo/types";
 import { applyCameraViewPreset, type CameraViewControls } from "@/lib/geometry/viewport-side-layout";
@@ -106,12 +112,7 @@ export function AfoMarkerPlacement() {
             const pick = trimPick();
             if (!pick) return null;
             const hits = raycaster.intersectObject(pick, false);
-            const first = hits.find((hit) => {
-                const face = hit.face?.normal;
-                if (!face) return true;
-                const worldN = face.clone().transformDirection(pick.matrixWorld);
-                return worldN.dot(raycaster.ray.direction) < 0;
-            });
+            const first = hits[0];
             if (!first) return null;
             pick.updateWorldMatrix(true, false);
             const local = pick.worldToLocal(first.point.clone());
@@ -163,38 +164,107 @@ export function AfoMarkerPlacement() {
             publishHover(lastClient.current.x, lastClient.current.y);
         }
 
+        const orbit = controls as {
+            enabled?: boolean;
+            addEventListener?: (type: string, fn: () => void) => void;
+            removeEventListener?: (type: string, fn: () => void) => void;
+        } | null;
+        let down: { x: number; y: number } | null = null;
+        let pointerDist = 0;
+        let orbitMoved = false;
+        let pinDown: number | null = null;
+        let pinMoved = false;
+        const onOrbitChange = () => {
+            if (pointerDist > AFO_TRIM_CLICK_PX) orbitMoved = true;
+        };
+        orbit?.addEventListener?.("change", onOrbitChange);
+
+        const closeAtFirstPin = () => {
+            if (!working) return;
+            const fit = fitSurfaceSpline(
+                working,
+                afo.trimPoints.map((p) => p.point),
+                { closed: true, previousSegments: spanRef.current ?? undefined },
+            );
+            rememberFit(fit);
+            useAfoStore.getState().setLastError(fit.ok ? null : fit.reasons.join(" "));
+            patchAfoState({ trimClosed: true, trimCurve: fit.curve, trimConfirmed: false }, "afo-trim-close");
+        };
+
         const onDown = (ev: PointerEvent) => {
             lastClient.current = { x: ev.clientX, y: ev.clientY };
+            down = { x: ev.clientX, y: ev.clientY };
+            pointerDist = 0;
+            orbitMoved = false;
+            pinMoved = false;
+            pinDown = null;
             if (!working) return;
             if (placingTrim || afo.trimPoints.length > 0) {
                 const near = nearestPinPx(ev.clientX, ev.clientY);
                 if (near && near.px <= AFO_TRIM_CLOSE_PX && !afo.trimConfirmed) {
-                    if (placingTrim && near.index === 0 && afo.trimPoints.length >= 3) {
-                        const fit = fitSurfaceSpline(
-                            working,
-                            afo.trimPoints.map((p) => p.point),
-                            { closed: true, previousSegments: spanRef.current ?? undefined },
-                        );
-                        rememberFit(fit);
-                        useAfoStore.getState().setLastError(fit.ok ? null : fit.reasons.join(" "));
-                        patchAfoState(
-                            { trimClosed: true, trimCurve: fit.curve, trimConfirmed: false },
-                            "afo-trim-close",
-                        );
-                        ev.preventDefault();
-                        return;
-                    }
+                    pinDown = near.index;
+                    if (orbit) orbit.enabled = false;
                     setDragging(near.index);
                     ev.preventDefault();
-                    return;
                 }
             }
+        };
 
+        const onMove = (ev: PointerEvent) => {
+            lastClient.current = { x: ev.clientX, y: ev.clientY };
+            if (down) pointerDist = Math.hypot(ev.clientX - down.x, ev.clientY - down.y);
+            if (useAfoStore.getState().placingTrim) publishHover(ev.clientX, ev.clientY);
+            if (pinDown == null || pointerDist <= AFO_TRIM_CLICK_PX || !working) return;
+            pinMoved = true;
+            const hit = hitWorking(ev.clientX, ev.clientY);
+            if (!hit) return;
+            const current = useDesignStore.getState().design.afo ?? getAfoState();
+            const next = current.trimPoints.slice();
+            if (!next[pinDown]) return;
+            const point = { x: hit.point.x, y: hit.point.y, z: hit.point.z };
+            next[pinDown] = { point, vertexIndex: nearestVertex(working, point).index };
+            const fit = fitSurfaceSpline(
+                working,
+                next.map((p) => p.point),
+                {
+                    closed: current.trimClosed,
+                    dragIndex: pinDown,
+                    previousSegments: spanRef.current ?? undefined,
+                    quick: !current.trimClosed,
+                },
+            );
+            rememberFit(fit);
+            if (fit.reasons.length) useAfoStore.getState().setLastError(fit.reasons.join(" "));
+            else useAfoStore.getState().setLastError(null);
+            patchAfoState({ trimPoints: next, trimCurve: fit.curve, trimConfirmed: false }, "afo-trim-drag");
+        };
+
+        const onUp = (ev: PointerEvent) => {
+            if (orbit) orbit.enabled = true;
+            setDragging(null);
+            const dist = down
+                ? Math.hypot(ev.clientX - down.x, ev.clientY - down.y)
+                : Number.POSITIVE_INFINITY;
+            const click = trimPointerIsClick(dist, orbitMoved);
+            const startedOnPin = pinDown;
+            const dragged = pinMoved;
+            down = null;
+            pinDown = null;
+            pinMoved = false;
+            if (!click || dragged) return;
+            if (!working) {
+                useAfoStore.getState().setLastError(AFO_TRIM_NO_MESH);
+                return;
+            }
+            if (startedOnPin != null) {
+                if (placingTrim && startedOnPin === 0 && afo.trimPoints.length >= 3) closeAtFirstPin();
+                return;
+            }
             const hit = hitWorking(ev.clientX, ev.clientY);
             if (!hit) return;
             const point = { x: hit.point.x, y: hit.point.y, z: hit.point.z };
-
-            if (placingTrim) {
+            const session = useAfoStore.getState();
+            if (session.placingTrim) {
                 const firstPx = afo.trimPoints[0]
                     ? pinScreenPx(afo.trimPoints[0].point, ev.clientX, ev.clientY)
                     : null;
@@ -235,12 +305,14 @@ export function AfoMarkerPlacement() {
                 );
                 return;
             }
-
-            if (placingClinicalId) {
-                const rest = afo.clinicalMarkers.filter((m) => m.id !== placingClinicalId);
+            if (session.placingClinicalId) {
+                const rest = afo.clinicalMarkers.filter((m) => m.id !== session.placingClinicalId);
                 patchAfoState(
                     {
-                        clinicalMarkers: [...rest, { id: placingClinicalId, point, vertexIndex: hit.index }],
+                        clinicalMarkers: [
+                            ...rest,
+                            { id: session.placingClinicalId, point, vertexIndex: hit.index },
+                        ],
                     },
                     "afo-clinical-marker",
                 );
@@ -248,7 +320,15 @@ export function AfoMarkerPlacement() {
                 refreshAfoWorkingMesh();
                 return;
             }
-
+            if (
+                !designLandmarkPlacementActive({
+                    placingTrim: session.placingTrim,
+                    placingClinical: session.placingClinicalId != null,
+                    placingDesignLandmarks: session.placingDesignLandmarks,
+                })
+            ) {
+                return;
+            }
             const marker = AFO_DESIGN_MARKERS[placingIndex];
             if (!marker) return;
             const rest = afo.landmarks.filter((l) => l.id !== marker.id);
@@ -258,51 +338,17 @@ export function AfoMarkerPlacement() {
             );
             const next = placingIndex + 1;
             setPlacing(next);
+            if (next >= AFO_DESIGN_MARKERS.length) useAfoStore.getState().setPlacingDesignLandmarks(false);
             const upcoming = AFO_DESIGN_MARKERS[Math.min(next, AFO_DESIGN_MARKERS.length - 1)];
             if (upcoming) applyView(cameraViewForAfoMarkerId(upcoming.id, afo.side, orientedSides));
         };
-
-        const onMove = (ev: PointerEvent) => {
-            lastClient.current = { x: ev.clientX, y: ev.clientY };
-            if (useAfoStore.getState().placingTrim) publishHover(ev.clientX, ev.clientY);
-            const drag = useAfoStore.getState().draggingTrimIndex;
-            if (drag == null) return;
-            const hit = hitWorking(ev.clientX, ev.clientY);
-            if (!hit) return;
-            const current = useDesignStore.getState().design.afo ?? getAfoState();
-            const next = current.trimPoints.slice();
-            if (!next[drag]) return;
-            const point = { x: hit.point.x, y: hit.point.y, z: hit.point.z };
-            next[drag] = { point, vertexIndex: nearestVertex(working, point).index };
-            const fit = fitSurfaceSpline(
-                working,
-                next.map((p) => p.point),
-                {
-                    closed: current.trimClosed,
-                    dragIndex: drag,
-                    previousSegments: spanRef.current ?? undefined,
-                    quick: !current.trimClosed,
-                },
-            );
-            rememberFit(fit);
-            if (fit.reasons.length) useAfoStore.getState().setLastError(fit.reasons.join(" "));
-            else useAfoStore.getState().setLastError(null);
-            patchAfoState(
-                {
-                    trimPoints: next,
-                    trimCurve: fit.curve,
-                    trimConfirmed: false,
-                },
-                "afo-trim-drag",
-            );
-        };
-
-        const onUp = () => setDragging(null);
 
         gl.domElement.addEventListener("pointerdown", onDown);
         gl.domElement.addEventListener("pointermove", onMove);
         window.addEventListener("pointerup", onUp);
         return () => {
+            orbit?.removeEventListener?.("change", onOrbitChange);
+            if (orbit) orbit.enabled = true;
             gl.domElement.removeEventListener("pointerdown", onDown);
             gl.domElement.removeEventListener("pointermove", onMove);
             window.removeEventListener("pointerup", onUp);
@@ -315,9 +361,9 @@ export function AfoMarkerPlacement() {
         afo.trimConfirmed,
         afo.trimPoints,
         camera,
+        controls,
         gl,
         placingIndex,
-        placingClinicalId,
         placingTrim,
         raycaster,
         scene,

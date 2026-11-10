@@ -7,7 +7,7 @@ import { designSettingsEnvelope, readStoredDesignSettings } from "../../../../sh
 import { AFO_TRIM_SAMPLE_MAX_MM, defaultAfoDesignState } from "./defaults";
 import { meshProjector, nearestVertex, positionsEqual } from "./mesh-ops";
 import { buildAfoShell, resolveShellTrimLoop, trimPolygonForShell } from "./shell";
-import { buildSyntheticLegMesh, buildUnitSphereMesh } from "./synthetic-leg";
+import { buildLiveFrameLeg, buildUnitSphereMesh } from "./synthetic-leg";
 import {
     countDistinctPoints,
     polylineSelfIntersects,
@@ -324,25 +324,27 @@ describe("AFO trim confirmation and curve-accurate shell", () => {
     });
 
     test("a balance brace and a posterior leaf both confirm, and the contour passes through every pin", () => {
-        const leg = buildSyntheticLegMesh();
-        const afo = defaultAfoDesignState("left");
-        for (const placed of [balanceBracePins(leg, afo), posteriorLeafPins(leg, afo)]) {
-            const fit = fitSurfaceSpline(leg, placed.pins, { closed: true });
-            expect(fit.reasons.join(" | ")).toBe("");
-            expect(fit.ok).toBe(true);
-            expect(maxStep(fit.curve)).toBeLessThanOrEqual(AFO_TRIM_SAMPLE_MAX_MM + 1e-3);
-            const validation = validateTrimLoop(
-                leg,
-                placed.pins.map(() => 0),
-                true,
-                { skipGeodesic: true, points: placed.pins },
-            );
-            expect(validation.reasons.join(" | ")).toBe("");
-            expect(validation.ok).toBe(true);
-            for (const pin of placed.pins) {
-                let best = Infinity;
-                for (const p of fit.curve) best = Math.min(best, dist(pin, p));
-                expect(best).toBeLessThanOrEqual(0.35);
+        for (const side of ["left", "right"] as const) {
+            const leg = buildLiveFrameLeg(side);
+            const afo = defaultAfoDesignState(side);
+            for (const placed of [balanceBracePins(leg, afo), posteriorLeafPins(leg, afo)]) {
+                const fit = fitSurfaceSpline(leg, placed.pins, { closed: true });
+                expect(fit.reasons.join(" | ")).toBe("");
+                expect(fit.ok).toBe(true);
+                expect(maxStep(fit.curve)).toBeLessThanOrEqual(AFO_TRIM_SAMPLE_MAX_MM + 1e-3);
+                const validation = validateTrimLoop(
+                    leg,
+                    placed.pins.map(() => 0),
+                    true,
+                    { skipGeodesic: true, points: placed.pins },
+                );
+                expect(validation.reasons.join(" | ")).toBe("");
+                expect(validation.ok).toBe(true);
+                for (const pin of placed.pins) {
+                    let best = Infinity;
+                    for (const p of fit.curve) best = Math.min(best, dist(pin, p));
+                    expect(best).toBeLessThanOrEqual(0.35);
+                }
             }
         }
     });

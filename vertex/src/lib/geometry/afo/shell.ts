@@ -1,9 +1,17 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { AFO_EDGE_MM, AFO_FLARE_MM, AFO_RIM_BAND_MM, AFO_THICKNESS_MM } from "./defaults";
+import {
+    AFO_EDGE_MM,
+    AFO_FLARE_MM,
+    AFO_FOOTPLATE_FLARE_CAP_MM,
+    AFO_RIM_BAND_MM,
+    AFO_THICKNESS_MM,
+} from "./defaults";
 import { geodesicVertexPath } from "./geodesic";
 import { cloneMesh, computeVertexNormals, nearestVertex, vertexCount } from "./mesh-ops";
 import { offsetMeshAlongNormals } from "./sdf-offset";
+import { embedTrimPolyline } from "./shell-cut";
+import { closeShellWithRoundRim } from "./shell-rim";
 import type { AfoShellOptions, AfoTriMesh, AfoVec3 } from "./types";
 
 /**
@@ -69,340 +77,6 @@ export function resolveShellTrimLoop(mesh: AfoTriMesh, fallback: number[], polyg
     }
     if (ids.length >= 2 && ids[0] === ids[ids.length - 1]) ids.pop();
     return ids.length >= 3 ? ids : fallback;
-}
-
-/**
- * Split every triangle the trim polyline crosses so the curve becomes a chain
- * of mesh edges. The shell boundary is that chain, not a geodesic snap to the
- * original edges.
- */
-function embedTrimPolyline(mesh: AfoTriMesh, polygon: AfoVec3[]): { mesh: AfoTriMesh; loop: number[] } {
-    const positions: number[] = Array.from(mesh.positions);
-    const faces: { a: number; b: number; c: number; live: boolean }[] = [];
-    const tcount = (mesh.indices.length / 3) | 0;
-    for (let i = 0; i < tcount; i++) {
-        const a = mesh.indices[i * 3] ?? 0;
-        const b = mesh.indices[i * 3 + 1] ?? 0;
-        const c = mesh.indices[i * 3 + 2] ?? 0;
-        if (a === b || b === c || c === a) continue;
-        faces.push({ a, b, c, live: true });
-    }
-    const neighbors: Set<number>[] = [];
-    const ensure = (i: number) => {
-        while (neighbors.length <= i) neighbors.push(new Set());
-    };
-    const at = (i: number): AfoVec3 => ({
-        x: positions[i * 3] ?? 0,
-        y: positions[i * 3 + 1] ?? 0,
-        z: positions[i * 3 + 2] ?? 0,
-    });
-    const link = (a: number, b: number) => {
-        if (a === b) return;
-        ensure(a);
-        ensure(b);
-        neighbors[a]!.add(b);
-        neighbors[b]!.add(a);
-    };
-    const linked = (a: number, b: number) => neighbors[a]?.has(b) ?? false;
-    const rebuild = () => {
-        neighbors.length = 0;
-        for (const f of faces) {
-            if (!f.live) continue;
-            link(f.a, f.b);
-            link(f.b, f.c);
-            link(f.c, f.a);
-        }
-    };
-    rebuild();
-    const weldMm = 0.08;
-    const nearestVert = (p: AfoVec3, maxMm: number): number => {
-        let best = -1;
-        let bestD = maxMm * maxMm;
-        const n = (positions.length / 3) | 0;
-        for (let i = 0; i < n; i++) {
-            const dx = (positions[i * 3] ?? 0) - p.x;
-            const dy = (positions[i * 3 + 1] ?? 0) - p.y;
-            const dz = (positions[i * 3 + 2] ?? 0) - p.z;
-            const d = dx * dx + dy * dy + dz * dz;
-            if (d <= bestD) {
-                bestD = d;
-                best = i;
-            }
-        }
-        return best;
-    };
-    const addVert = (p: AfoVec3): number => {
-        const i = (positions.length / 3) | 0;
-        positions.push(p.x, p.y, p.z);
-        ensure(i);
-        return i;
-    };
-    const splitEdge = (a: number, b: number, point: AfoVec3): number => {
-        if (vDist(point, at(a)) <= weldMm) return a;
-        if (vDist(point, at(b)) <= weldMm) return b;
-        const existing = nearestVert(point, weldMm);
-        if (existing >= 0) return existing;
-        const v = addVert(point);
-        const nFaces = faces.length;
-        for (let i = 0; i < nFaces; i++) {
-            const f = faces[i]!;
-            if (!f.live) continue;
-            const order = [f.a, f.b, f.c];
-            for (let k = 0; k < 3; k++) {
-                const x = order[k]!;
-                const y = order[(k + 1) % 3]!;
-                const z = order[(k + 2) % 3]!;
-                if (!((x === a && y === b) || (x === b && y === a))) continue;
-                f.live = false;
-                faces.push({ a: x, b: v, c: z, live: true });
-                faces.push({ a: v, b: y, c: z, live: true });
-                break;
-            }
-        }
-        rebuild();
-        return v;
-    };
-    const splitFace = (fi: number, point: AfoVec3): number => {
-        const existing = nearestVert(point, weldMm);
-        if (existing >= 0) return existing;
-        const f = faces[fi]!;
-        const v = addVert(point);
-        f.live = false;
-        faces.push({ a: f.a, b: f.b, c: v, live: true });
-        faces.push({ a: f.b, b: f.c, c: v, live: true });
-        faces.push({ a: f.c, b: f.a, c: v, live: true });
-        rebuild();
-        return v;
-    };
-    const locate = (
-        p: AfoVec3,
-    ):
-        | { kind: "vertex"; index: number }
-        | { kind: "edge"; a: number; b: number; point: AfoVec3 }
-        | { kind: "face"; index: number; point: AfoVec3 }
-        | null => {
-        const welded = nearestVert(p, weldMm);
-        if (welded >= 0) return { kind: "vertex", index: welded };
-        let bestD = Infinity;
-        let best:
-            | { kind: "vertex"; index: number }
-            | { kind: "edge"; a: number; b: number; point: AfoVec3 }
-            | { kind: "face"; index: number; point: AfoVec3 }
-            | null = null;
-        for (let i = 0; i < faces.length; i++) {
-            const f = faces[i]!;
-            if (!f.live) continue;
-            const A = at(f.a);
-            const B = at(f.b);
-            const C = at(f.c);
-            const cp = closestOnTriangle(p, A, B, C);
-            const d = vDist(p, cp);
-            if (d >= bestD) continue;
-            bestD = d;
-            if (vDist(cp, A) <= weldMm) best = { kind: "vertex", index: f.a };
-            else if (vDist(cp, B) <= weldMm) best = { kind: "vertex", index: f.b };
-            else if (vDist(cp, C) <= weldMm) best = { kind: "vertex", index: f.c };
-            else {
-                const ab = projectToSegment(cp, A, B);
-                const bc = projectToSegment(cp, B, C);
-                const ca = projectToSegment(cp, C, A);
-                if (ab.d <= weldMm) best = { kind: "edge", a: f.a, b: f.b, point: ab.point };
-                else if (bc.d <= weldMm) best = { kind: "edge", a: f.b, b: f.c, point: bc.point };
-                else if (ca.d <= weldMm) best = { kind: "edge", a: f.c, b: f.a, point: ca.point };
-                else best = { kind: "face", index: i, point: cp };
-            }
-        }
-        return best;
-    };
-    const insertPoint = (p: AfoVec3): number => {
-        const loc = locate(p);
-        if (!loc) return addVert(p);
-        if (loc.kind === "vertex") return loc.index;
-        if (loc.kind === "edge") return splitEdge(loc.a, loc.b, loc.point);
-        return splitFace(loc.index, loc.point);
-    };
-    const findExit = (
-        ia: number,
-        ib: number,
-    ): { kind: "vertex"; index: number } | { kind: "edge"; a: number; b: number; point: AfoVec3 } | null => {
-        const A = at(ia);
-        const B = at(ib);
-        let bestScore = Infinity;
-        let best:
-            | { kind: "vertex"; index: number }
-            | { kind: "edge"; a: number; b: number; point: AfoVec3 }
-            | null = null;
-        for (const f of faces) {
-            if (!f.live) continue;
-            let u = -1;
-            let v = -1;
-            if (f.a === ia) {
-                u = f.b;
-                v = f.c;
-            } else if (f.b === ia) {
-                u = f.c;
-                v = f.a;
-            } else if (f.c === ia) {
-                u = f.a;
-                v = f.b;
-            } else continue;
-            const hit = wedgeCross(A, at(u), at(v), B);
-            if (!hit) continue;
-            const score = pointToSegment(hit.point, A, B);
-            if (score >= bestScore) continue;
-            bestScore = score;
-            if (hit.t <= 0.02) best = { kind: "vertex", index: u };
-            else if (hit.t >= 0.98) best = { kind: "vertex", index: v };
-            else best = { kind: "edge", a: u, b: v, point: hit.point };
-        }
-        if (!best || bestScore > 1.5) return null;
-        return best;
-    };
-    const connect = (ia: number, ib: number, depth: number, seen: Set<string>): number[] => {
-        if (ia === ib || depth > 24) return [];
-        if (linked(ia, ib)) return [];
-        const token = ia < ib ? `${ia}|${ib}` : `${ib}|${ia}`;
-        if (seen.has(token)) return [];
-        seen.add(token);
-        const exit = findExit(ia, ib);
-        if (!exit) {
-            if (vDist(at(ia), at(ib)) <= 0.2) return [];
-            const mid = insertPoint(vLerp(at(ia), at(ib), 0.5));
-            if (mid === ia || mid === ib) return [];
-            return [...connect(ia, mid, depth + 1, seen), mid, ...connect(mid, ib, depth + 1, seen)];
-        }
-        const im = exit.kind === "vertex" ? exit.index : splitEdge(exit.a, exit.b, exit.point);
-        if (im === ia || im === ib) return [];
-        return [...connect(ia, im, depth + 1, seen), im, ...connect(im, ib, depth + 1, seen)];
-    };
-    const samples: AfoVec3[] = [];
-    for (const p of polygon) {
-        const last = samples[samples.length - 1];
-        if (last && vDist(last, p) < 0.15) continue;
-        samples.push(p);
-    }
-    if (samples.length >= 2 && vDist(samples[0]!, samples[samples.length - 1]!) < 0.15) samples.pop();
-    const uniq: number[] = [];
-    for (const p of samples) {
-        const id = insertPoint(p);
-        if (uniq[uniq.length - 1] !== id) uniq.push(id);
-    }
-    if (uniq.length >= 2 && uniq[0] === uniq[uniq.length - 1]) uniq.pop();
-    const stitch = (loop: number[]): number[] => {
-        const out: number[] = [];
-        for (let i = 0; i < loop.length; i++) {
-            const a = loop[i]!;
-            const b = loop[(i + 1) % loop.length]!;
-            if (out.length === 0 || out[out.length - 1] !== a) out.push(a);
-            if (linked(a, b)) continue;
-            for (const m of connect(a, b, 0, new Set())) {
-                if (out[out.length - 1] !== m) out.push(m);
-            }
-        }
-        if (out.length >= 2 && out[0] === out[out.length - 1]) out.pop();
-        return out;
-    };
-    let loop = uniq.length >= 3 ? stitch(uniq) : uniq;
-    loop = loop.length >= 3 ? stitch(loop) : loop;
-    const indices: number[] = [];
-    for (const f of faces) {
-        if (!f.live || f.a === f.b || f.b === f.c || f.c === f.a) continue;
-        indices.push(f.a, f.b, f.c);
-    }
-    return {
-        mesh: { positions: new Float32Array(positions), indices: new Uint32Array(indices) },
-        loop,
-    };
-}
-
-function vDist(a: AfoVec3, b: AfoVec3): number {
-    return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
-}
-
-function vLerp(a: AfoVec3, b: AfoVec3, t: number): AfoVec3 {
-    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t };
-}
-
-function vDot(a: AfoVec3, b: AfoVec3): number {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-function vSub(a: AfoVec3, b: AfoVec3): AfoVec3 {
-    return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
-}
-
-function vCross(a: AfoVec3, b: AfoVec3): AfoVec3 {
-    return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
-}
-
-function pointToSegment(p: AfoVec3, a: AfoVec3, b: AfoVec3): number {
-    return projectToSegment(p, a, b).d;
-}
-
-function projectToSegment(p: AfoVec3, a: AfoVec3, b: AfoVec3): { d: number; point: AfoVec3 } {
-    const ab = vSub(b, a);
-    const ab2 = vDot(ab, ab);
-    const t = ab2 < 1e-12 ? 0 : Math.min(1, Math.max(0, vDot(vSub(p, a), ab) / ab2));
-    const point = vLerp(a, b, t);
-    return { d: vDist(p, point), point };
-}
-
-function closestOnTriangle(p: AfoVec3, a: AfoVec3, b: AfoVec3, c: AfoVec3): AfoVec3 {
-    const ab = vSub(b, a);
-    const ac = vSub(c, a);
-    const ap = vSub(p, a);
-    const d1 = vDot(ab, ap);
-    const d2 = vDot(ac, ap);
-    if (d1 <= 0 && d2 <= 0) return a;
-    const bp = vSub(p, b);
-    const d3 = vDot(ab, bp);
-    const d4 = vDot(ac, bp);
-    if (d3 >= 0 && d4 <= d3) return b;
-    const vc = d1 * d4 - d3 * d2;
-    if (vc <= 0 && d1 >= 0 && d3 <= 0) return vLerp(a, b, d1 / (d1 - d3 || 1));
-    const cp = vSub(p, c);
-    const d5 = vDot(ab, cp);
-    const d6 = vDot(ac, cp);
-    if (d6 >= 0 && d5 <= d6) return c;
-    const vb = d5 * d2 - d1 * d6;
-    if (vb <= 0 && d2 >= 0 && d6 <= 0) return vLerp(a, c, d2 / (d2 - d6 || 1));
-    const va = d3 * d6 - d5 * d4;
-    if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
-        const w = (d4 - d3) / (d4 - d3 + (d5 - d6) || 1);
-        return vLerp(b, c, w);
-    }
-    const denom = 1 / (va + vb + vc || 1);
-    const v = vb * denom;
-    const w = vc * denom;
-    return { x: a.x + ab.x * v + ac.x * w, y: a.y + ab.y * v + ac.y * w, z: a.z + ab.z * v + ac.z * w };
-}
-
-/** Where the ray from A toward B crosses edge UV, in the plane of triangle AUV. */
-function wedgeCross(a: AfoVec3, u: AfoVec3, v: AfoVec3, b: AfoVec3): { t: number; point: AfoVec3 } | null {
-    const n = vCross(vSub(u, a), vSub(v, a));
-    const nl = Math.hypot(n.x, n.y, n.z);
-    if (nl < 1e-12) return null;
-    const nx = n.x / nl;
-    const ny = n.y / nl;
-    const nz = n.z / nl;
-    const signed = (b.x - a.x) * nx + (b.y - a.y) * ny + (b.z - a.z) * nz;
-    const bp = { x: b.x - nx * signed, y: b.y - ny * signed, z: b.z - nz * signed };
-    const v0 = vSub(u, a);
-    const v1 = vSub(v, a);
-    const v2 = vSub(bp, a);
-    const d00 = vDot(v0, v0);
-    const d01 = vDot(v0, v1);
-    const d11 = vDot(v1, v1);
-    const d20 = vDot(v2, v0);
-    const d21 = vDot(v2, v1);
-    const denom = d00 * d11 - d01 * d01 || 1e-12;
-    const wU = (d11 * d20 - d01 * d21) / denom;
-    const wV = (d00 * d21 - d01 * d20) / denom;
-    if (wU < -1e-4 || wV < -1e-4) return null;
-    const s = wU + wV;
-    if (s < 1e-8) return null;
-    const t = Math.min(1, Math.max(0, wV / s));
-    return { t, point: vLerp(u, v, t) };
 }
 
 function extractKeepRegion(mesh: AfoTriMesh, loop: number[], heelSeed?: AfoVec3): OpenSurface {
@@ -627,18 +301,57 @@ function orderBoundary(edges: { a: number; b: number }[], seed: number[], nVerts
     return loop.length >= 3 ? loop : seed;
 }
 
+/** Keep thickness directions from flipping along the opening, which bowties the rim. */
+function smoothBoundaryNormals(nrm: Float32Array, edges: { a: number; b: number }[]): void {
+    const next = new Map<number, number[]>();
+    for (const e of edges) {
+        const list = next.get(e.a) ?? [];
+        list.push(e.b);
+        next.set(e.a, list);
+    }
+    const unused = new Set(edges.map((e) => `${e.a}>${e.b}`));
+    const read = (i: number) => ({ x: nrm[i * 3] ?? 0, y: nrm[i * 3 + 1] ?? 0, z: nrm[i * 3 + 2] ?? 0 });
+    const flip = (i: number) => {
+        nrm[i * 3] = -(nrm[i * 3] ?? 0);
+        nrm[i * 3 + 1] = -(nrm[i * 3 + 1] ?? 0);
+        nrm[i * 3 + 2] = -(nrm[i * 3 + 2] ?? 0);
+    };
+    const dot = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) =>
+        a.x * b.x + a.y * b.y + a.z * b.z;
+    for (const e of edges) {
+        if (!unused.has(`${e.a}>${e.b}`)) continue;
+        const loop = [e.a];
+        let cur = e.a;
+        let guard = 0;
+        while (guard++ < edges.length + 2) {
+            const opts = (next.get(cur) ?? []).filter((b) => unused.has(`${cur}>${b}`));
+            if (opts.length === 0) break;
+            const nxt = opts[0]!;
+            unused.delete(`${cur}>${nxt}`);
+            if (nxt === loop[0]) break;
+            loop.push(nxt);
+            cur = nxt;
+        }
+        for (let i = 1; i < loop.length; i++) {
+            if (dot(read(loop[i]!), read(loop[i - 1]!)) < 0) flip(loop[i]!);
+        }
+    }
+}
+
 function thickenOpenSurface(
-    surface: OpenSurface,
+    surfaceIn: OpenSurface,
     thicknessMm: number,
     edgeMm: number,
     flareMm: number,
 ): AfoTriMesh {
+    const surface = surfaceIn;
     const inner: AfoTriMesh = {
         positions: new Float32Array(surface.positions),
         indices: new Uint32Array(surface.indices),
     };
     const n = vertexCount(inner);
     const nrm = computeVertexNormals(inner);
+    smoothBoundaryNormals(nrm, surface.boundaryEdges);
     const boundarySet = new Set<number>(surface.boundary);
     for (const e of surface.boundaryEdges) {
         boundarySet.add(e.a);
@@ -657,7 +370,7 @@ function thickenOpenSurface(
         const ny = nrm[i * 3 + 1] ?? 0;
         const nz = nrm[i * 3 + 2] ?? 0;
         const plantar = nz < -0.65 && (inner.positions[i * 3 + 2] ?? 0) < minZ + 8;
-        const flareCap = plantar ? Math.min(flareMm, 1) : flareMm;
+        const flareCap = plantar ? Math.min(flareMm, AFO_FOOTPLATE_FLARE_CAP_MM) : flareMm;
         const flare = flareCap * (1 - blend);
         blendAt.push(blend);
         // Skin-side rim lifts off the leg across the ramp band. The trim
@@ -689,7 +402,6 @@ function thickenOpenSurface(
         outerIdx[i] = (outer.indices[i] ?? 0) + n;
     }
 
-    const rim: number[] = [];
     const edges =
         surface.boundaryEdges.length > 0
             ? surface.boundaryEdges
@@ -697,70 +409,14 @@ function thickenOpenSurface(
                   a,
                   b: surface.boundary[(i + 1) % surface.boundary.length]!,
               }));
-    const steps = 6;
-    const rings = steps - 1;
-    const positions = new Float32Array(n * 3 * (2 + rings));
-    positions.set(inner.positions, 0);
-    positions.set(outer.positions, n * 3);
-    for (let s = 1; s < steps; s++) {
-        const t = s / steps;
-        const base = (s + 1) * n;
-        for (let i = 0; i < n; i++) {
-            if (!boundarySet.has(i)) continue;
-            const ex = (outer.positions[i * 3] ?? 0) - (inner.positions[i * 3] ?? 0);
-            const ey = (outer.positions[i * 3 + 1] ?? 0) - (inner.positions[i * 3 + 1] ?? 0);
-            const ez = (outer.positions[i * 3 + 2] ?? 0) - (inner.positions[i * 3 + 2] ?? 0);
-            const el = Math.hypot(ex, ey, ez) || 1;
-            let sx = outward[i * 3] ?? 0;
-            let sy = outward[i * 3 + 1] ?? 0;
-            let sz = outward[i * 3 + 2] ?? 0;
-            if (Math.hypot(sx, sy, sz) < 1e-4) {
-                sx = ex / el;
-                sy = ey / el;
-                sz = ez / el;
-            }
-            const dir = slerpUnit({ x: sx, y: sy, z: sz }, { x: ex / el, y: ey / el, z: ez / el }, t);
-            const o = (base + i) * 3;
-            positions[o] = (inner.positions[i * 3] ?? 0) + dir.x * el * t;
-            positions[o + 1] = (inner.positions[i * 3 + 1] ?? 0) + dir.y * el * t;
-            positions[o + 2] = (inner.positions[i * 3 + 2] ?? 0) + dir.z * el * t;
-        }
-    }
-    for (const e of edges) {
-        const a = e.a;
-        const c = e.b;
-        if (a === c) continue;
-        let prevA = a;
-        let prevC = c;
-        for (let s = 1; s <= steps; s++) {
-            const base = s === steps ? n : (s + 1) * n;
-            const na = base + a;
-            const nc = base + c;
-            rim.push(prevA, prevC, nc, prevA, nc, na);
-            prevA = na;
-            prevC = nc;
-        }
-    }
-
-    const indices = new Uint32Array(innerIdx.length + outerIdx.length + rim.length);
-    indices.set(innerIdx, 0);
-    indices.set(outerIdx, innerIdx.length);
-    indices.set(rim, innerIdx.length + outerIdx.length);
-    return { positions, indices };
-}
-
-function slerpUnit(
-    a: { x: number; y: number; z: number },
-    b: { x: number; y: number; z: number },
-    t: number,
-) {
-    const dot = Math.min(1, Math.max(-1, a.x * b.x + a.y * b.y + a.z * b.z));
-    const omega = Math.acos(dot);
-    if (omega < 1e-4) return { x: b.x, y: b.y, z: b.z };
-    const so = Math.sin(omega);
-    const w0 = Math.sin((1 - t) * omega) / so;
-    const w1 = Math.sin(t * omega) / so;
-    return { x: a.x * w0 + b.x * w1, y: a.y * w0 + b.y * w1, z: a.z * w0 + b.z * w1 };
+    return closeShellWithRoundRim({
+        innerPositions: inner.positions,
+        outerPositions: outer.positions,
+        innerIndices: innerIdx,
+        outerIndices: outerIdx,
+        edges,
+        outward,
+    });
 }
 
 function boundaryOutward(mesh: AfoTriMesh, edges: { a: number; b: number }[]): Float32Array {

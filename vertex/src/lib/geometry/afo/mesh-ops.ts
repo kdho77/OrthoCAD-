@@ -552,6 +552,157 @@ function rayTri(origin: AfoVec3, dir: AfoVec3, span: number, t: ProjTri): number
     return hit;
 }
 
+/** Directed edges used by more than one triangle. A consistent shell has none. */
+export function duplicateDirectedEdgeCount(mesh: AfoTriMesh): number {
+    const seen = new Map<string, number>();
+    const t = triangleCount(mesh);
+    let dup = 0;
+    for (let i = 0; i < t; i++) {
+        const a = mesh.indices[i * 3] ?? 0;
+        const b = mesh.indices[i * 3 + 1] ?? 0;
+        const c = mesh.indices[i * 3 + 2] ?? 0;
+        if (a === b || b === c || c === a) continue;
+        for (const key of [`${a}>${b}`, `${b}>${c}`, `${c}>${a}`]) {
+            const n = (seen.get(key) ?? 0) + 1;
+            seen.set(key, n);
+            if (n === 2) dup++;
+        }
+    }
+    return dup;
+}
+
+/** Positive when triangle normals point out of a closed solid. */
+export function meshSignedVolume(mesh: AfoTriMesh): number {
+    let v = 0;
+    const t = triangleCount(mesh);
+    for (let i = 0; i < t; i++) {
+        const ai = mesh.indices[i * 3] ?? 0;
+        const bi = mesh.indices[i * 3 + 1] ?? 0;
+        const ci = mesh.indices[i * 3 + 2] ?? 0;
+        const ax = mesh.positions[ai * 3] ?? 0;
+        const ay = mesh.positions[ai * 3 + 1] ?? 0;
+        const az = mesh.positions[ai * 3 + 2] ?? 0;
+        const bx = mesh.positions[bi * 3] ?? 0;
+        const by = mesh.positions[bi * 3 + 1] ?? 0;
+        const bz = mesh.positions[bi * 3 + 2] ?? 0;
+        const cx = mesh.positions[ci * 3] ?? 0;
+        const cy = mesh.positions[ci * 3 + 1] ?? 0;
+        const cz = mesh.positions[ci * 3 + 2] ?? 0;
+        v += ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx);
+    }
+    return v / 6;
+}
+
+/**
+ * Make every directed edge unique and turn the solid outward.
+ * Marching-tet fixtures can traverse the same directed edge twice; clicks
+ * then hit the back wall. Neighbor faces are walked so a shared edge is
+ * opposite in the two triangles, then the whole body is flipped if the
+ * signed volume is negative.
+ */
+export function orientMeshOutward(mesh: AfoTriMesh): AfoTriMesh {
+    const indices = new Uint32Array(mesh.indices);
+    const t = (indices.length / 3) | 0;
+    if (t === 0) return cloneMesh(mesh);
+    const undirected = new Map<string, number[]>();
+    const addEdge = (a: number, b: number, f: number) => {
+        const k = a < b ? `${a}|${b}` : `${b}|${a}`;
+        const list = undirected.get(k);
+        if (list) list.push(f);
+        else undirected.set(k, [f]);
+    };
+    for (let i = 0; i < t; i++) {
+        const a = indices[i * 3] ?? 0;
+        const b = indices[i * 3 + 1] ?? 0;
+        const c = indices[i * 3 + 2] ?? 0;
+        addEdge(a, b, i);
+        addEdge(b, c, i);
+        addEdge(c, a, i);
+    }
+    const faceVerts = (i: number) =>
+        [indices[i * 3] ?? 0, indices[i * 3 + 1] ?? 0, indices[i * 3 + 2] ?? 0] as const;
+    const hasDirected = (f: number, a: number, b: number) => {
+        const v = faceVerts(f);
+        for (let k = 0; k < 3; k++) if (v[k] === a && v[(k + 1) % 3] === b) return true;
+        return false;
+    };
+    const flip = (f: number) => {
+        const i = f * 3;
+        const tmp = indices[i + 1] ?? 0;
+        indices[i + 1] = indices[i + 2] ?? 0;
+        indices[i + 2] = tmp;
+    };
+    const visited = new Uint8Array(t);
+    const queue: number[] = [];
+    for (let seed = 0; seed < t; seed++) {
+        if (visited[seed]) continue;
+        visited[seed] = 1;
+        queue.push(seed);
+        while (queue.length) {
+            const f = queue.pop()!;
+            const v = faceVerts(f);
+            for (let k = 0; k < 3; k++) {
+                const a = v[k]!;
+                const b = v[(k + 1) % 3]!;
+                const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+                for (const nf of undirected.get(key) ?? []) {
+                    if (nf === f || visited[nf]) continue;
+                    visited[nf] = 1;
+                    if (hasDirected(nf, a, b)) flip(nf);
+                    queue.push(nf);
+                }
+            }
+        }
+    }
+    const out: AfoTriMesh = { positions: new Float32Array(mesh.positions), indices };
+    if (meshSignedVolume(out) < 0) {
+        for (let i = 0; i < t; i++) flip(i);
+    }
+    return out;
+}
+
+/** Connected triangle components. A printable shell is one body. */
+export function countMeshBodies(mesh: AfoTriMesh): number {
+    const t = triangleCount(mesh);
+    const edgeFaces = new Map<string, number[]>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let i = 0; i < t; i++) {
+        const vs = [mesh.indices[i * 3] ?? 0, mesh.indices[i * 3 + 1] ?? 0, mesh.indices[i * 3 + 2] ?? 0];
+        for (let e = 0; e < 3; e++) {
+            const k = key(vs[e]!, vs[(e + 1) % 3]!);
+            const list = edgeFaces.get(k);
+            if (list) list.push(i);
+            else edgeFaces.set(k, [i]);
+        }
+    }
+    const neighbors: number[][] = Array.from({ length: t }, () => []);
+    for (const faces of edgeFaces.values()) {
+        for (let i = 0; i < faces.length; i++) {
+            for (let j = i + 1; j < faces.length; j++) {
+                neighbors[faces[i]!]!.push(faces[j]!);
+                neighbors[faces[j]!]!.push(faces[i]!);
+            }
+        }
+    }
+    const seen = new Uint8Array(t);
+    let bodies = 0;
+    for (let i = 0; i < t; i++) {
+        if (seen[i]) continue;
+        bodies++;
+        const stack = [i];
+        seen[i] = 1;
+        while (stack.length) {
+            const f = stack.pop()!;
+            for (const nb of neighbors[f] ?? []) {
+                if (seen[nb]) continue;
+                seen[nb] = 1;
+                stack.push(nb);
+            }
+        }
+    }
+    return bodies;
+}
+
 export function nearestVertex(mesh: AfoTriMesh, p: AfoVec3): { index: number; distSq: number } {
     const n = vertexCount(mesh);
     let best = 0;

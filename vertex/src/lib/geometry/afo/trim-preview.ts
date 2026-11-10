@@ -5,6 +5,26 @@ import type { AfoVec3 } from "./types";
 /** Half-length of the placement cross drawn before the first trim click (mm). */
 export const AFO_TRIM_CURSOR_ARM_MM = 14;
 
+/** A pointerup this close to pointerdown, with no orbit, is a click. */
+export const AFO_TRIM_CLICK_PX = 4;
+
+export const AFO_TRIM_NO_MESH = "Load a cast or corrected mesh before drawing the trimline.";
+
+/** Orbit drags move the camera. A pin is added only for a real click. */
+export function trimPointerIsClick(pointerDistPx: number, orbitMoved: boolean): boolean {
+    return pointerDistPx <= AFO_TRIM_CLICK_PX && !orbitMoved;
+}
+
+/** Design landmarks, trim, and measure never write on the same click. */
+export function designLandmarkPlacementActive(flags: {
+    placingTrim: boolean;
+    placingClinical: boolean;
+    placingDesignLandmarks: boolean;
+    measuring?: boolean;
+}): boolean {
+    return flags.placingDesignLandmarks && !flags.placingTrim && !flags.placingClinical && !flags.measuring;
+}
+
 /** Closed centripetal preview starts at 3 pins. Handles still draw before that. */
 export function closedTrimPreviewReady(pinCount: number): boolean {
     return pinCount >= 3;
@@ -20,8 +40,10 @@ export function afoEditExclusive(flags: {
     placingTrim: boolean;
     placingLandmarks: boolean;
     placingClinical: boolean;
-}): "trim" | "markers" | "idle" {
+    measuring?: boolean;
+}): "trim" | "markers" | "measure" | "idle" {
     if (flags.placingTrim) return "trim";
+    if (flags.measuring) return "measure";
     if (flags.placingLandmarks || flags.placingClinical) return "markers";
     return "idle";
 }

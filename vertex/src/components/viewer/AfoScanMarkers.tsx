@@ -78,6 +78,7 @@ export function AfoScanMarkerDot({
     showLabel,
     markerId,
     onDragStart,
+    interactive = true,
     centerLocal = { x: 0, y: 0, z: 0 },
     drawMode = "surface",
     depthCue = false,
@@ -90,6 +91,8 @@ export function AfoScanMarkerDot({
     showLabel: boolean;
     markerId: string;
     onDragStart?: (id: string) => void;
+    /** Trim pins are the only drag targets while a trimline is being drawn. */
+    interactive?: boolean;
     /** Oriented-mesh centroid. Stage 1 leaves the cue off; its scan matrix is not this frame. */
     centerLocal?: AfoViewPoint;
     drawMode?: AfoScanDrawMode;
@@ -128,11 +131,16 @@ export function AfoScanMarkerDot({
         <group ref={groupRef} position={position}>
             <mesh
                 renderOrder={22}
-                userData={{ afoScanMarkerId: markerId }}
-                onPointerDown={(e) => {
-                    e.stopPropagation();
-                    onDragStart?.(markerId);
-                }}
+                userData={{ afoScanMarkerId: markerId, isAfoScanMarker: true }}
+                raycast={interactive ? undefined : () => undefined}
+                onPointerDown={
+                    interactive
+                        ? (e) => {
+                              e.stopPropagation();
+                              onDragStart?.(markerId);
+                          }
+                        : undefined
+                }
             >
                 <sphereGeometry args={[AFO_MARKER_WORLD_MM, 20, 16]} />
                 <meshBasicMaterial
@@ -160,7 +168,11 @@ export function AfoScanMarkerDot({
                     polygonOffsetUnits={-4}
                 />
             </mesh>
-            <mesh renderOrder={23} userData={{ afoScanMarkerId: markerId }}>
+            <mesh
+                renderOrder={23}
+                userData={{ afoScanMarkerId: markerId, isAfoScanMarker: true }}
+                raycast={interactive ? undefined : () => undefined}
+            >
                 <sphereGeometry args={[AFO_MARKER_WORLD_MM, 20, 16]} />
                 <meshBasicMaterial
                     color={color}
@@ -293,6 +305,7 @@ export function AfoScanStage1Markers({
 export function AfoScanMarkers() {
     const workflow = useDesignStore((s) => s.design.afo?.scanWorkflow) ?? defaultAfoScanWorkflow();
     const placement = useAfoStore((s) => s.scanPlacement);
+    const placingTrim = useAfoStore((s) => s.placingTrim);
     const showLabels = useAfoStore((s) => s.scanShowMarkerLabels);
     const source = useAfoStore((s) => s.sourceMesh);
     const targetId = activeAfoTarget(workflow, placement?.redo ?? null);
@@ -342,7 +355,7 @@ export function AfoScanMarkers() {
         useAfoStore.getState().setScanPlacement({ redo: id, paused: false });
     };
 
-    if (!placement || !workflow.alignmentApplied) return null;
+    if (!workflow.alignmentApplied || markers.length === 0) return null;
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
@@ -353,10 +366,11 @@ export function AfoScanMarkers() {
                     position={m.pos}
                     color={m.color}
                     opacity={m.opacity}
-                    isTarget={targetId === m.id}
+                    isTarget={!placingTrim && targetId === m.id}
                     label={AFO_MARKER_PILL[m.id]}
                     showLabel={showLabels}
-                    onDragStart={onDragStart}
+                    onDragStart={placingTrim ? undefined : onDragStart}
+                    interactive={!placingTrim}
                     centerLocal={centerLocal}
                     drawMode={drawMode}
                     depthCue

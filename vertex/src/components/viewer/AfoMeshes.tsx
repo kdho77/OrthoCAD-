@@ -2,7 +2,7 @@
 
 import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
-import { BufferAttribute, type BufferGeometry, DoubleSide, FrontSide, type Points, Vector3 } from "three";
+import { BufferAttribute, type BufferGeometry, DoubleSide, type Points, Vector3 } from "three";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
@@ -151,7 +151,7 @@ export function AfoMeshes() {
                     visible={false}
                     userData={{ isAfoTrimPick: true, isAfoCast: true }}
                 >
-                    <meshBasicMaterial side={FrontSide} />
+                    <meshBasicMaterial side={DoubleSide} />
                 </mesh>
             ) : null}
             {shadedGeo && bodyStyle.drawMode === "surface" ? (
