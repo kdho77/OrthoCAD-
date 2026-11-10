@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import * as React from "react";
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import {
     formatMeasureMm,
@@ -12,6 +12,7 @@ import {
     triangleMeshFromGeometry,
 } from "@/lib/geometry/measure";
 import type { MeasureOverall, MeasureProduct } from "@/lib/geometry/measure/types";
+import { useDesignStore } from "@/stores/design-store";
 import { useMeasureStore } from "@/stores/measure-store";
 
 function usePublishedSolids() {
@@ -46,13 +47,61 @@ export function MeasurementsPanel({ product = "insole" }: { product?: MeasurePro
             const overall = overallPrintSize(mesh, product, includeLeader && product === "insole");
             return { solid, overall };
         });
+    const exportKey = useDesignStore((s) =>
+        product === "insole"
+            ? JSON.stringify({
+                  us: s.design.usMenSize,
+                  system: s.design.sizeSystem,
+                  mm: s.design.footLengthMm,
+                  pattern: s.design.pattern,
+                  thickness: s.design.thicknessMm,
+                  leftT: s.design.paired?.leftThicknessMm,
+                  rightT: s.design.paired?.rightThicknessMm,
+                  corrections: s.design.corrections,
+                  elements: s.design.elements?.length ?? 0,
+              })
+            : "",
+    );
+    const [exportRows, setExportRows] = useState<typeof rows | null>(null);
+    useEffect(() => {
+        if (product !== "insole") return;
+        let cancel = false;
+        void exportKey;
+        setExportRows(null);
+        void (async () => {
+            try {
+                const { buildValidatedExportGeometry } = await import("@/lib/geometry/export-geometry");
+                const next: typeof rows = [];
+                for (const side of ["left", "right"] as const) {
+                    const geometry = await buildValidatedExportGeometry(side);
+                    const overall = overallPrintSize(
+                        triangleMeshFromGeometry(geometry),
+                        "insole",
+                        includeLeader,
+                    );
+                    geometry.dispose();
+                    next.push({
+                        solid: { id: `export-${side}`, product: "insole", side, geometry },
+                        overall,
+                    });
+                }
+                if (!cancel) setExportRows(next);
+            } catch {
+                if (!cancel) setExportRows(null);
+            }
+        })();
+        return () => {
+            cancel = true;
+        };
+    }, [product, exportKey, includeLeader]);
+    const shownRows = exportRows ?? rows;
 
     // rstest compiles this module with the classic JSX runtime.
     void React;
     const firstPoint = points[0];
     const secondPoint = points[1];
     const segment = firstPoint && secondPoint ? pointToPoint(firstPoint.export, secondPoint.export) : null;
-    const leaderError = rows.find((row) => row.overall.leaderError)?.overall.leaderError ?? null;
+    const leaderError = shownRows.find((row) => row.overall.leaderError)?.overall.leaderError ?? null;
 
     return (
         <div className="space-y-3" data-testid="measurements-panel">
@@ -64,10 +113,14 @@ export function MeasurementsPanel({ product = "insole" }: { product?: MeasurePro
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     {product === "afo" ? "Footplate × height × width" : "Length × width × height"}
                 </div>
-                {rows.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">Waiting for the print mesh.</p>
+                {shownRows.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                        {product === "insole" && exportRows === null
+                            ? "Measuring the print mesh…"
+                            : "Waiting for the print mesh."}
+                    </p>
                 ) : (
-                    rows.map(({ solid, overall }) => {
+                    shownRows.map(({ solid, overall }) => {
                         const length = formatMeasureMm(overall.lengthMm);
                         const width = formatMeasureMm(overall.widthMm);
                         const height = formatMeasureMm(overall.heightMm);
@@ -100,9 +153,9 @@ export function MeasurementsPanel({ product = "insole" }: { product?: MeasurePro
                         );
                     })
                 )}
-                {rows[0] ? (
+                {shownRows[0] ? (
                     <p className="sr-only" data-testid="measure-overall-text">
-                        {overallLabel(product, rows[0].overall)}
+                        {overallLabel(product, shownRows[0].overall)}
                     </p>
                 ) : null}
             </div>
