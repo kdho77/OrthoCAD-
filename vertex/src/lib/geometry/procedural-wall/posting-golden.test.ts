@@ -13,6 +13,7 @@ import {
     sampleTopFromArrayBuffer,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import type { ProceduralWallStyle } from "@/lib/geometry/procedural-wall/wall-style";
+import { scaleSourceShapeToFootprint } from "@/lib/geometry/shoe-size";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import type { Side, SideCorrections } from "@/types";
@@ -91,8 +92,14 @@ describe("posted SAMPLE_Top golden (composed top — Corrections viewer path)", 
             ...field,
             corrections: neutralCorrections(field.corrections),
         };
-        const posted = await composePrintSolidTop(raw, { sourceField: field });
-        const neutral = await composePrintSolidTop(raw, { sourceField: neutralField });
+        const postedSheet = raw.clone();
+        const neutralSheet = raw.clone();
+        scaleSourceShapeToFootprint(postedSheet, 1);
+        scaleSourceShapeToFootprint(neutralSheet, 1);
+        const posted = await composePrintSolidTop(postedSheet, { sourceField: field });
+        const neutral = await composePrintSolidTop(neutralSheet, { sourceField: neutralField });
+        postedSheet.dispose();
+        neutralSheet.dispose();
         const md5 = stlMd5(posted);
         const neutralMd5 = stlMd5(neutral);
         if (process.env.REGEN_POSTING_GOLDEN === "1") {
@@ -122,6 +129,7 @@ describe("posted SAMPLE_Top WALLED posting-4 S1 parity", () => {
             const rawRight = await sampleTopForSide("right");
             const rawLeft = await sampleTopForSide("left");
             const postedRight = await reconstructProceduralPreview(rawRight, {
+                footprintScale: 1,
                 sourceField: fieldFor("right"),
                 composedTop: true,
                 corrections: fieldFor("right").corrections,
@@ -129,6 +137,7 @@ describe("posted SAMPLE_Top WALLED posting-4 S1 parity", () => {
                 scanPattern: "full_contact",
             });
             const postedLeft = await reconstructProceduralPreview(rawLeft, {
+                footprintScale: 1,
                 sourceField: fieldFor("left"),
                 composedTop: true,
                 corrections: fieldFor("left").corrections,
@@ -156,6 +165,7 @@ describe("posted SAMPLE_Top WALLED posting-4 S1 parity", () => {
                     corrections: neutralCorrections(sourceField.corrections),
                 };
                 const postedPreview = await reconstructProceduralPreview(raw, {
+                    footprintScale: 1,
                     sourceField,
                     composedTop: true,
                     corrections: sourceField.corrections,
@@ -163,6 +173,7 @@ describe("posted SAMPLE_Top WALLED posting-4 S1 parity", () => {
                     scanPattern: "full_contact",
                 });
                 const neutralPreview = await reconstructProceduralPreview(raw, {
+                    footprintScale: 1,
                     sourceField: neutralField,
                     composedTop: true,
                     corrections: neutralField.corrections,

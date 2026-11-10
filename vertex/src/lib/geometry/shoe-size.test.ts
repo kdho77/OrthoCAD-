@@ -15,8 +15,11 @@ import {
     insoleLayoutFromDesign,
     normalizeUsMenSize,
     REFERENCE_US_MEN_SIZE,
+    scaleFootprintUniform,
     scaleGeometryToInsoleSize,
     scaleSourceShapeToFootprint,
+    TOP_SHEET_XY_ANCHOR_SCALE,
+    topSheetXyScale,
     ukFootLengthMm,
     ukShoeSizeOptions,
     usMenFootLengthMm,
@@ -155,26 +158,48 @@ describe("UK and mm sizing systems", () => {
     });
 });
 
-describe("scaleSourceShapeToFootprint", () => {
-    test("scale 1 does not write, and only relief above the 2 mm floor scales", () => {
+describe("scaleFootprintUniform", () => {
+    test("scale 1 does not write vertices", () => {
         const geometry = new THREE.BufferGeometry();
-        const src = new Float32Array([0, -10, 2, 100, 10, 2, 50, 0, 22]);
+        const src = new Float32Array([0, -10, 2, 100, 10, 12]);
         geometry.setAttribute("position", new THREE.BufferAttribute(src.slice(), 3));
-        const before = Array.from(src);
-        scaleSourceShapeToFootprint(geometry, 1, 2);
-        const stayed = geometry.getAttribute("position").array as Float32Array;
-        expect(Array.from(stayed)).toEqual(before);
+        scaleFootprintUniform(geometry, 1);
+        expect(Array.from(geometry.getAttribute("position").array as Float32Array)).toEqual(Array.from(src));
+    });
+});
 
+describe("scaleSourceShapeToFootprint", () => {
+    test("XY takes the 1.011273 anchor and relief Z uses the footprint scale alone", () => {
+        expect(TOP_SHEET_XY_ANCHOR_SCALE).toBe(1.011273);
+        expect(topSheetXyScale(1)).toBe(1.011273);
+
+        const src = new Float32Array([0, -10, 2, 100, 10, 2, 50, 0, 22]);
+        const m9 = new THREE.BufferGeometry();
+        m9.setAttribute("position", new THREE.BufferAttribute(src.slice(), 3));
+        const zBefore = [src[2] ?? 0, src[5] ?? 0, src[8] ?? 0];
+        scaleSourceShapeToFootprint(m9, 1, 2);
+        const anchored = m9.getAttribute("position");
+        const cx = 50;
+        const cy = 0;
+        const anchor = TOP_SHEET_XY_ANCHOR_SCALE;
+        expect(anchored.getX(0)).toBeCloseTo(cx + (0 - cx) * anchor, 5);
+        expect(anchored.getY(0)).toBeCloseTo(cy + (-10 - cy) * anchor, 5);
+        expect(anchored.getZ(0)).toBeCloseTo(zBefore[0], 6);
+        expect(anchored.getZ(1)).toBeCloseTo(zBefore[1], 6);
+        expect(anchored.getZ(2)).toBeCloseTo(zBefore[2], 6);
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(src.slice(), 3));
         const s = 23 / 31;
         scaleSourceShapeToFootprint(geometry, s, 2);
         const pos = geometry.getAttribute("position");
-        const cx = 50;
-        const cy = 0;
-        expect(pos.getX(0)).toBeCloseTo(cx + (0 - cx) * s, 5);
-        expect(pos.getY(0)).toBeCloseTo(cy + (-10 - cy) * s, 5);
+        const xy = s * anchor;
+        expect(pos.getX(0)).toBeCloseTo(cx + (0 - cx) * xy, 5);
+        expect(pos.getY(0)).toBeCloseTo(cy + (-10 - cy) * xy, 5);
         expect(pos.getZ(0)).toBeCloseTo(2, 6);
         expect(pos.getZ(1)).toBeCloseTo(2, 6);
         expect(pos.getX(2)).toBeCloseTo(cx, 6);
         expect(pos.getZ(2)).toBeCloseTo(2 + (22 - 2) * s, 5);
+        expect(pos.getZ(2)).not.toBeCloseTo(2 + (22 - 2) * xy, 3);
     });
 });

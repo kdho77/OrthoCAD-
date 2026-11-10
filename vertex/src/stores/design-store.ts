@@ -44,7 +44,11 @@ import {
     normalizeShoeSizeSystem,
     normalizeUkSize,
     normalizeUsMenSize,
+    SAMPLE_TOP_NATIVE_LENGTH_MM,
+    SAMPLE_TOP_NATIVE_WIDTH_MM,
     type ShoeSizeSystem,
+    scalePlanPointAboutCenter,
+    topSheetXyScale,
     usMenToUk,
 } from "@/lib/geometry/shoe-size";
 import { normalizeShoeWidth } from "@/lib/geometry/shoe-width";
@@ -131,6 +135,49 @@ function enforceWedgeMutualExclusion(corrections: Corrections): Corrections {
     return newCorrections;
 }
 
+function planSpan(points: { x: number; y: number }[]): {
+    minX: number;
+    lengthMm: number;
+    widthMm: number;
+    centerX: number;
+} {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of points) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+    return {
+        minX,
+        lengthMm: maxX - minX,
+        widthMm: maxY - minY,
+        centerX: (minX + maxX) / 2,
+    };
+}
+
+/** Native outline → anchored sheet. The center is unchanged. */
+function scaleOutlineAboutCenter(
+    points: { x: number; y: number }[],
+    scale: number,
+): { x: number; y: number }[] {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of points) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+    const center = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+    return points.map((p) => scalePlanPointAboutCenter(p, center, scale));
+}
+
 /** Scale element positions + trimlines when footprint length/width change. */
 function scaleDesignToLayout(
     design: DesignState,
@@ -138,8 +185,11 @@ function scaleDesignToLayout(
     sizingPatch: Partial<DesignState>,
 ): DesignState {
     const prev = insoleLayoutFromDesign(design);
-    const sx = next.lengthMm / prev.lengthMm;
-    const sy = next.widthMm / prev.widthMm;
+    // Both sizes include the XY anchor, so a size change is the ratio of
+    // topSheetXyScale. That ratio equals the Brannock ratio. The anchor itself
+    // is applied where a center offset is placed on the sheet.
+    const sx = topSheetXyScale(next.scale) / topSheetXyScale(prev.scale);
+    const sy = sx;
     const scaleNeeded = Math.abs(sx - 1) > 1e-9 || Math.abs(sy - 1) > 1e-9;
 
     const elements = scaleNeeded
@@ -1017,12 +1067,34 @@ export const useDesignStore = create<DesignStore>()(
                 get().checkpoint("add-element");
                 set((s) => {
                     const layout = insoleLayoutFromDesign(s.design);
-                    const outline = footOutlineForSide(
+                    const stored = footOutlineForSide(
                         s.design,
                         side,
                         useBaseOutlineStore.getState().outlines,
                     );
-                    const pose = defaultElementPose(kind, side, layout.lengthMm, layout.widthMm, outline);
+                    // The published outline is the native sheet. Morton's and the
+                    // kinetic wedge keep their u/v rules and sit on the anchored sheet.
+                    const xy = topSheetXyScale(layout.scale);
+                    const uv =
+                        kind === "mortons_extension" ||
+                        kind === "reverse_mortons" ||
+                        kind === "kinetic_wedge";
+                    const outline = uv && stored ? scaleOutlineAboutCenter(stored, xy) : null;
+                    const span = outline ? planSpan(outline) : null;
+                    const lengthMm = uv
+                        ? (span?.lengthMm ?? SAMPLE_TOP_NATIVE_LENGTH_MM * xy)
+                        : layout.lengthMm;
+                    const widthMm = uv ? (span?.widthMm ?? SAMPLE_TOP_NATIVE_WIDTH_MM * xy) : layout.widthMm;
+                    const pose = defaultElementPose(kind, side, lengthMm, widthMm, outline);
+                    if (uv) {
+                        const origin = span?.minX ?? 0;
+                        const centerX = span?.centerX ?? lengthMm / 2;
+                        const u = (centerX + pose.position.x - origin) / Math.max(lengthMm, 1e-6);
+                        pose.position = {
+                            x: u * layout.lengthMm - layout.lengthMm / 2,
+                            y: pose.position.y * (layout.widthMm / Math.max(widthMm, 1e-6)),
+                        };
+                    }
                     const id = crypto.randomUUID();
                     const el: PlacedElement = {
                         id,

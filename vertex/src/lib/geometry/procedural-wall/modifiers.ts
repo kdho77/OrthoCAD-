@@ -14,6 +14,7 @@ import {
     heelCupDepthBowlDelta,
     heelCupWidthScaleFactor,
 } from "@/lib/geometry/height-field";
+import { anchoredPlanOffset, TOP_SHEET_XY_ANCHOR_SCALE } from "@/lib/geometry/shoe-size";
 import { sinksActive, sinkThicknessAt, styloidWallReliefAt } from "@/lib/geometry/sink";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
@@ -375,10 +376,11 @@ export function forefootFeatureBoxes(
     const lengthScale = Math.max(0.75, (features.lengthMm ?? 260) / 260);
     for (const el of features.elements ?? []) {
         const half = FEATURE_HALF_MM[el.kind ?? ""] ?? { x: 24, y: 20 };
-        const sx = Math.max(0.5, el.scale?.x ?? 1) * lengthScale * 1.2;
-        const sy = Math.max(0.5, el.scale?.y ?? 1) * lengthScale * 1.2;
-        const cx = cx0 + el.position.x;
-        const cy = cy0 + el.position.y;
+        const placed = anchoredPlanOffset(el.position.x, el.position.y);
+        const sx = Math.max(0.5, el.scale?.x ?? 1) * lengthScale * 1.2 * TOP_SHEET_XY_ANCHOR_SCALE;
+        const sy = Math.max(0.5, el.scale?.y ?? 1) * lengthScale * 1.2 * TOP_SHEET_XY_ANCHOR_SCALE;
+        const cx = cx0 + placed.x;
+        const cy = cy0 + placed.y;
         boxes.push({
             minX: cx - half.x * sx,
             maxX: cx + half.x * sx,

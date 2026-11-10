@@ -8,6 +8,7 @@ import { heightAt } from "@/lib/geometry/height-field";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { sinkStyloidThickenForSide, sinksForSide } from "@/lib/geometry/migrate-corrections";
 import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-id";
+import { anchoredPlanOffset } from "@/lib/geometry/shoe-size";
 import {
     type SinkOutlinePoint,
     type SinkOvalFrame,
@@ -215,12 +216,17 @@ export function elementFootprintPose(
         element.kind === "mortons_extension" ? { lengthMm, widthMm, outline: footOutline } : undefined,
     );
     const extents = outlineHalfExtents(outline);
+    const uvKind =
+        element.kind === "mortons_extension" ||
+        element.kind === "reverse_mortons" ||
+        element.kind === "kinetic_wedge";
+    const placed = uvKind ? element.position : anchoredPlanOffset(element.position.x, element.position.y);
     return {
         id: element.id,
         side: element.side,
         kind: "element",
-        x: lengthMm / 2 + element.position.x,
-        y: element.position.y,
+        x: lengthMm / 2 + placed.x,
+        y: placed.y,
         rotationDeg: element.rotationDeg,
         halfLengthMm: extents.halfLengthMm,
         halfWidthMm: extents.halfWidthMm,

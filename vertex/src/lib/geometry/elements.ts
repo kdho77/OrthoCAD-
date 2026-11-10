@@ -22,6 +22,7 @@ import {
     mortonsLocalOutline,
     mortonsReferenceWidthMm,
 } from "@/lib/geometry/mortons-extension";
+import { anchoredPlanOffset, TOP_SHEET_XY_ANCHOR_SCALE } from "@/lib/geometry/shoe-size";
 import type { ElementKind, PlacedElement, Side } from "@/types";
 
 /**
@@ -498,8 +499,8 @@ export function elementOutlineLocalMm(
         return kineticWedgeLocalOutline(lengthMm, span, scaleX, scaleY);
     }
     const profile = ELEMENT_PROFILES[kind];
-    const rx = Math.max(2, profile.rxMm * scaleX);
-    const ry = Math.max(2, profile.ryMm * scaleY);
+    const rx = Math.max(2, profile.rxMm * scaleX * TOP_SHEET_XY_ANCHOR_SCALE);
+    const ry = Math.max(2, profile.ryMm * scaleY * TOP_SHEET_XY_ANCHOR_SCALE);
     const pts: { x: number; y: number }[] = [];
 
     for (let i = 0; i < segments; i++) {
@@ -556,6 +557,18 @@ export function kineticWedgeCenterU(lengthMm: number): number {
     return RKW_CENTER_U - RKW_DEEPEST_PROXIMAL_MM / Math.max(lengthMm, 1);
 }
 
+function outlineCenterX(outline: MortonsOutlinePoint[] | null | undefined, lengthMm: number): number {
+    if (!outline || outline.length < 6) return lengthMm / 2;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const p of outline) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+    }
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return lengthMm / 2;
+    return (minX + maxX) / 2;
+}
+
 /** Default pose when placing a stock element from the library. */
 export function defaultElementPose(
     kind: ElementKind,
@@ -570,13 +583,14 @@ export function defaultElementPose(
             ? mortonsAnchorMm(side, lengthMm, widthMm, outline)
             : null;
     const kinetic = kind === "kinetic_wedge" ? kineticWedgeAnchor(side, lengthMm, widthMm, outline) : null;
+    const centerX = outlineCenterX(outline, lengthMm);
     return {
         position: mortons
-            ? { x: mortons.x - lengthMm / 2, y: mortons.y }
+            ? { x: mortons.x - centerX, y: mortons.y }
             : kinetic
-              ? { x: kinetic.x - lengthMm / 2, y: kinetic.y }
+              ? { x: kinetic.x - centerX, y: kinetic.y }
               : {
-                    x: p.defaultU * lengthMm - lengthMm / 2,
+                    x: p.defaultU * lengthMm - centerX,
                     y: meshYForAnatomicalSide(
                         side,
                         p.anatomicalSide,
@@ -643,9 +657,11 @@ export function elementHeightAt(
             lower = Math.min(lower, kineticWedgeDelta(el, xMm, yMm, lengthMm, widthMm));
             continue;
         }
-        const cx = centerX + el.position.x;
+        // Landmark offsets are pre-anchor millimetres. The sheet grew about its center.
+        const placed = anchoredPlanOffset(el.position.x, el.position.y);
+        const cx = centerX + placed.x;
         // Stored Y is footprint-frame mesh Y. This sample is height-field Y.
-        const cy = heightFieldYFromMeshY(el.position.y);
+        const cy = heightFieldYFromMeshY(placed.y);
         const dx = xMm - cx;
         const dy = yMm - cy;
 
@@ -655,8 +671,8 @@ export function elementHeightAt(
         const ly = dx * Math.sin(a) + dy * Math.cos(a);
 
         const p = ELEMENT_PROFILES[el.kind];
-        const rx = Math.max(2, p.rxMm * el.scale.x);
-        const ry = Math.max(2, p.ryMm * el.scale.y);
+        const rx = Math.max(2, p.rxMm * el.scale.x * TOP_SHEET_XY_ANCHOR_SCALE);
+        const ry = Math.max(2, p.ryMm * el.scale.y * TOP_SHEET_XY_ANCHOR_SCALE);
         const t = elementFootprintT(el.kind, lx, ly, rx, ry, el.side);
         const w = domeWeight(t);
         if (w > 0) {

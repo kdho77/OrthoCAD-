@@ -100,12 +100,12 @@ function stampLabel(
  * The pin is the MPJ1–5 + styloid meshes, which are unchanged from main.
  */
 const US9_SINK_SHA256: Record<string, string> = {
-    "left-straight": "b18ad57b72b82cd0080380733b796a738e6285790283280ef30a3da889164de0",
-    "left-round": "05dd65d7f363d689a807754bb87f0a0409ffd954089eb1a34aba5986477f650c",
-    "left-hybrid": "09279f8fb8973c25bda4dd7a550a70db84e942c8733b4452ffa6a4da63a686ea",
-    "right-straight": "b4429222a09d9498db8ca4469e0277a0f22c835e6fff0a87c595e4a3f0717fd3",
-    "right-round": "696c0be112bf0eb6589db9650e45abf3051a955eb073028d98e78a01ac8b3b63",
-    "right-hybrid": "fd6b57aee23ad1639cadd17ad7ffb8fae43f3554d3c22ade7646a1705fb36447",
+    "left-straight": "70998557d64b8e855526b739b79078ef4bc1aee4a6be2987e53404fa16b0ebc4",
+    "left-round": "2c039984c4bd6e5f4a512b0526ea341143a009ce098c83e94a15db8a293adca5",
+    "left-hybrid": "ce06288c627d1eaff13bca0753969888c94d641dae9837e210433b9ee53cd440",
+    "right-straight": "9adc7ee30b7a0521dd53580eefb5b9dfa6d6092a021e8d1fcb111ff5ea9114b4",
+    "right-round": "c1ee8bab2bffeb68879bb176e18c824ae62dd59e3f3876a491b19a091078ed18",
+    "right-hybrid": "1e621f3827d629fcc73ed008d829f92af446f9da67325c6a11bf19e30c422921",
 };
 
 function nonRkwSinks(): PlacedSink[] {
@@ -682,7 +682,12 @@ describe("pediatric sink scale and sulcus clearance", () => {
             for (const side of ["left", "right"] as const) {
                 for (const wall of ["straight", "round", "hybrid"] as const) {
                     const src = (side === "left" ? left : right).clone();
-                    const built = await reconstructProceduralPreview(src, { wallStyle: wall, side, sinks });
+                    const built = await reconstructProceduralPreview(src, {
+                        footprintScale: 1,
+                        wallStyle: wall,
+                        side,
+                        sinks,
+                    });
                     hashes[`${side}-${wall}`] = sha256Stl(built.geometry);
                     const pos = built.geometry.getAttribute("position");
                     let bottom = Infinity;

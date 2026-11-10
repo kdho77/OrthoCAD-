@@ -11,7 +11,7 @@ import { DESIGN_ELEMENT_COLOR } from "@/lib/geometry/element-visualization";
 import { defaultElementPose } from "@/lib/geometry/elements";
 import { medialSign, meshYSign } from "@/lib/geometry/handedness";
 import { sideOffsetX } from "@/lib/geometry/layout";
-import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
+import { insoleLayoutForUsMenSize, TOP_SHEET_XY_ANCHOR_SCALE } from "@/lib/geometry/shoe-size";
 import { SINK_KIND_ORDER, SINK_PROFILES, sinkCutMm, sinkFrame } from "@/lib/geometry/sink";
 import { projectViewNdcX, projectViewNdcY } from "@/lib/geometry/viewport-side-layout";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
@@ -107,8 +107,8 @@ describe("element footprint planforms", () => {
             },
             layout.lengthMm,
         );
-        expect(moved.x - base.x).toBeCloseTo(12, 5);
-        expect(moved.y - base.y).toBeCloseTo(-4, 5);
+        expect(moved.x - base.x).toBeCloseTo(12 * TOP_SHEET_XY_ANCHOR_SCALE, 5);
+        expect(moved.y - base.y).toBeCloseTo(-4 * TOP_SHEET_XY_ANCHOR_SCALE, 5);
         expect(moved.rotationDeg).toBe(25);
     });
 
@@ -275,7 +275,7 @@ describe("element footprint overlay", () => {
         );
         const edited = footprintNames().find((n) => n.includes("heel-l")) ?? "";
         expect(edited).not.toBe(selected);
-        expect(edited).toContain(":160.0:");
+        expect(edited).toContain(":160.3:");
         expect(footprintNames().some((n) => n.includes("wedge") || n.includes("pad-l"))).toBe(false);
         const beforeSink = footprintNames().find((n) => n.includes("sink:sink-l")) ?? "";
         await act(async () => useDesignStore.getState().updateSink("sink-l", { u: 0.2, v: 0.5 }, "left"));

@@ -6,7 +6,11 @@ import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
-import { scaleSourceShapeToFootprint } from "@/lib/geometry/shoe-size";
+import {
+    scalePlanPointAboutCenter,
+    scaleSourceShapeToFootprint,
+    topSheetXyScale,
+} from "@/lib/geometry/shoe-size";
 import { hasActiveComposedTextMarking } from "@/lib/geometry/text-marking/compose";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -316,8 +320,10 @@ export interface ProceduralPreviewOptions {
     sinkStyloidThicken?: boolean;
     /**
      * Uniform scale vs Men's 9, applied to this top sheet before compose and
-     * loft. XY about the bbox center; Z relief above the 2 mm floor by the
-     * same factor. Omitted or 1 leaves every vertex unwritten.
+     * loft. XY is that scale times the 1.011273 top-sheet anchor, about the
+     * bbox center. Z relief above the 2 mm floor uses this scale alone.
+     * Omitted leaves the native sheet unwritten. Men's 9 passes 1 and still
+     * takes the XY anchor.
      */
     footprintScale?: number;
 }
@@ -363,6 +369,31 @@ async function withDefaultPrintCompose(options: ProceduralPreviewOptions): Promi
     };
 }
 
+function scaleStoredTrimlines(
+    options: ProceduralPreviewOptions,
+    center: { x: number; y: number },
+    scale: number,
+): ProceduralPreviewOptions {
+    const scaleCurve = (curve: ProceduralPreviewOptions["trimline"]) => {
+        if (!curve?.points?.length) return curve;
+        return {
+            ...curve,
+            points: curve.points.map((p) => scalePlanPointAboutCenter(p, center, scale)),
+        };
+    };
+    const trimline = scaleCurve(options.trimline);
+    const fieldTrim = scaleCurve(options.sourceField?.trimline ?? null);
+    if (trimline === options.trimline && fieldTrim === (options.sourceField?.trimline ?? null))
+        return options;
+    return {
+        ...options,
+        trimline,
+        ...(options.sourceField
+            ? { sourceField: { ...options.sourceField, trimline: fieldTrim ?? null } }
+            : {}),
+    };
+}
+
 export async function reconstructProceduralPreview(
     topGeo: BufferGeometry,
     options: ProceduralPreviewOptions = {},
@@ -375,41 +406,53 @@ export async function reconstructProceduralPreview(
     let working = topGeo;
     let footprintClone: BufferGeometry | null = null;
     let scaledPattern: PolyPoint[] | null = null;
-    if (footprintScale != null && Number.isFinite(footprintScale) && Math.abs(footprintScale - 1) > 1e-9) {
-        if (!topGeo.boundingBox) topGeo.computeBoundingBox();
-        const box = topGeo.boundingBox;
-        const center = box ? { x: (box.min.x + box.max.x) / 2, y: (box.min.y + box.max.y) / 2 } : null;
-        if (center && options.bottomPattern?.length) {
-            // Live / edited pattern is in the pre-scale frame. Use a fresh
-            // bbox so the center matches scaleSourceShapeToFootprint.
-            topGeo.computeBoundingBox();
-            const live = topGeo.boundingBox;
-            if (live) {
-                scaledPattern = scaleBottomPatternToFootprint(
-                    options.bottomPattern,
-                    { x: (live.min.x + live.max.x) / 2, y: (live.min.y + live.max.y) / 2 },
-                    footprintScale,
-                );
+    // Layout scale other than 1 also repairs the lofted bottom. The Men's 9
+    // anchor is XY only and keeps the unscaled-relief triangulation.
+    let reliefScaled = false;
+    if (footprintScale != null && Number.isFinite(footprintScale)) {
+        const xyScale = topSheetXyScale(footprintScale);
+        const writeXy = Math.abs(xyScale - 1) > 1e-9;
+        const writeZ = Math.abs(footprintScale - 1) > 1e-9;
+        if (writeXy || writeZ) {
+            reliefScaled = writeZ;
+            if (!topGeo.boundingBox) topGeo.computeBoundingBox();
+            const box = topGeo.boundingBox;
+            const center = box ? { x: (box.min.x + box.max.x) / 2, y: (box.min.y + box.max.y) / 2 } : null;
+            if (center && options.bottomPattern?.length) {
+                // Live / edited pattern is in the pre-scale frame. Use a fresh
+                // bbox so the center matches scaleSourceShapeToFootprint.
+                topGeo.computeBoundingBox();
+                const live = topGeo.boundingBox;
+                if (live) {
+                    scaledPattern = scaleBottomPatternToFootprint(
+                        options.bottomPattern,
+                        { x: (live.min.x + live.max.x) / 2, y: (live.min.y + live.max.y) / 2 },
+                        xyScale,
+                    );
+                }
+            } else if (center && insetsForScanPattern(options.scanPattern) == null) {
+                const native = topGeo.clone();
+                try {
+                    const nativeModel = extractTopOnlyModel(native, {
+                        id: SAMPLE_TOP_ASSET_ID,
+                        name: SAMPLE_TOP_NAME,
+                    });
+                    scaledPattern = scalePlanLoop(
+                        buildFairedPatternFromTop(nativeModel, options.scanPattern),
+                        xyScale,
+                        center,
+                    );
+                } finally {
+                    native.dispose();
+                }
             }
-        } else if (center && insetsForScanPattern(options.scanPattern) == null) {
-            const native = topGeo.clone();
-            try {
-                const nativeModel = extractTopOnlyModel(native, {
-                    id: SAMPLE_TOP_ASSET_ID,
-                    name: SAMPLE_TOP_NAME,
-                });
-                scaledPattern = scalePlanLoop(
-                    buildFairedPatternFromTop(nativeModel, options.scanPattern),
-                    footprintScale,
-                    center,
-                );
-            } finally {
-                native.dispose();
+            footprintClone = topGeo.clone();
+            scaleSourceShapeToFootprint(footprintClone, footprintScale, BASE_REFERENCE_THICKNESS_MM);
+            working = footprintClone;
+            if (center) {
+                options = scaleStoredTrimlines(options, center, xyScale);
             }
         }
-        footprintClone = topGeo.clone();
-        scaleSourceShapeToFootprint(footprintClone, footprintScale, BASE_REFERENCE_THICKNESS_MM);
-        working = footprintClone;
     }
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
     let source = working;
@@ -476,9 +519,9 @@ export async function reconstructProceduralPreview(
             ...(options.sinks && options.sinks.length > 0
                 ? { sinks: options.sinks, sinkStyloidThicken: options.sinkStyloidThicken }
                 : {}),
-            // Scaled outlines only. Native posting and the US 9 reference
-            // stay on the triangulation those baselines already froze.
-            ...(footprintClone ? { repairUpwardBottom: true } : {}),
+            // Layout scales other than 1 repair the bottom. The Men's 9 XY
+            // anchor does not; that sheet keeps the frozen triangulation.
+            ...(reliefScaled ? { repairUpwardBottom: true } : {}),
         });
         return { model, pattern, geometry };
     };

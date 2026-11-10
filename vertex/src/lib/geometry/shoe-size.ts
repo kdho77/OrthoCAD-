@@ -408,19 +408,63 @@ export function scaleFootprintUniform(geometry: THREE.BufferGeometry, scale: num
 }
 
 /**
+ * Even XY anchor on the native SAMPLE_Top sheet.
+ * 275 / 271.9346 = 1.011273. Restores the 10/23 Men's 9 top-sheet length.
+ * Relief Z does not use this factor. `layout.scale` stays the Brannock scale.
+ */
+export const TOP_SHEET_XY_ANCHOR_SCALE = 1.011273;
+
+/** Footprint scale composed with {@link TOP_SHEET_XY_ANCHOR_SCALE}. Even in X and Y. */
+export function topSheetXyScale(footprintScale: number): number {
+    return footprintScale * TOP_SHEET_XY_ANCHOR_SCALE;
+}
+
+/**
+ * Native SAMPLE_Top plan size. The Men's 9 anchor turns this into 275.0 × 92.73.
+ * The center stays put because the scale is about that center.
+ */
+export const SAMPLE_TOP_NATIVE_LENGTH_MM = 271.9346;
+export const SAMPLE_TOP_NATIVE_WIDTH_MM = 91.69212341308594;
+
+/** Offset from the sheet center, in the anchored plan. Even in X and Y. Z is not a part of this. */
+export function anchoredPlanOffset(x: number, y: number): { x: number; y: number } {
+    const s = TOP_SHEET_XY_ANCHOR_SCALE;
+    return { x: x * s, y: y * s };
+}
+
+/** Same map as the loft: scale a plan point about the sheet center. Z is copied. */
+export function scalePlanPointAboutCenter<T extends { x: number; y: number; z?: number }>(
+    point: T,
+    center: { x: number; y: number },
+    scale: number,
+): T {
+    return {
+        ...point,
+        x: center.x + (point.x - center.x) * scale,
+        y: center.y + (point.y - center.y) * scale,
+    };
+}
+
+/**
  * Size a top sheet to its footprint before compose and loft.
  *
- * XY uses the same center as {@link scaleFootprintUniform}. Z relief above
- * `floorMm` (the 2 mm reference floor) uses that same scale. The floor stays
- * in absolute millimetres, and this pass does not touch a shell that compose
- * adds afterwards. Scale 1 does not write vertices.
+ * XY uses the same center as {@link scaleFootprintUniform}, then the Men's 9
+ * anchor ({@link topSheetXyScale}). Z relief above `floorMm` (the 2 mm
+ * reference floor) uses `scale` alone, so Men's 9 height stays on the native
+ * sheet. The floor stays in absolute millimetres, and this pass does not
+ * touch a shell that compose adds afterwards.
  */
 export function scaleSourceShapeToFootprint(
     geometry: THREE.BufferGeometry,
     scale: number,
     floorMm = 2,
 ): THREE.BufferGeometry {
-    if (!Number.isFinite(scale) || Math.abs(scale - 1) <= 1e-9) return geometry;
+    const xyScale = topSheetXyScale(scale);
+    const zScale = scale;
+    if (!Number.isFinite(scale) || !Number.isFinite(xyScale)) return geometry;
+    const writeXy = Math.abs(xyScale - 1) > 1e-9;
+    const writeZ = Math.abs(zScale - 1) > 1e-9;
+    if (!writeXy && !writeZ) return geometry;
     geometry.computeBoundingBox();
     const box = geometry.boundingBox;
     const pos = geometry.getAttribute("position");
@@ -428,10 +472,14 @@ export function scaleSourceShapeToFootprint(
     const cx = (box.min.x + box.max.x) / 2;
     const cy = (box.min.y + box.max.y) / 2;
     for (let i = 0; i < pos.count; i++) {
-        pos.setX(i, cx + (pos.getX(i) - cx) * scale);
-        pos.setY(i, cy + (pos.getY(i) - cy) * scale);
-        const z = pos.getZ(i);
-        pos.setZ(i, floorMm + (z - floorMm) * scale);
+        if (writeXy) {
+            pos.setX(i, cx + (pos.getX(i) - cx) * xyScale);
+            pos.setY(i, cy + (pos.getY(i) - cy) * xyScale);
+        }
+        if (writeZ) {
+            const z = pos.getZ(i);
+            pos.setZ(i, floorMm + (z - floorMm) * zScale);
+        }
     }
     pos.needsUpdate = true;
     geometry.computeBoundingBox();

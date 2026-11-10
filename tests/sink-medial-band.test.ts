@@ -39,12 +39,12 @@ import type { PlacedElement, PlacedSink, Side, SideCorrections, SinkKind } from 
  * from mutating accepted points. The other five pins are unchanged.
  */
 const PARITY_SHA256: Record<string, string> = {
-    "no-sink": "4c0e3fa857504ddf81f2722737c83f47b20eac9b642e406656e06ed3deab13e1",
-    wedges: "5318b1222e1f82ef876c84f814d0c4e16ca8a7e230b455478fd4cdc1410e7e7a",
-    "regional-wedge": "be07ace9ba002920665c1763638c4cd0132728f8fd45c8d1bab67591d1b7001e",
-    "met-pad": "d7489b3b3405cf04fe978a4041f53c09199c6aeb3df292ae4654ea7db1057084",
-    width: "0f63337703e2f3195896fbe369e249bb4e42d034644589d862171a1a64d9c698",
-    "full-length-wedge": "a23a8e3a1a52fcc647b8dffb833952c911de1a5147df53408330928ddf8b2728",
+    "no-sink": "74b041bf3d9a9db9bc5f1914d66eaebb84c6a20d11758bee4ee8fa185bbbc4ce",
+    wedges: "e2fa43b1605b67003db707f326bbcc1aeba4f33300c7f99ee0df5994e4c90529",
+    "regional-wedge": "a9db1d0aa9aac13079a9dbddea41dad2853ce5782d257a3f580e7631a24b826e",
+    "met-pad": "9956c878d458184e37191790ef65ddbe971c16e6b73fc83f0c0afae806b38f4b",
+    width: "f19af352533db709cb4cd3fd0ec4a2bb9f1b89d21985cb81f4dd7be86d879f08",
+    "full-length-wedge": "0ea5fe1b7bd8c347d01b292132c02de66557475c91493c98f3fb57afb3a513aa",
 };
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
@@ -583,7 +583,11 @@ describe("sink taper reaches the medial and lateral outline", () => {
             for (const side of ["left", "right"] as const) {
                 const raw = pair[side];
                 for (const wall of ["straight", "round", "hybrid"] as const) {
-                    const plain = await reconstructProceduralPreview(raw, { wallStyle: wall, side });
+                    const plain = await reconstructProceduralPreview(raw, {
+                        footprintScale: 1,
+                        wallStyle: wall,
+                        side,
+                    });
                     const plainUd = plain.geometry.userData as {
                         topVertexCount?: number;
                         loftN?: number;
@@ -619,6 +623,7 @@ describe("sink taper reaches the medial and lateral outline", () => {
                     ];
                     for (const c of cases) {
                         const sunk = await reconstructProceduralPreview(raw, {
+                            footprintScale: 1,
                             wallStyle: wall,
                             side,
                             sinks: c.sinks,
@@ -815,6 +820,7 @@ describe("sink taper reaches the medial and lateral outline", () => {
                                 const printed = await composePrintSolidTop(raw, { sourceField });
                                 expect(sha256Stl(viewer), `${side} ${c.name} entry`).toBe(sha256Stl(printed));
                                 const exported = await reconstructProceduralPreview(raw, {
+                                    footprintScale: 1,
                                     wallStyle: "straight",
                                     side,
                                     sourceField,
@@ -934,6 +940,7 @@ describe("sink-free export hash parity", () => {
             for (const c of cases) {
                 const sourceField = field("left", c.corrections, c.extra);
                 const built = await reconstructProceduralPreview(raw, {
+                    footprintScale: 1,
                     wallStyle: "straight",
                     side: "left",
                     corrections: c.corrections,
