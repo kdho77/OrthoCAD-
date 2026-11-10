@@ -16,7 +16,7 @@ import {
     nextLandmarkStep,
     skippedLandmarkIds,
 } from "@/lib/geometry/afo/landmark-frame";
-import { cameraViewForAfoMarkerId } from "@/lib/geometry/afo/marker-side";
+import { type AfoOrientedSides, cameraViewForAfoMarkerId } from "@/lib/geometry/afo/marker-side";
 import type { AfoAnatomicalLandmarkId, AfoPlantarPointId, AfoScanWorkflow } from "@/lib/geometry/afo/types";
 import { getAfoState, useAfoStore } from "@/stores/afo-store";
 import type { CameraView } from "@/stores/design-store";
@@ -301,9 +301,13 @@ export function afoScanAutoFrameAllowed(wf: AfoScanWorkflow): boolean {
     return wf.alignmentApplied;
 }
 
-/** Scan-marker camera. Side-specific ids use the shared anatomical-side rule. */
-export function cameraViewForAfoMarker(id: AfoMarkerKey, side: Side): CameraView {
-    return cameraViewForAfoMarkerId(id, side);
+/** Scan-marker camera. Placed M1/M5 decide the side; `side` is the fallback. */
+export function cameraViewForAfoMarker(
+    id: AfoMarkerKey,
+    side: Side,
+    oriented?: AfoOrientedSides,
+): CameraView {
+    return cameraViewForAfoMarkerId(id, side, oriented);
 }
 
 const LANDMARK_IDS = new Set<string>(AFO_LANDMARK_STEPS.map((s) => s.id));

@@ -4,7 +4,7 @@ import { useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
 import { AFO_DESIGN_MARKERS, AFO_TRIM_CLOSE_PX } from "@/lib/geometry/afo/defaults";
-import { cameraViewForAfoMarkerId } from "@/lib/geometry/afo/marker-side";
+import { cameraViewForAfoMarkerId, orientedPlantarSides } from "@/lib/geometry/afo/marker-side";
 import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
 import { registerTrimClick } from "@/lib/geometry/afo/trim-loop";
 import { isAfoCastTrimPick } from "@/lib/geometry/afo/trim-preview";
@@ -27,6 +27,11 @@ export function AfoMarkerPlacement() {
     const setPlacing = useAfoStore((s) => s.setPlacingLandmarkIndex);
     const setDragging = useAfoStore((s) => s.setDraggingTrimIndex);
     const lastClient = useRef<{ x: number; y: number } | null>(null);
+    const orientedSides = orientedPlantarSides(
+        afo.scanWorkflow.matrixElements,
+        afo.scanWorkflow.plantar.m1p,
+        afo.scanWorkflow.plantar.m5p,
+    );
     const spanRef = useRef<AfoVec3[][] | null>(null);
 
     const applyView = useCallback(
@@ -41,8 +46,13 @@ export function AfoMarkerPlacement() {
         if (placingTrim) return;
         const marker = AFO_DESIGN_MARKERS[Math.min(placingIndex, AFO_DESIGN_MARKERS.length - 1)];
         if (!marker) return;
-        applyView(cameraViewForAfoMarkerId(marker.id, afo.side));
-    }, [placingIndex, placingTrim, afo.side, applyView]);
+        applyView(cameraViewForAfoMarkerId(marker.id, afo.side, orientedSides));
+    }, [placingIndex, placingTrim, afo.side, orientedSides, applyView]);
+
+    useEffect(() => {
+        if (!placingClinicalId) return;
+        applyView(cameraViewForAfoMarkerId(placingClinicalId, afo.side, orientedSides));
+    }, [placingClinicalId, afo.side, orientedSides, applyView]);
 
     useEffect(() => {
         const trimPick = (): THREE.Mesh | null => {
@@ -220,7 +230,7 @@ export function AfoMarkerPlacement() {
             const next = placingIndex + 1;
             setPlacing(next);
             const upcoming = AFO_DESIGN_MARKERS[Math.min(next, AFO_DESIGN_MARKERS.length - 1)];
-            if (upcoming) applyView(cameraViewForAfoMarkerId(upcoming.id, afo.side));
+            if (upcoming) applyView(cameraViewForAfoMarkerId(upcoming.id, afo.side, orientedSides));
         };
 
         const onMove = (ev: PointerEvent) => {
@@ -272,6 +282,7 @@ export function AfoMarkerPlacement() {
         afo.clinicalMarkers,
         afo.landmarks,
         afo.side,
+        orientedSides,
         afo.trimConfirmed,
         afo.trimPoints,
         camera,

@@ -1,26 +1,23 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { useEffect } from "react";
+import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
+import { afoFrameSide, scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
 import {
     AFO_CAMERA_TWEEN_MS,
     AFO_PLACE_ADVANCE_MS,
+    type AfoMarkerKey,
     activeAfoTarget,
     afoScanAutoFrameAllowed,
     cameraViewForAfoMarker,
-    type AfoMarkerKey,
 } from "@/features/afo/afo-scan-ui";
-import { afoFrameSide, scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
-import {
-    applyCameraViewPreset,
-    VIEW_CAMERA_POS,
-    viewCameraUp,
-} from "@/lib/geometry/viewport-side-layout";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
-import type { CameraView } from "@/stores/design-store";
+import { orientedPlantarSides } from "@/lib/geometry/afo/marker-side";
+import { applyCameraViewPreset, VIEW_CAMERA_POS, viewCameraUp } from "@/lib/geometry/viewport-side-layout";
 import { useAfoStore } from "@/stores/afo-store";
+import type { CameraView } from "@/stores/design-store";
 import { useDesignStore } from "@/stores/design-store";
-import * as THREE from "three";
 
 export function useAfoScanCameraFrame(controls: React.RefObject<OrbitControlsImpl | null>) {
     const workflow = useDesignStore((s) => s.design.afo?.scanWorkflow) ?? defaultAfoScanWorkflow();
@@ -37,12 +34,17 @@ export function useAfoScanCameraFrame(controls: React.RefObject<OrbitControlsImp
         if (!afoScanAutoFrameAllowed(workflow)) return;
         const scan = scanForAfoWorkflow();
         const side = afoFrameSide(scan?.side ?? "left");
-        const view = cameraViewForAfoMarker(targetId as AfoMarkerKey, side);
+        const oriented = orientedPlantarSides(
+            workflow.matrixElements,
+            workflow.plantar.m1p,
+            workflow.plantar.m5p,
+        );
+        const view = cameraViewForAfoMarker(targetId as AfoMarkerKey, side, oriented);
         const timer = window.setTimeout(() => {
             tweenCameraView(ctrl, view, () => setView({ view }));
         }, AFO_PLACE_ADVANCE_MS);
         return () => window.clearTimeout(timer);
-    }, [targetId, placement, autoFrame, suppressed, controls, setView, workflow.alignmentApplied]);
+    }, [targetId, placement, autoFrame, suppressed, controls, setView, workflow]);
 
     useEffect(() => {
         const ctrl = controls.current;
@@ -66,15 +68,16 @@ export function recenterAfoScanCamera(controls: OrbitControlsImpl | null): void 
     }
     const scan = scanForAfoWorkflow();
     const side = afoFrameSide(scan?.side ?? "left");
-    const view = cameraViewForAfoMarker(targetId as AfoMarkerKey, side);
+    const oriented = orientedPlantarSides(
+        workflow.matrixElements,
+        workflow.plantar.m1p,
+        workflow.plantar.m5p,
+    );
+    const view = cameraViewForAfoMarker(targetId as AfoMarkerKey, side, oriented);
     tweenCameraView(controls, view, () => useDesignStore.getState().setViewer({ view }));
 }
 
-function tweenCameraView(
-    controls: OrbitControlsImpl,
-    view: CameraView,
-    onDone: () => void,
-): void {
+function tweenCameraView(controls: OrbitControlsImpl, view: CameraView, onDone: () => void): void {
     const destPos = new THREE.Vector3(...VIEW_CAMERA_POS[view]);
     const destUp = new THREE.Vector3(...viewCameraUp(view));
     const startPos = controls.object.position.clone();

@@ -80,10 +80,13 @@ export function afoViewportPlacementLayer(
     return activeMarkerPlacementLayer(isAfo, placingScanMarkers, placingAfoLandmarks);
 }
 
+/**
+ * Side of the scan being framed.
+ * The insole editing foot is a different control. Using it here mirrored every
+ * AFO marker when that foot disagreed with the leg on screen.
+ */
 export function afoFrameSide(scanSide: Side): Side {
-    const editing = useClinicalWorkflowStore.getState().elementPlacementFoot;
-    if (editing === "left" || editing === "right") return editing;
-    return scanSide;
+    return scanSide === "right" ? "right" : "left";
 }
 
 export function scanForAfoWorkflow(): {
@@ -291,6 +294,7 @@ export function applyAfoAlignment(levelToRearfoot = false): void {
     const scan = scanForAfoWorkflow();
     if (!scan) throw new Error("Import a foot+leg scan to start the AFO case.");
     const side = afoFrameSide(scan.side);
+    if (getAfoState().side !== side) patchAfoState({ side }, "afo-frame-side");
     const scale = Number.isFinite(scan.displayScale) && scan.displayScale > 0 ? scan.displayScale : 1;
     const mesh = scaleMesh(geometryToAfoMesh(scan.geometry), scale);
     let longitudinal: AfoVec3 | undefined;
