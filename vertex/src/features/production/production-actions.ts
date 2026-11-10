@@ -10,14 +10,39 @@ import type { SaveMoonrakerPrinterInput } from "../../../shared/moonraker-farm";
 import { closedPrinterDispatch } from "../../../shared/printer-adapter";
 import type { EnqueueInput, RegisterConfiguredPrinterInput } from "../../../shared/production-jobs";
 
-export async function loadProduction(): Promise<void> {
+export interface ProductionShop {
+    tenantId: string;
+    shopId?: string;
+}
+
+function shopInput(shop?: ProductionShop): { tenantId?: string; shopId?: string } {
+    if (!shop?.tenantId) return {};
+    return { tenantId: shop.tenantId, shopId: shop.shopId ?? shop.tenantId };
+}
+
+export async function loadProduction(shop?: ProductionShop): Promise<void> {
     if (!isApiConfigured()) return;
     try {
-        const result = await trpc.production.list.query();
-        useProductionStore.getState().replace(result.jobs, result.printers);
+        const result = await trpc.production.list.query(shop?.tenantId ? shopInput(shop) : undefined);
+        const state = useProductionStore.getState();
+        if (shop?.tenantId) {
+            const kept = state.printers.filter((printer) => printer.tenantId !== shop.tenantId);
+            state.replace(state.jobs, [...kept, ...result.printers]);
+            return;
+        }
+        state.replace(result.jobs, result.printers);
     } catch (error) {
         console.warn("[production] list fell back to this session", error);
     }
+}
+
+/** Shops a super_admin can enroll. Uses the existing super-admin tenant list. */
+export async function loadProductionShops(): Promise<{ id: string; name: string }[]> {
+    if (!isApiConfigured()) return [];
+    const tenants = await trpc.admin.tenants.list.query();
+    return tenants
+        .filter((tenant) => !tenant.archivedAt)
+        .map((tenant) => ({ id: tenant.id, name: tenant.name }));
 }
 
 function resolveEnqueueContext(): {
@@ -125,27 +150,34 @@ async function samePath(server: () => Promise<void>, local: () => Promise<void>)
     await local();
 }
 
-export function saveMoonrakerProductionPrinter(input: SaveMoonrakerPrinterInput): Promise<void> {
+export function saveMoonrakerProductionPrinter(
+    input: SaveMoonrakerPrinterInput,
+    shop?: ProductionShop,
+): Promise<void> {
     return samePath(
-        () => trpc.production.saveMoonrakerPrinter.mutate(input).then(() => undefined),
-        () => useProductionStore.getState().saveMoonraker(input),
+        () =>
+            trpc.production.saveMoonrakerPrinter
+                .mutate({ ...input, ...shopInput(shop) })
+                .then(() => undefined),
+        () => useProductionStore.getState().saveMoonraker(input, shop),
     );
 }
 
 export function createBridgeEnrollment(
     bridgeName: string,
+    shop?: ProductionShop,
 ): Promise<{ proof: string; bridgeId: string; expiresAt: string }> {
     if (!isApiConfigured()) {
         return Promise.reject(new Error("Production API is not configured."));
     }
-    return trpc.production.createBridgeEnrollment.mutate({ bridgeName });
+    return trpc.production.createBridgeEnrollment.mutate({ bridgeName, ...shopInput(shop) });
 }
 
-export function revokeBridgeEnrollment(bridgeId: string): Promise<void> {
+export function revokeBridgeEnrollment(bridgeId: string, shop?: ProductionShop): Promise<void> {
     if (!isApiConfigured()) {
         return Promise.reject(new Error("Production API is not configured."));
     }
-    return trpc.production.revokeBridge.mutate({ bridgeId }).then(() => undefined);
+    return trpc.production.revokeBridge.mutate({ bridgeId, ...shopInput(shop) }).then(() => undefined);
 }
 
 export function registerConfiguredProductionPrinter(input: RegisterConfiguredPrinterInput): Promise<void> {
@@ -187,10 +219,17 @@ export function cancelDispatchedProductionJob(id: string): Promise<void> {
     );
 }
 
-export function registerMockProductionPrinter(name: string, moonrakerUrl: string): Promise<void> {
+export function registerMockProductionPrinter(
+    name: string,
+    moonrakerUrl: string,
+    shop?: ProductionShop,
+): Promise<void> {
     return withServer(
-        () => trpc.production.registerMockPrinter.mutate({ name, moonrakerUrl }).then(() => undefined),
-        () => useProductionStore.getState().registerMock(name, moonrakerUrl),
+        () =>
+            trpc.production.registerMockPrinter
+                .mutate({ name, moonrakerUrl, ...shopInput(shop) })
+                .then(() => undefined),
+        () => useProductionStore.getState().registerMock(name, moonrakerUrl, shop),
     );
 }
 
