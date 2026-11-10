@@ -2,10 +2,11 @@
 // Bundle the print bridge for the Windows and macOS installers.
 // Does not download a Node runtime and does not sign the result.
 
-import { mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { manifestUrlForPayload } from "../baked-config.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const vertex = resolve(here, "../..");
@@ -31,10 +32,18 @@ for (const [entry, outfile] of [
     });
 }
 
+copyFileSync(resolve(here, "update-public-keys.json"), resolve(out, "update-public-keys.json"));
+
 const origin = (process.env.ORTHOCAD_BRIDGE_CLOUD_ORIGIN ?? "").trim();
 if (origin.startsWith("https://")) {
-    const { writeFileSync } = await import("node:fs");
     writeFileSync(resolve(out, "cloud-origin.txt"), `${origin}\n`);
+}
+const manifestUrl = manifestUrlForPayload({
+    origin,
+    envValue: process.env.ORTHOCAD_BRIDGE_UPDATE_MANIFEST_URL,
+});
+if (manifestUrl.startsWith("https://")) {
+    writeFileSync(resolve(out, "update-manifest-url.txt"), `${manifestUrl}\n`);
 }
 
 console.log(`Bundled print bridge payload in ${out}`);

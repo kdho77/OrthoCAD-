@@ -4,10 +4,17 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { importExistingInstall, takeoverLegacyBridge, windowsLegacyDirs } from "./import-existing-install.js";
+import { resolveUpdateManifestUrl } from "./baked-config.js";
+import {
+    decodeCommandOutput,
+    importExistingInstall,
+    queryWindowsBridgeTasks,
+    takeoverLegacyBridge,
+    windowsLegacyDirs,
+} from "./import-existing-install.js";
 import { type CommandRunner, createPlatformSecretStore } from "./secret-store.js";
 
 function stateDir(): string {
@@ -25,7 +32,7 @@ const runner: CommandRunner = (command, args, input) =>
         child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
         child.on("error", () => resolve({ code: 1, stdout: "", stderr: "" }));
         child.on("close", (code) =>
-            resolve({ code: code ?? 1, stdout: Buffer.concat(stdout).toString("utf8"), stderr: "" }),
+            resolve({ code: code ?? 1, stdout: decodeCommandOutput(Buffer.concat(stdout)), stderr: "" }),
         );
         child.stdin.end(input);
     });
@@ -43,10 +50,56 @@ function bakedOrigin(): string {
     return "";
 }
 
+const bundleDir = dirname(fileURLToPath(import.meta.url));
+
+function bakedManifestFile(): string {
+    try {
+        return readFileSync(join(bundleDir, "update-manifest-url.txt"), "utf8");
+    } catch {
+        return "";
+    }
+}
+
+function publishBundledPublicKeys(): void {
+    const bundled = join(bundleDir, "update-public-keys.json");
+    if (!existsSync(bundled)) return;
+    copyFileSync(bundled, join(dir, "update-public-keys.json"));
+}
+
+function writeBridgeConfig(bridgeId: string, existingManifest = ""): void {
+    writeFileSync(
+        configPath,
+        JSON.stringify(
+            {
+                origin: readOrigin(configPath) || origin,
+                bridgeId,
+                updateManifestUrl: resolveUpdateManifestUrl({
+                    envValue: process.env.ORTHOCAD_BRIDGE_UPDATE_MANIFEST_URL,
+                    bakedFile: bakedManifestFile(),
+                    existing: existingManifest,
+                }),
+            },
+            null,
+            2,
+        ),
+        { mode: 0o600 },
+    );
+}
+
+function readOrigin(path: string): string {
+    try {
+        const parsed = JSON.parse(readFileSync(path, "utf8")) as { origin?: unknown };
+        return typeof parsed.origin === "string" ? parsed.origin : "";
+    } catch {
+        return "";
+    }
+}
+
 const dir = stateDir();
 mkdirSync(dir, { recursive: true });
 const configPath = join(dir, "bridge.json");
 const origin = bakedOrigin();
+publishBundledPublicKeys();
 if (!existsSync(configPath)) {
     if (!origin.startsWith("https://")) {
         console.error(
@@ -54,19 +107,7 @@ if (!existsSync(configPath)) {
         );
         process.exit(1);
     }
-    writeFileSync(
-        configPath,
-        JSON.stringify(
-            {
-                origin,
-                bridgeId: randomUUID(),
-                updateManifestUrl: (process.env.ORTHOCAD_BRIDGE_UPDATE_MANIFEST_URL ?? "").trim(),
-            },
-            null,
-            2,
-        ),
-        { mode: 0o600 },
-    );
+    writeBridgeConfig(randomUUID());
 }
 
 if (process.platform === "win32" || process.platform === "darwin") {
@@ -78,6 +119,12 @@ if (process.platform === "win32" || process.platform === "darwin") {
     const tasks = existsSync(taskXmlPath)
         ? [{ name: "OrthoCAD Print Bridge", xml: readFileSync(taskXmlPath, "utf8") }]
         : [];
+    if (process.platform === "win32") {
+        const live = await queryWindowsBridgeTasks(runner);
+        for (const task of live) {
+            if (!tasks.some((item) => item.xml === task.xml)) tasks.push(task);
+        }
+    }
     const imported = await takeoverLegacyBridge({
         store,
         candidateDirs: candidates,
@@ -92,22 +139,27 @@ if (process.platform === "win32" || process.platform === "darwin") {
         await importExistingInstall({ stateDir: dir, store, taskXml: tasks[0]?.xml });
     } else if (imported.bridgeId) {
         const current = JSON.parse(readFileSync(configPath, "utf8")) as {
-            origin?: string;
             updateManifestUrl?: string;
         };
-        writeFileSync(
-            configPath,
-            JSON.stringify(
-                {
-                    origin: current.origin || origin,
-                    bridgeId: imported.bridgeId,
-                    updateManifestUrl: current.updateManifestUrl ?? "",
-                },
-                null,
-                2,
-            ),
-            { mode: 0o600 },
-        );
+        writeBridgeConfig(imported.bridgeId, current.updateManifestUrl ?? "");
+    }
+}
+
+if (existsSync(configPath)) {
+    const current = JSON.parse(readFileSync(configPath, "utf8")) as {
+        bridgeId?: unknown;
+        updateManifestUrl?: unknown;
+    };
+    if (typeof current.bridgeId === "string" && current.bridgeId) {
+        const existingManifest =
+            typeof current.updateManifestUrl === "string" ? current.updateManifestUrl : "";
+        const resolved = resolveUpdateManifestUrl({
+            envValue: process.env.ORTHOCAD_BRIDGE_UPDATE_MANIFEST_URL,
+            bakedFile: bakedManifestFile(),
+            existing: existingManifest,
+        });
+        if (resolved && resolved !== existingManifest.trim())
+            writeBridgeConfig(current.bridgeId, existingManifest);
     }
 }
 

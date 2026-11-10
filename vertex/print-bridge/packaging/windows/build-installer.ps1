@@ -12,8 +12,11 @@ Copy-Item (Join-Path $here "OrthoCADPrintBridge.xml") $stage
 Copy-Item (Join-Path $here "dpapi-store.ps1") $payload
 Copy-Item (Join-Path $dist "bridge.mjs") $payload
 Copy-Item (Join-Path $dist "prepare-config.mjs") $payload
+Copy-Item (Join-Path $dist "update-public-keys.json") $payload
 $originFile = Join-Path $dist "cloud-origin.txt"
 if (Test-Path $originFile) { Copy-Item $originFile $payload }
+$manifestFile = Join-Path $dist "update-manifest-url.txt"
+if (Test-Path $manifestFile) { Copy-Item $manifestFile $payload }
 Copy-Item (Get-Command node).Source (Join-Path $payload "node\node.exe")
 $winsw = Join-Path $stage "OrthoCADPrintBridge.exe"
 Invoke-WebRequest -Uri "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe" -OutFile $winsw

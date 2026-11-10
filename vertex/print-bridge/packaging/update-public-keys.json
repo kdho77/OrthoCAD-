@@ -1,3 +1,3 @@
 {
-    "replace-before-release": "REPLACE-WITH-PRODUCTION-PUBLIC-KEY"
+    "orthocad-print-bridge": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAxTrxRpFCCmghMEqKTQ1cEtWdtwHMxxg3ApZGQQuN0UI=\n-----END PUBLIC KEY-----\n"
 }

@@ -23,6 +23,7 @@ jobs:
             contents: write
         env:
             ORTHOCAD_BRIDGE_CLOUD_ORIGIN: https://orthocad.vertexorthopedic.com
+            ORTHOCAD_BRIDGE_UPDATE_MANIFEST_URL: https://github.com/kdho77/OrthoCAD-/releases/latest/download/update-manifest.json
         steps:
             - name: Checkout repository
               uses: actions/checkout@v4
@@ -36,7 +37,10 @@ jobs:
               env:
                   ORTHOCAD_BRIDGE_UPDATE_PRIVATE_KEY: ${{ secrets.ORTHOCAD_BRIDGE_UPDATE_PRIVATE_KEY }}
               run: |
+                  set +x
+                  set -euo pipefail
                   node vertex/print-bridge/packaging/write-release-manifest.mjs release-assets
+                  node vertex/print-bridge/packaging/guard-update-release.mjs
                   if [ -z "$ORTHOCAD_BRIDGE_UPDATE_PRIVATE_KEY" ]; then
                     echo "Update manifest signing skipped. Secret ORTHOCAD_BRIDGE_UPDATE_PRIVATE_KEY is absent."
                     echo "UNSIGNED update manifest" >> "$GITHUB_STEP_SUMMARY"

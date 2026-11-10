@@ -6,7 +6,7 @@
 
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { migratePlaintextCredential, type SecretStore } from "./secret-store.js";
+import { type CommandRunner, migratePlaintextCredential, type SecretStore } from "./secret-store.js";
 
 export interface ImportedInstall {
     bridgeId: string;
@@ -14,11 +14,41 @@ export interface ImportedInstall {
     importedCredential: boolean;
 }
 
+export function decodeCommandOutput(buffer: Buffer): string {
+    if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+        return buffer.toString("utf16le").replace(/^\uFEFF/, "");
+    }
+    const zero = buffer.indexOf(0);
+    if (zero !== -1 && zero < 8) return buffer.toString("utf16le").replace(/^\uFEFF/, "");
+    return buffer.toString("utf8");
+}
+
+export function normalizeSchtasksText(text: string): string {
+    if (!text.includes("\u0000")) return text.replace(/^\uFEFF/, "");
+    return Buffer.from(text, "utf8")
+        .toString("utf16le")
+        .replace(/^\uFEFF/, "");
+}
+
 export function readBridgeIdFromTaskXml(xml: string): { bridgeId: string; stateDir: string | null } | null {
-    const id = /ORTHOCAD_BRIDGE_ID(?:=|\s+|["'=]+)([0-9a-fA-F-]{8,64})/.exec(xml);
-    if (!id?.[1]) return null;
-    const dir = /ORTHOCAD_BRIDGE_STATE_DIR(?:=|\s+|["'=]+)([^"<\s]+)/.exec(xml);
-    return { bridgeId: id[1], stateDir: dir?.[1] ?? null };
+    const text = normalizeSchtasksText(xml);
+    const bridgeId = readTaggedValue(text, "ORTHOCAD_BRIDGE_ID", /[0-9a-fA-F-]{8,64}/);
+    const stateDir = readTaggedValue(text, "ORTHOCAD_BRIDGE_STATE_DIR", /[^"<\r\n]+/);
+    if (!bridgeId && !stateDir) return null;
+    return { bridgeId, stateDir: stateDir ? stateDir.trim() : null };
+}
+
+function readTaggedValue(xml: string, name: string, value: RegExp): string {
+    const patterns = [
+        new RegExp(`${name}\\s*=\\s*"?(${value.source})`, "i"),
+        new RegExp(`name=["']${name}["'][^>]*value=["'](${value.source})["']`, "i"),
+        new RegExp(`<(?:Variable|EnvironmentVariable)[^>]*name=["']${name}["'][^>]*>(${value.source})<`, "i"),
+    ];
+    for (const pattern of patterns) {
+        const match = pattern.exec(xml);
+        if (match?.[1]) return match[1].trim();
+    }
+    return "";
 }
 
 export async function importExistingInstall(input: {
@@ -58,6 +88,61 @@ export function windowsLegacyDirs(env: { programData: string; userProfile: strin
         root(env.userProfile, "AppData", "Roaming", "OrthoCAD", "PrintBridge"),
         root(env.userProfile, "AppData", "Local", "OrthoCAD", "PrintBridge"),
     ];
+}
+
+const BRIDGE_TASK_NAME = /orthocad|print-?bridge/i;
+const BRIDGE_TASK_BODY = /ORTHOCAD_BRIDGE_ID|ORTHOCAD_BRIDGE_STATE_DIR|print-bridge[/\\]main\.ts/i;
+
+export function bridgeTaskNamesFromSchtasksCsv(stdout: string): string[] {
+    const names: string[] = [];
+    for (const line of normalizeSchtasksText(stdout).split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const quoted = /^"([^"]+)"/.exec(trimmed);
+        const name = (quoted?.[1] ?? trimmed.split(",")[0] ?? "").trim();
+        if (!name || name === "TaskName") continue;
+        if (BRIDGE_TASK_NAME.test(name)) names.push(name);
+    }
+    return [...new Set(names)];
+}
+
+export function bridgeTaskNamesFromSchtasksList(stdout: string): string[] {
+    const names: string[] = [];
+    for (const block of normalizeSchtasksText(stdout).split(/\r?\n\s*\r?\n/)) {
+        const name = /(?:^|\n)\s*TaskName:\s*(.+)/i.exec(block)?.[1]?.trim();
+        if (!name) continue;
+        if (BRIDGE_TASK_NAME.test(name) || BRIDGE_TASK_BODY.test(block)) names.push(name);
+    }
+    return [...new Set(names)];
+}
+
+export async function queryWindowsBridgeTasks(run: CommandRunner): Promise<{ name: string; xml: string }[]> {
+    const names = new Set<string>(["\\OrthoCAD Print Bridge", "OrthoCAD Print Bridge"]);
+    const listed = await run("schtasks.exe", ["/Query", "/FO", "LIST", "/V"], "");
+    if (listed.code === 0) {
+        for (const name of bridgeTaskNamesFromSchtasksList(listed.stdout)) names.add(name);
+    }
+    const csv = await run("schtasks.exe", ["/Query", "/FO", "CSV", "/NH"], "");
+    if (csv.code === 0) {
+        for (const name of bridgeTaskNamesFromSchtasksCsv(csv.stdout)) names.add(name);
+    }
+    const tasks: { name: string; xml: string }[] = [];
+    const seen = new Set<string>();
+    for (const name of names) {
+        const exported = await run("schtasks.exe", ["/Query", "/TN", name, "/XML"], "");
+        if (exported.code !== 0) continue;
+        const xml = normalizeSchtasksText(exported.stdout);
+        if (!xml.includes("<Task") || seen.has(xml)) continue;
+        seen.add(xml);
+        tasks.push({ name, xml });
+    }
+    return tasks;
+}
+
+export function installedBridgePlan(
+    discovered: { bridgeId: string; stateDir: string } | null,
+): "import" | "pairing" {
+    return discovered?.bridgeId ? "import" : "pairing";
 }
 
 export function scheduledTasksToReplace(tasks: { name: string; xml: string }[]): string[] {

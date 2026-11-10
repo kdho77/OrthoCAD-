@@ -3,7 +3,7 @@
 // Does not contact printers and does not require a production certificate.
 
 import { spawnSync } from "node:child_process";
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,9 +37,38 @@ if (!swift.includes("SecItemAdd") || !swift.includes("kSecClassGenericPassword")
     throw new Error("macOS credential helper must use the Keychain.");
 }
 
-for (const script of ["macos/build-pkg.sh", "macos/notarize-macos.sh", "macos/scripts/postinstall"]) {
+for (const script of [
+    "macos/build-pkg.sh",
+    "macos/build-release.sh",
+    "macos/notarize-macos.sh",
+    "macos/scripts/postinstall",
+]) {
     const result = spawnSync("bash", ["-n", resolve(here, script)], { encoding: "utf8" });
     if (result.status !== 0) throw new Error(`${script} failed bash -n: ${result.stderr}`);
+}
+
+const publicKeys = JSON.parse(read("update-public-keys.json"));
+const productionKey = publicKeys["orthocad-print-bridge"];
+if (typeof productionKey !== "string" || publicKeys["replace-before-release"]) {
+    throw new Error("update-public-keys.json must use the orthocad-print-bridge key id.");
+}
+if (
+    productionKey.includes("REPLACE") ||
+    read("update-public-keys.json").includes("REPLACE-WITH-PRODUCTION-PUBLIC-KEY")
+) {
+    throw new Error("update-public-keys.json still contains the placeholder public key.");
+}
+if (createPublicKey(productionKey).asymmetricKeyType !== "ed25519") {
+    throw new Error("orthocad-print-bridge is not an Ed25519 SPKI public key.");
+}
+const entitlements = read("macos/entitlements.plist");
+if (!entitlements.includes("com.apple.security.cs.allow-jit")) {
+    throw new Error("The embedded Node entitlements must allow JIT.");
+}
+for (const installer of ["windows/build-installer.ps1", "macos/build-pkg.sh", "build-payload.mjs"]) {
+    if (!read(installer).includes("update-public-keys.json")) {
+        throw new Error(`${installer} must copy update-public-keys.json into the installer payload.`);
+    }
 }
 
 const build = spawnSync(process.execPath, [resolve(here, "build-payload.mjs")], {

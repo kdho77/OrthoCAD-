@@ -47,6 +47,7 @@ jobs:
               working-directory: vertex
               env:
                   ORTHOCAD_BRIDGE_CLOUD_ORIGIN: https://orthocad.vertexorthopedic.com
+                  ORTHOCAD_BRIDGE_UPDATE_MANIFEST_URL: https://github.com/kdho77/OrthoCAD-/releases/latest/download/update-manifest.json
               run: node print-bridge/packaging/build-payload.mjs
             - name: Compile OrthoCAD-Print-Bridge-Setup.exe
               run: pwsh vertex/print-bridge/packaging/windows/build-installer.ps1
@@ -74,7 +75,7 @@ jobs:
 
     build-macos:
         runs-on: macos-latest
-        timeout-minutes: 30
+        timeout-minutes: 45
         steps:
             - name: Checkout repository
               uses: actions/checkout@v4
@@ -88,26 +89,39 @@ jobs:
               working-directory: vertex
               env:
                   ORTHOCAD_BRIDGE_CLOUD_ORIGIN: https://orthocad.vertexorthopedic.com
+                  ORTHOCAD_BRIDGE_UPDATE_MANIFEST_URL: https://github.com/kdho77/OrthoCAD-/releases/latest/download/update-manifest.json
               run: node print-bridge/packaging/build-payload.mjs
-            - name: Build the package and disk image
-              run: bash vertex/print-bridge/packaging/macos/build-release.sh
-            - name: Notarize when the Apple secrets are present
+            - name: Build, sign, and notarize the macOS installers
               env:
-                  ORTHOCAD_APPLE_ID: ${{ secrets.ORTHOCAD_APPLE_ID }}
+                  ORTHOCAD_MACOS_DEVID_APP_P12_BASE64: ${{ secrets.ORTHOCAD_MACOS_DEVID_APP_P12_BASE64 }}
+                  ORTHOCAD_MACOS_DEVID_INSTALLER_P12_BASE64: ${{ secrets.ORTHOCAD_MACOS_DEVID_INSTALLER_P12_BASE64 }}
+                  ORTHOCAD_MACOS_P12_PASSWORD: ${{ secrets.ORTHOCAD_MACOS_P12_PASSWORD }}
                   ORTHOCAD_APPLE_TEAM_ID: ${{ secrets.ORTHOCAD_APPLE_TEAM_ID }}
+                  ORTHOCAD_ASC_API_KEY_P8_BASE64: ${{ secrets.ORTHOCAD_ASC_API_KEY_P8_BASE64 }}
+                  ORTHOCAD_ASC_API_KEY_ID: ${{ secrets.ORTHOCAD_ASC_API_KEY_ID }}
+                  ORTHOCAD_ASC_API_ISSUER_ID: ${{ secrets.ORTHOCAD_ASC_API_ISSUER_ID }}
+                  ORTHOCAD_APPLE_ID: ${{ secrets.ORTHOCAD_APPLE_ID }}
                   ORTHOCAD_APPLE_APP_PASSWORD: ${{ secrets.ORTHOCAD_APPLE_APP_PASSWORD }}
               run: |
-                  if [ -z "$ORTHOCAD_APPLE_ID" ] || [ -z "$ORTHOCAD_APPLE_TEAM_ID" ] || [ -z "$ORTHOCAD_APPLE_APP_PASSWORD" ]; then
-                    printf '%s\n' "SHORT-UNSIGNED" "This macOS package is unsigned and not notarized. Set ORTHOCAD_APPLE_ID, ORTHOCAD_APPLE_TEAM_ID, and ORTHOCAD_APPLE_APP_PASSWORD." > vertex/print-bridge/packaging/dist/SHORT-UNSIGNED.txt
-                    echo "UNSIGNED macOS installer" >> "$GITHUB_STEP_SUMMARY"
-                  else
-                    umask 077
-                    pass="$(mktemp)"
-                    printf '%s' "$ORTHOCAD_APPLE_APP_PASSWORD" > "$pass"
-                    ORTHOCAD_APPLE_APP_PASSWORD_FILE="$pass" bash vertex/print-bridge/packaging/macos/notarize-macos.sh vertex/print-bridge/packaging/dist/OrthoCAD-Print-Bridge.pkg
-                    rm -f "$pass"
-                    echo "SIGNED macOS installer" >> "$GITHUB_STEP_SUMMARY"
-                  fi
+                  set +x
+                  set -euo pipefail
+                  bash vertex/print-bridge/packaging/macos/build-release.sh
+                  status="$(tr -d '\r' < vertex/print-bridge/packaging/dist/signing-status.txt || echo unsigned)"
+                  case "$status" in
+                    notarized)
+                      echo "SIGNED and notarized macOS installer" >> "$GITHUB_STEP_SUMMARY"
+                      ;;
+                    signed)
+                      echo "SIGNED macOS installer; notarization skipped" >> "$GITHUB_STEP_SUMMARY"
+                      ;;
+                    *)
+                      printf '%s\n' "SHORT-UNSIGNED" "This macOS package is unsigned and not notarized. Set ORTHOCAD_MACOS_DEVID_APP_P12_BASE64, ORTHOCAD_MACOS_DEVID_INSTALLER_P12_BASE64, ORTHOCAD_MACOS_P12_PASSWORD, and ORTHOCAD_APPLE_TEAM_ID." > vertex/print-bridge/packaging/dist/SHORT-UNSIGNED.txt
+                      echo "UNSIGNED macOS installer" >> "$GITHUB_STEP_SUMMARY"
+                      ;;
+                  esac
+            - name: Delete the temporary signing keychain
+              if: always()
+              run: bash vertex/print-bridge/packaging/macos/notarize-macos.sh cleanup
             - name: Upload macOS installers
               uses: actions/upload-artifact@v4
               with:

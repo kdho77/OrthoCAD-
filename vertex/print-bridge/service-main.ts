@@ -6,7 +6,8 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runBridgeSession } from "../shared/print-bridge-session.js";
 import { productionBridgePolicy } from "../shared/printer-address-resolve.js";
 import { stageVerifiedUpdate } from "./apply-update.js";
@@ -111,30 +112,34 @@ async function postJson(origin: string, path: string, body: unknown, credential:
     });
 }
 
-function trustedPublicKeys(dir: string): Record<string, string> | undefined {
-    try {
-        const parsed = JSON.parse(readFileSync(join(dir, "update-public-keys.json"), "utf8")) as Record<
-            string,
-            unknown
-        >;
-        const trusted = Object.fromEntries(
-            Object.entries(parsed).filter(
-                (entry): entry is [string, string] =>
-                    typeof entry[1] === "string" &&
-                    entry[1].includes("BEGIN PUBLIC KEY") &&
-                    !entry[1].includes("REPLACE"),
-            ),
-        );
-        return Object.keys(trusted).length > 0 ? trusted : undefined;
-    } catch {
-        return undefined;
+function trustedPublicKeys(dirs: string[]): Record<string, string> | undefined {
+    const trusted: Record<string, string> = {};
+    for (const dir of dirs) {
+        try {
+            const parsed = JSON.parse(readFileSync(join(dir, "update-public-keys.json"), "utf8")) as Record<
+                string,
+                unknown
+            >;
+            for (const [key, value] of Object.entries(parsed)) {
+                if (
+                    typeof value === "string" &&
+                    value.includes("BEGIN PUBLIC KEY") &&
+                    !value.includes("REPLACE")
+                ) {
+                    trusted[key] = value;
+                }
+            }
+        } catch {
+            // The payload or state directory may not have the key file yet.
+        }
     }
+    return Object.keys(trusted).length > 0 ? trusted : undefined;
 }
 
 const dir = process.env.ORTHOCAD_BRIDGE_STATE_DIR?.trim() || stateDir();
 const config = readConfig(dir);
 const store = createPlatformSecretStore({ platform: process.platform, stateDir: dir, run: runner });
-const publicKeys = trustedPublicKeys(dir);
+const publicKeys = trustedPublicKeys([dir, dirname(fileURLToPath(import.meta.url))]);
 
 const result = await runInstalledBridge({
     origin: config.origin,
