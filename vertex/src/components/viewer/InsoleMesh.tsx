@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
+import { usePublishMeasureSolid } from "@/features/measure/publish-solid";
 import { useInsoleGeometry } from "@/hooks/useInsoleGeometry";
 import { applyDesignElementColors } from "@/lib/geometry/element-visualization";
 import { sideOffsetX } from "@/lib/geometry/layout";
@@ -120,6 +121,13 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
 
     const offsetX = sideOffsetX(side, layout.widthMm);
     const displayGeo = coloredGeometry ?? geometry;
+    usePublishMeasureSolid(
+        `insole-${side}`,
+        displayGeo,
+        "insole",
+        side,
+        `${layout.lengthMm}:${layout.widthMm}:${design.thicknessMm}:${design.elements.length}`,
+    );
 
     if (!displayGeo || building) return null;
 
@@ -132,6 +140,7 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
                 position={[-layout.lengthMm / 2, offsetX, 0]}
                 castShadow
                 receiveShadow
+                userData={{ measureSolid: true, measureId: `insole-${side}`, measureSide: side }}
             />
             {!heightmap && (
                 <group position={[-layout.lengthMm / 2, offsetX, 0]}>

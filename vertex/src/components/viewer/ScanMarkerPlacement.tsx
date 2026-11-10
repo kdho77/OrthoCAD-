@@ -3,9 +3,11 @@
 import { useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
+import { markerPlacementBlocked } from "@/features/measure/exclusive-mode";
 import { worldHitToScanLocal } from "@/lib/geometry/scan-display";
 import { resolveMarkerPlacementTarget } from "@/lib/geometry/scan-marker-target";
 import { refineHitOnFullMesh } from "@/lib/geometry/scan-pick-mesh";
+import { measureToolArmed } from "@/stores/measure-store";
 import { type MarkerId, useScanStore } from "@/stores/scan-store";
 
 /**
@@ -86,6 +88,7 @@ export function ScanMarkerPlacement() {
     const onPointerDown = useCallback(
         (e: PointerEvent) => {
             if (!placementMode) return;
+            if (markerPlacementBlocked(measureToolArmed())) return;
             const local = hitScanLocal(e.clientX, e.clientY, placementMode.scanId);
             if (!local) return;
             e.stopPropagation();

@@ -3,6 +3,7 @@
 import { type ThreeEvent, useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
+import { trimEditBlocked } from "@/features/measure/exclusive-mode";
 import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { shiftClosedLoopForefoot } from "@/lib/geometry/procedural-wall/modifiers";
@@ -22,6 +23,7 @@ import {
 } from "@/lib/geometry/trimline";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useDesignStore } from "@/stores/design-store";
+import { useMeasureStore } from "@/stores/measure-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import { useScanStore } from "@/stores/scan-store";
@@ -39,12 +41,13 @@ export function TrimlineEditTools() {
     const getTrimlineForSide = useMeshEditStore((s) => s.getTrimlineForSide);
     // Match insole hide during marker placement — outline would otherwise linger.
     const placingMarkers = useScanStore((s) => s.placementMode != null);
+    const measureArmed = useMeasureStore((s) => s.tool != null);
 
     const sides: Side[] = [];
     if (viewer.showLeft) sides.push("left");
     if (viewer.showRight) sides.push("right");
 
-    if (placingMarkers) return null;
+    if (placingMarkers || trimEditBlocked(measureArmed)) return null;
 
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>

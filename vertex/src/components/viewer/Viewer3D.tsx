@@ -17,6 +17,7 @@ import { Suspense, useEffect, useRef } from "react";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
+import { MeasureOverlay } from "@/features/measure/MeasureOverlay";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
 import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -273,6 +274,7 @@ export function Viewer3D() {
                     {!printPreview ? <MeshEditTools /> : null}
                     {!printPreview && !loftOverlay.blockViewport ? <TrimlineEditTools /> : null}
                     {!printPreview && !loftOverlay.blockViewport ? <BottomPatternEditTools /> : null}
+                    <MeasureOverlay />
                     <PerformanceMonitorOverlay />
                 </Suspense>
 
