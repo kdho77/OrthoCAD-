@@ -361,7 +361,9 @@ export function probeThickness(
     const dir = normalize(inward);
     if (!dir) return null;
     const hits = collectHits(mesh, origin, dir);
-    const next = hits.find((hit) => hit.t > 0.05);
+    // Skip the start surface and rim walls. The opposite face is the first hit
+    // whose normal is nearly parallel to the probe (body or edge thickness).
+    const next = hits.find((hit) => hit.t > 0.2 && Math.abs(dot(hit.normal, dir)) > 0.65);
     return next ? next.t : null;
 }
 
