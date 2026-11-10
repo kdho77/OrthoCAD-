@@ -5,6 +5,7 @@ import { applyClinicalCast } from "@/lib/geometry/afo/cast";
 import { applyAfoCorrections, correctionContextFromAfo } from "@/lib/geometry/afo/corrections";
 import { detectTibialCrest } from "@/lib/geometry/afo/crest";
 import {
+    afoPrintParams,
     correctionsForSide,
     defaultAfoDesignState,
     defaultAfoSideCorrection,
@@ -78,7 +79,7 @@ export function getAfoState() {
         cast: { ...base.cast, ...design.afo.cast },
         corrections: mergeCorrections(base.corrections, design.afo.corrections),
         reliefs: { ...base.reliefs, ...design.afo.reliefs },
-        print: { ...base.print, ...design.afo.print },
+        print: afoPrintParams({ ...base.print, ...design.afo.print }),
         crest: { ...base.crest, ...design.afo.crest },
         clinicalMarkers: design.afo.clinicalMarkers ?? [],
         landmarks: design.afo.landmarks ?? [],

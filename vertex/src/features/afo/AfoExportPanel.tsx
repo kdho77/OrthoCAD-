@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { useState } from "react";
+import { afoShellSliceFields } from "@/features/exports/apex-print-material";
 import { ExportPanel } from "@/features/exports/ExportPanel";
 import { generateHybridGcode } from "@/features/exports/export-service";
 import { PRINTER_PRESETS } from "@/lib/kiri/presets";
@@ -20,8 +21,19 @@ export function AfoExportPanel() {
             setMsg("No printer preset available.");
             return;
         }
-        const res = await generateHybridGcode(exportSide, preset, { type: "straight" });
-        setMsg(res.ok ? `Sent to VertexSlice (${res.filename ?? "ok"})` : (res.reason ?? "Send failed"));
+        const slice = afoShellSliceFields();
+        const res = await generateHybridGcode(
+            exportSide,
+            preset,
+            { type: "straight" },
+            {},
+            { afoSliceMaterial: slice.material },
+        );
+        setMsg(
+            res.ok
+                ? `Sent to VertexSlice (${slice.material}, ${res.filename ?? "ok"})`
+                : (res.reason ?? "Send failed"),
+        );
     };
 
     return (

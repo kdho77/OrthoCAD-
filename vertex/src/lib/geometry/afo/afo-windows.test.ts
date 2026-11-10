@@ -297,14 +297,14 @@ describe("AFO Windows parity", () => {
         afo.corrections.right.toeRiseMm = 7;
         afo.corrections.patientName = "KENDON";
         afo.cast.flattenBottom = true;
-        afo.print.material = "PA12";
+        afo.print.material = "ApexVylon";
         const env = designSettingsEnvelope({ productType: "afo", afo });
         const back = readStoredDesignSettings(env) as {
             afo: typeof afo;
         };
         expect(back.afo.corrections.left.heelLiftMm).toBe(4);
         expect(back.afo.corrections.right.toeRiseMm).toBe(7);
-        expect(back.afo.print.material).toBe("PA12");
+        expect(back.afo.print.material).toBe("ApexVylon");
         expect(back.afo.cast.flattenRemoveMm).toBe(7);
         expect(textMatchesSide("KENDON L", "left")).toBe(true);
         expect(textMatchesSide("KENDON R", "left")).toBe(false);

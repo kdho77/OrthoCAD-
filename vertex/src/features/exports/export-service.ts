@@ -1,5 +1,6 @@
 import {
     type ApexPrintMaterialId,
+    afoShellSliceFields,
     isApexPrintMaterialExportReady,
     lockedProfileIdForApexMaterial,
     type VertexSliceMaterialId,
@@ -359,6 +360,11 @@ export interface HybridGcodeOptions {
     /** @deprecated Shore-A names are not printer materials. Use apexMaterialId. */
     material?: string;
     apexMaterialId?: ApexPrintMaterialId;
+    /**
+     * AFO shell only. Sends `apex_vylon` on the locked Apex V2 profile.
+     * Insole exports leave this unset and keep the Apex Light / Core / Bounce picker.
+     */
+    afoSliceMaterial?: "apex_vylon";
     /** Default on for belt G-code. Mesh and CNC callers leave this unset. */
     includeLeaderBlock?: boolean;
     onProgress?: (step: string) => void;
@@ -472,15 +478,16 @@ export async function generateHybridGcode(
     // Belt: one local-frame STL per foot. Bed printers keep the side-by-side pair STL.
     const separateFiles = pairExportLayout(family) === "separate-files";
     const outputType = separateFiles ? "gcode" : "stl";
-    if (outputType === "gcode" && !isApexPrintMaterialExportReady(options.apexMaterialId)) {
+    const afoSlice = options.afoSliceMaterial === "apex_vylon" ? afoShellSliceFields() : null;
+    if (outputType === "gcode" && !afoSlice && !isApexPrintMaterialExportReady(options.apexMaterialId)) {
         return {
             ok: false,
             reason: "Pick Apex Light or Apex Core before exporting G-code.",
         };
     }
     const sliceFields =
-        outputType === "gcode" && options.apexMaterialId
-            ? printerGcodeSliceFields(options.apexMaterialId)
+        outputType === "gcode"
+            ? (afoSlice ?? (options.apexMaterialId ? printerGcodeSliceFields(options.apexMaterialId) : null))
             : null;
     const ext = outputType === "gcode" ? "gcode" : "stl";
     const filename =

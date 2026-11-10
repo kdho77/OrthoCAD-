@@ -8,6 +8,7 @@ import type {
     AfoCrestState,
     AfoDesignMarkerId,
     AfoDesignState,
+    AfoPrintMaterialId,
     AfoPrintParams,
     AfoReliefs,
     AfoScanWorkflow,
@@ -32,7 +33,31 @@ export const AFO_BRACE_FIBULA_HARD_MM = 15;
 export const AFO_SMOOTH_ITERATIONS = 6;
 /** Rim band over which thickness blends from the wall to the edge (mm). */
 export const AFO_RIM_BAND_MM = 10;
-export const AFO_MATERIAL = "PLA";
+/** Print-step material ids. ApexVylon is the only AFO shell filament. */
+export const AFO_PRINT_MATERIAL_IDS = ["ApexVylon"] as const satisfies readonly AfoPrintMaterialId[];
+/** Default and only AFO print material. Founder spelling: ApexVylon. */
+export const AFO_MATERIAL: AfoPrintMaterialId = "ApexVylon";
+
+/**
+ * AFO print accepts only ApexVylon. Saved settingsJson values such as PLA are ignored.
+ */
+export function coerceAfoPrintMaterial(value: unknown): AfoPrintMaterialId {
+    const offered = AFO_PRINT_MATERIAL_IDS.find((id) => id === value);
+    return offered ?? AFO_MATERIAL;
+}
+
+/** Fill print defaults and force the material onto ApexVylon. */
+export function afoPrintParams(
+    print?: (Partial<Omit<AfoPrintParams, "material">> & { material?: unknown }) | null,
+): AfoPrintParams {
+    return {
+        thicknessMm: print?.thicknessMm ?? AFO_THICKNESS_MM,
+        edgeMm: print?.edgeMm ?? AFO_EDGE_MM,
+        flareMm: print?.flareMm ?? AFO_FLARE_MM,
+        material: coerceAfoPrintMaterial(print?.material),
+    };
+}
+
 export const AFO_FLATTEN_REMOVE_MM = 7;
 export const AFO_FLATTEN_ADD_MM = 2.8;
 export const AFO_FLATTEN_WARN_MM = 8;
@@ -255,12 +280,7 @@ export function defaultAfoCast(): AfoCastState {
 }
 
 export function defaultAfoPrint(): AfoPrintParams {
-    return {
-        thicknessMm: AFO_THICKNESS_MM,
-        edgeMm: AFO_EDGE_MM,
-        flareMm: AFO_FLARE_MM,
-        material: AFO_MATERIAL,
-    };
+    return afoPrintParams(null);
 }
 
 export function defaultAfoScanWorkflow(): AfoScanWorkflow {
