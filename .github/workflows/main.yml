@@ -14,7 +14,6 @@ concurrency:
 
 jobs:
     unit-tests:
-        if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
         timeout-minutes: 90
         strategy:
@@ -63,7 +62,6 @@ jobs:
     # Required acceptance. The unit shards exclude *.optional.test.ts on purpose.
     # This job runs that file against a synthetic local Postgres and fails closed.
     isolated-postgres-acceptance:
-        if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
         timeout-minutes: 20
         services:
@@ -110,7 +108,7 @@ jobs:
     test-and-deploy:
         # Branch protection gates on this job name; it aggregates shard results
         # and the isolated PostgreSQL acceptance job.
-        if: always() && github.event_name != 'workflow_dispatch'
+        if: always()
         needs: [unit-tests, isolated-postgres-acceptance]
         runs-on: ubuntu-latest
         timeout-minutes: 15
