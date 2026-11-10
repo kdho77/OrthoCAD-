@@ -6,7 +6,8 @@
     "framework": "vite",
     "functions": {
         "api/trpc/[[...trpc]].ts": {
-            "maxDuration": 300
+            "maxDuration": 300,
+            "includeFiles": "public/{fonts,elements}/**"
         }
     },
     "rewrites": [

@@ -25,6 +25,40 @@ const assetBytesCache = new Map<string, { hash: string; buffer: ArrayBuffer }>()
 const sidecarCache = new Map<string, ElementAssetSidecar>();
 const widthBasisCache = new Map<Side, BufferGeometry>();
 
+/** Relative file under public/elements, for example `index.json` or `met_bar_1.right.glb`. */
+export type ElementAssetReader = (relativePath: string) => Uint8Array | Promise<Uint8Array>;
+
+export interface ElementAssetInjection {
+    /** Absolute directory. Used instead of the cwd candidates when set. */
+    elementsBaseDir?: string | null;
+    /** When set, reads those bytes instead of the directory or a relative fetch. */
+    reader?: ElementAssetReader | null;
+}
+
+let injectedElementsBaseDir: string | null = null;
+let injectedElementReader: ElementAssetReader | null = null;
+
+function clearElementAssetCaches(): void {
+    manifestCache = null;
+    assetBytesCache.clear();
+    sidecarCache.clear();
+    widthBasisCache.clear();
+}
+
+/**
+ * Opt-in source for the headless loft. The browser fetch path is unchanged
+ * when this has not been called.
+ */
+export function injectElementAssetSource(source: ElementAssetInjection | null): void {
+    injectedElementsBaseDir = source?.elementsBaseDir ?? null;
+    injectedElementReader = source?.reader ?? null;
+    clearElementAssetCaches();
+}
+
+export function resetElementAssetSourceForTests(): void {
+    injectElementAssetSource(null);
+}
+
 function canReadLocalElements(): boolean {
     return typeof process !== "undefined" && Boolean(process.versions?.node);
 }
@@ -67,6 +101,7 @@ async function fetchElementsResponse(relativePath: string): Promise<Response> {
 }
 
 async function resolveElementsDir(): Promise<string> {
+    if (injectedElementsBaseDir) return injectedElementsBaseDir;
     const { existsSync } = await import("node:fs");
     const { resolve } = await import("node:path");
     const a = resolve(process.cwd(), "vertex/public/elements");
@@ -75,7 +110,21 @@ async function resolveElementsDir(): Promise<string> {
     return b;
 }
 
+async function readInjectedBytes(relativePath: string): Promise<Uint8Array | null> {
+    if (!injectedElementReader) return null;
+    const raw = await injectedElementReader(relativePath);
+    return raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+}
+
 async function readElementsText(relativePath: string): Promise<string> {
+    const injected = await readInjectedBytes(relativePath);
+    if (injected) {
+        const text = new TextDecoder().decode(injected);
+        if (text.trimStart().startsWith("<!DOCTYPE") || text.trimStart().startsWith("<html")) {
+            throw new Error(`Element asset /elements/${relativePath} returned HTML (missing from build)`);
+        }
+        return text;
+    }
     if (canReadLocalElements()) {
         const { readFileSync } = await import("node:fs");
         const { resolve } = await import("node:path");
@@ -90,6 +139,11 @@ async function readElementsText(relativePath: string): Promise<string> {
 }
 
 async function readElementsBuffer(relativePath: string): Promise<ArrayBuffer> {
+    const injected = await readInjectedBytes(relativePath);
+    if (injected) {
+        assertElementAssetBytes(relativePath, injected);
+        return injected.buffer.slice(injected.byteOffset, injected.byteOffset + injected.byteLength);
+    }
     if (canReadLocalElements()) {
         const { readFileSync } = await import("node:fs");
         const { resolve } = await import("node:path");

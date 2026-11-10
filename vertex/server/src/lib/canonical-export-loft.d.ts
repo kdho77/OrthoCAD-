@@ -7,6 +7,8 @@ export function buildFinalizedFootFromSavedSettings(input: {
     side: "left" | "right";
     sampleTopBytes: ArrayBuffer;
     includeLeader?: boolean;
+    fontBytes?: ArrayBuffer;
+    elementsBaseDir?: string;
 }): Promise<{
     side: "left" | "right";
     stl: ArrayBuffer;
