@@ -96,6 +96,7 @@ function workerRequest(
             if (msg.type === "geometry") {
                 const mesh = geometryToAfoMesh(payloadToGeometry(msg.payload));
                 if (typeof msg.rimFaceStart === "number") mesh.rimFaceStart = msg.rimFaceStart;
+                if (typeof msg.outerVertex0 === "number") mesh.outerVertex0 = msg.outerVertex0;
                 resolve(mesh);
                 return;
             }

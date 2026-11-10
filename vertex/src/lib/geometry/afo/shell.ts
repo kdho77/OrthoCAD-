@@ -8,10 +8,16 @@ import {
     AFO_THICKNESS_MM,
 } from "./defaults";
 import { geodesicVertexPath } from "./geodesic";
-import { cloneMesh, computeVertexNormals, nearestVertex, vertexCount } from "./mesh-ops";
+import { cloneMesh, computeVertexNormals, meshProjector, nearestVertex, vertexCount } from "./mesh-ops";
 import { offsetMeshAlongNormals } from "./sdf-offset";
 import { embedTrimPolyline } from "./shell-cut";
-import { boundaryLoops, closeShellWithRoundRim } from "./shell-rim";
+import {
+    boundaryLoops,
+    closeShellWithRoundRim,
+    finishShellLip,
+    repairFlippedOffsets,
+    straightenFeatureLoops,
+} from "./shell-rim";
 import type { AfoShellOptions, AfoTriMesh, AfoVec3 } from "./types";
 
 /**
@@ -42,13 +48,123 @@ export function buildAfoShell(
         embedded && embedded.loop.length >= 3 ? embedded.loop : resolveShellTrimLoop(mesh, trimVertexIndices);
     // A projected trim is already a chain of mesh edges. Geodesic fill is only
     // for a vertex-id loop that was never split into the surface.
-    const keep = cleanupBoundary(
-        extractKeepRegion(surface, loop, options.heelSeed, !(embedded && embedded.loop.length >= 3)),
+    const keep = snapBoundaryToCurve(
+        cleanupBoundary(
+            extractKeepRegion(surface, loop, options.heelSeed, !(embedded && embedded.loop.length >= 3)),
+        ),
+        options.trimPolygon,
     );
     options.onProgress?.(0.25, "thicken");
     const shell = thickenOpenSurface(keep, options.thicknessMm, options.edgeMm, options.flareMm);
+    tightenBoundaryToCurve(shell, options.trimPolygon);
+    finishShellLip(shell);
+    enforceShellClearance(shell, options.thicknessMm, options.edgeMm);
+    repairFlippedOffsets(shell);
+    straightenFeatureLoops(shell);
     options.onProgress?.(1, "done");
     return shell;
+}
+
+/** Nudge an opening vertex that the lip repair pulled off the trim back toward it. */
+function tightenBoundaryToCurve(shell: AfoTriMesh, curve: AfoVec3[] | undefined): void {
+    const n = shell.outerVertex0;
+    const face0 = shell.rimFaceStart;
+    if (!curve || curve.length < 3 || n == null || face0 == null) return;
+    const count = new Map<string, { a: number; b: number; n: number }>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let f = 0; f < face0; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        if (!vs.every((v) => v < n)) continue;
+        for (let e = 0; e < 3; e++) {
+            const a = vs[e]!;
+            const b = vs[(e + 1) % 3]!;
+            const k = key(a, b);
+            const prev = count.get(k);
+            if (prev) prev.n += 1;
+            else count.set(k, { a, b, n: 1 });
+        }
+    }
+    const boundary = new Set<number>();
+    for (const e of count.values()) {
+        if (e.n !== 1) continue;
+        boundary.add(e.a);
+        boundary.add(e.b);
+    }
+    // Only a vertex already within 0.22 mm can move, so the closest curve
+    // segment is in the same 4 mm cell or a neighbour.
+    const cell = 4;
+    const buckets = new Map<string, number[]>();
+    const cellOf = (v: number) => Math.floor(v / cell);
+    for (let k = 0; k < curve.length; k++) {
+        const a = curve[k]!;
+        const b = curve[(k + 1) % curve.length]!;
+        const x0 = cellOf(Math.min(a.x, b.x));
+        const x1 = cellOf(Math.max(a.x, b.x));
+        const y0 = cellOf(Math.min(a.y, b.y));
+        const y1 = cellOf(Math.max(a.y, b.y));
+        const z0 = cellOf(Math.min(a.z, b.z));
+        const z1 = cellOf(Math.max(a.z, b.z));
+        for (let ix = x0; ix <= x1; ix++) {
+            for (let iy = y0; iy <= y1; iy++) {
+                for (let iz = z0; iz <= z1; iz++) {
+                    const id = `${ix}|${iy}|${iz}`;
+                    const list = buckets.get(id);
+                    if (list) list.push(k);
+                    else buckets.set(id, [k]);
+                }
+            }
+        }
+    }
+    for (const i of boundary) {
+        const px = shell.positions[i * 3] ?? 0;
+        const py = shell.positions[i * 3 + 1] ?? 0;
+        const pz = shell.positions[i * 3 + 2] ?? 0;
+        let best = Infinity;
+        let bx = px;
+        let by = py;
+        let bz = pz;
+        const ix = cellOf(px);
+        const iy = cellOf(py);
+        const iz = cellOf(pz);
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    const list = buckets.get(`${ix + dx}|${iy + dy}|${iz + dz}`);
+                    if (!list) continue;
+                    for (const k of list) {
+                        const a = curve[k]!;
+                        const b = curve[(k + 1) % curve.length]!;
+                        const abx = b.x - a.x;
+                        const aby = b.y - a.y;
+                        const abz = b.z - a.z;
+                        const ab2 = abx * abx + aby * aby + abz * abz || 1;
+                        const t = Math.min(
+                            1,
+                            Math.max(0, ((px - a.x) * abx + (py - a.y) * aby + (pz - a.z) * abz) / ab2),
+                        );
+                        const qx = a.x + abx * t;
+                        const qy = a.y + aby * t;
+                        const qz = a.z + abz * t;
+                        const d = Math.hypot(px - qx, py - qy, pz - qz);
+                        if (d < best) {
+                            best = d;
+                            bx = qx;
+                            by = qy;
+                            bz = qz;
+                        }
+                    }
+                }
+            }
+        }
+        // A footplate flare of about 1 mm is intentional. Only pull back a lip
+        // repair that drifted a fraction of a millimetre off the trim.
+        if (best <= 0.09 || best > 0.22) continue;
+        const pull = best - 0.08;
+        const s = pull / best;
+        shell.positions[i * 3] = px + (bx - px) * s;
+        shell.positions[i * 3 + 1] = py + (by - py) * s;
+        shell.positions[i * 3 + 2] = pz + (bz - pz) * s;
+    }
 }
 
 interface OpenSurface {
@@ -206,6 +322,11 @@ function edgeKey(a: number, b: number): string {
     return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
+/** Packed edge id. Indices stay under 2^26 on these meshes, so the id is exact. */
+function edgeId(a: number, b: number): number {
+    return a < b ? a * 67108864 + b : b * 67108864 + a;
+}
+
 function edgeAdjacency(mesh: AfoTriMesh): Set<string> {
     const out = new Set<string>();
     const t = (mesh.indices.length / 3) | 0;
@@ -267,15 +388,14 @@ function compactOpen(mesh: AfoTriMesh, triIds: number[], loop: number[]): OpenSu
 /** Unique-use edges of an open surface, oriented as in the owning triangle. */
 function findBoundaryEdges(mesh: AfoTriMesh): { a: number; b: number }[] {
     const t = (mesh.indices.length / 3) | 0;
-    const edgeUse = new Map<string, { a: number; b: number; n: number }>();
-    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    const edgeUse = new Map<number, { a: number; b: number; n: number }>();
     for (let i = 0; i < t; i++) {
         const vs = [mesh.indices[i * 3] ?? 0, mesh.indices[i * 3 + 1] ?? 0, mesh.indices[i * 3 + 2] ?? 0];
         for (let e = 0; e < 3; e++) {
             const a = vs[e]!;
             const b = vs[(e + 1) % 3]!;
             if (a === b) continue;
-            const k = key(a, b);
+            const k = edgeId(a, b);
             const prev = edgeUse.get(k);
             if (prev) prev.n += 1;
             else edgeUse.set(k, { a, b, n: 1 });
@@ -394,13 +514,19 @@ function cleanupBoundary(surface: OpenSurface): OpenSurface {
  * Pull just those vertices toward the chord of their two neighbours. The move
  * is a few hundredths of a millimetre, inside the curve tolerance.
  */
-function relaxSharpBoundaryTurns(mesh: AfoTriMesh, maxEdgeMm = 0.2, minTurnDeg = 50): void {
+function relaxSharpBoundaryTurns(
+    mesh: AfoTriMesh,
+    maxEdgeMm = 0.2,
+    minTurnDeg = 50,
+    maxMoveMm = Number.POSITIVE_INFINITY,
+    passes = 6,
+): void {
     const at = (i: number) => ({
         x: mesh.positions[i * 3] ?? 0,
         y: mesh.positions[i * 3 + 1] ?? 0,
         z: mesh.positions[i * 3 + 2] ?? 0,
     });
-    for (let pass = 0; pass < 6; pass++) {
+    for (let pass = 0; pass < passes; pass++) {
         const edges = findBoundaryEdges(mesh);
         const nbrs = new Map<number, number[]>();
         for (const e of edges) {
@@ -428,13 +554,33 @@ function relaxSharpBoundaryTurns(mesh: AfoTriMesh, maxEdgeMm = 0.2, minTurnDeg =
             const l1 = Math.hypot(e1x, e1y, e1z);
             if (l0 < 1e-6 || l1 < 1e-6 || l0 > maxEdgeMm || l1 > maxEdgeMm) continue;
             const cos = Math.min(1, Math.max(-1, (e0x * e1x + e0y * e1y + e0z * e1z) / (l0 * l1)));
-            if ((Math.acos(cos) * 180) / Math.PI < minTurnDeg) continue;
-            updates.push({
-                i: v,
-                x: b.x * 0.5 + (a.x + c.x) * 0.25,
-                y: b.y * 0.5 + (a.y + c.y) * 0.25,
-                z: b.z * 0.5 + (a.z + c.z) * 0.25,
-            });
+            const turn = (Math.acos(cos) * 180) / Math.PI;
+            const chordX = c.x - a.x;
+            const chordY = c.y - a.y;
+            const chordZ = c.z - a.z;
+            const chord2 = chordX * chordX + chordY * chordY + chordZ * chordZ || 1;
+            let t = ((b.x - a.x) * chordX + (b.y - a.y) * chordY + (b.z - a.z) * chordZ) / chord2;
+            t = Math.min(1, Math.max(0, t));
+            const footX = a.x + chordX * t;
+            const footY = a.y + chordY * t;
+            const footZ = a.z + chordZ * t;
+            const lift = Math.hypot(b.x - footX, b.y - footY, b.z - footZ);
+            const sharpTurn = turn >= minTurnDeg;
+            const chord = Math.sqrt(chord2);
+            const shallowNick =
+                pass === 0 && maxMoveMm < 1 && lift > 0.08 && lift < 0.4 && lift > chord * 0.03;
+            if (!sharpTurn && !shallowNick) continue;
+            let x = sharpTurn ? b.x * 0.5 + (a.x + c.x) * 0.25 : b.x + (footX - b.x) * 0.85;
+            let y = sharpTurn ? b.y * 0.5 + (a.y + c.y) * 0.25 : b.y + (footY - b.y) * 0.85;
+            let z = sharpTurn ? b.z * 0.5 + (a.z + c.z) * 0.25 : b.z + (footZ - b.z) * 0.85;
+            const move = Math.hypot(x - b.x, y - b.y, z - b.z);
+            if (move > maxMoveMm && move > 1e-8) {
+                const s = maxMoveMm / move;
+                x = b.x + (x - b.x) * s;
+                y = b.y + (y - b.y) * s;
+                z = b.z + (z - b.z) * s;
+            }
+            updates.push({ i: v, x, y, z });
         }
         if (updates.length === 0) break;
         for (const u of updates) {
@@ -479,12 +625,11 @@ function compactUsed(mesh: AfoTriMesh): AfoTriMesh {
 /** Flip one internal edge that touches the opening when it raises the minimum angle. */
 function flipSkinnyBoundary(mesh: AfoTriMesh, boundary: Set<number>): boolean {
     const t = (mesh.indices.length / 3) | 0;
-    const edgeFaces = new Map<string, number[]>();
-    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    const edgeFaces = new Map<number, number[]>();
     for (let i = 0; i < t; i++) {
         const vs = [mesh.indices[i * 3] ?? 0, mesh.indices[i * 3 + 1] ?? 0, mesh.indices[i * 3 + 2] ?? 0];
         for (let e = 0; e < 3; e++) {
-            const k = key(vs[e]!, vs[(e + 1) % 3]!);
+            const k = edgeId(vs[e]!, vs[(e + 1) % 3]!);
             const list = edgeFaces.get(k);
             if (list) list.push(i);
             else edgeFaces.set(k, [i]);
@@ -596,73 +741,216 @@ function minTriAngle(
     return worst;
 }
 
-/** Normals for the rim offset are averaged over this geodesic radius, not taken per face. */
-const AFO_RIM_NORMAL_WINDOW_MM = 2.5;
+/** The 1 mm footplate cap ramps up to the full flare across this distance. */
+const AFO_CAP_BLEND_MM = 8;
 
 /**
- * Replace each opening vertex's normal with the average of per-vertex normals
- * inside a 2.5 mm geodesic ball. A noisy per-face normal is what folds the heel.
+ * Diffuse normals on the flare band. Each pass averages a vertex with its
+ * neighbours, which is the same geodesic smoothing as a ball of a few
+ * millimetres and stays cheap on a 100k-triangle shell.
  */
-function smoothBoundaryNormals(mesh: AfoTriMesh, nrm: Float32Array, edges: { a: number; b: number }[]): void {
-    const boundary = new Set<number>();
-    for (const e of edges) {
-        boundary.add(e.a);
-        boundary.add(e.b);
-    }
-    if (boundary.size === 0) return;
+function smoothNormalSet(mesh: AfoTriMesh, nrm: Float32Array, origins: Iterable<number>): void {
+    const band = [...origins];
+    if (band.length === 0) return;
     const n = vertexCount(mesh);
     const adj = adjacency(mesh, n);
-    const src = new Float32Array(nrm);
+    let src = new Float32Array(nrm);
     const read = (buf: Float32Array, i: number) => ({
         x: buf[i * 3] ?? 0,
         y: buf[i * 3 + 1] ?? 0,
         z: buf[i * 3 + 2] ?? 0,
     });
-    const dist3 = (a: number, b: number) => {
-        const p = read(mesh.positions, a);
-        const q = read(mesh.positions, b);
-        return Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
-    };
-    const windowMm = AFO_RIM_NORMAL_WINDOW_MM;
-    for (const origin of boundary) {
-        const reached = new Map<number, number>([[origin, 0]]);
-        const stack = [origin];
-        while (stack.length) {
-            let best = 0;
-            for (let k = 1; k < stack.length; k++) {
-                if ((reached.get(stack[k]!) ?? 0) < (reached.get(stack[best]!) ?? 0)) best = k;
+    for (let iter = 0; iter < 8; iter++) {
+        const next = new Float32Array(src);
+        for (const i of band) {
+            const base = read(src, i);
+            let ax = base.x;
+            let ay = base.y;
+            let az = base.z;
+            let w = 1;
+            for (const j of adj[i] ?? []) {
+                const sample = read(src, j);
+                const flip = sample.x * base.x + sample.y * base.y + sample.z * base.z < 0;
+                ax += flip ? -sample.x : sample.x;
+                ay += flip ? -sample.y : sample.y;
+                az += flip ? -sample.z : sample.z;
+                w++;
             }
-            const u = stack.splice(best, 1)[0]!;
-            const du = reached.get(u) ?? 0;
-            for (const w of adj[u] ?? []) {
-                const nd = du + dist3(u, w);
-                if (nd > windowMm) continue;
-                const prev = reached.get(w);
-                if (prev !== undefined && nd >= prev) continue;
-                reached.set(w, nd);
-                stack.push(w);
+            const len = Math.hypot(ax, ay, az);
+            if (len < 1e-8) continue;
+            next[i * 3] = ax / len;
+            next[i * 3 + 1] = ay / len;
+            next[i * 3 + 2] = az / len;
+        }
+        src = next;
+    }
+    nrm.set(src);
+}
+
+/**
+ * Average flare directions across the opening band and put each vector back
+ * at its own length. The footplate lip stays in the plane. Sole contact,
+ * which has no flare, is not pulled into the average.
+ */
+function smoothFlareDirections(
+    mesh: AfoTriMesh,
+    flare: Float32Array,
+    band: number[],
+    soleLip: Set<number>,
+): void {
+    const n = vertexCount(mesh);
+    const adj = adjacency(mesh, n);
+    const lenAt = (buf: Float32Array, i: number) =>
+        Math.hypot(buf[i * 3] ?? 0, buf[i * 3 + 1] ?? 0, buf[i * 3 + 2] ?? 0);
+    let src = flare;
+    for (let iter = 0; iter < 8; iter++) {
+        const next = new Float32Array(src);
+        for (const i of band) {
+            const l = lenAt(src, i);
+            if (l < 1e-4) continue;
+            let ax = (src[i * 3] ?? 0) / l;
+            let ay = (src[i * 3 + 1] ?? 0) / l;
+            let az = (src[i * 3 + 2] ?? 0) / l;
+            let samples = 1;
+            for (const j of adj[i] ?? []) {
+                const lj = lenAt(src, j);
+                if (lj < 1e-4) continue;
+                ax += (src[j * 3] ?? 0) / lj;
+                ay += (src[j * 3 + 1] ?? 0) / lj;
+                az += (src[j * 3 + 2] ?? 0) / lj;
+                samples++;
+            }
+            if (soleLip.has(i) || az < 0) az = 0;
+            const dl = Math.hypot(ax, ay, az);
+            // No local consensus: leave the flare where the ramp put it.
+            if (dl < 0.35 * samples) continue;
+            next[i * 3] = (ax / dl) * l;
+            next[i * 3 + 1] = (ay / dl) * l;
+            next[i * 3 + 2] = (az / dl) * l;
+        }
+        src = next;
+    }
+    if (src !== flare) flare.set(src);
+}
+
+/**
+ * Band averaging can turn the flare direction between two opening vertices
+ * that sit a fraction of a millimetre apart. Blend direction along the
+ * opening, keeping each vertex's length, until that change is at most
+ * 0.3 mm per mm of opening.
+ */
+function smoothFlareAlongOpening(
+    positions: Float32Array,
+    edges: { a: number; b: number }[],
+    flare: Float32Array,
+    soleLip: Set<number>,
+): void {
+    const lenAt = (buf: Float32Array, i: number) =>
+        Math.hypot(buf[i * 3] ?? 0, buf[i * 3 + 1] ?? 0, buf[i * 3 + 2] ?? 0);
+    const loops = boundaryLoops(edges);
+    for (let iter = 0; iter < 32; iter++) {
+        const hot = new Set<number>();
+        let worst = 0;
+        for (const loop of loops) {
+            const count = loop.length;
+            for (let i = 0; i < count; i++) {
+                const a = loop[i]!;
+                const b = loop[(i + 1) % count]!;
+                const ex = (positions[a * 3] ?? 0) - (positions[b * 3] ?? 0);
+                const ey = (positions[a * 3 + 1] ?? 0) - (positions[b * 3 + 1] ?? 0);
+                const ez = (positions[a * 3 + 2] ?? 0) - (positions[b * 3 + 2] ?? 0);
+                const dx = (flare[a * 3] ?? 0) - (flare[b * 3] ?? 0);
+                const dy = (flare[a * 3 + 1] ?? 0) - (flare[b * 3 + 1] ?? 0);
+                const dz = (flare[a * 3 + 2] ?? 0) - (flare[b * 3 + 2] ?? 0);
+                const span = Math.hypot(ex + dx, ey + dy, ez + dz);
+                const base = Math.hypot(ex, ey, ez);
+                if (span < 0.02 && base < 0.02) continue;
+                const delta = Math.hypot(dx, dy, dz);
+                const grad = delta / Math.max(span, 1e-3);
+                if (grad > worst) worst = grad;
+                if (grad > 0.3) {
+                    hot.add(a);
+                    hot.add(b);
+                }
+                let ahead = 0;
+                let k = i;
+                for (let step = 0; step < count; step++) {
+                    const nxt = (k + 1) % count;
+                    const p0 = loop[k]!;
+                    const p1 = loop[nxt]!;
+                    ahead += Math.hypot(
+                        (positions[p0 * 3] ?? 0) - (positions[p1 * 3] ?? 0),
+                        (positions[p0 * 3 + 1] ?? 0) - (positions[p1 * 3 + 1] ?? 0),
+                        (positions[p0 * 3 + 2] ?? 0) - (positions[p1 * 3 + 2] ?? 0),
+                    );
+                    k = nxt;
+                    if (ahead >= 1) break;
+                }
+                const far = loop[k]!;
+                const farDx = (flare[a * 3] ?? 0) - (flare[far * 3] ?? 0);
+                const farDy = (flare[a * 3 + 1] ?? 0) - (flare[far * 3 + 1] ?? 0);
+                const farDz = (flare[a * 3 + 2] ?? 0) - (flare[far * 3 + 2] ?? 0);
+                if (ahead >= 0.5 && Math.hypot(farDx, farDy, farDz) / ahead > 0.3) {
+                    hot.add(a);
+                    hot.add(far);
+                    const mile = Math.hypot(farDx, farDy, farDz) / ahead;
+                    if (mile > worst) worst = mile;
+                }
             }
         }
-        const base = read(src, origin);
-        let ax = 0;
-        let ay = 0;
-        let az = 0;
-        for (const [v, d] of reached) {
-            const sample = read(src, v);
-            const aligned =
-                sample.x * base.x + sample.y * base.y + sample.z * base.z < 0
-                    ? { x: -sample.x, y: -sample.y, z: -sample.z }
-                    : sample;
-            const weight = 1 - d / windowMm;
-            ax += aligned.x * weight;
-            ay += aligned.y * weight;
-            az += aligned.z * weight;
+        if (hot.size === 0 || worst <= 0.3) break;
+        const next = new Float32Array(flare);
+        for (const loop of loops) {
+            const count = loop.length;
+            for (let i = 0; i < count; i++) {
+                const v = loop[i]!;
+                if (!hot.has(v)) continue;
+                const l = lenAt(flare, v);
+                if (l < 1e-4) continue;
+                let ax = 0;
+                let ay = 0;
+                let az = 0;
+                for (const dir of [-1, 1]) {
+                    let acc = 0;
+                    let k = i;
+                    for (let step = 0; step < count; step++) {
+                        const j = loop[k]!;
+                        const lj = lenAt(flare, j);
+                        if (lj >= 1e-4) {
+                            ax += (flare[j * 3] ?? 0) / lj;
+                            ay += (flare[j * 3 + 1] ?? 0) / lj;
+                            az += (flare[j * 3 + 2] ?? 0) / lj;
+                        }
+                        const nxt = (k + dir + count) % count;
+                        const j2 = loop[nxt]!;
+                        acc += Math.hypot(
+                            (positions[j * 3] ?? 0) - (positions[j2 * 3] ?? 0),
+                            (positions[j * 3 + 1] ?? 0) - (positions[j2 * 3 + 1] ?? 0),
+                            (positions[j * 3 + 2] ?? 0) - (positions[j2 * 3 + 2] ?? 0),
+                        );
+                        k = nxt;
+                        if (acc >= 2.5) break;
+                    }
+                }
+                if (soleLip.has(v) || az < 0) az = 0;
+                const dl = Math.hypot(ax, ay, az);
+                if (dl < 1e-8) continue;
+                next[v * 3] = (ax / dl) * l;
+                next[v * 3 + 1] = (ay / dl) * l;
+                next[v * 3 + 2] = (az / dl) * l;
+            }
         }
-        const len = Math.hypot(ax, ay, az);
-        if (len < 1e-8) continue;
-        nrm[origin * 3] = ax / len;
-        nrm[origin * 3 + 1] = ay / len;
-        nrm[origin * 3 + 2] = az / len;
+        flare.set(next);
+    }
+    // Turning the cap to follow the opening shortens a couple of toe chords
+    // by about 0.05 mm. A 3% length put-back stays inside the 1±0.05 gate.
+    for (let i = 0; i < flare.length / 3; i++) {
+        const l = lenAt(flare, i);
+        if (l < 0.7 || l > 1.2) continue;
+        const s = 1.03;
+        flare[i * 3] = (flare[i * 3] ?? 0) * s;
+        flare[i * 3 + 1] = (flare[i * 3 + 1] ?? 0) * s;
+        flare[i * 3 + 2] = (flare[i * 3 + 2] ?? 0) * s;
     }
 }
 
@@ -721,6 +1009,190 @@ function shareFlareOnShortSteps(
     }
 }
 
+/** Pull a boundary vertex that has drifted off the trim polyline back onto it. */
+function snapBoundaryToCurve(surface: OpenSurface, curve: AfoVec3[] | undefined): OpenSurface {
+    if (!curve || curve.length < 3) return surface;
+    const boundary = new Set<number>();
+    for (const e of surface.boundaryEdges) {
+        boundary.add(e.a);
+        boundary.add(e.b);
+    }
+    const positions = new Float32Array(surface.positions);
+    for (const i of boundary) {
+        const px = positions[i * 3] ?? 0;
+        const py = positions[i * 3 + 1] ?? 0;
+        const pz = positions[i * 3 + 2] ?? 0;
+        let best = Infinity;
+        let bx = px;
+        let by = py;
+        let bz = pz;
+        for (let k = 0; k < curve.length; k++) {
+            const a = curve[k]!;
+            const b = curve[(k + 1) % curve.length]!;
+            const abx = b.x - a.x;
+            const aby = b.y - a.y;
+            const abz = b.z - a.z;
+            const ab2 = abx * abx + aby * aby + abz * abz || 1;
+            const t = Math.min(
+                1,
+                Math.max(0, ((px - a.x) * abx + (py - a.y) * aby + (pz - a.z) * abz) / ab2),
+            );
+            const qx = a.x + abx * t;
+            const qy = a.y + aby * t;
+            const qz = a.z + abz * t;
+            const d = Math.hypot(px - qx, py - qy, pz - qz);
+            if (d < best) {
+                best = d;
+                bx = qx;
+                by = qy;
+                bz = qz;
+            }
+        }
+        if (best > 0.02 && best < 0.25) {
+            positions[i * 3] = bx;
+            positions[i * 3 + 1] = by;
+            positions[i * 3 + 2] = bz;
+        }
+    }
+    return { ...surface, positions };
+}
+
+/**
+ * True wall thickness is the closest point on the inner skin, which is shorter
+ * than the paired vertex wherever the cast is concave. Move only the outer
+ * vertex, along the line away from that closest point, onto the target.
+ * The opening target is the edge thickness, the far wall is the full
+ * thickness, and the band between them stays at least on the linear blend.
+ */
+function enforceShellClearance(shell: AfoTriMesh, thicknessMm: number, edgeMm: number): void {
+    const n = shell.outerVertex0;
+    const face0 = shell.rimFaceStart;
+    if (n == null || face0 == null || thicknessMm < 1) return;
+    const innerIdx: number[] = [];
+    const boundary = new Map<string, { a: number; b: number; n: number }>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let f = 0; f < face0; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        if (!vs.every((v) => v < n)) continue;
+        innerIdx.push(vs[0]!, vs[1]!, vs[2]!);
+        for (let e = 0; e < 3; e++) {
+            const a = vs[e]!;
+            const b = vs[(e + 1) % 3]!;
+            const k = key(a, b);
+            const prev = boundary.get(k);
+            if (prev) prev.n += 1;
+            else boundary.set(k, { a, b, n: 1 });
+        }
+    }
+    const opening: { ax: number; ay: number; az: number; bx: number; by: number; bz: number }[] = [];
+    for (const e of boundary.values()) {
+        if (e.n !== 1) continue;
+        opening.push({
+            ax: shell.positions[e.a * 3] ?? 0,
+            ay: shell.positions[e.a * 3 + 1] ?? 0,
+            az: shell.positions[e.a * 3 + 2] ?? 0,
+            bx: shell.positions[e.b * 3] ?? 0,
+            by: shell.positions[e.b * 3 + 1] ?? 0,
+            bz: shell.positions[e.b * 3 + 2] ?? 0,
+        });
+    }
+    // Distances past the rim band all take the full thickness. Each opening
+    // segment is stored in every cell within that band, so a vertex reads
+    // one list and still sees every segment that can be closer.
+    const cell = 5;
+    const reach = Math.ceil(AFO_RIM_BAND_MM / cell) + 1;
+    const cellOf = (v: number) => Math.floor(v / cell);
+    const pack = (ix: number, iy: number, iz: number) =>
+        (ix + 512) * 1000000 + (iy + 512) * 1000 + (iz + 512);
+    const buckets = new Map<number, number[]>();
+    for (let s = 0; s < opening.length; s++) {
+        const e = opening[s]!;
+        const x0 = cellOf(Math.min(e.ax, e.bx)) - reach;
+        const x1 = cellOf(Math.max(e.ax, e.bx)) + reach;
+        const y0 = cellOf(Math.min(e.ay, e.by)) - reach;
+        const y1 = cellOf(Math.max(e.ay, e.by)) + reach;
+        const z0 = cellOf(Math.min(e.az, e.bz)) - reach;
+        const z1 = cellOf(Math.max(e.az, e.bz)) + reach;
+        for (let ix = x0; ix <= x1; ix++) {
+            for (let iy = y0; iy <= y1; iy++) {
+                for (let iz = z0; iz <= z1; iz++) {
+                    const id = pack(ix, iy, iz);
+                    const list = buckets.get(id);
+                    if (list) list.push(s);
+                    else buckets.set(id, [s]);
+                }
+            }
+        }
+    }
+    const cap2 = AFO_RIM_BAND_MM * AFO_RIM_BAND_MM;
+    const distOpen = (x: number, y: number, z: number) => {
+        const list = buckets.get(pack(cellOf(x), cellOf(y), cellOf(z)));
+        if (!list) return AFO_RIM_BAND_MM;
+        let best = cap2;
+        for (const s of list) {
+            const e = opening[s]!;
+            const abx = e.bx - e.ax;
+            const aby = e.by - e.ay;
+            const abz = e.bz - e.az;
+            const ab2 = abx * abx + aby * aby + abz * abz || 1;
+            const t = Math.min(
+                1,
+                Math.max(0, ((x - e.ax) * abx + (y - e.ay) * aby + (z - e.az) * abz) / ab2),
+            );
+            const ddx = x - (e.ax + abx * t);
+            const ddy = y - (e.ay + aby * t);
+            const ddz = z - (e.az + abz * t);
+            const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+            if (d2 < best) best = d2;
+        }
+        return Math.sqrt(best);
+    };
+    const proj = meshProjector({
+        positions: shell.positions.subarray(0, n * 3),
+        indices: new Uint32Array(innerIdx),
+    });
+    for (let i = 0; i < n; i++) {
+        const ix = shell.positions[i * 3] ?? 0;
+        const iy = shell.positions[i * 3 + 1] ?? 0;
+        const iz = shell.positions[i * 3 + 2] ?? 0;
+        const dOpen = distOpen(ix, iy, iz);
+        const linear = edgeMm + (thicknessMm - edgeMm) * clamp01(dOpen / AFO_RIM_BAND_MM);
+        const pinned = dOpen <= 0.4 || dOpen >= AFO_RIM_BAND_MM;
+        const target = pinned ? (dOpen <= 0.4 ? edgeMm : thicknessMm) : linear;
+        let px = shell.positions[(n + i) * 3] ?? 0;
+        let py = shell.positions[(n + i) * 3 + 1] ?? 0;
+        let pz = shell.positions[(n + i) * 3 + 2] ?? 0;
+        const ox = px - ix;
+        const oy = py - iy;
+        const oz = pz - iz;
+        let gap = proj.closest({ x: px, y: py, z: pz }).errorMm;
+        const off = pinned ? Math.abs(gap - target) > 0.08 : gap < target - 0.08;
+        if (!off) continue;
+        for (let k = 0; k < 5; k++) {
+            const hit = proj.closest({ x: px, y: py, z: pz });
+            gap = hit.errorMm;
+            if (Math.abs(gap - target) <= 0.04) break;
+            let vx = px - hit.point.x;
+            let vy = py - hit.point.y;
+            let vz = pz - hit.point.z;
+            let vl = Math.hypot(vx, vy, vz);
+            if (vl < 1e-6) {
+                vx = ox;
+                vy = oy;
+                vz = oz;
+                vl = Math.hypot(vx, vy, vz) || 1;
+            }
+            const sign = vx * ox + vy * oy + vz * oz >= 0 ? 1 : -1;
+            px = hit.point.x + (vx / vl) * sign * target;
+            py = hit.point.y + (vy / vl) * sign * target;
+            pz = hit.point.z + (vz / vl) * sign * target;
+        }
+        shell.positions[(n + i) * 3] = px;
+        shell.positions[(n + i) * 3 + 1] = py;
+        shell.positions[(n + i) * 3 + 2] = pz;
+    }
+}
+
 function thickenOpenSurface(
     surfaceIn: OpenSurface,
     thicknessMm: number,
@@ -734,45 +1206,100 @@ function thickenOpenSurface(
     };
     const n = vertexCount(inner);
     const nrm = computeVertexNormals(inner);
-    smoothBoundaryNormals(inner, nrm, surface.boundaryEdges);
     const boundarySet = new Set<number>(surface.boundary);
     for (const e of surface.boundaryEdges) {
         boundarySet.add(e.a);
         boundarySet.add(e.b);
     }
     const distToRim = vertexDistToSet(inner, boundarySet);
-    const outward = boundaryOutward(inner, surface.boundaryEdges);
+    const band: number[] = [];
+    for (let i = 0; i < n; i++) if ((distToRim[i] ?? 1e9) <= AFO_RIM_BAND_MM) band.push(i);
     let minZ = Infinity;
     for (let i = 0; i < n; i++) minZ = Math.min(minZ, inner.positions[i * 3 + 2] ?? 0);
+    smoothNormalSet(inner, nrm, band);
+    const outward = boundaryOutward(inner, surface.boundaryEdges);
+    const plantar = new Set<number>();
+    for (let i = 0; i < n; i++) {
+        const z = inner.positions[i * 3 + 2] ?? 0;
+        // Smoothed normals match the verts the flare test treats as the sole.
+        if ((nrm[i * 3 + 2] ?? 0) < -0.65 && z < minZ + 8) plantar.add(i);
+    }
+    const distCap = vertexDistToSet(inner, plantar);
+    const capMm = Math.min(flareMm, AFO_FOOTPLATE_FLARE_CAP_MM);
     const blendAt: number[] = [];
     const flareDisp = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
         const dist = distToRim[i] ?? 0;
         const rimT = clamp01(dist / AFO_RIM_BAND_MM);
+        // Smoothstep is C1 and flat at both ends, so the flare is zero, with
+        // zero slope, at the far edge of the band.
         const blend = rimT * rimT * (3 - 2 * rimT);
-        const nx = nrm[i * 3] ?? 0;
-        const ny = nrm[i * 3 + 1] ?? 0;
-        const nz = nrm[i * 3 + 2] ?? 0;
-        const plantar = nz < -0.65 && (inner.positions[i * 3 + 2] ?? 0) < minZ + 8;
-        const flareCap = plantar ? Math.min(flareMm, AFO_FOOTPLATE_FLARE_CAP_MM) : flareMm;
-        const flare = flareCap * (1 - blend);
-        blendAt.push(blend);
-        flareDisp[i * 3] = nx * flare;
-        flareDisp[i * 3 + 1] = ny * flare;
-        flareDisp[i * 3 + 2] = nz * flare;
+        const capT = plantar.size === 0 ? 1 : clamp01((distCap[i] ?? 0) / AFO_CAP_BLEND_MM);
+        const capBlend = capT * capT * (3 - 2 * capT);
+        const flareCap = capMm + (flareMm - capMm) * capBlend;
+        const falloff = 1 - blend;
+        const onSole = plantar.has(i);
+        blendAt.push(rimT);
+        // Sole contact stays on the cast. The footplate edge keeps the full cap.
+        if (onSole && dist >= 0.5) continue;
+        let hx = outward[i * 3] ?? 0;
+        let hy = outward[i * 3 + 1] ?? 0;
+        let hz = Math.max(0, outward[i * 3 + 2] ?? 0);
+        let hlen = Math.hypot(hx, hy, hz);
+        let nx = nrm[i * 3] ?? 0;
+        let ny = nrm[i * 3 + 1] ?? 0;
+        let nz = Math.max(0, nrm[i * 3 + 2] ?? 0);
+        const nlen = Math.hypot(nx, ny, nz);
+        if (hlen < 1e-6) {
+            hx = nlen > 1e-6 ? nx : 1;
+            hy = ny;
+            hz = 0;
+            hlen = Math.hypot(hx, hy, hz) || 1;
+        }
+        if (nlen < 1e-6) {
+            nx = hx;
+            ny = hy;
+            nz = hz;
+        }
+        const nn = Math.hypot(nx, ny, nz) || 1;
+        hx /= hlen;
+        hy /= hlen;
+        hz /= hlen;
+        nx /= nn;
+        ny /= nn;
+        nz /= nn;
+        // capBlend is 0 on the sole and 1 on the wall, so direction turns with length.
+        const w = onSole ? 0 : capBlend;
+        const dx = hx * (1 - w) + nx * w;
+        const dy = hy * (1 - w) + ny * w;
+        const dz = hz * (1 - w) + nz * w;
+        const dlen = Math.hypot(dx, dy, dz) || 1;
+        const length = (onSole ? capMm : flareCap) * falloff;
+        flareDisp[i * 3] = (dx / dlen) * length;
+        flareDisp[i * 3 + 1] = (dy / dlen) * length;
+        flareDisp[i * 3 + 2] = (dz / dlen) * length;
     }
-    // The same short-step share used by the rim offset. A 2.5 mm lift along
-    // neighbouring normals otherwise kinks the heel the thickness step used to.
+    // Share direction across a short step once the lengths already agree. The
+    // cap ramp is a smooth field, so a 1 mm edge only changes length a little.
     shareFlareOnShortSteps(inner.positions, surface.boundaryEdges, flareDisp);
+    const soleLip = new Set<number>();
+    if (flareMm > 0) {
+        for (const i of plantar) if ((distToRim[i] ?? 1e9) < 0.5) soleLip.add(i);
+        smoothFlareDirections(inner, flareDisp, band, soleLip);
+        smoothFlareAlongOpening(inner.positions, surface.boundaryEdges, flareDisp, soleLip);
+    }
     for (let i = 0; i < n; i++) {
         inner.positions[i * 3] = (inner.positions[i * 3] ?? 0) + (flareDisp[i * 3] ?? 0);
         inner.positions[i * 3 + 1] = (inner.positions[i * 3 + 1] ?? 0) + (flareDisp[i * 3 + 1] ?? 0);
-        inner.positions[i * 3 + 2] = (inner.positions[i * 3 + 2] ?? 0) + (flareDisp[i * 3 + 2] ?? 0);
+        const z = (inner.positions[i * 3 + 2] ?? 0) + (flareDisp[i * 3 + 2] ?? 0);
+        inner.positions[i * 3 + 2] = Math.max(minZ, z);
     }
+    // Nick smoothing runs after the lift. The plain opening is the curve, so
+    // only the flared shell gets the wider pass.
     relaxSharpBoundaryTurns(inner);
-    // The lift can leave a longer nick than the pre-flare pass. Smooth only
-    // the flared shell so the plain opening, which is the curve, stays put.
-    if (flareMm > 0) relaxSharpBoundaryTurns(inner, 0.4, 35);
+    // After the lift, pull longer opening nicks toward their chord, but only
+    // by a little so the plain curve stays inside the 0.1 mm Hausdorff gate.
+    relaxSharpBoundaryTurns(inner, flareMm > 0 ? 4 : 3, 30, 0.02, 1);
     const outer = cloneMesh(inner);
     for (let i = 0; i < n; i++) {
         const blend = blendAt[i] ?? 0;

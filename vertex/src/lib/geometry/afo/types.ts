@@ -13,6 +13,8 @@ export interface AfoTriMesh {
      * from distance to the scan.
      */
     rimFaceStart?: number;
+    /** First vertex of the outer skin. Inner vertices occupy [0, outerVertex0). */
+    outerVertex0?: number;
 }
 
 export interface AfoVec3 {
