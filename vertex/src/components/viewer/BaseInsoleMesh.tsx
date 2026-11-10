@@ -103,11 +103,9 @@ export function BaseInsoleMesh({
     useEffect(() => {
         if (!geometry) return;
         if (!heightmap) {
-            applyDesignElementColors(
-                geometry,
-                workflowStep !== "print" && workflowStep !== "export",
-                selectedElementId,
-            );
+            // Design color is the crisp planform overlay. Vertex-lift colors
+            // feather with the solid blend and read as a soft edge.
+            applyDesignElementColors(geometry, false, selectedElementId);
             return;
         }
         const pos = geometry.getAttribute("position");

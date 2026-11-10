@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { DESIGN_ELEMENT_COLOR } from "@/lib/geometry/element-visualization";
 import { ELEMENT_PROFILES, type ElementShape } from "@/lib/geometry/elements";
 import { medialSign, meshYFromAnatomicalLateral } from "@/lib/geometry/handedness";
 import { heightAt } from "@/lib/geometry/height-field";
@@ -21,10 +22,20 @@ import type { DesignState, PlacedElement, PlacedSink, Side } from "@/types";
 export const SINK_FOOTPRINT_COLORS = {
     fill: "#e879f9",
     edge: "#e879f9",
-    opacity: 0.72,
+    opacity: 1,
     selectedFill: "#ff00ff",
     selectedEdge: "#ffffff",
-    selectedOpacity: 0.9,
+    selectedOpacity: 1,
+} as const;
+
+/** Solid design-element purple for Morton's extension, visible on the insole top. */
+export const DESIGN_FOOTPRINT_COLORS = {
+    fill: DESIGN_ELEMENT_COLOR,
+    edge: "#f5d0fe",
+    opacity: 1,
+    selectedFill: "#22c55e",
+    selectedEdge: "#ffffff",
+    selectedOpacity: 1,
 } as const;
 
 /** Library shapes that are sinks. Kinetic wedges and pads are not in this set. */
@@ -44,6 +55,8 @@ export interface FootprintPose {
     halfWidthMm: number;
     /** Closed ring in element-local mm, centered on the pose. */
     outline: { x: number; y: number }[];
+    /** Design additions use the purple element color. Sinks stay magenta. */
+    tone?: "sink" | "design";
 }
 
 export function footprintStyle(selected: boolean): { color: string; opacity: number; edge: string } {
@@ -58,6 +71,25 @@ export function footprintStyle(selected: boolean): { color: string; opacity: num
               opacity: SINK_FOOTPRINT_COLORS.opacity,
               edge: SINK_FOOTPRINT_COLORS.edge,
           };
+}
+
+export function designFootprintStyle(selected: boolean): { color: string; opacity: number; edge: string } {
+    return selected
+        ? {
+              color: DESIGN_FOOTPRINT_COLORS.selectedFill,
+              opacity: DESIGN_FOOTPRINT_COLORS.selectedOpacity,
+              edge: DESIGN_FOOTPRINT_COLORS.selectedEdge,
+          }
+        : {
+              color: DESIGN_FOOTPRINT_COLORS.fill,
+              opacity: DESIGN_FOOTPRINT_COLORS.opacity,
+              edge: DESIGN_FOOTPRINT_COLORS.edge,
+          };
+}
+
+/** Morton's extension is drawn as a colored planform. Pads and wedges are not. */
+export function showsDesignFootprint(element: PlacedElement): boolean {
+    return element.kind === "mortons_extension";
 }
 
 /** Heel and navicular library elements. Wedges, pads, and other additions are not sinks. */
@@ -133,6 +165,7 @@ export function elementFootprintPose(element: PlacedElement, lengthMm: number): 
         halfLengthMm: extents.halfLengthMm,
         halfWidthMm: extents.halfWidthMm,
         outline,
+        tone: element.kind === "mortons_extension" ? "design" : "sink",
     };
 }
 

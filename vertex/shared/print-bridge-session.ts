@@ -46,9 +46,34 @@ export interface BridgeSessionOptions {
     policy?: AddressPolicy;
     proof?: string;
     credential?: string;
+    /** Moonraker HTTP X-Api-Key. Never sent to the cloud and never logged. */
+    moonrakerApiKey?: string;
     moonraker?: MoonrakerClient;
     maxCycles?: number;
     signal?: AbortSignal;
+}
+
+export function readMoonrakerApiKeyFile(
+    filePath: string | undefined,
+    readFile: (path: string) => string = (path) => readFileSync(path, "utf8"),
+): string | undefined {
+    const trimmed = filePath?.trim() ?? "";
+    if (!trimmed) return undefined;
+    let text: string;
+    try {
+        text = readFile(trimmed);
+    } catch {
+        throw new Error(
+            "ORTHOCAD_MOONRAKER_API_KEY_FILE is set but the file cannot be read. The bridge was not started.",
+        );
+    }
+    const key = text.trim();
+    if (!key) {
+        throw new Error(
+            "ORTHOCAD_MOONRAKER_API_KEY_FILE is set but the file is empty. The bridge was not started.",
+        );
+    }
+    return key;
 }
 
 function leasePath(dir: string, jobId: string): string {
@@ -134,6 +159,7 @@ export async function runBridgeSession(
     const origin = options.origin;
     const policy = options.policy ?? productionBridgePolicy();
     const moonraker = options.moonraker ?? createMoonrakerClient(policy);
+    const apiKey = options.moonrakerApiKey?.trim() || undefined;
     mkdirSync(options.stateDir, { recursive: true });
     const credentialFile = join(options.stateDir, "credential");
     let credential = options.credential ?? null;
@@ -221,6 +247,7 @@ export async function runBridgeSession(
                     job,
                     options,
                     credential,
+                    apiKey,
                 );
                 continue;
             }
@@ -237,9 +264,9 @@ export async function runBridgeSession(
                     continue;
                 }
                 try {
-                    if (job.action === "cancel") await moonraker.cancel({ address: printer.address });
-                    if (job.action === "pause") await moonraker.pause({ address: printer.address });
-                    if (job.action === "resume") await moonraker.resume({ address: printer.address });
+                    if (job.action === "cancel") await moonraker.cancel({ address: printer.address, apiKey });
+                    if (job.action === "pause") await moonraker.pause({ address: printer.address, apiKey });
+                    if (job.action === "resume") await moonraker.resume({ address: printer.address, apiKey });
                     await report(
                         origin,
                         credential,
@@ -261,19 +288,9 @@ export async function runBridgeSession(
                 continue;
             }
             if (lease?.phase === "acknowledged") continue;
-            const artifact = await cloud(
-                origin,
-                "/print-bridge/v1/artifact",
-                { bridgeId: options.bridgeId, jobId: job.jobId },
-                credential,
-            );
-            const body = typeof artifact.json.body === "string" ? artifact.json.body : "";
-            const actual = sha256Hex(body);
-            if (
-                artifact.status !== 200 ||
-                actual !== job.sha256 ||
-                Buffer.byteLength(body) !== job.byteLength
-            ) {
+            const body = await readArtifact(origin, credential, options.bridgeId, job);
+            const actual = body === null ? "" : sha256Hex(body);
+            if (body === null || actual !== job.sha256 || Buffer.byteLength(body) !== job.byteLength) {
                 await report(
                     origin,
                     credential,
@@ -291,6 +308,7 @@ export async function runBridgeSession(
                     filename,
                     body: Buffer.from(body),
                     sha256: actual,
+                    apiKey,
                 });
                 writeLease(options.stateDir, {
                     jobId: job.jobId,
@@ -308,7 +326,7 @@ export async function runBridgeSession(
                     "Upload finished.",
                 );
                 if (uploaded.printStarted) continue;
-                await moonraker.start({ address: printer.address, filename: uploaded.path });
+                await moonraker.start({ address: printer.address, filename: uploaded.path, apiKey });
                 writeLease(options.stateDir, {
                     jobId: job.jobId,
                     idempotencyKey: job.idempotencyKey,
@@ -316,7 +334,7 @@ export async function runBridgeSession(
                     filename: uploaded.path,
                     configVersion: job.configVersion,
                 });
-                await reconcile(moonraker, printer.address, uploaded.path, job, options, credential);
+                await reconcile(moonraker, printer.address, uploaded.path, job, options, credential, apiKey);
             } catch (error) {
                 const uncertain = error instanceof MoonrakerCallError && error.mayHaveStarted;
                 writeLease(options.stateDir, {
@@ -358,6 +376,40 @@ async function report(
     );
 }
 
+async function readArtifact(
+    origin: string,
+    credential: string,
+    bridgeId: string,
+    job: BridgeJobOffer,
+): Promise<string | null> {
+    const parts: Buffer[] = [];
+    let offset = 0;
+    for (let attempt = 0; attempt < 64; attempt += 1) {
+        const artifact = await cloud(
+            origin,
+            "/print-bridge/v1/artifact",
+            { bridgeId, jobId: job.jobId, offset },
+            credential,
+        );
+        if (artifact.status !== 200) return null;
+        const chunk = typeof artifact.json.body === "string" ? artifact.json.body : "";
+        const sha = typeof artifact.json.sha256 === "string" ? artifact.json.sha256 : "";
+        const total = typeof artifact.json.byteLength === "number" ? artifact.json.byteLength : -1;
+        const chunkOffset = typeof artifact.json.offset === "number" ? artifact.json.offset : 0;
+        if (sha !== job.sha256 || total !== job.byteLength || chunkOffset !== offset) return null;
+        const bytes = Buffer.from(chunk, "utf8");
+        const complete = artifact.json.complete === true || offset + bytes.length >= total;
+        if (bytes.length === 0 && !complete) return null;
+        parts.push(bytes);
+        offset += bytes.length;
+        if (!complete) continue;
+        const full = Buffer.concat(parts).toString("utf8");
+        if (sha256Hex(full) !== job.sha256 || Buffer.byteLength(full) !== job.byteLength) return null;
+        return full;
+    }
+    return null;
+}
+
 async function reconcile(
     moonraker: MoonrakerClient,
     address: string,
@@ -365,11 +417,13 @@ async function reconcile(
     job: BridgeJobOffer,
     options: BridgeSessionOptions,
     credential: string,
+    apiKey: string | undefined,
 ): Promise<void> {
     try {
-        const status = await moonraker.queryHttp({ address });
+        const status = await moonraker.queryHttp({ address, apiKey });
         let socketStatus = status;
         try {
+            // The websocket client refuses to put a key on the URL. HTTP status carries X-Api-Key.
             socketStatus = await moonraker.queryWebSocket({ address });
         } catch {
             socketStatus = status;

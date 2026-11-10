@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 // Shop jobs only. This router does not create or edit Vertex Orders.
 
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
     releaseAssignedJobToBridge,
@@ -26,9 +27,23 @@ import {
     rerunJob,
     retryJob,
 } from "../../../shared/production-jobs.js";
+import { ensureAppUser } from "../lib/ensure-user.js";
 import { openProduction, rethrowProduction } from "../lib/production-access.js";
 import { serverBridgeDirectory } from "../print-bridge-state.js";
-import { protectedProcedure, router } from "../trpc.js";
+import { protectedProcedure, publicProcedure, router } from "../trpc.js";
+
+// Same roles as adminProcedure. The role is checked before ensureAppUser so a
+// non-admin is rejected without writing a user row.
+const bridgeAdminProcedure = publicProcedure.use(async ({ ctx, next }) => {
+    if (!ctx.user) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Authentication required" });
+    }
+    if (ctx.user.role !== "admin" && ctx.user.role !== "super_admin") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
+    }
+    await ensureAppUser(ctx.user);
+    return next({ ctx: { ...ctx, user: ctx.user } });
+});
 
 const idInput = z.object({ id: z.string().uuid() });
 
@@ -204,11 +219,13 @@ export const productionRouter = router({
             }
         }),
 
-    createBridgeEnrollment: protectedProcedure
+    createBridgeEnrollment: bridgeAdminProcedure
         .input(z.object({ bridgeName: z.string().min(1).max(80) }))
         .mutation(async ({ ctx, input }) => {
             try {
                 const { actor } = await scope(ctx);
+                const bridgeName = input.bridgeName.trim();
+                if (!bridgeName) throw new ProductionError("BAD_REQUEST", "A bridge name is required.");
                 const origin = process.env.ORTHOCAD_CLOUD_ORIGIN?.trim() ?? "";
                 if (!origin.startsWith("https://")) {
                     throw new ProductionError("BAD_REQUEST", "Cloud origin is not configured.");
@@ -223,10 +240,10 @@ export const productionRouter = router({
                     origin,
                     now: new Date(),
                 });
-                await serverBridgeDirectory.putEnrollment(created.record);
+                await serverBridgeDirectory.putEnrollment(created.record, { name: bridgeName });
                 return {
                     bridgeId,
-                    bridgeName: input.bridgeName,
+                    bridgeName,
                     proof: created.proof,
                     expiresAt: created.record.expiresAt,
                 };
@@ -235,7 +252,7 @@ export const productionRouter = router({
             }
         }),
 
-    revokeBridge: protectedProcedure
+    revokeBridge: bridgeAdminProcedure
         .input(z.object({ bridgeId: z.string().uuid() }))
         .mutation(async ({ ctx, input }) => {
             try {

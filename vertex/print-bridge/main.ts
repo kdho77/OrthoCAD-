@@ -3,7 +3,7 @@
 // It does not listen for inbound printer traffic.
 // Printer addresses come from the cloud enrollment, never from this file.
 
-import { runBridgeSession } from "../shared/print-bridge-session.js";
+import { readMoonrakerApiKeyFile, runBridgeSession } from "../shared/print-bridge-session.js";
 import { productionBridgePolicy } from "../shared/printer-address-resolve.js";
 
 function required(name: string): string {
@@ -31,12 +31,25 @@ if (parsed.protocol !== "https:" && !loopbackCloud) {
     process.exit(1);
 }
 
+let moonrakerApiKey: string | undefined;
+try {
+    moonrakerApiKey = readMoonrakerApiKeyFile(process.env.ORTHOCAD_MOONRAKER_API_KEY_FILE);
+} catch (error) {
+    console.error(
+        error instanceof Error
+            ? error.message
+            : "ORTHOCAD_MOONRAKER_API_KEY_FILE is unreadable. The bridge was not started.",
+    );
+    process.exit(1);
+}
+
 const result = await runBridgeSession({
     origin,
     bridgeId,
     stateDir,
     policy: productionBridgePolicy(),
     proof: process.env.ORTHOCAD_BRIDGE_ENROLLMENT_PROOF?.trim() || undefined,
+    moonrakerApiKey,
 });
 console.error(`bridge stopped: ${result.stopped} cycles=${result.cycles}`);
 process.exit(result.stopped === "revoked" || result.stopped === "enrollment-rejected" ? 1 : 0);
