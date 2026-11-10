@@ -2,9 +2,14 @@
 
 import { TRPCError } from "@trpc/server";
 
+import {
+    sanitizeTransportDetail,
+    type TransientRetryOptions,
+    withOneTransientRetry,
+} from "./cad-operator-production.js";
 import { readUpstreamErrorText } from "./upstream-error.js";
 
-export async function downloadManufacturingStl(url: string): Promise<Uint8Array> {
+async function downloadManufacturingStlOnce(url: string): Promise<Uint8Array> {
     let response: Response;
     try {
         response = await fetch(url);
@@ -12,15 +17,28 @@ export async function downloadManufacturingStl(url: string): Promise<Uint8Array>
         const message = err instanceof Error ? err.message : String(err);
         throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
-            message: `Could not download manufacturing STL: ${message}`,
+            message: `Could not download manufacturing STL: ${sanitizeTransportDetail(message)}`,
         });
     }
     if (!response.ok) {
         const detail = await readUpstreamErrorText(response);
         throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
-            message: `Could not download manufacturing STL (${response.status}): ${detail}`,
+            message: `Could not download manufacturing STL (${response.status}): ${sanitizeTransportDetail(detail)}`,
         });
     }
-    return new Uint8Array(await response.arrayBuffer());
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    console.log("[manufacturing] STL download complete", { stlBytes: bytes.byteLength });
+    return bytes;
+}
+
+/** One retry for a dropped connection or 408/429/5xx. The URL is never logged. */
+export async function downloadManufacturingStl(
+    url: string,
+    retry?: TransientRetryOptions,
+): Promise<Uint8Array> {
+    return withOneTransientRetry(() => downloadManufacturingStlOnce(url), {
+        opName: "stl-download",
+        ...retry,
+    });
 }

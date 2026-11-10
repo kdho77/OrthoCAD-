@@ -2,6 +2,13 @@
 
 import { TRPCError } from "@trpc/server";
 import { APEX_V2_INSOLE_LOCKED_PROFILE_ID } from "../../../shared/print-recipe/print-recipe.js";
+import {
+    productionErrorName,
+    publicProductionError,
+    sanitizeTransportDetail,
+    type TransientRetryOptions,
+    withOneTransientRetry,
+} from "./cad-operator-production.js";
 import { readUpstreamErrorText } from "./upstream-error.js";
 
 /** VertexSlice `/v1/slice` material ids. Enabled printer exports are the first two. */
@@ -59,7 +66,8 @@ export function assertEnabledVertexSliceMaterial(material: string | undefined): 
     if (id !== "apex_core" && id !== "apex_light" && id !== "apex_bounce") {
         throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "Printer G-code requires Apex Core (apex_core), Apex Light (apex_light), or Apex Bounce (apex_bounce).",
+            message:
+                "Printer G-code requires Apex Core (apex_core), Apex Light (apex_light), or Apex Bounce (apex_bounce).",
         });
     }
     return id;
@@ -77,6 +85,12 @@ export function assertLockedVertexSliceProfile(profileId: string): string {
 
 function vertexSliceUrl(baseUrl: string, path: string): string {
     return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+/** Logs keep the path. A query string on the configured base URL is not written. */
+function loggableEndpoint(url: string): string {
+    const query = url.indexOf("?");
+    return query === -1 ? url : url.slice(0, query);
 }
 
 function authHeaders(apiKey: string): Record<string, string> {
@@ -156,25 +170,46 @@ async function vertexSliceFetch(url: string, init: RequestInit): Promise<Respons
         const message = err instanceof Error ? err.message : String(err);
         throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
-            message: `Could not reach VertexSlice (${url}): ${message}`,
+            message: `Could not reach VertexSlice: ${sanitizeTransportDetail(message)}`,
         });
     }
 }
 
-export async function listVertexSliceMaterials(): Promise<string[]> {
+function logMaterialsFailure(error: unknown): void {
+    console.error("[vertexslice] GET /v1/materials failed", {
+        name: productionErrorName(error),
+        message: publicProductionError(error),
+    });
+}
+
+async function readVertexSliceMaterials(): Promise<string[]> {
     const { baseUrl, apiKey } = getVertexSliceConfig();
     const endpoint = vertexSliceUrl(baseUrl, "/v1/materials");
-    const response = await vertexSliceFetch(endpoint, {
-        method: "GET",
-        headers: authHeaders(apiKey),
-    });
+    console.log("[vertexslice] -> GET /v1/materials");
+    let response: Response;
+    try {
+        response = await fetch(endpoint, {
+            method: "GET",
+            headers: authHeaders(apiKey),
+        });
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        const error = new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Could not reach VertexSlice: ${sanitizeTransportDetail(message)}`,
+        });
+        logMaterialsFailure(error);
+        throw error;
+    }
     if (!response.ok) {
         const detail = await readUpstreamErrorText(response);
-        throw new TRPCError({
+        const error = new TRPCError({
             code:
                 response.status === 401 || response.status === 403 ? "UNAUTHORIZED" : "INTERNAL_SERVER_ERROR",
-            message: `VertexSlice error (${response.status}): ${detail}`,
+            message: `VertexSlice error (${response.status}): ${sanitizeTransportDetail(detail)}`,
         });
+        logMaterialsFailure(error);
+        throw error;
     }
     const raw = await response.text();
     let payload: unknown = null;
@@ -185,13 +220,23 @@ export async function listVertexSliceMaterials(): Promise<string[]> {
     }
     const ids = materialIdsFromPayload(payload);
     if (!ids) {
-        const snippet = raw.replace(/\s+/g, " ").trim().slice(0, 180);
-        throw new TRPCError({
+        const error = new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
-            message: `VertexSlice /v1/materials returned an unrecognized payload${snippet ? `: ${snippet}` : ""}`,
+            message: "VertexSlice /v1/materials returned an unrecognized payload",
         });
+        logMaterialsFailure(error);
+        throw error;
     }
+    console.log("[vertexslice] <- GET /v1/materials", { ok: true, count: ids.length });
     return ids;
+}
+
+/** Materials GET only. A slice POST does not use this retry. */
+export async function listVertexSliceMaterials(retry?: TransientRetryOptions): Promise<string[]> {
+    return withOneTransientRetry(() => readVertexSliceMaterials(), {
+        opName: "materials-get",
+        ...retry,
+    });
 }
 
 export interface VertexSliceRequest {
@@ -213,6 +258,7 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
     const material = assertEnabledVertexSliceMaterial(request.material);
     const profileId = assertLockedVertexSliceProfile(request.profileId.trim());
 
+    // Slice errors are not retried. Only the materials GET uses withOneTransientRetry.
     const listed = await listVertexSliceMaterials();
     if (!materialIsListed(listed, material)) {
         throw new TRPCError({
@@ -240,7 +286,7 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
     form.append("model", new Blob([bytes], { type: "model/stl" }), request.filename ?? "model.stl");
 
     console.log("[vertexslice] -> POST /v1/slice", {
-        endpoint,
+        endpoint: loggableEndpoint(endpoint),
         profileId,
         material,
         infillDensityPct: request.infillDensityPct ?? null,
@@ -255,8 +301,13 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
     });
 
     if (!response.ok) {
-        const detail = await readUpstreamErrorText(response);
-        console.error("[vertexslice] slice failed", { endpoint, status: response.status, detail, material });
+        const detail = sanitizeTransportDetail(await readUpstreamErrorText(response));
+        console.error("[vertexslice] slice failed", {
+            endpoint: loggableEndpoint(endpoint),
+            status: response.status,
+            detail,
+            material,
+        });
         if (isMaterialRejection(detail, material)) {
             throw new TRPCError({
                 code: "BAD_REQUEST",
