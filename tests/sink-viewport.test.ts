@@ -108,13 +108,18 @@ function sinkHeightReport(
 describe("composed viewport sink height", () => {
     test("every sink and a max 1st MPJ move the composed sheet in height only", async () => {
         const raw = await loadSampleTop();
-        const six = SINK_KIND_ORDER.map((kind) => sinkAt(kind, SINK_PROFILES[kind].defaultDepthMm));
+        const six = SINK_KIND_ORDER.filter((kind) => kind !== "rkw").map((kind) =>
+            sinkAt(kind, SINK_PROFILES[kind].defaultDepthMm),
+        );
+        const withRkw = [...six, sinkAt("rkw", SINK_PROFILES.rkw.defaultDepthMm)];
         const mpj1Max = [sinkAt("mpj1", SINK_PROFILES.mpj1.maxDepthMm)];
         for (const [name, compose] of Object.entries(entryPoints)) {
             const plain = await compose(raw, field());
             const withSix = await compose(raw, field(six));
+            const withRkwMesh = await compose(raw, field(withRkw));
             const withMax = await compose(raw, field(mpj1Max));
             const sixReport = sinkHeightReport(plain, withSix, raw, six);
+            const rkwReport = sinkHeightReport(plain, withRkwMesh, raw, withRkw);
             const maxReport = sinkHeightReport(plain, withMax, raw, mpj1Max);
             const sixDz = Object.fromEntries(
                 SINK_KIND_ORDER.map((kind) => [kind, sixReport.best.get(kind) ?? null]),
@@ -129,15 +134,21 @@ describe("composed viewport sink height", () => {
             expect(sixReport.xyMm).toBeLessThan(1e-4);
             expect(maxReport.xyMm).toBeLessThan(1e-4);
             for (const kind of SINK_KIND_ORDER) {
+                if (kind === "rkw") continue;
                 const hit = sixReport.best.get(kind);
                 expect(hit, `${name} ${kind}`).toBeTruthy();
                 expect(Math.abs(hit!.dz)).toBeGreaterThan(0.05);
             }
+            expect(rkwReport.best.get("mpj1"), `${name} RKW suppresses MPJ1`).toBeUndefined();
+            const rkwHit = rkwReport.best.get("rkw");
+            expect(rkwHit, `${name} rkw`).toBeTruthy();
+            expect(Math.abs(rkwHit!.dz)).toBeGreaterThan(0.05);
             const maxHit = maxReport.best.get("mpj1");
             expect(maxHit, `${name} mpj1 max`).toBeTruthy();
             expect(Math.abs(maxHit!.dz)).toBeGreaterThan(0.05);
             plain.dispose();
             withSix.dispose();
+            withRkwMesh.dispose();
             withMax.dispose();
         }
         raw.dispose();

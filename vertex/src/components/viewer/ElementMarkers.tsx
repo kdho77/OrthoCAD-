@@ -7,11 +7,9 @@ import type {
     OrbitControls as OrbitControlsImpl,
     TransformControls as TransformControlsImpl,
 } from "three-stdlib";
-import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import { gizmoElementScale } from "@/lib/geometry/element-scale";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { sinksForSide } from "@/lib/geometry/migrate-corrections";
-import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import type { SinkOutlinePoint } from "@/lib/geometry/sink";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
@@ -24,9 +22,11 @@ import {
     designFootprintStyle,
     elementFootprintPose,
     type FootprintPose,
+    footOutlineForSide,
     footprintStyle,
     footprintSurfaceZ,
     isLibrarySinkElement,
+    recessFootprintStyle,
     showsDesignFootprint,
     sinkFootprintPose,
 } from "./element-footprints";
@@ -92,7 +92,12 @@ function FootprintPatch({
     selected: boolean;
     onSelect: () => void;
 }) {
-    const style = pose.tone === "design" ? designFootprintStyle(selected) : footprintStyle(selected);
+    const style =
+        pose.tone === "design"
+            ? designFootprintStyle(selected)
+            : pose.tone === "recess"
+              ? recessFootprintStyle(selected)
+              : footprintStyle(selected);
     const outlineKey = pose.outline.map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(";");
     // outlineKey serializes pose.outline so a new array with the same coordinates does not rebuild.
     // biome-ignore lint/correctness/useExhaustiveDependencies: outlineKey serializes pose.outline
@@ -125,8 +130,8 @@ function FootprintPatch({
             >
                 <meshBasicMaterial
                     color={style.color}
-                    transparent={false}
-                    opacity={1}
+                    transparent={style.opacity < 1}
+                    opacity={style.opacity}
                     depthTest={false}
                     depthWrite={false}
                     side={DoubleSide}
@@ -150,16 +155,7 @@ function sinkOutlineForSide(
     side: Side,
     outlines: ReturnType<typeof useBaseOutlineStore.getState>["outlines"],
 ): SinkOutlinePoint[] | null {
-    const wallModel = design.viewer?.wallModel ?? "procedural";
-    const base = getDesignBase(design, side);
-    const proceduralKey =
-        wallModel === "procedural" && base
-            ? `${SAMPLE_TOP_ASSET_ID}:${side}:${base.mirrored ? "m" : "p"}`
-            : null;
-    const baseKey = getBaseCacheKey(base) ?? base?.assetId ?? null;
-    const curve = (proceduralKey ? outlines[proceduralKey] : null) ?? (baseKey ? outlines[baseKey] : null);
-    if (!curve || curve.points.length < 6) return null;
-    return curve.points.map((p) => ({ x: p.x, y: p.y }));
+    return footOutlineForSide(design, side, outlines);
 }
 
 /**
@@ -212,16 +208,19 @@ export function ElementFootprints() {
         <group rotation={[-Math.PI / 2, 0, 0]}>
             {sides.map((side) => {
                 const poses: FootprintPose[] = [];
+                const footOutline = sinkOutlineForSide(design, side, outlines);
                 for (const element of librarySinks) {
                     if (element.side !== side) continue;
-                    poses.push(elementFootprintPose(element, layout.lengthMm));
+                    poses.push(elementFootprintPose(element, layout.lengthMm, layout.widthMm));
                 }
                 for (const element of designFootprints) {
                     if (element.side !== side) continue;
-                    poses.push(elementFootprintPose(element, layout.lengthMm));
+                    poses.push(elementFootprintPose(element, layout.lengthMm, layout.widthMm, footOutline));
                 }
-                const footOutline = sinkOutlineForSide(design, side, outlines);
-                for (const sink of sinksForSide(design, side) ?? []) {
+                const sideSinks = sinksForSide(design, side) ?? [];
+                const rkwOn = sideSinks.some((sink) => sink.kind === "rkw");
+                for (const sink of sideSinks) {
+                    if (rkwOn && sink.kind === "mpj1") continue;
                     const pose = sinkFootprintPose(sink, side, layout.lengthMm, layout.widthMm, footOutline);
                     if (pose) poses.push(pose);
                 }

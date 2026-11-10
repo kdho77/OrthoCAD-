@@ -84,6 +84,8 @@ describe("element footprint planforms", () => {
         expect(isLibrarySinkElement(placed("navicular_sink", "right"))).toBe(true);
         expect(isLibrarySinkElement(placed("mortons_extension", "left"))).toBe(false);
         expect(showsDesignFootprint(placed("mortons_extension", "right"))).toBe(true);
+        expect(showsDesignFootprint(placed("reverse_mortons", "left"))).toBe(true);
+        expect(showsDesignFootprint(placed("kinetic_wedge", "right"))).toBe(true);
         expect(showsDesignFootprint(placed("cluffy_wedge", "left"))).toBe(false);
 
         const heel = elementFootprintPose(placed("heel_sink", "left"), layout.lengthMm);
@@ -182,8 +184,8 @@ describe("element footprint planforms", () => {
         const src = readFileSync(repoFile("src/components/viewer/ElementMarkers.tsx"), "utf8");
         const math = readFileSync(repoFile("src/components/viewer/element-footprints.ts"), "utf8");
         expect(src).toMatch(/depthTest=\{false\}/);
-        expect(src).toMatch(/transparent=\{false\}/);
-        expect(src).toMatch(/opacity=\{1\}/);
+        expect(src).toMatch(/transparent=\{style\.opacity < 1\}/);
+        expect(src).toMatch(/opacity=\{style\.opacity\}/);
         expect(src).toMatch(/DoubleSide/);
         expect(src).toMatch(/ElementFootprints/);
         expect(src).not.toMatch(/cylinderGeometry/i);
@@ -202,8 +204,8 @@ describe("element footprint overlay", () => {
     beforeEach(() => {
         const design = JSON.parse(JSON.stringify(useDesignStore.getInitialState().design));
         design.elements = [
-            placed("kinetic_wedge", "left", "wedge-l"),
-            placed("kinetic_wedge", "right", "wedge-r"),
+            placed("cluffy_wedge", "left", "wedge-l"),
+            placed("cluffy_wedge", "right", "wedge-r"),
             placed("met_pad", "left", "pad-l"),
             placed("heel_sink", "left", "heel-l"),
             placed("navicular_sink", "right", "nav-r"),
@@ -312,7 +314,7 @@ describe("element footprint overlay", () => {
         expect(names.some((n) => n.includes("element:mort-r") && n.includes(DESIGN_ELEMENT_COLOR))).toBe(
             true,
         );
-        expect(names.some((n) => n.includes("wedge"))).toBe(false);
+        expect(names.some((n) => n.includes("element:wedge-l") && n.includes("#38bdf8"))).toBe(true);
         expect(DESIGN_FOOTPRINT_COLORS.fill).toBe(DESIGN_ELEMENT_COLOR);
         const leftPose = elementFootprintPose(placed("mortons_extension", "left", "mort-l"), layout.lengthMm);
         const rightPose = elementFootprintPose(
@@ -342,8 +344,10 @@ describe("element footprint overlay", () => {
         await act(async () => root.render(createElement(ElementFootprints)));
         const names = footprintNames();
         expect(footprintStyle(false).opacity).toBeGreaterThan(0.85);
-        expect(names.length).toBe(SINK_KIND_ORDER.length * 2);
+        expect(names.length).toBe((SINK_KIND_ORDER.length - 1) * 2);
+        expect(names.some((n) => n.includes("mpj1"))).toBe(false);
         for (const kind of SINK_KIND_ORDER) {
+            if (kind === "mpj1") continue;
             const fill = SINK_FOOTPRINT_COLORS.fill;
             expect(names.some((n) => n.includes(`sink:L-${kind}`) && n.includes(fill))).toBe(true);
             expect(names.some((n) => n.includes(`sink:R-${kind}`) && n.includes(fill))).toBe(true);
