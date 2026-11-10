@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 // Vercel function for POST /print-bridge/v1/*. This file is a route, not a helper.
+// Tests live outside this directory so Vercel does not publish them as functions.
 // The handler is handlePrintBridgeNode, the same contract the standalone Node server uses.
 //
 // Routing: non-Next Vercel projects only bind single-segment routes under /api.
