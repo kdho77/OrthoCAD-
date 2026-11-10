@@ -157,4 +157,103 @@ describe("saved-design belt G-code tool", () => {
         expect(result.content[0]?.text).toMatch(/right foot/);
         expect(result.content[0]?.text).not.toMatch(/prod-left|left\.gcode/);
     });
+
+    test("saved-design generate_gcode forwards apex_light and the ApexLight Foam alias", async () => {
+        const seen: Array<{ material?: string; presetId?: string }> = [];
+        const manufacturing = {
+            generateFromSavedDesign: async (input: { material?: string; presetId?: string }) => {
+                seen.push({ material: input.material, presetId: input.presetId });
+                return { ok: true, productionId: "prod-left", status: "pending" };
+            },
+        } as unknown as ManufacturingClient;
+        const designId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const light = await handleOrthocadTool(
+            "generate_gcode",
+            {
+                preset_id: "apex-v2-insole-95a",
+                use_saved_design: true,
+                design_id: designId,
+                side: "left",
+                material: "apex_light",
+            },
+            { config, manufacturing },
+        );
+        const foam = await handleOrthocadTool(
+            "generate_gcode",
+            {
+                preset_id: "apex-v2-insole-95a",
+                use_saved_design: true,
+                design_id: designId,
+                side: "left",
+                material: "ApexLight Foam",
+            },
+            { config, manufacturing },
+        );
+        expect(light.isError).toBeUndefined();
+        expect(foam.isError).toBeUndefined();
+        expect(seen.map((row) => row.material)).toEqual(["apex_light", "ApexLight Foam"]);
+        expect(seen.every((row) => row.presetId === "apex-v2-insole-95a")).toBe(true);
+        expect(seen.every((row) => row.material !== "apex_core")).toBe(true);
+    });
+
+    test("omitted material is forwarded unset and an omitted preset is not replaced here", async () => {
+        const seen: Array<{ material?: string; presetId?: string }> = [];
+        const manufacturing = {
+            generateFromSavedDesign: async (input: { material?: string; presetId?: string }) => {
+                seen.push({ material: input.material, presetId: input.presetId });
+                return { ok: true, productionId: "prod-left", status: "pending" };
+            },
+        } as unknown as ManufacturingClient;
+        const result = await handleOrthocadTool(
+            "generate_gcode",
+            {
+                use_saved_design: true,
+                design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                side: "left",
+            },
+            { config, manufacturing },
+        );
+        expect(result.isError).toBeUndefined();
+        expect(seen).toEqual([{ material: undefined, presetId: undefined }]);
+    });
+
+    test("unknown material and disabled Apex Forge are rejected and not sent", async () => {
+        let calls = 0;
+        const manufacturing = {
+            generateFromSavedDesign: async () => {
+                calls += 1;
+                return { ok: true, productionId: "should-not-run", status: "pending" };
+            },
+        } as unknown as ManufacturingClient;
+        const base = {
+            preset_id: "apex-v2-insole-95a",
+            use_saved_design: true,
+            design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            side: "left" as const,
+        };
+        const unknown = await handleOrthocadTool(
+            "generate_gcode",
+            { ...base, material: "TPU 95A" },
+            { config, manufacturing },
+        );
+        const forge = await handleOrthocadTool(
+            "generate_gcode",
+            { ...base, material: "apex_forge" },
+            { config, manufacturing },
+        );
+        const unlocked = await handleOrthocadTool(
+            "generate_gcode",
+            { ...base, preset_id: "gyroid-production-v1", material: "apex_light" },
+            { config, manufacturing },
+        );
+        expect(calls).toBe(0);
+        expect(unknown.isError).toBe(true);
+        expect(unknown.content[0]?.text).toMatch(/Unknown print material/);
+        expect(unknown.content[0]?.text).toMatch(/Nothing was substituted/);
+        expect(forge.isError).toBe(true);
+        expect(forge.content[0]?.text).toMatch(/Apex Forge is disabled/);
+        expect(unlocked.isError).toBe(true);
+        expect(unlocked.content[0]?.text).toMatch(/apex-v2-insole-95a/);
+        expect(unlocked.content[0]?.text).toMatch(/not substituted/);
+    });
 });

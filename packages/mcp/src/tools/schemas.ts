@@ -22,16 +22,33 @@ export const prepareManufacturingStlUploadInputSchema = z.object({
     file_name: z.string().max(200).optional(),
 });
 
+export const listMaterialsInputSchema = z.object({}).strict();
+
+const MATERIAL_FIELD_DESCRIPTION =
+    "Insole print material. Omit for apex_core (Apex Core). " +
+    'Enabled values: apex_light (Apex Light; aliases ApexLight, "Apex Light", "ApexLight Foam"), ' +
+    'apex_core (Apex Core; aliases ApexCore, "Apex Core", ApexComfort, "Apex Comfort"), ' +
+    'apex_bounce (Apex Bounce; aliases ApexBounce, "Apex Bounce"). ' +
+    "Spaces, underscores, and hyphens are ignored. " +
+    "ApexLight Foam is Apex Light, not a separate product. " +
+    "apex_forge (Apex Forge) is disabled and rejected. Unknown names are rejected. Nothing is substituted. " +
+    "Call list_materials for the canonical ids, labels, aliases, and enabled flags.";
+
+const PRESET_FIELD_DESCRIPTION =
+    "Locked process profile apex-v2-insole-95a. Omit preset_id or pass that exact id. " +
+    "Any other preset_id is rejected and is not substituted. " +
+    "The same locked profile is used for every enabled insole material.";
+
 export const generateGcodeInputObjectSchema = z.object({
     design_id: z.string().uuid().optional(),
     side: sideSchema.optional(),
-    preset_id: z.string().min(1),
+    preset_id: z.string().min(1).optional().describe(PRESET_FIELD_DESCRIPTION),
     /** Required unless use_saved_design. The saved-design path does not accept an STL deliverable. */
     stl_storage_key: z.string().min(1).optional(),
     output_type: z.enum(["gcode", "stl"]).default("gcode"),
     belt_angle_deg: z.number().min(10).max(80).optional(),
     file_name: z.string().max(200).optional(),
-    material: z.string().max(80).optional(),
+    material: z.string().max(80).optional().describe(MATERIAL_FIELD_DESCRIPTION),
     /** Server builds the canonical Export mesh and returns per-foot belt G-code only. */
     use_saved_design: z.boolean().optional(),
     /** Optional bottom engrave label for this export (same sanitize as Print/Export textMarking). */
@@ -273,6 +290,21 @@ export const MCP_TOOL_DEFINITIONS = [
         inputSchema: prepareManufacturingStlUploadInputSchema,
     },
     {
+        name: "list_materials",
+        description:
+            "Read-only catalog of insole print materials for generate_gcode. No arguments and no writes. " +
+            "Returns locked_preset_id (apex-v2-insole-95a), default_material (apex_core when material is omitted), " +
+            "and materials[] with id, label, vertex_slice_material, enabled, locked_preset_id, aliases, " +
+            "and disabled_reason when disabled. " +
+            "generate_gcode material accepts vertex_slice_material or any alias. Spaces, underscores, and hyphens are ignored. " +
+            'Apex Light / apex_light aliases include "ApexLight Foam" (the VertexOrders label, not a new product). ' +
+            "Apex Core / apex_core aliases include ApexComfort. Apex Bounce / apex_bounce is enabled. " +
+            "Apex Forge / apex_forge is disabled until print settings are approved and is rejected. " +
+            "Unknown material names are rejected. Nothing is substituted. " +
+            "preset_id must be omitted or apex-v2-insole-95a. Any other preset_id is rejected and not substituted.",
+        inputSchema: listMaterialsInputSchema,
+    },
+    {
         name: "generate_gcode",
         description:
             "Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. " +
@@ -280,7 +312,11 @@ export const MCP_TOOL_DEFINITIONS = [
             "A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset. " +
             "No STL deliverable and no G-code bytes. Omitting side enqueues both feet. " +
             "Legacy mode still calls manufacturing.generateSolid → Python /manufacture with stl_storage_key. " +
-            "PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck.",
+            "PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck. " +
+            "material: omit for apex_core, or pass apex_light, apex_core, apex_bounce, or a list_materials alias " +
+            '("ApexLight Foam" is apex_light). Unknown materials and disabled apex_forge are rejected and not substituted. ' +
+            "preset_id: omit or pass apex-v2-insole-95a. Any other preset_id is rejected and not substituted. " +
+            "Every enabled insole material keeps that locked profile.",
         inputSchema: generateGcodeInputObjectSchema,
     },
     {
@@ -410,23 +446,35 @@ export function listMcpSavedDesignCatalogKeyPaths(): string[] {
     return paths;
 }
 
+function withDescription(field: z.ZodTypeAny, out: Record<string, unknown>): Record<string, unknown> {
+    const description = field.description ?? unwrapZod(field).description;
+    if (description) out.description = description;
+    return out;
+}
+
 function zodFieldToJson(field: z.ZodTypeAny): Record<string, unknown> {
     const inner = unwrapZod(field);
     if (inner instanceof z.ZodString) {
         const out: Record<string, unknown> = { type: "string" };
         if (inner._def.checks?.some((c) => c.kind === "uuid")) out.format = "uuid";
-        return out;
+        return withDescription(field, out);
     }
-    if (inner instanceof z.ZodNumber) return { type: "number" };
-    if (inner instanceof z.ZodBoolean) return { type: "boolean" };
-    if (inner instanceof z.ZodEnum) return { type: "string", enum: inner._def.values };
-    if (inner instanceof z.ZodLiteral) return { type: "string", enum: [inner.value] };
+    if (inner instanceof z.ZodNumber) return withDescription(field, { type: "number" });
+    if (inner instanceof z.ZodBoolean) return withDescription(field, { type: "boolean" });
+    if (inner instanceof z.ZodEnum)
+        return withDescription(field, { type: "string", enum: inner._def.values });
+    if (inner instanceof z.ZodLiteral) return withDescription(field, { type: "string", enum: [inner.value] });
     if (inner instanceof z.ZodUnion) {
-        return { anyOf: (inner._def.options as z.ZodTypeAny[]).map((option) => zodFieldToJson(option)) };
+        return withDescription(field, {
+            anyOf: (inner._def.options as z.ZodTypeAny[]).map((option) => zodFieldToJson(option)),
+        });
     }
     if (inner instanceof z.ZodArray) {
-        return { type: "array", items: zodFieldToJson(inner._def.type as z.ZodTypeAny) };
+        return withDescription(field, {
+            type: "array",
+            items: zodFieldToJson(inner._def.type as z.ZodTypeAny),
+        });
     }
-    if (inner instanceof z.ZodObject) return zodToJsonSchema(inner);
-    return {};
+    if (inner instanceof z.ZodObject) return withDescription(field, zodToJsonSchema(inner));
+    return withDescription(field, {});
 }

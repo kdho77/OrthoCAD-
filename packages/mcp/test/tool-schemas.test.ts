@@ -14,6 +14,7 @@ describe("OrthoCAD MCP tool schemas", () => {
             "list_designs_by_order",
             "get_design_params",
             "prepare_manufacturing_stl_upload",
+            "list_materials",
             "generate_gcode",
             "get_production",
             "list_productions_by_design",
@@ -44,8 +45,15 @@ describe("OrthoCAD MCP tool schemas", () => {
         expect(properties).toHaveProperty("design_id");
         expect(properties).toHaveProperty("side");
         expect(properties).toHaveProperty("preset_id");
+        expect(properties).toHaveProperty("material");
         expect(properties).toHaveProperty("stl_storage_key");
-        expect(jsonSchema.required).toEqual(expect.arrayContaining(["preset_id"]));
+        expect(jsonSchema.required ?? []).not.toContain("preset_id");
+        const material = properties.material as { description?: string };
+        const preset = properties.preset_id as { description?: string };
+        expect(material.description).toMatch(/apex_light/);
+        expect(material.description).toMatch(/ApexLight Foam/);
+        expect(material.description).toMatch(/apex_forge/);
+        expect(preset.description).toMatch(/apex-v2-insole-95a/);
     });
 
     test("each tool schema accepts a minimal valid payload", () => {
@@ -58,6 +66,7 @@ describe("OrthoCAD MCP tool schemas", () => {
             },
             get_design_params: { design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
             prepare_manufacturing_stl_upload: { side: "left" },
+            list_materials: {},
             generate_gcode: {
                 preset_id: "gyroid-production-v1",
                 stl_storage_key: "manufacturing/tmp/example.stl",
