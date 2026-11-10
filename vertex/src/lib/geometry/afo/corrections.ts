@@ -112,8 +112,7 @@ export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections, axes?: 
     const frontDeg = clampFrontalDeg(c.legRearDeg);
     const medial = axes?.medialMal ?? { x: 35, y: 40, z: 80 };
     const lateral = axes?.lateralMal ?? { x: -35, y: 40, z: 80 };
-    const ySpan = spanY(out);
-    const footLen = Math.max(1, ySpan.yMax - ySpan.yMin);
+    const length = footLengthAlong(out, axes);
 
     // One spin for both paths. The old malleolar cross product plantarflexed a
     // right foot when +side asked for dorsiflexion (readout about −7.9° at +10°).
@@ -126,23 +125,23 @@ export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections, axes?: 
     }
 
     const nav = axes?.navicular ?? null;
-    // This loop's width axis is X (heel→toe is Y). Medial X follows the malleoli
-    // when they span; otherwise it is the shared plantar sign mapped into X
-    // (−medialSign: left medial is +X, right medial is −X).
+    // Width warps still read X. Heel lift and toe rise do not: the aligned
+    // frame's heel→toe axis is +X, taken from the heel and the met heads.
     const medialX = medialWidthXSign(medial, lateral, axes?.side);
 
     for (let i = 0; i < n; i++) {
         let x = out.positions[i * 3] ?? 0;
         const y = out.positions[i * 3 + 1] ?? 0;
         let z = out.positions[i * 3 + 2] ?? 0;
+        const along = (x - length.ox) * length.x + (y - length.oy) * length.y;
 
         if (c.heelLiftMm) {
-            const t = clamp01(1 - y / 140);
+            const t = clamp01(1 - along / 140);
             z += c.heelLiftMm * t;
         }
         if (c.toeRiseMm) {
-            const yNorm = (y - ySpan.yMin) / footLen;
-            if (yNorm > 0.6) z += c.toeRiseMm * smoothstep(0.6, 0.85, yNorm);
+            const alongNorm = (along - length.min) / length.span;
+            if (alongNorm > 0.6) z += c.toeRiseMm * smoothstep(0.6, 0.85, alongNorm);
         }
         if (c.footLiftMedMm && x * medialX > 0) {
             z += c.footLiftMedMm * clamp01(Math.abs(x) / 40) * clamp01(1 - z / 50);
@@ -184,16 +183,46 @@ export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections, axes?: 
     return out;
 }
 
-function spanY(mesh: AfoTriMesh): { yMin: number; yMax: number } {
-    const n = vertexCount(mesh);
-    let yMin = Infinity;
-    let yMax = -Infinity;
-    for (let i = 0; i < n; i++) {
-        const y = mesh.positions[i * 3 + 1] ?? 0;
-        if (y < yMin) yMin = y;
-        if (y > yMax) yMax = y;
+/**
+ * Heel→toe measure for Heel Lift and Toe Rise.
+ * Plantar landmarks put 0 at the heel and +1 toward the met heads (+X after
+ * alignment). Callers that never passed those points keep the old +Y length.
+ */
+function footLengthAlong(
+    mesh: AfoTriMesh,
+    axes: AfoRotationAxes | undefined,
+): { x: number; y: number; ox: number; oy: number; min: number; span: number } {
+    let dirX = 0;
+    let dirY = 1;
+    let ox = 0;
+    let oy = 0;
+    const heel = axes?.heel;
+    const m1 = axes?.m1;
+    const m5 = axes?.m5;
+    if (heel && m1 && m5) {
+        const ax = (m1.x + m5.x) * 0.5 - heel.x;
+        const ay = (m1.y + m5.y) * 0.5 - heel.y;
+        const len = Math.hypot(ax, ay);
+        if (len > 1) {
+            dirX = ax / len;
+            dirY = ay / len;
+            ox = heel.x;
+            oy = heel.y;
+        }
     }
-    return { yMin, yMax };
+    const n = vertexCount(mesh);
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = 0; i < n; i++) {
+        const s = ((mesh.positions[i * 3] ?? 0) - ox) * dirX + ((mesh.positions[i * 3 + 1] ?? 0) - oy) * dirY;
+        if (s < min) min = s;
+        if (s > max) max = s;
+    }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+        min = 0;
+        max = 1;
+    }
+    return { x: dirX, y: dirY, ox, oy, min, span: Math.max(1, max - min) };
 }
 
 /**
