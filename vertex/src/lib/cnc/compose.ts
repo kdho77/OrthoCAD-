@@ -4,8 +4,14 @@ import type { BufferGeometry } from "three";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
-import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
+import {
+    insoleLayoutFromDesign,
+    scalePlanPointAboutCenter,
+    scaleSourceShapeToFootprint,
+    topSheetXyScale,
+} from "@/lib/geometry/shoe-size";
 import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
+import { getDesignTrimline } from "@/lib/geometry/trimline";
 import type { DesignState, Side } from "@/types";
 import type { CncWorkpiece, MillingProfile } from "./types";
 import { workpieceFromGeometry } from "./workpiece";
@@ -76,10 +82,23 @@ export async function workpiecesFromDesign(
     for (const side of sides) {
         const loaded = await loadGeo(side);
         if (!loaded) continue;
-        // Toolpath the shoe-size footprint. SAMPLE_Top is ~272 mm; US M 9 is 260 mm.
-        // Scale before compose so elements and the outline share that frame.
-        const raw = scaleGeometryToInsoleSize(loaded, layout.lengthMm, layout.widthMm);
-        if (raw !== loaded) loaded.dispose();
+        // Same XY anchor as the print loft. Z relief stays on layout.scale.
+        const raw = loaded.clone();
+        scaleSourceShapeToFootprint(raw, layout.scale, BASE_REFERENCE_THICKNESS_MM);
+        loaded.dispose();
+        if (!raw.boundingBox) raw.computeBoundingBox();
+        const box = raw.boundingBox;
+        const center = box
+            ? { x: (box.min.x + box.max.x) / 2, y: (box.min.y + box.max.y) / 2 }
+            : { x: 0, y: 0 };
+        const xy = topSheetXyScale(layout.scale);
+        const storedTrim = getDesignTrimline(cncDesign, side);
+        const trimline = storedTrim
+            ? {
+                  ...storedTrim,
+                  points: storedTrim.points.map((p) => scalePlanPointAboutCenter(p, center, xy)),
+              }
+            : null;
         const thickness = cncDesign.paired
             ? side === "left"
                 ? cncDesign.paired.leftThicknessMm
@@ -96,6 +115,7 @@ export async function workpiecesFromDesign(
             // Same field the order build uses (includeElements, shape finish, effective length).
             // Text is not an input: designWithoutText already dropped it.
             sourceField: field,
+            trimline,
             shoeWidth: {
                 width: widthId,
                 ballWidthMm: layout.widthMm,

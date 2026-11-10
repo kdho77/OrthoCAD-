@@ -6,7 +6,11 @@ import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
-import { scaleSourceShapeToFootprint, topSheetXyScale } from "@/lib/geometry/shoe-size";
+import {
+    scalePlanPointAboutCenter,
+    scaleSourceShapeToFootprint,
+    topSheetXyScale,
+} from "@/lib/geometry/shoe-size";
 import { hasActiveComposedTextMarking } from "@/lib/geometry/text-marking/compose";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -365,6 +369,31 @@ async function withDefaultPrintCompose(options: ProceduralPreviewOptions): Promi
     };
 }
 
+function scaleStoredTrimlines(
+    options: ProceduralPreviewOptions,
+    center: { x: number; y: number },
+    scale: number,
+): ProceduralPreviewOptions {
+    const scaleCurve = (curve: ProceduralPreviewOptions["trimline"]) => {
+        if (!curve?.points?.length) return curve;
+        return {
+            ...curve,
+            points: curve.points.map((p) => scalePlanPointAboutCenter(p, center, scale)),
+        };
+    };
+    const trimline = scaleCurve(options.trimline);
+    const fieldTrim = scaleCurve(options.sourceField?.trimline ?? null);
+    if (trimline === options.trimline && fieldTrim === (options.sourceField?.trimline ?? null))
+        return options;
+    return {
+        ...options,
+        trimline,
+        ...(options.sourceField
+            ? { sourceField: { ...options.sourceField, trimline: fieldTrim ?? null } }
+            : {}),
+    };
+}
+
 export async function reconstructProceduralPreview(
     topGeo: BufferGeometry,
     options: ProceduralPreviewOptions = {},
@@ -420,6 +449,9 @@ export async function reconstructProceduralPreview(
             footprintClone = topGeo.clone();
             scaleSourceShapeToFootprint(footprintClone, footprintScale, BASE_REFERENCE_THICKNESS_MM);
             working = footprintClone;
+            if (center) {
+                options = scaleStoredTrimlines(options, center, xyScale);
+            }
         }
     }
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;

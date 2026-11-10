@@ -39,7 +39,13 @@ import {
     mortonsProximalU,
     mortonsWeightAtUV,
 } from "./mortons-extension";
-import { insoleLayoutForUsMenSize } from "./shoe-size";
+import {
+    insoleLayoutForUsMenSize,
+    SAMPLE_TOP_NATIVE_LENGTH_MM,
+    SAMPLE_TOP_NATIVE_WIDTH_MM,
+    scalePlanPointAboutCenter,
+    TOP_SHEET_XY_ANCHOR_SCALE,
+} from "./shoe-size";
 import { SINK_PROFILES } from "./sink";
 import { instanceWorldPosition, projectViewNdcX } from "./viewport-side-layout";
 
@@ -239,7 +245,7 @@ describe("anatomical element footprints", () => {
             heightMm: 3,
         };
         const lengthMm = 260;
-        const cx = lengthMm / 2 + el.position.x;
+        const cx = lengthMm / 2 + el.position.x * TOP_SHEET_XY_ANCHOR_SCALE;
         const inside = elementHeightAt([el], cx, 0, lengthMm);
         const outside = elementHeightAt([el], cx + 40, 0, lengthMm);
         expect(inside).toBeGreaterThan(1);
@@ -474,5 +480,53 @@ describe("anatomical element footprints", () => {
             }),
         ).toBeNull();
         expect(loweringMaterialWarning(3, 4)).toMatch(/1.5/);
+    });
+
+    test("a landmark offset scales by 1.011273 about the sheet center", () => {
+        const center = SAMPLE_TOP_NATIVE_LENGTH_MM / 2;
+        const landmark = 100;
+        const placed = center + landmark * TOP_SHEET_XY_ANCHOR_SCALE;
+        expect(placed - center).toBeCloseTo(101.1273, 3);
+        const el: PlacedElement = {
+            id: "toe",
+            kind: "toe_crest",
+            side: "left",
+            position: { x: landmark, y: -12 },
+            rotationDeg: 0,
+            scale: { x: 1, y: 1 },
+            heightMm: 3,
+        };
+        const lengthMm = SAMPLE_TOP_NATIVE_LENGTH_MM;
+        const on = elementHeightAt([el], lengthMm / 2 + landmark * TOP_SHEET_XY_ANCHOR_SCALE, 0, lengthMm);
+        const oldCenter = elementHeightAt([el], lengthMm / 2 + landmark, 0, lengthMm);
+        expect(on).toBeGreaterThan(oldCenter);
+    });
+
+    test("Morton's, reverse Morton's, and the kinetic wedge keep u on the anchored sheet", () => {
+        const nativeL = SAMPLE_TOP_NATIVE_LENGTH_MM;
+        const nativeW = SAMPLE_TOP_NATIVE_WIDTH_MM;
+        const anchoredL = nativeL * TOP_SHEET_XY_ANCHOR_SCALE;
+        const anchoredW = nativeW * TOP_SHEET_XY_ANCHOR_SCALE;
+        expect(anchoredL).toBeCloseTo(275, 2);
+        expect(anchoredW).toBeCloseTo(92.73, 2);
+        for (const kind of ["mortons_extension", "reverse_mortons", "kinetic_wedge"] as const) {
+            const native = defaultElementPose(kind, "left", nativeL, nativeW);
+            const anchored = defaultElementPose(kind, "left", anchoredL, anchoredW);
+            const uNative = (nativeL / 2 + native.position.x) / nativeL;
+            const uAnchored = (anchoredL / 2 + anchored.position.x) / anchoredL;
+            expect(uAnchored, kind).toBeCloseTo(uNative, 4);
+            const xNative = nativeL / 2 + native.position.x;
+            const xAnchored = anchoredL / 2 + anchored.position.x;
+            expect(xAnchored, kind).toBeCloseTo(xNative * TOP_SHEET_XY_ANCHOR_SCALE, 2);
+            expect(xAnchored, kind).toBeGreaterThan(xNative + 0.4);
+        }
+        const center = { x: nativeL / 2, y: 0 };
+        const toe = scalePlanPointAboutCenter({ x: nativeL, y: 0, z: 0 }, center, TOP_SHEET_XY_ANCHOR_SCALE);
+        const heel = scalePlanPointAboutCenter({ x: 0, y: 0, z: 0 }, center, TOP_SHEET_XY_ANCHOR_SCALE);
+        expect(toe.x - heel.x).toBeCloseTo(275, 2);
+        expect(toe.x - nativeL).toBeGreaterThan(1.4);
+        expect(toe.x - nativeL).toBeLessThan(1.6);
+        expect(0 - heel.x).toBeGreaterThan(1.4);
+        expect(0 - heel.x).toBeLessThan(1.6);
     });
 });

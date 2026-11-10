@@ -28,13 +28,13 @@ import type { PlacedSink, SideCorrections } from "@/types";
 
 /**
  * SHA-256 of geometryToBinarySTL(reconstructProceduralPreview(native SAMPLE_Top)).
- * Straight is the 37924-vertex solid (zonal shell adds one floor-fillet ring).
+ * Straight is the anchored 38255-vertex solid (zonal shell adds one floor-fillet ring).
  * These pins are the no-sink bytes of this tree.
  */
 const STL_SHA256 = {
-    straight: "4c0e3fa857504ddf81f2722737c83f47b20eac9b642e406656e06ed3deab13e1",
-    round: "ad742f2e7e6f2ad36053de3a1713237b60fff21bf84ebad5a15d854050bbe85f",
-    hybrid: "c19a58cdd99387eb6a2eb4b34f8442eb8317ce1779583c4f8734a9d64d1b383f",
+    straight: "74b041bf3d9a9db9bc5f1914d66eaebb84c6a20d11758bee4ee8fa185bbbc4ce",
+    round: "8320b07bd904546b703c67e5b5a5a1bbe3ba5fb3a7a2bc36266a07ff6ae18a35",
+    hybrid: "a703b4b9e651322d87e7ebeb67cabebe4e4b72c1581fbaea34f56e36c41d29cf",
 } as const;
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
@@ -99,7 +99,11 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         const plains: Record<string, BufferGeometry> = {};
         let plain: BufferGeometry | null = null;
         for (const wallStyle of ["straight", "round", "hybrid"] as const) {
-            const preview = await reconstructProceduralPreview(raw, { wallStyle, side: "left" });
+            const preview = await reconstructProceduralPreview(raw, {
+                footprintScale: 1,
+                wallStyle,
+                side: "left",
+            });
             const stl = sha256Stl(preview.geometry);
             const pos = sha256Positions(preview.geometry);
             const count = preview.geometry.getAttribute("position").count;
@@ -108,23 +112,26 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
             plains[wallStyle] = preview.geometry;
             if (wallStyle === "straight") plain = preview.geometry;
         }
-        expect(hashes.straight?.count).toBe(37924);
+        expect(hashes.straight?.count).toBe(38255);
         expect(hashes.straight?.stl).toBe(STL_SHA256.straight);
         expect(hashes.round?.stl).toBe(STL_SHA256.round);
         expect(hashes.hybrid?.stl).toBe(STL_SHA256.hybrid);
 
         const sunk = await reconstructProceduralPreview(raw, {
+            footprintScale: 1,
             wallStyle: "straight",
             side: "left",
             sinks: [MPJ1],
         });
         const composedPlain = await reconstructProceduralPreview(raw, {
+            footprintScale: 1,
             wallStyle: "straight",
             side: "left",
             sourceField: field(),
             composedTop: true,
         });
         const composedSunk = await reconstructProceduralPreview(raw, {
+            footprintScale: 1,
             wallStyle: "straight",
             side: "left",
             sourceField: field([MPJ1]),
@@ -133,7 +140,7 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         const analytic = compareSolids(plain!, sunk.geometry);
         const composed = compareSolids(composedPlain.geometry, composedSunk.geometry);
         console.log("[SINK-F1]", JSON.stringify({ analytic, composed, hashes }));
-        expect(analytic.baseVertexCount).toBe(37924);
+        expect(analytic.baseVertexCount).toBe(38255);
         expect(analytic.vertexCount).toBe(analytic.baseVertexCount);
         expect(analytic.outlineMm).toBeLessThanOrEqual(0.02);
         expect(analytic.rearfootDzMm).toBeLessThanOrEqual(1e-6);
@@ -157,6 +164,7 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         const floors: Record<string, Record<string, { dz: number; weight: number }>> = {};
         for (const wallStyle of ["straight", "round", "hybrid"] as const) {
             const all = await reconstructProceduralPreview(raw, {
+                footprintScale: 1,
                 wallStyle,
                 side: "left",
                 sinks: nonRkw,
@@ -182,6 +190,7 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
 
         const withRkw = [...nonRkw, { id: "rkw", kind: "rkw" as const, depthMm: SINK_DEFAULT_DEPTH_MM }];
         const suppressed = await reconstructProceduralPreview(raw, {
+            footprintScale: 1,
             wallStyle: "straight",
             side: "left",
             sinks: withRkw,
@@ -191,6 +200,7 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         expect(whileOn.rkw, "RKW still cuts").toBeTruthy();
         const restoredSinks = withRkw.filter((sink) => sink.kind !== "rkw");
         const restored = await reconstructProceduralPreview(raw, {
+            footprintScale: 1,
             wallStyle: "straight",
             side: "left",
             sinks: restoredSinks,
@@ -201,11 +211,13 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         restored.geometry.dispose();
 
         const styloid2 = await reconstructProceduralPreview(raw, {
+            footprintScale: 1,
             wallStyle: "straight",
             side: "left",
             sinks: [{ id: "styloid", kind: "styloid", depthMm: SINK_DEFAULT_DEPTH_MM }],
         });
         const styloid3 = await reconstructProceduralPreview(raw, {
+            footprintScale: 1,
             wallStyle: "straight",
             side: "left",
             sinks: [{ id: "styloid", kind: "styloid", depthMm: 3 }],
@@ -213,6 +225,7 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         const drop2 = wallTopDropMm(plains.straight!, styloid2.geometry);
         const drop3 = wallTopDropMm(plains.straight!, styloid3.geometry);
         const angled = await reconstructProceduralPreview(raw, {
+            footprintScale: 1,
             wallStyle: "straight",
             side: "left",
             sinks: [MPJ1, { id: "styloid", kind: "styloid", depthMm: 3 }],

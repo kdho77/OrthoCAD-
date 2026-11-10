@@ -10,7 +10,11 @@ import type {
 import { gizmoElementScale } from "@/lib/geometry/element-scale";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { sinksForSide } from "@/lib/geometry/migrate-corrections";
-import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import {
+    anchoredPlanOffset,
+    insoleLayoutFromDesign,
+    TOP_SHEET_XY_ANCHOR_SCALE,
+} from "@/lib/geometry/shoe-size";
 import type { SinkOutlinePoint } from "@/lib/geometry/sink";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
@@ -285,6 +289,9 @@ function SelectedElementGizmo({
     const orbitControls = useThree((s) => s.controls);
 
     const zTop = element.heightMm + 4;
+    const placed = showsDesignFootprint(element)
+        ? element.position
+        : anchoredPlanOffset(element.position.x, element.position.y);
 
     const previewFrame = useRef<number | null>(null);
     const cancelPreview = useCallback(() => {
@@ -307,13 +314,19 @@ function SelectedElementGizmo({
                 : element.scale;
         // Keep the handles and rendered preview on the same constrained XY scale.
         node.scale.set(scale.x, scale.y, 1);
+        const uv = showsDesignFootprint(element);
         return {
             id: element.id,
-            position: { x: node.position.x - centerX, y: node.position.y },
+            position: uv
+                ? { x: node.position.x - centerX, y: node.position.y }
+                : {
+                      x: (node.position.x - centerX) / TOP_SHEET_XY_ANCHOR_SCALE,
+                      y: node.position.y / TOP_SHEET_XY_ANCHOR_SCALE,
+                  },
             rotationDeg: (node.rotation.z * 180) / Math.PI,
             scale,
         };
-    }, [node, mode, element.scale, element.scaleLocked, element.id, centerX]);
+    }, [node, mode, element, element.scale, element.scaleLocked, element.id, centerX]);
 
     const commitTransform = useCallback(() => {
         cancelPreview();
@@ -365,7 +378,7 @@ function SelectedElementGizmo({
                 <group position={[-centerX, sideOffsetX(element.side, widthMm), 0]}>
                     <group
                         ref={setNode}
-                        position={[centerX + element.position.x, element.position.y, zTop]}
+                        position={[centerX + placed.x, placed.y, zTop]}
                         rotation={[0, 0, (element.rotationDeg * Math.PI) / 180]}
                         scale={[element.scale.x, element.scale.y, 1]}
                     />

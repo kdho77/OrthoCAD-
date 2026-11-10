@@ -420,6 +420,32 @@ export function topSheetXyScale(footprintScale: number): number {
 }
 
 /**
+ * Native SAMPLE_Top plan size. The Men's 9 anchor turns this into 275.0 × 92.73.
+ * The center stays put because the scale is about that center.
+ */
+export const SAMPLE_TOP_NATIVE_LENGTH_MM = 271.9346;
+export const SAMPLE_TOP_NATIVE_WIDTH_MM = 91.69212341308594;
+
+/** Offset from the sheet center, in the anchored plan. Even in X and Y. Z is not a part of this. */
+export function anchoredPlanOffset(x: number, y: number): { x: number; y: number } {
+    const s = TOP_SHEET_XY_ANCHOR_SCALE;
+    return { x: x * s, y: y * s };
+}
+
+/** Same map as the loft: scale a plan point about the sheet center. Z is copied. */
+export function scalePlanPointAboutCenter<T extends { x: number; y: number; z?: number }>(
+    point: T,
+    center: { x: number; y: number },
+    scale: number,
+): T {
+    return {
+        ...point,
+        x: center.x + (point.x - center.x) * scale,
+        y: center.y + (point.y - center.y) * scale,
+    };
+}
+
+/**
  * Size a top sheet to its footprint before compose and loft.
  *
  * XY uses the same center as {@link scaleFootprintUniform}, then the Men's 9

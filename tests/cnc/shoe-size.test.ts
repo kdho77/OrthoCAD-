@@ -6,7 +6,11 @@ import { workpiecesFromDesign } from "@/lib/cnc/compose";
 import { generateCncJob } from "@/lib/cnc/export";
 import { cloneProfile, IDAHO_PROFILE } from "@/lib/cnc/profile";
 import { defaultSideShapeFinish } from "@/lib/geometry/shape-finish-modifiers";
-import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
+import {
+    insoleLayoutForUsMenSize,
+    SAMPLE_TOP_NATIVE_LENGTH_MM,
+    topSheetXyScale,
+} from "@/lib/geometry/shoe-size";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import { createDesignWithStockPlaceholder } from "@/stores/design-store";
 import { loadSampleTop } from "./helpers";
@@ -60,11 +64,12 @@ describe("CNC shoe-size scale", () => {
                 expect(parts).toHaveLength(2);
                 for (const part of parts) {
                     expect(part.mesh).toBeTruthy();
+                    const sheet = SAMPLE_TOP_NATIVE_LENGTH_MM * topSheetXyScale(layout.scale);
                     const length = meshLengthMm(part.mesh!);
-                    expect(length).toBeGreaterThan(layout.lengthMm - 1);
-                    expect(length).toBeLessThan(layout.lengthMm + 1);
-                    expect(outlineLengthMm(part.outline)).toBeGreaterThan(layout.lengthMm * 0.9);
-                    expect(outlineLengthMm(part.outline)).toBeLessThan(layout.lengthMm + 2);
+                    expect(length).toBeGreaterThan(sheet - 1.5);
+                    expect(length).toBeLessThan(sheet + 1.5);
+                    expect(outlineLengthMm(part.outline)).toBeGreaterThan(sheet * 0.9);
+                    expect(outlineLengthMm(part.outline)).toBeLessThan(sheet + 2);
                 }
                 const job = generateCncJob(profile, parts);
                 expect(job.gcode.length).toBeGreaterThan(1000);
