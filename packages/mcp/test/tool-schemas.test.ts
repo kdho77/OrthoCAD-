@@ -15,6 +15,8 @@ describe("OrthoCAD MCP tool schemas", () => {
             "get_design_params",
             "prepare_manufacturing_stl_upload",
             "generate_gcode",
+            "get_production",
+            "list_productions_by_design",
             "get_export_download",
             "build_design_exported_payload",
             "persist_saved_design_snapshot",
@@ -59,6 +61,12 @@ describe("OrthoCAD MCP tool schemas", () => {
             generate_gcode: {
                 preset_id: "gyroid-production-v1",
                 stl_storage_key: "manufacturing/tmp/example.stl",
+            },
+            get_production: { production_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
+            list_productions_by_design: {
+                design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                side: "left",
+                preset_id: "apex-v2-insole-95a",
             },
             get_export_download: { production_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
             persist_saved_design_snapshot: {

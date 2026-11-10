@@ -4,6 +4,11 @@
     "buildCommand": "npm run prisma:generate && npm run build",
     "outputDirectory": "dist",
     "framework": "vite",
+    "functions": {
+        "api/trpc/[[...trpc]].ts": {
+            "maxDuration": 300
+        }
+    },
     "rewrites": [
         { "source": "/trpc", "destination": "/api/trpc" },
         { "source": "/trpc/:path*", "destination": "/api/trpc/:path*" },
