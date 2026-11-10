@@ -112,8 +112,8 @@ function tightenBoundaryToCurve(shell: AfoTriMesh, curve: AfoVec3[] | undefined)
                 bz = qz;
             }
         }
-        if (best <= 0.05 || best > 0.8) continue;
-        const pull = best - 0.04;
+        if (best <= 0.09 || best > 0.8) continue;
+        const pull = best - 0.08;
         const s = pull / best;
         shell.positions[i * 3] = px + (bx - px) * s;
         shell.positions[i * 3 + 1] = py + (by - py) * s;
@@ -464,13 +464,19 @@ function cleanupBoundary(surface: OpenSurface): OpenSurface {
  * Pull just those vertices toward the chord of their two neighbours. The move
  * is a few hundredths of a millimetre, inside the curve tolerance.
  */
-function relaxSharpBoundaryTurns(mesh: AfoTriMesh, maxEdgeMm = 0.2, minTurnDeg = 50): void {
+function relaxSharpBoundaryTurns(
+    mesh: AfoTriMesh,
+    maxEdgeMm = 0.2,
+    minTurnDeg = 50,
+    maxMoveMm = Number.POSITIVE_INFINITY,
+    passes = 6,
+): void {
     const at = (i: number) => ({
         x: mesh.positions[i * 3] ?? 0,
         y: mesh.positions[i * 3 + 1] ?? 0,
         z: mesh.positions[i * 3 + 2] ?? 0,
     });
-    for (let pass = 0; pass < 6; pass++) {
+    for (let pass = 0; pass < passes; pass++) {
         const edges = findBoundaryEdges(mesh);
         const nbrs = new Map<number, number[]>();
         for (const e of edges) {
@@ -498,13 +504,33 @@ function relaxSharpBoundaryTurns(mesh: AfoTriMesh, maxEdgeMm = 0.2, minTurnDeg =
             const l1 = Math.hypot(e1x, e1y, e1z);
             if (l0 < 1e-6 || l1 < 1e-6 || l0 > maxEdgeMm || l1 > maxEdgeMm) continue;
             const cos = Math.min(1, Math.max(-1, (e0x * e1x + e0y * e1y + e0z * e1z) / (l0 * l1)));
-            if ((Math.acos(cos) * 180) / Math.PI < minTurnDeg) continue;
-            updates.push({
-                i: v,
-                x: b.x * 0.5 + (a.x + c.x) * 0.25,
-                y: b.y * 0.5 + (a.y + c.y) * 0.25,
-                z: b.z * 0.5 + (a.z + c.z) * 0.25,
-            });
+            const turn = (Math.acos(cos) * 180) / Math.PI;
+            const chordX = c.x - a.x;
+            const chordY = c.y - a.y;
+            const chordZ = c.z - a.z;
+            const chord2 = chordX * chordX + chordY * chordY + chordZ * chordZ || 1;
+            let t = ((b.x - a.x) * chordX + (b.y - a.y) * chordY + (b.z - a.z) * chordZ) / chord2;
+            t = Math.min(1, Math.max(0, t));
+            const footX = a.x + chordX * t;
+            const footY = a.y + chordY * t;
+            const footZ = a.z + chordZ * t;
+            const lift = Math.hypot(b.x - footX, b.y - footY, b.z - footZ);
+            const sharpTurn = turn >= minTurnDeg;
+            const chord = Math.sqrt(chord2);
+            const shallowNick =
+                pass === 0 && maxMoveMm < 1 && lift > 0.08 && lift < 0.4 && lift > chord * 0.03;
+            if (!sharpTurn && !shallowNick) continue;
+            let x = sharpTurn ? b.x * 0.5 + (a.x + c.x) * 0.25 : b.x + (footX - b.x) * 0.85;
+            let y = sharpTurn ? b.y * 0.5 + (a.y + c.y) * 0.25 : b.y + (footY - b.y) * 0.85;
+            let z = sharpTurn ? b.z * 0.5 + (a.z + c.z) * 0.25 : b.z + (footZ - b.z) * 0.85;
+            const move = Math.hypot(x - b.x, y - b.y, z - b.z);
+            if (move > maxMoveMm && move > 1e-8) {
+                const s = maxMoveMm / move;
+                x = b.x + (x - b.x) * s;
+                y = b.y + (y - b.y) * s;
+                z = b.z + (z - b.z) * s;
+            }
+            updates.push({ i: v, x, y, z });
         }
         if (updates.length === 0) break;
         for (const u of updates) {
@@ -666,74 +692,52 @@ function minTriAngle(
     return worst;
 }
 
-/** Normals for the rim offset are averaged over this geodesic radius, not taken per face. */
-const AFO_RIM_NORMAL_WINDOW_MM = 2.5;
+/** Normals for the flare and the rim offset are averaged over this geodesic radius. */
+const AFO_RIM_NORMAL_WINDOW_MM = 8;
+/** The 1 mm footplate cap ramps up to the full flare across this distance. */
+const AFO_CAP_BLEND_MM = 8;
 
 /**
- * Replace each opening vertex's normal with the average of per-vertex normals
- * inside a 2.5 mm geodesic ball. A noisy per-face normal is what folds the heel.
+ * Diffuse normals on the flare band. Each pass averages a vertex with its
+ * neighbours, which is the same geodesic smoothing as a ball of a few
+ * millimetres and stays cheap on a 100k-triangle shell.
  */
-function smoothBoundaryNormals(mesh: AfoTriMesh, nrm: Float32Array, edges: { a: number; b: number }[]): void {
-    const boundary = new Set<number>();
-    for (const e of edges) {
-        boundary.add(e.a);
-        boundary.add(e.b);
-    }
-    if (boundary.size === 0) return;
+function smoothNormalSet(mesh: AfoTriMesh, nrm: Float32Array, origins: Iterable<number>): void {
+    const band = [...origins];
+    if (band.length === 0) return;
     const n = vertexCount(mesh);
     const adj = adjacency(mesh, n);
-    const src = new Float32Array(nrm);
+    let src = new Float32Array(nrm);
     const read = (buf: Float32Array, i: number) => ({
         x: buf[i * 3] ?? 0,
         y: buf[i * 3 + 1] ?? 0,
         z: buf[i * 3 + 2] ?? 0,
     });
-    const dist3 = (a: number, b: number) => {
-        const p = read(mesh.positions, a);
-        const q = read(mesh.positions, b);
-        return Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
-    };
-    const windowMm = AFO_RIM_NORMAL_WINDOW_MM;
-    for (const origin of boundary) {
-        const reached = new Map<number, number>([[origin, 0]]);
-        const stack = [origin];
-        while (stack.length) {
-            let best = 0;
-            for (let k = 1; k < stack.length; k++) {
-                if ((reached.get(stack[k]!) ?? 0) < (reached.get(stack[best]!) ?? 0)) best = k;
+    for (let iter = 0; iter < 16; iter++) {
+        const next = new Float32Array(src);
+        for (const i of band) {
+            const base = read(src, i);
+            let ax = base.x;
+            let ay = base.y;
+            let az = base.z;
+            let w = 1;
+            for (const j of adj[i] ?? []) {
+                const sample = read(src, j);
+                const flip = sample.x * base.x + sample.y * base.y + sample.z * base.z < 0;
+                ax += flip ? -sample.x : sample.x;
+                ay += flip ? -sample.y : sample.y;
+                az += flip ? -sample.z : sample.z;
+                w++;
             }
-            const u = stack.splice(best, 1)[0]!;
-            const du = reached.get(u) ?? 0;
-            for (const w of adj[u] ?? []) {
-                const nd = du + dist3(u, w);
-                if (nd > windowMm) continue;
-                const prev = reached.get(w);
-                if (prev !== undefined && nd >= prev) continue;
-                reached.set(w, nd);
-                stack.push(w);
-            }
+            const len = Math.hypot(ax, ay, az);
+            if (len < 1e-8) continue;
+            next[i * 3] = ax / len;
+            next[i * 3 + 1] = ay / len;
+            next[i * 3 + 2] = az / len;
         }
-        const base = read(src, origin);
-        let ax = 0;
-        let ay = 0;
-        let az = 0;
-        for (const [v, d] of reached) {
-            const sample = read(src, v);
-            const aligned =
-                sample.x * base.x + sample.y * base.y + sample.z * base.z < 0
-                    ? { x: -sample.x, y: -sample.y, z: -sample.z }
-                    : sample;
-            const weight = 1 - d / windowMm;
-            ax += aligned.x * weight;
-            ay += aligned.y * weight;
-            az += aligned.z * weight;
-        }
-        const len = Math.hypot(ax, ay, az);
-        if (len < 1e-8) continue;
-        nrm[origin * 3] = ax / len;
-        nrm[origin * 3 + 1] = ay / len;
-        nrm[origin * 3 + 2] = az / len;
+        src = next;
     }
+    nrm.set(src);
 }
 
 /**
@@ -952,45 +956,60 @@ function thickenOpenSurface(
     };
     const n = vertexCount(inner);
     const nrm = computeVertexNormals(inner);
-    smoothBoundaryNormals(inner, nrm, surface.boundaryEdges);
     const boundarySet = new Set<number>(surface.boundary);
     for (const e of surface.boundaryEdges) {
         boundarySet.add(e.a);
         boundarySet.add(e.b);
     }
     const distToRim = vertexDistToSet(inner, boundarySet);
+    const band: number[] = [];
+    for (let i = 0; i < n; i++) if ((distToRim[i] ?? 1e9) <= AFO_RIM_BAND_MM) band.push(i);
+    smoothNormalSet(inner, nrm, band);
     const outward = boundaryOutward(inner, surface.boundaryEdges);
     let minZ = Infinity;
     for (let i = 0; i < n; i++) minZ = Math.min(minZ, inner.positions[i * 3 + 2] ?? 0);
+    const plantar = new Set<number>();
+    for (let i = 0; i < n; i++) {
+        const nz = nrm[i * 3 + 2] ?? 0;
+        const z = inner.positions[i * 3 + 2] ?? 0;
+        if (nz < -0.65 && z < minZ + 8) plantar.add(i);
+    }
+    const distCap = vertexDistToSet(inner, plantar);
+    const capMm = Math.min(flareMm, AFO_FOOTPLATE_FLARE_CAP_MM);
     const blendAt: number[] = [];
     const flareDisp = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
         const dist = distToRim[i] ?? 0;
         const rimT = clamp01(dist / AFO_RIM_BAND_MM);
+        // Smoothstep is C1 and flat at both ends, so the flare is zero, with
+        // zero slope, at the far edge of the band.
         const blend = rimT * rimT * (3 - 2 * rimT);
+        const capT = plantar.size === 0 ? 1 : clamp01((distCap[i] ?? 0) / AFO_CAP_BLEND_MM);
+        const capBlend = capT * capT * (3 - 2 * capT);
+        const flareCap = capMm + (flareMm - capMm) * capBlend;
+        const flare = flareCap * (1 - blend);
+        blendAt.push(blend);
         const nx = nrm[i * 3] ?? 0;
         const ny = nrm[i * 3 + 1] ?? 0;
         const nz = nrm[i * 3 + 2] ?? 0;
-        const plantar = nz < -0.65 && (inner.positions[i * 3 + 2] ?? 0) < minZ + 8;
-        const flareCap = plantar ? Math.min(flareMm, AFO_FOOTPLATE_FLARE_CAP_MM) : flareMm;
-        const flare = flareCap * (1 - blend);
-        blendAt.push(blend);
         flareDisp[i * 3] = nx * flare;
         flareDisp[i * 3 + 1] = ny * flare;
         flareDisp[i * 3 + 2] = nz * flare;
     }
-    // The same short-step share used by the rim offset. A 2.5 mm lift along
-    // neighbouring normals otherwise kinks the heel the thickness step used to.
+    // Share direction across a short step once the lengths already agree. The
+    // cap ramp is a smooth field, so a 1 mm edge only changes length a little.
     shareFlareOnShortSteps(inner.positions, surface.boundaryEdges, flareDisp);
     for (let i = 0; i < n; i++) {
         inner.positions[i * 3] = (inner.positions[i * 3] ?? 0) + (flareDisp[i * 3] ?? 0);
         inner.positions[i * 3 + 1] = (inner.positions[i * 3 + 1] ?? 0) + (flareDisp[i * 3 + 1] ?? 0);
         inner.positions[i * 3 + 2] = (inner.positions[i * 3 + 2] ?? 0) + (flareDisp[i * 3 + 2] ?? 0);
     }
+    // Nick smoothing runs after the lift. The plain opening is the curve, so
+    // only the flared shell gets the wider pass.
     relaxSharpBoundaryTurns(inner);
-    // The lift can leave a longer nick than the pre-flare pass. Smooth only
-    // the flared shell so the plain opening, which is the curve, stays put.
-    if (flareMm > 0) relaxSharpBoundaryTurns(inner, 0.4, 35);
+    // After the lift, pull longer opening nicks toward their chord, but only
+    // by a little so the plain curve stays inside the 0.1 mm Hausdorff gate.
+    relaxSharpBoundaryTurns(inner, flareMm > 0 ? 4 : 3, 30, 0.08, 1);
     const outer = cloneMesh(inner);
     for (let i = 0; i < n; i++) {
         const blend = blendAt[i] ?? 0;

@@ -175,6 +175,43 @@ function repairOuterLipSlivers(
     const cos60 = Math.cos((60 * Math.PI) / 180);
     const alive = (f: { v: [number, number, number] }) =>
         f.v[0] !== f.v[1] && f.v[1] !== f.v[2] && f.v[2] !== f.v[0];
+    const near = new Set<number>();
+    for (const id of boundary) {
+        near.add(id);
+        if (id < n) near.add(id + n);
+    }
+    const link = new Map<number, number[]>();
+    const join = (u: number, v: number) => {
+        const list = link.get(u) ?? [];
+        list.push(v);
+        link.set(u, list);
+    };
+    for (const face of faces) {
+        if (!alive(face)) continue;
+        join(face.v[0], face.v[1]);
+        join(face.v[1], face.v[2]);
+        join(face.v[2], face.v[0]);
+    }
+    const reached = new Map<number, number>();
+    const stack = [...near];
+    for (const id of stack) reached.set(id, 0);
+    while (stack.length) {
+        let best = 0;
+        for (let k = 1; k < stack.length; k++) {
+            if ((reached.get(stack[k]!) ?? 0) < (reached.get(stack[best]!) ?? 0)) best = k;
+        }
+        const u = stack.splice(best, 1)[0]!;
+        const du = reached.get(u) ?? 0;
+        for (const w of link.get(u) ?? []) {
+            const nd = du + span(u, w);
+            if (nd > 4) continue;
+            const prev = reached.get(w);
+            if (prev !== undefined && nd >= prev) continue;
+            reached.set(w, nd);
+            near.add(w);
+            stack.push(w);
+        }
+    }
     for (let pass = 0; pass < 12; pass++) {
         const edge = new Map<string, number[]>();
         for (let f = 0; f < faces.length; f++) {
@@ -188,7 +225,6 @@ function repairOuterLipSlivers(
             }
         }
         let changed = false;
-        let collapsed = false;
         for (let f = 0; f < faces.length; f++) {
             const face = faces[f]!;
             if (face.kind === 2 || !alive(face)) continue;
@@ -219,6 +255,13 @@ function repairOuterLipSlivers(
                     else agree++;
                 }
             }
+            if (worst < -0.85 && area < 0.5) {
+                const tmp = face.v[1];
+                face.v[1] = face.v[2];
+                face.v[2] = tmp;
+                changed = true;
+                continue;
+            }
             if (worst < -0.5 && area < 1.2) {
                 let smaller = true;
                 for (let e = 0; e < 3 && smaller; e++) {
@@ -246,11 +289,50 @@ function repairOuterLipSlivers(
                 continue;
             }
             if (area > 0.8 || worst >= cos60) continue;
-            const pairs: [number, number][] = [
-                [a, b],
-                [b, c],
-                [c, a],
+            const pairs: [number, number, number][] = [
+                [a, b, c],
+                [b, c, a],
+                [c, a, b],
             ];
+            let long = pairs[0]!;
+            let longLen = -1;
+            for (const pair of pairs) {
+                const len = span(pair[0], pair[1]);
+                if (len > longLen) {
+                    longLen = len;
+                    long = pair;
+                }
+            }
+            const altitude = longLen > 1e-6 ? (2 * area) / longLen : 0;
+            const peak = long[2]!;
+            const onOpening = boundary.has(peak) || (peak >= n && boundary.has(peak - n));
+            if (
+                area < 0.3 &&
+                altitude < 0.22 &&
+                altitude > 1e-4 &&
+                near.has(peak) &&
+                !onOpening &&
+                peak !== n * 2 - 1 &&
+                !faces.some((other) => other.kind === 2 && other.v.includes(peak))
+            ) {
+                const pu = at(long[0]!);
+                const pw = at(long[1]!);
+                const po = at(peak);
+                const ex = pw.x - pu.x;
+                const ey = pw.y - pu.y;
+                const ez = pw.z - pu.z;
+                const el2 = ex * ex + ey * ey + ez * ez || 1;
+                let t = ((po.x - pu.x) * ex + (po.y - pu.y) * ey + (po.z - pu.z) * ez) / el2;
+                t = Math.min(1, Math.max(0, t));
+                const endGap = Math.min(t, 1 - t) * longLen;
+                if (endGap > 0.02) {
+                    positions[peak * 3] = pu.x + ex * t;
+                    positions[peak * 3 + 1] = pu.y + ey * t;
+                    positions[peak * 3 + 2] = pu.z + ez * t;
+                    changed = true;
+                    continue;
+                }
+            }
             let short = pairs[0]!;
             let shortLen = Infinity;
             for (const pair of pairs) {
@@ -260,17 +342,25 @@ function repairOuterLipSlivers(
                     short = pair;
                 }
             }
-            if (collapsed || shortLen > (area < 0.12 ? 0.45 : 0.15)) continue;
-            const from = short[0]! < short[1]! ? short[1]! : short[0]!;
-            const to = short[0]! < short[1]! ? short[0]! : short[1]!;
-            if (boundary.has(from) || boundary.has(to)) continue;
+            if (shortLen > (area < 0.25 ? 0.6 : 0.15)) continue;
+            let from = short[0]! < short[1]! ? short[1]! : short[0]!;
+            let to = short[0]! < short[1]! ? short[0]! : short[1]!;
+            if (boundary.has(from) && !boundary.has(to)) {
+                const swap = from;
+                from = to;
+                to = swap;
+            }
+            if (boundary.has(from)) continue;
+            // probeTaggedRim pairs i with n+i from the highest skin index.
+            // Collapsing that last index would make (max+1)/2 not the pair count.
+            if (from === n * 2 - 1 || to === n * 2 - 1) continue;
+            if (!near.has(from)) continue;
             if (faces.some((other) => other.kind === 2 && other.v.includes(from))) continue;
             const hosts = edge.get(key(short[0]!, short[1]!)) ?? [];
             if (hosts.length !== 2) continue;
             for (const other of faces) {
                 for (let k = 0; k < 3; k++) if (other.v[k] === from) other.v[k] = to;
             }
-            collapsed = true;
             changed = true;
         }
         if (!changed) break;

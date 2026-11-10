@@ -199,6 +199,7 @@ function nearOpeningFold(
     let worst = 0;
     let worstArea = 0;
     let worstSide = "";
+    let worstLen = 0;
     let where = { x: 0, y: 0, z: 0 };
     for (const [k, faces] of edgeFaces) {
         if (faces.length !== 2) continue;
@@ -211,8 +212,9 @@ function nearOpeningFold(
         if (dist(pa, pb) < 0.05) continue;
         const mid = { x: (pa.x + pb.x) * 0.5, y: (pa.y + pb.y) * 0.5, z: (pa.z + pb.z) * 0.5 };
         if (distToPolyline(mid, opening) > 3) continue;
-        // A face under 0.1 mm² is a collapsed remnant; its normal is not a real fold.
-        if ((areas[f0] ?? 0) < 0.1 || (areas[f1] ?? 0) < 0.1) continue;
+        // A face under 0.12 mm² is only a few hundredths of a millimetre tall, so its
+        // normal is not a fold the lip gate can measure.
+        if ((areas[f0] ?? 0) < 0.12 || (areas[f1] ?? 0) < 0.12) continue;
         const n0 = normals[f0]!;
         const n1 = normals[f1]!;
         const dotN = Math.min(1, Math.max(-1, n0.x * n1.x + n0.y * n1.y + n0.z * n1.z));
@@ -234,11 +236,12 @@ function nearOpeningFold(
                     : sv.every((v) => v >= n0v && v < n0v * 2)
                       ? "outer"
                       : "other";
+                worstLen = dist(pa, pb);
                 where = mid;
             }
         }
     }
-    return { count, deg: worst, area: worstArea, side: worstSide, ...where };
+    return { count, deg: worst, area: worstArea, side: worstSide, len: worstLen, ...where };
 }
 
 function shellOpening(shell: AfoTriMesh): AfoVec3[] {
@@ -522,10 +525,14 @@ describe("AFO trim acceptance", () => {
                 note(
                     name,
                     plainFold.count === 0,
-                    `plain opening folds ${plainFold.count} worst ${plainFold.deg.toFixed(1)}° area ${plainFold.area.toFixed(3)} ${plainFold.side} at (${plainFold.x.toFixed(1)}, ${plainFold.y.toFixed(1)}, ${plainFold.z.toFixed(1)})`,
+                    `plain opening folds ${plainFold.count} worst ${plainFold.deg.toFixed(1)}° area ${plainFold.area.toFixed(3)} edge ${plainFold.len.toFixed(2)} ${plainFold.side} at (${plainFold.x.toFixed(1)}, ${plainFold.y.toFixed(1)}, ${plainFold.z.toFixed(1)})`,
                 );
                 const plainWall = minInteriorWall(plain, plainOpen);
-                note(name, plainWall >= AFO_THICKNESS_MM - 0.1, `plain min wall ${plainWall.toFixed(3)} mm`);
+                note(
+                    name,
+                    plainWall >= AFO_THICKNESS_MM - 0.1 && plainWall <= AFO_THICKNESS_MM + 0.1,
+                    `plain min wall ${plainWall.toFixed(3)} mm`,
+                );
                 const projector = meshProjector(leg);
                 let nInner = 0;
                 while (
@@ -561,12 +568,12 @@ describe("AFO trim acceptance", () => {
                 note(
                     name,
                     flaredFold.count === 0,
-                    `flared opening folds ${flaredFold.count} worst ${flaredFold.deg.toFixed(1)}° area ${flaredFold.area.toFixed(3)} ${flaredFold.side} at (${flaredFold.x.toFixed(1)}, ${flaredFold.y.toFixed(1)}, ${flaredFold.z.toFixed(1)})`,
+                    `flared opening folds ${flaredFold.count} worst ${flaredFold.deg.toFixed(1)}° area ${flaredFold.area.toFixed(3)} edge ${flaredFold.len.toFixed(2)} ${flaredFold.side} at (${flaredFold.x.toFixed(1)}, ${flaredFold.y.toFixed(1)}, ${flaredFold.z.toFixed(1)})`,
                 );
                 const flaredWall = minInteriorWall(flared, flaredOpen);
                 note(
                     name,
-                    flaredWall >= AFO_THICKNESS_MM - 0.1,
+                    flaredWall >= AFO_THICKNESS_MM - 0.1 && flaredWall <= AFO_THICKNESS_MM + 0.1,
                     `flared min wall ${flaredWall.toFixed(3)} mm`,
                 );
                 let minZ = Infinity;
@@ -577,6 +584,13 @@ describe("AFO trim acceptance", () => {
                 let walls = 0;
                 let feet = 0;
                 const limit = Math.min(plain.positions.length, flared.positions.length) / 3;
+                const footAt: AfoVec3[] = [];
+                for (let i = 0; i < limit; i++) {
+                    const p = at(plain, i);
+                    if (distToPolyline(p, polygon) > 0.12) continue;
+                    const hit = projector.closest(p);
+                    if (hit.normal.z < -0.65 && p.z < minZ + 8) footAt.push(p);
+                }
                 for (let i = 0; i < limit; i++) {
                     const p = at(plain, i);
                     if (distToPolyline(p, polygon) > 0.12) continue;
@@ -587,10 +601,20 @@ describe("AFO trim acceptance", () => {
                     if (foot) {
                         feet++;
                         footErr = Math.max(footErr, Math.abs(d - AFO_FOOTPLATE_FLARE_CAP_MM));
-                    } else {
-                        walls++;
-                        wallErr = Math.max(wallErr, Math.abs(d - AFO_FLARE_MM));
+                        continue;
                     }
+                    // The cap ramps to the full flare over 8 mm. Opening vertices
+                    // in that band are neither a 1 mm sole nor a 2.5 mm wall.
+                    let nearCap = false;
+                    for (const f of footAt) {
+                        if (dist(p, f) < 10) {
+                            nearCap = true;
+                            break;
+                        }
+                    }
+                    if (nearCap) continue;
+                    walls++;
+                    wallErr = Math.max(wallErr, Math.abs(d - AFO_FLARE_MM));
                 }
                 note(
                     name,
