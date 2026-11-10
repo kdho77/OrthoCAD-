@@ -4,7 +4,11 @@ import { useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
 import { AFO_DESIGN_MARKERS, AFO_TRIM_CLOSE_PX } from "@/lib/geometry/afo/defaults";
-import { cameraViewForAfoMarkerId, orientedPlantarSides } from "@/lib/geometry/afo/marker-side";
+import {
+    type AfoOrientedSides,
+    cameraViewForAfoMarkerId,
+    orientedPlantarSides,
+} from "@/lib/geometry/afo/marker-side";
 import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
 import { registerTrimClick } from "@/lib/geometry/afo/trim-loop";
 import { isAfoCastTrimPick } from "@/lib/geometry/afo/trim-preview";
@@ -13,6 +17,31 @@ import type { AfoVec3 } from "@/lib/geometry/afo/types";
 import { applyCameraViewPreset, type CameraViewControls } from "@/lib/geometry/viewport-side-layout";
 import { getAfoState, patchAfoState, refreshAfoWorkingMesh, useAfoStore } from "@/stores/afo-store";
 import { type CameraView, useDesignStore } from "@/stores/design-store";
+
+/** Same matrix and M1/M5 values share one key, even when the arrays are new objects. */
+export function orientedSidesKey(
+    matrix: number[] | null | undefined,
+    m1: AfoVec3 | undefined,
+    m5: AfoVec3 | undefined,
+): string {
+    const nums = matrix ? matrix.map((n) => (Number.isFinite(n) ? n.toFixed(5) : "")).join(",") : "";
+    const p = (v: AfoVec3 | undefined) => (v ? `${v.x.toFixed(4)},${v.y.toFixed(4)},${v.z.toFixed(4)}` : "");
+    return `${nums}|${p(m1)}|${p(m5)}`;
+}
+
+/** Stable medial/lateral axis. A new object every render was retriggering the camera. */
+export function useOrientedPlantarSides(
+    matrix: number[] | null | undefined,
+    m1: AfoVec3 | undefined,
+    m5: AfoVec3 | undefined,
+): AfoOrientedSides | undefined {
+    const key = orientedSidesKey(matrix, m1, m5);
+    const cache = useRef<{ key: string; value: AfoOrientedSides | undefined } | null>(null);
+    if (!cache.current || cache.current.key !== key) {
+        cache.current = { key, value: orientedPlantarSides(matrix, m1, m5) };
+    }
+    return cache.current.value;
+}
 
 export function AfoMarkerPlacement() {
     const { gl, camera, raycaster, scene, controls } = useThree();
@@ -27,7 +56,7 @@ export function AfoMarkerPlacement() {
     const setPlacing = useAfoStore((s) => s.setPlacingLandmarkIndex);
     const setDragging = useAfoStore((s) => s.setDraggingTrimIndex);
     const lastClient = useRef<{ x: number; y: number } | null>(null);
-    const orientedSides = orientedPlantarSides(
+    const orientedSides = useOrientedPlantarSides(
         afo.scanWorkflow.matrixElements,
         afo.scanWorkflow.plantar.m1p,
         afo.scanWorkflow.plantar.m5p,

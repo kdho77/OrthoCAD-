@@ -89,6 +89,12 @@ export function afoFrameSide(scanSide: Side): Side {
     return scanSide === "right" ? "right" : "left";
 }
 
+/** Missing or unknown scan side is not a left leg. */
+export function knownScanSide(scanSide: Side | null | undefined): Side | null {
+    if (scanSide === "left" || scanSide === "right") return scanSide;
+    return null;
+}
+
 export function scanForAfoWorkflow(): {
     id: string;
     side: Side;
@@ -157,7 +163,8 @@ function withDerived(wf: AfoScanWorkflow, side: Side): AfoScanWorkflow {
 
 export function commitAfoScanPoint(pointMm: AfoVec3, scanId: string, displayScale: number): string | null {
     const scan = useScanStore.getState().scans.find((item) => item.id === scanId);
-    const side = afoFrameSide(scan?.side ?? "left");
+    const side = knownScanSide(scan?.side);
+    if (!side) return "The scan has no left or right side.";
     let wf = freshIfScanChanged(getAfoState().scanWorkflow, scanId, displayScale);
     const redo = useAfoStore.getState().scanPlacement?.redo;
 
@@ -225,7 +232,7 @@ export function commitAfoScanPoint(pointMm: AfoVec3, scanId: string, displayScal
 
 export function undoAfoMarker(id: string): void {
     const scan = scanForAfoWorkflow();
-    const side = afoFrameSide(scan?.side ?? "left");
+    const side = knownScanSide(scan?.side);
     const wf = getAfoState().scanWorkflow;
     if (PLANTAR_IDS.has(id)) {
         const plantar = { ...wf.plantar };
@@ -243,7 +250,7 @@ export function undoAfoMarker(id: string): void {
         );
         return;
     }
-    if (!LANDMARK_IDS.has(id)) return;
+    if (!LANDMARK_IDS.has(id) || !side) return;
     const landmarkId = id as AfoAnatomicalLandmarkId;
     const landmarks = { ...wf.landmarks };
     delete landmarks[landmarkId];
@@ -264,7 +271,8 @@ export function undoAfoMarker(id: string): void {
 export function skipAfoLandmark(id: string): string | null {
     if (!isOptionalLandmark(id)) return "That landmark is required.";
     const scan = scanForAfoWorkflow();
-    const side = afoFrameSide(scan?.side ?? "left");
+    const side = knownScanSide(scan?.side);
+    if (!side) return "The scan has no left or right side.";
     const wf = getAfoState().scanWorkflow;
     if (!wf.alignmentApplied) return "Apply alignment before anatomical landmarks.";
     if (wf.landmarks[id]) return "Undo the marker before skipping it.";

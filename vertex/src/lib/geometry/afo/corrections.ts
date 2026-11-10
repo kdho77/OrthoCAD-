@@ -112,7 +112,10 @@ export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections, axes?: 
     const frontDeg = clampFrontalDeg(c.legRearDeg);
     const medial = axes?.medialMal ?? { x: 35, y: 40, z: 80 };
     const lateral = axes?.lateralMal ?? { x: -35, y: 40, z: 80 };
-    const length = footLengthAlong(out, axes);
+    const length = footLengthX(out);
+    // Aligned frame: medial is medialSign along Y. Do not read malleolar X;
+    // that offset is anterior-posterior and is the same sign on both feet.
+    const medialY = axes?.side === "left" || axes?.side === "right" ? medialSign(axes.side) : null;
 
     // One spin for both paths. The old malleolar cross product plantarflexed a
     // right foot when +side asked for dorsiflexion (readout about −7.9° at +10°).
@@ -125,43 +128,40 @@ export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections, axes?: 
     }
 
     const nav = axes?.navicular ?? null;
-    // Width warps still read X. Heel lift and toe rise do not: the aligned
-    // frame's heel→toe axis is +X, taken from the heel and the met heads.
-    const medialX = medialWidthXSign(medial, lateral, axes?.side);
 
     for (let i = 0; i < n; i++) {
-        let x = out.positions[i * 3] ?? 0;
-        const y = out.positions[i * 3 + 1] ?? 0;
+        const x = out.positions[i * 3] ?? 0;
+        let y = out.positions[i * 3 + 1] ?? 0;
         let z = out.positions[i * 3 + 2] ?? 0;
-        const along = (x - length.ox) * length.x + (y - length.oy) * length.y;
+        const fromHeel = x - length.min;
 
         if (c.heelLiftMm) {
-            const t = clamp01(1 - along / 140);
+            const t = clamp01(1 - fromHeel / 140);
             z += c.heelLiftMm * t;
         }
         if (c.toeRiseMm) {
-            const alongNorm = (along - length.min) / length.span;
-            if (alongNorm > 0.6) z += c.toeRiseMm * smoothstep(0.6, 0.85, alongNorm);
+            const xNorm = fromHeel / length.span;
+            if (xNorm > 0.6) z += c.toeRiseMm * smoothstep(0.6, 0.85, xNorm);
         }
-        if (c.footLiftMedMm && x * medialX > 0) {
-            z += c.footLiftMedMm * clamp01(Math.abs(x) / 40) * clamp01(1 - z / 50);
+        if (medialY != null && c.footLiftMedMm && y * medialY > 0) {
+            z += c.footLiftMedMm * clamp01(Math.abs(y) / 40) * clamp01(1 - z / 50);
         }
-        if (c.footLiftLatMm && x * medialX < 0) {
-            z += c.footLiftLatMm * clamp01(Math.abs(x) / 40) * clamp01(1 - z / 50);
+        if (medialY != null && c.footLiftLatMm && y * medialY < 0) {
+            z += c.footLiftLatMm * clamp01(Math.abs(y) / 40) * clamp01(1 - z / 50);
         }
         if (c.medialArchMm) {
             if (nav) {
                 const gy = Math.exp(-((y - nav.y) ** 2) / (2 * 28 * 28));
                 const gx = Math.exp(-((x - nav.x) ** 2) / (2 * 18 * 18));
                 z += c.medialArchMm * gy * gx;
-            } else if (x * medialX > 0) {
-                const gy = Math.exp(-((y - 70) ** 2) / (2 * 28 * 28));
-                z += c.medialArchMm * gy * clamp01(Math.abs(x) / 30);
+            } else if (medialY != null && y * medialY > 0) {
+                const gx = Math.exp(-((x - (length.min + 70)) ** 2) / (2 * 28 * 28));
+                z += c.medialArchMm * gx * clamp01(Math.abs(y) / 30);
             }
         }
         if (c.heelWidthMm) {
-            const gh = Math.exp(-(y * y) / (2 * 35 * 35)) * clamp01(1 - z / 50);
-            x += Math.sign(x || 1) * c.heelWidthMm * 0.5 * gh;
+            const gh = Math.exp(-(fromHeel * fromHeel) / (2 * 35 * 35)) * clamp01(1 - z / 50);
+            y += Math.sign(y || 1) * c.heelWidthMm * 0.5 * gh;
         }
         if (c.braceHeightMm > 0 && z > c.braceHeightMm) {
             z = c.braceHeightMm + (z - c.braceHeightMm) * 0.05;
@@ -183,59 +183,26 @@ export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections, axes?: 
     return out;
 }
 
-/**
- * Heel→toe measure for Heel Lift and Toe Rise.
- * Plantar landmarks put 0 at the heel and +1 toward the met heads (+X after
- * alignment). Callers that never passed those points keep the old +Y length.
- */
-function footLengthAlong(
-    mesh: AfoTriMesh,
-    axes: AfoRotationAxes | undefined,
-): { x: number; y: number; ox: number; oy: number; min: number; span: number } {
-    let dirX = 0;
-    let dirY = 1;
-    let ox = 0;
-    let oy = 0;
-    const heel = axes?.heel;
-    const m1 = axes?.m1;
-    const m5 = axes?.m5;
-    if (heel && m1 && m5) {
-        const ax = (m1.x + m5.x) * 0.5 - heel.x;
-        const ay = (m1.y + m5.y) * 0.5 - heel.y;
-        const len = Math.hypot(ax, ay);
-        if (len > 1) {
-            dirX = ax / len;
-            dirY = ay / len;
-            ox = heel.x;
-            oy = heel.y;
-        }
-    }
+/** Heel→toe span. Aligned scans put the heel at low X and the toes at +X. */
+function footLengthX(mesh: AfoTriMesh): { min: number; span: number } {
     const n = vertexCount(mesh);
     let min = Infinity;
     let max = -Infinity;
     for (let i = 0; i < n; i++) {
-        const s = ((mesh.positions[i * 3] ?? 0) - ox) * dirX + ((mesh.positions[i * 3 + 1] ?? 0) - oy) * dirY;
-        if (s < min) min = s;
-        if (s > max) max = s;
+        const x = mesh.positions[i * 3] ?? 0;
+        if (x < min) min = x;
+        if (x > max) max = x;
     }
-    if (!Number.isFinite(min) || !Number.isFinite(max)) {
-        min = 0;
-        max = 1;
-    }
-    return { x: dirX, y: dirY, ox, oy, min, span: Math.max(1, max - min) };
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return { min: 0, span: 1 };
+    return { min, span: Math.max(1, max - min) };
 }
 
 /**
- * Sign of X that points at the medial malleolus in the correction loop.
- * X is width here (Y is heel→toe). A real malleolar span wins. With no span,
- * medial X is −{@link medialSign}: the shared footprint rule mapped onto this axis
- * (left medial +X, right medial −X). Default landmarks also put medial at +X.
+ * Sign of Y that is medial in the aligned plantar frame.
+ * This is {@link medialSign}: left −1, right +1. Malleolar X is not width.
  */
-export function medialWidthXSign(medial: AfoVec3, lateral: AfoVec3, side?: Side): 1 | -1 {
-    const dx = medial.x - lateral.x;
-    if (Math.abs(dx) > 1e-3) return dx > 0 ? 1 : -1;
-    if (!side) return 1;
-    return -medialSign(side) as 1 | -1;
+export function medialWidthSign(side: Side): 1 | -1 {
+    return medialSign(side);
 }
 
 /** +X is lateral on the right. The left side mirrors so +varus stays medial. */

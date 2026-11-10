@@ -1,42 +1,42 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { describe, expect, test } from "@rstest/core";
-import { applyAfoCorrections, medialWidthXSign } from "./corrections";
+import { medialSign } from "@/lib/geometry/handedness";
+import { applyAfoCorrections, medialWidthSign } from "./corrections";
 import { defaultAfoCorrections } from "./defaults";
 import { positionsEqual } from "./mesh-ops";
 import type { AfoCorrections, AfoTriMesh, AfoVec3 } from "./types";
 
 /**
- * Correction loop frame: X is width, Y is heel→toe, Z is up.
- * Left medial is +X. Right medial is −X (the mesh is mirrored).
+ * Aligned plantar frame: +X heel→toe, +Y medial-signed, +Z up.
  */
-function legacyLeg(side: "left" | "right"): {
+function liveLeg(side: "left" | "right"): {
     mesh: AfoTriMesh;
     medial: number;
     lateral: number;
     heel: number;
     toe: number;
 } {
-    const medialX = side === "left" ? 24 : -24;
-    const lateralX = -medialX;
+    const medialY = 24 * medialSign(side);
+    const lateralY = -medialY;
     const positions = new Float32Array([
         0,
         0,
         5, // heel
-        medialX,
         70,
+        medialY,
         8, // medial midfoot
-        lateralX,
         70,
+        lateralY,
         8, // lateral midfoot
+        180,
         0,
-        140,
         5, // toe
-        medialX,
-        40,
+        50,
+        medialY,
         12, // medial forefoot
-        lateralX,
-        40,
+        50,
+        lateralY,
         12, // lateral forefoot
     ]);
     return {
@@ -49,12 +49,12 @@ function legacyLeg(side: "left" | "right"): {
 }
 
 function axes(side: "left" | "right", navicular?: AfoVec3) {
-    const medialX = side === "left" ? 35 : -35;
+    const medialY = 30 * medialSign(side);
     return {
         side,
         anatomical: false as const,
-        medialMal: { x: medialX, y: 40, z: 80 },
-        lateralMal: { x: -medialX, y: 40, z: 80 },
+        medialMal: { x: 20, y: medialY, z: 80 },
+        lateralMal: { x: 12, y: -medialY, z: 72 },
         navicular: navicular ?? null,
     };
 }
@@ -75,24 +75,22 @@ function z(mesh: AfoTriMesh, index: number): number {
     return mesh.positions[index * 3 + 2] ?? 0;
 }
 
-describe("AFO correction sides in the legacy width frame", () => {
+describe("AFO correction sides in the aligned plantar frame", () => {
     test("medial arch rises on the medial vertex for a left and a right leg", () => {
         for (const side of ["left", "right"] as const) {
-            const leg = legacyLeg(side);
+            const leg = liveLeg(side);
             const out = applyAfoCorrections(leg.mesh, corrections({ medialArchMm: 4 }), axes(side));
             const medialRise = z(out, leg.medial) - z(leg.mesh, leg.medial);
             const lateralRise = z(out, leg.lateral) - z(leg.mesh, leg.lateral);
             expect(medialRise).toBeGreaterThan(2);
             expect(lateralRise).toBe(0);
-            expect(medialWidthXSign(axes(side).medialMal, axes(side).lateralMal, side)).toBe(
-                side === "left" ? 1 : -1,
-            );
+            expect(medialWidthSign(side)).toBe(medialSign(side));
         }
     });
 
     test("medial and lateral foot lifts stay on their own sides for both feet", () => {
         for (const side of ["left", "right"] as const) {
-            const leg = legacyLeg(side);
+            const leg = liveLeg(side);
             const med = applyAfoCorrections(leg.mesh, corrections({ footLiftMedMm: 3 }), axes(side));
             expect(z(med, 4) - z(leg.mesh, 4)).toBeGreaterThan(1);
             expect(z(med, 5) - z(leg.mesh, 5)).toBe(0);
@@ -104,7 +102,7 @@ describe("AFO correction sides in the legacy width frame", () => {
 
     test("with no medial or lateral correction the mesh is unchanged", () => {
         for (const side of ["left", "right"] as const) {
-            const leg = legacyLeg(side);
+            const leg = liveLeg(side);
             const out = applyAfoCorrections(leg.mesh, corrections({}), axes(side));
             expect(positionsEqual(leg.mesh.positions, out.positions)).toBe(true);
             const heelOnly = applyAfoCorrections(leg.mesh, corrections({ heelLiftMm: 4 }), axes(side));
