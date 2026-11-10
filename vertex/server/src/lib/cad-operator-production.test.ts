@@ -3,6 +3,7 @@ import { describe, expect, test } from "@rstest/core";
 import { HARDNESS_TO_INFILL_PCT } from "../../../shared/print-recipe/hardness-to-infill-pct.js";
 import type { PrintRecipeV1 } from "../../../shared/print-recipe/print-recipe.js";
 import {
+    assetLoadCauseForLog,
     beginCadOperatorProduction,
     CAD_PRODUCTION_LEASE_MS,
     type CadProductionInsert,
@@ -252,6 +253,52 @@ describe("CAD-operator production claim", () => {
         expect(
             publicProductionError(new Error("Canonical Export mesh is not available headless (Jane Doe)")),
         ).toBe("Canonical Export mesh is not available headless. Refusing to substitute a different mesh.");
+        expect(
+            assetLoadCauseForLog(new Error("Canonical Export mesh is not available headless (Jane Doe)")),
+        ).toBeNull();
+    });
+
+    test("a failed loft logs the font or element cause and keeps the public row error", async () => {
+        const store = new MemoryCadProductionStore();
+        const now = new Date("2026-11-09T00:00:00.000Z");
+        const claimed = await claimProduction(store, insert("left", "font-cause"), now);
+        const fontError = new Error(
+            "Canonical Export mesh is not available headless (Failed to parse URL from /fonts/Inter-Bold.ttf). Refusing to substitute a different mesh.",
+        );
+        const logged: string[] = [];
+        const original = console.error;
+        console.error = (...args: unknown[]) => {
+            logged.push(args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "));
+        };
+        try {
+            await executeCadOperatorProduction({
+                row: (await store.findById(claimed.row.id)) ?? claimed.row,
+                store,
+                now: () => new Date("2026-11-09T00:00:01.000Z"),
+                materialize: async () => {
+                    throw fontError;
+                },
+                slice: async () => ({ gcode: "G1\n", jobId: "job" }),
+                uploadGcode: async () => ({ storageKey: "gcode/cad-operator/t/c/d/left.gcode" }),
+                charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+            });
+        } finally {
+            console.error = original;
+        }
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toBe(
+            "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.",
+        );
+        expect(logged.join("\n")).toContain("Failed to parse URL from /fonts/Inter-Bold.ttf");
+        expect(logged.join("\n")).not.toContain("Jane Doe");
+        expect(assetLoadCauseForLog(fontError)).toBe("Failed to parse URL from /fonts/Inter-Bold.ttf");
+        const elementError = new Error(
+            "Canonical Export mesh is not available headless (Element asset /elements/met_bar_1.right.glb is not a GLB). Refusing to substitute a different mesh.",
+        );
+        expect(assetLoadCauseForLog(elementError)).toBe(
+            "Element asset /elements/met_bar_1.right.glb is not a GLB",
+        );
     });
 
     test("settings identity changes with the foot and stays stable for the same inputs", () => {

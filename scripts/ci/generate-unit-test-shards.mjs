@@ -23,6 +23,8 @@ const PINNED_HEAVY = {
     "tests/s1-ring-size-regression.test.ts": 3,
     // ~18m self-intersection case; keep it off the s1 shard.
     "tests/text-marking-acceptance.test.ts": 6,
+    // Headless loft parity is several full Export builds.
+    "vertex/server/src/lib/finalized-mesh-runner.test.ts": 4,
     "tests/arch-wall-falloff.test.ts": 4,
     "tests/procedural-wall-s0-parity.test.ts": 5,
     "tests/rim-conformity-matrix.test.ts": 5,
