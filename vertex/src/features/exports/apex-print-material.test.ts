@@ -42,6 +42,19 @@ describe("Apex print material", () => {
         expect(lockedProfileIdForApexMaterial("ApexCore")).toBe("apex-v2-insole-95a");
     });
 
+    test("ApexLight Foam is the Apex Light order label", () => {
+        expect(apexPrintMaterialForOrderMaterial("ApexLight Foam")).toBe("ApexLight");
+        expect(apexPrintMaterialForOrderMaterial("Apex Light Foam")).toBe("ApexLight");
+        expect(apexPrintMaterialForOrderMaterial("apex-light-foam")).toBe("ApexLight");
+        expect(apexPrintMaterialForOrderMaterial("Apex Light")).toBe("ApexLight");
+        expect(apexPrintMaterialForOrderMaterial("ApexLight")).toBe("ApexLight");
+        expect(apexPrintMaterialForOrderMaterial("apex_light")).toBe("ApexLight");
+        expect(vertexSliceMaterialForApexMaterial("ApexLight")).toBe("apex_light");
+        expect(apexPrintMaterialForOrderMaterial("Apex Forge")).toBe("ApexForge");
+        expect(apexPrintMaterialById("ApexForge").enabled).toBe(false);
+        expect(apexPrintMaterialForOrderMaterial("ApexVylon")).toBeNull();
+    });
+
     test("Apex Bounce uses the approved Core deltas and Forge stays disabled", () => {
         expect(apexPrintMaterialById("ApexBounce").enabled).toBe(true);
         expect(lockedProfileIdForApexMaterial("ApexBounce")).toBe(APEX_V2_INSOLE_LOCKED_PROFILE_ID);

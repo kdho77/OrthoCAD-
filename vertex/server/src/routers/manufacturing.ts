@@ -54,7 +54,7 @@ const grindingStyleSchema = z.object({
 const manufactureInputSchema = z.object({
     designId: z.string().uuid().optional(),
     side: z.enum(["left", "right"]).optional(),
-    presetId: z.string().min(1),
+    presetId: z.string().min(1).optional(),
     stlUrl: z.string().url().optional(),
     stlStorageKey: z.string().min(1),
     outputType: z.enum(["gcode", "stl"]),
@@ -326,6 +326,7 @@ export const manufacturingRouter = router({
                             useSavedDesignMesh: input.useSavedDesignMesh,
                             patientName: input.patientName,
                             hardness: input.hardness,
+                            material: input.material,
                         },
                     });
                 } catch (error) {
@@ -339,7 +340,10 @@ export const manufacturingRouter = router({
             return runSessionGenerateSolid({
                 userId: ctx.user.id,
                 ip: ctx.ip,
-                input,
+                input: {
+                    ...input,
+                    presetId: input.presetId ?? "",
+                },
                 io: sessionManufacturingIo(),
             });
         }),

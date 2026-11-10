@@ -59,7 +59,8 @@ export function assertEnabledVertexSliceMaterial(material: string | undefined): 
     if (id !== "apex_core" && id !== "apex_light" && id !== "apex_bounce") {
         throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "Printer G-code requires Apex Core (apex_core), Apex Light (apex_light), or Apex Bounce (apex_bounce).",
+            message:
+                "Printer G-code requires Apex Core (apex_core), Apex Light (apex_light), or Apex Bounce (apex_bounce).",
         });
     }
     return id;
@@ -73,6 +74,93 @@ export function assertLockedVertexSliceProfile(profileId: string): string {
         });
     }
     return profileId;
+}
+
+/**
+ * Canonical insole print materials for MCP `list_materials` and CAD-operator
+ * generate_gcode. Keep this object identical to
+ * packages/mcp/src/tools/print-materials.ts. ApexVylon is not an insole material.
+ * "ApexLight Foam" is the VertexOrders label for Apex Light.
+ */
+export const CANONICAL_INSOLE_PRINT_MATERIALS = {
+    locked_preset_id: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+    default_material: "apex_core",
+    materials: [
+        {
+            id: "ApexLight",
+            label: "Apex Light",
+            vertex_slice_material: "apex_light",
+            enabled: true,
+            locked_preset_id: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+            aliases: ["ApexLight", "Apex Light", "apex_light", "ApexLight Foam"],
+        },
+        {
+            id: "ApexCore",
+            label: "Apex Core",
+            vertex_slice_material: "apex_core",
+            enabled: true,
+            locked_preset_id: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+            aliases: ["ApexCore", "Apex Core", "apex_core", "ApexComfort", "Apex Comfort"],
+        },
+        {
+            id: "ApexBounce",
+            label: "Apex Bounce",
+            vertex_slice_material: "apex_bounce",
+            enabled: true,
+            locked_preset_id: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+            aliases: ["ApexBounce", "Apex Bounce", "apex_bounce"],
+        },
+        {
+            id: "ApexForge",
+            label: "Apex Forge",
+            vertex_slice_material: "apex_forge",
+            enabled: false,
+            locked_preset_id: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+            aliases: ["ApexForge", "Apex Forge", "apex_forge"],
+            disabled_reason: "Disabled until print settings are approved",
+        },
+    ],
+} as const;
+
+export function canonicalInsolePrintMaterialCatalog(): typeof CANONICAL_INSOLE_PRINT_MATERIALS {
+    return CANONICAL_INSOLE_PRINT_MATERIALS;
+}
+
+function compactMaterialKey(value: string): string {
+    return value
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_-]+/g, "");
+}
+
+const SLICE_ID_BY_COMPACT_KEY = new Map<string, VertexSliceMaterialId>();
+for (const material of CANONICAL_INSOLE_PRINT_MATERIALS.materials) {
+    const id = material.vertex_slice_material;
+    for (const key of [material.id, material.label, material.vertex_slice_material, ...material.aliases]) {
+        const compact = compactMaterialKey(key);
+        if (compact) SLICE_ID_BY_COMPACT_KEY.set(compact, id);
+    }
+}
+
+/**
+ * Map a caller material to an enabled VertexSlice id.
+ * Omitted or blank uses `omitted` (CAD-operator passes CAD_OPERATOR_BELT_MATERIAL).
+ * Unknown names and Apex Forge throw. Nothing is substituted.
+ */
+export function resolveEnabledSliceMaterial(
+    material: string | undefined,
+    omitted: EnabledVertexSliceMaterial = "apex_core",
+): EnabledVertexSliceMaterial {
+    const raw = material?.trim() ?? "";
+    if (!raw) return assertEnabledVertexSliceMaterial(omitted);
+    const id = SLICE_ID_BY_COMPACT_KEY.get(compactMaterialKey(raw));
+    if (!id) {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Unknown print material "${raw}". Use apex_core, apex_light, or apex_bounce. Nothing was substituted.`,
+        });
+    }
+    return assertEnabledVertexSliceMaterial(id);
 }
 
 function vertexSliceUrl(baseUrl: string, path: string): string {
