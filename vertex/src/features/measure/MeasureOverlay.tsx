@@ -3,7 +3,7 @@
 import { Html } from "@react-three/drei";
 import { useThree } from "@react-three/fiber";
 import { useEffect, useMemo } from "react";
-import { BufferGeometry, type Mesh, Vector2, Vector3 } from "three";
+import { BufferGeometry, Line, LineBasicMaterial, type Mesh, Vector2, Vector3 } from "three";
 import {
     formatMeasureMm,
     pointToPoint,
@@ -141,26 +141,35 @@ export function MeasureOverlay() {
 }
 
 function MeasureLine({ a, b, label }: { a: MeasureVec3; b: MeasureVec3; label: string }) {
-    const geometry = useMemo(() => {
-        const g = new BufferGeometry();
-        g.setFromPoints([new Vector3(a.x, a.y, a.z), new Vector3(b.x, b.y, b.z)]);
-        return g;
+    const line = useMemo(() => {
+        const geometry = new BufferGeometry();
+        geometry.setFromPoints([new Vector3(a.x, a.y, a.z), new Vector3(b.x, b.y, b.z)]);
+        const material = new LineBasicMaterial({
+            color: "#67e8f9",
+            depthTest: false,
+            depthWrite: false,
+            polygonOffset: true,
+            polygonOffsetFactor: -4,
+            polygonOffsetUnits: -4,
+            toneMapped: false,
+        });
+        const obj = new Line(geometry, material);
+        obj.renderOrder = 1000;
+        obj.raycast = () => {};
+        return obj;
     }, [a.x, a.y, a.z, b.x, b.y, b.z]);
-    useEffect(() => () => geometry.dispose(), [geometry]);
+    useEffect(
+        () => () => {
+            line.geometry.dispose();
+            const material = line.material;
+            if (!Array.isArray(material)) material.dispose();
+        },
+        [line],
+    );
     const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
     return (
         <group>
-            <line geometry={geometry} renderOrder={1000} raycast={() => null}>
-                <lineBasicMaterial
-                    color="#67e8f9"
-                    depthTest={false}
-                    depthWrite={false}
-                    polygonOffset
-                    polygonOffsetFactor={-4}
-                    polygonOffsetUnits={-4}
-                    toneMapped={false}
-                />
-            </line>
+            <primitive object={line} />
             <Html
                 position={[mid.x, mid.y, mid.z]}
                 center
