@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { medialSign } from "@/lib/geometry/handedness";
 import type { Side } from "@/types";
 import {
     AFO_REAR_ROT_RANGE,
@@ -213,15 +214,77 @@ export function ankleJointCentre(medial: AfoVec3, lateral: AfoVec3): AfoVec3 {
     };
 }
 
+export interface AfoFootAxes {
+    origin: AfoVec3;
+    /** Unit footplate axis, heel toward the metatarsal midpoint (sagittal). */
+    anterior: AfoVec3;
+    /** Unit footplate axis, medial malleolus toward the lateral malleolus. */
+    lateral: AfoVec3;
+    /** Unit footplate axis, toward the medial malleolus. */
+    medial: AfoVec3;
+    /**
+     * Sign of a positive right-hand spin about `anterior` that carries +Z toward medial.
+     * Clinical rear and side degrees are multiplied by this so +rear is varus and
+     * +side is dorsiflexion on both feet.
+     */
+    chirality: 1 | -1;
+}
+
+function unitXY(x: number, y: number): AfoVec3 | null {
+    const l = Math.hypot(x, y);
+    if (l < 1e-6) return null;
+    return { x: x / l, y: y / l, z: 0 };
+}
+
+/**
+ * Footplate axes through the ankle-joint centre.
+ * Rear view (varus/valgus) spins about `anterior`. Side view (dorsi/plantarflexion)
+ * spins about `lateral`. Medial, when the malleoli do not span, follows
+ * {@link medialSign} along geometric +Y (the plantar frame).
+ */
+export function afoFootAxes(axes: AfoRotationAxes): AfoFootAxes {
+    const origin = ankleJointCentre(axes.medialMal, axes.lateralMal);
+    const lateral =
+        unitXY(axes.lateralMal.x - axes.medialMal.x, axes.lateralMal.y - axes.medialMal.y) ??
+        (() => {
+            const s = medialSign(axes.side ?? "right");
+            return { x: 0, y: -s, z: 0 };
+        })();
+    const medial = { x: -lateral.x, y: -lateral.y, z: 0 };
+    const heel = axes.heel ?? { x: 0, y: 0, z: 0 };
+    const m1 = axes.m1 ?? { x: 0, y: 120, z: 0 };
+    const m5 = axes.m5 ?? { x: 0, y: 120, z: 0 };
+    let anterior = unitXY((m1.x + m5.x) * 0.5 - heel.x, (m1.y + m5.y) * 0.5 - heel.y);
+    const crossZ = anterior ? anterior.x * lateral.y - anterior.y * lateral.x : 0;
+    if (!anterior || Math.abs(crossZ) < 1e-3) {
+        const ccw = { x: -lateral.y, y: lateral.x, z: 0 };
+        const cw = { x: lateral.y, y: -lateral.x, z: 0 };
+        // Toes are +X in the plantar frame and +Y in the legacy three-point frame.
+        anterior = ccw.x * 2 + ccw.y >= cw.x * 2 + cw.y ? ccw : cw;
+    }
+    const chirality: 1 | -1 = anterior.x * lateral.y - anterior.y * lateral.x >= 0 ? 1 : -1;
+    return { origin, anterior, lateral, medial, chirality };
+}
+
+function dot3(a: AfoVec3, b: AfoVec3): number {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
 export interface ShankAngles {
     sagittalDeg: number;
     frontalDeg: number;
     axis: AfoVec3;
 }
 
-/** Angle of the shank from the plantar normal. 0 is 90° to the footplate. */
+/**
+ * Shank tilt from the plantar normal, in the same footplate axes the rotation uses.
+ * Positive sagittal is dorsiflexion (proximal shank toward the toes).
+ * Positive frontal is varus (proximal shank toward the medial malleolus).
+ * Zero is a shank square to the footplate.
+ */
 export function measureShankAngles(mesh: AfoTriMesh, axes: AfoRotationAxes): ShankAngles {
-    const origin = ankleJointCentre(axes.medialMal, axes.lateralMal);
+    const frame = afoFootAxes(axes);
+    const origin = frame.origin;
     const headZ = axes.fibularHead?.z ?? origin.z + 110;
     const centroid = sectionCentroid(mesh, headZ) ?? { x: origin.x, y: origin.y, z: headZ };
     const sx = centroid.x - origin.x;
@@ -229,10 +292,9 @@ export function measureShankAngles(mesh: AfoTriMesh, axes: AfoRotationAxes): Sha
     const sz = centroid.z - origin.z;
     const sl = Math.hypot(sx, sy, sz) || 1;
     const axis = { x: sx / sl, y: sy / sl, z: sz / sl };
-    const lateral = lateralX(axes.side ?? "right");
     return {
-        sagittalDeg: (Math.atan2(axis.y, Math.max(1e-6, axis.z)) * 180) / Math.PI,
-        frontalDeg: (Math.atan2(-lateral * axis.x, Math.max(1e-6, axis.z)) * 180) / Math.PI,
+        sagittalDeg: (Math.atan2(dot3(axis, frame.anterior), axis.z) * 180) / Math.PI,
+        frontalDeg: (Math.atan2(dot3(axis, frame.medial), axis.z) * 180) / Math.PI,
         axis,
     };
 }
@@ -273,7 +335,8 @@ function applyAnatomicalRotation(
     rearDeg: number,
     axes: AfoRotationAxes,
 ): void {
-    const origin = ankleJointCentre(axes.medialMal, axes.lateralMal);
+    const frame = afoFootAxes(axes);
+    const origin = frame.origin;
     const measured = measureShankAngles(mesh, axes);
     const sideTotal = clampSagittalDeg(measured.sagittalDeg + sideDeg);
     const rearTotal = clampFrontalDeg(measured.frontalDeg + rearDeg);
@@ -281,27 +344,16 @@ function applyAnatomicalRotation(
     const dRear = rearDeg === 0 ? 0 : rearTotal - measured.frontalDeg;
     if (Math.abs(dSide) < 1e-6 && Math.abs(dRear) < 1e-6) return;
 
-    const trans = {
-        x: axes.lateralMal.x - axes.medialMal.x,
-        y: axes.lateralMal.y - axes.medialMal.y,
-        z: 0,
-    };
-    const tl = Math.hypot(trans.x, trans.y) || 1;
-    const sagittal = { x: trans.x / tl, y: trans.y / tl, z: 0 };
-    const heel = axes.heel ?? { x: 0, y: 0, z: 0 };
-    const m1 = axes.m1 ?? { x: 0, y: 120, z: 0 };
-    const m5 = axes.m5 ?? { x: 0, y: 120, z: 0 };
-    const fore = {
-        x: (m1.x + m5.x) * 0.5 - heel.x,
-        y: (m1.y + m5.y) * 0.5 - heel.y,
-        z: 0,
-    };
-    const fl = Math.hypot(fore.x, fore.y) || 1;
-    const frontal = { x: fore.x / fl, y: fore.y / fl, z: 0 };
-    const rearAngle = -sagittal.x * dRear * DEG;
-    const sideAngle = -sagittal.x * dSide * DEG;
+    // Full clinical degrees. Do not scale by the malleolar X component — in the
+    // plantar frame that axis lies along Y, and the old scale cancelled the spin.
+    const rearAngle = frame.chirality * dRear * DEG;
+    const sideAngle = frame.chirality * dSide * DEG;
     const n = vertexCount(mesh);
-    const pins = [heel, m1, m5];
+    const pins = [
+        axes.heel ?? { x: 0, y: 0, z: 0 },
+        axes.m1 ?? { x: 0, y: 120, z: 0 },
+        axes.m5 ?? { x: 0, y: 120, z: 0 },
+    ];
     for (let i = 0; i < n; i++) {
         const p = {
             x: mesh.positions[i * 3] ?? 0,
@@ -315,8 +367,8 @@ function applyAnatomicalRotation(
         }
         if (w <= 0) continue;
         let q = p;
-        if (dRear !== 0) q = rotateAround(q, origin, frontal, rearAngle * w);
-        if (dSide !== 0) q = rotateAround(q, origin, sagittal, sideAngle * w);
+        if (dRear !== 0) q = rotateAround(q, origin, frame.anterior, rearAngle * w);
+        if (dSide !== 0) q = rotateAround(q, origin, frame.lateral, sideAngle * w);
         mesh.positions[i * 3] = q.x;
         mesh.positions[i * 3 + 1] = q.y;
         mesh.positions[i * 3 + 2] = q.z;
@@ -486,24 +538,28 @@ export function correctionContextFromAfo(
     afo: AfoDesignState,
     extras?: { medialMal?: AfoVec3; lateralMal?: AfoVec3 },
 ): AfoRotationAxes {
-    const medial = extras?.medialMal ??
-        afo.landmarks.find((l) => l.id === "malleolus_medial")?.point ??
-        afo.scanWorkflow.derived?.ankleAxis?.medial ?? { x: 35, y: 40, z: 80 };
-    const lateral = extras?.lateralMal ??
-        afo.landmarks.find((l) => l.id === "malleolus_lateral")?.point ??
-        afo.scanWorkflow.derived?.ankleAxis?.lateral ?? { x: -35, y: 40, z: 80 };
-    const fib =
-        afo.clinicalMarkers.find((m) => m.id === "fibular_head")?.point ??
-        afo.scanWorkflow.landmarks.fibular_head ??
-        null;
-    const nav =
-        afo.clinicalMarkers.find((m) => m.id === "navicular")?.point ??
-        afo.scanWorkflow.landmarks.navicular ??
-        null;
-    const pins = [...afo.clinicalMarkers.map((m) => m.point), ...afo.landmarks.map((l) => l.point)];
     const matrix = afo.scanWorkflow.matrixElements;
     const mapPoint = (p: AfoVec3 | undefined): AfoVec3 | undefined =>
         p ? (matrix ? transformAfoPoint(p, matrix) : p) : undefined;
+    // Design clicks are already on the oriented mesh. Scan-workflow points are
+    // stored unoriented and have to ride the alignment matrix.
+    const medial = extras?.medialMal ??
+        afo.landmarks.find((l) => l.id === "malleolus_medial")?.point ??
+        afo.scanWorkflow.derived?.ankleAxis?.medial ??
+        mapPoint(afo.scanWorkflow.landmarks.medial_malleolus) ?? { x: 35, y: 40, z: 80 };
+    const lateral = extras?.lateralMal ??
+        afo.landmarks.find((l) => l.id === "malleolus_lateral")?.point ??
+        afo.scanWorkflow.derived?.ankleAxis?.lateral ??
+        mapPoint(afo.scanWorkflow.landmarks.lateral_malleolus) ?? { x: -35, y: 40, z: 80 };
+    const fib =
+        afo.clinicalMarkers.find((m) => m.id === "fibular_head")?.point ??
+        mapPoint(afo.scanWorkflow.landmarks.fibular_head) ??
+        null;
+    const nav =
+        afo.clinicalMarkers.find((m) => m.id === "navicular")?.point ??
+        mapPoint(afo.scanWorkflow.landmarks.navicular) ??
+        null;
+    const pins = [...afo.clinicalMarkers.map((m) => m.point), ...afo.landmarks.map((l) => l.point)];
     return {
         medialMal: medial,
         lateralMal: lateral,

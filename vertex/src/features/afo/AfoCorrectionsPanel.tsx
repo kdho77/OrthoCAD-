@@ -24,6 +24,7 @@ import {
     AFO_VOLUME_OFFSET_RANGE,
     correctionsForSide,
     defaultAfoCorrections,
+    writeAfoSideCorrection,
 } from "@/lib/geometry/afo/defaults";
 import { evaluateAfoWarnings } from "@/lib/geometry/afo/warnings";
 import { getAfoState, patchAfoState, refreshAfoWorkingMesh, useAfoStore } from "@/stores/afo-store";
@@ -39,6 +40,7 @@ export function AfoCorrectionsPanel() {
     const scanned =
         placement === "both" ? side : placement === "left" || placement === "right" ? placement : side;
     const castMesh = useAfoStore((s) => s.castMesh);
+    const correctedMesh = useAfoStore((s) => s.correctedMesh);
     const setCorrected = useAfoStore((s) => s.setCorrectedMesh);
 
     const [editSide, setEditSide] = useState<"left" | "right">(side === "right" ? "right" : "left");
@@ -46,16 +48,14 @@ export function AfoCorrectionsPanel() {
     const volume = c.volumeRegions?.[0];
     const axes = correctionContextFromAfo(afo);
     const warnings = evaluateAfoWarnings(afo, castMesh);
-    const measured = castMesh ? measureShankAngles(castMesh, axes) : null;
+    const measuredMesh = correctedMesh ?? castMesh;
+    const measured = measuredMesh ? measureShankAngles(measuredMesh, axes) : null;
 
     const patch = (partial: Partial<typeof edited>) => {
-        const nextSide = { ...edited, ...partial };
-        const corrections = {
-            ...c,
-            ...(editSide === afo.side ? nextSide : {}),
-            left: editSide === "left" ? nextSide : c.left,
-            right: editSide === "right" ? nextSide : c.right,
-        };
+        const corrections = writeAfoSideCorrection(c, editSide, partial, {
+            linked: placement === "both",
+            promote: editSide === afo.side,
+        });
         patchAfoState({ corrections }, "afo-corrections");
         if (castMesh) {
             setCorrected(

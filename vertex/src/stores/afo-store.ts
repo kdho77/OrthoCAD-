@@ -160,10 +160,11 @@ export function refreshAfoWorkingMesh(): void {
             design: { ...ds.design, afo: { ...current, effectiveFeatherMm: featherMm } },
         });
     }
-    const corrected = applyAfoCorrections(mesh, correctionsForSide(afo.corrections, afo.side), {
-        ...correctionContextFromAfo(afo, { medialMal: medial, lateralMal: lateral }),
-        anatomical: Boolean(medial && lateral),
-    });
+    const corrected = applyAfoCorrections(
+        mesh,
+        correctionsForSide(afo.corrections, afo.side),
+        correctionContextFromAfo(afo, { medialMal: medial, lateralMal: lateral }),
+    );
     useAfoStore.getState().setCorrectedMesh(corrected);
 }
 
