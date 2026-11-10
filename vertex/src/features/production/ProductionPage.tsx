@@ -39,6 +39,7 @@ import {
     downloadProductionGcode,
     holdProductionJob,
     loadProduction,
+    loadProductionShops,
     markProductionJobDone,
     reconcileProductionPrinter,
     refreshProductionReadiness,
@@ -286,6 +287,8 @@ function QueueTab({ jobs, printers }: { jobs: ProductionJob[]; printers: Printer
 }
 
 function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: PrinterRecord[] }) {
+    const role = useAuthStore((state) => state.user?.role);
+    const superAdmin = role === "super_admin";
     const [name, setName] = useState("");
     const [moonrakerUrl, setMoonrakerUrl] = useState("");
     const [configName, setConfigName] = useState("");
@@ -294,11 +297,45 @@ function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: Prin
     const [enabled, setEnabled] = useState(true);
     const [cancellation, setCancellation] = useState<"unsupported" | "explicit">("unsupported");
     const [notice, setNotice] = useState("");
-    const cards = printerCards(printers, jobs);
+    const [shopId, setShopId] = useState("");
+    const [shops, setShops] = useState<{ id: string; name: string }[]>([]);
+    const [shopsNotice, setShopsNotice] = useState("");
+    const shop = superAdmin && shopId ? { tenantId: shopId, shopId } : undefined;
+    const visiblePrinters = superAdmin
+        ? printers.filter((printer) => printer.tenantId === shopId && shopId !== "")
+        : printers;
+    const visibleJobs = superAdmin ? jobs.filter((job) => job.tenantId === shopId && shopId !== "") : jobs;
+    const cards = printerCards(visiblePrinters, visibleJobs);
+
+    useEffect(() => {
+        if (!superAdmin) return;
+        let cancelled = false;
+        void loadProductionShops()
+            .then((rows) => {
+                if (!cancelled) setShops(rows);
+            })
+            .catch((error: unknown) => {
+                if (!cancelled) {
+                    setShopsNotice(error instanceof Error ? error.message : "Shops could not be loaded.");
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [superAdmin]);
+
+    useEffect(() => {
+        if (!superAdmin || !shopId) return;
+        void loadProduction({ tenantId: shopId, shopId });
+    }, [superAdmin, shopId]);
 
     const register = () => {
         setNotice("");
-        void registerMockProductionPrinter(name, moonrakerUrl)
+        if (superAdmin && !shop) {
+            setNotice("A tenant is required.");
+            return;
+        }
+        void registerMockProductionPrinter(name, moonrakerUrl, shop)
             .then(() => {
                 setName("");
             })
@@ -309,13 +346,20 @@ function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: Prin
 
     const configure = () => {
         setNotice("");
-        void saveMoonrakerProductionPrinter({
-            name: configName,
-            address: endpoint,
-            bridgeId,
-            cancellation,
-            enabled,
-        })
+        if (superAdmin && !shop) {
+            setNotice("A tenant is required.");
+            return;
+        }
+        void saveMoonrakerProductionPrinter(
+            {
+                name: configName,
+                address: endpoint,
+                bridgeId,
+                cancellation,
+                enabled,
+            },
+            shop,
+        )
             .then(() => {
                 setConfigName("");
                 setEndpoint("");
@@ -339,6 +383,35 @@ function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: Prin
                 Queue state for two or more printers. Mock registration is not a live printer. A configured
                 printer stays unverified, and this page does not open a socket.
             </p>
+            {superAdmin ? (
+                <div
+                    className="rounded-xl border border-border bg-panel p-3"
+                    data-testid="production-shop-picker"
+                >
+                    <label className="block max-w-md text-xs text-muted-foreground">
+                        Shop
+                        <select
+                            aria-label="Shop"
+                            value={shopId}
+                            className="mt-1 block min-h-11 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                            onChange={(event) => setShopId(event.target.value)}
+                        >
+                            <option value="">Choose a shop</option>
+                            {shops.map((item) => (
+                                <option key={item.id} value={item.id}>
+                                    {item.name}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    {shopId ? null : (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                            Choose a shop before enrolling a bridge or saving a printer.
+                        </p>
+                    )}
+                    {shopsNotice ? <p className="mt-1 text-sm text-amber-300">{shopsNotice}</p> : null}
+                </div>
+            ) : null}
             <div className="rounded-xl border border-border bg-panel p-3">
                 <h2 className="text-sm font-medium">Register mock printer</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -366,7 +439,8 @@ function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: Prin
                     </label>
                     <button
                         type="button"
-                        className="min-h-11 self-end rounded-md bg-primary px-4 text-sm text-primary-foreground"
+                        className="min-h-11 self-end rounded-md bg-primary px-4 text-sm text-primary-foreground disabled:opacity-50"
+                        disabled={superAdmin && !shopId}
                         onClick={register}
                     >
                         Register
@@ -439,14 +513,15 @@ function PrintersTab({ jobs, printers }: { jobs: ProductionJob[]; printers: Prin
                     </label>
                     <button
                         type="button"
-                        className="min-h-11 self-end rounded-md bg-primary px-4 text-sm text-primary-foreground"
+                        className="min-h-11 self-end rounded-md bg-primary px-4 text-sm text-primary-foreground disabled:opacity-50"
+                        disabled={superAdmin && !shopId}
                         onClick={configure}
                     >
                         Save configuration
                     </button>
                 </div>
             </div>
-            <BridgeEnrollmentCard />
+            <BridgeEnrollmentCard shop={shop} />
             {notice ? <p className="text-sm text-amber-300">{notice}</p> : null}
             {cards.length === 0 ? <p className="text-sm text-muted-foreground">No printers yet.</p> : null}
             <div className="grid gap-3 md:grid-cols-2">
@@ -498,8 +573,9 @@ function isProductionAdmin(role: string | undefined): boolean {
     return role === "admin" || role === "super_admin";
 }
 
-function BridgeEnrollmentCard() {
+function BridgeEnrollmentCard({ shop }: { shop?: { tenantId: string; shopId: string } }) {
     const role = useAuthStore((state) => state.user?.role);
+    const needsShop = role === "super_admin";
     const [bridgeName, setBridgeName] = useState("");
     const [pending, setPending] = useState(false);
     const [notice, setNotice] = useState("");
@@ -514,10 +590,14 @@ function BridgeEnrollmentCard() {
     const create = () => {
         const name = bridgeName.trim();
         if (!name || pending) return;
+        if (needsShop && !shop) {
+            setNotice("A tenant is required.");
+            return;
+        }
         setNotice("");
         setCopied(false);
         setPending(true);
-        void createBridgeEnrollment(name)
+        void createBridgeEnrollment(name, needsShop ? shop : undefined)
             .then((result) => {
                 setEnrollment({
                     bridgeId: result.bridgeId,
@@ -568,7 +648,7 @@ function BridgeEnrollmentCard() {
                 <button
                     type="button"
                     className="min-h-11 self-end rounded-md bg-primary px-4 text-sm text-primary-foreground disabled:opacity-50"
-                    disabled={pending || bridgeName.trim().length === 0}
+                    disabled={pending || bridgeName.trim().length === 0 || (needsShop && !shop)}
                     onClick={create}
                 >
                     Create bridge enrollment
@@ -834,7 +914,7 @@ function Select({
 
 function PrinterStateBadge({ state }: { state: PrinterState }) {
     const tone = {
-        idle: "text-zinc-300",
+        idle: "text-sky-300",
         running: "text-emerald-300",
         paused: "text-amber-300",
         error: "text-red-300",
@@ -844,7 +924,11 @@ function PrinterStateBadge({ state }: { state: PrinterState }) {
         state
     ];
     return (
-        <span className={cn("inline-flex items-center gap-1 text-xs", tone)}>
+        <span
+            className={cn("inline-flex items-center gap-1 text-xs", tone)}
+            data-testid="printer-state"
+            data-state={state}
+        >
             <Icon className="h-3.5 w-3.5" aria-hidden />
             {printerStateLabel(state)}
         </span>

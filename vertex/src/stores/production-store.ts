@@ -3,7 +3,7 @@
 
 import { create } from "zustand";
 import { useAuthStore } from "@/stores/auth-store";
-import type { Actor } from "../../shared/client-files";
+import { type Actor, isSuperAdmin } from "../../shared/client-files";
 import { type SaveMoonrakerPrinterInput, saveMoonrakerPrinter } from "../../shared/moonraker-farm";
 import type { DispatchDeps, DispatchEvent, PrinterBinding } from "../../shared/production-jobs";
 import {
@@ -43,9 +43,9 @@ interface ProductionStore {
     assign: (id: string, printerId: string) => Promise<void>;
     rerun: (id: string) => Promise<void>;
     download: (id: string) => Promise<{ filename: string; gcode: string; sha256: string }>;
-    registerMock: (name: string, moonrakerUrl: string) => Promise<void>;
+    registerMock: (name: string, moonrakerUrl: string, shop?: { tenantId: string }) => Promise<void>;
     registerConfigured: (input: RegisterConfiguredPrinterInput) => Promise<void>;
-    saveMoonraker: (input: SaveMoonrakerPrinterInput) => Promise<void>;
+    saveMoonraker: (input: SaveMoonrakerPrinterInput, shop?: { tenantId: string }) => Promise<void>;
     dispatch: (id: string, deps: DispatchDeps) => Promise<void>;
     reconcile: (printerId: string, deps: DispatchDeps) => Promise<void>;
     refreshReadiness: (printerId: string, deps: DispatchDeps) => Promise<void>;
@@ -63,6 +63,18 @@ function actor(): Actor {
         role: user?.role ?? "clinician",
         tenantId: null,
     };
+}
+
+/** Session fallback. A super_admin must name a shop; other roles cannot switch shops. */
+function actorForShop(shop?: { tenantId?: string }): Actor {
+    const base = actor();
+    const chosen = shop?.tenantId?.trim() || "";
+    if (isSuperAdmin(base)) {
+        if (!chosen) throw new ProductionError("BAD_REQUEST", "A tenant is required.");
+        return { ...base, tenantId: chosen };
+    }
+    if (chosen) throw new ProductionError("FORBIDDEN", "You cannot choose another shop.");
+    return base;
 }
 
 const endpointByPrinter = new Map<string, string>();
@@ -218,8 +230,8 @@ export const useProductionStore = create<ProductionStore>((_set, _get) => ({
     download(id) {
         return downloadGcode(repo(), actor(), id);
     },
-    async registerMock(name, moonrakerUrl) {
-        const result = await registerMockPrinter(repo(), actor(), { name, moonrakerUrl });
+    async registerMock(name, moonrakerUrl, shop) {
+        const result = await registerMockPrinter(repo(), actorForShop(shop), { name, moonrakerUrl });
         useProductionStore.setState((state) => ({
             printers: [...state.printers.filter((row) => row.id !== result.printer.id), result.printer],
         }));
@@ -230,8 +242,8 @@ export const useProductionStore = create<ProductionStore>((_set, _get) => ({
             printers: [...state.printers.filter((row) => row.id !== printer.id), printer],
         }));
     },
-    async saveMoonraker(input) {
-        const printer = await saveMoonrakerPrinter(repo(), actor(), input);
+    async saveMoonraker(input, shop) {
+        const printer = await saveMoonrakerPrinter(repo(), actorForShop(shop), input);
         useProductionStore.setState((state) => ({
             printers: [...state.printers.filter((row) => row.id !== printer.id), printer],
         }));

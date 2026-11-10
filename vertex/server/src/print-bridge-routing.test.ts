@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, test } from "@rstest/core";
-import { config } from "./index";
+import { config } from "../../api/print-bridge/index";
 
 function matches(source: string, path: string): boolean {
     if (source.startsWith("/((")) {
@@ -49,6 +49,9 @@ describe("print-bridge vercel rewrites", () => {
         expect(destination(vercel.rewrites, "/api/trpc")).toBeNull();
         expect(config.api.bodyParser).toBe(false);
         expect(config.maxDuration).toBe(60);
+        const entries = readdirSync("vertex/api/print-bridge").filter((name) => !name.startsWith("."));
+        expect(entries).toEqual(["index.ts"]);
+        expect(JSON.stringify(vercel)).not.toContain(".test.ts");
         const node = readFileSync("vertex/server/src/index.ts", "utf8");
         expect(node).toContain('"/print-bridge/"');
         expect(node).toContain("handlePrintBridgeNode");

@@ -3,9 +3,14 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { BridgeDirectory } from "../../shared/print-bridge-directory.js";
-import { sha256Hex as hashText } from "../../shared/print-bridge-enrollment.js";
+import { type BridgeCredential, sha256Hex as hashText } from "../../shared/print-bridge-enrollment.js";
 import { publicPrinterMessage } from "../../shared/printer-adapter.js";
-import type { ProductionRepo } from "../../shared/production-jobs.js";
+import {
+    PRINTER_STATES,
+    type PrinterRecord,
+    type PrinterState,
+    type ProductionRepo,
+} from "../../shared/production-jobs.js";
 
 /**
  * Raw G-code bytes per artifact response.
@@ -72,6 +77,38 @@ function sliceArtifact(
     };
 }
 
+function isPrinterState(value: string): value is PrinterState {
+    return (PRINTER_STATES as readonly string[]).includes(value);
+}
+
+/**
+ * Optional printer presence on heartbeat. A body that omits `printers` (the
+ * installed desktop relay posts `{bridgeId}` only) does not change printer
+ * state. Listed rows update shop_printers.state and shop_printer_configs.lastSeenAt.
+ * Unlisted printers are left as they are, including when they were online.
+ */
+async function applyBridgePrinterPresence(
+    repo: ProductionRepo,
+    known: PrinterRecord[],
+    bridge: BridgeCredential,
+    reported: unknown,
+    at: string,
+): Promise<void> {
+    if (!Array.isArray(reported)) return;
+    for (const entry of reported) {
+        if (!entry || typeof entry !== "object") continue;
+        const id = "id" in entry && typeof entry.id === "string" ? entry.id : "";
+        const state = "state" in entry && typeof entry.state === "string" ? entry.state : "";
+        if (!id || !isPrinterState(state)) continue;
+        const printer = known.find(
+            (item) =>
+                item.id === id && item.bridgeId === bridge.bridgeId && item.tenantId === bridge.tenantId,
+        );
+        if (!printer) continue;
+        await repo.patchPrinter(printer.id, { state, lastSeenAt: at });
+    }
+}
+
 export async function handlePrintBridgeNode(
     req: IncomingMessage,
     res: ServerResponse,
@@ -102,8 +139,10 @@ export async function handlePrintBridgeNode(
         }
         await deps.directory.touch(bridge.bridgeId, now.toISOString());
         if (path === "/print-bridge/v1/heartbeat") {
+            const known = await deps.repo.listPrinters();
+            await applyBridgePrinterPresence(deps.repo, known, bridge, body.printers, now.toISOString());
             const printers = [];
-            for (const printer of await deps.repo.listPrinters()) {
+            for (const printer of known) {
                 if (printer.bridgeId !== bridge.bridgeId || printer.tenantId !== bridge.tenantId) continue;
                 const address = await deps.repo.getPrinterEndpoint(printer.id);
                 if (!address) continue;
