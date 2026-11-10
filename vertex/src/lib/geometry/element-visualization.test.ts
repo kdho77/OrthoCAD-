@@ -16,6 +16,8 @@ import {
     ELEMENT_OWNER_ATTRIBUTE,
     MIN_VISIBLE_RAISE_MM,
 } from "./element-visualization";
+import { defaultElementPose } from "./elements";
+import { medialSign } from "./handedness";
 import { sampleTopFromArrayBuffer } from "./procedural-wall/sample-top-preview";
 import { clipGeometryToOutline } from "./trimline";
 
@@ -136,5 +138,80 @@ describe("design element visualization", () => {
             base.dispose();
         }
         raw.dispose();
+    }, 120_000);
+
+    test("Morton's extension raises and colors the medial 1st-ray strip on the export mesh", async () => {
+        const bytes = readFileSync(resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb"));
+        const raw = await sampleTopFromArrayBuffer(
+            bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+        );
+        const corrections = {
+            forefootPostingDeg: 0,
+            rearfootPostingDeg: 0,
+            medialSkiveMm: 0,
+            lateralSkiveMm: 0,
+            archFillMm: 0,
+            archHeightMm: 0,
+            archEaseMm: 0,
+            heelCupDepthMm: 0,
+            heelCupHeightMm: 0,
+            heelCupWidthMm: 0,
+            heelLiftMm: 0,
+            apexMoveMm: 0,
+            medialFlangeMm: 0,
+            lateralFlangeMm: 0,
+        };
+        try {
+            for (const side of ["left", "right"] as Side[]) {
+                const base = side === "right" ? mirrorGeometry(raw) : raw.clone();
+                const frame = getBaseFootprintFrame(base, side);
+                const pose = defaultElementPose("mortons_extension", side, frame.lenSize, frame.widSize);
+                const element: PlacedElement = {
+                    id: `mortons-${side}`,
+                    kind: "mortons_extension",
+                    side,
+                    ...pose,
+                };
+                const composed = base.clone();
+                await applyElementsToTopMeshLast(
+                    composed,
+                    base,
+                    {
+                        side,
+                        lengthMm: frame.lenSize,
+                        widthMm: frame.widSize,
+                        thicknessMm: 3,
+                        elements: [element],
+                        corrections,
+                    },
+                    { subdivide: false },
+                );
+                applyDesignElementColors(composed);
+                const original = base.getAttribute("position");
+                const positions = composed.getAttribute("position");
+                const sign = medialSign(side);
+                let medialRaise = 0;
+                let lateralRaise = 0;
+                let purple = 0;
+                for (let i = 0; i < positions.count; i++) {
+                    const delta =
+                        positions.getComponent(i, frame.thickAxis) -
+                        original.getComponent(i, frame.thickAxis);
+                    const u = (original.getComponent(i, frame.lengthAxis) - frame.lenMin) / frame.lenSize;
+                    const meshY = original.getComponent(i, frame.widthAxis) - frame.widCenter;
+                    if (u < 0.62 || u > 0.96) continue;
+                    if (meshY * sign > 0) medialRaise = Math.max(medialRaise, delta);
+                    else lateralRaise = Math.max(lateralRaise, delta);
+                    if (isPurple(composed, i)) purple++;
+                }
+                expect(medialRaise).toBeGreaterThan(1);
+                expect(lateralRaise).toBeLessThan(0.25);
+                expect(purple).toBeGreaterThan(0);
+                composed.dispose();
+                base.dispose();
+            }
+        } finally {
+            raw.dispose();
+        }
     }, 120_000);
 });

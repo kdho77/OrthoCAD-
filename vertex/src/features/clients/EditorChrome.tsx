@@ -5,7 +5,8 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { navigate } from "@/features/admin/admin-nav";
-import { useClientStore } from "@/stores/client-store";
+import { useAuthStore } from "@/stores/auth-store";
+import { isDirectoryUnresolved, useClientStore } from "@/stores/client-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
 import { formatClientName } from "../../../shared/client-files";
@@ -17,9 +18,20 @@ export function useDesignRoute(clientId: string, designId: string) {
     const record = useClientStore(
         (s) => s.designs.find((design) => design.id === designId && design.clientId === clientId) ?? null,
     );
+    const directoryStatus = useClientStore((s) => s.directoryStatus);
+    const authLoading = useAuthStore((s) => s.loading);
+    // The directory is empty on a fresh reload until client.list returns. Don't
+    // treat that gap as "not in the current session".
+    const resolving = authLoading || isDirectoryUnresolved(record !== null, directoryStatus);
     const [ready, setReady] = useState(false);
 
     useEffect(() => {
+        if (!resolving || authLoading) return;
+        void useClientStore.getState().loadDirectory();
+    }, [resolving, authLoading]);
+
+    useEffect(() => {
+        if (resolving) return;
         let cancelled = false;
         const open = async () => {
             const persist = useDesignStore.persist;
@@ -59,9 +71,9 @@ export function useDesignRoute(clientId: string, designId: string) {
         return () => {
             cancelled = true;
         };
-    }, [clientId, designId]);
+    }, [clientId, designId, resolving]);
 
-    return { record, ready };
+    return { record, ready, resolving };
 }
 
 export function EditorChrome({ clientId, designId }: { clientId: string; designId: string }) {

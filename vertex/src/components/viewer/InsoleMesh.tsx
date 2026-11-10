@@ -6,7 +6,6 @@ import { applyDesignElementColors } from "@/lib/geometry/element-visualization";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { getDesignTrimline } from "@/lib/geometry/trimline";
-import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, Side } from "@/types";
@@ -26,7 +25,6 @@ const sideColors: Record<Side, string> = {
 
 export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshProps) {
     const trimLines = useMeshEditStore((s) => s.trimLines);
-    const workflowStep = useClinicalWorkflowStore((s) => s.step);
     const selectedElementId = useDesignStore((s) => s.selectedElementId);
     const vertexOverrides = useMeshEditStore((s) => s.vertexOverrides);
     const target = useMeshEditStore((s) => s.target);
@@ -81,11 +79,8 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
     const coloredGeometry = useMemo(() => {
         if (!geometry) return geometry;
         if (!heightmap) {
-            applyDesignElementColors(
-                geometry,
-                workflowStep !== "print" && workflowStep !== "export",
-                selectedElementId,
-            );
+            // Design color is the crisp planform overlay, not the feathered lift.
+            applyDesignElementColors(geometry, false, selectedElementId);
             return geometry;
         }
         const pos = geometry.getAttribute("position");
@@ -110,7 +105,7 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
         colors.needsUpdate = true;
         geometry.setAttribute("color", colors);
         return geometry;
-    }, [geometry, heightmap, design.elements, layout.lengthMm, side, workflowStep, selectedElementId]);
+    }, [geometry, heightmap, selectedElementId]);
 
     useEffect(
         () => () => {

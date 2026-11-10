@@ -7,10 +7,21 @@ import { sha256Hex as hashText } from "../../shared/print-bridge-enrollment.js";
 import { publicPrinterMessage } from "../../shared/printer-adapter.js";
 import type { ProductionRepo } from "../../shared/production-jobs.js";
 
+/**
+ * Raw G-code bytes per artifact response.
+ * Vercel serverless responses are limited to about 4.5 MB. A realistic insole
+ * G-code can exceed that (the queue accepts up to 5_000_000 characters, and
+ * JSON encoding expands newlines). 1 MiB stays under the limit even if every
+ * byte were escaped. The bridge reassembles the ranges and checks sha256.
+ */
+export const ARTIFACT_CHUNK_BYTES = 1024 * 1024;
+
 export interface PrintBridgeHttpDeps {
     directory: BridgeDirectory;
     repo: ProductionRepo;
     now?: () => Date;
+    /** Test override. Production never exceeds ARTIFACT_CHUNK_BYTES. */
+    artifactChunkBytes?: number;
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -33,6 +44,32 @@ function send(res: ServerResponse, status: number, body: unknown): void {
 function bearer(req: IncomingMessage): string {
     const header = req.headers.authorization ?? "";
     return header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
+}
+
+function artifactOffset(value: unknown): number | null {
+    if (value === undefined) return 0;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return null;
+    return value;
+}
+
+function sliceArtifact(
+    body: string,
+    offset: number,
+    chunkBytes: number,
+): { slice: string; complete: boolean } | null {
+    const bytes = Buffer.from(body, "utf8");
+    if (offset > bytes.length) return null;
+    const end = Math.min(bytes.length, offset + chunkBytes);
+    let sliceEnd = end;
+    while (sliceEnd > offset && sliceEnd < bytes.length) {
+        const byte = bytes[sliceEnd];
+        if (byte === undefined || (byte & 0xc0) !== 0x80) break;
+        sliceEnd -= 1;
+    }
+    return {
+        slice: bytes.subarray(offset, sliceEnd).toString("utf8"),
+        complete: sliceEnd >= bytes.length,
+    };
 }
 
 export async function handlePrintBridgeNode(
@@ -119,10 +156,26 @@ export async function handlePrintBridgeNode(
                 send(res, 409, { error: "artifact rejected" });
                 return;
             }
+            const offset = artifactOffset(body.offset);
+            if (offset === null) {
+                send(res, 400, { error: "bridge request rejected" });
+                return;
+            }
+            const chunkBytes = Math.min(
+                ARTIFACT_CHUNK_BYTES,
+                Math.max(1, deps.artifactChunkBytes ?? ARTIFACT_CHUNK_BYTES),
+            );
+            const slice = sliceArtifact(stored.body, offset, chunkBytes);
+            if (!slice) {
+                send(res, 400, { error: "bridge request rejected" });
+                return;
+            }
             send(res, 200, {
                 sha256: stored.sha256,
                 byteLength: Buffer.byteLength(stored.body),
-                body: stored.body,
+                offset,
+                body: slice.slice,
+                complete: slice.complete,
             });
             return;
         }
