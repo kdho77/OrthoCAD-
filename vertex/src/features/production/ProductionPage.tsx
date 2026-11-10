@@ -914,7 +914,7 @@ function Select({
 
 function PrinterStateBadge({ state }: { state: PrinterState }) {
     const tone = {
-        idle: "text-zinc-300",
+        idle: "text-sky-300",
         running: "text-emerald-300",
         paused: "text-amber-300",
         error: "text-red-300",
@@ -924,7 +924,11 @@ function PrinterStateBadge({ state }: { state: PrinterState }) {
         state
     ];
     return (
-        <span className={cn("inline-flex items-center gap-1 text-xs", tone)}>
+        <span
+            className={cn("inline-flex items-center gap-1 text-xs", tone)}
+            data-testid="printer-state"
+            data-state={state}
+        >
             <Icon className="h-3.5 w-3.5" aria-hidden />
             {printerStateLabel(state)}
         </span>

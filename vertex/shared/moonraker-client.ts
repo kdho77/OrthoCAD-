@@ -153,6 +153,34 @@ function multipart(filename: string, body: Buffer, sha256: string): { payload: B
     };
 }
 
+/**
+ * Shop presence from one Moonraker objects query.
+ * idle = reachable and not printing (shown as Online). running = printing.
+ * Callers that cannot reach the printer report offline without using this.
+ */
+export function printerStateFromMoonraker(
+    status: Pick<MoonrakerStatus, "webhooksState" | "printState">,
+): "idle" | "running" | "paused" | "error" | "offline" {
+    const webhooks = status.webhooksState.trim().toLowerCase();
+    const print = status.printState.trim().toLowerCase();
+    if (webhooks === "shutdown" || webhooks === "disconnected") return "offline";
+    if (webhooks === "error" || print === "error") return "error";
+    if (print === "printing") return "running";
+    if (print === "paused") return "paused";
+    if (webhooks === "ready" || webhooks === "startup") {
+        if (
+            print === "standby" ||
+            print === "complete" ||
+            print === "cancelled" ||
+            print === "canceled" ||
+            print === ""
+        ) {
+            return "idle";
+        }
+    }
+    return "offline";
+}
+
 function parseStatus(raw: string): MoonrakerStatus {
     let parsed: unknown;
     try {

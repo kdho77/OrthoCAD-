@@ -6,7 +6,12 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
-import { createMoonrakerClient, MoonrakerCallError, type MoonrakerClient } from "./moonraker-client.js";
+import {
+    createMoonrakerClient,
+    MoonrakerCallError,
+    type MoonrakerClient,
+    printerStateFromMoonraker,
+} from "./moonraker-client.js";
 import { sha256Hex } from "./print-bridge-enrollment.js";
 import { publicPrinterMessage } from "./printer-adapter.js";
 import type { AddressPolicy } from "./printer-address-policy.js";
@@ -356,8 +361,55 @@ export async function runBridgeSession(
                 );
             }
         }
+        const presence = await reportPrinterPresence(
+            origin,
+            credential,
+            options.bridgeId,
+            moonraker,
+            printers,
+            apiKey,
+        );
+        if (presence === "revoked") {
+            rmSync(credentialFile, { force: true });
+            return { cycles, stopped: "revoked" };
+        }
     }
     return { cycles, stopped: "cycles" };
+}
+
+/**
+ * Second heartbeat on the same check-in. The first body stays `{bridgeId}` so a
+ * relay that has not been updated still matches this client. Statuses are
+ * additive and never include the Moonraker API key.
+ */
+async function reportPrinterPresence(
+    origin: string,
+    credential: string,
+    bridgeId: string,
+    moonraker: MoonrakerClient,
+    printers: BridgePrinterOffer[],
+    apiKey: string | undefined,
+): Promise<"ok" | "revoked"> {
+    if (printers.length === 0) return "ok";
+    const statuses: { id: string; state: "idle" | "running" | "paused" | "error" | "offline" }[] = [];
+    for (const printer of printers) {
+        if (!printer.id || !printer.address) continue;
+        try {
+            const status = await moonraker.queryHttp({ address: printer.address, apiKey });
+            statuses.push({ id: printer.id, state: printerStateFromMoonraker(status) });
+        } catch {
+            statuses.push({ id: printer.id, state: "offline" });
+        }
+    }
+    if (statuses.length === 0) return "ok";
+    const reported = await cloud(
+        origin,
+        "/print-bridge/v1/heartbeat",
+        { bridgeId, printers: statuses },
+        credential,
+    );
+    if (reported.status === 401) return "revoked";
+    return "ok";
 }
 
 async function report(

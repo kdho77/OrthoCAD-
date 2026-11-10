@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { describe, expect, test } from "@rstest/core";
-import { handlePrintBridgeNode, type PrintBridgeHttpDeps } from "../../server/src/print-bridge-http";
+import { handlePrintBridgeFunction } from "../../api/print-bridge/index";
 import type { Actor } from "../../shared/client-files";
 import type { MoonrakerClient } from "../../shared/moonraker-client";
 import { memoryBridgeDirectory } from "../../shared/print-bridge-directory";
@@ -15,7 +15,7 @@ import { createEnrollment, sha256Hex } from "../../shared/print-bridge-enrollmen
 import { runBridgeSession } from "../../shared/print-bridge-session";
 import { testLoopbackAddressPolicy } from "../../shared/printer-address-policy";
 import { assignJob, createMemoryProductionRepo, enqueueJob } from "../../shared/production-jobs";
-import { handlePrintBridgeFunction } from "./index";
+import { handlePrintBridgeNode, type PrintBridgeHttpDeps } from "./print-bridge-http";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";

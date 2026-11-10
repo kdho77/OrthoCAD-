@@ -96,6 +96,9 @@ function mapPrinter(
         credentialRef: string | null;
         cancellation: string;
         lastSeenAt: Date | null;
+        enabled?: boolean;
+        bridgeId?: string | null;
+        configVersion?: number;
     } | null,
 ): PrinterRecord {
     const mode =
@@ -116,6 +119,14 @@ function mapPrinter(
         liveVerified: false,
         protocolVerified: false,
         lastSeenAt: config?.lastSeenAt ? config.lastSeenAt.toISOString() : null,
+        ...(config
+            ? {
+                  enabled: config.enabled !== false,
+                  bridgeId: config.bridgeId ?? null,
+                  configVersion: config.configVersion ?? 1,
+                  address: config.endpoint ?? null,
+              }
+            : {}),
     };
 }
 
@@ -338,19 +349,27 @@ export function prismaProductionRepo(prisma: PrismaClient): ProductionRepo {
             }
         },
         async insertConfiguredPrinter(printer, binding: PrinterBinding) {
+            const presence = {
+                enabled: printer.enabled !== false,
+                bridgeId: printer.bridgeId ?? null,
+                configVersion: printer.configVersion ?? 1,
+            };
             try {
                 await prisma.$transaction([
-                    prisma.shopPrinter.create({
-                        data: {
+                    prisma.shopPrinter.upsert({
+                        where: { id: printer.id },
+                        create: {
                             id: printer.id,
                             name: printer.name,
                             state: printer.state,
                             ownerId: printer.ownerId,
                             tenantId: printer.tenantId,
                         },
+                        update: { name: printer.name },
                     }),
-                    prisma.shopPrinterConfig.create({
-                        data: {
+                    prisma.shopPrinterConfig.upsert({
+                        where: { printerId: printer.id },
+                        create: {
                             printerId: printer.id,
                             adapterMode: "configured",
                             protocolId: binding.protocolId,
@@ -358,6 +377,15 @@ export function prismaProductionRepo(prisma: PrismaClient): ProductionRepo {
                             credentialRef: binding.credentialRef,
                             cancellation: binding.cancellation,
                             lastSeenAt: binding.lastSeenAt ? new Date(binding.lastSeenAt) : null,
+                            ...presence,
+                        },
+                        update: {
+                            adapterMode: "configured",
+                            protocolId: binding.protocolId,
+                            endpoint: binding.endpoint,
+                            credentialRef: binding.credentialRef,
+                            cancellation: binding.cancellation,
+                            ...presence,
                         },
                     }),
                 ]);
