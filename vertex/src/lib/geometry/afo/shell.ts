@@ -50,9 +50,9 @@ export function buildAfoShell(
     );
     options.onProgress?.(0.25, "thicken");
     const shell = thickenOpenSurface(keep, options.thicknessMm, options.edgeMm, options.flareMm);
-    restoreFarWall(shell, options.thicknessMm);
     tightenBoundaryToCurve(shell, options.trimPolygon);
     finishShellLip(shell);
+    enforceShellClearance(shell, options.thicknessMm, options.edgeMm);
     options.onProgress?.(1, "done");
     return shell;
 }
@@ -112,7 +112,9 @@ function tightenBoundaryToCurve(shell: AfoTriMesh, curve: AfoVec3[] | undefined)
                 bz = qz;
             }
         }
-        if (best <= 0.09 || best > 0.8) continue;
+        // A footplate flare of about 1 mm is intentional. Only pull back a lip
+        // repair that drifted a fraction of a millimetre off the trim.
+        if (best <= 0.09 || best > 0.22) continue;
         const pull = best - 0.08;
         const s = pull / best;
         shell.positions[i * 3] = px + (bx - px) * s;
@@ -713,7 +715,7 @@ function smoothNormalSet(mesh: AfoTriMesh, nrm: Float32Array, origins: Iterable<
         y: buf[i * 3 + 1] ?? 0,
         z: buf[i * 3 + 2] ?? 0,
     });
-    for (let iter = 0; iter < 16; iter++) {
+    for (let iter = 0; iter < 8; iter++) {
         const next = new Float32Array(src);
         for (const i of band) {
             const base = read(src, i);
@@ -844,12 +846,13 @@ function snapBoundaryToCurve(surface: OpenSurface, curve: AfoVec3[] | undefined)
 }
 
 /**
- * A vertex-normal offset of 4 mm can land inside a concavity, so another part
- * of the inner skin is closer than the paired vertex. Slide that outer vertex
- * along its offset ray to the distance whose true clearance is nearest 4 mm.
- * Vertices inside the rim band keep the blended edge thickness.
+ * True wall thickness is the closest point on the inner skin, which is shorter
+ * than the paired vertex wherever the cast is concave. Move only the outer
+ * vertex, along the line away from that closest point, onto the target.
+ * The opening target is the edge thickness, the far wall is the full
+ * thickness, and the band between them stays at least on the linear blend.
  */
-function restoreFarWall(shell: AfoTriMesh, thicknessMm: number): void {
+function enforceShellClearance(shell: AfoTriMesh, thicknessMm: number, edgeMm: number): void {
     const n = shell.outerVertex0;
     const face0 = shell.rimFaceStart;
     if (n == null || face0 == null || thicknessMm < 1) return;
@@ -869,77 +872,80 @@ function restoreFarWall(shell: AfoTriMesh, thicknessMm: number): void {
             else boundary.set(k, { a, b, n: 1 });
         }
     }
-    const opening: { a: AfoVec3; b: AfoVec3 }[] = [];
+    const opening: { ax: number; ay: number; az: number; bx: number; by: number; bz: number }[] = [];
     for (const e of boundary.values()) {
         if (e.n !== 1) continue;
         opening.push({
-            a: {
-                x: shell.positions[e.a * 3] ?? 0,
-                y: shell.positions[e.a * 3 + 1] ?? 0,
-                z: shell.positions[e.a * 3 + 2] ?? 0,
-            },
-            b: {
-                x: shell.positions[e.b * 3] ?? 0,
-                y: shell.positions[e.b * 3 + 1] ?? 0,
-                z: shell.positions[e.b * 3 + 2] ?? 0,
-            },
+            ax: shell.positions[e.a * 3] ?? 0,
+            ay: shell.positions[e.a * 3 + 1] ?? 0,
+            az: shell.positions[e.a * 3 + 2] ?? 0,
+            bx: shell.positions[e.b * 3] ?? 0,
+            by: shell.positions[e.b * 3 + 1] ?? 0,
+            bz: shell.positions[e.b * 3 + 2] ?? 0,
         });
     }
-    const distOpen = (p: AfoVec3) => {
+    const distOpen = (x: number, y: number, z: number) => {
         let best = Infinity;
         for (const e of opening) {
-            const abx = e.b.x - e.a.x;
-            const aby = e.b.y - e.a.y;
-            const abz = e.b.z - e.a.z;
+            const abx = e.bx - e.ax;
+            const aby = e.by - e.ay;
+            const abz = e.bz - e.az;
             const ab2 = abx * abx + aby * aby + abz * abz || 1;
             const t = Math.min(
                 1,
-                Math.max(0, ((p.x - e.a.x) * abx + (p.y - e.a.y) * aby + (p.z - e.a.z) * abz) / ab2),
+                Math.max(0, ((x - e.ax) * abx + (y - e.ay) * aby + (z - e.az) * abz) / ab2),
             );
-            best = Math.min(
-                best,
-                Math.hypot(p.x - (e.a.x + abx * t), p.y - (e.a.y + aby * t), p.z - (e.a.z + abz * t)),
-            );
+            const dx = x - (e.ax + abx * t);
+            const dy = y - (e.ay + aby * t);
+            const dz = z - (e.az + abz * t);
+            const d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < best) best = d2;
         }
-        return best;
+        return Math.sqrt(best);
     };
-    const innerMesh: AfoTriMesh = {
+    const proj = meshProjector({
         positions: shell.positions.subarray(0, n * 3),
         indices: new Uint32Array(innerIdx),
-    };
-    const proj = meshProjector(innerMesh);
-    const floor = thicknessMm - 0.1;
+    });
     for (let i = 0; i < n; i++) {
         const ix = shell.positions[i * 3] ?? 0;
         const iy = shell.positions[i * 3 + 1] ?? 0;
         const iz = shell.positions[i * 3 + 2] ?? 0;
-        if (distOpen({ x: ix, y: iy, z: iz }) < AFO_RIM_BAND_MM) continue;
-        const ox = shell.positions[(n + i) * 3] ?? 0;
-        const oy = shell.positions[(n + i) * 3 + 1] ?? 0;
-        const oz = shell.positions[(n + i) * 3 + 2] ?? 0;
-        if (proj.closest({ x: ox, y: oy, z: oz }).errorMm >= floor) continue;
-        const dx = ox - ix;
-        const dy = oy - iy;
-        const dz = oz - iz;
-        const len = Math.hypot(dx, dy, dz) || 1;
-        const ux = dx / len;
-        const uy = dy / len;
-        const uz = dz / len;
-        let bestD = Math.hypot(dx, dy, dz);
-        let bestPenalty = Infinity;
-        for (let d = 1.5; d <= 12.01; d += 0.25) {
-            const c = proj.closest({ x: ix + ux * d, y: iy + uy * d, z: iz + uz * d }).errorMm;
-            if (c < floor) continue;
-            const penalty = Math.abs(c - thicknessMm);
-            if (penalty < bestPenalty) {
-                bestPenalty = penalty;
-                bestD = d;
+        const dOpen = distOpen(ix, iy, iz);
+        const linear = edgeMm + (thicknessMm - edgeMm) * clamp01(dOpen / AFO_RIM_BAND_MM);
+        const pinned = dOpen <= 0.4 || dOpen >= AFO_RIM_BAND_MM;
+        const target = pinned ? (dOpen <= 0.4 ? edgeMm : thicknessMm) : linear;
+        let px = shell.positions[(n + i) * 3] ?? 0;
+        let py = shell.positions[(n + i) * 3 + 1] ?? 0;
+        let pz = shell.positions[(n + i) * 3 + 2] ?? 0;
+        const ox = px - ix;
+        const oy = py - iy;
+        const oz = pz - iz;
+        let gap = proj.closest({ x: px, y: py, z: pz }).errorMm;
+        const off = pinned ? Math.abs(gap - target) > 0.08 : gap < target - 0.08;
+        if (!off) continue;
+        for (let k = 0; k < 5; k++) {
+            const hit = proj.closest({ x: px, y: py, z: pz });
+            gap = hit.errorMm;
+            if (Math.abs(gap - target) <= 0.04) break;
+            let vx = px - hit.point.x;
+            let vy = py - hit.point.y;
+            let vz = pz - hit.point.z;
+            let vl = Math.hypot(vx, vy, vz);
+            if (vl < 1e-6) {
+                vx = ox;
+                vy = oy;
+                vz = oz;
+                vl = Math.hypot(vx, vy, vz) || 1;
             }
+            const sign = vx * ox + vy * oy + vz * oz >= 0 ? 1 : -1;
+            px = hit.point.x + (vx / vl) * sign * target;
+            py = hit.point.y + (vy / vl) * sign * target;
+            pz = hit.point.z + (vz / vl) * sign * target;
         }
-        if (bestPenalty === Infinity) continue;
-        shell.positions[(n + i) * 3] = ix + ux * bestD;
-        shell.positions[(n + i) * 3 + 1] = iy + uy * bestD;
-        shell.positions[(n + i) * 3 + 2] = iz + uz * bestD;
+        shell.positions[(n + i) * 3] = px;
+        shell.positions[(n + i) * 3 + 1] = py;
+        shell.positions[(n + i) * 3 + 2] = pz;
     }
 }
 
@@ -964,15 +970,15 @@ function thickenOpenSurface(
     const distToRim = vertexDistToSet(inner, boundarySet);
     const band: number[] = [];
     for (let i = 0; i < n; i++) if ((distToRim[i] ?? 1e9) <= AFO_RIM_BAND_MM) band.push(i);
-    smoothNormalSet(inner, nrm, band);
-    const outward = boundaryOutward(inner, surface.boundaryEdges);
     let minZ = Infinity;
     for (let i = 0; i < n; i++) minZ = Math.min(minZ, inner.positions[i * 3 + 2] ?? 0);
+    smoothNormalSet(inner, nrm, band);
+    const outward = boundaryOutward(inner, surface.boundaryEdges);
     const plantar = new Set<number>();
     for (let i = 0; i < n; i++) {
-        const nz = nrm[i * 3 + 2] ?? 0;
         const z = inner.positions[i * 3 + 2] ?? 0;
-        if (nz < -0.65 && z < minZ + 8) plantar.add(i);
+        // Smoothed normals match the verts the flare test treats as the sole.
+        if ((nrm[i * 3 + 2] ?? 0) < -0.65 && z < minZ + 8) plantar.add(i);
     }
     const distCap = vertexDistToSet(inner, plantar);
     const capMm = Math.min(flareMm, AFO_FOOTPLATE_FLARE_CAP_MM);
@@ -987,14 +993,47 @@ function thickenOpenSurface(
         const capT = plantar.size === 0 ? 1 : clamp01((distCap[i] ?? 0) / AFO_CAP_BLEND_MM);
         const capBlend = capT * capT * (3 - 2 * capT);
         const flareCap = capMm + (flareMm - capMm) * capBlend;
-        const flare = flareCap * (1 - blend);
-        blendAt.push(blend);
-        const nx = nrm[i * 3] ?? 0;
-        const ny = nrm[i * 3 + 1] ?? 0;
-        const nz = nrm[i * 3 + 2] ?? 0;
-        flareDisp[i * 3] = nx * flare;
-        flareDisp[i * 3 + 1] = ny * flare;
-        flareDisp[i * 3 + 2] = nz * flare;
+        const falloff = 1 - blend;
+        const onSole = plantar.has(i);
+        blendAt.push(rimT);
+        // Sole contact stays on the cast. The footplate edge keeps the full cap.
+        if (onSole && dist >= 0.5) continue;
+        let hx = outward[i * 3] ?? 0;
+        let hy = outward[i * 3 + 1] ?? 0;
+        let hz = Math.max(0, outward[i * 3 + 2] ?? 0);
+        let hlen = Math.hypot(hx, hy, hz);
+        let nx = nrm[i * 3] ?? 0;
+        let ny = nrm[i * 3 + 1] ?? 0;
+        let nz = Math.max(0, nrm[i * 3 + 2] ?? 0);
+        const nlen = Math.hypot(nx, ny, nz);
+        if (hlen < 1e-6) {
+            hx = nlen > 1e-6 ? nx : 1;
+            hy = ny;
+            hz = 0;
+            hlen = Math.hypot(hx, hy, hz) || 1;
+        }
+        if (nlen < 1e-6) {
+            nx = hx;
+            ny = hy;
+            nz = hz;
+        }
+        const nn = Math.hypot(nx, ny, nz) || 1;
+        hx /= hlen;
+        hy /= hlen;
+        hz /= hlen;
+        nx /= nn;
+        ny /= nn;
+        nz /= nn;
+        // capBlend is 0 on the sole and 1 on the wall, so direction turns with length.
+        const w = onSole ? 0 : capBlend;
+        const dx = hx * (1 - w) + nx * w;
+        const dy = hy * (1 - w) + ny * w;
+        const dz = hz * (1 - w) + nz * w;
+        const dlen = Math.hypot(dx, dy, dz) || 1;
+        const length = (onSole ? capMm : flareCap) * falloff;
+        flareDisp[i * 3] = (dx / dlen) * length;
+        flareDisp[i * 3 + 1] = (dy / dlen) * length;
+        flareDisp[i * 3 + 2] = (dz / dlen) * length;
     }
     // Share direction across a short step once the lengths already agree. The
     // cap ramp is a smooth field, so a 1 mm edge only changes length a little.
@@ -1002,7 +1041,8 @@ function thickenOpenSurface(
     for (let i = 0; i < n; i++) {
         inner.positions[i * 3] = (inner.positions[i * 3] ?? 0) + (flareDisp[i * 3] ?? 0);
         inner.positions[i * 3 + 1] = (inner.positions[i * 3 + 1] ?? 0) + (flareDisp[i * 3 + 1] ?? 0);
-        inner.positions[i * 3 + 2] = (inner.positions[i * 3 + 2] ?? 0) + (flareDisp[i * 3 + 2] ?? 0);
+        const z = (inner.positions[i * 3 + 2] ?? 0) + (flareDisp[i * 3 + 2] ?? 0);
+        inner.positions[i * 3 + 2] = Math.max(minZ, z);
     }
     // Nick smoothing runs after the lift. The plain opening is the curve, so
     // only the flared shell gets the wider pass.

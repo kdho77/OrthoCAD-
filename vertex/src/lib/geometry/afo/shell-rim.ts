@@ -192,27 +192,21 @@ function repairOuterLipSlivers(
         join(face.v[1], face.v[2]);
         join(face.v[2], face.v[0]);
     }
-    const reached = new Map<number, number>();
-    const stack = [...near];
-    for (const id of stack) reached.set(id, 0);
-    while (stack.length) {
-        let best = 0;
-        for (let k = 1; k < stack.length; k++) {
-            if ((reached.get(stack[k]!) ?? 0) < (reached.get(stack[best]!) ?? 0)) best = k;
-        }
-        const u = stack.splice(best, 1)[0]!;
-        const du = reached.get(u) ?? 0;
+    const hops = new Map<number, number>();
+    const queue = [...near];
+    for (const id of queue) hops.set(id, 0);
+    for (let q = 0; q < queue.length; q++) {
+        const u = queue[q]!;
+        const hu = hops.get(u) ?? 0;
+        if (hu >= 8) continue;
         for (const w of link.get(u) ?? []) {
-            const nd = du + span(u, w);
-            if (nd > 4) continue;
-            const prev = reached.get(w);
-            if (prev !== undefined && nd >= prev) continue;
-            reached.set(w, nd);
+            if (hops.has(w)) continue;
+            hops.set(w, hu + 1);
             near.add(w);
-            stack.push(w);
+            queue.push(w);
         }
     }
-    for (let pass = 0; pass < 12; pass++) {
+    for (let pass = 0; pass < 1; pass++) {
         const edge = new Map<string, number[]>();
         for (let f = 0; f < faces.length; f++) {
             const face = faces[f]!;
@@ -224,11 +218,19 @@ function repairOuterLipSlivers(
                 else edge.set(k, [f]);
             }
         }
+        const rimVerts = new Set<number>();
+        for (const face of faces) {
+            if (face.kind !== 2 || !alive(face)) continue;
+            rimVerts.add(face.v[0]);
+            rimVerts.add(face.v[1]);
+            rimVerts.add(face.v[2]);
+        }
         let changed = false;
         for (let f = 0; f < faces.length; f++) {
             const face = faces[f]!;
             if (face.kind === 2 || !alive(face)) continue;
             const [a, b, c] = face.v;
+            if (!near.has(a) && !near.has(b) && !near.has(c)) continue;
             const onSkin =
                 face.kind === 0
                     ? a < n && b < n && c < n
@@ -238,8 +240,6 @@ function repairOuterLipSlivers(
             if (area < 1e-8) continue;
             const mine = unitN(a, b, c);
             let worst = 1;
-            let agree = 0;
-            let disagree = 0;
             for (const [u, v] of [
                 [a, b],
                 [b, c],
@@ -249,45 +249,11 @@ function repairOuterLipSlivers(
                     if (nb === f || faces[nb]!.kind !== face.kind || !alive(faces[nb]!)) continue;
                     const nv = faces[nb]!.v;
                     const nn = unitN(nv[0], nv[1], nv[2]);
-                    const dotN = mine.x * nn.x + mine.y * nn.y + mine.z * nn.z;
-                    worst = Math.min(worst, dotN);
-                    if (dotN < 0) disagree++;
-                    else agree++;
+                    worst = Math.min(worst, mine.x * nn.x + mine.y * nn.y + mine.z * nn.z);
                 }
             }
-            if (worst < -0.85 && area < 0.5) {
-                const tmp = face.v[1];
-                face.v[1] = face.v[2];
-                face.v[2] = tmp;
-                changed = true;
-                continue;
-            }
-            if (worst < -0.5 && area < 1.2) {
-                let smaller = true;
-                for (let e = 0; e < 3 && smaller; e++) {
-                    for (const nb of edge.get(key(face.v[e]!, face.v[(e + 1) % 3]!)) ?? []) {
-                        if (nb === f || faces[nb]!.kind !== face.kind || !alive(faces[nb]!)) continue;
-                        const nv = faces[nb]!.v;
-                        const nn = unitN(nv[0], nv[1], nv[2]);
-                        if (mine.x * nn.x + mine.y * nn.y + mine.z * nn.z >= -0.5) continue;
-                        if (areaOf(nv[0], nv[1], nv[2]) + 1e-6 < area) smaller = false;
-                    }
-                }
-                if (smaller) {
-                    const tmp = face.v[1];
-                    face.v[1] = face.v[2];
-                    face.v[2] = tmp;
-                    changed = true;
-                    continue;
-                }
-            }
-            if (disagree > 0 && agree === 0 && area < 2) {
-                const tmp = face.v[1];
-                face.v[1] = face.v[2];
-                face.v[2] = tmp;
-                changed = true;
-                continue;
-            }
+            // Never flip a face's winding. A reversed index hides the fold and
+            // makes two triangles share a directed edge.
             if (area > 0.8 || worst >= cos60) continue;
             const pairs: [number, number, number][] = [
                 [a, b, c],
@@ -308,12 +274,11 @@ function repairOuterLipSlivers(
             const onOpening = boundary.has(peak) || (peak >= n && boundary.has(peak - n));
             if (
                 area < 0.3 &&
-                altitude < 0.22 &&
+                altitude < (onOpening ? 0.1 : 0.22) &&
                 altitude > 1e-4 &&
                 near.has(peak) &&
-                !onOpening &&
                 peak !== n * 2 - 1 &&
-                !faces.some((other) => other.kind === 2 && other.v.includes(peak))
+                !rimVerts.has(peak)
             ) {
                 const pu = at(long[0]!);
                 const pw = at(long[1]!);
@@ -355,7 +320,7 @@ function repairOuterLipSlivers(
             // Collapsing that last index would make (max+1)/2 not the pair count.
             if (from === n * 2 - 1 || to === n * 2 - 1) continue;
             if (!near.has(from)) continue;
-            if (faces.some((other) => other.kind === 2 && other.v.includes(from))) continue;
+            if (rimVerts.has(from)) continue;
             const hosts = edge.get(key(short[0]!, short[1]!)) ?? [];
             if (hosts.length !== 2) continue;
             for (const other of faces) {

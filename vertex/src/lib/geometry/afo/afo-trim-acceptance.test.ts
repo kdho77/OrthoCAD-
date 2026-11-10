@@ -200,7 +200,7 @@ function nearOpeningFold(
     let worstArea = 0;
     let worstSide = "";
     let worstLen = 0;
-    let where = { x: 0, y: 0, z: 0 };
+    let where: { x: number; y: number; z: number; tag?: string } = { x: 0, y: 0, z: 0 };
     for (const [k, faces] of edgeFaces) {
         if (faces.length !== 2) continue;
         const f0 = faces[0]!;
@@ -211,10 +211,9 @@ function nearOpeningFold(
         const pb = at(shell, sb!);
         if (dist(pa, pb) < 0.05) continue;
         const mid = { x: (pa.x + pb.x) * 0.5, y: (pa.y + pb.y) * 0.5, z: (pa.z + pb.z) * 0.5 };
-        if (distToPolyline(mid, opening) > 3) continue;
-        // A face under 0.12 mm² is only a few hundredths of a millimetre tall, so its
-        // normal is not a fold the lip gate can measure.
-        if ((areas[f0] ?? 0) < 0.12 || (areas[f1] ?? 0) < 0.12) continue;
+        // Lip folds sit within 3 mm. The posterior-leaf wall crease shows up out to 14 mm.
+        if (distToPolyline(mid, opening) > 14) continue;
+        if ((areas[f0] ?? 0) < 1e-4 || (areas[f1] ?? 0) < 1e-4) continue;
         const n0 = normals[f0]!;
         const n1 = normals[f1]!;
         const dotN = Math.min(1, Math.max(-1, n0.x * n1.x + n0.y * n1.y + n0.z * n1.z));
@@ -238,6 +237,8 @@ function nearOpeningFold(
                       : "other";
                 worstLen = dist(pa, pb);
                 where = mid;
+                const dv = sv.map((v) => distToPolyline(at(shell, v), opening).toFixed(2)).join(",");
+                where = { ...where, tag: dv };
             }
         }
     }
@@ -307,6 +308,58 @@ function minInteriorWall(shell: AfoTriMesh, opening: AfoVec3[]): number {
         min = Math.min(min, proj.closest(outer).errorMm);
     }
     return min;
+}
+
+/** Closest-point thickness of the outer skin against the inner skin. */
+function shellClearance(
+    shell: AfoTriMesh,
+    opening: AfoVec3[],
+): {
+    farOut: number;
+    farLo: number;
+    farHi: number;
+    edgeOut: number;
+    edgeLo: number;
+    edgeHi: number;
+    blendOut: number;
+} {
+    const n = shell.outerVertex0 ?? 0;
+    const face0 = shell.rimFaceStart ?? 0;
+    const innerIdx: number[] = [];
+    for (let f = 0; f < face0; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        if (!vs.every((v) => v < n)) continue;
+        innerIdx.push(vs[0]!, vs[1]!, vs[2]!);
+    }
+    const proj = meshProjector({
+        positions: shell.positions.subarray(0, n * 3),
+        indices: new Uint32Array(innerIdx),
+    });
+    let farOut = 0;
+    let farLo = Infinity;
+    let farHi = 0;
+    let edgeOut = 0;
+    let edgeLo = Infinity;
+    let edgeHi = 0;
+    let blendOut = 0;
+    for (let i = 0; i < n; i++) {
+        const p = at(shell, i);
+        const dOpen = distToPolyline(p, opening);
+        const gap = proj.closest(at(shell, n + i)).errorMm;
+        if (dOpen <= 0.4) {
+            edgeLo = Math.min(edgeLo, gap);
+            edgeHi = Math.max(edgeHi, gap);
+            if (gap < AFO_EDGE_MM - 0.1 || gap > AFO_EDGE_MM + 0.1) edgeOut++;
+        } else if (dOpen >= 10) {
+            farLo = Math.min(farLo, gap);
+            farHi = Math.max(farHi, gap);
+            if (gap < AFO_THICKNESS_MM - 0.1 || gap > AFO_THICKNESS_MM + 0.1) farOut++;
+        } else {
+            const linear = AFO_EDGE_MM + (AFO_THICKNESS_MM - AFO_EDGE_MM) * (dOpen / 10);
+            if (gap < linear - 0.1) blendOut++;
+        }
+    }
+    return { farOut, farLo, farHi, edgeOut, edgeLo, edgeHi, blendOut };
 }
 
 describe("AFO trim acceptance", () => {
@@ -467,6 +520,7 @@ describe("AFO trim acceptance", () => {
                 note(name, fit.ok, fit.ok ? "spline ok" : fit.reasons.join(" | "));
                 if (!fit.ok) continue;
                 const polygon = trimPolygonForShell(fit.curve, true)!;
+                const plainStarted = performance.now();
                 const plain = buildAfoShell(leg, [0, 1, 2], {
                     thicknessMm: AFO_THICKNESS_MM,
                     edgeMm: AFO_EDGE_MM,
@@ -474,8 +528,15 @@ describe("AFO trim acceptance", () => {
                     trimPolygon: polygon,
                     heelSeed: { x: leg.positions[0] ?? 0, y: 0, z: -10 },
                 });
+                note(
+                    name,
+                    (performance.now() - plainStarted) / 1000 < 1.2,
+                    `plain build ${((performance.now() - plainStarted) / 1000).toFixed(2)} s`,
+                );
                 const gateShell = (label: string, shell: AfoTriMesh) => {
                     const report = analyzeManifoldBuffers(shell.positions, shell.indices);
+                    const dup = duplicateDirectedEdgeCount(shell);
+                    note(name, dup === 0, `${label} duplicate directed edges ${dup}`);
                     note(name, report.openEdges === 0, `${label} open edges ${report.openEdges}`);
                     note(
                         name,
@@ -525,9 +586,25 @@ describe("AFO trim acceptance", () => {
                 note(
                     name,
                     plainFold.count === 0,
-                    `plain opening folds ${plainFold.count} worst ${plainFold.deg.toFixed(1)}° area ${plainFold.area.toFixed(3)} edge ${plainFold.len.toFixed(2)} ${plainFold.side} at (${plainFold.x.toFixed(1)}, ${plainFold.y.toFixed(1)}, ${plainFold.z.toFixed(1)})`,
+                    `plain opening folds ${plainFold.count} worst ${plainFold.deg.toFixed(1)}° area ${plainFold.area.toFixed(3)} edge ${plainFold.len.toFixed(2)} ${plainFold.side} at (${plainFold.x.toFixed(1)}, ${plainFold.y.toFixed(1)}, ${plainFold.z.toFixed(1)}) d=[${plainFold.tag ?? ""}]`,
                 );
                 const plainWall = minInteriorWall(plain, plainOpen);
+                const plainClear = shellClearance(plain, plainOpen);
+                note(
+                    name,
+                    plainClear.farOut === 0,
+                    `plain far wall ${plainClear.farLo.toFixed(2)}–${plainClear.farHi.toFixed(2)} mm, ${plainClear.farOut} outside 4±0.1`,
+                );
+                note(
+                    name,
+                    plainClear.edgeOut === 0,
+                    `plain edge ${plainClear.edgeLo.toFixed(2)}–${plainClear.edgeHi.toFixed(2)} mm, ${plainClear.edgeOut} outside 2.5±0.1`,
+                );
+                note(
+                    name,
+                    plainClear.blendOut === 0,
+                    `plain blend thinner than linear−0.1 at ${plainClear.blendOut} verts`,
+                );
                 note(
                     name,
                     plainWall >= AFO_THICKNESS_MM - 0.1 && plainWall <= AFO_THICKNESS_MM + 0.1,
@@ -549,7 +626,8 @@ describe("AFO trim acceptance", () => {
                     const thickness = dist(v, outer);
                     edgeErr = Math.max(edgeErr, Math.abs(thickness - AFO_EDGE_MM));
                 }
-                note(name, edgeErr <= 0.1, `edge error ${edgeErr.toFixed(3)} mm`);
+                // Pair spacing is not the edge gate. Closest-point E is checked below.
+                const flaredStarted = performance.now();
                 const flared = buildAfoShell(leg, [0, 1, 2], {
                     thicknessMm: AFO_THICKNESS_MM,
                     edgeMm: AFO_EDGE_MM,
@@ -557,6 +635,11 @@ describe("AFO trim acceptance", () => {
                     trimPolygon: polygon,
                     heelSeed: { x: 0, y: 0, z: -10 },
                 });
+                note(
+                    name,
+                    (performance.now() - flaredStarted) / 1000 < 1.2,
+                    `flared build ${((performance.now() - flaredStarted) / 1000).toFixed(2)} s`,
+                );
                 note(
                     name,
                     flared.positions.length === plain.positions.length,
@@ -571,6 +654,57 @@ describe("AFO trim acceptance", () => {
                     `flared opening folds ${flaredFold.count} worst ${flaredFold.deg.toFixed(1)}° area ${flaredFold.area.toFixed(3)} edge ${flaredFold.len.toFixed(2)} ${flaredFold.side} at (${flaredFold.x.toFixed(1)}, ${flaredFold.y.toFixed(1)}, ${flaredFold.z.toFixed(1)})`,
                 );
                 const flaredWall = minInteriorWall(flared, flaredOpen);
+                const flaredClear = shellClearance(flared, flaredOpen);
+                note(
+                    name,
+                    flaredClear.farOut === 0,
+                    `flared far wall ${flaredClear.farLo.toFixed(2)}–${flaredClear.farHi.toFixed(2)} mm, ${flaredClear.farOut} outside 4±0.1`,
+                );
+                note(
+                    name,
+                    flaredClear.edgeOut === 0,
+                    `flared edge ${flaredClear.edgeLo.toFixed(2)}–${flaredClear.edgeHi.toFixed(2)} mm, ${flaredClear.edgeOut} outside 2.5±0.1`,
+                );
+                note(
+                    name,
+                    flaredClear.blendOut === 0,
+                    `flared blend thinner than linear−0.1 at ${flaredClear.blendOut} verts`,
+                );
+                let legMinZ = Infinity;
+                for (let i = 2; i < leg.positions.length; i += 3)
+                    legMinZ = Math.min(legMinZ, leg.positions[i] ?? 0);
+                let below = 0;
+                let shellMinZ = Infinity;
+                const innerN = flared.outerVertex0 ?? 0;
+                for (let i = 0; i < innerN; i++) {
+                    const z = flared.positions[i * 3 + 2] ?? 0;
+                    shellMinZ = Math.min(shellMinZ, z);
+                    if (z < legMinZ - 0.001) below++;
+                }
+                let contact = 0;
+                let contactMoved = 0;
+                let contactMax = 0;
+                const pairN = plain.outerVertex0 ?? 0;
+                for (let i = 0; i < pairN; i++) {
+                    const p = at(plain, i);
+                    if (p.z > legMinZ + 2 || distToPolyline(p, polygon) < 0.5) continue;
+                    const hit = projector.closest(p);
+                    if (hit.normal.z >= -0.65) continue;
+                    contact++;
+                    const moved = dist(p, at(flared, i));
+                    contactMax = Math.max(contactMax, moved);
+                    if (moved > 0.01) contactMoved++;
+                }
+                note(
+                    name,
+                    below === 0,
+                    `flared vertices below cast min z ${below}, shell min ${shellMinZ.toFixed(2)}`,
+                );
+                note(
+                    name,
+                    contactMoved === 0,
+                    `plantar contact moved ${contactMoved}/${contact}, max ${contactMax.toFixed(3)} mm`,
+                );
                 note(
                     name,
                     flaredWall >= AFO_THICKNESS_MM - 0.1 && flaredWall <= AFO_THICKNESS_MM + 0.1,
@@ -583,6 +717,9 @@ describe("AFO trim acceptance", () => {
                 let footErr = 0;
                 let walls = 0;
                 let feet = 0;
+                let footOff = 0;
+                const footMoves: number[] = [];
+                const samples: string[] = [];
                 const limit = Math.min(plain.positions.length, flared.positions.length) / 3;
                 const footAt: AfoVec3[] = [];
                 for (let i = 0; i < limit; i++) {
@@ -600,6 +737,16 @@ describe("AFO trim acceptance", () => {
                     const foot = hit.normal.z < -0.65 && p.z < minZ + 8;
                     if (foot) {
                         feet++;
+                        footMoves.push(d);
+                        if (Math.abs(d - AFO_FOOTPLATE_FLARE_CAP_MM) > 0.2) {
+                            footOff++;
+                            if (name === "left balance-brace" && footOff <= 8) {
+                                const n0 = plain.outerVertex0 ?? 0;
+                                samples.push(
+                                    `${i < n0 ? "in" : i < n0 * 2 ? "out" : "rim"}${i} d=${d.toFixed(2)} z=${p.z.toFixed(2)}`,
+                                );
+                            }
+                        }
                         footErr = Math.max(footErr, Math.abs(d - AFO_FOOTPLATE_FLARE_CAP_MM));
                         continue;
                     }
@@ -624,7 +771,7 @@ describe("AFO trim acceptance", () => {
                 note(
                     name,
                     feet === 0 || footErr <= 0.2,
-                    `footplate error ${footErr.toFixed(3)} mm on ${feet} verts`,
+                    `footplate error ${footErr.toFixed(3)} mm on ${feet} verts, ${footOff} outside 1±0.2, move ${footMoves.length ? Math.min(...footMoves).toFixed(2) : "n/a"}–${footMoves.length ? Math.max(...footMoves).toFixed(2) : "n/a"} ${samples.join("; ")}`,
                 );
             }
         }
@@ -652,6 +799,6 @@ describe("AFO trim acceptance", () => {
         });
         const seconds = (performance.now() - started) / 1000;
         expect(shell.indices.length).toBeGreaterThan(1000);
-        expect(seconds).toBeLessThan(5);
+        expect(seconds).toBeLessThan(4);
     });
 });
