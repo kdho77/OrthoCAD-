@@ -40,7 +40,11 @@ export function buildAfoShell(
     const surface = embedded && embedded.loop.length >= 3 ? embedded.mesh : mesh;
     const loop =
         embedded && embedded.loop.length >= 3 ? embedded.loop : resolveShellTrimLoop(mesh, trimVertexIndices);
-    const keep = extractKeepRegion(surface, loop, options.heelSeed);
+    // A projected trim is already a chain of mesh edges. Geodesic fill is only
+    // for a vertex-id loop that was never split into the surface.
+    const keep = cleanupBoundary(
+        extractKeepRegion(surface, loop, options.heelSeed, !(embedded && embedded.loop.length >= 3)),
+    );
     options.onProgress?.(0.25, "thicken");
     const shell = thickenOpenSurface(keep, options.thicknessMm, options.edgeMm, options.flareMm);
     options.onProgress?.(1, "done");
@@ -79,8 +83,13 @@ export function resolveShellTrimLoop(mesh: AfoTriMesh, fallback: number[], polyg
     return ids.length >= 3 ? ids : fallback;
 }
 
-function extractKeepRegion(mesh: AfoTriMesh, loop: number[], heelSeed?: AfoVec3): OpenSurface {
-    const expanded = expandLoop(mesh, loop);
+function extractKeepRegion(
+    mesh: AfoTriMesh,
+    loop: number[],
+    heelSeed: AfoVec3 | undefined,
+    allowGeodesic: boolean,
+): OpenSurface {
+    const expanded = expandLoop(mesh, loop, allowGeodesic);
     const cut = new Set<string>();
     const edgeKey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
     for (let i = 0; i < expanded.length; i++) {
@@ -178,7 +187,7 @@ function extractKeepRegion(mesh: AfoTriMesh, loop: number[], heelSeed?: AfoVec3)
     return compactOpen(mesh, keepTris, expanded);
 }
 
-function expandLoop(mesh: AfoTriMesh, loop: number[]): number[] {
+function expandLoop(mesh: AfoTriMesh, loop: number[], allowGeodesic: boolean): number[] {
     if (loop.length < 2) return loop.slice();
     const adjacent = edgeAdjacency(mesh);
     const out: number[] = [];
@@ -186,7 +195,7 @@ function expandLoop(mesh: AfoTriMesh, loop: number[]): number[] {
         const a = loop[i]!;
         const b = loop[(i + 1) % loop.length]!;
         const direct = adjacent.has(edgeKey(a, b));
-        const path = direct ? [a, b] : (geodesicVertexPath(mesh, a, b) ?? [a, b]);
+        const path = direct ? [a, b] : allowGeodesic ? (geodesicVertexPath(mesh, a, b) ?? [a, b]) : [a, b];
         const start = i === 0 ? 0 : 1;
         for (let k = start; k < path.length; k++) out.push(path[k]!);
     }
@@ -301,6 +310,235 @@ function orderBoundary(edges: { a: number; b: number }[], seed: number[], nVerts
     return loop.length >= 3 ? loop : seed;
 }
 
+/**
+ * Collapse boundary edges under 0.05 mm and flip skinny triangles that touch
+ * the opening so the rim is not built on slivers.
+ */
+function cleanupBoundary(surface: OpenSurface): OpenSurface {
+    let mesh: AfoTriMesh = {
+        positions: new Float32Array(surface.positions),
+        indices: new Uint32Array(surface.indices),
+    };
+    for (let pass = 0; pass < 4; pass++) {
+        const edges = findBoundaryEdges(mesh);
+        const degree = new Map<number, number>();
+        for (const e of edges) {
+            degree.set(e.a, (degree.get(e.a) ?? 0) + 1);
+            degree.set(e.b, (degree.get(e.b) ?? 0) + 1);
+        }
+        const parent = new Int32Array(vertexCount(mesh)).map((_, i) => i);
+        const find = (i: number): number => {
+            let v = i;
+            while (parent[v] !== v) v = parent[v]!;
+            return v;
+        };
+        let unions = 0;
+        for (const e of edges) {
+            if ((degree.get(e.a) ?? 0) > 2 || (degree.get(e.b) ?? 0) > 2) continue;
+            if (vertexDist(mesh, e.a, e.b) >= 0.05) continue;
+            const ra = find(e.a);
+            const rb = find(e.b);
+            if (ra === rb) continue;
+            parent[rb] = ra;
+            unions++;
+        }
+        if (unions === 0) break;
+        const positions = new Float32Array(mesh.positions);
+        const weight = new Float32Array(vertexCount(mesh));
+        for (let i = 0; i < vertexCount(mesh); i++) {
+            const r = find(i);
+            if (r === i) continue;
+            positions[r * 3] = (positions[r * 3] ?? 0) + (mesh.positions[i * 3] ?? 0);
+            positions[r * 3 + 1] = (positions[r * 3 + 1] ?? 0) + (mesh.positions[i * 3 + 1] ?? 0);
+            positions[r * 3 + 2] = (positions[r * 3 + 2] ?? 0) + (mesh.positions[i * 3 + 2] ?? 0);
+            weight[r] = (weight[r] ?? 0) + 1;
+        }
+        for (let i = 0; i < vertexCount(mesh); i++) {
+            if ((weight[i] ?? 0) === 0) continue;
+            const n = (weight[i] ?? 0) + 1;
+            positions[i * 3] = (positions[i * 3] ?? 0) / n;
+            positions[i * 3 + 1] = (positions[i * 3 + 1] ?? 0) / n;
+            positions[i * 3 + 2] = (positions[i * 3 + 2] ?? 0) / n;
+        }
+        const raw: number[] = [];
+        const triCount = (mesh.indices.length / 3) | 0;
+        for (let t = 0; t < triCount; t++) {
+            const a = find(mesh.indices[t * 3] ?? 0);
+            const b = find(mesh.indices[t * 3 + 1] ?? 0);
+            const c = find(mesh.indices[t * 3 + 2] ?? 0);
+            if (a === b || b === c || c === a) continue;
+            raw.push(a, b, c);
+        }
+        mesh = compactUsed({ positions, indices: new Uint32Array(raw) });
+    }
+    const boundaryVerts = new Set<number>();
+    for (const e of findBoundaryEdges(mesh)) {
+        boundaryVerts.add(e.a);
+        boundaryVerts.add(e.b);
+    }
+    for (let n = 0; n < 24; n++) {
+        if (!flipSkinnyBoundary(mesh, boundaryVerts)) break;
+    }
+    const edges = findBoundaryEdges(mesh);
+    return {
+        positions: mesh.positions,
+        indices: mesh.indices,
+        boundary: orderBoundary(edges, [], vertexCount(mesh)),
+        boundaryEdges: edges,
+    };
+}
+
+function vertexDist(mesh: AfoTriMesh, a: number, b: number): number {
+    const ax = mesh.positions[a * 3] ?? 0;
+    const ay = mesh.positions[a * 3 + 1] ?? 0;
+    const az = mesh.positions[a * 3 + 2] ?? 0;
+    const bx = mesh.positions[b * 3] ?? 0;
+    const by = mesh.positions[b * 3 + 1] ?? 0;
+    const bz = mesh.positions[b * 3 + 2] ?? 0;
+    return Math.hypot(ax - bx, ay - by, az - bz);
+}
+
+function compactUsed(mesh: AfoTriMesh): AfoTriMesh {
+    const map = new Map<number, number>();
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const add = (old: number): number => {
+        let ni = map.get(old);
+        if (ni === undefined) {
+            ni = map.size;
+            map.set(old, ni);
+            positions.push(
+                mesh.positions[old * 3] ?? 0,
+                mesh.positions[old * 3 + 1] ?? 0,
+                mesh.positions[old * 3 + 2] ?? 0,
+            );
+        }
+        return ni;
+    };
+    for (let i = 0; i < mesh.indices.length; i++) indices.push(add(mesh.indices[i] ?? 0));
+    return { positions: new Float32Array(positions), indices: new Uint32Array(indices) };
+}
+
+/** Flip one internal edge that touches the opening when it raises the minimum angle. */
+function flipSkinnyBoundary(mesh: AfoTriMesh, boundary: Set<number>): boolean {
+    const t = (mesh.indices.length / 3) | 0;
+    const edgeFaces = new Map<string, number[]>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let i = 0; i < t; i++) {
+        const vs = [mesh.indices[i * 3] ?? 0, mesh.indices[i * 3 + 1] ?? 0, mesh.indices[i * 3 + 2] ?? 0];
+        for (let e = 0; e < 3; e++) {
+            const k = key(vs[e]!, vs[(e + 1) % 3]!);
+            const list = edgeFaces.get(k);
+            if (list) list.push(i);
+            else edgeFaces.set(k, [i]);
+        }
+    }
+    const at = (i: number) => ({
+        x: mesh.positions[i * 3] ?? 0,
+        y: mesh.positions[i * 3 + 1] ?? 0,
+        z: mesh.positions[i * 3 + 2] ?? 0,
+    });
+    for (const faces of edgeFaces.values()) {
+        if (faces.length !== 2) continue;
+        const t0 = faces[0]!;
+        const t1 = faces[1]!;
+        const a0 = [mesh.indices[t0 * 3] ?? 0, mesh.indices[t0 * 3 + 1] ?? 0, mesh.indices[t0 * 3 + 2] ?? 0];
+        const a1 = [mesh.indices[t1 * 3] ?? 0, mesh.indices[t1 * 3 + 1] ?? 0, mesh.indices[t1 * 3 + 2] ?? 0];
+        const shared = a0.filter((v) => a1.includes(v));
+        if (shared.length !== 2) continue;
+        if (!boundary.has(shared[0]!) && !boundary.has(shared[1]!)) continue;
+        const b = a0.find((v) => !shared.includes(v));
+        const d = a1.find((v) => !shared.includes(v));
+        if (b == null || d == null || b === d) continue;
+        const oldMin = Math.min(
+            minTriAngle(at, a0[0]!, a0[1]!, a0[2]!),
+            minTriAngle(at, a1[0]!, a1[1]!, a1[2]!),
+        );
+        if (oldMin > (20 * Math.PI) / 180) continue;
+        const n0 = triNormalOf(at, a0[0]!, a0[1]!, a0[2]!);
+        const n1 = triNormalOf(at, a1[0]!, a1[1]!, a1[2]!);
+        const ref = {
+            x: n0.x + n1.x,
+            y: n0.y + n1.y,
+            z: n0.z + n1.z,
+        };
+        const candidates = [
+            [shared[0]!, b, d, shared[1]!, d, b],
+            [shared[0]!, d, b, shared[1]!, b, d],
+        ];
+        let best: number[] | null = null;
+        let bestMin = oldMin;
+        for (const c of candidates) {
+            const nA = triNormalOf(at, c[0]!, c[1]!, c[2]!);
+            const nB = triNormalOf(at, c[3]!, c[4]!, c[5]!);
+            const areaA = Math.hypot(nA.x, nA.y, nA.z);
+            const areaB = Math.hypot(nB.x, nB.y, nB.z);
+            if (areaA < 1e-8 || areaB < 1e-8) continue;
+            const agree =
+                nA.x * ref.x + nA.y * ref.y + nA.z * ref.z > 0 &&
+                nB.x * ref.x + nB.y * ref.y + nB.z * ref.z > 0;
+            if (!agree) continue;
+            const ang = Math.min(minTriAngle(at, c[0]!, c[1]!, c[2]!), minTriAngle(at, c[3]!, c[4]!, c[5]!));
+            if (ang > bestMin + 1e-4) {
+                bestMin = ang;
+                best = c;
+            }
+        }
+        if (!best) continue;
+        for (let k = 0; k < 3; k++) {
+            mesh.indices[t0 * 3 + k] = best[k]!;
+            mesh.indices[t1 * 3 + k] = best[k + 3]!;
+        }
+        return true;
+    }
+    return false;
+}
+
+function triNormalOf(
+    at: (i: number) => { x: number; y: number; z: number },
+    a: number,
+    b: number,
+    c: number,
+): { x: number; y: number; z: number } {
+    const pa = at(a);
+    const pb = at(b);
+    const pc = at(c);
+    const ux = pb.x - pa.x;
+    const uy = pb.y - pa.y;
+    const uz = pb.z - pa.z;
+    const vx = pc.x - pa.x;
+    const vy = pc.y - pa.y;
+    const vz = pc.z - pa.z;
+    return { x: uy * vz - uz * vy, y: uz * vx - ux * vz, z: ux * vy - uy * vx };
+}
+
+function minTriAngle(
+    at: (i: number) => { x: number; y: number; z: number },
+    a: number,
+    b: number,
+    c: number,
+): number {
+    const p = [at(a), at(b), at(c)];
+    let worst = Math.PI;
+    for (let i = 0; i < 3; i++) {
+        const o = p[i]!;
+        const u = p[(i + 1) % 3]!;
+        const v = p[(i + 2) % 3]!;
+        const ux = u.x - o.x;
+        const uy = u.y - o.y;
+        const uz = u.z - o.z;
+        const vx = v.x - o.x;
+        const vy = v.y - o.y;
+        const vz = v.z - o.z;
+        const ul = Math.hypot(ux, uy, uz);
+        const vl = Math.hypot(vx, vy, vz);
+        if (ul < 1e-8 || vl < 1e-8) return 0;
+        const cos = Math.min(1, Math.max(-1, (ux * vx + uy * vy + uz * vz) / (ul * vl)));
+        worst = Math.min(worst, Math.acos(cos));
+    }
+    return worst;
+}
+
 /** Keep thickness directions from flipping along the opening, which bowties the rim. */
 function smoothBoundaryNormals(nrm: Float32Array, edges: { a: number; b: number }[]): void {
     const next = new Map<number, number[]>();
@@ -311,13 +549,6 @@ function smoothBoundaryNormals(nrm: Float32Array, edges: { a: number; b: number 
     }
     const unused = new Set(edges.map((e) => `${e.a}>${e.b}`));
     const read = (i: number) => ({ x: nrm[i * 3] ?? 0, y: nrm[i * 3 + 1] ?? 0, z: nrm[i * 3 + 2] ?? 0 });
-    const flip = (i: number) => {
-        nrm[i * 3] = -(nrm[i * 3] ?? 0);
-        nrm[i * 3 + 1] = -(nrm[i * 3 + 1] ?? 0);
-        nrm[i * 3 + 2] = -(nrm[i * 3 + 2] ?? 0);
-    };
-    const dot = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) =>
-        a.x * b.x + a.y * b.y + a.z * b.z;
     for (const e of edges) {
         if (!unused.has(`${e.a}>${e.b}`)) continue;
         const loop = [e.a];
@@ -332,8 +563,23 @@ function smoothBoundaryNormals(nrm: Float32Array, edges: { a: number; b: number 
             loop.push(nxt);
             cur = nxt;
         }
-        for (let i = 1; i < loop.length; i++) {
-            if (dot(read(loop[i]!), read(loop[i - 1]!)) < 0) flip(loop[i]!);
+        for (let pass = 0; pass < 12; pass++) {
+            const averaged = loop.map((_, i) => {
+                const p = read(loop[(i - 1 + loop.length) % loop.length]!);
+                const c = read(loop[i]!);
+                const q = read(loop[(i + 1) % loop.length]!);
+                const s = { x: p.x + c.x + q.x, y: p.y + c.y + q.y, z: p.z + c.z + q.z };
+                const L = Math.hypot(s.x, s.y, s.z);
+                if (L < 1e-8) return c;
+                return { x: s.x / L, y: s.y / L, z: s.z / L };
+            });
+            for (let i = 0; i < loop.length; i++) {
+                const u = averaged[i]!;
+                const id = loop[i]!;
+                nrm[id * 3] = u.x;
+                nrm[id * 3 + 1] = u.y;
+                nrm[id * 3 + 2] = u.z;
+            }
         }
     }
 }

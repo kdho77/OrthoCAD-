@@ -60,7 +60,7 @@ function innerRimLoops(shell: AfoTriMesh, source: AfoTriMesh): AfoVec3[][] {
     for (let i = 0; i < nAll; i++) err.push(projector.closest(at(shell, i)).errorMm);
     let n = 0;
     while (n < nAll && (err[n] ?? 1) < 0.2) n++;
-    const onSkin: boolean[] = err.map((e) => e < 0.15);
+    const onSkin: boolean[] = err.map((e) => e < 0.12);
     const t = (shell.indices.length / 3) | 0;
     const edgeCount = new Map<string, { a: number; b: number; n: number }>();
     const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -109,13 +109,18 @@ function innerRimLoops(shell: AfoTriMesh, source: AfoTriMesh): AfoVec3[][] {
     return loops;
 }
 
-function rimDihedralDeg(shell: AfoTriMesh, source: AfoTriMesh): number {
+function rimDihedralDeg(
+    shell: AfoTriMesh,
+    source: AfoTriMesh,
+): { deg: number; x: number; y: number; z: number } {
     const projector = meshProjector(source);
     const nAll = (shell.positions.length / 3) | 0;
     const err: number[] = [];
     for (let i = 0; i < nAll; i++) err.push(projector.closest(at(shell, i)).errorMm);
     let n = 0;
-    while (n < nAll && (err[n] ?? 1) < 0.2) n++;
+    // Inner vertices stay near the scan. The outer shell starts a full edge-thickness away,
+    // so the arc rings begin at twice that prefix.
+    while (n < nAll && (err[n] ?? 1) < 1) n++;
     const arcAt = Math.max(0, n * 2);
     const t = (shell.indices.length / 3) | 0;
     const normals: AfoVec3[] = [];
@@ -130,13 +135,7 @@ function rimDihedralDeg(shell: AfoTriMesh, source: AfoTriMesh): number {
         const ny = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
         const nz = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
         const len = Math.hypot(nx, ny, nz);
-        const area = len * 0.5;
-        const ab = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
-        const bc = Math.hypot(c.x - b.x, c.y - b.y, c.z - b.z);
-        const ca = Math.hypot(a.x - c.x, a.y - c.y, a.z - c.z);
-        const longest = Math.max(ab, bc, ca);
-        const aspect = longest > 1e-6 ? (2 * area) / longest / longest : 0;
-        if (aspect < 0.45) rim[i] = 0;
+        if (len < 1e-6) rim[i] = 0;
         normals.push({
             x: nx / (len || 1),
             y: ny / (len || 1),
@@ -155,19 +154,27 @@ function rimDihedralDeg(shell: AfoTriMesh, source: AfoTriMesh): number {
         }
     }
     let worst = 0;
+    let where = { x: 0, y: 0, z: 0 };
     for (const faces of edgeFaces.values()) {
         if (faces.length !== 2) continue;
         if (!rim[faces[0]!] || !rim[faces[1]!]) continue;
         const va = [0, 1, 2].map((k) => shell.indices[faces[0]! * 3 + k] ?? 0);
         const vb = [0, 1, 2].map((k) => shell.indices[faces[1]! * 3 + k] ?? 0);
         const shared = va.filter((v) => vb.includes(v));
-        if (shared.length === 2 && dist(at(shell, shared[0]!), at(shell, shared[1]!)) < 0.35) continue;
+        if (shared.length !== 2) continue;
+        const pa = at(shell, shared[0]!);
+        const pb = at(shell, shared[1]!);
+        if (dist(pa, pb) < 0.05) continue;
         const n0 = normals[faces[0]!]!;
         const n1 = normals[faces[1]!]!;
         const c = Math.min(1, Math.max(-1, n0.x * n1.x + n0.y * n1.y + n0.z * n1.z));
-        worst = Math.max(worst, (Math.acos(c) * 180) / Math.PI);
+        const deg = (Math.acos(c) * 180) / Math.PI;
+        if (deg > worst) {
+            worst = deg;
+            where = { x: (pa.x + pb.x) * 0.5, y: (pa.y + pb.y) * 0.5, z: (pa.z + pb.z) * 0.5 };
+        }
     }
-    return worst;
+    return { deg: worst, ...where };
 }
 
 describe("AFO trim acceptance", () => {
@@ -299,7 +306,11 @@ describe("AFO trim acceptance", () => {
         const report = analyzeManifoldBuffers(shell.positions, shell.indices);
         expect(report.openEdges).toBe(0);
         expect(report.nonManifoldEdges).toBe(0);
-        expect(rimDihedralDeg(shell, sphere)).toBeLessThanOrEqual(60);
+        const bend = rimDihedralDeg(shell, sphere);
+        expect(
+            bend.deg,
+            `sphere dihedral at ${bend.x.toFixed(1)},${bend.y.toFixed(1)},${bend.z.toFixed(1)}`,
+        ).toBeLessThanOrEqual(60);
     });
 
     test("balance-brace and posterior-leaf shells are watertight, on the curve, and flared", () => {
@@ -323,32 +334,24 @@ describe("AFO trim acceptance", () => {
                 expect(countMeshBodies(plain), side).toBe(1);
                 const dihedral = rimDihedralDeg(plain, leg);
                 const rims = innerRimLoops(plain, leg);
-                expect(
-                    rims.reduce((n, loop) => n + loop.length, 0),
-                    side,
-                ).toBeGreaterThan(8);
-                let edgeToCurve = 0;
-                for (const loop of rims)
-                    for (const v of loop) edgeToCurve = Math.max(edgeToCurve, distToPolyline(v, polygon));
-                let onShell = 0;
+                expect(rims.length, `${side} boundary loops`).toBe(1);
+                const boundary = rims[0] ?? [];
+                let curveToEdge = 0;
+                let within = 0;
                 for (const p of polygon) {
-                    let best = Infinity;
-                    for (let i = 0; i < plain.positions.length; i += 3) {
-                        const d = Math.hypot(
-                            (plain.positions[i] ?? 0) - p.x,
-                            (plain.positions[i + 1] ?? 0) - p.y,
-                            (plain.positions[i + 2] ?? 0) - p.z,
-                        );
-                        if (d < best) best = d;
-                        if (best <= 0.2) break;
-                    }
-                    if (best <= 0.2) onShell++;
+                    const d = distToPolyline(p, boundary);
+                    curveToEdge = Math.max(curveToEdge, d);
+                    if (d <= 0.1) within++;
                 }
-                expect(edgeToCurve, `${side} edge→curve`).toBeLessThanOrEqual(0.12);
-                expect(onShell / polygon.length, `${side} curve on shell`).toBeGreaterThan(0.98);
-                const longest = rims.reduce((m, loop) => Math.max(m, loop.length), 0);
-                expect(longest, `${side} opening`).toBeGreaterThan(100);
-                expect(dihedral, `${side} dihedral`).toBeLessThan(180);
+                console.log(
+                    `${side} curve→edge ${curveToEdge.toFixed(3)} mm on ${within}/${polygon.length} samples, loops ${rims.length}, dihedral ${dihedral.deg.toFixed(2)}° at (${dihedral.x.toFixed(1)}, ${dihedral.y.toFixed(1)}, ${dihedral.z.toFixed(1)})`,
+                );
+                expect(within, `${side} samples on the boundary`).toBe(polygon.length);
+                expect(curveToEdge, `${side} curve→edge`).toBeLessThanOrEqual(0.1);
+                expect(
+                    dihedral.deg,
+                    `${side} dihedral ${dihedral.deg.toFixed(2)}° at ${dihedral.x.toFixed(1)},${dihedral.y.toFixed(1)},${dihedral.z.toFixed(1)}`,
+                ).toBeLessThanOrEqual(60);
                 const projector = meshProjector(leg);
                 let nInner = 0;
                 while (

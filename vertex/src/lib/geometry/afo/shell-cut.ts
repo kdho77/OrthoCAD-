@@ -13,7 +13,7 @@ export function embedTrimPolyline(
     polygon: AfoVec3[],
 ): { mesh: AfoTriMesh; loop: number[] } {
     const positions: number[] = Array.from(mesh.positions);
-    let weldMm = 0.01;
+    const weldMm = 0.01;
     const cell = 8;
     type Face = { a: number; b: number; c: number; live: boolean; cells: string[] };
     const faces: Face[] = [];
@@ -256,108 +256,141 @@ export function embedTrimPolyline(
         if (loc.kind === "edge") return splitEdge(loc.a, loc.b, loc.point);
         return splitFace(loc.index, loc.point);
     };
-    const findExit = (
-        ia: number,
-        ib: number,
-    ): { kind: "vertex"; index: number } | { kind: "edge"; a: number; b: number; point: AfoVec3 } | null => {
-        const A = at(ia);
-        const B = at(ib);
-        let bestScore = Infinity;
-        let best:
-            | { kind: "vertex"; index: number }
-            | { kind: "edge"; a: number; b: number; point: AfoVec3 }
-            | null = null;
-        for (const fi of vertFaces[ia] ?? []) {
-            const f = faces[fi];
-            if (!f?.live) continue;
-            let u = -1;
-            let v = -1;
-            if (f.a === ia) {
-                u = f.b;
-                v = f.c;
-            } else if (f.b === ia) {
-                u = f.c;
-                v = f.a;
-            } else if (f.c === ia) {
-                u = f.a;
-                v = f.b;
-            } else continue;
-            const hit = wedgeCross(A, at(u), at(v), B);
-            if (!hit) continue;
-            const score = pointToSegment(hit.point, A, B);
-            if (score >= bestScore) continue;
-            bestScore = score;
-            if (hit.t <= 0.02) best = { kind: "vertex", index: u };
-            else if (hit.t >= 0.98) best = { kind: "vertex", index: v };
-            else best = { kind: "edge", a: u, b: v, point: hit.point };
-        }
-        if (!best || bestScore > 6) return null;
-        return best;
-    };
-    const connect = (ia: number, ib: number, depth: number, seen: Set<string>): number[] => {
-        if (ia === ib || depth > 48) return [];
-        if (linked(ia, ib)) return [];
-        const token = ia < ib ? `${ia}|${ib}` : `${ib}|${ia}`;
-        if (seen.has(token)) return [];
-        seen.add(token);
-        const exit = findExit(ia, ib);
-        if (!exit) {
-            if (vDist(at(ia), at(ib)) <= 0.2) return [];
-            const mid = insertPoint(vLerp(at(ia), at(ib), 0.5));
-            if (mid === ia || mid === ib) return [];
-            return [...connect(ia, mid, depth + 1, seen), mid, ...connect(mid, ib, depth + 1, seen)];
-        }
-        const im = exit.kind === "vertex" ? exit.index : splitEdge(exit.a, exit.b, exit.point);
-        if (im === ia || im === ib) return [];
-        return [...connect(ia, im, depth + 1, seen), im, ...connect(im, ib, depth + 1, seen)];
-    };
-    const samples: AfoVec3[] = [];
-    for (const p of polygon) {
-        const last = samples[samples.length - 1];
-        if (last && vDist(last, p) < 0.04) continue;
-        samples.push(p);
-    }
-    if (samples.length >= 2 && vDist(samples[0]!, samples[samples.length - 1]!) < 0.04) samples.pop();
-    const uniq: number[] = [];
-    for (const p of samples) {
-        const id = insertPoint(p);
-        if (uniq[uniq.length - 1] !== id) uniq.push(id);
-    }
-    if (uniq.length >= 2 && uniq[0] === uniq[uniq.length - 1]) uniq.pop();
-    const stitch = (loop: number[]): number[] => {
+    const incident = (v: number): number[] => {
         const out: number[] = [];
-        for (let i = 0; i < loop.length; i++) {
-            const a = loop[i]!;
-            const b = loop[(i + 1) % loop.length]!;
-            if (out.length === 0 || out[out.length - 1] !== a) out.push(a);
-            if (linked(a, b)) continue;
-            for (const m of connect(a, b, 0, new Set())) {
-                if (out[out.length - 1] !== m) out.push(m);
-            }
+        for (const fi of vertFaces[v] ?? []) {
+            const f = faces[fi];
+            if (f?.live && (f.a === v || f.b === v || f.c === v)) out.push(fi);
         }
-        if (out.length >= 2 && out[0] === out[out.length - 1]) out.pop();
         return out;
     };
-    let loop = uniq.length >= 3 ? stitch(uniq) : uniq;
-    loop = loop.length >= 3 ? stitch(loop) : loop;
-    for (let pass = 0; pass < 6 && loop.length >= 3; pass++) {
-        let grew = false;
-        const savedWeld = weldMm;
-        weldMm = 0;
-        for (let i = 0; i < loop.length; i++) {
-            const a = loop[i]!;
-            const b = loop[(i + 1) % loop.length]!;
-            if (a === b || linked(a, b)) continue;
-            if (vDist(at(a), at(b)) > 1.5) continue;
-            const mid = insertPoint(vLerp(at(a), at(b), 0.5));
-            if (mid === a || mid === b) continue;
-            loop.splice(i + 1, 0, mid);
-            grew = true;
-            i++;
+    const others = (f: Face, v: number): [number, number] => {
+        if (f.a === v) return [f.b, f.c];
+        if (f.b === v) return [f.c, f.a];
+        return [f.a, f.b];
+    };
+    /** Plane test: does O→G cross the opposite edge UV, or does G sit inside triangle OUV? */
+    const classify = (
+        o: AfoVec3,
+        g: AfoVec3,
+        u: AfoVec3,
+        v: AfoVec3,
+    ): { inside: boolean; s: number; point: AfoVec3 } | null => {
+        const n = vCross(vSub(u, o), vSub(v, o));
+        const nl = Math.hypot(n.x, n.y, n.z);
+        if (nl < 1e-12) return null;
+        const nx = n.x / nl;
+        const ny = n.y / nl;
+        const nz = n.z / nl;
+        const signed = (g.x - o.x) * nx + (g.y - o.y) * ny + (g.z - o.z) * nz;
+        const gp = { x: g.x - nx * signed, y: g.y - ny * signed, z: g.z - nz * signed };
+        const v0 = vSub(u, o);
+        const v1 = vSub(v, o);
+        const v2 = vSub(gp, o);
+        const d00 = vDot(v0, v0);
+        const d01 = vDot(v0, v1);
+        const d11 = vDot(v1, v1);
+        const d20 = vDot(v2, v0);
+        const d21 = vDot(v2, v1);
+        const denom = d00 * d11 - d01 * d01;
+        if (Math.abs(denom) < 1e-14) return null;
+        const wU = (d11 * d20 - d01 * d21) / denom;
+        const wV = (d00 * d21 - d01 * d20) / denom;
+        const wO = 1 - wU - wV;
+        if (wO >= -1e-4 && wU >= -1e-4 && wV >= -1e-4) return { inside: true, s: 1, point: gp };
+        if (wU < -1e-4 || wV < -1e-4) return null;
+        const sum = wU + wV;
+        if (sum < 1e-8) return null;
+        const point = vLerp(u, v, Math.min(1, Math.max(0, wV / sum)));
+        const og = vSub(g, o);
+        const og2 = vDot(og, og);
+        const s = og2 < 1e-12 ? 0 : vDot(vSub(point, o), og) / og2;
+        if (s <= 1e-4) return null;
+        return { inside: false, s, point };
+    };
+    const crossToward = (cur: number, goal: AfoVec3): number | null => {
+        let best: { a: number; b: number; point: AfoVec3; score: number } | null = null;
+        const goalD = vDist(at(cur), goal);
+        for (const fi of incident(cur)) {
+            const f = faces[fi];
+            if (!f) continue;
+            const [u, v] = others(f, cur);
+            const hit = classify(at(cur), goal, at(u), at(v));
+            if (hit && !hit.inside && hit.s < 1.02 && vDist(hit.point, goal) < goalD - 1e-4) {
+                if (!best || hit.s < best.score) best = { a: u, b: v, point: hit.point, score: hit.s };
+                continue;
+            }
+            const near = segmentSegmentClosest(at(cur), goal, at(u), at(v));
+            if (
+                near.dist < 0.2 &&
+                near.sA > 0.02 &&
+                near.sA < 0.98 &&
+                near.sB > 0.02 &&
+                near.sB < 0.98 &&
+                vDist(near.pointB, goal) < goalD - 1e-4
+            ) {
+                const score = 2 + near.dist;
+                if (!best || score < best.score) best = { a: u, b: v, point: near.pointB, score };
+            }
         }
-        weldMm = savedWeld;
-        if (!grew) break;
-    }
+        if (!best) return null;
+        const id = splitEdge(best.a, best.b, best.point);
+        if (id === cur || !linked(cur, id)) return null;
+        return id;
+    };
+    const pushV = (loop: number[], id: number) => {
+        if (loop.length === 0 || loop[loop.length - 1] !== id) loop.push(id);
+    };
+    const walkTo = (loop: number[], start: number, goalId: number, depth: number): number => {
+        if (goalId === start) return start;
+        let cur = start;
+        const seen = new Set<number>([start]);
+        for (let step = 0; step < 64; step++) {
+            if (linked(cur, goalId)) {
+                pushV(loop, goalId);
+                return goalId;
+            }
+            const nxt = crossToward(cur, at(goalId));
+            if (nxt == null || seen.has(nxt)) break;
+            if (vDist(at(nxt), at(goalId)) >= vDist(at(cur), at(goalId)) - 1e-4) break;
+            seen.add(nxt);
+            pushV(loop, nxt);
+            cur = nxt;
+        }
+        if (linked(cur, goalId)) {
+            pushV(loop, goalId);
+            return goalId;
+        }
+        if (depth >= 10 || vDist(at(cur), at(goalId)) <= 0.05) {
+            pushV(loop, goalId);
+            return goalId;
+        }
+        const midId = insertPoint(vLerp(at(cur), at(goalId), 0.5));
+        if (midId === cur || midId === goalId) {
+            pushV(loop, goalId);
+            return goalId;
+        }
+        const midReached = walkTo(loop, cur, midId, depth + 1);
+        return walkTo(loop, midReached, goalId, depth + 1);
+    };
+    const mergeVerts = (from: number, into: number) => {
+        if (from === into) return;
+        const mid = vLerp(at(from), at(into), 0.5);
+        positions[into * 3] = mid.x;
+        positions[into * 3 + 1] = mid.y;
+        positions[into * 3 + 2] = mid.z;
+        const owned = [...(vertFaces[from] ?? [])];
+        for (const fi of owned) {
+            const f = faces[fi];
+            if (!f?.live) continue;
+            const repl = (v: number) => (v === from ? into : v);
+            const a = repl(f.a);
+            const b = repl(f.b);
+            const c = repl(f.c);
+            unregister(fi);
+            if (a !== b && b !== c && c !== a) register(a, b, c);
+        }
+    };
     const nearPath = (ia: number, ib: number): number[] | null => {
         const A = at(ia);
         const B = at(ib);
@@ -367,9 +400,9 @@ export function embedTrimPolyline(
             const u = queue.shift()!;
             if (u === ib) break;
             const nbrs = new Set<number>();
-            for (const fi of vertFaces[u] ?? []) {
+            for (const fi of incident(u)) {
                 const f = faces[fi];
-                if (!f?.live) continue;
+                if (!f) continue;
                 nbrs.add(f.a);
                 nbrs.add(f.b);
                 nbrs.add(f.c);
@@ -379,7 +412,7 @@ export function embedTrimPolyline(
                 if (v !== ib && pointToSegment(at(v), A, B) > 0.08) continue;
                 prev.set(v, u);
                 queue.push(v);
-                if (queue.length > 64) return null;
+                if (queue.length > 80) return null;
             }
         }
         if (!prev.has(ib)) return null;
@@ -392,14 +425,64 @@ export function embedTrimPolyline(
         path.reverse();
         return path;
     };
-    for (let i = 0; i < loop.length; i++) {
-        const a = loop[i]!;
-        const b = loop[(i + 1) % loop.length]!;
-        if (a === b || linked(a, b) || vDist(at(a), at(b)) > 0.4) continue;
-        const path = nearPath(a, b);
-        if (!path || path.length < 3) continue;
-        loop.splice(i + 1, 0, ...path.slice(1, -1));
-        i += path.length - 2;
+    const dedupe = (ids: number[]): number[] => {
+        const out: number[] = [];
+        for (const id of ids) {
+            if (out.length === 0 || out[out.length - 1] !== id) out.push(id);
+        }
+        if (out.length >= 2 && out[0] === out[out.length - 1]) out.pop();
+        return out;
+    };
+    const samples: AfoVec3[] = [];
+    for (const p of polygon) {
+        const last = samples[samples.length - 1];
+        if (last && vDist(last, p) < 0.04) continue;
+        samples.push(p);
+    }
+    if (samples.length >= 2 && vDist(samples[0]!, samples[samples.length - 1]!) < 0.04) samples.pop();
+    const loop: number[] = [];
+    if (samples.length >= 3) {
+        pushV(loop, insertPoint(samples[0]!));
+        for (let i = 1; i < samples.length; i++)
+            walkTo(loop, loop[loop.length - 1]!, insertPoint(samples[i]!), 0);
+        walkTo(loop, loop[loop.length - 1]!, loop[0]!, 0);
+    }
+    let sealed = dedupe(loop);
+    for (let pass = 0; pass < 8 && sealed.length >= 3; pass++) {
+        let gapAt = -1;
+        for (let i = 0; i < sealed.length; i++) {
+            const a = sealed[i]!;
+            const b = sealed[(i + 1) % sealed.length]!;
+            if (a !== b && !linked(a, b)) {
+                gapAt = i;
+                break;
+            }
+        }
+        if (gapAt < 0) break;
+        const a = sealed[gapAt]!;
+        const b = sealed[(gapAt + 1) % sealed.length]!;
+        const span = vDist(at(a), at(b));
+        const path = span <= 1.5 ? nearPath(a, b) : null;
+        if (path && path.length >= 2) {
+            sealed.splice(gapAt + 1, 0, ...path.slice(1, -1));
+            sealed = dedupe(sealed);
+            continue;
+        }
+        if (span <= 0.05) {
+            mergeVerts(b, a);
+            sealed = dedupe(sealed.map((v) => (v === b ? a : v)));
+            continue;
+        }
+        const midId = insertPoint(vLerp(at(a), at(b), 0.5));
+        if (midId === a || midId === b) {
+            if (span <= 0.1) {
+                mergeVerts(b, a);
+                sealed = dedupe(sealed.map((v) => (v === b ? a : v)));
+            }
+            break;
+        }
+        sealed.splice(gapAt + 1, 0, midId);
+        sealed = dedupe(sealed);
     }
     const indices: number[] = [];
     for (const f of faces) {
@@ -408,7 +491,7 @@ export function embedTrimPolyline(
     }
     return {
         mesh: { positions: new Float32Array(positions), indices: new Uint32Array(indices) },
-        loop,
+        loop: sealed,
     };
 }
 
@@ -474,30 +557,27 @@ function closestOnTriangle(p: AfoVec3, a: AfoVec3, b: AfoVec3, c: AfoVec3): AfoV
     return { x: a.x + ab.x * v + ac.x * w, y: a.y + ab.y * v + ac.y * w, z: a.z + ab.z * v + ac.z * w };
 }
 
-/** Where the ray from A toward B crosses edge UV, in the plane of triangle AUV. */
-function wedgeCross(a: AfoVec3, u: AfoVec3, v: AfoVec3, b: AfoVec3): { t: number; point: AfoVec3 } | null {
-    const n = vCross(vSub(u, a), vSub(v, a));
-    const nl = Math.hypot(n.x, n.y, n.z);
-    if (nl < 1e-12) return null;
-    const nx = n.x / nl;
-    const ny = n.y / nl;
-    const nz = n.z / nl;
-    const signed = (b.x - a.x) * nx + (b.y - a.y) * ny + (b.z - a.z) * nz;
-    const bp = { x: b.x - nx * signed, y: b.y - ny * signed, z: b.z - nz * signed };
-    const v0 = vSub(u, a);
-    const v1 = vSub(v, a);
-    const v2 = vSub(bp, a);
-    const d00 = vDot(v0, v0);
-    const d01 = vDot(v0, v1);
-    const d11 = vDot(v1, v1);
-    const d20 = vDot(v2, v0);
-    const d21 = vDot(v2, v1);
-    const denom = d00 * d11 - d01 * d01 || 1e-12;
-    const wU = (d11 * d20 - d01 * d21) / denom;
-    const wV = (d00 * d21 - d01 * d20) / denom;
-    if (wU < -1e-4 || wV < -1e-4) return null;
-    const s = wU + wV;
-    if (s < 1e-8) return null;
-    const t = Math.min(1, Math.max(0, wV / s));
-    return { t, point: vLerp(u, v, t) };
+/** Closest points of segments AB and CD. sA/sB are clamped parameters. */
+function segmentSegmentClosest(
+    a: AfoVec3,
+    b: AfoVec3,
+    c: AfoVec3,
+    d: AfoVec3,
+): { dist: number; sA: number; sB: number; pointB: AfoVec3 } {
+    const u = vSub(b, a);
+    const v = vSub(d, c);
+    const w = vSub(a, c);
+    const uu = vDot(u, u);
+    const uv = vDot(u, v);
+    const vv = vDot(v, v);
+    const uw = vDot(u, w);
+    const vw = vDot(v, w);
+    const denom = uu * vv - uv * uv;
+    let sA = denom < 1e-12 ? 0 : (uv * vw - vv * uw) / denom;
+    let sB = denom < 1e-12 ? 0 : (uu * vw - uv * uw) / denom;
+    sA = Math.min(1, Math.max(0, sA));
+    sB = Math.min(1, Math.max(0, sB));
+    const pointB = vLerp(c, d, sB);
+    const pointA = vLerp(a, b, sA);
+    return { dist: vDist(pointA, pointB), sA, sB, pointB };
 }
