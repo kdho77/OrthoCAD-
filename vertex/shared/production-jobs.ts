@@ -1454,9 +1454,14 @@ export function processLabel(process: JobProcess): string {
     return process === "mill" ? "Mill" : "Print";
 }
 
+/**
+ * Badge copy for a persisted PrinterState. Idle (Moonraker up, not printing)
+ * is Online. Running (Moonraker printing) is Printing. Offline is unreachable.
+ * The label is the printer row, not the bridge heartbeat age.
+ */
 export function printerStateLabel(state: PrinterState): string {
-    if (state === "idle") return "Idle";
-    if (state === "running") return "Running";
+    if (state === "idle") return "Online";
+    if (state === "running") return "Printing";
     if (state === "paused") return "Paused";
     if (state === "error") return "Error";
     return "Offline";
