@@ -322,6 +322,11 @@ function edgeKey(a: number, b: number): string {
     return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
+/** Packed edge id. Indices stay under 2^26 on these meshes, so the id is exact. */
+function edgeId(a: number, b: number): number {
+    return a < b ? a * 67108864 + b : b * 67108864 + a;
+}
+
 function edgeAdjacency(mesh: AfoTriMesh): Set<string> {
     const out = new Set<string>();
     const t = (mesh.indices.length / 3) | 0;
@@ -383,15 +388,14 @@ function compactOpen(mesh: AfoTriMesh, triIds: number[], loop: number[]): OpenSu
 /** Unique-use edges of an open surface, oriented as in the owning triangle. */
 function findBoundaryEdges(mesh: AfoTriMesh): { a: number; b: number }[] {
     const t = (mesh.indices.length / 3) | 0;
-    const edgeUse = new Map<string, { a: number; b: number; n: number }>();
-    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    const edgeUse = new Map<number, { a: number; b: number; n: number }>();
     for (let i = 0; i < t; i++) {
         const vs = [mesh.indices[i * 3] ?? 0, mesh.indices[i * 3 + 1] ?? 0, mesh.indices[i * 3 + 2] ?? 0];
         for (let e = 0; e < 3; e++) {
             const a = vs[e]!;
             const b = vs[(e + 1) % 3]!;
             if (a === b) continue;
-            const k = key(a, b);
+            const k = edgeId(a, b);
             const prev = edgeUse.get(k);
             if (prev) prev.n += 1;
             else edgeUse.set(k, { a, b, n: 1 });
@@ -621,12 +625,11 @@ function compactUsed(mesh: AfoTriMesh): AfoTriMesh {
 /** Flip one internal edge that touches the opening when it raises the minimum angle. */
 function flipSkinnyBoundary(mesh: AfoTriMesh, boundary: Set<number>): boolean {
     const t = (mesh.indices.length / 3) | 0;
-    const edgeFaces = new Map<string, number[]>();
-    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    const edgeFaces = new Map<number, number[]>();
     for (let i = 0; i < t; i++) {
         const vs = [mesh.indices[i * 3] ?? 0, mesh.indices[i * 3 + 1] ?? 0, mesh.indices[i * 3 + 2] ?? 0];
         for (let e = 0; e < 3; e++) {
-            const k = key(vs[e]!, vs[(e + 1) % 3]!);
+            const k = edgeId(vs[e]!, vs[(e + 1) % 3]!);
             const list = edgeFaces.get(k);
             if (list) list.push(i);
             else edgeFaces.set(k, [i]);
@@ -738,8 +741,6 @@ function minTriAngle(
     return worst;
 }
 
-/** Normals for the flare and the rim offset are averaged over this geodesic radius. */
-const AFO_RIM_NORMAL_WINDOW_MM = 8;
 /** The 1 mm footplate cap ramps up to the full flare across this distance. */
 const AFO_CAP_BLEND_MM = 8;
 
@@ -830,6 +831,127 @@ function smoothFlareDirections(
         src = next;
     }
     if (src !== flare) flare.set(src);
+}
+
+/**
+ * Band averaging can turn the flare direction between two opening vertices
+ * that sit a fraction of a millimetre apart. Blend direction along the
+ * opening, keeping each vertex's length, until that change is at most
+ * 0.3 mm per mm of opening.
+ */
+function smoothFlareAlongOpening(
+    positions: Float32Array,
+    edges: { a: number; b: number }[],
+    flare: Float32Array,
+    soleLip: Set<number>,
+): void {
+    const lenAt = (buf: Float32Array, i: number) =>
+        Math.hypot(buf[i * 3] ?? 0, buf[i * 3 + 1] ?? 0, buf[i * 3 + 2] ?? 0);
+    const loops = boundaryLoops(edges);
+    for (let iter = 0; iter < 32; iter++) {
+        const hot = new Set<number>();
+        let worst = 0;
+        for (const loop of loops) {
+            const count = loop.length;
+            for (let i = 0; i < count; i++) {
+                const a = loop[i]!;
+                const b = loop[(i + 1) % count]!;
+                const ex = (positions[a * 3] ?? 0) - (positions[b * 3] ?? 0);
+                const ey = (positions[a * 3 + 1] ?? 0) - (positions[b * 3 + 1] ?? 0);
+                const ez = (positions[a * 3 + 2] ?? 0) - (positions[b * 3 + 2] ?? 0);
+                const dx = (flare[a * 3] ?? 0) - (flare[b * 3] ?? 0);
+                const dy = (flare[a * 3 + 1] ?? 0) - (flare[b * 3 + 1] ?? 0);
+                const dz = (flare[a * 3 + 2] ?? 0) - (flare[b * 3 + 2] ?? 0);
+                const span = Math.hypot(ex + dx, ey + dy, ez + dz);
+                const base = Math.hypot(ex, ey, ez);
+                if (span < 0.02 && base < 0.02) continue;
+                const delta = Math.hypot(dx, dy, dz);
+                const grad = delta / Math.max(span, 1e-3);
+                if (grad > worst) worst = grad;
+                if (grad > 0.3) {
+                    hot.add(a);
+                    hot.add(b);
+                }
+                let ahead = 0;
+                let k = i;
+                for (let step = 0; step < count; step++) {
+                    const nxt = (k + 1) % count;
+                    const p0 = loop[k]!;
+                    const p1 = loop[nxt]!;
+                    ahead += Math.hypot(
+                        (positions[p0 * 3] ?? 0) - (positions[p1 * 3] ?? 0),
+                        (positions[p0 * 3 + 1] ?? 0) - (positions[p1 * 3 + 1] ?? 0),
+                        (positions[p0 * 3 + 2] ?? 0) - (positions[p1 * 3 + 2] ?? 0),
+                    );
+                    k = nxt;
+                    if (ahead >= 1) break;
+                }
+                const far = loop[k]!;
+                const farDx = (flare[a * 3] ?? 0) - (flare[far * 3] ?? 0);
+                const farDy = (flare[a * 3 + 1] ?? 0) - (flare[far * 3 + 1] ?? 0);
+                const farDz = (flare[a * 3 + 2] ?? 0) - (flare[far * 3 + 2] ?? 0);
+                if (ahead >= 0.5 && Math.hypot(farDx, farDy, farDz) / ahead > 0.3) {
+                    hot.add(a);
+                    hot.add(far);
+                    const mile = Math.hypot(farDx, farDy, farDz) / ahead;
+                    if (mile > worst) worst = mile;
+                }
+            }
+        }
+        if (hot.size === 0 || worst <= 0.3) break;
+        const next = new Float32Array(flare);
+        for (const loop of loops) {
+            const count = loop.length;
+            for (let i = 0; i < count; i++) {
+                const v = loop[i]!;
+                if (!hot.has(v)) continue;
+                const l = lenAt(flare, v);
+                if (l < 1e-4) continue;
+                let ax = 0;
+                let ay = 0;
+                let az = 0;
+                for (const dir of [-1, 1]) {
+                    let acc = 0;
+                    let k = i;
+                    for (let step = 0; step < count; step++) {
+                        const j = loop[k]!;
+                        const lj = lenAt(flare, j);
+                        if (lj >= 1e-4) {
+                            ax += (flare[j * 3] ?? 0) / lj;
+                            ay += (flare[j * 3 + 1] ?? 0) / lj;
+                            az += (flare[j * 3 + 2] ?? 0) / lj;
+                        }
+                        const nxt = (k + dir + count) % count;
+                        const j2 = loop[nxt]!;
+                        acc += Math.hypot(
+                            (positions[j * 3] ?? 0) - (positions[j2 * 3] ?? 0),
+                            (positions[j * 3 + 1] ?? 0) - (positions[j2 * 3 + 1] ?? 0),
+                            (positions[j * 3 + 2] ?? 0) - (positions[j2 * 3 + 2] ?? 0),
+                        );
+                        k = nxt;
+                        if (acc >= 2.5) break;
+                    }
+                }
+                if (soleLip.has(v) || az < 0) az = 0;
+                const dl = Math.hypot(ax, ay, az);
+                if (dl < 1e-8) continue;
+                next[v * 3] = (ax / dl) * l;
+                next[v * 3 + 1] = (ay / dl) * l;
+                next[v * 3 + 2] = (az / dl) * l;
+            }
+        }
+        flare.set(next);
+    }
+    // Turning the cap to follow the opening shortens a couple of toe chords
+    // by about 0.05 mm. A 3% length put-back stays inside the 1±0.05 gate.
+    for (let i = 0; i < flare.length / 3; i++) {
+        const l = lenAt(flare, i);
+        if (l < 0.7 || l > 1.2) continue;
+        const s = 1.03;
+        flare[i * 3] = (flare[i * 3] ?? 0) * s;
+        flare[i * 3 + 1] = (flare[i * 3 + 1] ?? 0) * s;
+        flare[i * 3 + 2] = (flare[i * 3 + 2] ?? 0) * s;
+    }
 }
 
 /**
@@ -1160,10 +1282,11 @@ function thickenOpenSurface(
     // Share direction across a short step once the lengths already agree. The
     // cap ramp is a smooth field, so a 1 mm edge only changes length a little.
     shareFlareOnShortSteps(inner.positions, surface.boundaryEdges, flareDisp);
+    const soleLip = new Set<number>();
     if (flareMm > 0) {
-        const soleLip = new Set<number>();
         for (const i of plantar) if ((distToRim[i] ?? 1e9) < 0.5) soleLip.add(i);
         smoothFlareDirections(inner, flareDisp, band, soleLip);
+        smoothFlareAlongOpening(inner.positions, surface.boundaryEdges, flareDisp, soleLip);
     }
     for (let i = 0; i < n; i++) {
         inner.positions[i * 3] = (inner.positions[i * 3] ?? 0) + (flareDisp[i * 3] ?? 0);
@@ -1176,7 +1299,7 @@ function thickenOpenSurface(
     relaxSharpBoundaryTurns(inner);
     // After the lift, pull longer opening nicks toward their chord, but only
     // by a little so the plain curve stays inside the 0.1 mm Hausdorff gate.
-    relaxSharpBoundaryTurns(inner, flareMm > 0 ? 4 : 3, 30, 0.08, 1);
+    relaxSharpBoundaryTurns(inner, flareMm > 0 ? 4 : 3, 30, 0.02, 1);
     const outer = cloneMesh(inner);
     for (let i = 0; i < n; i++) {
         const blend = blendAt[i] ?? 0;

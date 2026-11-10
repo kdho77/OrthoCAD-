@@ -161,88 +161,6 @@ function rimDihedralDeg(shell: AfoTriMesh): { deg: number; x: number; y: number;
     return { deg: worst, ...where };
 }
 
-/** Skin-skin edges near the opening. The rim-to-skin junction is left out; it is meant to be about 90°. */
-function nearOpeningFold(
-    shell: AfoTriMesh,
-    opening: AfoVec3[],
-): { count: number; deg: number; x: number; y: number; z: number } {
-    const face0 = shell.rimFaceStart ?? (shell.indices.length / 3) | 0;
-    const t = (shell.indices.length / 3) | 0;
-    const normals: AfoVec3[] = [];
-    const areas: number[] = [];
-    for (let i = 0; i < t; i++) {
-        const ia = shell.indices[i * 3] ?? 0;
-        const ib = shell.indices[i * 3 + 1] ?? 0;
-        const ic = shell.indices[i * 3 + 2] ?? 0;
-        const a = at(shell, ia);
-        const b = at(shell, ib);
-        const c = at(shell, ic);
-        const nx = (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y);
-        const ny = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
-        const nz = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-        const len = Math.hypot(nx, ny, nz);
-        areas.push(len * 0.5);
-        normals.push({ x: nx / (len || 1), y: ny / (len || 1), z: nz / (len || 1) });
-    }
-    const edgeFaces = new Map<string, number[]>();
-    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
-    for (let i = 0; i < t; i++) {
-        const vs = [shell.indices[i * 3] ?? 0, shell.indices[i * 3 + 1] ?? 0, shell.indices[i * 3 + 2] ?? 0];
-        for (let e = 0; e < 3; e++) {
-            const k = key(vs[e]!, vs[(e + 1) % 3]!);
-            const list = edgeFaces.get(k);
-            if (list) list.push(i);
-            else edgeFaces.set(k, [i]);
-        }
-    }
-    let count = 0;
-    let worst = 0;
-    let worstArea = 0;
-    let worstSide = "";
-    let worstLen = 0;
-    let where: { x: number; y: number; z: number; tag?: string } = { x: 0, y: 0, z: 0 };
-    for (const [k, faces] of edgeFaces) {
-        if (faces.length !== 2) continue;
-        const f0 = faces[0]!;
-        const f1 = faces[1]!;
-        if (f0 >= face0 || f1 >= face0) continue;
-        const [sa, sb] = k.split("|").map(Number);
-        const pa = at(shell, sa!);
-        const pb = at(shell, sb!);
-        if (dist(pa, pb) < 0.05) continue;
-        const mid = { x: (pa.x + pb.x) * 0.5, y: (pa.y + pb.y) * 0.5, z: (pa.z + pb.z) * 0.5 };
-        if ((areas[f0] ?? 0) < 0.01 || (areas[f1] ?? 0) < 0.01) continue;
-        const n0 = normals[f0]!;
-        const n1 = normals[f1]!;
-        const dotN = Math.min(1, Math.max(-1, n0.x * n1.x + n0.y * n1.y + n0.z * n1.z));
-        const deg = (Math.acos(dotN) * 180) / Math.PI;
-        if (deg > 60) {
-            count++;
-            if (deg > worst) {
-                worst = deg;
-                worstArea = Math.min(areas[f0] ?? 0, areas[f1] ?? 0);
-                const n0v = shell.outerVertex0 ?? 0;
-                const small = (areas[f0] ?? 0) <= (areas[f1] ?? 0) ? f0 : f1;
-                const sv = [
-                    shell.indices[small * 3] ?? 0,
-                    shell.indices[small * 3 + 1] ?? 0,
-                    shell.indices[small * 3 + 2] ?? 0,
-                ];
-                worstSide = sv.every((v) => v < n0v)
-                    ? "inner"
-                    : sv.every((v) => v >= n0v && v < n0v * 2)
-                      ? "outer"
-                      : "other";
-                worstLen = dist(pa, pb);
-                where = mid;
-                const dv = sv.map((v) => distToPolyline(at(shell, v), opening).toFixed(2)).join(",");
-                where = { ...where, tag: dv };
-            }
-        }
-    }
-    return { count, deg: worst, area: worstArea, side: worstSide, len: worstLen, ...where };
-}
-
 const BUILDER_FOLD_CAP: Record<string, { plain: number; flared: number; d: number }> = {
     "left balance-brace": { plain: 27, flared: 74, d: 30 },
     "left posterior-leaf": { plain: 27, flared: 74, d: 47 },
@@ -420,141 +338,6 @@ function minFace(shell: AfoTriMesh): { area: number; altitude: number } {
         if (alt < altitude) altitude = alt;
     }
     return { area, altitude };
-}
-
-function sliverWhy(shell: AfoTriMesh): string {
-    const n = shell.outerVertex0 ?? 0;
-    const face0 = shell.rimFaceStart ?? 0;
-    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
-    const count = new Map<string, number>();
-    for (let f = 0; f < face0; f++) {
-        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
-        if (!vs.every((v) => v < n) && !vs.every((v) => v >= n && v < n * 2)) continue;
-        for (let e = 0; e < 3; e++) {
-            const k = key(vs[e]!, vs[(e + 1) % 3]!);
-            count.set(k, (count.get(k) ?? 0) + 1);
-        }
-    }
-    const next = new Map<number, number[]>();
-    for (const [k, nUse] of count) {
-        if (nUse !== 1) continue;
-        const [a, b] = k.split("|").map(Number);
-        (next.get(a!) ?? next.set(a!, []).get(a)!).push(b!);
-        (next.get(b!) ?? next.set(b!, []).get(b)!).push(a!);
-    }
-    const turnOf = (v: number) => {
-        const nb = next.get(v) ?? [];
-        if (nb.length !== 2) return null;
-        const a = at(shell, nb[0]!);
-        const b = at(shell, v);
-        const c = at(shell, nb[1]!);
-        const va = { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
-        const vc = { x: c.x - b.x, y: c.y - b.y, z: c.z - b.z };
-        const la = Math.hypot(va.x, va.y, va.z);
-        const lc = Math.hypot(vc.x, vc.y, vc.z);
-        const cos = Math.min(1, Math.max(-1, (va.x * vc.x + va.y * vc.y + va.z * vc.z) / (la * lc || 1)));
-        const turn = ((Math.PI - Math.acos(cos)) * 180) / Math.PI;
-        const chord = { x: c.x - a.x, y: c.y - a.y, z: c.z - a.z };
-        const ab2 = chord.x * chord.x + chord.y * chord.y + chord.z * chord.z || 1;
-        const t = Math.min(
-            1,
-            Math.max(0, ((b.x - a.x) * chord.x + (b.y - a.y) * chord.y + (b.z - a.z) * chord.z) / ab2),
-        );
-        const foot = { x: a.x + chord.x * t, y: a.y + chord.y * t, z: a.z + chord.z * t };
-        const dist = Math.hypot(b.x - foot.x, b.y - foot.y, b.z - foot.z);
-        return { turn, dist };
-    };
-    const bits: string[] = [];
-    for (let f = 0; f < face0; f++) {
-        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
-        const inner = vs.every((v) => v < n);
-        const outer = vs.every((v) => v >= n && v < n * 2);
-        if (!inner && !outer) continue;
-        let onLoop = false;
-        for (let e = 0; e < 3; e++) if ((count.get(key(vs[e]!, vs[(e + 1) % 3]!)) ?? 0) === 1) onLoop = true;
-        if (!onLoop) continue;
-        const p = vs.map((v) => at(shell, v));
-        const area =
-            Math.hypot(
-                (p[1]!.y - p[0]!.y) * (p[2]!.z - p[0]!.z) - (p[1]!.z - p[0]!.z) * (p[2]!.y - p[0]!.y),
-                (p[1]!.z - p[0]!.z) * (p[2]!.x - p[0]!.x) - (p[1]!.x - p[0]!.x) * (p[2]!.z - p[0]!.z),
-                (p[1]!.x - p[0]!.x) * (p[2]!.y - p[0]!.y) - (p[1]!.y - p[0]!.y) * (p[2]!.x - p[0]!.x),
-            ) * 0.5;
-        if (area >= 0.001) continue;
-        const lens = [0, 1, 2].map((e) => dist(p[e]!, p[(e + 1) % 3]!));
-        const longE = lens.indexOf(Math.max(...lens));
-        const apex = vs[(longE + 2) % 3]!;
-        const here = turnOf(apex);
-        const mate = inner ? apex + n : apex - n;
-        const there = mate >= 0 && mate < n * 2 ? turnOf(mate) : null;
-        const why =
-            here == null
-                ? "boundary degree is not 2"
-                : here.turn > 2
-                  ? `turn ${here.turn.toFixed(2)}° over 2°`
-                  : here.dist > 0.01
-                    ? `chord distance ${here.dist.toFixed(4)} mm over 0.01`
-                    : there == null
-                      ? "mate is not a paired boundary vertex"
-                      : there.turn > 2
-                        ? `mate turn ${there.turn.toFixed(2)}° over 2°, collapsing it would move that loop`
-                        : there.dist > 0.01
-                          ? `mate chord distance ${there.dist.toFixed(4)} mm over 0.01`
-                          : "paired collapse was rejected: a neighbour would invert or fall under 0.01 mm², or the rim arc is not collinear";
-        const cx = (p[0]!.x + p[1]!.x + p[2]!.x) / 3;
-        const cy = (p[0]!.y + p[1]!.y + p[2]!.y) / 3;
-        const cz = (p[0]!.z + p[1]!.z + p[2]!.z) / 3;
-        bits.push(`${area.toFixed(4)} mm² at (${cx.toFixed(1)}, ${cy.toFixed(1)}, ${cz.toFixed(1)}): ${why}`);
-    }
-    return bits.join("; ");
-}
-
-function loopSlivers(shell: AfoTriMesh): { count: number; area: number; x: number; y: number; z: number } {
-    const n = shell.outerVertex0 ?? 0;
-    const face0 = shell.rimFaceStart ?? 0;
-    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
-    const count = new Map<string, number>();
-    const facesOf = new Map<string, number[]>();
-    for (let f = 0; f < face0; f++) {
-        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
-        const inner = vs.every((v) => v < n);
-        const outer = vs.every((v) => v >= n && v < n * 2);
-        if (!inner && !outer) continue;
-        for (let e = 0; e < 3; e++) {
-            const k = key(vs[e]!, vs[(e + 1) % 3]!);
-            count.set(k, (count.get(k) ?? 0) + 1);
-            const list = facesOf.get(k) ?? [];
-            list.push(f);
-            facesOf.set(k, list);
-        }
-    }
-    const loopFace = new Set<number>();
-    for (const [k, nUse] of count) if (nUse === 1) for (const f of facesOf.get(k) ?? []) loopFace.add(f);
-    let found = 0;
-    let area = Infinity;
-    let where = { x: 0, y: 0, z: 0 };
-    for (const f of loopFace) {
-        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
-        const p = vs.map((v) => at(shell, v));
-        const ux = p[1]!.x - p[0]!.x;
-        const uy = p[1]!.y - p[0]!.y;
-        const uz = p[1]!.z - p[0]!.z;
-        const vx = p[2]!.x - p[0]!.x;
-        const vy = p[2]!.y - p[0]!.y;
-        const vz = p[2]!.z - p[0]!.z;
-        const a = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) * 0.5;
-        if (a >= 0.001) continue;
-        found++;
-        if (a < area) {
-            area = a;
-            where = {
-                x: (p[0]!.x + p[1]!.x + p[2]!.x) / 3,
-                y: (p[0]!.y + p[1]!.y + p[2]!.y) / 3,
-                z: (p[0]!.z + p[1]!.z + p[2]!.z) / 3,
-            };
-        }
-    }
-    return { count: found, area, ...where };
 }
 
 function shellOpening(shell: AfoTriMesh): AfoVec3[] {
@@ -1109,7 +892,7 @@ describe("AFO trim acceptance", () => {
         expect(failures, failures.join("\n")).toEqual([]);
     });
 
-    test("a 100k-triangle shell builds in under 5 seconds", () => {
+    test("a 100k-triangle shell builds in under 4 seconds", () => {
         const sphere = buildUnitSphereMesh(40, 165);
         const tris = sphere.indices.length / 3;
         expect(tris).toBeGreaterThan(100_000);
@@ -1120,16 +903,27 @@ describe("AFO trim acceptance", () => {
         }
         const fit = fitSurfaceSpline(sphere, pins, { closed: true, spacingMm: 1, quick: true });
         expect(fit.ok).toBe(true);
-        const started = performance.now();
-        const shell = buildAfoShell(sphere, [0, 1, 2], {
-            thicknessMm: 4,
-            edgeMm: 2.5,
-            flareMm: 0,
-            trimPolygon: trimPolygonForShell(fit.curve, true)!,
-            heelSeed: { x: 0, y: 0, z: -40 },
-        });
-        const seconds = (performance.now() - started) / 1000;
-        expect(shell.indices.length).toBeGreaterThan(1000);
-        expect(seconds).toBeLessThan(4);
+        const polygon = trimPolygonForShell(fit.curve, true)!;
+        const build = () =>
+            buildAfoShell(sphere, [0, 1, 2], {
+                thicknessMm: 4,
+                edgeMm: 2.5,
+                flareMm: 0,
+                trimPolygon: polygon,
+                heelSeed: { x: 0, y: 0, z: -40 },
+            });
+        // The first build pays for JIT. Time the median of the next three.
+        const warm = build();
+        expect(warm.indices.length).toBeGreaterThan(1000);
+        const samples: number[] = [];
+        for (let i = 0; i < 3; i++) {
+            const started = performance.now();
+            const shell = build();
+            samples.push((performance.now() - started) / 1000);
+            expect(shell.indices.length).toBeGreaterThan(1000);
+        }
+        samples.sort((a, b) => a - b);
+        const median = samples[1] ?? 0;
+        expect(median, `samples ${samples.map((s) => s.toFixed(2)).join(", ")}`).toBeLessThan(4);
     });
 });
