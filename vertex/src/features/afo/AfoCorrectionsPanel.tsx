@@ -50,6 +50,9 @@ export function AfoCorrectionsPanel() {
     const warnings = evaluateAfoWarnings(afo, castMesh);
     const measuredMesh = correctedMesh ?? castMesh;
     const measured = measuredMesh ? measureShankAngles(measuredMesh, axes) : null;
+    const castAngles = castMesh && correctedMesh ? measureShankAngles(castMesh, axes) : null;
+    const sideRead = measured ? measured.sagittalDeg - (castAngles?.sagittalDeg ?? 0) : null;
+    const rearRead = measured ? measured.frontalDeg - (castAngles?.frontalDeg ?? 0) : null;
 
     const patch = (partial: Partial<typeof edited>) => {
         const corrections = writeAfoSideCorrection(c, editSide, partial, {
@@ -113,11 +116,10 @@ export function AfoCorrectionsPanel() {
                         defaultValue={0}
                         onChange={(v) => patch({ legSideDeg: v })}
                     />
-                    {measured ? (
+                    {sideRead != null && rearRead != null ? (
                         <p className="text-[10px] text-muted-foreground">
-                            Measured after rotation: side {measured.sagittalDeg.toFixed(1)}°, rear{" "}
-                            {measured.frontalDeg.toFixed(1)}°. Positive side is dorsiflexion. Positive rear is
-                            varus.
+                            Measured after rotation: side {sideRead.toFixed(1)}°, rear {rearRead.toFixed(1)}°.
+                            Positive side is dorsiflexion. Positive rear is varus.
                         </p>
                     ) : null}
                     <SliderField
