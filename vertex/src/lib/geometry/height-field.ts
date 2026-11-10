@@ -1,4 +1,4 @@
-import { elementHeightAt } from "@/lib/geometry/elements";
+import { elementHeightAt, isLoweringElement, REMAINING_MATERIAL_MM } from "@/lib/geometry/elements";
 import {
     type FullLengthRimFrame,
     fullLengthDeltaFromField,
@@ -552,6 +552,12 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
                 }),
         });
         h = zCurrent + raise;
+    }
+
+    if (h < REMAINING_MATERIAL_MM && elements.some((el) => isLoweringElement(el.kind))) {
+        const hw = resolveOutlineHalfWidth(u, params) * halfW;
+        const delta = elementHeightAt(elements, u * lengthMm, vSigned * hw, lengthMm, widthMm);
+        if (delta < -1e-6) h = REMAINING_MATERIAL_MM;
     }
 
     return h;

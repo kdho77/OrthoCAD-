@@ -31,6 +31,16 @@ export const SINK_FOOTPRINT_COLORS = {
     selectedOpacity: 1,
 } as const;
 
+/** Visible recess for Reverse Morton's and the kinetic wedge. */
+export const RECESS_FOOTPRINT_COLORS = {
+    fill: "#38bdf8",
+    edge: "#e0f2fe",
+    opacity: 0.85,
+    selectedFill: "#22c55e",
+    selectedEdge: "#ffffff",
+    selectedOpacity: 0.9,
+} as const;
+
 /** Solid design-element purple for Morton's extension, visible on the insole top. */
 export const DESIGN_FOOTPRINT_COLORS = {
     fill: DESIGN_ELEMENT_COLOR,
@@ -59,7 +69,7 @@ export interface FootprintPose {
     /** Closed ring in element-local mm, centered on the pose. */
     outline: { x: number; y: number }[];
     /** Design additions use the purple element color. Sinks stay magenta. */
-    tone?: "sink" | "design";
+    tone?: "sink" | "design" | "recess";
 }
 
 export function footprintStyle(selected: boolean): { color: string; opacity: number; edge: string } {
@@ -90,9 +100,27 @@ export function designFootprintStyle(selected: boolean): { color: string; opacit
           };
 }
 
-/** Morton's extension is drawn as a colored planform. Pads and wedges are not. */
+export function recessFootprintStyle(selected: boolean): { color: string; opacity: number; edge: string } {
+    return selected
+        ? {
+              color: RECESS_FOOTPRINT_COLORS.selectedFill,
+              opacity: RECESS_FOOTPRINT_COLORS.selectedOpacity,
+              edge: RECESS_FOOTPRINT_COLORS.selectedEdge,
+          }
+        : {
+              color: RECESS_FOOTPRINT_COLORS.fill,
+              opacity: RECESS_FOOTPRINT_COLORS.opacity,
+              edge: RECESS_FOOTPRINT_COLORS.edge,
+          };
+}
+
+/** Raising Morton's and the lowering 1st-ray / kinetic-wedge recesses. */
 export function showsDesignFootprint(element: PlacedElement): boolean {
-    return element.kind === "mortons_extension";
+    return (
+        element.kind === "mortons_extension" ||
+        element.kind === "reverse_mortons" ||
+        element.kind === "kinetic_wedge"
+    );
 }
 
 /** Heel and navicular library elements. Wedges, pads, and other additions are not sinks. */
@@ -197,7 +225,12 @@ export function elementFootprintPose(
         halfLengthMm: extents.halfLengthMm,
         halfWidthMm: extents.halfWidthMm,
         outline,
-        tone: element.kind === "mortons_extension" ? "design" : "sink",
+        tone:
+            element.kind === "mortons_extension"
+                ? "design"
+                : element.kind === "reverse_mortons" || element.kind === "kinetic_wedge"
+                  ? "recess"
+                  : "sink",
     };
 }
 

@@ -212,7 +212,7 @@ const ELEMENT_PROFILES: Record<
         defaultMedial: 0.5984,
         anatomicalSide: "medial",
     },
-    reverse_mortons: { defaultHeightMm: 2.5, defaultU: 0.7, defaultMedial: -0.1, anatomicalSide: "lateral" },
+    reverse_mortons: { defaultHeightMm: 3, defaultU: 0.81, defaultMedial: 0.5984, anatomicalSide: "medial" },
     kinetic_wedge: { defaultHeightMm: 2.5, defaultU: 0.72, defaultMedial: 0.48, anatomicalSide: "medial" },
     heel_sink: { defaultHeightMm: 2, defaultU: 0.12, defaultMedial: 0, anatomicalSide: "midline" },
     navicular_sink: { defaultHeightMm: 2, defaultU: 0.38, defaultMedial: 0.55, anatomicalSide: "medial" },

@@ -26,6 +26,7 @@ import {
     footprintStyle,
     footprintSurfaceZ,
     isLibrarySinkElement,
+    recessFootprintStyle,
     showsDesignFootprint,
     sinkFootprintPose,
 } from "./element-footprints";
@@ -91,7 +92,12 @@ function FootprintPatch({
     selected: boolean;
     onSelect: () => void;
 }) {
-    const style = pose.tone === "design" ? designFootprintStyle(selected) : footprintStyle(selected);
+    const style =
+        pose.tone === "design"
+            ? designFootprintStyle(selected)
+            : pose.tone === "recess"
+              ? recessFootprintStyle(selected)
+              : footprintStyle(selected);
     const outlineKey = pose.outline.map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(";");
     // outlineKey serializes pose.outline so a new array with the same coordinates does not rebuild.
     // biome-ignore lint/correctness/useExhaustiveDependencies: outlineKey serializes pose.outline
@@ -124,8 +130,8 @@ function FootprintPatch({
             >
                 <meshBasicMaterial
                     color={style.color}
-                    transparent={false}
-                    opacity={1}
+                    transparent={style.opacity < 1}
+                    opacity={style.opacity}
                     depthTest={false}
                     depthWrite={false}
                     side={DoubleSide}
@@ -211,7 +217,10 @@ export function ElementFootprints() {
                     if (element.side !== side) continue;
                     poses.push(elementFootprintPose(element, layout.lengthMm, layout.widthMm, footOutline));
                 }
-                for (const sink of sinksForSide(design, side) ?? []) {
+                const sideSinks = sinksForSide(design, side) ?? [];
+                const rkwOn = sideSinks.some((sink) => sink.kind === "rkw");
+                for (const sink of sideSinks) {
+                    if (rkwOn && sink.kind === "mpj1") continue;
                     const pose = sinkFootprintPose(sink, side, layout.lengthMm, layout.widthMm, footOutline);
                     if (pose) poses.push(pose);
                 }

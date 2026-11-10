@@ -10,6 +10,10 @@ import {
     elementFootprintT,
     elementHeightAt,
     elementOutlineLocalMm,
+    elementPlacementRefusal,
+    loweringMaterialWarning,
+    REMAINING_MATERIAL_MM,
+    rkwPlanMm,
 } from "./elements";
 import { heightFieldYFromMeshY, meshYSign } from "./handedness";
 import {
@@ -25,6 +29,7 @@ import {
     MORTONS_U_CORNER,
     MORTONS_U_DIP,
     MORTONS_V_LATERAL,
+    mortonsEdgeMm,
     mortonsExtensionMetrics,
     mortonsExtensionWarnings,
     mortonsFilletRadiusMm,
@@ -135,18 +140,31 @@ describe("anatomical element footprints", () => {
         expect(elementFootprintT("cluffy_wedge", rx * 0.7, 0, rx, ry)).toBeLessThan(1);
     });
 
-    test("reverse Morton's relief points inward like the approved dancer pad", () => {
-        const { rxMm: rx, ryMm: ry } = ELEMENT_PROFILES.reverse_mortons;
-        for (const side of ["left", "right"] as const) {
-            // In the displayed pair, inward local Y is negative on the left.
-            const inward = side === "left" ? -1 : 1;
-            expect(
-                elementFootprintT("reverse_mortons", rx * 0.15, inward * ry * 0.75, rx, ry, side),
-            ).toBeGreaterThan(1);
-            expect(elementFootprintT("reverse_mortons", 0, -inward * ry * 0.55, rx, ry, side)).toBeLessThan(
-                1,
-            );
-        }
+    test("reverse Morton's uses the Morton's footprint and lowers the 1st ray", () => {
+        expect(ELEMENT_PROFILES.reverse_mortons.sign).toBe(-1);
+        expect(ELEMENT_PROFILES.reverse_mortons.shape).toBe("first_ray_strip");
+        expect(ELEMENT_PROFILES.reverse_mortons.defaultHeightMm).toBe(3);
+        const length = 300;
+        const width = 100 * (100 / mortonsLocalWidthMm(0.7, 100));
+        const raised = mortonsExtensionMetrics(length, width, "left");
+        const lowered = mortonsExtensionMetrics(length, width, "left");
+        expect(lowered.forefootPadMm).toBeCloseTo(raised.forefootPadMm, 4);
+        expect(lowered.lengthMm).toBeCloseTo(raised.lengthMm, 4);
+        const pose = defaultElementPose("reverse_mortons", "left", length, width);
+        const morton = defaultElementPose("mortons_extension", "left", length, width);
+        expect(pose.position).toEqual(morton.position);
+        const el = (kind: "mortons_extension" | "reverse_mortons"): PlacedElement => ({
+            id: kind,
+            kind,
+            side: "left",
+            ...pose,
+        });
+        const x = length / 2 + pose.position.x;
+        const y = heightFieldYFromMeshY(pose.position.y);
+        const up = elementHeightAt([el("mortons_extension")], x, y, length, width);
+        const down = elementHeightAt([el("reverse_mortons")], x, y, length, width);
+        expect(up).toBeCloseTo(3, 1);
+        expect(down).toBeCloseTo(-3, 1);
     });
 
     test("every procedural footprint mirrors across width without reversing heel/toe", () => {
@@ -413,7 +431,49 @@ describe("anatomical element footprints", () => {
         expect(ELEMENT_PROFILES.kinetic_wedge.sign).toBe(-1);
         expect(ELEMENT_PROFILES.heel_sink.sign).toBe(-1);
         expect(ELEMENT_PROFILES.navicular_sink.sign).toBe(-1);
-        expect(ELEMENT_PROFILES.reverse_mortons.sign).toBe(1);
+        expect(ELEMENT_PROFILES.reverse_mortons.sign).toBe(-1);
         expect(ELEMENT_PROFILES.met_pad.sign).toBe(1);
+    });
+
+    test("kinetic wedge is an elongated medial oval and a second one does not stack", () => {
+        const length = 260;
+        const width = 95;
+        const plan = rkwPlanMm(length);
+        expect(plan.lengthMm).toBeCloseTo(39, 4);
+        expect(plan.widthMm).toBeCloseTo(28, 4);
+        const m115 = rkwPlanMm(300);
+        expect(m115.lengthMm).toBeCloseTo(45, 0);
+        expect(m115.widthMm).toBeCloseTo(32, 0);
+        const pose = defaultElementPose("kinetic_wedge", "left", length, width);
+        const right = defaultElementPose("kinetic_wedge", "right", length, width);
+        expect(pose.position.x).toBeCloseTo((0.665 - 0.5) * length, 4);
+        expect(right.position.y).toBeCloseTo(-pose.position.y, 4);
+        expect(pose.heightMm).toBe(2);
+        const edge = mortonsEdgeMm(0.665, width, "left");
+        const off = edge.medial - (pose.position.y - plan.widthMm / 2);
+        expect(off / plan.widthMm).toBeCloseTo(1 / 3, 1);
+        const one: PlacedElement = {
+            id: "a",
+            kind: "kinetic_wedge",
+            side: "left",
+            ...pose,
+            heightMm: 4,
+        };
+        const x = length / 2 + pose.position.x;
+        const y = heightFieldYFromMeshY(pose.position.y);
+        const single = elementHeightAt([one], x, y, length, width);
+        const stacked = elementHeightAt([one, { ...one, id: "b" }], x, y, length, width);
+        expect(single).toBeLessThan(-1);
+        expect(stacked).toBeCloseTo(single, 5);
+        expect(Math.max(REMAINING_MATERIAL_MM, 3 + stacked)).toBeGreaterThanOrEqual(REMAINING_MATERIAL_MM);
+        expect(elementPlacementRefusal("kinetic_wedge", "left", [one])).toMatch(/already/);
+        expect(elementPlacementRefusal("mortons_extension", "left", [one])).toMatch(/cannot/);
+        expect(elementPlacementRefusal("reverse_mortons", "left", [], ["rkw"])).toMatch(/override/);
+        expect(
+            elementPlacementRefusal("reverse_mortons", "left", [], ["rkw"], {
+                allowReverseMortonsWithRkw: true,
+            }),
+        ).toBeNull();
+        expect(loweringMaterialWarning(3, 4)).toMatch(/1.5/);
     });
 });

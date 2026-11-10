@@ -178,6 +178,17 @@ function stockStation(u: number, widthMm: number, side: Side): Station {
     };
 }
 
+/** Medial and lateral border, mesh Y, at u. Left medial is negative. */
+export function mortonsEdgeMm(
+    u: number,
+    widthMm: number,
+    side: Side = "left",
+    outline?: readonly MortonsOutlinePoint[] | null,
+): Station {
+    const fromOutline = outline && outline.length >= 6 ? edgesFromOutline(outline, side) : null;
+    return fromOutline ? fromOutline(u) : stockStation(u, widthMm, side);
+}
+
 /** Local medial-to-lateral span at u, millimetres. */
 export function mortonsLocalWidthMm(
     u: number,
@@ -185,8 +196,7 @@ export function mortonsLocalWidthMm(
     side: Side = "left",
     outline?: readonly MortonsOutlinePoint[] | null,
 ): number {
-    const fromOutline = outline && outline.length >= 6 ? edgesFromOutline(outline, side) : null;
-    const station = fromOutline ? fromOutline(u) : stockStation(u, widthMm, side);
+    const station = mortonsEdgeMm(u, widthMm, side, outline);
     return Math.abs(station.lateral - station.medial);
 }
 
