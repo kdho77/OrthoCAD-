@@ -192,25 +192,38 @@ const STOCK_ELEMENT_IDS: { id: ElementKind; label: string }[] = [
 /** Subset of ELEMENT_PROFILES needed for default placement and height checks. */
 const ELEMENT_PROFILES: Record<
     ElementKind,
-    { defaultHeightMm: number; defaultU: number; defaultMedial: number }
+    {
+        defaultHeightMm: number;
+        defaultU: number;
+        defaultMedial: number;
+        anatomicalSide: "medial" | "lateral" | "midline";
+    }
 > = {
-    met_pad: { defaultHeightMm: 5, defaultU: 0.5473, defaultMedial: 0.0722 },
-    met_bar: { defaultHeightMm: 3.47, defaultU: 0.5162, defaultMedial: -0.0387 },
-    toe_crest: { defaultHeightMm: 2.47, defaultU: 0.7802, defaultMedial: -0.2859 },
-    cuboid_pad: { defaultHeightMm: 6.37, defaultU: 0.3448, defaultMedial: -0.6865 },
-    cluffy_wedge: { defaultHeightMm: 2.4, defaultU: 0.7744, defaultMedial: 0.6413 },
-    mortons_extension: { defaultHeightMm: 2, defaultU: 0.78, defaultMedial: 0.5 },
-    reverse_mortons: { defaultHeightMm: 2.5, defaultU: 0.7, defaultMedial: -0.1 },
-    kinetic_wedge: { defaultHeightMm: 2.5, defaultU: 0.72, defaultMedial: 0.48 },
-    heel_sink: { defaultHeightMm: 2, defaultU: 0.12, defaultMedial: 0 },
-    navicular_sink: { defaultHeightMm: 2, defaultU: 0.38, defaultMedial: 0.55 },
-    scaphoid_pad: { defaultHeightMm: 4, defaultU: 0.42, defaultMedial: 0.62 },
-    heel_cushion: { defaultHeightMm: 3, defaultU: 0.14, defaultMedial: 0 },
-    dancers_pad: { defaultHeightMm: 2.5, defaultU: 0.6496, defaultMedial: -0.0196 },
+    met_pad: { defaultHeightMm: 5, defaultU: 0.5473, defaultMedial: 0.0722, anatomicalSide: "medial" },
+    met_bar: { defaultHeightMm: 3.47, defaultU: 0.5162, defaultMedial: -0.0387, anatomicalSide: "lateral" },
+    toe_crest: { defaultHeightMm: 2.47, defaultU: 0.7802, defaultMedial: -0.2859, anatomicalSide: "lateral" },
+    cuboid_pad: { defaultHeightMm: 6.37, defaultU: 0.3448, defaultMedial: -0.6865, anatomicalSide: "lateral" },
+    cluffy_wedge: { defaultHeightMm: 2.4, defaultU: 0.7744, defaultMedial: 0.6413, anatomicalSide: "medial" },
+    mortons_extension: { defaultHeightMm: 3, defaultU: 0.78, defaultMedial: 0.5, anatomicalSide: "medial" },
+    reverse_mortons: { defaultHeightMm: 2.5, defaultU: 0.7, defaultMedial: -0.1, anatomicalSide: "lateral" },
+    kinetic_wedge: { defaultHeightMm: 2.5, defaultU: 0.72, defaultMedial: 0.48, anatomicalSide: "medial" },
+    heel_sink: { defaultHeightMm: 2, defaultU: 0.12, defaultMedial: 0, anatomicalSide: "midline" },
+    navicular_sink: { defaultHeightMm: 2, defaultU: 0.38, defaultMedial: 0.55, anatomicalSide: "medial" },
+    scaphoid_pad: { defaultHeightMm: 4, defaultU: 0.42, defaultMedial: 0.62, anatomicalSide: "medial" },
+    heel_cushion: { defaultHeightMm: 3, defaultU: 0.14, defaultMedial: 0, anatomicalSide: "midline" },
+    dancers_pad: { defaultHeightMm: 2.5, defaultU: 0.6496, defaultMedial: -0.0196, anatomicalSide: "midline" },
 };
 
-function medialYSign(side: Side): number {
-    return side === "left" ? 1 : -1;
+/** Same mesh-Y rule as meshYForAnatomicalSide in geometry/handedness.ts. */
+function meshPlacementY(
+    side: Side,
+    anatomicalSide: "medial" | "lateral" | "midline",
+    magnitudeMm: number,
+): number {
+    if (anatomicalSide === "midline" || !(magnitudeMm > 0)) return 0;
+    const medial = side === "left" ? -1 : 1;
+    const sign = anatomicalSide === "medial" ? medial : -medial;
+    return sign * magnitudeMm;
 }
 
 function defaultElementPose(
@@ -220,11 +233,10 @@ function defaultElementPose(
     widthMm: number,
 ): Pick<PlacedElement, "position" | "rotationDeg" | "scale" | "heightMm" | "placementMode"> {
     const p = ELEMENT_PROFILES[kind];
-    const medial = medialYSign(side) * (kind === "cluffy_wedge" ? -1 : 1);
     return {
         position: {
             x: p.defaultU * lengthMm - lengthMm / 2,
-            y: p.defaultMedial * (widthMm / 2) * medial,
+            y: meshPlacementY(side, p.anatomicalSide, Math.abs(p.defaultMedial) * (widthMm / 2)),
         },
         rotationDeg: 0,
         scale: { x: 1, y: 1 },

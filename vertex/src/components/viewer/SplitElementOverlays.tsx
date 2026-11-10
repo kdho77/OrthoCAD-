@@ -1,9 +1,8 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { isLibraryHeightFieldKind } from "@/lib/geometry/element-assets/types";
-import { ElementHardnessPopup } from "./ElementHardnessPopup";
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
+import { isLibraryHeightFieldKind } from "@/lib/geometry/element-assets/types";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { elementPreviewColor, splitOverlayOutline } from "@/lib/hardness/split-overlay";
@@ -11,6 +10,7 @@ import { useDesignStore } from "@/stores/design-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { PlacedElement } from "@/types";
 import { SELECTED_ELEMENT_HIGHLIGHT } from "../../../shared/print-recipe/hardness-class-table";
+import { ElementHardnessPopup } from "./ElementHardnessPopup";
 
 function outlineGeometry(pts: { x: number; y: number }[]): THREE.BufferGeometry {
     const shape = new THREE.Shape();

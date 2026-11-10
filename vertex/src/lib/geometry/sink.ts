@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferAttribute, BufferGeometry } from "three";
-import { medialSign } from "@/lib/geometry/handedness";
+import { type AnatomicalSide, medialSign } from "@/lib/geometry/handedness";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import type { PlacedElement, PlacedSink, Side, SinkKind, SinkMarkerRef, TextMarking } from "@/types";
@@ -130,6 +130,8 @@ export interface SinkProfile {
     /** Keep the cut off the medial wall. */
     medialWallFade: boolean;
     forefoot: boolean;
+    /** Registered border. Placement and the viewer must follow this, not a copied world Y. */
+    anatomicalSide: AnatomicalSide;
 }
 
 export const SINK_KIND_ORDER: readonly SinkKind[] = [
@@ -159,6 +161,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         lateralWallFade: false,
         medialWallFade: true,
         forefoot: true,
+        anatomicalSide: "medial",
     },
     mpj2: {
         kind: "mpj2",
@@ -176,6 +179,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         lateralWallFade: false,
         medialWallFade: false,
         forefoot: true,
+        anatomicalSide: "medial",
     },
     mpj3: {
         kind: "mpj3",
@@ -193,6 +197,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         lateralWallFade: false,
         medialWallFade: false,
         forefoot: true,
+        anatomicalSide: "lateral",
     },
     mpj4: {
         kind: "mpj4",
@@ -210,6 +215,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         lateralWallFade: false,
         medialWallFade: false,
         forefoot: true,
+        anatomicalSide: "lateral",
     },
     mpj5: {
         kind: "mpj5",
@@ -227,6 +233,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         lateralWallFade: true,
         medialWallFade: false,
         forefoot: true,
+        anatomicalSide: "lateral",
     },
     rkw: {
         kind: "rkw",
@@ -247,6 +254,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         // the same way the 1st MPJ does, so the wall is not sheared.
         medialWallFade: true,
         forefoot: true,
+        anatomicalSide: "medial",
     },
     styloid: {
         kind: "styloid",
@@ -264,6 +272,7 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         lateralWallFade: false,
         medialWallFade: false,
         forefoot: false,
+        anatomicalSide: "lateral",
     },
 };
 
