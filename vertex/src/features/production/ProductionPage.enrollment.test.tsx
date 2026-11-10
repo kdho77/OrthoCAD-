@@ -13,24 +13,31 @@ import { ProductionPage } from "./ProductionPage";
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const enrollmentSpy = rs.fn(async (bridgeName: string) => ({
+const NORTH = "11111111-1111-4111-8111-111111111111";
+const SOUTH = "22222222-2222-4222-8222-222222222222";
+
+const enrollmentSpy = rs.fn(async (bridgeName: string, _shop?: { tenantId?: string }) => ({
     proof: `proof-shown-once-${bridgeName}`,
     bridgeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     expiresAt: "2026-11-09T20:10:00.000Z",
 }));
+const shopsSpy = rs.fn(async (): Promise<{ id: string; name: string }[]> => []);
+const saveSpy = rs.fn(async (_input?: unknown, _shop?: unknown) => undefined);
 
 rs.mock("./production-actions", () => {
     const noop = async () => undefined;
     return {
         loadProduction: noop,
+        loadProductionShops: () => shopsSpy(),
         holdProductionJob: noop,
         cancelProductionJob: noop,
         retryProductionJob: noop,
         markProductionJobDone: noop,
         assignProductionJob: noop,
         rerunProductionJob: noop,
-        saveMoonrakerProductionPrinter: noop,
-        createBridgeEnrollment: (bridgeName: string) => enrollmentSpy(bridgeName),
+        saveMoonrakerProductionPrinter: (input: unknown, shop?: unknown) => saveSpy(input, shop),
+        createBridgeEnrollment: (bridgeName: string, shop?: { tenantId: string; shopId: string }) =>
+            enrollmentSpy(bridgeName, shop),
         revokeBridgeEnrollment: noop,
         registerConfiguredProductionPrinter: noop,
         dispatchProductionJob: noop,
@@ -120,6 +127,12 @@ function setInputValue(input: HTMLInputElement, value: string) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function setSelectValue(select: HTMLSelectElement, value: string) {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+    descriptor?.set?.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function buttonLabels(root: ParentNode | null): string[] {
     return [...(root?.querySelectorAll("button") ?? [])].map((button) =>
         (button.textContent ?? "").replace(/\s+/g, " ").trim(),
@@ -139,6 +152,9 @@ describe("production printers enrollment", () => {
 
     beforeEach(() => {
         enrollmentSpy.mockClear();
+        saveSpy.mockClear();
+        shopsSpy.mockReset();
+        shopsSpy.mockResolvedValue([]);
         written.length = 0;
         localStorage.clear();
         sessionStorage.clear();
@@ -213,6 +229,7 @@ describe("production printers enrollment", () => {
         expect(printers?.querySelector('[aria-label="Bridge id"]')).toBeTruthy();
         expect(printers?.querySelector('[aria-label="Moonraker URL"]')).toBeTruthy();
         expect(printers?.querySelector('[data-testid="create-bridge-enrollment"]')).toBeNull();
+        expect(printers?.querySelector('[data-testid="production-shop-picker"]')).toBeNull();
         expect(printers?.textContent).toContain("Mock only. Not a live printer.");
         expect(enrollmentSpy).not.toHaveBeenCalled();
     });
@@ -226,6 +243,8 @@ describe("production printers enrollment", () => {
         user("admin");
         await render("printers");
         const printers = container.querySelector('[data-testid="production-printers"]');
+        expect(printers?.querySelector('[data-testid="production-shop-picker"]')).toBeNull();
+        expect(printers?.querySelector('[aria-label="Shop"]')).toBeNull();
         expect(headings(printers)).toEqual([
             "Register mock printer",
             "Configure Moonraker printer",
@@ -273,7 +292,93 @@ describe("production printers enrollment", () => {
         user("super_admin");
         await render("printers");
         expect(container.querySelector('[data-testid="create-bridge-enrollment"]')).toBeTruthy();
+        expect(container.querySelector('[data-testid="production-shop-picker"]')).toBeTruthy();
+        expect(container.querySelector('[aria-label="Shop"]')).toBeTruthy();
         expect(container.querySelector('[aria-label="Bridge id"]')).toBeTruthy();
         expect(container.querySelector('[aria-label="Moonraker URL"]')).toBeTruthy();
+    });
+
+    test("a super admin must pick a shop, and that picker stays hidden for an admin", async () => {
+        shopsSpy.mockResolvedValue([
+            { id: NORTH, name: "North clinic" },
+            { id: SOUTH, name: "South clinic" },
+        ]);
+        useProductionStore.setState({
+            jobs: [job("waiting", "Left shell")],
+            printers: [
+                printer,
+                {
+                    ...printer,
+                    id: "qqqqqqqq-qqqq-4qqq-8qqq-qqqqqqqqqqqq",
+                    name: "North press",
+                    tenantId: NORTH,
+                },
+                {
+                    ...printer,
+                    id: "rrrrrrrr-rrrr-4rrr-8rrr-rrrrrrrrrrrr",
+                    name: "South press",
+                    tenantId: SOUTH,
+                },
+            ],
+        });
+
+        user("admin");
+        await render("printers");
+        expect(container.querySelector('[data-testid="production-shop-picker"]')).toBeNull();
+        expect(container.textContent).toContain("Bay 1");
+
+        await act(async () => root?.unmount());
+        user("super_admin");
+        await render("printers");
+        const picker = container.querySelector('[data-testid="production-shop-picker"]');
+        expect(picker).toBeTruthy();
+        const select = picker?.querySelector('[aria-label="Shop"]') as HTMLSelectElement;
+        const optionText = [...select.options].map((option) => option.textContent);
+        expect(optionText).toEqual(["Choose a shop", "North clinic", "South clinic"]);
+        expect(select.value).toBe("");
+        expect(container.textContent).not.toContain("North press");
+        expect(container.textContent).not.toContain("South press");
+        expect(container.textContent).not.toContain("Bay 1");
+
+        const printers = container.querySelector('[data-testid="production-printers"]');
+        const name = printers?.querySelector('[aria-label="Bridge name"]') as HTMLInputElement;
+        const create = [...(printers?.querySelectorAll("button") ?? [])].find(
+            (button) => button.textContent === "Create bridge enrollment",
+        ) as HTMLButtonElement;
+        const save = [...(printers?.querySelectorAll("button") ?? [])].find(
+            (button) => button.textContent === "Save configuration",
+        ) as HTMLButtonElement;
+        await act(async () => setInputValue(name, "Bay press"));
+        expect(create.disabled).toBe(true);
+        expect(save.disabled).toBe(true);
+        await act(async () => {
+            create.click();
+            save.click();
+        });
+        expect(enrollmentSpy).not.toHaveBeenCalled();
+        expect(saveSpy).not.toHaveBeenCalled();
+
+        await act(async () => setSelectValue(select, NORTH));
+        expect(container.textContent).toContain("North press");
+        expect(container.textContent).not.toContain("South press");
+        expect(container.textContent).not.toContain("Bay 1");
+        expect(create.disabled).toBe(false);
+        await act(async () => {
+            create.click();
+        });
+        expect(enrollmentSpy).toHaveBeenCalledTimes(1);
+        expect(enrollmentSpy.mock.calls[0]?.[0]).toBe("Bay press");
+        expect(enrollmentSpy.mock.calls[0]?.[1]).toEqual({ tenantId: NORTH, shopId: NORTH });
+        expect(container.querySelector('[data-testid="bridge-enrollment-proof"]')).toBeTruthy();
+
+        const configName = printers?.querySelector(
+            '[aria-label="Configured printer name"]',
+        ) as HTMLInputElement;
+        await act(async () => setInputValue(configName, "North bay"));
+        await act(async () => {
+            save.click();
+        });
+        expect(saveSpy).toHaveBeenCalledTimes(1);
+        expect(saveSpy.mock.calls[0]?.[1]).toEqual({ tenantId: NORTH, shopId: NORTH });
     });
 });
