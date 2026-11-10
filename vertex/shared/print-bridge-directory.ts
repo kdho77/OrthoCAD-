@@ -10,7 +10,7 @@ import {
 } from "./print-bridge-enrollment.js";
 
 export interface BridgeDirectory {
-    putEnrollment(record: EnrollmentRecord): Promise<void>;
+    putEnrollment(record: EnrollmentRecord, options?: { name?: string }): Promise<void>;
     redeem(input: {
         proof: string;
         bridgeId: string;
