@@ -123,7 +123,10 @@ export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections, axes?: 
     const sag = sagDeg * DEG;
     const front = frontDeg * DEG;
     const nav = axes?.navicular ?? null;
-    const medialSign = axes?.side === "left" ? 1 : -1;
+    // This loop's width axis is X (heel→toe is Y). Medial X follows the malleoli
+    // when they span; otherwise it is the shared plantar sign mapped into X
+    // (−medialSign: left medial is +X, right medial is −X).
+    const medialX = medialWidthXSign(medial, lateral, axes?.side);
 
     for (let i = 0; i < n; i++) {
         let x = out.positions[i * 3] ?? 0;
@@ -149,18 +152,18 @@ export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections, axes?: 
             const yNorm = (y - ySpan.yMin) / footLen;
             if (yNorm > 0.6) z += c.toeRiseMm * smoothstep(0.6, 0.85, yNorm);
         }
-        if (c.footLiftMedMm && x > 0) {
-            z += c.footLiftMedMm * clamp01(x / 40) * clamp01(1 - z / 50);
+        if (c.footLiftMedMm && x * medialX > 0) {
+            z += c.footLiftMedMm * clamp01(Math.abs(x) / 40) * clamp01(1 - z / 50);
         }
-        if (c.footLiftLatMm && x < 0) {
-            z += c.footLiftLatMm * clamp01(-x / 40) * clamp01(1 - z / 50);
+        if (c.footLiftLatMm && x * medialX < 0) {
+            z += c.footLiftLatMm * clamp01(Math.abs(x) / 40) * clamp01(1 - z / 50);
         }
         if (c.medialArchMm) {
             if (nav) {
                 const gy = Math.exp(-((y - nav.y) ** 2) / (2 * 28 * 28));
                 const gx = Math.exp(-((x - nav.x) ** 2) / (2 * 18 * 18));
                 z += c.medialArchMm * gy * gx;
-            } else if (x * (axes?.side ? medialSign : 1) > 0) {
+            } else if (x * medialX > 0) {
                 const gy = Math.exp(-((y - 70) ** 2) / (2 * 28 * 28));
                 z += c.medialArchMm * gy * clamp01(Math.abs(x) / 30);
             }
@@ -199,6 +202,19 @@ function spanY(mesh: AfoTriMesh): { yMin: number; yMax: number } {
         if (y > yMax) yMax = y;
     }
     return { yMin, yMax };
+}
+
+/**
+ * Sign of X that points at the medial malleolus in the correction loop.
+ * X is width here (Y is heel→toe). A real malleolar span wins. With no span,
+ * medial X is −{@link medialSign}: the shared footprint rule mapped onto this axis
+ * (left medial +X, right medial −X). Default landmarks also put medial at +X.
+ */
+export function medialWidthXSign(medial: AfoVec3, lateral: AfoVec3, side?: Side): 1 | -1 {
+    const dx = medial.x - lateral.x;
+    if (Math.abs(dx) > 1e-3) return dx > 0 ? 1 : -1;
+    if (!side) return 1;
+    return -medialSign(side) as 1 | -1;
 }
 
 /** +X is lateral on the right. The left side mirrors so +varus stays medial. */

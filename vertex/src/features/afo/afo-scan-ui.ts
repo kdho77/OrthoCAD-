@@ -5,7 +5,6 @@ import {
     AFO_OPTIONAL_LANDMARK_COUNT,
     AFO_PLANTAR_STEPS,
     AFO_REQUIRED_LANDMARK_COUNT,
-    afoFrameSide,
     scanForAfoWorkflow,
     skipAfoLandmark,
     undoAfoMarker,
