@@ -6,9 +6,9 @@ import { TRPCError } from "@trpc/server";
 
 import { readStoredDesignSettings } from "../../../shared/design-settings.js";
 import {
-    decideDogfoodHardness,
-    DogfoodUserQuestion,
     type DogfoodHardnessProvenance,
+    DogfoodUserQuestion,
+    decideDogfoodHardness,
     patientNameQuestion,
 } from "../../../shared/dogfood-manufacturing.js";
 import {
@@ -34,14 +34,34 @@ import {
 } from "../lib/integration-text-marking.js";
 
 export interface CadGeneratePlan {
-    stlStorageKey: string;
+    stlStorageKey: string | null;
     presetId: string;
     printRecipe: PrintRecipeV1;
     material: string;
     beltAngleDeg: number;
     ownerId: string;
-    fingerprint: string | null;
+    useSavedDesignMesh: boolean;
+    settingsJson: unknown;
 }
+
+const designSelect = {
+    id: true,
+    ownerId: true,
+    name: true,
+    kind: true,
+    pattern: true,
+    method: true,
+    thicknessMm: true,
+    linked: true,
+    unit: true,
+    settingsJson: true,
+    updatedAt: true,
+    deletedAt: true,
+    client: { select: { tenantId: true, firstName: true, lastName: true } },
+    integrationLink: {
+        select: { tenantId: true, source: true, externalOrderId: true, sides: true },
+    },
+} as const;
 
 function lockedRecipe(settingsJson: unknown): PrintRecipeV1 {
     const settings = readStoredDesignSettings(settingsJson);
@@ -49,47 +69,17 @@ function lockedRecipe(settingsJson: unknown): PrintRecipeV1 {
     return bindPrintRecipeProfile(parsed.success ? parsed.data : undefined, CAD_OPERATOR_BELT_PROFILE_ID);
 }
 
-export async function planCadOperatorGenerate(args: {
-    prisma: PrismaClient;
-    principal: CadOperatorPrincipal;
-    designId: string;
-    side: "left" | "right";
-    outputType: "gcode" | "stl";
-    useSavedDesignMesh: boolean;
-    stlStorageKey: string;
-    patientName?: string;
-    hardness?: string;
-    uploadStl: (key: string, bytes: Buffer) => Promise<void>;
-}): Promise<CadGeneratePlan & { settingsJson: unknown }> {
-    if (args.outputType !== "gcode") {
-        throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "CAD-operator manufacturing returns G-code only",
-        });
-    }
-    const row = await args.prisma.design.findUnique({
-        where: { id: args.designId },
-        select: {
-            id: true,
-            ownerId: true,
-            name: true,
-            kind: true,
-            pattern: true,
-            method: true,
-            thicknessMm: true,
-            linked: true,
-            unit: true,
-            settingsJson: true,
-            updatedAt: true,
-            deletedAt: true,
-            client: { select: { tenantId: true, firstName: true, lastName: true } },
-            integrationLink: {
-                select: { tenantId: true, source: true, externalOrderId: true, sides: true },
-            },
-        },
+export async function loadDogfoodDesign(
+    prisma: PrismaClient,
+    principal: CadOperatorPrincipal,
+    designId: string,
+) {
+    const row = await prisma.design.findUnique({
+        where: { id: designId },
+        select: designSelect,
     });
     const design = dogfoodDesignRead(
-        args.principal,
+        principal,
         row
             ? {
                   id: row.id,
@@ -112,6 +102,31 @@ export async function planCadOperatorGenerate(args: {
               }
             : null,
     );
+    return { row, design };
+}
+
+/**
+ * Auth, text marking, and hardness. No loft and no STL upload.
+ * The mesh fingerprint is not known yet. Callers hash settings instead.
+ */
+export async function prepareCadOperatorGenerate(args: {
+    prisma: PrismaClient;
+    principal: CadOperatorPrincipal;
+    designId: string;
+    side: "left" | "right";
+    outputType: "gcode" | "stl";
+    useSavedDesignMesh: boolean;
+    stlStorageKey: string;
+    patientName?: string;
+    hardness?: string;
+}): Promise<CadGeneratePlan> {
+    if (args.outputType !== "gcode") {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "CAD-operator manufacturing returns G-code only",
+        });
+    }
+    const { row, design } = await loadDogfoodDesign(args.prisma, args.principal, args.designId);
     if (design.method === "milling_3axis") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Milled orders are not belt G-code" });
     }
@@ -163,12 +178,28 @@ export async function planCadOperatorGenerate(args: {
         } catch {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid manufacturing STL storage key" });
         }
-        return { ...shared, stlStorageKey: args.stlStorageKey, fingerprint: null, settingsJson };
+        return { ...shared, stlStorageKey: args.stlStorageKey, useSavedDesignMesh: false, settingsJson };
+    }
+    return { ...shared, stlStorageKey: null, useSavedDesignMesh: true, settingsJson };
+}
+
+/** Headless loft and temp STL upload. Runs after the production id is returned. */
+export async function materializeCadOperatorStl(args: {
+    plan: CadGeneratePlan;
+    credentialId: string;
+    side: "left" | "right";
+    uploadStl: (key: string, bytes: Buffer) => Promise<void>;
+}): Promise<{ stlStorageKey: string; meshFingerprint: string | null }> {
+    if (!args.plan.useSavedDesignMesh) {
+        if (!args.plan.stlStorageKey) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid manufacturing STL storage key" });
+        }
+        return { stlStorageKey: args.plan.stlStorageKey, meshFingerprint: null };
     }
     let foot: Awaited<ReturnType<typeof buildHeadlessFinalizedFoot>>;
     try {
         foot = await buildHeadlessFinalizedFoot({
-            settingsJson,
+            settingsJson: args.plan.settingsJson,
             side: args.side,
         });
     } catch (error) {
@@ -178,7 +209,7 @@ export async function planCadOperatorGenerate(args: {
             message,
         });
     }
-    const stlStorageKey = buildCadOperatorTempStlKey(args.principal.credentialId);
+    const stlStorageKey = buildCadOperatorTempStlKey(args.credentialId);
     await args.uploadStl(stlStorageKey, Buffer.from(foot.stl));
-    return { ...shared, stlStorageKey, fingerprint: foot.fingerprint, settingsJson };
+    return { stlStorageKey, meshFingerprint: foot.fingerprint };
 }

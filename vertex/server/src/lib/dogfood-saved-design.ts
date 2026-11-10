@@ -76,10 +76,20 @@ interface DogfoodClient {
     tenantId: string;
 }
 
+export interface DogfoodPersonShoe {
+    system: "US_M" | "US_W" | "EU";
+    size: number;
+    left: number | null;
+    right: number | null;
+    width: string;
+}
+
 export interface DogfoodPersonLink {
     clientId: string;
     givenName: string;
     familyName: string;
+    /** Stored integration-client shoe. Absent width is not a width. */
+    shoe?: DogfoodPersonShoe;
 }
 
 export interface EstablishVerifiedOrderInput {
@@ -183,6 +193,21 @@ function refusalMessage(code: DogfoodOrderIdentityCode): string {
 
 function identityError(code: DogfoodOrderIdentityCode): DogfoodOrderIdentityError {
     return new DogfoodOrderIdentityError(code, refusalMessage(code));
+}
+
+/** Detail text for one refusal. The code prefix is added by {@link DogfoodOrderIdentityError}. */
+export function dogfoodOrderIdentityDetail(code: DogfoodOrderIdentityCode): string {
+    return refusalMessage(code);
+}
+
+/** Same refusal create_saved_design throws. No row is written by the throw itself. */
+export function dogfoodOrderIdentityRefusal(code: DogfoodOrderIdentityCode): DogfoodOrderIdentityError {
+    return identityError(code);
+}
+
+/** Order id check shared with first-sight auto-bind. Caller ids are not accepted here. */
+export function requireDogfoodExternalOrderId(value: string): string {
+    return requireOrderId(value);
 }
 
 const INTEGRATION_LINK_WIDTHS = ["narrow", "medium", "wide"] as const;
@@ -471,6 +496,11 @@ export function prismaDogfoodSavedDesignStore(prisma: PrismaClient): DogfoodSave
                 where: { source: "vo2", tenantId: DOGFOOD_TENANT_ID, externalClientId: externalPersonId },
                 select: {
                     clientId: true,
+                    shoeSizeSystem: true,
+                    shoeSize: true,
+                    shoeSizeLeft: true,
+                    shoeSizeRight: true,
+                    shoeWidth: true,
                     client: { select: { firstName: true, lastName: true, tenantId: true } },
                 },
                 take: 2,
@@ -481,6 +511,13 @@ export function prismaDogfoodSavedDesignStore(prisma: PrismaClient): DogfoodSave
                     clientId: row.clientId,
                     givenName: row.client.firstName,
                     familyName: row.client.lastName,
+                    shoe: {
+                        system: row.shoeSizeSystem,
+                        size: row.shoeSize,
+                        left: row.shoeSizeLeft,
+                        right: row.shoeSizeRight,
+                        width: row.shoeWidth,
+                    },
                 }));
         },
         async establishVerifiedOrder(input) {

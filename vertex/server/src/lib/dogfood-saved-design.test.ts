@@ -597,8 +597,14 @@ describe("integration link width", () => {
         expect(
             readers
                 .filter((entry) => entry.text.includes("integrationLinkShoeWidth"))
-                .map((entry) => entry.file),
-        ).toEqual(["vertex/server/src/lib/dogfood-saved-design.ts"]);
+                .map((entry) => entry.file)
+                .sort(),
+        ).toEqual(
+            [
+                "vertex/server/src/lib/dogfood-order-auto-bind.ts",
+                "vertex/server/src/lib/dogfood-saved-design.ts",
+            ].sort(),
+        );
         expect(
             readers
                 .filter((entry) => entry.text.includes("IntegrationShoeWidthError"))

@@ -70,6 +70,16 @@ export const getExportDownloadInputSchema = z.object({
     production_id: z.string().uuid(),
 });
 
+export const getProductionInputSchema = z.object({
+    production_id: z.string().uuid(),
+});
+
+export const listProductionsByDesignInputSchema = z.object({
+    design_id: z.string().uuid(),
+    side: sideSchema.optional(),
+    preset_id: z.string().min(1).optional(),
+});
+
 const voHandoffFileSchema = z.object({
     side: z.string().min(1),
     machine: z.string().min(1),
@@ -265,11 +275,27 @@ export const MCP_TOOL_DEFINITIONS = [
     {
         name: "generate_gcode",
         description:
-            "Belt G-code. Saved-design mode (use_saved_design) builds the canonical Export mesh on the server and returns left and right G-code files. " +
-            "No STL deliverable. Omitting side generates both feet and fails if either foot fails. " +
+            "Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. " +
+            "The server lofts and slices after that response. Poll get_production. Download with get_export_download only after succeeded. " +
+            "A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset. " +
+            "No STL deliverable and no G-code bytes. Omitting side enqueues both feet. " +
             "Legacy mode still calls manufacturing.generateSolid → Python /manufacture with stl_storage_key. " +
             "PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck.",
         inputSchema: generateGcodeInputObjectSchema,
+    },
+    {
+        name: "get_production",
+        description:
+            "CAD-operator production status by production_id. Returns id, design, side, preset, status, timestamps, " +
+            "G-code storage key, a non-PHI error, and a get_export_download hint when succeeded. No G-code bytes and no PHI.",
+        inputSchema: getProductionInputSchema,
+    },
+    {
+        name: "list_productions_by_design",
+        description:
+            "CAD-operator productions for a design_id. Optional side and preset_id filters. Same fields as get_production. " +
+            "No G-code bytes and no PHI.",
+        inputSchema: listProductionsByDesignInputSchema,
     },
     {
         name: "get_export_download",
