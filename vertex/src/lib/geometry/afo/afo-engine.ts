@@ -40,6 +40,28 @@ export async function runAfoShell(
     }
 }
 
+/** Drop callbacks before postMessage. Progress comes back as `{ type: "progress" }` messages. */
+export function cloneableWorkerOptions(options: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(options)) {
+        if (typeof value === "function") continue;
+        if (Array.isArray(value)) {
+            out[key] = value.map((item) =>
+                item && typeof item === "object" && !ArrayBuffer.isView(item)
+                    ? cloneableWorkerOptions(item as Record<string, unknown>)
+                    : item,
+            );
+            continue;
+        }
+        if (value && typeof value === "object" && !ArrayBuffer.isView(value)) {
+            out[key] = cloneableWorkerOptions(value as Record<string, unknown>);
+            continue;
+        }
+        out[key] = value;
+    }
+    return out;
+}
+
 function tryWorker(): Worker | null {
     if (typeof Worker === "undefined") return null;
     try {
@@ -72,7 +94,9 @@ function workerRequest(
                 return;
             }
             if (msg.type === "geometry") {
-                resolve(geometryToAfoMesh(payloadToGeometry(msg.payload)));
+                const mesh = geometryToAfoMesh(payloadToGeometry(msg.payload));
+                if (typeof msg.rimFaceStart === "number") mesh.rimFaceStart = msg.rimFaceStart;
+                resolve(mesh);
                 return;
             }
             reject(new Error("Unexpected AFO worker response"));
@@ -84,11 +108,7 @@ function workerRequest(
         const transfer: Transferable[] = [payload.positions.buffer as ArrayBuffer];
         if (payload.indices) transfer.push(payload.indices.buffer as ArrayBuffer);
         const { mesh: _omitMesh, options, ...rest } = body;
-        const rawOptions = (options ?? {}) as Record<string, unknown>;
-        const safeOptions: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(rawOptions)) {
-            if (typeof v !== "function") safeOptions[k] = v;
-        }
+        const safeOptions = cloneableWorkerOptions((options ?? {}) as Record<string, unknown>);
         try {
             worker.postMessage({ id, ...rest, options: safeOptions, mesh: payload }, transfer);
         } catch (err) {

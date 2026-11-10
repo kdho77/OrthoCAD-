@@ -1,8 +1,10 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { useEffect } from "react";
 import { AFO_DESIGN_MARKERS } from "@/lib/geometry/afo/defaults";
 import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
 import { loopNearZ, validateTrimLoop } from "@/lib/geometry/afo/trim-loop";
+import { AFO_TRIM_NO_MESH } from "@/lib/geometry/afo/trim-preview";
 import { balanceBracePins, fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import { getAfoState, patchAfoState, useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -17,6 +19,20 @@ export function AfoDesignPanel() {
     const correctedMesh = useAfoStore((s) => s.correctedMesh);
     const castMesh = useAfoStore((s) => s.castMesh);
     const working = correctedMesh ?? castMesh;
+
+    useEffect(() => {
+        const store = useAfoStore.getState();
+        if (store.placingTrim) return;
+        if (
+            afo.landmarks.length < AFO_DESIGN_MARKERS.length &&
+            store.placingLandmarkIndex < AFO_DESIGN_MARKERS.length
+        ) {
+            store.setPlacingDesignLandmarks(true);
+        }
+        return () => {
+            useAfoStore.getState().setPlacingDesignLandmarks(false);
+        };
+    }, [afo.landmarks.length]);
 
     const nextMarker = AFO_DESIGN_MARKERS[Math.min(Math.max(placingIndex, 0), AFO_DESIGN_MARKERS.length - 1)];
     const landmarksDone = afo.landmarks.length >= AFO_DESIGN_MARKERS.length;
@@ -172,7 +188,10 @@ export function AfoDesignPanel() {
                     <button
                         type="button"
                         className="h-7 w-full rounded border border-border text-[11px]"
-                        onClick={() => setPlacing(0)}
+                        onClick={() => {
+                            setPlacing(0);
+                            useAfoStore.getState().setPlacingDesignLandmarks(true);
+                        }}
                     >
                         Re-place landmarks
                     </button>
@@ -186,10 +205,16 @@ export function AfoDesignPanel() {
                 <p className="text-muted-foreground">
                     Click to place. Close by clicking the first point. Drag handles to edit.
                 </p>
+                {!working ? (
+                    <p className="text-[11px] font-medium text-amber-200">{AFO_TRIM_NO_MESH}</p>
+                ) : null}
                 <button
                     type="button"
                     className="h-8 w-full rounded-md border border-border bg-background"
-                    onClick={() => setPlacingTrim(!placingTrim)}
+                    onClick={() => {
+                        if (!placingTrim && !working) useAfoStore.getState().setLastError(AFO_TRIM_NO_MESH);
+                        setPlacingTrim(!placingTrim);
+                    }}
                 >
                     {placingTrim ? "Placing trim…" : "Start trim line"}
                 </button>

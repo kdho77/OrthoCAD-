@@ -33,28 +33,106 @@ export function projectedAreaXy(points: AfoVec3[]): number {
     return Math.abs(a) * 0.5;
 }
 
-function segmentsIntersect(a: AfoVec3, b: AfoVec3, c: AfoVec3, d: AfoVec3): boolean {
-    const orient = (p: AfoVec3, q: AfoVec3, r: AfoVec3) =>
-        Math.sign((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x));
-    const o1 = orient(a, b, c);
-    const o2 = orient(a, b, d);
-    const o3 = orient(c, d, a);
-    const o4 = orient(c, d, b);
-    if (o1 !== 0 && o2 !== 0 && o3 !== 0 && o4 !== 0 && o1 !== o2 && o3 !== o4) return true;
-    return false;
+function sub3(a: AfoVec3, b: AfoVec3): AfoVec3 {
+    return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
 }
 
-export function polylineSelfIntersects(points: AfoVec3[]): boolean {
+function dot3(a: AfoVec3, b: AfoVec3): number {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function clamp01(v: number): number {
+    return Math.min(1, Math.max(0, v));
+}
+
+/** Distance from point `p` to segment `a`–`b`. */
+function pointSegmentDistance(p: AfoVec3, a: AfoVec3, b: AfoVec3): number {
+    const ab = sub3(b, a);
+    const ab2 = dot3(ab, ab);
+    const t = ab2 < 1e-12 ? 0 : clamp01(dot3(sub3(p, a), ab) / ab2);
+    return Math.hypot(a.x + ab.x * t - p.x, a.y + ab.y * t - p.y, a.z + ab.z * t - p.z);
+}
+
+/**
+ * Shortest distance between two 3D segments. Endpoint-to-segment distances cover
+ * collinear overlaps that a single clamped parameter pair can miss.
+ */
+function segmentSegmentDistance(a: AfoVec3, b: AfoVec3, c: AfoVec3, d: AfoVec3): number {
+    const u = sub3(b, a);
+    const v = sub3(d, c);
+    const w = sub3(a, c);
+    const uu = dot3(u, u);
+    const uv = dot3(u, v);
+    const vv = dot3(v, v);
+    const uw = dot3(u, w);
+    const vw = dot3(v, w);
+    const eps = 1e-8;
+    let s = 0;
+    let t = 0;
+    const denom = uu * vv - uv * uv;
+    if (uu <= eps && vv <= eps) {
+        return Math.hypot(a.x - c.x, a.y - c.y, a.z - c.z);
+    } else if (uu <= eps) {
+        t = clamp01(vw / vv);
+    } else if (vv <= eps) {
+        s = clamp01(-uw / uu);
+    } else {
+        s = denom > eps ? clamp01((uv * vw - vv * uw) / denom) : 0;
+        t = (uv * s + vw) / vv;
+        if (t < 0) {
+            t = 0;
+            s = clamp01(-uw / uu);
+        } else if (t > 1) {
+            t = 1;
+            s = clamp01((uv - uw) / uu);
+        }
+    }
+    const analytic = Math.hypot(
+        a.x + u.x * s - (c.x + v.x * t),
+        a.y + u.y * s - (c.y + v.y * t),
+        a.z + u.z * s - (c.z + v.z * t),
+    );
+    return Math.min(
+        analytic,
+        pointSegmentDistance(a, c, d),
+        pointSegmentDistance(b, c, d),
+        pointSegmentDistance(c, a, b),
+        pointSegmentDistance(d, a, b),
+    );
+}
+
+function arcBetween(from: number, to: number, prefix: number[], total: number): number {
+    if (to >= from) return (prefix[to] ?? 0) - (prefix[from] ?? 0);
+    return total - ((prefix[from] ?? 0) - (prefix[to] ?? 0));
+}
+
+/**
+ * Non-local 3D self-intersection. Uprights that only cross in the XY projection
+ * (separated along the leg) do not count. Segments within `localArcMm` of each
+ * other along the loop are a corner, not a crossing.
+ */
+export function polylineSelfIntersects(points: AfoVec3[], epsilonMm = 0.3, localArcMm = 4): boolean {
     const n = points.length;
     if (n < 4) return false;
+    const prefix = [0];
     for (let i = 0; i < n; i++) {
         const a = points[i]!;
         const b = points[(i + 1) % n]!;
-        for (let j = i + 2; j < n; j++) {
-            if (i === 0 && j === n - 1) continue;
+        prefix.push(prefix[i]! + Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+    }
+    const total = prefix[n] ?? 0;
+    for (let i = 0; i < n; i++) {
+        const a = points[i]!;
+        const b = points[(i + 1) % n]!;
+        for (let j = i + 1; j < n; j++) {
+            const adjacent = j === i + 1 || (i === 0 && j === n - 1);
+            if (adjacent) continue;
+            const forward = arcBetween(i + 1, j, prefix, total);
+            const backward = arcBetween((j + 1) % n, i, prefix, total);
+            if (Math.min(forward, backward) < localArcMm) continue;
             const c = points[j]!;
             const d = points[(j + 1) % n]!;
-            if (segmentsIntersect(a, b, c, d)) return true;
+            if (segmentSegmentDistance(a, b, c, d) <= epsilonMm) return true;
         }
     }
     return false;

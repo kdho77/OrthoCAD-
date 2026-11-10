@@ -22,8 +22,8 @@ describe("AFO product workflow", () => {
         setProductType("afo", "left");
         expect(useDesignStore.getState().design.productType).toBe("afo");
         expect(useDesignStore.getState().design.afo?.print.thicknessMm).toBe(4);
-        expect(useDesignStore.getState().design.afo?.print.edgeMm).toBe(2);
-        expect(useDesignStore.getState().design.afo?.print.flareMm).toBe(1.5);
+        expect(useDesignStore.getState().design.afo?.print.edgeMm).toBe(2.5);
+        expect(useDesignStore.getState().design.afo?.print.flareMm).toBe(2.5);
         expect(useDesignStore.getState().design.afo?.print.material).toBe("ApexVylon");
         expect(useDesignStore.getState().design.afo?.print).not.toHaveProperty("hideCast");
         expect(useDesignStore.getState().design.afo?.corrections).not.toHaveProperty("toeFlowMm");
@@ -51,9 +51,13 @@ describe("AFO product workflow", () => {
         useAfoStore.getState().resetSession();
         useAfoStore.getState().setPlacingClinicalId("fibular_head");
         useAfoStore.getState().setPlacingLandmarkIndex(1);
+        useAfoStore.getState().setScanPlacement({ redo: null });
+        useAfoStore.getState().setPlacingDesignLandmarks(true);
         useAfoStore.getState().setPlacingTrim(true);
         expect(useAfoStore.getState().placingTrim).toBe(true);
         expect(useAfoStore.getState().placingClinicalId).toBeNull();
+        expect(useAfoStore.getState().placingDesignLandmarks).toBe(false);
+        expect(useAfoStore.getState().scanPlacement).toEqual({ redo: null });
         useAfoStore.getState().setPlacingLandmarkIndex(0);
         expect(useAfoStore.getState().placingTrim).toBe(false);
         expect(useAfoStore.getState().placingLandmarkIndex).toBe(0);

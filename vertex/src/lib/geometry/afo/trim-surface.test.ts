@@ -1,12 +1,19 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { describe, expect, test } from "@rstest/core";
+import { afoPrintShellInput } from "@/features/afo/AfoPrintPanel";
+import { analyzeManifoldBuffers } from "@/lib/geometry/manifold-core";
 import { designSettingsEnvelope, readStoredDesignSettings } from "../../../../shared/design-settings";
-import { defaultAfoDesignState } from "./defaults";
-import { meshProjector } from "./mesh-ops";
+import { AFO_TRIM_SAMPLE_MAX_MM, defaultAfoDesignState } from "./defaults";
+import { meshProjector, nearestVertex, positionsEqual } from "./mesh-ops";
 import { buildAfoShell, resolveShellTrimLoop, trimPolygonForShell } from "./shell";
-import { buildUnitSphereMesh } from "./synthetic-leg";
-import { countDistinctPoints, registerTrimClick, validateTrimLoop } from "./trim-loop";
+import { buildLiveFrameLeg, buildUnitSphereMesh } from "./synthetic-leg";
+import {
+    countDistinctPoints,
+    polylineSelfIntersects,
+    registerTrimClick,
+    validateTrimLoop,
+} from "./trim-loop";
 import {
     afoDesignBaseLabel,
     afoEditExclusive,
@@ -14,7 +21,14 @@ import {
     enterAfoEdit,
     isAfoCastTrimPick,
 } from "./trim-preview";
-import { acceptTrimHit, affectedTrimSegments, fitSurfaceSpline, reprojectTrimPins } from "./trim-spline";
+import {
+    acceptTrimHit,
+    affectedTrimSegments,
+    balanceBracePins,
+    fitSurfaceSpline,
+    posteriorLeafPins,
+    reprojectTrimPins,
+} from "./trim-spline";
 import type { AfoTriMesh, AfoVec3 } from "./types";
 
 function dist(a: AfoVec3, b: AfoVec3): number {
@@ -219,5 +233,176 @@ describe("AFO trim surface contour", () => {
         const on = acceptTrimHit(patch, { x: 0.4, y: 0.4, z: 0.2 });
         expect(on).not.toBeNull();
         expect(meshProjector(patch).closest(on!).errorMm).toBeLessThanOrEqual(0.1);
+    });
+});
+
+function maxStep(curve: AfoVec3[]): number {
+    let step = 0;
+    for (let i = 1; i < curve.length; i++) step = Math.max(step, dist(curve[i - 1]!, curve[i]!));
+    return step;
+}
+
+function nearestOn(mesh: AfoTriMesh, p: AfoVec3): number {
+    let best = Infinity;
+    for (let i = 0; i < mesh.positions.length / 3; i++) {
+        best = Math.min(
+            best,
+            Math.hypot(
+                (mesh.positions[i * 3] ?? 0) - p.x,
+                (mesh.positions[i * 3 + 1] ?? 0) - p.y,
+                (mesh.positions[i * 3 + 2] ?? 0) - p.z,
+            ),
+        );
+    }
+    return best;
+}
+
+/** The old XY-only predicate. Uprights that only cross in plan view used to fail here. */
+function xySegmentsCross(points: AfoVec3[]): boolean {
+    const orient = (p: AfoVec3, q: AfoVec3, r: AfoVec3) =>
+        Math.sign((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x));
+    const n = points.length;
+    for (let i = 0; i < n; i++) {
+        const a = points[i]!;
+        const b = points[(i + 1) % n]!;
+        for (let j = i + 2; j < n; j++) {
+            if (i === 0 && j === n - 1) continue;
+            const c = points[j]!;
+            const d = points[(j + 1) % n]!;
+            const o1 = orient(a, b, c);
+            const o2 = orient(a, b, d);
+            const o3 = orient(c, d, a);
+            const o4 = orient(c, d, b);
+            if (o1 !== 0 && o2 !== 0 && o3 !== 0 && o4 !== 0 && o1 !== o2 && o3 !== o4) return true;
+        }
+    }
+    return false;
+}
+
+describe("AFO trim confirmation and curve-accurate shell", () => {
+    test("XY-only upright crossings do not reject a valid loop, and a real 3D crossing does", () => {
+        const uprights = [
+            { x: 20, y: 30, z: 170 },
+            { x: 20, y: 50, z: 80 },
+            { x: 16, y: 12, z: 14 },
+            { x: 0, y: 40, z: 16 },
+            { x: 40, y: 40, z: 18 },
+            { x: -12, y: 14, z: 14 },
+            { x: -20, y: 42, z: 90 },
+            { x: 0, y: 18, z: 175 },
+        ];
+        expect(xySegmentsCross(uprights)).toBe(true);
+        expect(polylineSelfIntersects(uprights)).toBe(false);
+        const bowtie = [
+            { x: 0, y: 0, z: 5 },
+            { x: 12, y: 12, z: 6 },
+            { x: 12, y: 0, z: 4 },
+            { x: 0, y: 12, z: 7 },
+        ];
+        expect(polylineSelfIntersects(bowtie)).toBe(true);
+    });
+
+    test("sample spacing stays within the 1 mm cap and pin corners are exempt", () => {
+        const quad = flatQuad();
+        const sharp = [
+            { x: -14, y: -10, z: 0 },
+            { x: 14, y: -10, z: 0 },
+            { x: 14, y: 10, z: 0 },
+            { x: -14, y: 10, z: 0 },
+        ];
+        const fit = fitSurfaceSpline(quad, sharp, { spacingMm: 2, closed: true });
+        expect(fit.reasons.join(" | ")).toBe("");
+        expect(fit.ok).toBe(true);
+        expect(maxStep(fit.curve)).toBeLessThanOrEqual(AFO_TRIM_SAMPLE_MAX_MM + 1e-3);
+        for (const pin of sharp) {
+            let best = Infinity;
+            for (const p of fit.curve) best = Math.min(best, dist(p, pin));
+            expect(best).toBeLessThanOrEqual(0.35);
+        }
+        expect(fit.maxTurnDeg).toBeLessThanOrEqual(25);
+        expect(fit.maxChordErrorMm).toBeLessThanOrEqual(0.5);
+    });
+
+    test("a balance brace and a posterior leaf both confirm, and the contour passes through every pin", () => {
+        for (const side of ["left", "right"] as const) {
+            const leg = buildLiveFrameLeg(side);
+            const afo = defaultAfoDesignState(side);
+            for (const placed of [balanceBracePins(leg, afo), posteriorLeafPins(leg, afo)]) {
+                const fit = fitSurfaceSpline(leg, placed.pins, { closed: true });
+                expect(fit.reasons.join(" | ")).toBe("");
+                expect(fit.ok).toBe(true);
+                expect(maxStep(fit.curve)).toBeLessThanOrEqual(AFO_TRIM_SAMPLE_MAX_MM + 1e-3);
+                const validation = validateTrimLoop(
+                    leg,
+                    placed.pins.map(() => 0),
+                    true,
+                    { skipGeodesic: true, points: placed.pins },
+                );
+                expect(validation.reasons.join(" | ")).toBe("");
+                expect(validation.ok).toBe(true);
+                for (const pin of placed.pins) {
+                    let best = Infinity;
+                    for (const p of fit.curve) best = Math.min(best, dist(pin, p));
+                    expect(best).toBeLessThanOrEqual(0.35);
+                }
+            }
+        }
+    });
+
+    test("the shell edge follows the trim curve, preview matches export, and flare lifts the inner rim", () => {
+        const sphere = buildUnitSphereMesh(36, 10);
+        const pins = ringPins(12, 30, 8);
+        const fit = fitSurfaceSpline(sphere, pins, { spacingMm: 1, closed: true });
+        expect(fit.ok).toBe(true);
+        const polygon = trimPolygonForShell(fit.curve, true)!;
+        const opts = {
+            thicknessMm: 4,
+            edgeMm: 2,
+            flareMm: 0,
+            trimPolygon: polygon,
+            heelSeed: { x: 0, y: 0, z: -36 },
+        };
+        const preview = buildAfoShell(sphere, [0, 1, 2, 3], opts);
+        const exported = buildAfoShell(sphere, [0, 1, 2, 3], opts);
+        expect(positionsEqual(preview.positions, exported.positions)).toBe(true);
+        const report = analyzeManifoldBuffers(exported.positions, exported.indices);
+        expect(report.openEdges).toBe(0);
+        expect(report.nonManifoldEdges).toBe(0);
+        let worst = 0;
+        let splitOffVertex = 0;
+        for (const p of polygon) {
+            worst = Math.max(worst, nearestOn(exported, p));
+            if (Math.sqrt(nearestVertex(sphere, p).distSq) > 1 && nearestOn(exported, p) < 0.45)
+                splitOffVertex++;
+        }
+        expect(worst).toBeLessThan(0.45);
+        expect(splitOffVertex).toBeGreaterThan(0);
+        const flared = buildAfoShell(sphere, [0, 1, 2, 3], { ...opts, flareMm: 1.5 });
+        let lifted = 0;
+        let onSkin = 0;
+        for (const p of polygon) {
+            const hit = meshProjector(sphere).closest(p);
+            const raised = {
+                x: p.x + hit.normal.x * 1.5,
+                y: p.y + hit.normal.y * 1.5,
+                z: p.z + hit.normal.z * 1.5,
+            };
+            if (nearestOn(flared, raised) < 0.75) lifted++;
+            if (nearestOn(flared, p) > 0.8) onSkin++;
+        }
+        expect(lifted).toBeGreaterThan(polygon.length * 0.5);
+        expect(onSkin).toBeGreaterThan(polygon.length * 0.5);
+        const flaredReport = analyzeManifoldBuffers(flared.positions, flared.indices);
+        expect(flaredReport.openEdges).toBe(0);
+    });
+
+    test("print builds the shell on the corrected mesh the trim was drawn on", () => {
+        const corrected = buildUnitSphereMesh(30, 8);
+        corrected.positions[0] = 42;
+        const cast = buildUnitSphereMesh(30, 8);
+        const chosen = afoPrintShellInput(corrected, cast);
+        expect(chosen).toBe(corrected);
+        expect(chosen?.positions[0]).toBe(42);
+        expect(afoPrintShellInput(null, cast)).toBe(cast);
     });
 });

@@ -7,6 +7,12 @@ type ProductionMethod = "printing_solid" | "printing_shell" | "milling_3axis";
 export interface AfoTriMesh {
     positions: Float32Array;
     indices: Uint32Array;
+    /**
+     * First triangle of the closing rim. Faces before this are the inner and
+     * outer skins. Set by the shell builder so a flared rim is not inferred
+     * from distance to the scan.
+     */
+    rimFaceStart?: number;
 }
 
 export interface AfoVec3 {

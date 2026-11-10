@@ -52,7 +52,7 @@ export type WorkerRequest =
       };
 
 export type WorkerResponse =
-    | { id: number; type: "geometry"; payload: ReturnType<typeof geometryToPayload> }
+    | { id: number; type: "geometry"; payload: ReturnType<typeof geometryToPayload>; rimFaceStart?: number }
     | { id: number; type: "manifold"; report: ReturnType<typeof analyzeManifoldBuffers> }
     | { id: number; type: "progress"; pct: number; stage: string }
     | { id: number; type: "error"; message: string };
@@ -177,7 +177,7 @@ function postAfoMesh(id: number, mesh: AfoTriMesh): void {
     const transfer: Transferable[] = [out.positions.buffer as ArrayBuffer];
     if (out.indices) transfer.push(out.indices.buffer as ArrayBuffer);
     (self as DedicatedWorkerGlobalScope).postMessage(
-        { id, type: "geometry", payload: out } satisfies WorkerResponse,
+        { id, type: "geometry", payload: out, rimFaceStart: mesh.rimFaceStart } satisfies WorkerResponse,
         transfer,
     );
 }

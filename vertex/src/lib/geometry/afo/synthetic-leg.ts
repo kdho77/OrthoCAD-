@@ -1,5 +1,8 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { medialSign } from "@/lib/geometry/handedness";
+import type { Side } from "@/types";
+import { orientMeshOutward } from "./mesh-ops";
 import type { AfoTriMesh, AfoVec3 } from "./types";
 
 /**
@@ -57,7 +60,7 @@ export function buildUnitSphereMesh(radiusMm: number, segments = 12): AfoTriMesh
  * The result is intentionally tiny (a few hundred triangles) so it can live
  * in the repo as generated geometry — never as a patient scan fixture.
  */
-export function buildSyntheticLegMesh(): AfoTriMesh {
+export function buildSyntheticLegMesh(cells = 18): AfoTriMesh {
     // Implicit union of shin capsule (along +Z) and foot ellipsoid (along +Y).
     const shinA = { x: 0, y: 35, z: 40 };
     const shinB = { x: 0, y: 35, z: 200 };
@@ -74,7 +77,7 @@ export function buildSyntheticLegMesh(): AfoTriMesh {
     return extractImplicitSolid(sdf, {
         min: { x: -50, y: -20, z: -8 },
         max: { x: 50, y: 190, z: 230 },
-        cells: 18,
+        cells,
     });
 }
 
@@ -200,7 +203,33 @@ function extractImplicitSolid(
         }
     }
 
-    return { positions: new Float32Array(positions), indices: new Uint32Array(indices) };
+    return orientMeshOutward({
+        positions: new Float32Array(positions),
+        indices: new Uint32Array(indices),
+    });
+}
+
+/**
+ * Synthetic leg in the live plantar frame.
+ * +X anterior, +Z up, medial = medialSign along Y (left −Y, right +Y).
+ * The marching-tet source is authored with +Y anterior and +X toward the
+ * fixture's medial side; this rigid map (and a mirror for the right foot)
+ * puts both feet in the frame `alignScanToPlantarFrame` produces.
+ */
+export function buildLiveFrameLeg(side: Side, cells = 18): AfoTriMesh {
+    const src = buildSyntheticLegMesh(cells);
+    const sign = medialSign(side);
+    const positions = new Float32Array(src.positions.length);
+    const n = (src.positions.length / 3) | 0;
+    for (let i = 0; i < n; i++) {
+        const x = src.positions[i * 3] ?? 0;
+        const y = src.positions[i * 3 + 1] ?? 0;
+        const z = src.positions[i * 3 + 2] ?? 0;
+        positions[i * 3] = y;
+        positions[i * 3 + 1] = sign * x;
+        positions[i * 3 + 2] = z;
+    }
+    return orientMeshOutward({ positions, indices: src.indices });
 }
 
 function emitTet(

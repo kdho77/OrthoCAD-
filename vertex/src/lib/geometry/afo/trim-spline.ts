@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { medialSign } from "@/lib/geometry/handedness";
 import {
     AFO_TRIM_DRAW_OFFSET_MM,
-    AFO_TRIM_JUMP_FACTOR,
     AFO_TRIM_PLANE_MAX_MM,
     AFO_TRIM_PROJECT_MAX_MM,
     AFO_TRIM_SAMPLE_MAX_MM,
@@ -287,19 +287,29 @@ export function fitSurfaceSpline(
         }
     }
     const smoothed = smoothAndReproject(flat, projector, dirtyIndex, closed, pinLocks);
-    const curve = smoothed.curve;
-    if (curve.length < 2) return emptySpline(["Need at least 3 trim pins."]);
+    if (smoothed.curve.length < 2) return emptySpline(["Need at least 3 trim pins."]);
+    const spaced = enforceSpacing(smoothed.curve, AFO_TRIM_SAMPLE_MAX_MM, projector, closed);
+    const curve = enforceSpacing(
+        relaxSurfaceKinks(spaced, projector, snapped, closed),
+        AFO_TRIM_SAMPLE_MAX_MM,
+        projector,
+        closed,
+    );
     let maxSurface = 0;
     for (const p of curve) maxSurface = Math.max(maxSurface, projector.closest(p).errorMm);
     let maxTurn = 0;
     let maxChord = 0;
     const turnCount = closed ? curve.length : Math.max(0, curve.length - 2);
+    const corners = pinCornerSet(curve, snapped, closed);
     for (let i = 0; i < curve.length; i++) {
         const prev = curve[(i - 1 + curve.length) % curve.length]!;
         const cur = curve[i]!;
         const next = curve[(i + 1) % curve.length]!;
         if (!closed && (i === 0 || i === curve.length - 1)) continue;
         if (i >= turnCount && !closed) continue;
+        // A placed pin is allowed to be a corner. The 25° / 0.5 mm limits
+        // apply to the spans between pins, not to the pin itself.
+        if (corners.has(i)) continue;
         const v1 = sub(cur, prev);
         const v2 = sub(next, cur);
         const l1 = len(v1) || 1;
@@ -311,12 +321,11 @@ export function fitSurfaceSpline(
     if (closed && maxTurn > 25) reasons.push(`Trim turning ${maxTurn.toFixed(1)}° exceeds 25°.`);
     if (closed && maxChord > 0.5) reasons.push(`Chord error ${maxChord.toFixed(2)} mm exceeds 0.5 mm.`);
     if (maxSurface > 0.1) reasons.push(`Curve leaves the surface by ${maxSurface.toFixed(2)} mm.`);
-    if (closed && !opts.quick && (polylineSelfIntersects(curve) || segmentsCrowd(curve))) {
+    if (closed && !opts.quick && polylineSelfIntersects(curve)) {
         reasons.push("Trim loop self-intersects.");
     }
     const baked = resliceKeepingClean(smoothed.curve, counts, segments, dirty);
-    const ring =
-        closed && smoothed.curve.length > 2 ? [...smoothed.curve, { ...smoothed.curve[0]! }] : smoothed.curve;
+    const ring = closed && curve.length > 2 ? [...curve, { ...curve[0]! }] : curve;
     return {
         ok: reasons.length === 0 && (closed || snapped.length >= 2),
         reasons,
@@ -327,6 +336,32 @@ export function fitSurfaceSpline(
         maxChordErrorMm: maxChord,
         maxSurfaceErrorMm: maxSurface,
     };
+}
+
+/** Pin corners, and the samples on either side of them, are not span limits. */
+function pinCornerSet(curve: AfoVec3[], pins: AfoVec3[], closed: boolean): Set<number> {
+    const skip = new Set<number>();
+    const n = curve.length;
+    const radius = 10;
+    for (const pin of pins) {
+        let best = -1;
+        let bestD = Infinity;
+        for (let i = 0; i < n; i++) {
+            const d = dist(curve[i]!, pin);
+            if (d < bestD) {
+                bestD = d;
+                best = i;
+            }
+            if (d <= radius) skip.add(i);
+        }
+        if (best < 0 || n < 2) continue;
+        skip.add(best);
+        const prev = closed ? (best - 1 + n) % n : best - 1;
+        const next = closed ? (best + 1) % n : best + 1;
+        if (prev >= 0 && prev < n) skip.add(prev);
+        if (next >= 0 && next < n) skip.add(next);
+    }
+    return skip;
 }
 
 function dedupePins(pins: AfoVec3[]): AfoVec3[] {
@@ -360,23 +395,91 @@ function sampleSegment(
 
 function projectChain(raw: AfoVec3[], spacing: number, projector: MeshProjector): AfoVec3[] {
     const out: AfoVec3[] = [];
-    const limit = spacing * AFO_TRIM_JUMP_FACTOR;
+    const cap = Math.min(spacing, AFO_TRIM_SAMPLE_MAX_MM);
     const walk = (prevRaw: AfoVec3, sample: AfoVec3, depth: number) => {
         const prev = out.length ? out[out.length - 1]! : null;
-        const hit = projector.project(sample, prev, spacing);
-        if (prev && dist(hit.point, prev) > limit && depth < 5) {
+        const hit = projector.project(sample, prev, cap);
+        if (prev && dist(hit.point, prev) > cap && depth < 8) {
             const mid = lerp(prevRaw, sample, 0.5);
-            walk(prevRaw, mid, depth + 1);
-            walk(mid, sample, depth + 1);
-            return;
+            if (dist(mid, prevRaw) > 1e-4 && dist(mid, sample) > 1e-4) {
+                walk(prevRaw, mid, depth + 1);
+                walk(mid, sample, depth + 1);
+                return;
+            }
         }
-        out.push(hit.point);
+        if (!prev || dist(hit.point, prev) > 0.02) out.push(hit.point);
     };
     const first = raw[0];
     if (!first) return out;
-    out.push(projector.project(first, null, spacing).point);
+    out.push(projector.project(first, null, cap).point);
     for (let i = 1; i < raw.length; i++) walk(raw[i - 1]!, raw[i]!, 0);
     return out;
+}
+
+/**
+ * A sample more than 25° off the chord, while that chord still lies on the
+ * mesh, is a spline kink rather than the surface. Pull it onto the chord.
+ * Pin corners are left alone.
+ */
+function relaxSurfaceKinks(
+    curve: AfoVec3[],
+    projector: MeshProjector,
+    pins: AfoVec3[],
+    closed: boolean,
+): AfoVec3[] {
+    const cur = curve.map((p) => ({ ...p }));
+    const corners = pinCornerSet(cur, pins, closed);
+    const n = cur.length;
+    for (let pass = 0; pass < 8; pass++) {
+        let moved = false;
+        for (let i = 0; i < n; i++) {
+            if (!closed && (i === 0 || i === n - 1)) continue;
+            const prev = cur[(i - 1 + n) % n]!;
+            const p = cur[i]!;
+            const next = cur[(i + 1) % n]!;
+            if (corners.has(i)) continue;
+            const v1 = sub(p, prev);
+            const v2 = sub(next, p);
+            const l1 = len(v1) || 1;
+            const l2 = len(v2) || 1;
+            const c = Math.min(1, Math.max(-1, dot(v1, v2) / (l1 * l2)));
+            if ((Math.acos(c) * 180) / Math.PI <= 25) continue;
+            const mid = lerp(prev, next, 0.5);
+            const hit = projector.closest(mid);
+            if (hit.errorMm > 0.15 || dist(hit.point, p) < 0.01) continue;
+            cur[i] = { ...hit.point };
+            moved = true;
+        }
+        if (!moved) break;
+    }
+    return cur;
+}
+
+/** Insert reprojected midpoints until every step is within the 1 mm cap. */
+function enforceSpacing(curve: AfoVec3[], cap: number, projector: MeshProjector, closed: boolean): AfoVec3[] {
+    let cur = curve.map((p) => ({ ...p }));
+    for (let pass = 0; pass < 8; pass++) {
+        const next: AfoVec3[] = [];
+        let grew = false;
+        const n = cur.length;
+        const limit = closed ? n : Math.max(0, n - 1);
+        for (let i = 0; i < limit; i++) {
+            const a = cur[i]!;
+            const b = cur[(i + 1) % n]!;
+            next.push(a);
+            if (dist(a, b) > cap + 1e-4) {
+                const mid = projector.project(lerp(a, b, 0.5), a, cap).point;
+                if (dist(mid, a) > 0.05 && dist(mid, b) > 0.05) {
+                    next.push(mid);
+                    grew = true;
+                }
+            }
+        }
+        if (!closed && n > 0) next.push(cur[n - 1]!);
+        cur = next;
+        if (!grew) break;
+    }
+    return cur;
 }
 
 function dirtyIndexSet(counts: number[], dirty: Set<number> | null): Set<number> | null {
@@ -452,31 +555,6 @@ function offsetDisplay(projector: MeshProjector, curve: AfoVec3[]): AfoVec3[] {
     });
 }
 
-function segmentsCrowd(points: AfoVec3[]): boolean {
-    const n = points.length;
-    for (let i = 0; i < n; i++) {
-        const a = points[i]!;
-        const b = points[(i + 1) % n]!;
-        for (let j = i + 2; j < n; j++) {
-            if (i === 0 && j >= n - 2) continue;
-            const c = points[j]!;
-            const d = points[(j + 1) % n]!;
-            if (segmentDistance(a, b, c, d) < 0.2) return true;
-        }
-    }
-    return false;
-}
-
-function segmentDistance(a: AfoVec3, b: AfoVec3, c: AfoVec3, d: AfoVec3): number {
-    const samples = 4;
-    let best = Infinity;
-    for (let i = 0; i <= samples; i++) {
-        const p = lerp(a, b, i / samples);
-        for (let j = 0; j <= samples; j++) best = Math.min(best, dist(p, lerp(c, d, j / samples)));
-    }
-    return best;
-}
-
 export interface BalanceBrace {
     pins: AfoVec3[];
     reasons: string[];
@@ -489,17 +567,13 @@ export interface BalanceBrace {
  */
 export function balanceBracePins(mesh: AfoTriMesh, afo: AfoDesignState): BalanceBrace {
     const reasons: string[] = [];
-    const n = vertexCount(mesh);
-    let yMax = -Infinity;
-    let zMin = Infinity;
-    let zMax = -Infinity;
-    for (let i = 0; i < n; i++) {
-        yMax = Math.max(yMax, mesh.positions[i * 3 + 1] ?? 0);
-        zMin = Math.min(zMin, mesh.positions[i * 3 + 2] ?? 0);
-        zMax = Math.max(zMax, mesh.positions[i * 3 + 2] ?? 0);
-    }
-    const med = afo.landmarks.find((l) => l.id === "malleolus_medial")?.point ?? { x: 25, y: 40, z: 70 };
-    const lat = afo.landmarks.find((l) => l.id === "malleolus_lateral")?.point ?? { x: -25, y: 40, z: 70 };
+    const box = meshBounds(mesh);
+    const med =
+        afo.landmarks.find((l) => l.id === "malleolus_medial")?.point ??
+        malleolusOn(mesh, afo.side, "medial", box);
+    const lat =
+        afo.landmarks.find((l) => l.id === "malleolus_lateral")?.point ??
+        malleolusOn(mesh, afo.side, "lateral", box);
     const midZ = (med.z + lat.z) * 0.5;
     const fib =
         afo.clinicalMarkers.find((m) => m.id === "fibular_head")?.point ??
@@ -507,28 +581,146 @@ export function balanceBracePins(mesh: AfoTriMesh, afo: AfoDesignState): Balance
     let topZ = midZ + 110;
     if (fib) topZ = Math.min(topZ, fib.z - 15);
     if (topZ - midZ < 100) reasons.push("Balance-brace top is under 100 mm above the malleoli.");
+    const length = Math.max(1, box.xMax - box.xMin);
     const distal = afo.landmarks.find((l) => l.id === "distal")?.point ?? {
-        x: 0,
-        y: yMax * 0.72,
-        z: zMin + 18,
+        x: box.xMin + length * 0.72,
+        y: 0,
+        z: box.zMin + 18,
     };
-    const heelZ = Math.max(zMin + 10, 10);
+    const heelZ = box.zMin + 12;
+    const heelX = box.xMin + length * 0.06;
+    const sign = medialSign(afo.side);
     const pins = [
-        { x: med.x, y: med.y + 10, z: topZ },
-        { x: med.x, y: med.y + 10, z: med.z },
-        { x: med.x * 0.6, y: 12, z: heelZ },
+        { x: med.x + 10, y: med.y + sign * 4, z: topZ },
+        { x: med.x + 10, y: med.y + sign * 4, z: med.z },
+        { x: heelX, y: med.y * 0.55, z: heelZ },
         distal,
-        { x: lat.x * 0.6, y: 12, z: heelZ },
-        { x: lat.x, y: lat.y + 10, z: lat.z },
-        { x: lat.x, y: lat.y + 10, z: topZ },
-        { x: 0, y: Math.min(med.y, lat.y) - 18, z: topZ },
+        { x: heelX, y: lat.y * 0.55, z: heelZ },
+        { x: lat.x + 10, y: lat.y - sign * 4, z: lat.z },
+        { x: lat.x + 10, y: lat.y - sign * 4, z: topZ },
+        { x: box.xMin - 6, y: 0, z: topZ },
     ].map((p) => snapPointToMesh(mesh, p).point);
     if (fib && topZ > fib.z - 15) reasons.push("Proximal pin is closer than 15 mm to the fibular head.");
-    if (pins[2]!.z < zMin + 10 - 0.5 || pins[4]!.z < zMin + 10 - 0.5) {
+    if (pins[2]!.z < box.zMin + 10 - 0.5 || pins[4]!.z < box.zMin + 10 - 0.5) {
         reasons.push("Heel cup edge is under 10 mm above the plantar plane.");
     }
-    void zMax;
     return { pins, reasons };
+}
+
+/**
+ * Posterior leaf: footplate to the sulcus, heel cup, then the trim rises
+ * behind each malleolus and closes across the posterior calf. The anterior
+ * shin stays open, so the side pins sit posterior of the malleoli.
+ */
+export function posteriorLeafPins(mesh: AfoTriMesh, afo: AfoDesignState): BalanceBrace {
+    const reasons: string[] = [];
+    const box = meshBounds(mesh);
+    const med =
+        afo.landmarks.find((l) => l.id === "malleolus_medial")?.point ??
+        malleolusOn(mesh, afo.side, "medial", box);
+    const lat =
+        afo.landmarks.find((l) => l.id === "malleolus_lateral")?.point ??
+        malleolusOn(mesh, afo.side, "lateral", box);
+    const midZ = (med.z + lat.z) * 0.5;
+    const fib =
+        afo.clinicalMarkers.find((m) => m.id === "fibular_head")?.point ??
+        afo.scanWorkflow.landmarks.fibular_head;
+    let topZ = midZ + 100;
+    if (fib) topZ = Math.min(topZ, fib.z - 15);
+    if (topZ - midZ < 80) reasons.push("Posterior-leaf top is under 80 mm above the malleoli.");
+    const length = Math.max(1, box.xMax - box.xMin);
+    const distal = afo.landmarks.find((l) => l.id === "distal")?.point ?? {
+        x: box.xMin + length * 0.72,
+        y: 0,
+        z: box.zMin + 18,
+    };
+    const heelZ = box.zMin + 12;
+    const heelX = box.xMin + length * 0.06;
+    const sign = medialSign(afo.side);
+    const pins = [
+        { x: box.xMin - 6, y: 0, z: topZ },
+        { x: box.xMin - 4, y: med.y + sign * 2, z: topZ - 8 },
+        { x: med.x - 14, y: med.y + sign * 2, z: med.z },
+        { x: heelX, y: med.y * 0.55, z: heelZ },
+        distal,
+        { x: heelX, y: lat.y * 0.55, z: heelZ },
+        { x: lat.x - 14, y: lat.y - sign * 2, z: lat.z },
+        { x: box.xMin - 4, y: lat.y - sign * 2, z: topZ - 8 },
+    ].map((p) => snapPointToMesh(mesh, p).point);
+    if (fib && topZ > fib.z - 15) reasons.push("Proximal pin is closer than 15 mm to the fibular head.");
+    if (pins[3]!.z < box.zMin + 10 - 0.5 || pins[5]!.z < box.zMin + 10 - 0.5) {
+        reasons.push("Heel cup edge is under 10 mm above the plantar plane.");
+    }
+    return { pins, reasons };
+}
+
+interface MeshBounds {
+    xMin: number;
+    xMax: number;
+    yMin: number;
+    yMax: number;
+    zMin: number;
+    zMax: number;
+}
+
+function meshBounds(mesh: AfoTriMesh): MeshBounds {
+    const box: MeshBounds = {
+        xMin: Infinity,
+        xMax: -Infinity,
+        yMin: Infinity,
+        yMax: -Infinity,
+        zMin: Infinity,
+        zMax: -Infinity,
+    };
+    const n = vertexCount(mesh);
+    for (let i = 0; i < n; i++) {
+        const x = mesh.positions[i * 3] ?? 0;
+        const y = mesh.positions[i * 3 + 1] ?? 0;
+        const z = mesh.positions[i * 3 + 2] ?? 0;
+        if (x < box.xMin) box.xMin = x;
+        if (x > box.xMax) box.xMax = x;
+        if (y < box.yMin) box.yMin = y;
+        if (y > box.yMax) box.yMax = y;
+        if (z < box.zMin) box.zMin = z;
+        if (z > box.zMax) box.zMax = z;
+    }
+    return box;
+}
+
+/** Live frame: +X anterior, width on Y, medial = medialSign. */
+function malleolusOn(
+    mesh: AfoTriMesh,
+    side: AfoDesignState["side"],
+    which: "medial" | "lateral",
+    box: MeshBounds,
+): AfoVec3 {
+    const sign = medialSign(side);
+    const length = Math.max(1, box.xMax - box.xMin);
+    const x0 = box.xMin + length * 0.12;
+    const x1 = box.xMin + length * 0.4;
+    const z0 = box.zMin + 45;
+    const z1 = box.zMin + 115;
+    let best: AfoVec3 | null = null;
+    let bestScore = -Infinity;
+    const n = vertexCount(mesh);
+    for (let i = 0; i < n; i++) {
+        const x = mesh.positions[i * 3] ?? 0;
+        const y = mesh.positions[i * 3 + 1] ?? 0;
+        const z = mesh.positions[i * 3 + 2] ?? 0;
+        if (x < x0 || x > x1 || z < z0 || z > z1) continue;
+        const score = which === "medial" ? y * sign : -y * sign;
+        if (score > bestScore) {
+            bestScore = score;
+            best = { x, y, z };
+        }
+    }
+    if (best) return best;
+    const width = Math.max(Math.abs(box.yMin), Math.abs(box.yMax), 20);
+    return {
+        x: box.xMin + length * 0.25,
+        y: (which === "medial" ? sign : -sign) * width * 0.7,
+        z: box.zMin + 70,
+    };
 }
 
 export function landmarksFromPins(pins: AfoVec3[], mesh: AfoTriMesh): AfoLandmark[] {
