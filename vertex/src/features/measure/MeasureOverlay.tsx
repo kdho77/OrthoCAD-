@@ -10,7 +10,8 @@ import {
     probeThickness,
     triangleMeshFromGeometry,
 } from "@/lib/geometry/measure";
-import { pickFrontFace } from "@/lib/geometry/measure/mesh-ops";
+import { nearestSurfacePoint, pickFrontFace } from "@/lib/geometry/measure/mesh-ops";
+import { getExportMeasureMesh } from "@/lib/geometry/measure/registry";
 import type { MeasureVec3 } from "@/lib/geometry/measure/types";
 import { useMeasureStore } from "@/stores/measure-store";
 
@@ -68,25 +69,32 @@ export function MeasureOverlay() {
                 }
             }
             if (!picked) return;
+            const side = String(picked.mesh.userData.measureSide ?? "");
+            const exportMesh = getExportMeasureMesh(side);
+            if (!exportMesh) {
+                useMeasureStore.getState().setNotice("Print mesh is still measuring.");
+                return;
+            }
+            const snapped = nearestSurfacePoint(exportMesh, picked.local);
+            if (!snapped) return;
             event.stopPropagation();
             event.preventDefault();
-            const worldV = new Vector3(picked.local.x, picked.local.y, picked.local.z);
+            const worldV = new Vector3(snapped.point.x, snapped.point.y, snapped.point.z);
             picked.mesh.localToWorld(worldV);
             const world = { x: worldV.x, y: worldV.y, z: worldV.z };
             const solidId = String(picked.mesh.userData.measureId ?? picked.mesh.name ?? "solid");
-            const stored = { solidId, export: picked.local, world, normal: picked.normal };
+            const stored = { solidId, export: snapped.point, world, normal: snapped.normal };
             const active = useMeasureStore.getState().tool;
             if (active === "point") {
                 useMeasureStore.getState().addPoint(stored);
                 return;
             }
-            const localMesh = triangleMeshFromGeometry(picked.mesh.geometry);
             const inward = {
-                x: -picked.normal.x,
-                y: -picked.normal.y,
-                z: -picked.normal.z,
+                x: -snapped.normal.x,
+                y: -snapped.normal.y,
+                z: -snapped.normal.z,
             };
-            const thicknessHit = probeThickness(localMesh, picked.local, inward);
+            const thicknessHit = probeThickness(exportMesh, snapped.point, inward);
             useMeasureStore.getState().setThickness(stored, thicknessHit);
         };
         el.addEventListener("pointerdown", onPointerDown);

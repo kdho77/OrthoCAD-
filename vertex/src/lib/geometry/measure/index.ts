@@ -11,6 +11,8 @@ export {
     undoDisplayMesh,
     VIEWER_DISPLAY_RX,
 } from "./export-frame";
+export { insoleExportRefreshKey, insoleExportSides } from "./export-key";
+export { loadInsoleExportRows, setInsoleExportLoaderForTests } from "./export-rows";
 export {
     boxMesh,
     bufferGeometryFromMesh,
@@ -27,7 +29,10 @@ export {
     triangleMeshFromGeometry,
 } from "./mesh-ops";
 export {
+    clearExportMeasureMeshes,
+    getExportMeasureMesh,
     getMeasureSolidsSnapshot,
+    publishExportMeasureMesh,
     publishMeasureSolid,
     REPROJECT_CLEAR_MM,
     subscribeMeasureRegistry,

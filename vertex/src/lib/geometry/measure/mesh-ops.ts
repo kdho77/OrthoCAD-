@@ -54,9 +54,10 @@ export function overallFromAabb(bounds: MeasureAabb, product: MeasureProduct): M
     const dy = bounds.max.y - bounds.min.y;
     const dz = bounds.max.z - bounds.min.z;
     if (product === "afo") {
+        // Live AFO frame: +X is heel→toes (footplate length), +Y is width, +Z is height.
         return {
-            lengthMm: dy,
-            widthMm: dx,
+            lengthMm: dx,
+            widthMm: dy,
             heightMm: dz,
             min: bounds.min,
             max: bounds.max,

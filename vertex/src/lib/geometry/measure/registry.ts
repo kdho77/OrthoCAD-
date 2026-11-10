@@ -3,7 +3,7 @@
 import type { BufferGeometry } from "three";
 import { useMeasureStore } from "@/stores/measure-store";
 import { nearestSurfacePoint, triangleMeshFromGeometry } from "./mesh-ops";
-import type { MeasureProduct, MeasureSide } from "./types";
+import type { MeasureProduct, MeasureSide, MeasureTriangleMesh } from "./types";
 
 /** A point that moves farther than this on rebuild is cleared instead of slid. */
 export const REPROJECT_CLEAR_MM = 5;
@@ -16,6 +16,8 @@ export interface PublishedSolid {
 }
 
 const solids = new Map<string, PublishedSolid>();
+/** Export-frame solids used for picks and thickness. Not the viewer preview. */
+const exportMeshes = new Map<string, MeasureTriangleMesh>();
 const hashes = new Map<string, string>();
 let version = 0;
 let snapshot: PublishedSolid[] = [];
@@ -37,6 +39,21 @@ function geometryHash(geometry: BufferGeometry): string {
 function emit(): void {
     version += 1;
     for (const listener of listeners) listener();
+}
+
+export function publishExportMeasureMesh(side: string, mesh: MeasureTriangleMesh): void {
+    exportMeshes.set(side, {
+        positions: mesh.positions.slice(),
+        indices: mesh.indices.slice(),
+    });
+}
+
+export function getExportMeasureMesh(side: string): MeasureTriangleMesh | null {
+    return exportMeshes.get(side) ?? null;
+}
+
+export function clearExportMeasureMeshes(): void {
+    exportMeshes.clear();
 }
 
 export function subscribeMeasureRegistry(listener: () => void): () => void {

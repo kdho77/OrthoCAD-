@@ -11,9 +11,14 @@ import {
     subscribeMeasureRegistry,
     triangleMeshFromGeometry,
 } from "@/lib/geometry/measure";
+import { insoleExportRefreshKey } from "@/lib/geometry/measure/export-key";
+import { type ExportMeasureRow, loadInsoleExportRows } from "@/lib/geometry/measure/export-rows";
 import type { MeasureOverall, MeasureProduct } from "@/lib/geometry/measure/types";
+import { useBaseOutlineStore } from "@/stores/base-outline-store";
+import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeasureStore } from "@/stores/measure-store";
+import { useMeshEditStore } from "@/stores/mesh-edit-store";
 
 function usePublishedSolids() {
     return useSyncExternalStore(subscribeMeasureRegistry, getMeasureSolidsSnapshot, getMeasureSolidsSnapshot);
@@ -40,61 +45,51 @@ export function MeasurementsPanel({ product = "insole" }: { product?: MeasurePro
     const setIncludeLeader = useMeasureStore((s) => s.setIncludeLeader);
     const clear = useMeasureStore((s) => s.clear);
 
-    const rows = solids
+    useDesignStore((s) => s.design);
+    useMeshEditStore((s) => s.trimlineEdit);
+    useMeshEditStore((s) => s.bottomPatternEdit);
+    useBottomPatternStore((s) => s.patterns);
+    useBaseOutlineStore((s) => s.outlines);
+    const exportKey = product === "insole" ? insoleExportRefreshKey() : "";
+    const previewRows = solids
         .filter((solid) => solid.product === product)
         .map((solid) => {
             const mesh = triangleMeshFromGeometry(solid.geometry);
-            const overall = overallPrintSize(mesh, product, includeLeader && product === "insole");
-            return { solid, overall };
+            const overall = overallPrintSize(mesh, product, false);
+            return { id: solid.id, side: solid.side, overall, source: "preview" as const };
         });
-    const exportKey = useDesignStore((s) =>
-        product === "insole"
-            ? JSON.stringify({
-                  us: s.design.usMenSize,
-                  system: s.design.sizeSystem,
-                  mm: s.design.footLengthMm,
-                  pattern: s.design.pattern,
-                  thickness: s.design.thicknessMm,
-                  leftT: s.design.paired?.leftThicknessMm,
-                  rightT: s.design.paired?.rightThicknessMm,
-                  corrections: s.design.corrections,
-                  elements: s.design.elements?.length ?? 0,
-              })
-            : "",
-    );
-    const [exportRows, setExportRows] = useState<typeof rows | null>(null);
+    const [exportRows, setExportRows] = useState<ExportMeasureRow[] | null>(null);
+    const [exportError, setExportError] = useState<string | null>(null);
     useEffect(() => {
         if (product !== "insole") return;
         let cancel = false;
         void exportKey;
         setExportRows(null);
+        setExportError(null);
         void (async () => {
             try {
-                const { buildValidatedExportGeometry } = await import("@/lib/geometry/export-geometry");
-                const next: typeof rows = [];
-                for (const side of ["left", "right"] as const) {
-                    const geometry = await buildValidatedExportGeometry(side);
-                    const overall = overallPrintSize(
-                        triangleMeshFromGeometry(geometry),
-                        "insole",
-                        includeLeader,
-                    );
-                    geometry.dispose();
-                    next.push({
-                        solid: { id: `export-${side}`, product: "insole", side, geometry },
-                        overall,
-                    });
-                }
+                const next = await loadInsoleExportRows(includeLeader);
                 if (!cancel) setExportRows(next);
-            } catch {
-                if (!cancel) setExportRows(null);
+            } catch (error) {
+                if (!cancel) {
+                    setExportRows([]);
+                    setExportError(error instanceof Error ? error.message : "Print size unavailable");
+                }
             }
         })();
         return () => {
             cancel = true;
         };
     }, [product, exportKey, includeLeader]);
-    const shownRows = exportRows ?? rows;
+    const shownRows =
+        product === "insole"
+            ? (exportRows ?? []).map((row) => ({
+                  id: `export-${row.side}`,
+                  side: row.side,
+                  overall: row.overall,
+                  source: row.source,
+              }))
+            : previewRows;
 
     // rstest compiles this module with the classic JSX runtime.
     void React;
@@ -113,40 +108,50 @@ export function MeasurementsPanel({ product = "insole" }: { product?: MeasurePro
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     {product === "afo" ? "Footplate × height × width" : "Length × width × height"}
                 </div>
-                {shownRows.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">
-                        {product === "insole" && exportRows === null
-                            ? "Measuring the print mesh…"
-                            : "Waiting for the print mesh."}
+                {product === "insole" && exportRows === null ? (
+                    <p className="text-xs text-muted-foreground" data-testid="measure-export-pending">
+                        Measuring the print mesh…
                     </p>
+                ) : null}
+                {exportError ? (
+                    <p className="text-[11px] text-amber-200" data-testid="measure-export-error">
+                        {exportError}
+                    </p>
+                ) : null}
+                {shownRows.length === 0 && !(product === "insole" && (exportRows === null || exportError)) ? (
+                    <p className="text-xs text-muted-foreground">Waiting for the print mesh.</p>
                 ) : (
-                    shownRows.map(({ solid, overall }) => {
+                    shownRows.map(({ id, side, overall, source }) => {
                         const length = formatMeasureMm(overall.lengthMm);
                         const width = formatMeasureMm(overall.widthMm);
                         const height = formatMeasureMm(overall.heightMm);
                         const shown = product === "afo" ? [length, height, width] : [length, width, height];
                         return (
                             <p
-                                key={solid.id}
+                                key={id}
                                 className="font-mono text-sm text-foreground"
-                                data-measure-side={solid.side}
-                                data-testid={`measure-overall-${solid.side}`}
+                                data-measure-side={side}
+                                data-measure-source={source}
+                                data-testid={`measure-overall-${side}`}
                             >
-                                {solid.side === "afo" ? null : (
+                                {source === "preview" ? (
+                                    <span className="mr-1 text-[10px] uppercase text-amber-200">Preview</span>
+                                ) : null}
+                                {side === "afo" ? null : (
                                     <span className="mr-1 text-[11px] uppercase text-muted-foreground">
-                                        {solid.side}
+                                        {side}
                                     </span>
                                 )}
-                                <span data-testid={`measure-length-${solid.side}`}>{shown[0]}</span>
+                                <span data-testid={`measure-length-${side}`}>{shown[0]}</span>
                                 <span className="text-muted-foreground"> × </span>
-                                <span data-testid={`measure-mid-${solid.side}`}>{shown[1]}</span>
+                                <span data-testid={`measure-mid-${side}`}>{shown[1]}</span>
                                 <span className="text-muted-foreground"> × </span>
-                                <span data-testid={`measure-last-${solid.side}`}>{shown[2]}</span>
+                                <span data-testid={`measure-last-${side}`}>{shown[2]}</span>
                                 <span className="text-muted-foreground"> mm</span>
-                                <span className="sr-only" data-testid={`measure-width-${solid.side}`}>
+                                <span className="sr-only" data-testid={`measure-width-${side}`}>
                                     {width}
                                 </span>
-                                <span className="sr-only" data-testid={`measure-height-${solid.side}`}>
+                                <span className="sr-only" data-testid={`measure-height-${side}`}>
                                     {height}
                                 </span>
                             </p>

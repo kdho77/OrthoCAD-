@@ -4,12 +4,12 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import { BufferGeometry, Group, Mesh, Vector3 } from "three";
+import { buildExportStl, buildValidatedExportGeometry } from "@/lib/geometry/export-geometry";
 import { sideOffsetX } from "@/lib/geometry/layout";
-import {
-    reconstructProceduralPreview,
-    sampleTopFromArrayBuffer,
-} from "@/lib/geometry/procedural-wall/sample-top-preview";
-import { mirrorGeometry } from "@/lib/library/loaders";
+import { binaryStlBounds } from "@/lib/geometry/leader-block";
+import { nearestSurfacePoint } from "@/lib/geometry/measure/mesh-ops";
+import { resetSampleTopGeometryCache } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
 import {
     afoViewerDisplayTransform,
     bakeDisplayTransform,
@@ -142,16 +142,16 @@ describe("export-frame measurements", () => {
     });
 
     test("AFO display rotation undoes and overall is footplate × height × width", () => {
-        const source = boxMesh({ x: -15, y: 0, z: 0 }, { x: 30, y: 200, z: 180 });
+        const source = boxMesh({ x: 0, y: -15, z: 0 }, { x: 200, y: 30, z: 180 });
         const xf = afoViewerDisplayTransform();
         const overall = overallPrintSize(undoDisplayMesh(bakeDisplayTransform(source, xf), xf), "afo");
         nearly(overall.lengthMm, 200);
         nearly(overall.heightMm, 180);
         nearly(overall.widthMm, 30);
         const stl = exportedStlBounds(source);
-        expect(Math.abs(overall.lengthMm - (stl.maxY - stl.minY))).toBeLessThanOrEqual(0.05);
+        expect(Math.abs(overall.lengthMm - (stl.maxX - stl.minX))).toBeLessThanOrEqual(0.05);
         expect(Math.abs(overall.heightMm - (stl.maxZ - stl.minZ))).toBeLessThanOrEqual(0.05);
-        expect(Math.abs(overall.widthMm - (stl.maxX - stl.minX))).toBeLessThanOrEqual(0.05);
+        expect(Math.abs(overall.widthMm - (stl.maxY - stl.minY))).toBeLessThanOrEqual(0.05);
     });
 
     test("front-face pick ignores back faces and empty meshes", () => {
@@ -201,60 +201,63 @@ describe("export-frame measurements", () => {
         expect(withLeader.lengthMm).toBeGreaterThan(bare.lengthMm + 10);
     });
 
-    test("SAMPLE_Top Men's 9 length and width match the export STL", async () => {
-        const buf = readFileSync(SAMPLE_TOP_PATH);
-        const raw = await sampleTopFromArrayBuffer(
-            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
-        );
-        const right = await reconstructProceduralPreview(raw, { side: "right", footprintScale: 1 });
-        const mirrored = mirrorGeometry(right.geometry);
+    test("a viewer hit snaps onto the export solid", () => {
+        const exported = boxMesh({ x: 0, y: 0, z: 0 }, { x: 80, y: 40, z: 12 });
+        const hit = { x: 20, y: 10, z: 14 };
+        const snapped = nearestSurfacePoint(exported, hit);
+        expect(snapped).not.toBeNull();
+        nearly(snapped!.point.z, 12, 1e-4);
+        expect(snapped!.distance).toBeGreaterThan(1);
+        expect(snapped!.distance).toBeLessThan(3);
+    });
+
+    test("SAMPLE_Top Men's 9 export STL is 275.0 mm long and about 92.73 wide", async () => {
+        const bytes = readFileSync(SAMPLE_TOP_PATH);
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = (async () => new Response(bytes)) as typeof fetch;
+        resetSampleTopGeometryCache();
+        useDesignStore.setState({ design: createDesignWithStockPlaceholder() });
         try {
-            for (const [label, geometry] of [
-                ["right", right.geometry],
-                ["left", mirrored],
-            ] as const) {
-                const mesh = {
-                    positions: new Float32Array(geometry.getAttribute("position").count * 3),
-                    indices: new Uint32Array(
-                        geometry.getIndex()?.count ?? geometry.getAttribute("position").count,
-                    ),
-                };
-                const pos = geometry.getAttribute("position");
-                for (let i = 0; i < pos.count; i++) {
-                    mesh.positions[i * 3] = pos.getX(i);
-                    mesh.positions[i * 3 + 1] = pos.getY(i);
-                    mesh.positions[i * 3 + 2] = pos.getZ(i);
+            for (const side of ["left", "right"] as const) {
+                const geometry = await buildValidatedExportGeometry(side);
+                const stl = await buildExportStl(side);
+                try {
+                    const mesh = {
+                        positions: new Float32Array(geometry.getAttribute("position").count * 3),
+                        indices: new Uint32Array(
+                            geometry.getIndex()?.count ?? geometry.getAttribute("position").count,
+                        ),
+                    };
+                    const pos = geometry.getAttribute("position");
+                    for (let i = 0; i < pos.count; i++) {
+                        mesh.positions[i * 3] = pos.getX(i);
+                        mesh.positions[i * 3 + 1] = pos.getY(i);
+                        mesh.positions[i * 3 + 2] = pos.getZ(i);
+                    }
+                    const index = geometry.getIndex();
+                    if (index) {
+                        for (let i = 0; i < index.count; i++) mesh.indices[i] = index.getX(i);
+                    } else {
+                        for (let i = 0; i < pos.count; i++) mesh.indices[i] = i;
+                    }
+                    const overall = overallPrintSize(mesh, "insole", false);
+                    const stlBox = binaryStlBounds(stl);
+                    const detail = `${side} L=${overall.lengthMm.toFixed(3)} W=${overall.widthMm.toFixed(3)}`;
+                    expect(
+                        Math.abs(overall.lengthMm - (stlBox.maxX - stlBox.minX)),
+                        detail,
+                    ).toBeLessThanOrEqual(0.05);
+                    expect(Math.abs(overall.widthMm - (stlBox.maxY - stlBox.minY))).toBeLessThanOrEqual(0.05);
+                    // Kendon 10/23: SAMPLE_Top scaled evenly in XY by 1.011290.
+                    expect(Math.abs(overall.lengthMm - 275), detail).toBeLessThanOrEqual(0.1);
+                    expect(Math.abs(overall.widthMm - 92.73), detail).toBeLessThanOrEqual(0.1);
+                } finally {
+                    geometry.dispose();
                 }
-                const index = geometry.getIndex();
-                if (index) {
-                    for (let i = 0; i < index.count; i++) mesh.indices[i] = index.getX(i);
-                } else {
-                    for (let i = 0; i < pos.count; i++) mesh.indices[i] = i;
-                }
-                const overall = overallPrintSize(mesh, "insole", false);
-                const stl = exportedStlBounds(mesh);
-                const lengthDelta = Math.abs(overall.lengthMm - (stl.maxX - stl.minX));
-                const widthDelta = Math.abs(overall.widthMm - (stl.maxY - stl.minY));
-                expect(
-                    lengthDelta,
-                    `${label} length ${overall.lengthMm.toFixed(3)} vs stl`,
-                ).toBeLessThanOrEqual(0.05);
-                expect(widthDelta).toBeLessThanOrEqual(0.05);
-                // Live SAMPLE_Top Men's 9 closed solid. The one-click baseline
-                // records this X span as 273.1 mm. 275.0 is not this STL.
-                expect(
-                    Math.abs(overall.lengthMm - 273.1),
-                    `${label} L=${overall.lengthMm.toFixed(3)} W=${overall.widthMm.toFixed(3)} H=${overall.heightMm.toFixed(3)}`,
-                ).toBeLessThanOrEqual(0.1);
-                expect(
-                    Math.abs(overall.widthMm - 92.7),
-                    `${label} width ${overall.widthMm.toFixed(3)}`,
-                ).toBeLessThanOrEqual(0.1);
             }
         } finally {
-            mirrored.dispose();
-            right.geometry.dispose();
-            raw.dispose();
+            globalThis.fetch = originalFetch;
+            resetSampleTopGeometryCache();
         }
     }, 180_000);
 });
