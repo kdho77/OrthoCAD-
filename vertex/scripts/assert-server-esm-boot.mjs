@@ -97,6 +97,9 @@ cpSync(canonicalExportLoftOutfile, join(outDir, "server/src/lib/canonical-export
 const sampleDest = join(outDir, "public/Templates/SAMPLE_Top.glb");
 mkdirSync(dirname(sampleDest), { recursive: true });
 cpSync(join(vertexRoot, "public/Templates/SAMPLE_Top.glb"), sampleDest);
+const fontDest = join(outDir, "public/fonts/Inter-Bold.ttf");
+mkdirSync(dirname(fontDest), { recursive: true });
+cpSync(join(vertexRoot, "public/fonts/Inter-Bold.ttf"), fontDest);
 
 const runnerSource = readFileSync(runnerPath, "utf8");
 if (
