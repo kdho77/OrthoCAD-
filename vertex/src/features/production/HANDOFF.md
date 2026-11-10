@@ -91,18 +91,29 @@ Documented Moonraker calls, and only these: `POST /server/files/upload` with `pr
 
 Printer addresses are operator-entered. Production policy allows RFC1918 hosts with an explicit port and rejects loopback, link-local, metadata, public hosts, userinfo, redirects, and a DNS answer that is not LAN. `testLoopbackAddressPolicy` exists for fake localhost servers and is not used by `main.ts`.
 
-New config key names, not yet provisioned: `ORTHOCAD_BRIDGE_CLOUD_ORIGIN`, `ORTHOCAD_BRIDGE_ID`, `ORTHOCAD_BRIDGE_STATE_DIR`, `ORTHOCAD_BRIDGE_ENROLLMENT_PROOF` (one enroll only), `ORTHOCAD_CLOUD_ORIGIN` (server, https), `ORTHOCAD_MOONRAKER_API_KEY_FILE` (optional local file path, not a key in the environment). Founder example addresses are not stored in this repo.
+Config names:
 
-Start, from `vertex/`: `npx tsx print-bridge/main.ts`. Node 22. The credential file is written mode 0600 under the state directory. Revocation makes the next heartbeat fail and stops new work. An in-flight print is not cancelled automatically and is not sent again.
+- `ORTHOCAD_CLOUD_ORIGIN` — server only. The https origin that serves `/print-bridge/v1`. It must be the same string as the bridge's `ORTHOCAD_BRIDGE_CLOUD_ORIGIN`. `production.createBridgeEnrollment` refuses with "Cloud origin is not configured." when this is unset or not https. It is not set on the hosted project by this change.
+- `ORTHOCAD_BRIDGE_CLOUD_ORIGIN` — bridge. Must equal `ORTHOCAD_CLOUD_ORIGIN`.
+- `ORTHOCAD_BRIDGE_ID` — bridge.
+- `ORTHOCAD_BRIDGE_STATE_DIR` — bridge. The credential file is written here, mode 0600.
+- `ORTHOCAD_BRIDGE_ENROLLMENT_PROOF` — bridge, one enroll only.
+- `ORTHOCAD_MOONRAKER_API_KEY_FILE` — bridge, optional filesystem path. The bridge reads that file once at startup and sends the contents as `X-Api-Key` on Moonraker HTTP calls only. The key is not sent to the cloud, not written into the credential file, and not logged. If the variable is set and the file is missing, empty, or unreadable, the bridge exits before it dials anything. If the variable is unset, Moonraker is called without a key and the shop should use Moonraker `[authorization] trusted_clients`. The websocket status query does not put the key on the URL; authenticated status uses the HTTP query.
 
-`print-bridge.review.sql` is not under `prisma/migrations` and is not applied. Apply it only after the foundation migration and `dispatch-ledger.review.sql`, with Founder approval.
+Founder example addresses are not stored in this repo.
+
+`/print-bridge/v1/enroll`, `heartbeat`, `report`, and `artifact` are served by the Vercel function `vertex/api/print-bridge` and by the standalone Node server. Both call `handlePrintBridgeNode`. Enrollments and credential hashes persist in `shop_bridges` and `shop_enrollments`. A proof is redeemed once. Artifact reads are ranges of 1 MiB so a multi-megabyte insole G-code stays under Vercel's response limit. The bridge checks sha256 after it reassembles the ranges.
+
+Start, from `vertex/`: `npx tsx print-bridge/main.ts`. Node 22. Revocation makes the next heartbeat fail and stops new work. An in-flight print is not cancelled automatically and is not sent again.
+
+`print-bridge.review.sql` is not under `prisma/migrations`. `shop-rls.review.sql` enables row level security on `shop_printers`, `shop_jobs`, and `job_gcode` and is also not under `prisma/migrations`. Neither file is applied by this change. Apply only with Founder approval, after the foundation migration. The five ledger and bridge tables already have row level security on. The API reaches these tables through Prisma as the table owner.
 
 Gates still open: review, deploy, bridge install, enroll, printer config on the shop LAN, read-only connectivity check, then a separately authorized controlled print.
 
 ## How to verify locally
 
 ```bash
-npm test -- vertex/shared/printer-adapter.test.ts vertex/server/src/lib/production-jobs.test.ts vertex/server/src/lib/production-jobs.dispatch.test.ts vertex/server/src/lib/tenancy.test.ts
+npm test -- vertex/shared/printer-adapter.test.ts vertex/server/src/lib/production-jobs.test.ts vertex/server/src/lib/production-jobs.dispatch.test.ts vertex/server/src/lib/tenancy.test.ts vertex/server/src/lib/prisma-bridge-directory.test.ts vertex/api/print-bridge/print-bridge-function.test.ts vertex/api/print-bridge/routing.test.ts vertex/server/src/routers/production-bridge-admin.test.ts vertex/src/features/production/ProductionPage.enrollment.test.tsx vertex/shared/print-bridge-moonraker-key.test.ts vertex/src/features/production/shop-rls.review.test.ts vertex/print-bridge/print-bridge.e2e.test.ts
 ```
 
 Do not point those tests at a printer. Optional UI smoke remains `scripts/production-e2e.mjs` with `?e2eLogin=1`, and it still must not dial hardware.
