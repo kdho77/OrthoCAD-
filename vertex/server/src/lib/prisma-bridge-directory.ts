@@ -11,6 +11,22 @@ import {
     issueCredential,
     sha256Hex,
 } from "../../../shared/print-bridge-enrollment.js";
+import {
+    DISCOVERY_AUDIENCE,
+    type DiscoveryCandidateRecord,
+    type DiscoveryMeta,
+    deviceProofHash,
+    discoveryProofHash,
+    generatePairingCode,
+    PAIRING_AUDIENCE,
+    PAIRING_TTL_MS,
+    PENDING_BRIDGE_NAME,
+    PENDING_SHOP_ID,
+    pairingCodeHash,
+    readDiscoveryMeta,
+    readPairingMeta,
+} from "../../../shared/print-bridge-pairing.js";
+import { productionAddressPolicy } from "../../../shared/printer-address-policy.js";
 
 type DirectoryClient = PrismaClient | Prisma.TransactionClient;
 
@@ -205,5 +221,235 @@ export function prismaBridgeDirectory(prisma: PrismaClient): BridgeDirectory {
             if (!enrollment) return null;
             return credentialFrom({ ...row, credentialHash: row.credentialHash }, enrollment);
         },
+
+        async beginPairing(input) {
+            const proofHash = deviceProofHash(input.deviceProof);
+            if (!proofHash || !allowedPairingOrigin(input.origin)) return { ok: false, reason: "invalid" };
+            const existing = await prisma.shopBridge.findUnique({ where: { id: input.bridgeId } });
+            if (existing?.credentialHash) return { ok: false, reason: "already-enrolled" };
+            const pairingCode = generatePairingCode();
+            const codeHash = pairingCodeHash(pairingCode);
+            if (!codeHash) return { ok: false, reason: "invalid" };
+            const expiresAt = new Date(input.now.getTime() + PAIRING_TTL_MS);
+            await prisma.$transaction(async (tx) => {
+                await tx.shopEnrollment.deleteMany({
+                    where: { bridgeId: input.bridgeId, audience: PAIRING_AUDIENCE, usedAt: null },
+                });
+                await tx.shopBridge.upsert({
+                    where: { id: input.bridgeId },
+                    create: {
+                        id: input.bridgeId,
+                        tenantId: null,
+                        shopId: PENDING_SHOP_ID,
+                        name: PENDING_BRIDGE_NAME,
+                        credentialHash: null,
+                    },
+                    update: { name: existing?.name ?? PENDING_BRIDGE_NAME },
+                });
+                await tx.shopEnrollment.create({
+                    data: {
+                        id: crypto.randomUUID(),
+                        proofHash,
+                        tenantId: null,
+                        shopId: PENDING_SHOP_ID,
+                        bridgeId: input.bridgeId,
+                        printerIds: { kind: "pairing", codeHash, approved: false },
+                        audience: PAIRING_AUDIENCE,
+                        origin: input.origin,
+                        expiresAt,
+                        usedAt: null,
+                    },
+                });
+            });
+            return { ok: true, pairingCode, expiresAt: expiresAt.toISOString() };
+        },
+
+        async approvePairing(input) {
+            const codeHash = pairingCodeHash(input.code);
+            const bridgeName = input.bridgeName.trim();
+            if (!codeHash || !bridgeName || !input.tenantId) return { ok: false, reason: "mismatch" };
+            const rows = await prisma.shopEnrollment.findMany({
+                where: { audience: PAIRING_AUDIENCE },
+            });
+            const matches = rows.filter((row) => readPairingMeta(row.printerIds)?.codeHash === codeHash);
+            if (matches.length === 0) return { ok: false, reason: "mismatch" };
+            const live = matches.find((row) => !row.usedAt && row.expiresAt.getTime() > input.now.getTime());
+            if (!live) return { ok: false, reason: matches.some((row) => row.usedAt) ? "used" : "expired" };
+            const meta = readPairingMeta(live.printerIds);
+            if (!meta || meta.approved) return { ok: false, reason: "used" };
+            await prisma.$transaction(async (tx) => {
+                await tx.shopEnrollment.update({
+                    where: { id: live.id },
+                    data: {
+                        tenantId: input.tenantId,
+                        shopId: input.shopId,
+                        printerIds: { kind: "pairing", codeHash, approved: true },
+                    },
+                });
+                await tx.shopBridge.update({
+                    where: { id: live.bridgeId },
+                    data: { tenantId: input.tenantId, shopId: input.shopId, name: bridgeName },
+                });
+            });
+            return { ok: true, bridgeId: live.bridgeId };
+        },
+
+        async pollPairing(input) {
+            const proofHash = deviceProofHash(input.deviceProof);
+            if (!proofHash) return { status: "rejected" };
+            const row = await prisma.shopEnrollment.findUnique({ where: { proofHash } });
+            if (
+                !row ||
+                row.audience !== PAIRING_AUDIENCE ||
+                row.bridgeId !== input.bridgeId ||
+                row.origin !== input.origin
+            ) {
+                return { status: "rejected" };
+            }
+            if (row.usedAt) return { status: "consumed" };
+            if (row.expiresAt.getTime() <= input.now.getTime()) return { status: "expired" };
+            const meta = readPairingMeta(row.printerIds);
+            if (!meta?.approved || !row.tenantId || row.shopId === PENDING_SHOP_ID)
+                return { status: "pending" };
+            const claimed = await prisma.$transaction(async (tx) => {
+                const updated = await tx.shopEnrollment.updateMany({
+                    where: { id: row.id, usedAt: null },
+                    data: { usedAt: input.now, printerIds: [] },
+                });
+                if (updated.count !== 1) return null;
+                const issued = issueCredential();
+                await tx.shopBridge.update({
+                    where: { id: row.bridgeId },
+                    data: { credentialHash: issued.credentialHash },
+                });
+                return issued.credential;
+            });
+            if (!claimed) return { status: "consumed" };
+            return { status: "ready", credential: claimed };
+        },
+
+        async reportDiscovery(input) {
+            const proofHash = discoveryProofHash(input.bridge.bridgeId);
+            const existing = await prisma.shopEnrollment.findUnique({ where: { proofHash } });
+            const current = existing ? readDiscoveryMeta(existing.printerIds) : null;
+            const meta: DiscoveryMeta = {
+                kind: "discovery",
+                candidates: sanitizeStoredCandidates(input.candidates),
+                probe: current?.probe ?? null,
+                lastTest: current?.lastTest ?? null,
+            };
+            if (input.connectionTest && meta.probe && meta.probe.address === input.connectionTest.address) {
+                meta.lastTest = {
+                    address: input.connectionTest.address,
+                    info: input.connectionTest.info,
+                    checkedAt: input.now.toISOString(),
+                };
+                meta.probe = null;
+            }
+            const data = {
+                printerIds: meta as unknown as Prisma.InputJsonValue,
+                tenantId: input.bridge.tenantId,
+                shopId: input.bridge.shopId,
+                origin: input.bridge.origin,
+                expiresAt: new Date(input.now.getTime() + 24 * 60 * 60 * 1000),
+            };
+            if (existing) {
+                await prisma.shopEnrollment.update({ where: { id: existing.id }, data });
+                return;
+            }
+            await prisma.shopEnrollment.create({
+                data: {
+                    id: crypto.randomUUID(),
+                    proofHash,
+                    bridgeId: input.bridge.bridgeId,
+                    audience: DISCOVERY_AUDIENCE,
+                    usedAt: null,
+                    ...data,
+                },
+            });
+        },
+
+        async listDiscovery(tenantId) {
+            const rows = await prisma.shopEnrollment.findMany({
+                where: { audience: DISCOVERY_AUDIENCE, tenantId },
+            });
+            const candidates: Array<DiscoveryCandidateRecord & { bridgeId: string }> = [];
+            let lastTest: DiscoveryMeta["lastTest"] = null;
+            for (const row of rows) {
+                const meta = readDiscoveryMeta(row.printerIds);
+                if (!meta) continue;
+                for (const candidate of meta.candidates)
+                    candidates.push({ ...candidate, bridgeId: row.bridgeId });
+                if (meta.lastTest) lastTest = meta.lastTest;
+            }
+            return { candidates, lastTest };
+        },
+
+        async requestConnectionTest(input) {
+            const bridge = await prisma.shopBridge.findUnique({ where: { id: input.bridgeId } });
+            if (!bridge?.credentialHash || bridge.revokedAt || bridge.tenantId !== input.tenantId) {
+                return { ok: false, reason: "Bridge not found." };
+            }
+            const decision = productionAddressPolicy().decide(input.address);
+            if (!decision.ok) return { ok: false, reason: decision.reason };
+            const proofHash = discoveryProofHash(input.bridgeId);
+            const existing = await prisma.shopEnrollment.findUnique({ where: { proofHash } });
+            const current = existing ? readDiscoveryMeta(existing.printerIds) : null;
+            const meta: DiscoveryMeta = {
+                kind: "discovery",
+                candidates: current?.candidates ?? [],
+                probe: { address: input.address, requestedAt: input.now.toISOString() },
+                lastTest: current?.lastTest ?? null,
+            };
+            if (existing) {
+                await prisma.shopEnrollment.update({
+                    where: { id: existing.id },
+                    data: { printerIds: meta as unknown as Prisma.InputJsonValue },
+                });
+            } else {
+                const enrollment = await latestEnrollment(prisma, input.bridgeId);
+                await prisma.shopEnrollment.create({
+                    data: {
+                        id: crypto.randomUUID(),
+                        proofHash,
+                        tenantId: input.tenantId,
+                        shopId: bridge.shopId,
+                        bridgeId: input.bridgeId,
+                        printerIds: meta as unknown as Prisma.InputJsonValue,
+                        audience: DISCOVERY_AUDIENCE,
+                        origin: enrollment?.origin ?? "",
+                        expiresAt: new Date(input.now.getTime() + 24 * 60 * 60 * 1000),
+                        usedAt: null,
+                    },
+                });
+            }
+            return { ok: true, address: input.address };
+        },
+
+        async pendingDiscoveryProbe(bridgeId) {
+            const row = await prisma.shopEnrollment.findUnique({
+                where: { proofHash: discoveryProofHash(bridgeId) },
+            });
+            const probe = row ? readDiscoveryMeta(row.printerIds)?.probe : null;
+            return probe ? { address: probe.address } : null;
+        },
     };
+}
+
+function allowedPairingOrigin(origin: string): boolean {
+    if (origin.startsWith("https://")) return true;
+    try {
+        const url = new URL(origin);
+        return url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost");
+    } catch {
+        return false;
+    }
+}
+
+function sanitizeStoredCandidates(candidates: DiscoveryCandidateRecord[]): DiscoveryCandidateRecord[] {
+    const policy = productionAddressPolicy();
+    return candidates.filter((candidate) => {
+        const decision = policy.decide(candidate.address);
+        return decision.ok && candidate.address === `http://${candidate.host}:${candidate.port}`;
+    });
 }
