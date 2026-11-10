@@ -2,8 +2,6 @@
 
 import { SliderField } from "@/components/ui/slider-field";
 import { runAfoShell } from "@/lib/geometry/afo/afo-engine";
-import { applyClinicalCast } from "@/lib/geometry/afo/cast";
-import { applyAfoCorrections, correctionContextFromAfo } from "@/lib/geometry/afo/corrections";
 import {
     AFO_EDGE_MM,
     AFO_EDGE_RANGE,
@@ -13,22 +11,33 @@ import {
     AFO_THICKNESS_MM,
     AFO_THICKNESS_RANGE,
     afoPrintParams,
-    correctionsForSide,
     defaultAfoPrint,
 } from "@/lib/geometry/afo/defaults";
 import { trimPolygonForShell } from "@/lib/geometry/afo/shell";
 import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
+import type { AfoTriMesh } from "@/lib/geometry/afo/types";
 import { evaluateAfoWarnings } from "@/lib/geometry/afo/warnings";
 import { getAfoState, patchAfoState, useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
+
+/**
+ * The shell is built on the mesh the trim was drawn on. Re-running cast and
+ * corrections here drops the malleolus override that `refreshAfoWorkingMesh`
+ * already baked into `correctedMesh`.
+ */
+export function afoPrintShellInput(
+    correctedMesh: AfoTriMesh | null,
+    castMesh: AfoTriMesh | null,
+): AfoTriMesh | null {
+    return correctedMesh ?? castMesh;
+}
 
 export function AfoPrintPanel() {
     const afo = useDesignStore((s) => s.design.afo) ?? getAfoState();
     const print = afoPrintParams(afo.print ?? defaultAfoPrint());
     const correctedMesh = useAfoStore((s) => s.correctedMesh);
     const castMesh = useAfoStore((s) => s.castMesh);
-    const sourceMesh = useAfoStore((s) => s.sourceMesh);
-    const working = correctedMesh ?? castMesh;
+    const working = afoPrintShellInput(correctedMesh, castMesh);
     const progress = useAfoStore((s) => s.workerProgress);
     const lastError = useAfoStore((s) => s.lastError);
     const setShell = useAfoStore((s) => s.setShellMesh);
@@ -44,25 +53,14 @@ export function AfoPrintPanel() {
         setError(null);
         setProgress({ pct: 0, stage: "shell" });
         try {
-            const src = sourceMesh ?? working;
-            const includeShinBox = afo.method !== "printing_shell";
-            const casted = src ? applyClinicalCast(src, afo, undefined, { includeShinBox }) : null;
-            const positive =
-                casted != null
-                    ? applyAfoCorrections(casted.mesh, correctionsForSide(afo.corrections, afo.side), {
-                          ...correctionContextFromAfo(afo),
-                          anatomical: true,
-                      })
-                    : working;
-            if (!positive) return;
             const pinPoints = afo.trimPoints.map((p) => p.point);
             const polygon =
                 trimPolygonForShell(afo.trimCurve ?? [], true) ??
                 (pinPoints.length >= 3
-                    ? trimPolygonForShell(fitSurfaceSpline(positive, pinPoints, { closed: true }).curve, true)
+                    ? trimPolygonForShell(fitSurfaceSpline(working, pinPoints, { closed: true }).curve, true)
                     : null);
             const shell = await runAfoShell(
-                positive,
+                working,
                 afo.trimPoints.map((p) => p.vertexIndex),
                 {
                     thicknessMm: print.thicknessMm,

@@ -2,7 +2,6 @@
 
 import {
     AFO_TRIM_DRAW_OFFSET_MM,
-    AFO_TRIM_JUMP_FACTOR,
     AFO_TRIM_PLANE_MAX_MM,
     AFO_TRIM_PROJECT_MAX_MM,
     AFO_TRIM_SAMPLE_MAX_MM,
@@ -287,19 +286,29 @@ export function fitSurfaceSpline(
         }
     }
     const smoothed = smoothAndReproject(flat, projector, dirtyIndex, closed, pinLocks);
-    const curve = smoothed.curve;
-    if (curve.length < 2) return emptySpline(["Need at least 3 trim pins."]);
+    if (smoothed.curve.length < 2) return emptySpline(["Need at least 3 trim pins."]);
+    const spaced = enforceSpacing(smoothed.curve, AFO_TRIM_SAMPLE_MAX_MM, projector, closed);
+    const curve = enforceSpacing(
+        relaxSurfaceKinks(spaced, projector, snapped, closed),
+        AFO_TRIM_SAMPLE_MAX_MM,
+        projector,
+        closed,
+    );
     let maxSurface = 0;
     for (const p of curve) maxSurface = Math.max(maxSurface, projector.closest(p).errorMm);
     let maxTurn = 0;
     let maxChord = 0;
     const turnCount = closed ? curve.length : Math.max(0, curve.length - 2);
+    const cornerMm = AFO_TRIM_SAMPLE_MAX_MM + 0.05;
     for (let i = 0; i < curve.length; i++) {
         const prev = curve[(i - 1 + curve.length) % curve.length]!;
         const cur = curve[i]!;
         const next = curve[(i + 1) % curve.length]!;
         if (!closed && (i === 0 || i === curve.length - 1)) continue;
         if (i >= turnCount && !closed) continue;
+        // A placed pin is allowed to be a corner. The 25° / 0.5 mm limits
+        // apply to the spans between pins, not to the pin itself.
+        if (snapped.some((pin) => dist(pin, cur) <= cornerMm)) continue;
         const v1 = sub(cur, prev);
         const v2 = sub(next, cur);
         const l1 = len(v1) || 1;
@@ -311,12 +320,11 @@ export function fitSurfaceSpline(
     if (closed && maxTurn > 25) reasons.push(`Trim turning ${maxTurn.toFixed(1)}° exceeds 25°.`);
     if (closed && maxChord > 0.5) reasons.push(`Chord error ${maxChord.toFixed(2)} mm exceeds 0.5 mm.`);
     if (maxSurface > 0.1) reasons.push(`Curve leaves the surface by ${maxSurface.toFixed(2)} mm.`);
-    if (closed && !opts.quick && (polylineSelfIntersects(curve) || segmentsCrowd(curve))) {
+    if (closed && !opts.quick && polylineSelfIntersects(curve)) {
         reasons.push("Trim loop self-intersects.");
     }
     const baked = resliceKeepingClean(smoothed.curve, counts, segments, dirty);
-    const ring =
-        closed && smoothed.curve.length > 2 ? [...smoothed.curve, { ...smoothed.curve[0]! }] : smoothed.curve;
+    const ring = closed && curve.length > 2 ? [...curve, { ...curve[0]! }] : curve;
     return {
         ok: reasons.length === 0 && (closed || snapped.length >= 2),
         reasons,
@@ -360,23 +368,91 @@ function sampleSegment(
 
 function projectChain(raw: AfoVec3[], spacing: number, projector: MeshProjector): AfoVec3[] {
     const out: AfoVec3[] = [];
-    const limit = spacing * AFO_TRIM_JUMP_FACTOR;
+    const cap = Math.min(spacing, AFO_TRIM_SAMPLE_MAX_MM);
     const walk = (prevRaw: AfoVec3, sample: AfoVec3, depth: number) => {
         const prev = out.length ? out[out.length - 1]! : null;
-        const hit = projector.project(sample, prev, spacing);
-        if (prev && dist(hit.point, prev) > limit && depth < 5) {
+        const hit = projector.project(sample, prev, cap);
+        if (prev && dist(hit.point, prev) > cap && depth < 8) {
             const mid = lerp(prevRaw, sample, 0.5);
-            walk(prevRaw, mid, depth + 1);
-            walk(mid, sample, depth + 1);
-            return;
+            if (dist(mid, prevRaw) > 1e-4 && dist(mid, sample) > 1e-4) {
+                walk(prevRaw, mid, depth + 1);
+                walk(mid, sample, depth + 1);
+                return;
+            }
         }
-        out.push(hit.point);
+        if (!prev || dist(hit.point, prev) > 0.02) out.push(hit.point);
     };
     const first = raw[0];
     if (!first) return out;
-    out.push(projector.project(first, null, spacing).point);
+    out.push(projector.project(first, null, cap).point);
     for (let i = 1; i < raw.length; i++) walk(raw[i - 1]!, raw[i]!, 0);
     return out;
+}
+
+/**
+ * A sample more than 25° off the chord, while that chord still lies on the
+ * mesh, is a spline kink rather than the surface. Pull it onto the chord.
+ * Pin corners are left alone.
+ */
+function relaxSurfaceKinks(
+    curve: AfoVec3[],
+    projector: MeshProjector,
+    pins: AfoVec3[],
+    closed: boolean,
+): AfoVec3[] {
+    const cur = curve.map((p) => ({ ...p }));
+    const cornerMm = AFO_TRIM_SAMPLE_MAX_MM + 0.05;
+    const n = cur.length;
+    for (let pass = 0; pass < 8; pass++) {
+        let moved = false;
+        for (let i = 0; i < n; i++) {
+            if (!closed && (i === 0 || i === n - 1)) continue;
+            const prev = cur[(i - 1 + n) % n]!;
+            const p = cur[i]!;
+            const next = cur[(i + 1) % n]!;
+            if (pins.some((pin) => dist(pin, p) <= cornerMm)) continue;
+            const v1 = sub(p, prev);
+            const v2 = sub(next, p);
+            const l1 = len(v1) || 1;
+            const l2 = len(v2) || 1;
+            const c = Math.min(1, Math.max(-1, dot(v1, v2) / (l1 * l2)));
+            if ((Math.acos(c) * 180) / Math.PI <= 25) continue;
+            const mid = lerp(prev, next, 0.5);
+            const hit = projector.closest(mid);
+            if (hit.errorMm > 0.15 || dist(hit.point, p) < 0.01) continue;
+            cur[i] = { ...hit.point };
+            moved = true;
+        }
+        if (!moved) break;
+    }
+    return cur;
+}
+
+/** Insert reprojected midpoints until every step is within the 1 mm cap. */
+function enforceSpacing(curve: AfoVec3[], cap: number, projector: MeshProjector, closed: boolean): AfoVec3[] {
+    let cur = curve.map((p) => ({ ...p }));
+    for (let pass = 0; pass < 8; pass++) {
+        const next: AfoVec3[] = [];
+        let grew = false;
+        const n = cur.length;
+        const limit = closed ? n : Math.max(0, n - 1);
+        for (let i = 0; i < limit; i++) {
+            const a = cur[i]!;
+            const b = cur[(i + 1) % n]!;
+            next.push(a);
+            if (dist(a, b) > cap + 1e-4) {
+                const mid = projector.project(lerp(a, b, 0.5), a, cap).point;
+                if (dist(mid, a) > 0.05 && dist(mid, b) > 0.05) {
+                    next.push(mid);
+                    grew = true;
+                }
+            }
+        }
+        if (!closed && n > 0) next.push(cur[n - 1]!);
+        cur = next;
+        if (!grew) break;
+    }
+    return cur;
 }
 
 function dirtyIndexSet(counts: number[], dirty: Set<number> | null): Set<number> | null {
@@ -452,31 +528,6 @@ function offsetDisplay(projector: MeshProjector, curve: AfoVec3[]): AfoVec3[] {
     });
 }
 
-function segmentsCrowd(points: AfoVec3[]): boolean {
-    const n = points.length;
-    for (let i = 0; i < n; i++) {
-        const a = points[i]!;
-        const b = points[(i + 1) % n]!;
-        for (let j = i + 2; j < n; j++) {
-            if (i === 0 && j >= n - 2) continue;
-            const c = points[j]!;
-            const d = points[(j + 1) % n]!;
-            if (segmentDistance(a, b, c, d) < 0.2) return true;
-        }
-    }
-    return false;
-}
-
-function segmentDistance(a: AfoVec3, b: AfoVec3, c: AfoVec3, d: AfoVec3): number {
-    const samples = 4;
-    let best = Infinity;
-    for (let i = 0; i <= samples; i++) {
-        const p = lerp(a, b, i / samples);
-        for (let j = 0; j <= samples; j++) best = Math.min(best, dist(p, lerp(c, d, j / samples)));
-    }
-    return best;
-}
-
 export interface BalanceBrace {
     pins: AfoVec3[];
     reasons: string[];
@@ -528,6 +579,53 @@ export function balanceBracePins(mesh: AfoTriMesh, afo: AfoDesignState): Balance
         reasons.push("Heel cup edge is under 10 mm above the plantar plane.");
     }
     void zMax;
+    return { pins, reasons };
+}
+
+/**
+ * Posterior leaf: footplate to the sulcus, heel cup, then the trim rises
+ * behind each malleolus and closes across the posterior calf. The anterior
+ * shin stays open, so the side pins sit posterior of the malleoli.
+ */
+export function posteriorLeafPins(mesh: AfoTriMesh, afo: AfoDesignState): BalanceBrace {
+    const reasons: string[] = [];
+    const n = vertexCount(mesh);
+    let yMax = -Infinity;
+    let zMin = Infinity;
+    for (let i = 0; i < n; i++) {
+        yMax = Math.max(yMax, mesh.positions[i * 3 + 1] ?? 0);
+        zMin = Math.min(zMin, mesh.positions[i * 3 + 2] ?? 0);
+    }
+    const med = afo.landmarks.find((l) => l.id === "malleolus_medial")?.point ?? { x: 25, y: 40, z: 70 };
+    const lat = afo.landmarks.find((l) => l.id === "malleolus_lateral")?.point ?? { x: -25, y: 40, z: 70 };
+    const midZ = (med.z + lat.z) * 0.5;
+    const fib =
+        afo.clinicalMarkers.find((m) => m.id === "fibular_head")?.point ??
+        afo.scanWorkflow.landmarks.fibular_head;
+    let topZ = midZ + 100;
+    if (fib) topZ = Math.min(topZ, fib.z - 15);
+    if (topZ - midZ < 80) reasons.push("Posterior-leaf top is under 80 mm above the malleoli.");
+    const distal = afo.landmarks.find((l) => l.id === "distal")?.point ?? {
+        x: 0,
+        y: yMax * 0.72,
+        z: zMin + 18,
+    };
+    const heelZ = Math.max(zMin + 10, 10);
+    const backY = Math.min(med.y, lat.y) - 22;
+    const pins = [
+        { x: 0, y: backY, z: topZ },
+        { x: med.x * 0.85, y: med.y - 16, z: topZ - 6 },
+        { x: med.x, y: med.y - 12, z: med.z },
+        { x: med.x * 0.55, y: 10, z: heelZ },
+        distal,
+        { x: lat.x * 0.55, y: 10, z: heelZ },
+        { x: lat.x, y: lat.y - 12, z: lat.z },
+        { x: lat.x * 0.85, y: lat.y - 16, z: topZ - 6 },
+    ].map((p) => snapPointToMesh(mesh, p).point);
+    if (fib && topZ > fib.z - 15) reasons.push("Proximal pin is closer than 15 mm to the fibular head.");
+    if (pins[3]!.z < zMin + 10 - 0.5 || pins[5]!.z < zMin + 10 - 0.5) {
+        reasons.push("Heel cup edge is under 10 mm above the plantar plane.");
+    }
     return { pins, reasons };
 }
 

@@ -248,26 +248,21 @@ describe("AFO Windows parity", () => {
         expect(report.nonManifoldEdges).toBe(0);
         expect(countTriangleSelfIntersections(shell)).toBe(0);
         expect(worstDihedralDeg(sphere)).toBeLessThanOrEqual(60);
-        let haus = 0;
+        const plain = buildAfoShell(sphere, loop, { thicknessMm: 4, edgeMm: 2, flareMm: 0 });
+        let hausPlain = 0;
+        let hausFlared = 0;
         for (const i of loop) {
             const p = {
                 x: sphere.positions[i * 3] ?? 0,
                 y: sphere.positions[i * 3 + 1] ?? 0,
                 z: sphere.positions[i * 3 + 2] ?? 0,
             };
-            let best = Infinity;
-            for (let v = 0; v < shell.positions.length / 3; v++) {
-                const d = Math.hypot(
-                    (shell.positions[v * 3] ?? 0) - p.x,
-                    (shell.positions[v * 3 + 1] ?? 0) - p.y,
-                    (shell.positions[v * 3 + 2] ?? 0) - p.z,
-                );
-                if (d < best) best = d;
-            }
-            haus = Math.max(haus, best);
+            hausPlain = Math.max(hausPlain, nearestVertexDistance(plain, p));
+            hausFlared = Math.max(hausFlared, nearestVertexDistance(shell, p));
         }
-        expect(haus).toBeLessThanOrEqual(0.5);
-        const plain = buildAfoShell(sphere, loop, { thicknessMm: 4, edgeMm: 2, flareMm: 0 });
+        expect(hausPlain).toBeLessThanOrEqual(0.5);
+        expect(hausFlared).toBeGreaterThan(1);
+        expect(hausFlared).toBeLessThan(2.2);
         const moved: number[] = [];
         for (let i = 0; i < shell.positions.length / 3; i++) {
             const p = {
@@ -367,6 +362,19 @@ function at(mesh: AfoTriMesh, i: number): AfoVec3 {
         y: mesh.positions[i * 3 + 1] ?? 0,
         z: mesh.positions[i * 3 + 2] ?? 0,
     };
+}
+
+function nearestVertexDistance(mesh: AfoTriMesh, p: AfoVec3): number {
+    let best = Infinity;
+    for (let i = 0; i < mesh.positions.length / 3; i++) {
+        const d = Math.hypot(
+            (mesh.positions[i * 3] ?? 0) - p.x,
+            (mesh.positions[i * 3 + 1] ?? 0) - p.y,
+            (mesh.positions[i * 3 + 2] ?? 0) - p.z,
+        );
+        if (d < best) best = d;
+    }
+    return best;
 }
 
 function nearestZ(mesh: AfoTriMesh, p: AfoVec3): number {
