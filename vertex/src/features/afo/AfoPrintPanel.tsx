@@ -9,9 +9,10 @@ import {
     AFO_EDGE_RANGE,
     AFO_FLARE_MM,
     AFO_FLARE_RANGE,
-    AFO_MATERIAL,
+    AFO_PRINT_MATERIAL_IDS,
     AFO_THICKNESS_MM,
     AFO_THICKNESS_RANGE,
+    afoPrintParams,
     correctionsForSide,
     defaultAfoPrint,
 } from "@/lib/geometry/afo/defaults";
@@ -21,7 +22,7 @@ import { useDesignStore } from "@/stores/design-store";
 
 export function AfoPrintPanel() {
     const afo = useDesignStore((s) => s.design.afo) ?? getAfoState();
-    const print = afo.print ?? defaultAfoPrint();
+    const print = afoPrintParams(afo.print ?? defaultAfoPrint());
     const correctedMesh = useAfoStore((s) => s.correctedMesh);
     const castMesh = useAfoStore((s) => s.castMesh);
     const sourceMesh = useAfoStore((s) => s.sourceMesh);
@@ -100,15 +101,26 @@ export function AfoPrintPanel() {
                 defaultValue={AFO_FLARE_MM}
                 onChange={(v) => patchAfoState({ print: { ...print, flareMm: v } }, "afo-print")}
             />
-            <label className="block text-[10px] text-muted-foreground">
+            <label className="block text-[10px] text-muted-foreground" htmlFor="afo-print-material">
                 Material
-                <input
+                <select
+                    id="afo-print-material"
+                    data-testid="afo-print-material"
                     className="mt-1 h-7 w-full rounded border border-border bg-background px-2 text-foreground"
-                    value={print.material ?? AFO_MATERIAL}
+                    value={print.material}
                     onChange={(e) =>
-                        patchAfoState({ print: { ...print, material: e.target.value } }, "afo-print")
+                        patchAfoState(
+                            { print: afoPrintParams({ ...print, material: e.target.value }) },
+                            "afo-print",
+                        )
                     }
-                />
+                >
+                    {AFO_PRINT_MATERIAL_IDS.map((id) => (
+                        <option key={id} value={id}>
+                            {id}
+                        </option>
+                    ))}
+                </select>
             </label>
             <button
                 type="button"

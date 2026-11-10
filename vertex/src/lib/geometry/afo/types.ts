@@ -148,12 +148,18 @@ export interface AfoTrimPoint {
     vertexIndex: number;
 }
 
+/** AFO shell filament. The Print step offers this id and no other. */
+export type AfoPrintMaterialId = "ApexVylon";
+
 export interface AfoPrintParams {
     thicknessMm: number;
     edgeMm: number;
     flareMm: number;
-    /** Print material. Geometry does not assume a polymer. */
-    material: string;
+    /**
+     * Locked to ApexVylon. Legacy saved values such as PLA are coerced on read
+     * and are not offered in the Print control.
+     */
+    material: AfoPrintMaterialId;
 }
 
 export interface AfoWarning {

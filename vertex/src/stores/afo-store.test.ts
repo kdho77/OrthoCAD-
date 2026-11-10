@@ -24,7 +24,7 @@ describe("AFO product workflow", () => {
         expect(useDesignStore.getState().design.afo?.print.thicknessMm).toBe(4);
         expect(useDesignStore.getState().design.afo?.print.edgeMm).toBe(2);
         expect(useDesignStore.getState().design.afo?.print.flareMm).toBe(1.5);
-        expect(useDesignStore.getState().design.afo?.print.material).toBe("PLA");
+        expect(useDesignStore.getState().design.afo?.print.material).toBe("ApexVylon");
         expect(useDesignStore.getState().design.afo?.print).not.toHaveProperty("hideCast");
         expect(useDesignStore.getState().design.afo?.corrections).not.toHaveProperty("toeFlowMm");
         expect(useDesignStore.getState().design.afo?.cast.shinBox).toEqual({

@@ -4,12 +4,23 @@ import { TRPCError } from "@trpc/server";
 import { APEX_V2_INSOLE_LOCKED_PROFILE_ID } from "../../../shared/print-recipe/print-recipe.js";
 import { readUpstreamErrorText } from "./upstream-error.js";
 
-/** VertexSlice `/v1/slice` material ids. Enabled printer exports are the first two. */
-export const VERTEX_SLICE_MATERIAL_IDS = ["apex_core", "apex_light", "apex_forge", "apex_bounce"] as const;
+/** VertexSlice `/v1/slice` material ids. `apex_forge` stays disabled. `apex_vylon` is AFO shell only. */
+export const VERTEX_SLICE_MATERIAL_IDS = [
+    "apex_core",
+    "apex_light",
+    "apex_forge",
+    "apex_bounce",
+    "apex_vylon",
+] as const;
 
 export type VertexSliceMaterialId = (typeof VERTEX_SLICE_MATERIAL_IDS)[number];
 
-export const ENABLED_VERTEX_SLICE_MATERIALS = ["apex_core", "apex_light", "apex_bounce"] as const;
+export const ENABLED_VERTEX_SLICE_MATERIALS = [
+    "apex_core",
+    "apex_light",
+    "apex_bounce",
+    "apex_vylon",
+] as const;
 
 export type EnabledVertexSliceMaterial = (typeof ENABLED_VERTEX_SLICE_MATERIALS)[number];
 
@@ -46,7 +57,9 @@ export function manufacturingBackendForOutput(outputType: "gcode" | "stl"): "ver
 /**
  * Apex Forge stays disabled. Apex Bounce is enabled; its temperatures and speed
  * are a VertexSlice material profile, not fields on this form.
- * Any other id, including legacy Shore-A names, is refused. Nothing is substituted.
+ * `apex_vylon` is the AFO shell material (Forge contract, belt/bed 60°C, wall loops 6).
+ * It is not an insole picker option. Any other id, including legacy Shore-A names, is refused.
+ * Nothing is substituted.
  */
 export function assertEnabledVertexSliceMaterial(material: string | undefined): EnabledVertexSliceMaterial {
     const id = material?.trim() ?? "";
@@ -56,10 +69,12 @@ export function assertEnabledVertexSliceMaterial(material: string | undefined): 
             message: "Apex Forge is disabled until print settings are approved",
         });
     }
-    if (id !== "apex_core" && id !== "apex_light" && id !== "apex_bounce") {
+    if (id !== "apex_core" && id !== "apex_light" && id !== "apex_bounce" && id !== "apex_vylon") {
         throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "Printer G-code requires Apex Core (apex_core), Apex Light (apex_light), or Apex Bounce (apex_bounce).",
+            message:
+                "Printer G-code requires Apex Core (apex_core), Apex Light (apex_light), " +
+                "Apex Bounce (apex_bounce), or Apex Vylon (apex_vylon).",
         });
     }
     return id;
