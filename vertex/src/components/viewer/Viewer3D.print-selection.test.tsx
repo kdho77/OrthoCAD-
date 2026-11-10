@@ -30,7 +30,7 @@ rs.mock("@react-three/fiber", () => ({
     useThree: (selector?: (state: typeof fiberState) => unknown) =>
         typeof selector === "function" ? selector(fiberState) : fiberState,
 }));
-rs.mock("@react-three/drei", () => ({ OrbitControls: () => null }));
+rs.mock("@react-three/drei", () => ({ OrbitControls: () => null, Html: () => null }));
 rs.mock("./BaseInsoleMesh", () => ({ BaseInsoleMesh: () => null }));
 rs.mock("./InsoleMesh", () => ({ InsoleMesh: () => null }));
 rs.mock("./ElementMarkers", () => ({ ElementMarkers: () => null }));

@@ -115,7 +115,10 @@ import {
 const rndConsoleLog = console.log.bind(console);
 console.log = ((...args: unknown[]) => {
     const head = typeof args[0] === "string" ? args[0] : "";
-    if (head.includes("[RND-") && process.env.ORTHOCAD_RND_DEBUG !== "1") return;
+    if (head.includes("[RND-")) {
+        const debug = typeof process !== "undefined" && process.env?.ORTHOCAD_RND_DEBUG === "1";
+        if (!debug) return;
+    }
     rndConsoleLog(...(args as Parameters<typeof console.log>));
 }) as typeof console.log;
 

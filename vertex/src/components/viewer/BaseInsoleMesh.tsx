@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { publishTextGuide } from "@/features/exports/text-guide-store";
+import { usePublishMeasureSolid } from "@/features/measure/publish-solid";
 import { useBaseInsoleGeometry } from "@/hooks/useBaseInsoleGeometry";
 import { applyDesignElementColors } from "@/lib/geometry/element-visualization";
 import { sideOffsetX } from "@/lib/geometry/layout";
@@ -139,11 +140,18 @@ export function BaseInsoleMesh({
         [],
     );
 
-    if (shouldHideBaseMesh(Boolean(geometry), building)) return null;
-    if (!geometry) return null;
-
     const layout = insoleLayoutFromDesign(design);
     const offsetX = sideOffsetX(side, layout.widthMm);
+    usePublishMeasureSolid(
+        `insole-${side}`,
+        geometry,
+        "insole",
+        side,
+        `${layout.lengthMm}:${layout.widthMm}:${design.thicknessMm}:${design.elements.length}:${corr.archHeightMm}:${corr.forefootWidthMm}:${corr.heelCupDepthMm}:${corr.apexMoveMm}`,
+    );
+
+    if (shouldHideBaseMesh(Boolean(geometry), building)) return null;
+    if (!geometry) return null;
     const vertexCount = geometry.getAttribute("position")?.count ?? 0;
     const showEdges =
         !heightmap && !isCoarsePointerDevice() && shouldExtractBaseEdges(vertexCount, interacting);
@@ -156,6 +164,7 @@ export function BaseInsoleMesh({
                 position={[-layout.lengthMm / 2, offsetX, 0]}
                 castShadow={!building}
                 receiveShadow
+                userData={{ measureSolid: true, measureId: `insole-${side}`, measureSide: side }}
                 onPointerDown={textDrag.onPointerDown}
                 onPointerMove={textDrag.onPointerMove}
                 onPointerUp={textDrag.onPointerUp}
