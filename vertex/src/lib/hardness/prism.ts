@@ -69,8 +69,8 @@ export function makeParametricSampler(params: HeightFieldParams, excludeElementI
     };
 }
 
-function elementLiftAt(el: PlacedElement, x: number, y: number, lengthMm: number): number {
-    return Math.abs(elementHeightAt([el], x, y, lengthMm));
+function elementLiftAt(el: PlacedElement, x: number, y: number, lengthMm: number, widthMm: number): number {
+    return Math.abs(elementHeightAt([el], x, y, lengthMm, widthMm));
 }
 
 function cellZs(
@@ -310,7 +310,7 @@ export function buildElementFootprint(el: PlacedElement, sampler: SurfaceSampler
         const y = originY + (iy + 0.5) * GRID_MM;
         for (let ix = 0; ix < nx; ix++) {
             const x = originX + (ix + 0.5) * GRID_MM;
-            row.push(elementLiftAt(el, x, y, sampler.lengthMm) >= LIFT_THRESHOLD_MM);
+            row.push(elementLiftAt(el, x, y, sampler.lengthMm, sampler.widthMm) >= LIFT_THRESHOLD_MM);
         }
         occ.push(row);
     }

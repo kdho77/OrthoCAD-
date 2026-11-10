@@ -612,7 +612,9 @@ describe("sink taper reaches the medial and lateral outline", () => {
                         { name: "mpj5-4", sinks: [{ id: "mpj5", kind: "mpj5", depthMm: 4 }] },
                         {
                             name: "all-max",
-                            sinks: SINK_KIND_ORDER.map((kind) => maxSink(kind)),
+                            sinks: SINK_KIND_ORDER.filter((kind) => kind !== "rkw").map((kind) =>
+                                maxSink(kind),
+                            ),
                         },
                     ];
                     for (const c of cases) {

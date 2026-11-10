@@ -32,7 +32,21 @@ export const SULCUS_CLEARANCE_MM = 3;
 export const SULCUS_DIAMETER_MIN = 0.75;
 /** Proximal shift cap when the taper and diameter are already at their floors. */
 export const SULCUS_SHIFT_MAX_MM = 3;
-/** Reverse kinetic wedge: medial edge of the oval, mm from the insole's medial edge. Not scaled. */
+/** Reverse kinetic wedge center, as a fraction of local width from the medial edge. */
+export const RKW_CENTER_V = 0.15;
+/** Length is 45 mm at 300 mm insole length. Width is this fraction of local width. */
+export const RKW_LENGTH_AT_300_MM = 45;
+export const RKW_LENGTH_REFERENCE_MM = 300;
+export const RKW_WIDTH_OF_LOCAL = 0.32;
+export const RKW_SCALE_MIN = 0.65;
+export const RKW_MIN_LENGTH_MM = 30;
+export const RKW_MIN_WIDTH_MM = 20;
+/** The oval may cross the medial contour by at most this much. */
+export const RKW_MAX_OVERHANG_MM = 2;
+/** Depth at the medial border is this fraction of full depth, ramped over 5 mm. */
+export const RKW_BORDER_DEPTH_FRACTION = 0.5;
+export const RKW_MEDIAL_RAMP_MM = 5;
+/** Kept so older call sites still compile. Placement no longer uses a 3 mm inset. */
 export const RKW_MEDIAL_INSET_MM = 3;
 /**
  * Reverse kinetic wedge cut and thicken fade out over this distance from the
@@ -238,11 +252,11 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
     rkw: {
         kind: "rkw",
         label: "Reverse kinetic wedge",
-        u: 0.68,
-        /** Unused. The oval's medial edge is RKW_MEDIAL_INSET_MM from the medial outline. */
-        v: 0,
-        lengthMm: 40,
-        widthMm: 23,
+        u: 0.665,
+        /** Center on the 1st MPJ. Live width is 0.32 of the local span, not this nominal. */
+        v: 0.15,
+        lengthMm: 45,
+        widthMm: 32,
         blendMm: 6,
         defaultDepthMm: SINK_DEFAULT_DEPTH_MM,
         maxDepthMm: 4,
@@ -371,6 +385,13 @@ export function sinkDepthWarnings(sinks?: PlacedSink[] | null): SinkWarning[] {
     const out: SinkWarning[] = [];
     for (const sink of sinks!) {
         const clamped = clampSinkDepth(sink.kind, sink.depthMm);
+        if (sink.kind === "rkw" && sink.depthMm > 3 && !clamped.aboveMax) {
+            out.push({
+                sinkId: sink.id,
+                code: "depth-warn",
+                message: `${SINK_LABELS.rkw} depth ${sink.depthMm} mm is above 3 mm`,
+            });
+        }
         if (!clamped.aboveMax) continue;
         out.push({
             sinkId: sink.id,
@@ -393,6 +414,16 @@ export function referenceWidthAtU(u: number): number {
         effectiveOutlineHalfWidth(uu, SINK_REFERENCE_LENGTH_MM, SINK_REFERENCE_WIDTH_MM, null) *
         SINK_REFERENCE_WIDTH_MM
     );
+}
+
+/** Reverse kinetic wedge axes. Length follows L/300. Width follows the local span. */
+export function rkwAxesMm(lengthMm: number, localSpanMm: number): { lengthMm: number; widthMm: number } {
+    const raw = lengthMm / RKW_LENGTH_REFERENCE_MM;
+    const s = Math.max(RKW_SCALE_MIN, Number.isFinite(raw) && raw > 0 ? raw : RKW_SCALE_MIN);
+    return {
+        lengthMm: Math.max(RKW_MIN_LENGTH_MM, RKW_LENGTH_AT_300_MM * s),
+        widthMm: Math.max(RKW_MIN_WIDTH_MM, RKW_WIDTH_OF_LOCAL * Math.max(localSpanMm, 0)),
+    };
 }
 
 /** Plan scale shared by every sink axis. Depth, taper, and the wedge inset stay in millimetres. */
@@ -885,11 +916,11 @@ function footprintPose(
     const cx = edges.originX + u * edges.lengthMm;
     let cy = medial + vSpec * span;
     if (sink.kind === "rkw" && !vWasExplicit(sink, ctx.sinkMarkers)) {
-        const minCy = medial + halfWidthMm;
-        const maxCy = lateral - halfWidthMm;
-        cy = medial + RKW_MEDIAL_INSET_MM + halfWidthMm;
-        if (maxCy >= minCy - 1e-6) cy = Math.min(maxCy, Math.max(minCy, cy));
-        else cy = (medial + lateral) / 2;
+        const overhang = halfWidthMm - RKW_CENTER_V * span;
+        cy =
+            overhang > RKW_MAX_OVERHANG_MM
+                ? medial + halfWidthMm - RKW_MAX_OVERHANG_MM
+                : medial + RKW_CENTER_V * span;
     }
     if (sink.kind === "mpj5" && span > 1e-6) {
         const limit = lateral - halfWidthMm;
@@ -996,8 +1027,14 @@ function resolveSulcusFallback(
     const profile = SINK_PROFILES[sink.kind];
     const depthMm = clampSinkDepth(sink.kind, sink.depthMm).depthMm;
     const blend0 = profile.blendMm;
-    const halfL0 = (profile.lengthMm / 2) * scale * plateauScale;
-    const halfW0 = (profile.widthMm / 2) * scale * plateauScale;
+    let halfL0 = (profile.lengthMm / 2) * scale * plateauScale;
+    let halfW0 = (profile.widthMm / 2) * scale * plateauScale;
+    if (sink.kind === "rkw") {
+        const span = Math.max(edges.lateralAt(u0) - edges.medialAt(u0), 1e-6);
+        const axes = rkwAxesMm(edges.lengthMm, span);
+        halfL0 = (axes.lengthMm / 2) * plateauScale;
+        halfW0 = (axes.widthMm / 2) * plateauScale;
+    }
     const crease = creaseMillimetres(edges, sampleTopSulcusCrease(ctx));
     const at = (blendMm: number, diameterScale: number, proximalShiftMm: number) => {
         const halfLengthMm = halfL0 * diameterScale;
@@ -1122,13 +1159,21 @@ function frameSink(sink: PlacedSink, ctx: SinkSurfaceContext, diameterScale = 1)
     let blendMm = profile.blendMm;
     let u = uv.u;
     let fallbackStep = 0;
-    if (scale < SULCUS_ADULT_SCALE) {
+    if (sink.kind !== "rkw" && scale < SULCUS_ADULT_SCALE) {
         const adj = sulcusFallbackFor(sink, ctx, edges, scale, diameterScale, uv.u, uv.v);
         halfLengthMm *= adj.diameterScale;
         halfWidthMm *= adj.diameterScale;
         blendMm = adj.blendMm;
         u = uv.u - adj.proximalShiftMm / edges.lengthMm;
         fallbackStep = adj.fallbackStep;
+    }
+    if (sink.kind === "rkw") {
+        const spanAt = Math.max(edges.lateralAt(u) - edges.medialAt(u), 1e-6);
+        const axes = rkwAxesMm(edges.lengthMm, spanAt);
+        halfLengthMm = (axes.lengthMm / 2) * diameterScale;
+        halfWidthMm = (axes.widthMm / 2) * diameterScale;
+        blendMm = profile.blendMm;
+        fallbackStep = 0;
     }
     const rotationDeg = signedSinkRotationDeg(profile.rotationDeg, ctx.side);
     const theta = (rotationDeg * Math.PI) / 180;
@@ -1140,12 +1185,12 @@ function frameSink(sink: PlacedSink, ctx: SinkSurfaceContext, diameterScale = 1)
     let cy = medial + uv.v * span;
     let v = uv.v;
     if (sink.kind === "rkw" && !vWasExplicit(sink, ctx.sinkMarkers)) {
-        const minCy = medial + halfWidthMm;
-        const maxCy = lateral - halfWidthMm;
-        cy = medial + RKW_MEDIAL_INSET_MM + halfWidthMm;
-        if (maxCy >= minCy - 1e-6) cy = Math.min(maxCy, Math.max(minCy, cy));
-        else cy = (medial + lateral) / 2;
-        v = span > 1e-6 ? (cy - medial) / span : 0.5;
+        const overhang = halfWidthMm - RKW_CENTER_V * span;
+        cy =
+            overhang > RKW_MAX_OVERHANG_MM
+                ? medial + halfWidthMm - RKW_MAX_OVERHANG_MM
+                : medial + RKW_CENTER_V * span;
+        v = span > 1e-6 ? (cy - medial) / span : RKW_CENTER_V;
     }
     if (sink.kind === "mpj5" && span > 1e-6) {
         const limit = lateral - halfWidthMm;
@@ -1282,7 +1327,9 @@ interface PreparedSink {
 function prepare(ctx: SinkSurfaceContext): PreparedSink[] {
     if (!sinksActive(ctx.sinks)) return [];
     const out: PreparedSink[] = [];
+    const rkwOn = ctx.sinks!.some((sink) => sink.kind === "rkw");
     for (const sink of ctx.sinks!) {
+        if (rkwOn && sink.kind === "mpj1") continue;
         const frame = sinkFrame(sink, ctx);
         if (!frame || frame.depthMm <= 0 || frame.rimBlocked) continue;
         out.push({ frame });
@@ -1419,6 +1466,22 @@ export function sinkRimWarnings(ctx: SinkSurfaceContext): SinkWarning[] {
     return out;
 }
 
+function rkwOverhangMm(frame: SinkOvalFrame, ctx: SinkSurfaceContext): number {
+    const edges = planEdges(ctx);
+    const u = Math.max(0, Math.min(1, (frame.cx - edges.originX) / Math.max(edges.lengthMm, 1e-6)));
+    return edges.medialAt(u) - (frame.cy - frame.bMed);
+}
+
+function rkwMedialRamp(x: number, yLateral: number, ctx: SinkSurfaceContext): number {
+    const edges = planEdges(ctx);
+    const u = Math.max(0, Math.min(1, (x - edges.originX) / Math.max(edges.lengthMm, 1e-6)));
+    const distInside = yLateral - edges.medialAt(u);
+    if (distInside >= RKW_MEDIAL_RAMP_MM) return 1;
+    if (distInside <= 0) return RKW_BORDER_DEPTH_FRACTION;
+    const t = distInside / RKW_MEDIAL_RAMP_MM;
+    return RKW_BORDER_DEPTH_FRACTION + (1 - RKW_BORDER_DEPTH_FRACTION) * smoothstep01(t);
+}
+
 /** Subtractive cut at a height-field sample. Overlap = max. 0 when no sinks. */
 export function sinkCutAt(u: number, vSigned: number, ctx: SinkSurfaceContext): SinkCutSample {
     if (!sinksActive(ctx.sinks)) return { mm: 0, weight: 0 };
@@ -1440,7 +1503,10 @@ export function sinkCutMm(
     let sinkId: string | undefined;
     let weight = 0;
     for (const p of prepare(ctx)) {
-        const w = eggWeight(p.frame, x, yLateral, p.frame.blendMm);
+        let w = eggWeight(p.frame, x, yLateral, p.frame.blendMm);
+        if (p.frame.kind === "rkw" && w > 0 && rkwOverhangMm(p.frame, ctx) > 0.05) {
+            w *= rkwMedialRamp(x, yLateral, ctx);
+        }
         const d = p.frame.depthMm * w;
         if (d > best) {
             best = d;

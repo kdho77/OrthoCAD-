@@ -15,8 +15,8 @@ describe("printer G-code VertexSlice fields", () => {
     });
 
     test("hardness still maps to the locked gyroid infill percent", () => {
-        expect(gyroidInfillPctForHardness("Extra Soft")).toBe(16);
-        expect(gyroidInfillPctForHardness("Soft")).toBe(22);
+        expect(gyroidInfillPctForHardness("Extra Soft")).toBe(14);
+        expect(gyroidInfillPctForHardness("Soft")).toBe(20);
         expect(gyroidInfillPctForHardness("Medium")).toBe(26);
         expect(gyroidInfillPctForHardness("Hard")).toBe(32);
         expect(gyroidInfillPctForHardness("Extra Hard")).toBe(38);

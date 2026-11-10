@@ -4,31 +4,31 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { deflateSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, test } from "@rstest/core";
-import { BufferGeometry, type BufferGeometry as BufferGeometryType } from "three";
+import type { BufferGeometry, BufferGeometry as BufferGeometryType } from "three";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { medialSign } from "@/lib/geometry/handedness";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt } from "@/lib/geometry/height-field";
 import {
-    BLEND_LEN_MM,
-    FLOOR_MIN_MM,
-    applySinkCutToGeometry,
-    applySinkThicknessToGeometry,
-    footOutlineFromGeometry,
-    FOREFOOT_THICKNESS_CLEARANCE_MM,
-    SINK_KIND_ORDER,
-    SINK_PROFILES,
-    SINK_WALL_MIN_MM,
-    sinkPlanScale,
-    STYLOID_WALL_FADE_BELOW_FLOOR_MM,
-    styloidWallReliefAt,
-    type SinkOutlinePoint,
-} from "@/lib/geometry/sink";
-import {
     reconstructProceduralPreview,
     sampleTopFromArrayBuffer,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutForUsMenSize, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
+import {
+    applySinkCutToGeometry,
+    applySinkThicknessToGeometry,
+    BLEND_LEN_MM,
+    FLOOR_MIN_MM,
+    FOREFOOT_THICKNESS_CLEARANCE_MM,
+    footOutlineFromGeometry,
+    SINK_KIND_ORDER,
+    SINK_PROFILES,
+    SINK_WALL_MIN_MM,
+    type SinkOutlinePoint,
+    STYLOID_WALL_FADE_BELOW_FLOOR_MM,
+    sinkPlanScale,
+    styloidWallReliefAt,
+} from "@/lib/geometry/sink";
 import { buildTrimPresetCurve } from "@/lib/geometry/trim-presets";
 import { clipGeometryToOutline, extractMeshOutline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
@@ -80,11 +80,7 @@ function sourceField(
     extra: Partial<HeightFieldParams> = {},
 ): HeightFieldParams {
     return {
-        side,
-        lengthMm,
-        widthMm,
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
-        corrections: blank(patch),
         elements: [],
         includeElements: false,
         includeSkives: extra.includeSkives ?? false,
@@ -102,7 +98,9 @@ function maxSink(kind: SinkKind): PlacedSink {
 }
 
 function allMax(): PlacedSink[] {
-    return SINK_KIND_ORDER.map((kind) => maxSink(kind));
+    // RKW auto-suppresses MPJ1. This list is the non-RKW set so the medial-rim
+    // threshold stays the original MPJ1–5 + styloid measurement.
+    return SINK_KIND_ORDER.filter((kind) => kind !== "rkw").map((kind) => maxSink(kind));
 }
 
 function distalU(kind: SinkKind, lengthMm: number): number {
@@ -321,8 +319,16 @@ function drawText(
 function paintUs9(left: BufferGeometry, right: BufferGeometry): void {
     const layout = insoleLayoutForUsMenSize(9);
     const feet = [
-        { side: "left" as const, geo: scaleGeometryToInsoleSize(left, layout.lengthMm, layout.widthMm), label: "LEFT" },
-        { side: "right" as const, geo: scaleGeometryToInsoleSize(right, layout.lengthMm, layout.widthMm), label: "RIGHT" },
+        {
+            side: "left" as const,
+            geo: scaleGeometryToInsoleSize(left, layout.lengthMm, layout.widthMm),
+            label: "LEFT",
+        },
+        {
+            side: "right" as const,
+            geo: scaleGeometryToInsoleSize(right, layout.lengthMm, layout.widthMm),
+            label: "RIGHT",
+        },
     ];
     const panelW = 440;
     const panelH = 560;
@@ -451,7 +457,8 @@ function twoFaceEdges(geo: BufferGeometry): Map<string, EdgeHit> {
         const acx = pos[c * 3]! - pos[a * 3]!;
         const acy = pos[c * 3 + 1]! - pos[a * 3 + 1]!;
         const acz = pos[c * 3 + 2]! - pos[a * 3 + 2]!;
-        if (Math.hypot(aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx) * 0.5 < 1e-8) continue;
+        if (Math.hypot(aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx) * 0.5 < 1e-8)
+            continue;
         for (const [p, q] of [
             [a, b],
             [b, c],
@@ -541,7 +548,10 @@ function foldAgainstPlain(
     return { worst, crest, sharpened, over, at };
 }
 
-function boundsOf(geo: BufferGeometry, count: number): { minX: number; maxX: number; minY: number; maxY: number } {
+function boundsOf(
+    geo: BufferGeometry,
+    count: number,
+): { minX: number; maxX: number; minY: number; maxY: number } {
     const pos = geo.getAttribute("position");
     let minX = Infinity;
     let maxX = -Infinity;
@@ -561,7 +571,9 @@ let pair: { left: BufferGeometry; right: BufferGeometry };
 
 beforeAll(async () => {
     const buf = readFileSync(SAMPLE_TOP_PATH);
-    const left = await sampleTopFromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    const left = await sampleTopFromArrayBuffer(
+        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+    );
     pair = { left, right: mirrorGeometry(left) };
 });
 
@@ -675,7 +687,12 @@ describe("proximal metatarsal shift", () => {
                     const lateralY = lateralOf(span, side);
                     const edgeDist = Math.min(Math.abs(y - medialY), Math.abs(y - lateralY));
                     const u = (x - box.minX) / length;
-                    if (edgeDist <= 1.2 && u >= styloid.u && u <= SINK_PROFILES.mpj5.u && Math.abs(y - lateralY) <= 1.5) {
+                    if (
+                        edgeDist <= 1.2 &&
+                        u >= styloid.u &&
+                        u <= SINK_PROFILES.mpj5.u &&
+                        Math.abs(y - lateralY) <= 1.5
+                    ) {
                         const allowed = a.getZ(i) >= SINK_WALL_MIN_MM ? SINK_WALL_MIN_MM : a.getZ(i);
                         const deficit = allowed - z;
                         if (deficit > lateralDeficit) lateralDeficit = deficit;
@@ -700,7 +717,10 @@ describe("proximal metatarsal shift", () => {
                                 if (!jSpan) continue;
                                 const jMed = medialSign(side) < 0 ? jSpan.lo : jSpan.hi;
                                 const jLat = lateralOf(jSpan, side);
-                                const jDist = Math.min(Math.abs(b.getY(j) - jMed), Math.abs(b.getY(j) - jLat));
+                                const jDist = Math.min(
+                                    Math.abs(b.getY(j) - jMed),
+                                    Math.abs(b.getY(j) - jLat),
+                                );
                                 if (jDist < edgeDist + 0.4) continue;
                                 if (d < nearest) {
                                     nearest = d;
@@ -822,10 +842,9 @@ describe("proximal metatarsal shift", () => {
         const depth = SINK_PROFILES.styloid.maxDepthMm;
         const crest = 12;
         const lowering = 2;
-        expect(styloidWallReliefAt(crest - depth - STYLOID_WALL_FADE_BELOW_FLOOR_MM, crest, depth, lowering)).toBeCloseTo(
-            0,
-            5,
-        );
+        expect(
+            styloidWallReliefAt(crest - depth - STYLOID_WALL_FADE_BELOW_FLOOR_MM, crest, depth, lowering),
+        ).toBeCloseTo(0, 5);
         expect(styloidWallReliefAt(crest, crest, depth, lowering)).toBeCloseTo(-lowering, 5);
 
         const sinks = allMax();
@@ -837,12 +856,24 @@ describe("proximal metatarsal shift", () => {
                 const raised = heightAt(
                     0.08,
                     vMed,
-                    sourceField(side, 260, 95, { medialSkiveMm: 5 }, { includeSkives: true, trimline: trim, sinks }),
+                    sourceField(
+                        side,
+                        260,
+                        95,
+                        { medialSkiveMm: 5 },
+                        { includeSkives: true, trimline: trim, sinks },
+                    ),
                 );
                 const flat = heightAt(
                     0.08,
                     vMed,
-                    sourceField(side, 260, 95, { medialSkiveMm: 0 }, { includeSkives: true, trimline: trim, sinks }),
+                    sourceField(
+                        side,
+                        260,
+                        95,
+                        { medialSkiveMm: 0 },
+                        { includeSkives: true, trimline: trim, sinks },
+                    ),
                 );
                 const bare = heightAt(
                     0.08,
@@ -862,7 +893,9 @@ describe("proximal metatarsal shift", () => {
                     sinkShiftMm: Number((delta - (bare - bareFlat)).toFixed(3)),
                 });
                 expect(delta, `${preset} ${side} 5 mm skive`).toBeGreaterThan(0.2);
-                expect(Math.abs(delta - (bare - bareFlat)), `${preset} ${side} skive vs sinks`).toBeLessThan(0.05);
+                expect(Math.abs(delta - (bare - bareFlat)), `${preset} ${side} skive vs sinks`).toBeLessThan(
+                    0.05,
+                );
             }
         }
 
@@ -923,7 +956,9 @@ describe("proximal metatarsal shift", () => {
                 console.log("[SINK-TRIM]", JSON.stringify(loftRows[loftRows.length - 1]));
                 expect(floor, `${preset} ${side} floor`).toBeGreaterThanOrEqual(FLOOR_MIN_MM - 1e-3);
                 expect(bandN, `${preset} ${side} 5 mm band`).toBeGreaterThan(10);
-                expect(bandFloor, `${preset} ${side} 5 mm band floor`).toBeGreaterThanOrEqual(FLOOR_MIN_MM - 1e-3);
+                expect(bandFloor, `${preset} ${side} 5 mm band floor`).toBeGreaterThanOrEqual(
+                    FLOOR_MIN_MM - 1e-3,
+                );
                 expect(xy, `${preset} ${side} outline`).toBeLessThan(1e-3);
                 clipped.dispose();
                 sunk.dispose();

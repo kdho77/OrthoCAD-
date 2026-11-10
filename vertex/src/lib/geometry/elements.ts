@@ -6,6 +6,22 @@ import {
     meshYForAnatomicalSide,
     meshYSign,
 } from "@/lib/geometry/handedness";
+import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
+import {
+    MORTONS_DEFAULT_MEDIAL,
+    MORTONS_DEFAULT_U,
+    MORTONS_HEIGHT_DEFAULT_MM,
+    MORTONS_HEIGHT_MAX_MM,
+    MORTONS_REFERENCE_RX_MM,
+    MORTONS_REFERENCE_RY_MM,
+    type MortonsOutlinePoint,
+    mortonsAnchorMm,
+    mortonsEdgeMm,
+    mortonsFootprintT,
+    mortonsHeightMm,
+    mortonsLocalOutline,
+    mortonsReferenceWidthMm,
+} from "@/lib/geometry/mortons-extension";
 import type { ElementKind, PlacedElement, Side } from "@/types";
 
 /**
@@ -19,6 +35,25 @@ import type { ElementKind, PlacedElement, Side } from "@/types";
  * when rotation = 0). Medial-biased shapes (reverse Morton's notch, Cluffy,
  * Morton's, kinetic wedge) flip across Y for the right foot.
  */
+
+/** Elongated 1st-MPJ trough. Length is 45 mm at 300 mm. Width is 0.32 of local width. */
+export const RKW_LENGTH_AT_300_MM = 45;
+export const RKW_CENTER_U = 0.665;
+export const RKW_CENTER_V = 0.15;
+export const RKW_WIDTH_OF_LOCAL = 0.32;
+export const RKW_DEEPEST_PROXIMAL_MM = 3;
+export const RKW_MAX_OVERHANG_MM = 2;
+export const RKW_TAPER_MM = 6;
+export const RKW_MEDIAL_RAMP_MM = 5;
+export const RKW_BORDER_DEPTH_FRACTION = 0.5;
+export const RKW_DEPTH_DEFAULT_MM = 2;
+export const RKW_DEPTH_WARN_MM = 3;
+export const RKW_DEPTH_MAX_MM = 4;
+export const RKW_PLAN_SCALE_MIN = 0.65;
+export const RKW_MIN_LENGTH_MM = 30;
+export const RKW_MIN_WIDTH_MM = 20;
+/** No lowering element or sink may leave less than this much material. */
+export const REMAINING_MATERIAL_MM = 1.5;
 
 export type ElementShape =
     | "teardrop" // met pad — proximal tip, distal bulb
@@ -112,39 +147,41 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultMedial: 0.6413,
         anatomicalSide: "medial",
     },
-    // Morton's extension: rigid strip under 1st ray from met neck through
-    // hallux. Long AP, narrow ML. ~56 × 18 mm. Stock height is 3 mm.
+    // Morton's extension: 1st ray from the met head (u 0.62–0.63) to the toe
+    // edge, flush to the medial border, lateral border at v 0.40 of local
+    // width. Reference half-extents are the Men's 9 pad. Height stays 3 mm.
     mortons_extension: {
-        rxMm: 28,
-        ryMm: 9,
+        rxMm: MORTONS_REFERENCE_RX_MM,
+        ryMm: MORTONS_REFERENCE_RY_MM,
         sign: 1,
         shape: "first_ray_strip",
-        defaultHeightMm: 3,
-        defaultU: 0.78,
-        defaultMedial: 0.5,
+        defaultHeightMm: MORTONS_HEIGHT_DEFAULT_MM,
+        defaultU: MORTONS_DEFAULT_U,
+        defaultMedial: MORTONS_DEFAULT_MEDIAL,
         anatomicalSide: "medial",
     },
-    // Reverse Morton's: additive platform under mets 2–5 with a medial
-    // notch so the 1st ray can plantarflex. ~28 × 48 mm outer.
+    // Reverse Morton's: the same 1st-ray footprint as Morton's. The only
+    // difference is the sign — this one lowers the ray.
     reverse_mortons: {
-        rxMm: 14,
-        ryMm: 24,
-        sign: 1,
-        shape: "reverse_mortons",
-        defaultHeightMm: 2.5,
-        defaultU: 0.7,
-        defaultMedial: -0.1,
-        anatomicalSide: "lateral",
+        rxMm: MORTONS_REFERENCE_RX_MM,
+        ryMm: MORTONS_REFERENCE_RY_MM,
+        sign: -1,
+        shape: "first_ray_strip",
+        defaultHeightMm: MORTONS_HEIGHT_DEFAULT_MM,
+        defaultU: MORTONS_DEFAULT_U,
+        defaultMedial: MORTONS_DEFAULT_MEDIAL,
+        anatomicalSide: "medial",
     },
-    // Kinetic wedge (Dananberg): plantar cutout under 1st met head.
+    // Reverse kinetic wedge: medially offset elongated oval under the 1st MPJ.
+    // 39 × 28 mm at the 260 mm reference. About one third sits off the medial edge.
     kinetic_wedge: {
-        rxMm: 12,
-        ryMm: 10,
+        rxMm: RKW_LENGTH_AT_300_MM / 2,
+        ryMm: 16,
         sign: -1,
         shape: "kinetic_oval",
-        defaultHeightMm: 2.5,
-        defaultU: 0.72,
-        defaultMedial: 0.48,
+        defaultHeightMm: RKW_DEPTH_DEFAULT_MM,
+        defaultU: RKW_CENTER_U,
+        defaultMedial: 0.5,
         anatomicalSide: "medial",
     },
     // Circular heel seat relief.
@@ -209,7 +246,56 @@ export const ELEMENT_HEIGHT_LIMITS: Partial<Record<ElementKind, { min: number; m
     scaphoid_pad: { min: 0, max: 8 },
     heel_cushion: { min: 0, max: 6 },
     dancers_pad: { min: 0, max: 6 },
+    mortons_extension: { min: 0, max: MORTONS_HEIGHT_MAX_MM },
+    reverse_mortons: { min: 0, max: MORTONS_HEIGHT_MAX_MM },
+    kinetic_wedge: { min: 0, max: RKW_DEPTH_MAX_MM },
 };
+
+export function rkwPlanScale(lengthMm: number): number {
+    const raw = lengthMm / 300;
+    if (!(raw > 0)) return RKW_PLAN_SCALE_MIN;
+    return Math.max(RKW_PLAN_SCALE_MIN, raw);
+}
+
+export function rkwPlanMm(lengthMm: number, localWidthMm: number): { lengthMm: number; widthMm: number } {
+    const scale = rkwPlanScale(lengthMm);
+    return {
+        lengthMm: Math.max(RKW_MIN_LENGTH_MM, RKW_LENGTH_AT_300_MM * scale),
+        widthMm: Math.max(RKW_MIN_WIDTH_MM, RKW_WIDTH_OF_LOCAL * Math.max(localWidthMm, 0)),
+    };
+}
+
+function smoothstep01(t: number): number {
+    const x = t <= 0 ? 0 : t >= 1 ? 1 : t;
+    return x * x * (3 - 2 * x);
+}
+
+/** Ellipse weight. 1 inside, smoothstep to 0 across `taperMm` outside. */
+export function rkwOvalWeight(localX: number, localY: number, halfLength: number, halfWidth: number): number {
+    const r = Math.hypot(localX / Math.max(halfLength, 1e-6), localY / Math.max(halfWidth, 1e-6));
+    if (r <= 1) return 1;
+    const excess = (r - 1) * Math.max(halfLength, halfWidth);
+    if (excess >= RKW_TAPER_MM) return 0;
+    return 1 - smoothstep01(excess / RKW_TAPER_MM);
+}
+
+export function kineticWedgeLocalOutline(
+    lengthMm: number,
+    localWidthMm: number,
+    scaleX = 1,
+    scaleY = 1,
+): { x: number; y: number }[] {
+    const plan = rkwPlanMm(lengthMm, localWidthMm);
+    const rx = (plan.lengthMm / 2) * (scaleX > 1e-6 ? scaleX : 1);
+    const ry = (plan.widthMm / 2) * (scaleY > 1e-6 ? scaleY : 1);
+    const pts: { x: number; y: number }[] = [];
+    const n = 40;
+    for (let i = 0; i < n; i++) {
+        const t = (i / n) * Math.PI * 2;
+        pts.push({ x: Math.cos(t) * rx, y: Math.sin(t) * ry });
+    }
+    return pts;
+}
 
 const DEG = Math.PI / 180;
 
@@ -367,11 +453,11 @@ export function elementFootprintT(
         case "hallux_wedge":
             return halluxWedgeT(lx, ly, rx, ry);
         case "first_ray_strip":
-            return superEllipseT(lx, ly, rx, ry, 4);
+            return mortonsFootprintT(lx, ly, rx, ry, side);
         case "reverse_mortons":
-            return reverseMortonsT(lx, ly, rx, ry, medial);
+            return mortonsFootprintT(lx, ly, rx, ry, side);
         case "kinetic_oval":
-            return kineticOvalT(lx, ly, rx, ry);
+            return Math.hypot(lx / Math.max(rx, 1e-6), ly / Math.max(ry, 1e-6));
         case "heel_cup":
             return superEllipseT(lx, ly, rx, ry, 2);
         case "navicular_oval":
@@ -397,7 +483,20 @@ export function elementOutlineLocalMm(
     scaleY: number,
     side: Side = "left",
     segments = 48,
+    frame?: { lengthMm: number; widthMm: number; outline?: MortonsOutlinePoint[] | null },
 ): { x: number; y: number }[] {
+    if (kind === "mortons_extension" || kind === "reverse_mortons") {
+        const lengthMm = frame?.lengthMm ?? INSOLE_LENGTH_MM;
+        const widthMm = frame?.widthMm ?? INSOLE_WIDTH_MM;
+        return mortonsLocalOutline(side, lengthMm, widthMm, scaleX, scaleY, frame?.outline);
+    }
+    if (kind === "kinetic_wedge") {
+        const lengthMm = frame?.lengthMm ?? INSOLE_LENGTH_MM;
+        const widthMm = frame?.widthMm ?? INSOLE_WIDTH_MM;
+        const edge = mortonsEdgeMm(RKW_CENTER_U, widthMm, side, frame?.outline);
+        const span = Math.abs(edge.lateral - edge.medial);
+        return kineticWedgeLocalOutline(lengthMm, span, scaleX, scaleY);
+    }
     const profile = ELEMENT_PROFILES[kind];
     const rx = Math.max(2, profile.rxMm * scaleX);
     const ry = Math.max(2, profile.ryMm * scaleY);
@@ -433,19 +532,57 @@ export function elementOutlineLocalMm(
     return pts;
 }
 
+function kineticWedgeAnchor(
+    side: Side,
+    lengthMm: number,
+    widthMm: number,
+    outline?: MortonsOutlinePoint[] | null,
+): { x: number; y: number } {
+    const edge = mortonsEdgeMm(RKW_CENTER_U, widthMm, side, outline);
+    const span = Math.abs(edge.lateral - edge.medial);
+    const plan = rkwPlanMm(lengthMm, span);
+    const inwardSign = meshYSign(side, "lateral");
+    let inside = RKW_CENTER_V * span;
+    const overhang = plan.widthMm / 2 - inside;
+    if (overhang > RKW_MAX_OVERHANG_MM) inside = plan.widthMm / 2 - RKW_MAX_OVERHANG_MM;
+    return {
+        x: RKW_CENTER_U * lengthMm,
+        y: edge.medial + inwardSign * inside,
+    };
+}
+
+/** Oval center is u 0.665. The deepest point of the trough is 3 mm proximal of that. */
+export function kineticWedgeCenterU(lengthMm: number): number {
+    return RKW_CENTER_U - RKW_DEEPEST_PROXIMAL_MM / Math.max(lengthMm, 1);
+}
+
 /** Default pose when placing a stock element from the library. */
 export function defaultElementPose(
     kind: ElementKind,
     side: Side,
     lengthMm = 260,
     widthMm = 95,
+    outline?: MortonsOutlinePoint[] | null,
 ): Pick<PlacedElement, "position" | "rotationDeg" | "scale" | "heightMm" | "placementMode"> {
     const p = ELEMENT_PROFILES[kind];
+    const mortons =
+        kind === "mortons_extension" || kind === "reverse_mortons"
+            ? mortonsAnchorMm(side, lengthMm, widthMm, outline)
+            : null;
+    const kinetic = kind === "kinetic_wedge" ? kineticWedgeAnchor(side, lengthMm, widthMm, outline) : null;
     return {
-        position: {
-            x: p.defaultU * lengthMm - lengthMm / 2,
-            y: meshYForAnatomicalSide(side, p.anatomicalSide, Math.abs(p.defaultMedial) * (widthMm / 2)),
-        },
+        position: mortons
+            ? { x: mortons.x - lengthMm / 2, y: mortons.y }
+            : kinetic
+              ? { x: kinetic.x - lengthMm / 2, y: kinetic.y }
+              : {
+                    x: p.defaultU * lengthMm - lengthMm / 2,
+                    y: meshYForAnatomicalSide(
+                        side,
+                        p.anatomicalSide,
+                        Math.abs(p.defaultMedial) * (widthMm / 2),
+                    ),
+                },
         rotationDeg: 0,
         scale: { x: 1, y: 1 },
         heightMm: p.defaultHeightMm,
@@ -470,13 +607,42 @@ export function elementHeightAt(
     xMm: number,
     yMm: number,
     lengthMm: number,
+    widthMm = mortonsReferenceWidthMm(lengthMm),
 ): number {
     if (elements.length === 0) return 0;
     const centerX = lengthMm / 2;
     let sum = 0;
+    // Same-type and overlapping recesses use the deepest cut, never a sum.
+    let lower = 0;
 
     for (const el of elements) {
         if (el.kind === "custom") continue;
+        if (el.kind === "mortons_extension" || el.kind === "reverse_mortons") {
+            const anchorX = centerX + el.position.x;
+            const anchorY = el.position.y;
+            // yMm is height-field Y. The pad is authored in mesh Y.
+            const magnitude = mortonsHeightMm(
+                el.side,
+                lengthMm,
+                widthMm,
+                anchorX,
+                anchorY,
+                xMm,
+                -yMm,
+                el.rotationDeg,
+                el.scale.x,
+                el.scale.y,
+                el.heightMm,
+            );
+            const signed = el.kind === "reverse_mortons" ? -magnitude : magnitude;
+            if (signed < 0) lower = Math.min(lower, signed);
+            else sum += signed;
+            continue;
+        }
+        if (el.kind === "kinetic_wedge") {
+            lower = Math.min(lower, kineticWedgeDelta(el, xMm, yMm, lengthMm, widthMm));
+            continue;
+        }
         const cx = centerX + el.position.x;
         // Stored Y is footprint-frame mesh Y. This sample is height-field Y.
         const cy = heightFieldYFromMeshY(el.position.y);
@@ -494,8 +660,87 @@ export function elementHeightAt(
         const t = elementFootprintT(el.kind, lx, ly, rx, ry, el.side);
         const w = domeWeight(t);
         if (w > 0) {
-            sum += p.sign * el.heightMm * w;
+            const delta = p.sign * el.heightMm * w;
+            if (delta < 0) lower = Math.min(lower, delta);
+            else sum += delta;
         }
     }
-    return sum;
+    return sum + lower;
+}
+
+function kineticWedgeDelta(
+    el: PlacedElement,
+    xMm: number,
+    yMm: number,
+    lengthMm: number,
+    widthMm: number,
+): number {
+    const edgeAt = mortonsEdgeMm(Math.max(0, Math.min(1, xMm / Math.max(lengthMm, 1e-6))), widthMm, el.side);
+    const centerEdge = mortonsEdgeMm(RKW_CENTER_U, widthMm, el.side);
+    const span = Math.abs(centerEdge.lateral - centerEdge.medial);
+    const plan = rkwPlanMm(lengthMm, span);
+    const halfLength = (plan.lengthMm / 2) * (el.scale.x > 1e-6 ? el.scale.x : 1);
+    const halfWidth = (plan.widthMm / 2) * (el.scale.y > 1e-6 ? el.scale.y : 1);
+    const anchorX = lengthMm / 2 + el.position.x;
+    const meshY = -yMm;
+    const dx = xMm - anchorX;
+    const dy = meshY - el.position.y;
+    const a = (-el.rotationDeg * Math.PI) / 180;
+    const lx = dx * Math.cos(a) - dy * Math.sin(a);
+    const ly = dx * Math.sin(a) + dy * Math.cos(a);
+    const oval = rkwOvalWeight(lx, ly, halfLength, halfWidth);
+    if (oval <= 0) return 0;
+    const inward = meshYSign(el.side, "lateral");
+    const centerInside = (el.position.y - centerEdge.medial) * inward;
+    const overhang = halfWidth - centerInside;
+    const distInside = (meshY - edgeAt.medial) * inward;
+    let ramp = 1;
+    if (overhang > 0.05 && distInside < RKW_MEDIAL_RAMP_MM) {
+        const t = distInside / RKW_MEDIAL_RAMP_MM;
+        ramp =
+            t <= 0
+                ? RKW_BORDER_DEPTH_FRACTION
+                : RKW_BORDER_DEPTH_FRACTION + (1 - RKW_BORDER_DEPTH_FRACTION) * (t * t * (3 - 2 * t));
+    }
+    const depth = Math.min(RKW_DEPTH_MAX_MM, Math.max(0, el.heightMm));
+    return -depth * oval * ramp;
+}
+
+export function isLoweringElement(kind: ElementKind | "custom"): boolean {
+    if (kind === "custom") return false;
+    if (kind === "reverse_mortons") return true;
+    return ELEMENT_PROFILES[kind].sign < 0;
+}
+
+export function elementPlacementRefusal(
+    kind: ElementKind,
+    side: Side,
+    elements: PlacedElement[],
+    sinkKinds: readonly string[] = [],
+    options?: { allowReverseMortonsWithRkw?: boolean },
+): string | null {
+    const sameSide = elements.filter((el) => el.side === side);
+    const has = (name: ElementKind) => sameSide.some((el) => el.kind === name);
+    const hasRkw = sinkKinds.includes("rkw") || has("kinetic_wedge");
+    if (kind === "kinetic_wedge" && has("kinetic_wedge")) {
+        return "A kinetic wedge is already on this foot. A second one is not added.";
+    }
+    if (
+        (kind === "mortons_extension" && has("reverse_mortons")) ||
+        (kind === "reverse_mortons" && has("mortons_extension"))
+    ) {
+        return "Morton's and Reverse Morton's cannot be on the same foot.";
+    }
+    if ((kind === "mortons_extension" && hasRkw) || (kind === "kinetic_wedge" && has("mortons_extension"))) {
+        return "Morton's and the reverse kinetic wedge cannot be on the same foot.";
+    }
+    if (kind === "reverse_mortons" && hasRkw && !options?.allowReverseMortonsWithRkw) {
+        return "Reverse Morton's with a reverse kinetic wedge needs an explicit override.";
+    }
+    return null;
+}
+
+export function loweringMaterialWarning(topMm: number, requestedCutMm: number): string | null {
+    if (topMm - requestedCutMm >= REMAINING_MATERIAL_MM - 1e-6) return null;
+    return `Depth clamped so at least ${REMAINING_MATERIAL_MM.toFixed(1)} mm of material remains.`;
 }
