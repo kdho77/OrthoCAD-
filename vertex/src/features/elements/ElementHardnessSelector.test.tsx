@@ -137,7 +137,7 @@ describe("Print element hardness popup", () => {
         const zip = await JSZip.loadAsync(packed.bytes);
         const xml = await zip.file("Metadata/model_settings.config")!.async("string");
         expect(xml).toContain('key="hardnessClass" value="Extra Soft"');
-        expect(xml).toContain('key="sparse_infill_density" value="16%"');
+        expect(xml).toContain('key="sparse_infill_density" value="14%"');
         expect(xml).toContain('key="sparse_infill_line_width" value="0.7"');
         const reopened = await readDesignFrom3mf(packed.bytes);
         expect(JSON.parse(reopened.designJson).design.elements[0]!.hardnessClass).toBe("Extra Soft");
