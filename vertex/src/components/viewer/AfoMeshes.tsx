@@ -2,7 +2,7 @@
 
 import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
-import { BufferAttribute, type BufferGeometry, DoubleSide, type Points, Vector3 } from "three";
+import { BufferAttribute, type BufferGeometry, DoubleSide, FrontSide, type Points, Vector3 } from "three";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
@@ -16,11 +16,15 @@ import {
     afoUploadedScanMaterial,
     setAfoPointCloudRange,
 } from "@/features/afo/afo-scan-ui";
+import { usePublishMeasureSolid } from "@/features/measure/publish-solid";
 import { AFO_TRIM_PIN_RADIUS_MM } from "@/lib/geometry/afo/defaults";
 import { afoMeshToGeometry, meshCentroid } from "@/lib/geometry/afo/mesh-ops";
 import { afoTrimPreview, cursorCrossSegments } from "@/lib/geometry/afo/trim-preview";
 import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import type { AfoVec3 } from "@/lib/geometry/afo/types";
+import { afoMeasureSolidId, afoMeasureTarget } from "@/lib/geometry/measure/afo-target";
+import { triangleMeshFromGeometry } from "@/lib/geometry/measure/mesh-ops";
+import { publishExportMeasureMesh } from "@/lib/geometry/measure/registry";
 import { getAfoState, useAfoStore } from "@/stores/afo-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -135,6 +139,22 @@ export function AfoMeshes() {
         };
     }, [shadedGeo, bodyGeo]);
 
+    const measureMesh = afoMeasureTarget({ shell, corrected, cast });
+    const measureId = afoMeasureSolidId({ shell, corrected, cast });
+    const measureGeo = useMemo(() => (measureMesh ? afoMeshToGeometry(measureMesh) : null), [measureMesh]);
+    useEffect(() => () => measureGeo?.dispose(), [measureGeo]);
+    useEffect(() => {
+        if (!measureGeo) return;
+        publishExportMeasureMesh("afo", triangleMeshFromGeometry(measureGeo));
+    }, [measureGeo]);
+    usePublishMeasureSolid(
+        measureId ?? "afo-cast",
+        measureGeo,
+        "afo",
+        "afo",
+        `${shell ? "shell" : corrected ? "corrected" : cast ? "cast" : "none"}:${measureGeo?.uuid ?? "none"}`,
+    );
+
     return (
         <group rotation={[-Math.PI / 2, 0, 0]}>
             <ambientLight intensity={0.72} />
@@ -152,6 +172,15 @@ export function AfoMeshes() {
                     userData={{ isAfoTrimPick: true, isAfoCast: true }}
                 >
                     <meshBasicMaterial side={DoubleSide} />
+                </mesh>
+            ) : null}
+            {measureGeo && measureId ? (
+                <mesh
+                    geometry={measureGeo}
+                    visible={false}
+                    userData={{ measureSolid: true, measureId, measureSide: "afo" }}
+                >
+                    <meshBasicMaterial side={FrontSide} />
                 </mesh>
             ) : null}
             {shadedGeo && bodyStyle.drawMode === "surface" ? (
@@ -178,7 +207,16 @@ export function AfoMeshes() {
                 />
             ) : null}
             {shellGeo ? (
-                <mesh geometry={shellGeo} userData={{ isAfoShell: true, isScanMesh: true }}>
+                <mesh
+                    geometry={shellGeo}
+                    userData={{
+                        isAfoShell: true,
+                        isScanMesh: true,
+                        measureSolid: true,
+                        measureId: measureId ?? "afo-shell",
+                        measureSide: "afo",
+                    }}
+                >
                     <meshStandardMaterial
                         color="#6ee7b7"
                         roughness={0.45}
