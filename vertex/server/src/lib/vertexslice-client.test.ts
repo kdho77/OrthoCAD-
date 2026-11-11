@@ -214,4 +214,121 @@ describe("VertexSlice printer G-code client", () => {
             }),
         ).rejects.toThrow("VertexSlice timed out after 1s (left)");
     });
+
+    test("a slice timeout logs mesh bytes, triangles, bounds, and the manifold check", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const errors: unknown[] = [];
+        const spy = rs.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+            errors.push(args);
+        });
+        installFetch((url, init) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_light"]), { status: 200 });
+            }
+            return new Promise<Response>((_resolve, reject) => {
+                init.signal?.addEventListener(
+                    "abort",
+                    () =>
+                        reject(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+                    { once: true },
+                );
+            });
+        });
+        const model = writeTimeoutStl();
+        await expect(
+            sliceWithVertexSlice({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_light",
+                model,
+                sliceTimeoutMs: 40,
+                side: "left",
+            }),
+        ).rejects.toThrow("VertexSlice timed out after 1s (left)");
+        const logged = errors.flat().find((item) => item === "[vertexslice] mesh at timeout");
+        expect(logged).toBe("[vertexslice] mesh at timeout");
+        const stats = errors
+            .flat()
+            .find((item) => item && typeof item === "object" && "triangles" in item) as {
+            bytes: number;
+            triangles: number;
+            bbox: { minX: number; maxX: number };
+            manifold: { isWatertight: boolean };
+        };
+        expect(stats.bytes).toBe(model.byteLength);
+        expect(stats.triangles).toBe(12);
+        expect(stats.bbox.maxX).toBeGreaterThan(stats.bbox.minX);
+        expect(stats.manifold.isWatertight).toBe(true);
+        expect(stats.manifold).toMatchObject({ shells: 1 });
+        spy.mockRestore();
+    });
+
+    test("an off-plate mesh is refused before POST /v1/slice", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const calls = installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_light"]), { status: 200 });
+            }
+            return new Response("sliced", { status: 200 });
+        });
+        const model = writeTimeoutStl();
+        new DataView(model.buffer).setFloat32(96, 50_000, true);
+        await expect(
+            sliceWithVertexSlice({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_light",
+                model,
+            }),
+        ).rejects.toThrow(/Manufacturing mesh is not sliceable/);
+        expect(calls.some((call) => call.url.endsWith("/v1/slice"))).toBe(false);
+    });
 });
+
+function writeTimeoutStl(): Uint8Array {
+    const v = [
+        [0, 0, 0],
+        [20, 0, 0],
+        [20, 10, 0],
+        [0, 10, 0],
+        [0, 0, 8],
+        [20, 0, 8],
+        [20, 10, 8],
+        [0, 10, 8],
+    ];
+    const faces = [
+        [0, 2, 1],
+        [0, 3, 2],
+        [4, 5, 6],
+        [4, 6, 7],
+        [0, 1, 5],
+        [0, 5, 4],
+        [1, 2, 6],
+        [1, 6, 5],
+        [2, 3, 7],
+        [2, 7, 6],
+        [3, 0, 4],
+        [3, 4, 7],
+    ];
+    const out = new Uint8Array(84 + faces.length * 50);
+    const view = new DataView(out.buffer);
+    view.setUint32(80, faces.length, true);
+    let offset = 84;
+    const put = (x: number, y: number, z: number) => {
+        view.setFloat32(offset, x, true);
+        offset += 4;
+        view.setFloat32(offset, y, true);
+        offset += 4;
+        view.setFloat32(offset, z, true);
+        offset += 4;
+    };
+    for (const [a, b, c] of faces) {
+        put(0, 0, 0);
+        for (const i of [a, b, c]) {
+            const p = v[i]!;
+            put(p[0]!, p[1]!, p[2]!);
+        }
+        offset += 2;
+    }
+    return out;
+}

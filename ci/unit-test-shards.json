@@ -22,6 +22,7 @@
                 "vertex/server/src/lib/design-settings.roundtrip.test.ts",
                 "vertex/server/src/lib/dogfood-saved-design.test.ts",
                 "vertex/server/src/lib/prisma-bridge-directory.test.ts",
+                "vertex/server/src/lib/slice-mesh.test.ts",
                 "vertex/server/src/lib/tenancy.test.ts",
                 "vertex/server/src/routers/admin-access.test.ts",
                 "vertex/server/src/routers/production-shop-tenant.test.ts",

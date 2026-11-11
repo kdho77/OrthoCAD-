@@ -2,6 +2,7 @@
 
 import { TRPCError } from "@trpc/server";
 import { APEX_V2_INSOLE_LOCKED_PROFILE_ID } from "../../../shared/print-recipe/print-recipe.js";
+import { prepareManufacturingMeshForSlice, sliceMeshStats, UnsliceableMeshError } from "./slice-mesh.js";
 import { readUpstreamErrorText } from "./upstream-error.js";
 
 /** VertexSlice `/v1/slice` material ids. Enabled printer exports are the first two. */
@@ -358,7 +359,15 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
         }
         form.append("infill_density", String(pct));
     }
-    const bytes = new Uint8Array(request.model);
+    let bytes: Uint8Array;
+    try {
+        bytes = prepareManufacturingMeshForSlice(new Uint8Array(request.model));
+    } catch (err) {
+        if (err instanceof UnsliceableMeshError) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
+        }
+        throw err;
+    }
     form.append("model", new Blob([bytes], { type: "model/stl" }), request.filename ?? "model.stl");
 
     console.log("[vertexslice] -> POST /v1/slice", {
@@ -376,18 +385,26 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
     const sliceSignal =
         sliceTimeoutMs !== undefined && sliceTimeoutMs > 0 ? AbortSignal.timeout(sliceTimeoutMs) : undefined;
 
-    const response = await vertexSliceFetch(
-        endpoint,
-        {
-            method: "POST",
-            headers: authHeaders(apiKey),
-            body: form,
-            signal: sliceSignal,
-        },
-        sliceTimeoutSec !== undefined
-            ? { timedOut: { timeoutSec: sliceTimeoutSec, side: request.side } }
-            : undefined,
-    );
+    let response: Response;
+    try {
+        response = await vertexSliceFetch(
+            endpoint,
+            {
+                method: "POST",
+                headers: authHeaders(apiKey),
+                body: form,
+                signal: sliceSignal,
+            },
+            sliceTimeoutSec !== undefined
+                ? { timedOut: { timeoutSec: sliceTimeoutSec, side: request.side } }
+                : undefined,
+        );
+    } catch (err) {
+        if (err instanceof Error && err.message.startsWith("VertexSlice timed out")) {
+            console.error("[vertexslice] mesh at timeout", sliceMeshStats(bytes));
+        }
+        throw err;
+    }
 
     if (!response.ok) {
         const detail = await readUpstreamErrorText(response);
