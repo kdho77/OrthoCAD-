@@ -9,7 +9,13 @@ import {
     isAfoIdentityCorrections,
 } from "./defaults";
 import { transformAfoPoint } from "./landmark-frame";
-import { cloneMesh, computeVertexNormals, nearestVertex, vertexCount } from "./mesh-ops";
+import {
+    cloneMesh,
+    computeVertexNormals,
+    nearestVertex,
+    vertexCount,
+    weldCoincidentVertices,
+} from "./mesh-ops";
 import { clamp01, smoothstep } from "./offset-field";
 import type {
     AfoCorrections,
@@ -106,7 +112,8 @@ function rotateAround(p: AfoVec3, origin: AfoVec3, axis: AfoVec3, angle: number)
  */
 export function applyAfoCorrections(mesh: AfoTriMesh, c: AfoCorrections, axes?: AfoRotationAxes): AfoTriMesh {
     if (isAfoIdentityCorrections(c)) return cloneMesh(mesh);
-    const out = cloneMesh(mesh);
+    // Weld before the smooth. Unindexed OBJ soups otherwise collapse face by face.
+    const out = weldCoincidentVertices(cloneMesh(mesh));
     const n = vertexCount(out);
     const sagDeg = clampSagittalDeg(c.legSideDeg);
     const frontDeg = clampFrontalDeg(c.legRearDeg);
