@@ -65,6 +65,7 @@ export const MCP_TOOL_REQUIRED_SCOPES = {
     list_designs_by_order: ["design:read"],
     get_design_params: ["design:read"],
     prepare_manufacturing_stl_upload: ["manufacturing:prepare"],
+    list_materials: ["manufacturing:generate"],
     generate_gcode: ["manufacturing:generate"],
     get_production: ["manufacturing:download"],
     list_productions_by_design: ["manufacturing:download"],

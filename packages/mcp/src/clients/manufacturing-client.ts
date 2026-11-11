@@ -91,7 +91,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
         generateGcode(input: {
             designId?: string;
             side?: "left" | "right";
-            presetId: string;
+            presetId?: string;
             stlStorageKey: string;
             outputType: "gcode" | "stl";
             beltAngleDeg?: number;
@@ -112,10 +112,11 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
         generateFromSavedDesign(input: {
             designId: string;
             side: "left" | "right";
-            presetId: string;
+            presetId?: string;
             fileName?: string;
             patientName?: string;
             hardness?: string;
+            material?: string;
         }) {
             return trpc.manufacturing.generateSolid.mutate({
                 designId: input.designId,
@@ -128,6 +129,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
                 fileName: input.fileName,
                 patientName: input.patientName,
                 hardness: input.hardness,
+                material: input.material,
             });
         },
 

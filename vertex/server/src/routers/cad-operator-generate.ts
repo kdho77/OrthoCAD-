@@ -38,7 +38,7 @@ import {
 export interface CadGenerateRequestInput {
     designId: string;
     side: CadFootSide;
-    presetId: string;
+    presetId?: string;
     stlStorageKey: string;
     outputType: "gcode" | "stl";
     beltAngleDeg: number;
@@ -47,6 +47,7 @@ export interface CadGenerateRequestInput {
     useSavedDesignMesh?: boolean;
     patientName?: string;
     hardness?: string;
+    material?: string;
 }
 
 function requireStorage() {
@@ -93,6 +94,8 @@ export async function runCadOperatorGenerateRequest(args: {
         stlStorageKey: input.stlStorageKey,
         patientName: input.patientName,
         hardness: input.hardness,
+        presetId: input.presetId,
+        material: input.material,
     });
     const identity = cadOperatorManufacturingIdentity({
         designId: input.designId,

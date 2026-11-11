@@ -32,6 +32,7 @@ import {
     patientDisplayName,
     resolveProductionTextMarking,
 } from "../lib/integration-text-marking.js";
+import { assertLockedVertexSliceProfile, resolveEnabledSliceMaterial } from "../lib/vertexslice-client.js";
 
 export interface CadGeneratePlan {
     stlStorageKey: string | null;
@@ -67,6 +68,23 @@ function lockedRecipe(settingsJson: unknown): PrintRecipeV1 {
     const settings = readStoredDesignSettings(settingsJson);
     const parsed = printRecipeV1Schema.safeParse(settings?.printRecipe);
     return bindPrintRecipeProfile(parsed.success ? parsed.data : undefined, CAD_OPERATOR_BELT_PROFILE_ID);
+}
+
+/** Omitted preset uses the locked insole profile. Any other id is rejected. */
+export function resolveCadOperatorPreset(presetId: string | undefined): string {
+    const raw = presetId?.trim() ?? "";
+    if (!raw) return CAD_OPERATOR_BELT_PROFILE_ID;
+    try {
+        return assertLockedVertexSliceProfile(raw);
+    } catch (error) {
+        if (error instanceof TRPCError) {
+            throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: `${error.message}. preset_id "${raw}" was rejected and was not substituted.`,
+            });
+        }
+        throw error;
+    }
 }
 
 export async function loadDogfoodDesign(
@@ -119,6 +137,8 @@ export async function prepareCadOperatorGenerate(args: {
     stlStorageKey: string;
     patientName?: string;
     hardness?: string;
+    presetId?: string;
+    material?: string;
 }): Promise<CadGeneratePlan> {
     if (args.outputType !== "gcode") {
         throw new TRPCError({
@@ -126,6 +146,8 @@ export async function prepareCadOperatorGenerate(args: {
             message: "CAD-operator manufacturing returns G-code only",
         });
     }
+    const presetId = resolveCadOperatorPreset(args.presetId);
+    const material = resolveEnabledSliceMaterial(args.material, CAD_OPERATOR_BELT_MATERIAL);
     const { row, design } = await loadDogfoodDesign(args.prisma, args.principal, args.designId);
     if (design.method === "milling_3axis") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Milled orders are not belt G-code" });
@@ -166,9 +188,9 @@ export async function prepareCadOperatorGenerate(args: {
         printRecipe = { ...printRecipe, defaultHardness: decision.hardness };
     }
     const shared = {
-        presetId: CAD_OPERATOR_BELT_PROFILE_ID,
+        presetId,
         printRecipe,
-        material: CAD_OPERATOR_BELT_MATERIAL,
+        material,
         beltAngleDeg: CAD_OPERATOR_BELT_ANGLE_DEG,
         ownerId: design.ownerId,
     };

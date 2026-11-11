@@ -6,6 +6,11 @@ import { requireCadOperatorKey } from "../config.js";
 import { buildDesignExportedPayload } from "../payload/design-exported-payload.js";
 import { buildVoAttachFilesHandoff, DOGFOOD_HELD_ID_PREFIXES } from "../payload/vo-attach-files.js";
 import {
+    callerPrintMaterial,
+    callerPrintPreset,
+    canonicalInsolePrintMaterialCatalog,
+} from "./print-materials.js";
+import {
     buildDesignExportedPayloadInputSchema,
     createSavedDesignInputSchema,
     generateGcodeInputSchema,
@@ -14,6 +19,7 @@ import {
     getExportDownloadInputSchema,
     getProductionInputSchema,
     listDesignsByOrderInputSchema,
+    listMaterialsInputSchema,
     listProductionsByDesignInputSchema,
     persistSavedDesignSnapshotInputSchema,
     prepareManufacturingStlUploadInputSchema,
@@ -255,8 +261,14 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                 fileName: input.file_name,
             });
         }
+        case "list_materials": {
+            listMaterialsInputSchema.parse(args ?? {});
+            return canonicalInsolePrintMaterialCatalog();
+        }
         case "generate_gcode": {
             const input = generateGcodeInputSchema.parse(args);
+            const material = callerPrintMaterial(input.material);
+            const presetId = callerPrintPreset(input.preset_id);
             const manufacturing =
                 deps.manufacturing ??
                 (await import("../clients/manufacturing-client.js")).createManufacturingClient({
@@ -276,7 +288,8 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                         const result = await manufacturing.generateFromSavedDesign({
                             designId: input.design_id,
                             side,
-                            presetId: input.preset_id,
+                            presetId,
+                            material,
                             fileName: input.file_name ? `${side}-${input.file_name}` : `${side}.gcode`,
                             patientName: input.patient_name,
                             hardness: input.hardness,
@@ -312,12 +325,12 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
             const legacy = await manufacturing.generateGcode({
                 designId: input.design_id,
                 side: input.side,
-                presetId: input.preset_id,
+                presetId,
                 stlStorageKey: input.stl_storage_key,
                 outputType: input.output_type,
                 beltAngleDeg: input.belt_angle_deg,
                 fileName: input.file_name,
-                material: input.material,
+                material,
                 patientName: input.patient_name,
             });
             if (isUserQuestion(legacy)) return legacy;

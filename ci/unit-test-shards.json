@@ -114,6 +114,7 @@
             "index": 3,
             "files": [
                 "packages/mcp/test/http-endpoint.test.ts",
+                "packages/mcp/test/list-materials.test.ts",
                 "tests/apex-warp-solid-gates.test.ts",
                 "tests/cnc/belt-phase-b-pitch.test.ts",
                 "tests/cnc/errors.test.ts",

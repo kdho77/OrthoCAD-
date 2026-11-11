@@ -22,8 +22,16 @@ export const CAD_OPERATOR_SCOPES = [
 
 export type CadOperatorScope = (typeof CAD_OPERATOR_SCOPES)[number];
 
-/** Locked Apex Core belt slice. Must match the Export material table. */
+/**
+ * Locked insole process profile. Every enabled insole material uses this id.
+ * A caller preset is accepted only when it is this id or omitted.
+ */
 export const CAD_OPERATOR_BELT_PROFILE_ID = "apex-v2-insole-95a";
+/**
+ * VertexSlice material used only when the caller omits material.
+ * A selected enabled material replaces this value. It is not a fallback for
+ * unknown or disabled names.
+ */
 export const CAD_OPERATOR_BELT_MATERIAL = "apex_core";
 export const CAD_OPERATOR_BELT_ANGLE_DEG = 45;
 

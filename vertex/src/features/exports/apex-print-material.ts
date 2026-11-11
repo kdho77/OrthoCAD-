@@ -130,7 +130,17 @@ export function lockedProfileIdForApexMaterial(materialId: ApexPrintMaterialId):
     return opt.lockedProfileId;
 }
 
-/** Order-material alias. ApexComfort prints with the locked Apex Core profile. */
+/**
+ * Order-material alias. ApexComfort prints with the locked Apex Core profile.
+ * "ApexLight Foam" is the VertexOrders label for Apex Light, not a separate product.
+ * Spaces, underscores, and hyphens are ignored, so "Apex Light", "ApexLight", and
+ * "apex_light" match ApexLight.
+ */
+const ORDER_MATERIAL_ALIASES: Record<string, ApexPrintMaterialId> = {
+    apexcomfort: "ApexCore",
+    apexlightfoam: "ApexLight",
+};
+
 export function apexPrintMaterialForOrderMaterial(
     orderMaterial: string | null | undefined,
 ): ApexPrintMaterialId | null {
@@ -140,7 +150,8 @@ export function apexPrintMaterialForOrderMaterial(
             .toLowerCase()
             .replace(/[\s_-]+/g, "") ?? "";
     if (!key) return null;
-    if (key === "apexcomfort") return "ApexCore";
+    const alias = ORDER_MATERIAL_ALIASES[key];
+    if (alias) return alias;
     return APEX_PRINT_MATERIAL_OPTIONS.find((m) => m.id.toLowerCase() === key)?.id ?? null;
 }
 
