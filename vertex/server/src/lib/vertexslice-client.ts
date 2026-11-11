@@ -237,10 +237,28 @@ function isMaterialRejection(errorText: string, material: string): boolean {
     return /not available|not found|unknown|unsupported|unrecognized|invalid|not allowed|no such/.test(text);
 }
 
-async function vertexSliceFetch(url: string, init: RequestInit): Promise<Response> {
+function isAbortError(err: unknown): boolean {
+    if (err instanceof Error && err.name === "AbortError") return true;
+    if (err instanceof DOMException && err.name === "AbortError") return true;
+    return false;
+}
+
+function vertexSliceTimedOutError(timeoutSec: number, side?: string): Error {
+    const suffix = side?.trim() ? ` (${side.trim()})` : "";
+    return new Error(`VertexSlice timed out after ${timeoutSec}s${suffix}`);
+}
+
+async function vertexSliceFetch(
+    url: string,
+    init: RequestInit,
+    opts?: { timedOut?: { timeoutSec: number; side?: string } },
+): Promise<Response> {
     try {
         return await fetch(url, init);
     } catch (err: unknown) {
+        if (isAbortError(err) && opts?.timedOut) {
+            throw vertexSliceTimedOutError(opts.timedOut.timeoutSec, opts.timedOut.side);
+        }
         const message = err instanceof Error ? err.message : String(err);
         throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -289,6 +307,10 @@ export interface VertexSliceRequest {
     filename?: string;
     /** PrintRecipe hardness percent on the locked profile. Wall loops are never sent. */
     infillDensityPct?: number;
+    /** Deadline for POST /v1/slice only. Materials prefetch is not bounded by this. */
+    sliceTimeoutMs?: number;
+    /** Included in timeout errors when sliceTimeoutMs is set. */
+    side?: string;
 }
 
 /**
@@ -336,11 +358,24 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
         authenticated: true,
     });
 
-    const response = await vertexSliceFetch(endpoint, {
-        method: "POST",
-        headers: authHeaders(apiKey),
-        body: form,
-    });
+    const sliceTimeoutMs = request.sliceTimeoutMs;
+    const sliceTimeoutSec =
+        sliceTimeoutMs !== undefined ? Math.max(1, Math.ceil(sliceTimeoutMs / 1000)) : undefined;
+    const sliceSignal =
+        sliceTimeoutMs !== undefined && sliceTimeoutMs > 0 ? AbortSignal.timeout(sliceTimeoutMs) : undefined;
+
+    const response = await vertexSliceFetch(
+        endpoint,
+        {
+            method: "POST",
+            headers: authHeaders(apiKey),
+            body: form,
+            signal: sliceSignal,
+        },
+        sliceTimeoutSec !== undefined
+            ? { timedOut: { timeoutSec: sliceTimeoutSec, side: request.side } }
+            : undefined,
+    );
 
     if (!response.ok) {
         const detail = await readUpstreamErrorText(response);

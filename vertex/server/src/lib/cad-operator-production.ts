@@ -16,8 +16,26 @@ import {
 /** Pro serverless cap. waitUntil work is still inside this budget. */
 export const CAD_PRODUCTION_MAX_DURATION_SEC = 300;
 
+/** Reserve before the platform maxDuration so slice can fail and mark the production failed. */
+export const CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC = 20;
+
+/** Upper bound on a single POST /v1/slice fetch wait. */
+export const CAD_VERTEX_SLICE_MAX_TIMEOUT_SEC = 240;
+
 /** Longer than maxDuration so a live invocation is not stolen before the platform stops it. */
 export const CAD_PRODUCTION_LEASE_MS = (CAD_PRODUCTION_MAX_DURATION_SEC + 60) * 1000;
+
+/**
+ * Remaining invocation time for VertexSlice slice, capped at CAD_VERTEX_SLICE_MAX_TIMEOUT_SEC.
+ * Uses the generateSolid / executeCadOperatorProduction start timestamp.
+ */
+export function cadVertexSliceSliceTimeoutMs(invocationStartedAt: Date, now: Date): number {
+    const elapsedMs = Math.max(0, now.getTime() - invocationStartedAt.getTime());
+    const budgetMs =
+        (CAD_PRODUCTION_MAX_DURATION_SEC - CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC) * 1000 - elapsedMs;
+    const cappedMs = Math.min(budgetMs, CAD_VERTEX_SLICE_MAX_TIMEOUT_SEC * 1000);
+    return Math.max(1, cappedMs);
+}
 
 export const HYBRID_GCODE_COST = 3;
 
@@ -274,6 +292,9 @@ export function publicProductionError(error: unknown): string {
         "Supabase admin client not configured",
         "Manufacturing charge failed",
     ];
+    if (message.startsWith("VertexSlice timed out after")) {
+        return message;
+    }
     for (const item of allowed) {
         if (message === item || message.startsWith(`${item}:`) || message.startsWith(`${item} `)) {
             return item;
@@ -409,12 +430,20 @@ export interface CadChargeResult {
     alreadyCharged: boolean;
 }
 
+export interface CadProductionSliceContext {
+    sliceTimeoutMs: number;
+    sliceTimeoutSec: number;
+}
+
 export interface ExecuteCadProductionArgs {
     row: CadProductionRow;
     store: CadProductionStore;
     now: () => Date;
     materialize: () => Promise<{ stlStorageKey: string; meshFingerprint: string | null }>;
-    slice: (stlStorageKey: string) => Promise<{ gcode: string; jobId: string }>;
+    slice: (
+        stlStorageKey: string,
+        ctx?: CadProductionSliceContext,
+    ) => Promise<{ gcode: string; jobId: string }>;
     uploadGcode: (gcode: string) => Promise<{ storageKey: string }>;
     charge: (args: {
         storageKey: string;
@@ -436,20 +465,20 @@ async function markFailed(store: CadProductionStore, id: string, error: unknown,
 
 export async function executeCadOperatorProduction(args: ExecuteCadProductionArgs): Promise<void> {
     const started = args.now();
-    const running = await args.store.updateIf(
-        args.row.id,
-        (row) => row.status === "pending" || row.status === "running",
-        {
-            status: "running",
-            leaseExpiresAt: leaseDeadline(started),
-            updatedAt: started,
-            error: null,
-        },
-    );
-    if (!running) return;
-
     let stlStorageKey: string | null = null;
     try {
+        const running = await args.store.updateIf(
+            args.row.id,
+            (row) => row.status === "pending" || row.status === "running",
+            {
+                status: "running",
+                leaseExpiresAt: leaseDeadline(started),
+                updatedAt: started,
+                error: null,
+            },
+        );
+        if (!running) return;
+
         const current = await args.store.findById(args.row.id);
         if (current?.chargedAt && current.gcodeStorageKey) {
             await args.store.updateIf(args.row.id, (row) => row.status !== "succeeded", {
@@ -464,7 +493,10 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
 
         const materialized = await args.materialize();
         stlStorageKey = materialized.stlStorageKey;
-        const sliced = await args.slice(stlStorageKey);
+        const sliceNow = args.now();
+        const sliceTimeoutMs = cadVertexSliceSliceTimeoutMs(started, sliceNow);
+        const sliceTimeoutSec = Math.max(1, Math.ceil(sliceTimeoutMs / 1000));
+        const sliced = await args.slice(stlStorageKey, { sliceTimeoutMs, sliceTimeoutSec });
         if (!sliced.gcode) {
             throw new Error("Manufacturing service returned empty output");
         }
