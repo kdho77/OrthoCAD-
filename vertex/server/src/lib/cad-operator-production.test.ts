@@ -6,8 +6,12 @@ import {
     assetLoadCauseForLog,
     beginCadOperatorProduction,
     CAD_PRODUCTION_LEASE_MS,
+    CAD_PRODUCTION_MAX_DURATION_SEC,
+    CAD_VERTEX_SLICE_MAX_TIMEOUT_SEC,
+    CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC,
     type CadProductionInsert,
     cadOperatorManufacturingIdentity,
+    cadVertexSliceSliceTimeoutMs,
     claimProduction,
     executeCadOperatorProduction,
     expireStaleProduction,
@@ -16,6 +20,7 @@ import {
     publicProductionError,
     toPublicProduction,
 } from "./cad-operator-production.js";
+import { sliceWithVertexSlice } from "./vertexslice-client.js";
 
 const recipe: PrintRecipeV1 = {
     version: 1,
@@ -39,6 +44,96 @@ function insert(side: "left" | "right", fingerprint = "fp-1"): CadProductionInse
 }
 
 describe("CAD-operator production claim", () => {
+    test("cadVertexSliceSliceTimeoutMs respects invocation budget and 240s cap", () => {
+        const started = new Date("2026-11-09T00:00:00.000Z");
+        const atStart = cadVertexSliceSliceTimeoutMs(started, started);
+        expect(atStart).toBe(
+            Math.min(
+                CAD_VERTEX_SLICE_MAX_TIMEOUT_SEC,
+                CAD_PRODUCTION_MAX_DURATION_SEC - CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC,
+            ) * 1000,
+        );
+        const after99s = cadVertexSliceSliceTimeoutMs(started, new Date(started.getTime() + 99_000));
+        expect(after99s).toBe(
+            Math.min(240, CAD_PRODUCTION_MAX_DURATION_SEC - CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC - 99) * 1000,
+        );
+    });
+
+    test("a hung VertexSlice slice fails the production with a timeout error", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice")) {
+                return new Promise<Response>((_resolve, reject) => {
+                    const signal = init?.signal;
+                    if (!signal) {
+                        reject(new Error("expected AbortSignal on slice fetch"));
+                        return;
+                    }
+                    const onAbort = () => {
+                        reject(new DOMException("The operation was aborted.", "AbortError"));
+                    };
+                    if (signal.aborted) {
+                        onAbort();
+                        return;
+                    }
+                    signal.addEventListener("abort", onAbort, { once: true });
+                });
+            }
+            return originalFetch(input, init);
+        }) as typeof fetch;
+
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(store, insert("right"), new Date("2026-11-09T00:00:00.000Z"));
+        const invocationStart = new Date("2026-11-09T00:00:00.000Z");
+        const sliceAt = new Date(
+            invocationStart.getTime() +
+                (CAD_PRODUCTION_MAX_DURATION_SEC - CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC - 1) * 1000,
+        );
+        let sliceCtxSeen: { sliceTimeoutMs: number } | undefined;
+        let nowCalls = 0;
+        await executeCadOperatorProduction({
+            row: claimed.row,
+            store,
+            now: () => {
+                nowCalls += 1;
+                return nowCalls === 1 ? invocationStart : sliceAt;
+            },
+            materialize: async () => ({ stlStorageKey: "tmp/r.stl", meshFingerprint: null }),
+            slice: async (stlStorageKey, sliceCtx) => {
+                sliceCtxSeen = sliceCtx;
+                await sliceWithVertexSlice({
+                    profileId: "apex-v2-insole-95a",
+                    material: "apex_core",
+                    model: new Uint8Array([1, 2, 3]),
+                    filename: stlStorageKey,
+                    sliceTimeoutMs: sliceCtx?.sliceTimeoutMs,
+                    side: "right",
+                });
+                return { gcode: "G1\n", jobId: "job" };
+            },
+            uploadGcode: async () => ({ storageKey: "gcode/cad-operator/t/c/d/right.gcode" }),
+            charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+        });
+
+        globalThis.fetch = originalFetch;
+        delete process.env.VERTEXSLICE_SLICER_URL;
+        delete process.env.VERTEXSLICE_API_KEY;
+
+        const expectedMs = cadVertexSliceSliceTimeoutMs(invocationStart, sliceAt);
+        const expectedSec = Math.ceil(expectedMs / 1000);
+        expect(sliceCtxSeen?.sliceTimeoutMs).toBe(expectedMs);
+        expect(expectedMs).toBe(1000);
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toBe(`VertexSlice timed out after ${expectedSec}s (right)`);
+        expect(publicProductionError(new Error(row?.error ?? ""))).toBe(row?.error);
+    });
     test("begin returns before slicing finishes", async () => {
         const store = new MemoryCadProductionStore();
         let release: () => void = () => {};

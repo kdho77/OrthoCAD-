@@ -150,7 +150,7 @@ export async function runCadOperatorGenerateRequest(args: {
                             );
                         },
                     }),
-                slice: async (stlStorageKey) => {
+                slice: async (stlStorageKey, sliceCtx) => {
                     const supabase = requireStorage();
                     const stlUrl = await signedDownloadUrl(
                         supabase,
@@ -166,6 +166,8 @@ export async function runCadOperatorGenerateRequest(args: {
                         model: stlBytes,
                         filename: `${input.side}.stl`,
                         infillDensityPct,
+                        sliceTimeoutMs: sliceCtx?.sliceTimeoutMs,
+                        side: input.side,
                     });
                     const jobStamp = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
                     return { gcode, jobId: `vs_${jobStamp}` };
