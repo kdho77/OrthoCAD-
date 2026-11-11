@@ -25,6 +25,7 @@ import {
     type SavedDesignCatalog,
     type SavedDesignSlider,
     SavedDesignSnapshotError,
+    SHELL_THICKNESS_MM_DEFAULT,
     SLIDER_FIELDS,
     type StoredLinkShoe,
     US_WOMEN_TO_MENS_OFFSET,
@@ -41,7 +42,7 @@ const SAMPLE_TOP_GLB_PATH = "Templates/SAMPLE_Top.glb";
 const SAMPLE_TOP_ASSET_ID = "sample-top";
 const SAMPLE_TOP_NAME = "SAMPLE_Top";
 
-const BASE_REFERENCE_THICKNESS_MM = 2;
+const BASE_REFERENCE_THICKNESS_MM = SHELL_THICKNESS_MM_DEFAULT;
 
 /** Matches SHAPE_FINISH_DEFAULTS in shape-finish-modifiers (printing_solid default). */
 function defaultShapeFinishModifiers(): ShapeFinishModifiers {
@@ -741,6 +742,23 @@ export function buildSavedDesignSnapshot(input: {
         design.corrections.left.fullLengthWedge = wedge;
         design.corrections.right.fullLengthWedge = { ...wedge };
         paths.push("settings.corrections.left.fullLengthWedge", "settings.corrections.right.fullLengthWedge");
+    }
+
+    if (catalog.thickness_mm !== undefined) {
+        const mm = catalog.thickness_mm;
+        // Uniform mode is the shell-thickness slider path (thickness-raise).
+        // Zonal walls ignore thicknessMm. Omitted thickness leaves zonal + 2 mm.
+        design.thicknessMm = mm;
+        design.shellThicknessMode = "uniform";
+        if (design.paired) {
+            design.paired.leftThicknessMm = mm;
+            design.paired.rightThicknessMm = mm;
+        }
+        paths.push(
+            "settings.shellThicknessMode",
+            "settings.paired.leftThicknessMm",
+            "settings.paired.rightThicknessMm",
+        );
     }
 
     const counts = new Map<string, number>();

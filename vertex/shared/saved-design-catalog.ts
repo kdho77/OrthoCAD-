@@ -21,6 +21,16 @@ export const FLEXIBLE_FOOT_APEX_MM = 4;
 /** US women's retail label is men's + 1.5 (shoe-size.ts). Inverse maps a stored US_W size. */
 export const US_WOMEN_TO_MENS_OFFSET = 1.5;
 
+/**
+ * Human Corrections "Shell thickness" (`design.thicknessMm`).
+ * This is the labelled shell/base clearance, not the zonal rear/mid/fore walls.
+ * Min and max match CLINICAL_LIMITS.thicknessMm and the Corrections slider.
+ * The omitted default matches BASE_REFERENCE_THICKNESS_MM.
+ */
+export const SHELL_THICKNESS_MM_MIN = 1.5;
+export const SHELL_THICKNESS_MM_MAX = 8;
+export const SHELL_THICKNESS_MM_DEFAULT = 2;
+
 /** Loft dropdown bounds. Sizes outside this are rejected instead of clamped. */
 export const LOFT_US_MEN_MIN = 1;
 export const LOFT_US_MEN_MAX = 16;
@@ -148,6 +158,11 @@ export const savedDesignCatalogSchema = z
         rearfoot_wedge: wedgeSchema.optional(),
         forefoot_wedge: wedgeSchema.optional(),
         full_length_wedge: fullLengthWedgeSchema.optional(),
+        /**
+         * Shell thickness in mm (`design.thicknessMm`). Optional.
+         * Omitted keeps {@link SHELL_THICKNESS_MM_DEFAULT} and the zonal shell.
+         */
+        thickness_mm: z.number().finite().min(SHELL_THICKNESS_MM_MIN).max(SHELL_THICKNESS_MM_MAX).optional(),
         rx_text: z.string().max(8000).optional(),
         notes: z.string().max(8000).optional(),
         rigidity: z.string().max(80).optional(),
