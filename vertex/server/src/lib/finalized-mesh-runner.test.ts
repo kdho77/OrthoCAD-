@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { PrismaClient } from "@prisma/client";
 import { describe, expect, test } from "@rstest/core";
 import { buildPrinterFootManufacturingStl } from "@/features/exports/export-service";
 import { designStateFromSavedSettings } from "@/features/exports/saved-design-finalized-mesh";
@@ -24,9 +25,14 @@ import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import type { PlacedElement, Side } from "@/types";
 import { defaultBottomTextMarking } from "../../../shared/bottom-text-marking.js";
-import { designSettingsEnvelope } from "../../../shared/design-settings.js";
-import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot.js";
-import { envelopeWithLoftTextMarking } from "./integration-text-marking.js";
+import {
+    type DesignSettingsEnvelope,
+    designSettingsEnvelope,
+    readStoredDesignSettings,
+} from "../../../shared/design-settings.js";
+import { type CadOperatorPrincipal, DOGFOOD_TENANT_ID } from "../auth/cad-operator.js";
+import { envelopeWithLoftTextMarking, resolveProductionTextMarking } from "./integration-text-marking.js";
+import { persistSavedDesignSnapshotOnDesign } from "./saved-design-snapshot.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VERTEX_CWD = resolve(HERE, "../../..");
@@ -175,7 +181,7 @@ describe("headless canonical export assets", () => {
 interface GeometryCase {
     label: string;
     side: Side;
-    settings: ReturnType<typeof designSettingsEnvelope>;
+    settings: DesignSettingsEnvelope;
 }
 
 interface GeometryFootReport {
@@ -192,14 +198,86 @@ interface GeometryReport {
     cases: Record<string, GeometryFootReport>;
 }
 
-/** Same envelope manufacturing.generateFromSavedDesign lofts, including the composed patient name. */
-function savedDesignEnvelope(catalog: Parameters<typeof buildSavedDesignSnapshot>[0]["catalog"], side: Side) {
-    const built = buildSavedDesignSnapshot({ stored: null, catalog });
-    const base = designSettingsEnvelope({
-        ...(built.design as unknown as Record<string, unknown>),
-        textMarking: defaultBottomTextMarking(),
+const PERSIST_DESIGN_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+const persistPrincipal: CadOperatorPrincipal = {
+    kind: "cad_operator",
+    credentialId: "cred-dogfood",
+    tenantId: DOGFOOD_TENANT_ID,
+    scopes: ["design:read", "manufacturing:prepare", "manufacturing:generate", "manufacturing:download"],
+};
+
+function persistPrisma() {
+    const current = {
+        id: PERSIST_DESIGN_ID,
+        ownerId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        name: "Fixture insole",
+        kind: "insole",
+        pattern: "full_contact",
+        method: "printing_solid",
+        thicknessMm: 2,
+        linked: true,
+        unit: "mm",
+        settingsJson: null,
+        updatedAt: "2026-11-06T00:00:00.000Z",
+        deletedAt: null,
+        client: { tenantId: DOGFOOD_TENANT_ID },
+        integrationLink: {
+            tenantId: DOGFOOD_TENANT_ID,
+            source: "vo2",
+            externalOrderId: "fixture-order",
+            sides: "pair",
+            shoeSizeSystem: "US_M",
+            shoeSize: 9,
+            shoeSizeLeft: null,
+            shoeSizeRight: null,
+            shoeWidth: "medium",
+            rxText: null,
+            notes: null,
+        },
+    };
+    return {
+        design: {
+            findUnique: async () => current,
+            update: async () => ({ id: PERSIST_DESIGN_ID }),
+        },
+    } as unknown as PrismaClient;
+}
+
+/**
+ * settingsJson from persistSavedDesignSnapshotOnDesign, then the same text
+ * composition manufacturing.generateFromSavedDesign lofts.
+ */
+async function persistedLoftSettings(
+    catalog: unknown,
+    side: Side,
+): Promise<{ persisted: unknown; settings: DesignSettingsEnvelope }> {
+    const saved = await persistSavedDesignSnapshotOnDesign({
+        prisma: persistPrisma(),
+        principal: persistPrincipal,
+        designId: PERSIST_DESIGN_ID,
+        catalog,
     });
-    return envelopeWithLoftTextMarking(base, "Jane Doe", side);
+    const resolved = resolveProductionTextMarking({
+        settingsJson: saved.settingsJson,
+        patientNameOverride: "Jane Doe",
+        clientDisplayName: null,
+    });
+    return {
+        persisted: saved.settingsJson,
+        settings: envelopeWithLoftTextMarking(resolved.envelope, resolved.patientDisplayName, side),
+    };
+}
+
+function sideCorrection(settingsJson: unknown, side: Side) {
+    const corrections = readStoredDesignSettings(settingsJson)?.corrections as
+        | {
+              left: { archHeightMm: number; rearfootWedge?: Record<string, unknown> };
+              right: { archHeightMm: number; rearfootWedge?: Record<string, unknown> };
+          }
+        | undefined;
+    if (!corrections) throw new Error("persisted snapshot has no corrections");
+    return corrections[side];
 }
 
 function sha256(bytes: ArrayBuffer): string {
@@ -234,55 +312,66 @@ async function canonicalExportSha(settings: GeometryCase["settings"], side: Side
 }
 
 describe("headless canonical export for non-default saved geometry", () => {
-    test("low arch with 1.5 mm sinks, a high arch, and a 3 mm lateral rearfoot wedge match Export", async () => {
+    test("persisted low arch with sinks and a lateral rearfoot wedge match Export", async () => {
+        const shoe = { system: "US_M", size: 9 } as const;
+        const low = await persistedLoftSettings(
+            { shoe_size: shoe, arch: "low", sinks: [{ name: "1st met head", side: "left", depth_mm: 1.5 }] },
+            "left",
+        );
+        expect(sideCorrection(low.persisted, "left").archHeightMm).toBe(-3.5);
+        expect(sideCorrection(low.persisted, "right").archHeightMm).toBe(-3.5);
+        const sinks = readStoredDesignSettings(low.persisted)?.sinks as {
+            left?: Array<{ kind: string; depthMm: number; u?: number; v?: number }>;
+        };
+        expect(sinks.left?.[0]).toMatchObject({ kind: "mpj1", depthMm: 1.5 });
+        expect(sinks.left?.[0]?.u).toBeUndefined();
+        expect(sinks.left?.[0]?.v).toBeUndefined();
+        expect(sideCorrection(low.settings, "left").archHeightMm).toBe(-3.5);
+
+        const high = await persistedLoftSettings({ shoe_size: shoe, arch: "high" }, "left");
+        expect(sideCorrection(high.persisted, "left").archHeightMm).toBe(3);
+
+        const wedgeLeft = await persistedLoftSettings(
+            { shoe_size: shoe, rearfoot_wedge: { side: "lateral", value: 3, unit: "mm" } },
+            "left",
+        );
+        const wedgeRight = await persistedLoftSettings(
+            { shoe_size: shoe, rearfoot_wedge: { side: "lateral", value: 3, unit: "mm" } },
+            "right",
+        );
+        for (const saved of [wedgeLeft.persisted, wedgeRight.persisted]) {
+            for (const side of ["left", "right"] as const) {
+                expect(JSON.parse(JSON.stringify(sideCorrection(saved, side).rearfootWedge))).toEqual({
+                    side: "lateral",
+                    value: 3,
+                    unit: "mm",
+                });
+                expect(JSON.stringify(sideCorrection(saved, side).rearfootWedge)).not.toContain("degree");
+            }
+        }
+        expect(JSON.parse(JSON.stringify(sideCorrection(wedgeLeft.settings, "left").rearfootWedge))).toEqual({
+            side: "lateral",
+            value: 3,
+            unit: "mm",
+        });
+        expect(
+            JSON.parse(JSON.stringify(sideCorrection(wedgeRight.settings, "right").rearfootWedge)),
+        ).toEqual({
+            side: "lateral",
+            value: 3,
+            unit: "mm",
+        });
+
         const cases: GeometryCase[] = [
             {
                 label: "default",
                 side: "left",
-                settings: savedDesignEnvelope({ shoe_size: { system: "US_M", size: 9 } }, "left"),
+                settings: (await persistedLoftSettings({ shoe_size: shoe }, "left")).settings,
             },
-            {
-                label: "low-arch-sink",
-                side: "left",
-                settings: savedDesignEnvelope(
-                    {
-                        shoe_size: { system: "US_M", size: 9 },
-                        arch: "low",
-                        sinks: [{ name: "1st met head", side: "left", depth_mm: 1.5 }],
-                    },
-                    "left",
-                ),
-            },
-            {
-                label: "high-arch",
-                side: "left",
-                settings: savedDesignEnvelope(
-                    { shoe_size: { system: "US_M", size: 9 }, arch: "high" },
-                    "left",
-                ),
-            },
-            {
-                label: "wedge-left",
-                side: "left",
-                settings: savedDesignEnvelope(
-                    {
-                        shoe_size: { system: "US_M", size: 9 },
-                        rearfoot_wedge: { side: "lateral", value: 3, unit: "mm" },
-                    },
-                    "left",
-                ),
-            },
-            {
-                label: "wedge-right",
-                side: "right",
-                settings: savedDesignEnvelope(
-                    {
-                        shoe_size: { system: "US_M", size: 9 },
-                        rearfoot_wedge: { side: "lateral", value: 3, unit: "mm" },
-                    },
-                    "right",
-                ),
-            },
+            { label: "low-arch-sink", side: "left", settings: low.settings },
+            { label: "high-arch", side: "left", settings: high.settings },
+            { label: "wedge-left", side: "left", settings: wedgeLeft.settings },
+            { label: "wedge-right", side: "right", settings: wedgeRight.settings },
         ];
 
         const dir = mkdtempSync(join(tmpdir(), "canonical-export-geometry-"));

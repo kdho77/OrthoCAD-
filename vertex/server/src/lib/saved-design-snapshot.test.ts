@@ -224,6 +224,65 @@ describe("persist saved design snapshot", () => {
         expect(updates[0]?.where.id).not.toBe(DESIGN_ID);
     });
 
+    test("low arch with sinks and a lateral rearfoot wedge survive the save mapping", async () => {
+        const low = await persistSavedDesignSnapshotOnDesign({
+            prisma: fakePrisma().prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: {
+                shoe_size: { system: "US_M", size: 9 },
+                arch: "low",
+                sinks: [{ name: "1st met head", side: "left", depth_mm: 1.5 }],
+            },
+        });
+        const lowSettings = readStoredDesignSettings(low.settingsJson);
+        const lowCorrections = lowSettings?.corrections as {
+            left: { archHeightMm: number };
+            right: { archHeightMm: number };
+        };
+        expect(lowCorrections.left.archHeightMm).toBe(-3.5);
+        expect(lowCorrections.right.archHeightMm).toBe(-3.5);
+        const sinks = lowSettings?.sinks as {
+            left?: Array<{ kind: string; depthMm: number; u?: number; v?: number }>;
+        };
+        expect(sinks.left?.[0]).toMatchObject({ kind: "mpj1", depthMm: 1.5 });
+        expect(sinks.left?.[0]?.u).toBeUndefined();
+        expect(sinks.left?.[0]?.v).toBeUndefined();
+
+        const high = await persistSavedDesignSnapshotOnDesign({
+            prisma: fakePrisma().prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: { shoe_size: { system: "US_M", size: 9 }, arch: "high" },
+        });
+        const highCorrections = readStoredDesignSettings(high.settingsJson)?.corrections as {
+            left: { archHeightMm: number };
+        };
+        expect(highCorrections.left.archHeightMm).toBe(3);
+
+        const wedge = await persistSavedDesignSnapshotOnDesign({
+            prisma: fakePrisma().prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: {
+                shoe_size: { system: "US_M", size: 9 },
+                rearfoot_wedge: { side: "lateral", value: 3, unit: "mm" },
+            },
+        });
+        const wedgeCorrections = readStoredDesignSettings(wedge.settingsJson)?.corrections as {
+            left: { rearfootWedge?: { side: string; value: number; unit: string; degreeMode?: string } };
+            right: { rearfootWedge?: { side: string; value: number; unit: string; degreeMode?: string } };
+        };
+        for (const side of ["left", "right"] as const) {
+            expect(JSON.parse(JSON.stringify(wedgeCorrections[side].rearfootWedge))).toEqual({
+                side: "lateral",
+                value: 3,
+                unit: "mm",
+            });
+            expect(JSON.stringify(wedgeCorrections[side].rearfootWedge)).not.toContain("degree");
+        }
+    });
+
     test("AFO and milled designs are refused", async () => {
         for (const current of [row({ kind: "afo" }), row({ method: "milling_3axis" })]) {
             const { prisma, updates } = fakePrisma(current);
