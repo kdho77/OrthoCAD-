@@ -185,10 +185,82 @@ export async function expireStaleProduction(
     return updated ?? (await store.findById(id));
 }
 
+const CANONICAL_EXPORT_REFUSAL =
+    "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.";
+const CANONICAL_EXPORT_PREFIX = "Canonical Export mesh is not available headless";
+
+/** Full server log, including cause stacks. The public row stores publicProductionError instead. */
+export function productionErrorStack(error: unknown): string {
+    const parts: string[] = [];
+    const seen = new Set<unknown>();
+    let current: unknown = error;
+    while (current instanceof Error && !seen.has(current)) {
+        seen.add(current);
+        parts.push(current.stack ?? `${current.name}: ${current.message}`);
+        current = current.cause;
+    }
+    return parts.length > 0 ? parts.join("\nCaused by: ") : String(error);
+}
+
+function errorClassName(error: Error): string {
+    const name = error.name?.trim();
+    return name || "Error";
+}
+
+/** Class plus a short message. Drops names, settings payloads, file bodies, and secrets. */
+function sanitizedInnerCause(name: string, message: string): string | null {
+    const raw = message.replace(/\s+/g, " ").trim();
+    if (!raw) return null;
+    if (/settingsJson|firstName|lastName|patientName|"settings"/i.test(raw)) return null;
+    if (/^[A-Z][a-z]+(?:[ '][A-Z][a-z]+){0,3}$/.test(raw)) return null;
+    if (/facet normal|endsolid|^solid\s|(?:^|\s)(?:G0|G1|G90)\b/i.test(raw)) return null;
+    let text = raw.length > 400 ? `${raw.slice(0, 240)}…` : raw;
+    text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted]");
+    text = text.replace(
+        /\b(?:bearer|token|secret|password|api[_-]?key)\b\s*[:=]?\s*\S+|\bocad_[A-Za-z0-9._-]+|\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]+\b/gi,
+        "[redacted]",
+    );
+    text = text.replace(/\b[A-Z][a-z]+(?:[ '][A-Z][a-z]+)+\b/g, "[redacted]");
+    text = text.replace(/\/(?:home|Users)\/[^/\s]+/g, "/[redacted]");
+    text = text.replace(/\s+/g, " ").trim();
+    if (!text || text === "[redacted]" || /^[\s[\]redacted…]+$/.test(text)) return null;
+    return `${name}: ${text}`;
+}
+
+function deepestNonRefusal(error: unknown): Error | null {
+    const seen = new Set<unknown>();
+    let current: unknown = error;
+    let found: Error | null = null;
+    while (current instanceof Error && !seen.has(current)) {
+        seen.add(current);
+        if (!current.message.startsWith(CANONICAL_EXPORT_PREFIX)) found = current;
+        current = current.cause;
+    }
+    return found;
+}
+
+function innerCauseForPublicError(error: unknown): string | null {
+    const deepest = deepestNonRefusal(error);
+    if (deepest) {
+        const labeled = sanitizedInnerCause(errorClassName(deepest), deepest.message);
+        if (labeled) return labeled;
+    }
+    const message = error instanceof Error ? error.message : "";
+    const wrapped = message.match(
+        /^Canonical Export mesh is not available headless(?: \(([\s\S]*)\))?(?:\. Refusing to substitute a different mesh\.)?$/,
+    );
+    const inner = wrapped?.[1]?.trim() ?? "";
+    if (!inner) return null;
+    const labeled = inner.match(/^([A-Z][A-Za-z0-9_]*): ([\s\S]+)$/);
+    if (labeled?.[1] && labeled[2]) return sanitizedInnerCause(labeled[1], labeled[2]);
+    return sanitizedInnerCause("Error", inner);
+}
+
 export function publicProductionError(error: unknown): string {
     const message = error instanceof Error ? error.message : "";
-    if (message.startsWith("Canonical Export mesh is not available headless")) {
-        return "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.";
+    if (message.startsWith(CANONICAL_EXPORT_PREFIX)) {
+        const detail = innerCauseForPublicError(error);
+        return detail ? `${CANONICAL_EXPORT_REFUSAL} (${detail})` : CANONICAL_EXPORT_REFUSAL;
     }
     const allowed = [
         "Insufficient export tokens",
@@ -436,6 +508,7 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
         console.error("[manufacturing] cad production failed", {
             productionId: args.row.id,
             message: publicProductionError(error),
+            stack: productionErrorStack(error),
         });
         const assetCause = assetLoadCauseForLog(error);
         if (assetCause) console.error(assetCause);

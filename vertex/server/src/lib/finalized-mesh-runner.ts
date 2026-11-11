@@ -90,10 +90,29 @@ export async function buildHeadlessFinalizedFoot(input: {
             elementsBaseDir: fileURLToPath(ELEMENTS_DIR_URL),
         });
     } catch (error) {
+        const parts: string[] = [];
+        const seen = new Set<unknown>();
+        let current: unknown = error;
+        while (current instanceof Error && !seen.has(current)) {
+            seen.add(current);
+            parts.push(current.stack ?? `${current.name}: ${current.message}`);
+            current = current.cause;
+        }
+        console.error(
+            "[manufacturing] headless canonical export failed",
+            parts.length > 0 ? parts.join("\nCaused by: ") : String(error),
+        );
+        if (
+            error instanceof Error &&
+            error.message.startsWith("Canonical Export mesh is not available headless")
+        ) {
+            throw error;
+        }
+        const name = error instanceof Error && error.name ? error.name : "Error";
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(
-            `Canonical Export mesh is not available headless (${message}). Refusing to substitute a different mesh.`,
-            { cause: error },
+            `Canonical Export mesh is not available headless (${name}: ${message}). Refusing to substitute a different mesh.`,
+            { cause: error instanceof Error ? error : undefined },
         );
     }
 }
