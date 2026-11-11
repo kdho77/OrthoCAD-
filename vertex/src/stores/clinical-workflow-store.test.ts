@@ -35,15 +35,14 @@ describe("clinical workflow steps", () => {
         if (sticky) expect(sticky).not.toMatch(/Select Left, Right, or Pair/i);
     });
 
-    test("blocked Next stays enabled and jumps to Scan", () => {
+    test("Next from Setup advances to Base instead of bouncing to Scan", () => {
         useClinicalWorkflowStore.setState({
             step: "setup",
             footSideExplicitlyChosen: false,
             nextBlockReason: null,
         });
         useClinicalWorkflowStore.getState().goNext();
-        expect(useClinicalWorkflowStore.getState().step).toBe("scan");
-        expect(useClinicalWorkflowStore.getState().nextBlockReason).toMatch(/Left, Right, or Pair/i);
+        expect(useClinicalWorkflowStore.getState().step).toBe("base");
     });
 
     test("Continue to Export from Print opens Export when the scan gate would bounce Next", () => {

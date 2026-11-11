@@ -32,7 +32,11 @@ import {
     patientDisplayName,
     resolveProductionTextMarking,
 } from "../lib/integration-text-marking.js";
-import { assertLockedVertexSliceProfile, resolveEnabledSliceMaterial } from "../lib/vertexslice-client.js";
+import {
+    assertLockedVertexSliceProfile,
+    inspectManufacturingStl,
+    resolveEnabledSliceMaterial,
+} from "../lib/vertexslice-client.js";
 
 export interface CadGeneratePlan {
     stlStorageKey: string | null;
@@ -230,6 +234,10 @@ export async function materializeCadOperatorStl(args: {
             code: "INTERNAL_SERVER_ERROR",
             message,
         });
+    }
+    const mesh = inspectManufacturingStl(new Uint8Array(foot.stl));
+    if (mesh.problem) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: mesh.problem });
     }
     const stlStorageKey = buildCadOperatorTempStlKey(args.credentialId);
     await args.uploadStl(stlStorageKey, Buffer.from(foot.stl));
