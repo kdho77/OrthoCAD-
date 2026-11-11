@@ -1,6 +1,8 @@
 export { createIntegrationClient } from "./clients/integration-client.js";
 export { createManufacturingClient } from "./clients/manufacturing-client.js";
 export { loadConfig, requireCadOperatorKey, requireIntegrationKey } from "./config.js";
+export { handleOrthocadMcpHttp, MCP_FUNCTION_MAX_DURATION_SECONDS, MCP_HTTP_PATH } from "./http.js";
+export { authorizeMcpBearer, CAD_OPERATOR_SCOPES, DOGFOOD_TENANT_ID } from "./http-auth.js";
 export type { VoDesignExportedHandoff, VoHandoffFile } from "./payload/design-exported-payload.js";
 export { buildDesignExportedPayload } from "./payload/design-exported-payload.js";
 export { createOrthocadMcpServer } from "./server.js";

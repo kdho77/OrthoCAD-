@@ -3,11 +3,19 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
+import type { OrthocadMcpConfig } from "./config.js";
 import { loadConfig } from "./config.js";
-import { handleOrthocadTool } from "./tools/handlers.js";
+import { handleOrthocadTool, type OrthocadToolDeps } from "./tools/handlers.js";
 import { MCP_TOOL_DEFINITIONS } from "./tools/schemas.js";
 
-export function createOrthocadMcpServer(config = loadConfig()): McpServer {
+/**
+ * Stdio and Streamable HTTP both register `MCP_TOOL_DEFINITIONS` here.
+ * Tool names, schemas, and handlers stay one list.
+ */
+export function createOrthocadMcpServer(
+    config: OrthocadMcpConfig = loadConfig(),
+    deps?: Omit<OrthocadToolDeps, "config">,
+): McpServer {
     const server = new McpServer({
         name: "orthocad-mcp",
         version: "0.1.0-phase-a",
@@ -20,7 +28,7 @@ export function createOrthocadMcpServer(config = loadConfig()): McpServer {
                 description: tool.description,
                 inputSchema: tool.inputSchema,
             },
-            async (args: unknown) => handleOrthocadTool(tool.name, args, { config }),
+            async (args: unknown) => handleOrthocadTool(tool.name, args, { config, ...deps }),
         );
     }
 
