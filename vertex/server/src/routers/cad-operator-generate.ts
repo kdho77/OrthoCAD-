@@ -12,6 +12,7 @@ import {
     type CadFootSide,
     type CadProductionStatus,
     cadOperatorManufacturingIdentity,
+    cadVertexSliceSliceTimeoutMs,
     executeCadOperatorProduction,
     expireStaleProduction,
     HYBRID_GCODE_COST,
@@ -163,13 +164,16 @@ export async function runCadOperatorGenerateRequest(args: {
                     );
                     const stlBytes = await downloadManufacturingStl(stlUrl);
                     const infillDensityPct = infillPctForCadSlice(plan.presetId, plan.printRecipe);
+                    const sliceTimeoutMs = sliceCtx?.invocationStartedAt
+                        ? cadVertexSliceSliceTimeoutMs(sliceCtx.invocationStartedAt, now())
+                        : sliceCtx?.sliceTimeoutMs;
                     const gcode = await sliceWithVertexSlice({
                         profileId: plan.presetId,
                         material: plan.material,
                         model: stlBytes,
                         filename: `${input.side}.stl`,
                         infillDensityPct,
-                        sliceTimeoutMs: sliceCtx?.sliceTimeoutMs,
+                        sliceTimeoutMs,
                         side: input.side,
                     });
                     const jobStamp = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;

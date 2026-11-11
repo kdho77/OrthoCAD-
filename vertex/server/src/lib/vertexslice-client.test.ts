@@ -5,6 +5,7 @@ import { TRPCError } from "@trpc/server";
 import { APEX_V2_INSOLE_LOCKED_PROFILE_ID } from "../../../shared/print-recipe/print-recipe";
 import {
     assertEnabledVertexSliceMaterial,
+    inspectManufacturingStl,
     manufacturingBackendForOutput,
     materialIdsFromPayload,
     sliceWithVertexSlice,
@@ -214,4 +215,56 @@ describe("VertexSlice printer G-code client", () => {
             }),
         ).rejects.toThrow("VertexSlice timed out after 1s (left)");
     });
+
+    test("a binary STL outside a single foot fails before any slicer call", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const calls = installFetch(() => new Response("nope", { status: 500 }));
+        await expect(
+            sliceWithVertexSlice({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_light",
+                model: triangleStl([0, 0, 0, 10_000, 0, 0, 0, 1, 0]),
+                infillDensityPct: 26,
+                sliceTimeoutMs: 1_000,
+                side: "left",
+            }),
+        ).rejects.toThrow(/Manufacturing STL bounding box is 10000×1×0 mm/);
+        expect(calls).toHaveLength(0);
+        const degenerate = inspectManufacturingStl(triangleStl([0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        expect(degenerate.problem).toMatch(/degenerate/);
+        const placeholder = inspectManufacturingStl(new Uint8Array([1, 2, 3]));
+        expect(placeholder.binary).toBe(false);
+        expect(placeholder.problem).toBeNull();
+    });
+
+    test("a foot-sized binary STL still posts infill and the locked profile", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const calls = installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_light"]), { status: 200 });
+            }
+            return new Response("G1 X0\n", { status: 200 });
+        });
+        const gcode = await sliceWithVertexSlice({
+            profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+            material: "apex_light",
+            model: triangleStl([0, 0, 0, 120, 0, 0, 0, 40, 8]),
+            infillDensityPct: 26,
+        });
+        expect(gcode).toContain("G1");
+        const form = calls.find((call) => call.url.endsWith("/v1/slice"))?.init.body as FormData;
+        expect(form.get("infill_density")).toBe("26");
+        expect(form.get("profile_id")).toBe("apex-v2-insole-95a");
+        expect(form.get("material")).toBe("apex_light");
+        expect(form.get("wall_loops")).toBeNull();
+    });
 });
+
+function triangleStl(verts: number[]): Uint8Array {
+    const buf = Buffer.alloc(84 + 50);
+    buf.writeUInt32LE(1, 80);
+    for (let i = 0; i < 9; i++) buf.writeFloatLE(verts[i] ?? 0, 84 + 12 + i * 4);
+    return new Uint8Array(buf);
+}
