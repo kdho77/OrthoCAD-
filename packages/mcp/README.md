@@ -8,8 +8,8 @@ This package is **original `@vertex/orthocad-mcp`**. Do not revive the deleted C
 
 | Item | Phase A choice |
 | --- | --- |
-| **Transport** | **Stdio** (required for Cursor / Grok `AuthenticateMcpServer`) |
-| **HTTP MCP** | Not shipped in Phase A — use stdio child process only |
+| **Transport** | **Stdio** for a local child process. **Streamable HTTP** at `POST /api/mcp` on the existing Vercel project |
+| **HTTP MCP** | Stateless JSON on `https://orthocad.vertexorthopedic.com/api/mcp`. Same tools and the caller's own `ocad_` key |
 | **Entry** | `node …/packages/mcp/dist/cli.js` |
 | **API origin** | `ORTHOCAD_API_BASE` → integration REST + `${ORTHOCAD_API_BASE}/trpc` for manufacturing wrap |
 
@@ -59,7 +59,45 @@ npm run build
 }
 ```
 
-Local dev: `npm run dev` (tsx stdio server).
+Local dev: `npm run dev` (tsx stdio server). The stdio command and env vars above are unchanged.
+
+## Hosted Streamable HTTP
+
+Agents can connect by URL. The route lives in the existing Vercel project (root directory `vertex`, production alias `https://orthocad.vertexorthopedic.com`).
+
+| Item | Value |
+| --- | --- |
+| **Endpoint** | `POST https://orthocad.vertexorthopedic.com/api/mcp` |
+| **Auth header** | `Authorization: Bearer ocad_…` |
+| **Credential** | The caller's own CAD-operator integration key. The same key stdio puts in `ORTHOCAD_MCP_API_KEY`. |
+| **Transport** | Official `@modelcontextprotocol/sdk` `WebStandardStreamableHTTPServerTransport`, stateless (`sessionIdGenerator` unset), JSON responses. One function invocation per request. GET and DELETE return 405. |
+
+The hosted function forwards that bearer to integration REST and manufacturing tRPC. It does not read `ORTHOCAD_MCP_API_KEY` and does not substitute a project-wide key. Missing, malformed, unknown, or revoked keys return **401**. A key that is not a dogfood CAD operator, or a caller missing the scope a tool requires, returns **403**. The scopes are the locked set `design:read`, `manufacturing:prepare`, `manufacturing:generate`, and `manufacturing:download`.
+
+Cursor URL connector:
+
+```json
+{
+  "mcpServers": {
+    "orthocad": {
+      "url": "https://orthocad.vertexorthopedic.com/api/mcp",
+      "headers": {
+        "Authorization": "Bearer ocad_…"
+      }
+    }
+  }
+}
+```
+
+`generate_gcode` still returns `{production_id, status}` per foot. Poll `get_production`. The MCP function `maxDuration` is 60 seconds for that enqueue round-trip. Loft and slice stay on `vertex/api/trpc` (`maxDuration` 300, `waitUntil`). This route does not wait for them.
+
+When `ORTHOCAD_API_BASE` is unset, tool calls use `https://$VERCEL_URL` (this deployment). Set `ORTHOCAD_API_BASE` only when those calls must target a different origin. Credential lookup uses the project's existing Prisma database env (`DATABASE_URL`, `POSTGRES_URL`, or `DIRECT_URL`). No new secret is required. This package does not deploy the project.
+
+After changing `packages/mcp/src`, rebuild the function bundle and commit it:
+
+```bash
+node vertex/scripts/bundle-orthocad-mcp-http.mjs
+```
 
 ## Tools (v0)
 
