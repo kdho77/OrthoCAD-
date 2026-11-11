@@ -5,6 +5,7 @@
         {
             "index": 1,
             "files": [
+                "packages/mcp/test/central-fab-stl.test.ts",
                 "packages/mcp/test/design-exported-payload.test.ts",
                 "packages/mcp/test/tool-schemas.test.ts",
                 "tests/bottom-pattern-cad-render.test.ts",
@@ -140,6 +141,7 @@
                 "vertex/src/features/clients/design-route.deeplink.test.tsx",
                 "vertex/src/features/exports/ExportPanel.test.tsx",
                 "vertex/src/features/exports/saved-design-finalized-mesh.test.ts",
+                "vertex/src/features/exports/saved-design-thickness-loft.test.ts",
                 "vertex/src/features/production/shop-rls.review.test.ts",
                 "vertex/src/lib/clinical/clinical-step-gates.test.ts",
                 "vertex/src/lib/clinical/one-click-e2e-clinical-match.test.ts",
