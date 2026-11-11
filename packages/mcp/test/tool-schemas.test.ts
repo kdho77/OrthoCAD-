@@ -1,10 +1,19 @@
 import { describe, expect, test } from "@rstest/core";
 
 import {
+    ARCH_APEX_SHIFT_MM_MAX,
+    ARCH_APEX_SHIFT_MM_MIN,
+    ARCH_RAISE_MM_MAX,
+    ARCH_RAISE_MM_MIN,
+} from "../../../vertex/shared/saved-design-catalog.ts";
+import {
     generateGcodeInputObjectSchema,
     MCP_TOOL_DEFINITIONS,
+    persistSavedDesignSnapshotInputSchema,
     zodToJsonSchema,
 } from "../src/tools/schemas.js";
+
+const designId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 describe("OrthoCAD MCP tool schemas", () => {
     test("Phase A exposes the dogfood tools with unique snake_case names", () => {
@@ -119,5 +128,46 @@ describe("OrthoCAD MCP tool schemas", () => {
             expect(jsonSchema.type).toBe("object");
             expect(jsonSchema.properties).toBeTruthy();
         }
+    });
+
+    test("arch_raise_mm and arch_apex_shift_mm accept the slider bounds and reject outside them", () => {
+        const tool = MCP_TOOL_DEFINITIONS.find((entry) => entry.name === "persist_saved_design_snapshot");
+        expect(tool?.description).toMatch(/forward\/anterior\/distal/);
+        expect(tool?.description).toMatch(/back\/posterior/);
+        expect(tool?.description).toContain("arch_raise_mm");
+        expect(tool?.description).toContain("arch_apex_shift_mm");
+        expect(tool?.description).toContain("−10");
+        expect(tool?.description).toContain("14");
+        expect(tool?.description).toContain("−12");
+        expect(tool?.description).toContain("12");
+        const create = MCP_TOOL_DEFINITIONS.find((entry) => entry.name === "create_saved_design");
+        expect(create?.description).toMatch(/forward\/anterior/);
+        expect(create?.description).toMatch(/back\/posterior/);
+
+        const accept = (catalog: unknown) =>
+            persistSavedDesignSnapshotInputSchema.safeParse({ design_id: designId, catalog }).success;
+        expect(accept({ arch_raise_mm: 3, arch_apex_shift_mm: 4 })).toBe(true);
+        expect(accept({ arch_raise_mm: ARCH_RAISE_MM_MIN, arch_apex_shift_mm: ARCH_APEX_SHIFT_MM_MIN })).toBe(
+            true,
+        );
+        expect(accept({ arch_raise_mm: ARCH_RAISE_MM_MAX, arch_apex_shift_mm: ARCH_APEX_SHIFT_MM_MAX })).toBe(
+            true,
+        );
+        expect(
+            accept({
+                arch_by_side: {
+                    left: { arch_raise_mm: 3, arch_apex_shift_mm: 4 },
+                    right: { arch_raise_mm: -10, arch_apex_shift_mm: -12 },
+                },
+            }),
+        ).toBe(true);
+        expect(accept({ arch_raise_mm: ARCH_RAISE_MM_MIN - 0.001 })).toBe(false);
+        expect(accept({ arch_raise_mm: ARCH_RAISE_MM_MAX + 0.001 })).toBe(false);
+        expect(accept({ arch_apex_shift_mm: ARCH_APEX_SHIFT_MM_MIN - 0.001 })).toBe(false);
+        expect(accept({ arch_apex_shift_mm: ARCH_APEX_SHIFT_MM_MAX + 0.001 })).toBe(false);
+        expect(accept({ arch_raise_mm: Number.NaN })).toBe(false);
+        expect(accept({ arch_apex_shift_mm: Number.POSITIVE_INFINITY })).toBe(false);
+        expect(accept({ arch_by_side: { right: { arch_apex_shift_mm: 12.001 } } })).toBe(false);
+        expect(accept({ arch: "high", flexible_foot: true })).toBe(true);
     });
 });

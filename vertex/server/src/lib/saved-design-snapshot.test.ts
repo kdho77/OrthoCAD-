@@ -196,6 +196,41 @@ describe("persist saved design snapshot", () => {
         expect(updates).toEqual([]);
     });
 
+    test("arch raise and forward apex shift are stored on both feet and out of range does not write", async () => {
+        const { prisma, updates } = fakePrisma();
+        const result = await persistSavedDesignSnapshotOnDesign({
+            prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: { arch_raise_mm: 3, arch_apex_shift_mm: 4 },
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        expect(updates).toHaveLength(1);
+        const settings = readStoredDesignSettings(result.settingsJson);
+        const corrections = settings?.corrections as {
+            linked: boolean;
+            left: { archHeightMm: number; apexMoveMm: number; archFillMm: number };
+            right: { archHeightMm: number; apexMoveMm: number; archFillMm: number };
+        };
+        expect(corrections.linked).toBe(true);
+        expect(corrections.left).toMatchObject({ archHeightMm: 3, apexMoveMm: 4, archFillMm: 0 });
+        expect(corrections.right).toMatchObject({ archHeightMm: 3, apexMoveMm: 4, archFillMm: 0 });
+        expect(result.paths).toContain("settings.corrections.left.archHeightMm");
+        expect(result.paths).toContain("settings.corrections.right.apexMoveMm");
+
+        const refused = fakePrisma();
+        await expect(
+            persistSavedDesignSnapshotOnDesign({
+                prisma: refused.prisma,
+                principal,
+                designId: DESIGN_ID,
+                catalog: { arch_raise_mm: 14.001, arch_apex_shift_mm: 4 },
+                buildSnapshot: buildSavedDesignSnapshot,
+            }),
+        ).rejects.toBeInstanceOf(SavedDesignSnapshotError);
+        expect(refused.updates).toEqual([]);
+    });
+
     test("a conflicting supplied size is 422 and does not write", async () => {
         const { prisma, updates } = fakePrisma();
         await expect(

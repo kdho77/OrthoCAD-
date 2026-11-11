@@ -1,14 +1,22 @@
 import { describe, expect, test } from "@rstest/core";
-
+import type { Side, SideCorrections } from "@/types";
 import { readStoredDesignSettings } from "../../../shared/design-settings";
+import { infillFractionFromRecipe } from "../../../shared/print-recipe/print-recipe";
 import {
+    ARCH_APEX_SHIFT_MM_MAX,
+    ARCH_APEX_SHIFT_MM_MIN,
+    ARCH_RAISE_MM_MAX,
+    ARCH_RAISE_MM_MIN,
     parseSavedDesignCatalog,
     SavedDesignSnapshotError,
     type StoredLinkShoe,
 } from "../../../shared/saved-design-catalog";
 import { designStateFromSavedSettings } from "../../features/exports/saved-design-finalized-mesh";
+import { CLINICAL_LIMITS } from "../geometry/clinical-constraints";
 import { defaultElementPose, ELEMENT_PROFILES } from "../geometry/elements";
+import { type HeightFieldParams, heightAt } from "../geometry/height-field";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_GLB_PATH } from "../geometry/procedural-wall/sample-top-id";
+import { insoleLayoutForUsMenSize } from "../geometry/shoe-size";
 import { SINK_DEFAULT_DEPTH_MM, SINK_PROFILES } from "../geometry/sink";
 import { buildSavedDesignSnapshot } from "./saved-design-snapshot";
 
@@ -321,4 +329,215 @@ describe("SAMPLE_Top saved-design snapshot", () => {
         });
         expect(bothStored.design.sinks?.left?.map((sink) => sink.kind)).toEqual(["mpj1", "rkw"]);
     });
+
+    test("arch raise and apex shift use the Arch slider bounds and sign", () => {
+        expect(ARCH_RAISE_MM_MIN).toBe(CLINICAL_LIMITS.archHeightMm.min);
+        expect(ARCH_RAISE_MM_MAX).toBe(CLINICAL_LIMITS.archHeightMm.max);
+        expect(ARCH_APEX_SHIFT_MM_MIN).toBe(CLINICAL_LIMITS.apexMoveMm.min);
+        expect(ARCH_APEX_SHIFT_MM_MAX).toBe(CLINICAL_LIMITS.apexMoveMm.max);
+        expect(
+            parseSavedDesignCatalog({
+                arch_raise_mm: ARCH_RAISE_MM_MIN,
+                arch_apex_shift_mm: ARCH_APEX_SHIFT_MM_MIN,
+            }),
+        ).toMatchObject({ arch_raise_mm: -10, arch_apex_shift_mm: -12 });
+        expect(
+            parseSavedDesignCatalog({
+                arch_raise_mm: ARCH_RAISE_MM_MAX,
+                arch_apex_shift_mm: ARCH_APEX_SHIFT_MM_MAX,
+            }),
+        ).toMatchObject({ arch_raise_mm: 14, arch_apex_shift_mm: 12 });
+        for (const catalog of [
+            { arch_raise_mm: ARCH_RAISE_MM_MIN - 0.001 },
+            { arch_raise_mm: ARCH_RAISE_MM_MAX + 0.001 },
+            { arch_apex_shift_mm: ARCH_APEX_SHIFT_MM_MIN - 0.001 },
+            { arch_apex_shift_mm: ARCH_APEX_SHIFT_MM_MAX + 0.001 },
+            { arch_raise_mm: Number.POSITIVE_INFINITY },
+            { arch_by_side: { left: { arch_apex_shift_mm: 12.001 } } },
+        ]) {
+            expect(expect422(() => parseSavedDesignCatalog(catalog)).message).toMatch(/arch_/);
+        }
+    });
+
+    test("+3 mm raise and forward 4 mm apex match the arch sliders and move the dome", () => {
+        const plain = build({});
+        const preset = build({ arch: "high", flexible_foot: true });
+        const numeric = build({ arch_raise_mm: 3, arch_apex_shift_mm: 4 });
+        const back = build({ arch_raise_mm: 3, arch_apex_shift_mm: -4 });
+        expect(preset.design.corrections.left.archHeightMm).toBe(3);
+        expect(preset.design.corrections.left.apexMoveMm).toBe(4);
+        expect(preset.design.corrections.right).toMatchObject({
+            archHeightMm: 3,
+            apexMoveMm: 4,
+            archFillMm: 0,
+        });
+        expect(numeric.design.corrections.linked).toBe(true);
+        for (const side of ["left", "right"] as const) {
+            expect(numeric.design.corrections[side]).toEqual({
+                ...plain.design.corrections[side],
+                archHeightMm: 3,
+                apexMoveMm: 4,
+            });
+            expect(numeric.design.corrections[side].archFillMm).toBe(0);
+            expect(back.design.corrections[side].apexMoveMm).toBe(-4);
+        }
+        expect(numeric.design.printRecipe).toEqual(plain.design.printRecipe);
+        const numericRecipe = numeric.design.printRecipe;
+        const plainRecipe = plain.design.printRecipe;
+        if (!numericRecipe || !plainRecipe) throw new Error("print recipe missing");
+        expect(infillFractionFromRecipe(numericRecipe)).toBe(infillFractionFromRecipe(plainRecipe));
+        expect(build({ arch: "high", arch_raise_mm: 3 }).design.corrections.left.archHeightMm).toBe(3);
+        expect(
+            build({ flexible_foot: true, arch_apex_shift_mm: 4 }).design.corrections.right.apexMoveMm,
+        ).toBe(4);
+        expect(
+            build({ flexible_foot: false, arch_apex_shift_mm: -4 }).design.corrections.left.apexMoveMm,
+        ).toBe(-4);
+        expect(expect422(() => build({ arch: "high", arch_raise_mm: 5 })).message).toMatch(
+            /disagrees with arch/,
+        );
+        expect(expect422(() => build({ flexible_foot: true, arch_apex_shift_mm: -4 })).message).toMatch(
+            /disagrees with flexible_foot/,
+        );
+        expect(
+            expect422(() =>
+                build({
+                    arch_raise_mm: 3,
+                    arch_by_side: { left: { arch_raise_mm: 3 } },
+                }),
+            ).message,
+        ).toMatch(/not both/);
+
+        const layout = insoleLayoutForUsMenSize(numeric.usMenSize);
+        const ui = uiArchCorrections(3, 4);
+        expect(archDome(numeric.design.corrections.left, layout.lengthMm, layout.widthMm, "left")).toEqual(
+            archDome(ui, layout.lengthMm, layout.widthMm, "left"),
+        );
+        const forward = archPeak(numeric.design.corrections.left, layout.lengthMm, layout.widthMm, "left");
+        const posterior = archPeak(back.design.corrections.left, layout.lengthMm, layout.widthMm, "left");
+        const right = archPeak(numeric.design.corrections.right, layout.lengthMm, layout.widthMm, "right");
+        expect(forward.peakRaiseMm).toBeCloseTo(3, 1);
+        expect(right.peakRaiseMm).toBeCloseTo(3, 1);
+        expect(posterior.peakRaiseMm).toBeCloseTo(3, 1);
+        expect(forward.peakXMm - 0.42 * layout.lengthMm).toBeCloseTo(4, 0);
+        expect(right.peakXMm - 0.42 * layout.lengthMm).toBeCloseTo(4, 0);
+        expect(posterior.peakXMm - 0.42 * layout.lengthMm).toBeCloseTo(-4, 0);
+        const oldU = 0.42;
+        expect(raiseAt(numeric.design.corrections.left, layout, "left", forward.peakU)).toBeGreaterThan(
+            raiseAt(numeric.design.corrections.left, layout, "left", oldU),
+        );
+
+        const split = build({
+            arch_by_side: {
+                left: { arch_raise_mm: 3, arch_apex_shift_mm: 4 },
+                right: { arch_raise_mm: 1, arch_apex_shift_mm: -6 },
+            },
+        });
+        expect(split.design.corrections.linked).toBe(false);
+        expect(split.design.corrections.left).toMatchObject({
+            archHeightMm: 3,
+            apexMoveMm: 4,
+            archFillMm: 0,
+        });
+        expect(split.design.corrections.right).toMatchObject({
+            archHeightMm: 1,
+            apexMoveMm: -6,
+            archFillMm: 0,
+        });
+        const leftPeak = archPeak(split.design.corrections.left, layout.lengthMm, layout.widthMm, "left");
+        const rightPeak = archPeak(split.design.corrections.right, layout.lengthMm, layout.widthMm, "right");
+        expect(leftPeak.peakRaiseMm).toBeCloseTo(3, 1);
+        expect(rightPeak.peakRaiseMm).toBeCloseTo(1, 1);
+        expect(leftPeak.peakXMm - rightPeak.peakXMm).toBeCloseTo(10, 0);
+    });
 });
+
+/** Arch height slider value written the same way CorrectionsPanel commits archHeightMm. */
+function uiArchCorrections(archHeightMm: number, apexMoveMm: number): SideCorrections {
+    return {
+        forefootPostingDeg: 0,
+        rearfootPostingDeg: 0,
+        medialSkiveMm: 0,
+        lateralSkiveMm: 0,
+        archFillMm: 0,
+        archHeightMm,
+        archEaseMm: 0,
+        heelCupDepthMm: 0,
+        heelCupHeightMm: 0,
+        heelCupWidthMm: 0,
+        forefootWidthMm: 0,
+        heelLiftMm: 0,
+        apexMoveMm,
+        medialFlangeMm: 0,
+        lateralFlangeMm: 0,
+    };
+}
+
+function archField(
+    side: Side,
+    corrections: SideCorrections,
+    lengthMm: number,
+    widthMm: number,
+): HeightFieldParams {
+    return {
+        side,
+        lengthMm,
+        widthMm,
+        thicknessMm: 3,
+        corrections,
+        includeElements: false,
+        includeSkives: false,
+    };
+}
+
+/** Medial sample used by the arch-class height check. Right medial v is the opposite sign. */
+function medialV(side: Side): number {
+    return side === "left" ? 0.86 : -0.86;
+}
+
+function raiseAt(
+    corrections: SideCorrections,
+    layout: { lengthMm: number; widthMm: number },
+    side: Side,
+    u: number,
+): number {
+    const v = medialV(side);
+    const raised = heightAt(u, v, archField(side, corrections, layout.lengthMm, layout.widthMm));
+    const base = heightAt(
+        u,
+        v,
+        archField(
+            side,
+            { ...corrections, archHeightMm: 0, apexMoveMm: 0, archFillMm: 0 },
+            layout.lengthMm,
+            layout.widthMm,
+        ),
+    );
+    return raised - base;
+}
+
+function archDome(corrections: SideCorrections, lengthMm: number, widthMm: number, side: Side): number[] {
+    const v = medialV(side);
+    const samples: number[] = [];
+    for (let i = 0; i <= 20; i++) {
+        const u = i / 20;
+        samples.push(heightAt(u, v, archField(side, corrections, lengthMm, widthMm)));
+    }
+    return samples;
+}
+
+function archPeak(corrections: SideCorrections, lengthMm: number, widthMm: number, side: Side) {
+    const layout = { lengthMm, widthMm };
+    let peakU = 0;
+    let peakRaiseMm = -Infinity;
+    const steps = 1000;
+    for (let i = 0; i <= steps; i++) {
+        const u = i / steps;
+        const delta = raiseAt(corrections, layout, side, u);
+        if (delta > peakRaiseMm) {
+            peakRaiseMm = delta;
+            peakU = u;
+        }
+    }
+    return { peakU, peakXMm: peakU * lengthMm, peakRaiseMm };
+}

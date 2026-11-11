@@ -18,6 +18,21 @@ export type ArchName = keyof typeof ARCH_HEIGHT_MM;
 /** Built-in apex shift when flexible_foot is explicitly true. Not derived from rigidity. */
 export const FLEXIBLE_FOOT_APEX_MM = 4;
 
+/**
+ * Arch height slider, absolute mm on the default arch (0). Same inclusive
+ * range as CLINICAL_LIMITS.archHeightMm. Not added on top of `arch`.
+ */
+export const ARCH_RAISE_MM_MIN = -10;
+export const ARCH_RAISE_MM_MAX = 14;
+
+/**
+ * Apex shift slider, absolute mm. Same inclusive range as
+ * CLINICAL_LIMITS.apexMoveMm. Positive is forward / anterior / distal
+ * (toward the toe). Negative is back / posterior.
+ */
+export const ARCH_APEX_SHIFT_MM_MIN = -12;
+export const ARCH_APEX_SHIFT_MM_MAX = 12;
+
 /** US women's retail label is men's + 1.5 (shoe-size.ts). Inverse maps a stored US_W size. */
 export const US_WOMEN_TO_MENS_OFFSET = 1.5;
 
@@ -61,6 +76,17 @@ const archSchema = z.preprocess(
     (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
     z.enum(["low", "medium", "standard", "high"]),
 );
+
+const archRaiseMmSchema = z.number().finite().min(ARCH_RAISE_MM_MIN).max(ARCH_RAISE_MM_MAX);
+const archApexShiftMmSchema = z.number().finite().min(ARCH_APEX_SHIFT_MM_MIN).max(ARCH_APEX_SHIFT_MM_MAX);
+
+/** One foot. Same two numbers as the pair-wide fields, and the same bounds. */
+const archSideSchema = z
+    .object({
+        arch_raise_mm: archRaiseMmSchema.optional(),
+        arch_apex_shift_mm: archApexShiftMmSchema.optional(),
+    })
+    .strict();
 
 const sliderShape = {
     forefoot_posting_deg: z.number().finite().optional(),
@@ -135,6 +161,21 @@ export const savedDesignCatalogSchema = z
         width: widthSchema.optional(),
         arch: archSchema.optional(),
         flexible_foot: z.boolean().optional(),
+        /** Both feet. Absolute Arch height slider mm. Do not send with arch_by_side. */
+        arch_raise_mm: archRaiseMmSchema.optional(),
+        /**
+         * Both feet. Absolute Apex shift slider mm.
+         * Positive = forward/anterior/distal. Negative = back/posterior.
+         * Do not send with arch_by_side.
+         */
+        arch_apex_shift_mm: archApexShiftMmSchema.optional(),
+        arch_by_side: z
+            .object({
+                left: archSideSchema.optional(),
+                right: archSideSchema.optional(),
+            })
+            .strict()
+            .optional(),
         elements: z.array(elementSchema).max(24).optional(),
         sinks: z.array(sinkSchema).max(14).optional(),
         sliders: savedDesignSliderSchema.optional(),

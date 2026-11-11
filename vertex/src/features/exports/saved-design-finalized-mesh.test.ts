@@ -8,6 +8,7 @@ import { buildPrinterFootManufacturingStl } from "@/features/exports/export-serv
 import { printerFootStlFacts } from "@/features/exports/printer-foot-isolation";
 import {
     buildFinalizedFootFromSavedDesign,
+    buildFinalizedFootFromSavedSettings,
     designStateFromSavedSettings,
 } from "@/features/exports/saved-design-finalized-mesh";
 import { buildExportStl } from "@/lib/geometry/export-geometry";
@@ -19,6 +20,8 @@ import { binaryStlToGeometry } from "@/lib/geometry/stl";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
 import { designSettingsEnvelope } from "../../../shared/design-settings";
+import { parseSavedDesignCatalog, type StoredLinkShoe } from "../../../shared/saved-design-catalog";
+import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot";
 
 const originalFetch = globalThis.fetch;
 
@@ -112,4 +115,70 @@ describe("saved-design mesh matches canonical Export", () => {
         expect(savedCorrected.fingerprint).not.toBe(savedLeft.fingerprint);
         expect(sha256(savedCorrected.stl)).not.toBe(sha256(savedLeft.stl));
     }, 240_000);
+
+    test("headless export lofts a +3 mm arch raise and a forward 4 mm apex on both feet", async () => {
+        const stored: StoredLinkShoe = {
+            system: "US_M",
+            size: 9,
+            left: null,
+            right: null,
+            width: "medium",
+        };
+        const catalog = parseSavedDesignCatalog({ arch_raise_mm: 3, arch_apex_shift_mm: 4 });
+        const numeric = buildSavedDesignSnapshot({ stored, catalog });
+        const baseline = buildSavedDesignSnapshot({
+            stored,
+            catalog: parseSavedDesignCatalog({}),
+        });
+        const ui = structuredClone(baseline.design);
+        ui.corrections.left.archHeightMm = 3;
+        ui.corrections.left.apexMoveMm = 4;
+        ui.corrections.right.archHeightMm = 3;
+        ui.corrections.right.apexMoveMm = 4;
+        expect(numeric.design.corrections).toEqual(ui.corrections);
+        expect(numeric.design.printRecipe).toEqual(baseline.design.printRecipe);
+
+        const envelope = designSettingsEnvelope(numeric.design as unknown as Record<string, unknown>);
+        const uiEnvelope = designSettingsEnvelope(ui as unknown as Record<string, unknown>);
+        const zeroEnvelope = designSettingsEnvelope(baseline.design as unknown as Record<string, unknown>);
+        const sampleTop = installDesign(designStateFromSavedSettings(envelope));
+
+        const catalogLeft = await buildFinalizedFootFromSavedSettings({
+            settingsJson: envelope,
+            side: "left",
+            sampleTopBytes: sampleTop,
+            includeLeader: true,
+        });
+        installDesign(designStateFromSavedSettings(uiEnvelope));
+        const uiLeft = await buildFinalizedFootFromSavedSettings({
+            settingsJson: uiEnvelope,
+            side: "left",
+            sampleTopBytes: sampleTop,
+            includeLeader: true,
+        });
+        expect(catalogLeft.uploadTriangles).toBeGreaterThan(catalogLeft.solidTriangles);
+        expect(sha256(catalogLeft.stl)).toBe(sha256(uiLeft.stl));
+        expect(catalogLeft.fingerprint).toBe(uiLeft.fingerprint);
+
+        installDesign(designStateFromSavedSettings(zeroEnvelope));
+        const zeroLeft = await buildFinalizedFootFromSavedSettings({
+            settingsJson: zeroEnvelope,
+            side: "left",
+            sampleTopBytes: sampleTop,
+            includeLeader: true,
+        });
+        expect(sha256(zeroLeft.stl)).not.toBe(sha256(catalogLeft.stl));
+
+        installDesign(designStateFromSavedSettings(envelope));
+        const catalogRight = await buildFinalizedFootFromSavedSettings({
+            settingsJson: envelope,
+            side: "right",
+            sampleTopBytes: sampleTop,
+            includeLeader: true,
+        });
+        expect(catalogRight.uploadTriangles).toBeGreaterThan(catalogRight.solidTriangles);
+        expect(sha256(catalogRight.stl)).not.toBe(sha256(catalogLeft.stl));
+        expect(printerFootStlFacts(catalogLeft.stl).side).toBe("left");
+        expect(printerFootStlFacts(catalogRight.stl).side).toBe("right");
+    }, 360_000);
 });

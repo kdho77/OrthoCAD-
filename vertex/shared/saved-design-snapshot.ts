@@ -595,6 +595,58 @@ function sliderHasNumber(sliders: SavedDesignSlider | undefined): boolean {
     return Object.values(sliders).some((value) => typeof value === "number");
 }
 
+/**
+ * Absolute Arch height and Apex shift slider values. Pair-wide numbers write
+ * both feet. arch_by_side writes one foot and unlinks. A number that disagrees
+ * with arch or flexible_foot is refused. Arch fill is left at 0.
+ */
+function applyArchSliderNumbers(design: DesignState, catalog: SavedDesignCatalog, paths: string[]) {
+    const bySide = catalog.arch_by_side;
+    const bySideActive = Boolean(bySide?.left || bySide?.right);
+    if (bySideActive && (catalog.arch_raise_mm !== undefined || catalog.arch_apex_shift_mm !== undefined)) {
+        throw new SavedDesignSnapshotError(
+            "provide arch_raise_mm and arch_apex_shift_mm or arch_by_side, not both.",
+        );
+    }
+    const presetRaise = catalog.arch ? ARCH_HEIGHT_MM[catalog.arch] : undefined;
+    const writeSide = (sideName: "left" | "right", raise: number | undefined, shift: number | undefined) => {
+        const side = design.corrections[sideName];
+        if (raise !== undefined) {
+            if (presetRaise !== undefined && raise !== presetRaise) {
+                throw new SavedDesignSnapshotError(
+                    `arch_raise_mm ${raise} disagrees with arch ${catalog.arch} (${presetRaise} mm). Refusing to guess.`,
+                );
+            }
+            if (side.archHeightMm !== raise) {
+                side.archHeightMm = raise;
+                paths.push(`settings.corrections.${sideName}.archHeightMm`);
+            }
+        }
+        if (shift !== undefined) {
+            if (catalog.flexible_foot === true && shift !== FLEXIBLE_FOOT_APEX_MM) {
+                throw new SavedDesignSnapshotError(
+                    `arch_apex_shift_mm ${shift} disagrees with flexible_foot apex +${FLEXIBLE_FOOT_APEX_MM} mm forward. Refusing to guess.`,
+                );
+            }
+            if (side.apexMoveMm !== shift) {
+                side.apexMoveMm = shift;
+                paths.push(`settings.corrections.${sideName}.apexMoveMm`);
+            }
+        }
+    };
+    if (bySideActive && bySide) {
+        if (design.corrections.linked) {
+            design.corrections.linked = false;
+            paths.push("settings.corrections.linked");
+        }
+        if (bySide.left) writeSide("left", bySide.left.arch_raise_mm, bySide.left.arch_apex_shift_mm);
+        if (bySide.right) writeSide("right", bySide.right.arch_raise_mm, bySide.right.arch_apex_shift_mm);
+        return;
+    }
+    writeSide("left", catalog.arch_raise_mm, catalog.arch_apex_shift_mm);
+    writeSide("right", catalog.arch_raise_mm, catalog.arch_apex_shift_mm);
+}
+
 function ignoredFields(catalog: SavedDesignCatalog): IgnoredCatalogKey[] {
     return IGNORED_CATALOG_KEYS.filter((key) => {
         if (key === "hardness") return false;
@@ -709,6 +761,8 @@ export function buildSavedDesignSnapshot(input: {
         design.corrections.right.apexMoveMm = FLEXIBLE_FOOT_APEX_MM;
         paths.push("settings.corrections.left.apexMoveMm", "settings.corrections.right.apexMoveMm");
     }
+
+    applyArchSliderNumbers(design, catalog, paths);
 
     if (catalog.rearfoot_wedge) {
         const wedge = {
