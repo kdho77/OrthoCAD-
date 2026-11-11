@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { useEffect, useMemo, useState } from "react";
+import { AfoChecklistCheck, afoChecklistRowState } from "@/features/afo/AfoScanGuidedCard";
 import {
     AFO_FOREFOOT_WARN_DEG,
     AFO_LANDMARK_STEPS,
@@ -17,14 +18,11 @@ import {
     undoAfoMarker,
 } from "@/features/afo/afo-scan-markers";
 import {
-    AfoChecklistCheck,
-    afoChecklistRowState,
-} from "@/features/afo/AfoScanGuidedCard";
-import {
     afoPlacementComplete,
     afoRequiredLandmarkSummary,
     ensureAfoScanPlacement,
     jumpToFirstMissingRequired,
+    resetAfoAlignmentMarkers,
 } from "@/features/afo/afo-scan-ui";
 import { ScanImport } from "@/features/scans/ScanImport";
 import { selectAfoLandmarkRevision, selectScanGateRevision } from "@/lib/clinical/clinical-step-gates";
@@ -60,6 +58,7 @@ export function AfoScanPanel() {
     );
     const [alignError, setAlignError] = useState<string | null>(null);
     const plantarReady = Boolean(workflow.plantar.heel && workflow.plantar.m1p && workflow.plantar.m5p);
+    const stage1PlantarPlaced = AFO_PLANTAR_STEPS.some((step) => workflow.plantar[step.id]);
     const hasMalleoli = Boolean(workflow.landmarks.medial_malleolus && workflow.landmarks.lateral_malleolus);
 
     const forefoot = useMemo(() => previewForefoot(workflow, scanTick), [workflow, scanTick]);
@@ -162,15 +161,27 @@ export function AfoScanPanel() {
                 })}
             </div>
 
-            <button
-                type="button"
-                data-testid="afo-apply-alignment"
-                onClick={() => onApply(false)}
-                disabled={!plantarReady}
-                className="h-8 w-full rounded-md bg-primary text-[12px] font-medium text-primary-foreground disabled:opacity-40"
-            >
-                Apply alignment
-            </button>
+            <div className="flex gap-2">
+                <button
+                    type="button"
+                    data-testid="afo-apply-alignment"
+                    onClick={() => onApply(false)}
+                    disabled={!plantarReady}
+                    className="h-8 min-w-0 flex-1 rounded-md bg-primary text-[12px] font-medium text-primary-foreground disabled:opacity-40"
+                >
+                    Apply alignment
+                </button>
+                {!workflow.alignmentApplied && stage1PlantarPlaced ? (
+                    <button
+                        type="button"
+                        data-testid="afo-reset-alignment"
+                        onClick={() => resetAfoAlignmentMarkers()}
+                        className="h-8 shrink-0 rounded-md border border-border bg-background px-3 text-[12px] text-foreground hover:bg-muted/40"
+                    >
+                        Reset
+                    </button>
+                ) : null}
+            </div>
 
             {forefoot.angle != null ? (
                 <p className="text-[11px] text-foreground" data-testid="afo-forefoot-angle">

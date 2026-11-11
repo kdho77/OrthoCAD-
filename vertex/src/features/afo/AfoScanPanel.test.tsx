@@ -20,7 +20,7 @@ import {
     skipAfoLandmark,
     undoAfoMarker,
 } from "./afo-scan-markers";
-import { cameraViewForAfoMarker } from "./afo-scan-ui";
+import { cameraViewForAfoMarker, resetAfoAlignmentMarkers, undoLastAfoMarker } from "./afo-scan-ui";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -265,5 +265,69 @@ describe("AFO marker placement helpers", () => {
         expect(cameraViewForAfoMarker("lateral_malleolus", "right")).toBe("left");
         expect(cameraViewForAfoMarker("heel", "left")).toBe("bottom");
         expect(cameraViewForAfoMarker("posterior_calcaneus", "right")).toBe("back");
+    });
+
+    test("stage-1 undo, reset, and panel reset control stay in sync", async () => {
+        armAfo("left");
+        addBox("leg", "left");
+        commitAfoScanPoint(HEEL, "leg", 1);
+        commitAfoScanPoint(M1P, "leg", 1);
+        let wf = useDesignStore.getState().design.afo?.scanWorkflow;
+        expect(wf?.plantar.heel).toBeTruthy();
+        expect(wf?.plantar.m1p).toBeTruthy();
+        expect(wf?.plantar.m5p).toBeFalsy();
+
+        expect(undoLastAfoMarker()).toBe("m1p");
+        wf = useDesignStore.getState().design.afo?.scanWorkflow;
+        expect(wf?.plantar.m1p).toBeFalsy();
+        expect(wf?.plantar.heel).toBeTruthy();
+
+        expect(undoLastAfoMarker()).toBe("heel");
+        wf = useDesignStore.getState().design.afo?.scanWorkflow;
+        expect(wf?.plantar.heel).toBeFalsy();
+
+        expect(undoLastAfoMarker()).toBeNull();
+        wf = useDesignStore.getState().design.afo?.scanWorkflow;
+        expect(wf?.plantar.heel).toBeFalsy();
+
+        commitAfoScanPoint(HEEL, "leg", 1);
+        commitAfoScanPoint(M1P, "leg", 1);
+        commitAfoScanPoint(M5P, "leg", 1);
+        resetAfoAlignmentMarkers();
+        wf = useDesignStore.getState().design.afo?.scanWorkflow;
+        expect(wf?.plantar.heel).toBeFalsy();
+        expect(wf?.plantar.m1p).toBeFalsy();
+        expect(wf?.plantar.m5p).toBeFalsy();
+        expect(wf?.alignmentApplied).toBe(false);
+        expect(useAfoStore.getState().scanPlacement?.redo).toBe("heel");
+
+        useDesignStore.setState((state) => {
+            const afo = state.design.afo;
+            if (!afo) return state;
+            return {
+                ...state,
+                design: {
+                    ...state.design,
+                    afo: {
+                        ...afo,
+                        trimPoints: [{ point: { x: 1, y: 2, z: 3 }, vertexIndex: 0 }],
+                    },
+                },
+            };
+        });
+        await renderPanel();
+        await act(async () => {
+            commitAfoScanPoint(HEEL, "leg", 1);
+            commitAfoScanPoint(M1P, "leg", 1);
+            commitAfoScanPoint(M5P, "leg", 1);
+        });
+        expect(buttonByText(container, "Apply alignment").disabled).toBe(false);
+        const resetControl = container.querySelector('[data-testid="afo-reset-alignment"]') as HTMLButtonElement;
+        expect(resetControl).toBeTruthy();
+        await act(async () => {
+            resetControl.click();
+        });
+        expect(buttonByText(container, "Apply alignment").disabled).toBe(true);
+        expect(useDesignStore.getState().design.afo?.trimPoints).toHaveLength(1);
     });
 });

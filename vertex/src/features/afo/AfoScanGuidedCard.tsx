@@ -1,27 +1,23 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { ChevronUp, GripVertical, HelpCircle, SkipForward, Undo2 } from "lucide-react";
+import { ChevronUp, GripVertical, HelpCircle, RotateCcw, SkipForward, Undo2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-    AFO_LANDMARK_STEPS,
-    AFO_PLANTAR_STEPS,
-    afoStageSnapshot,
-    undoAfoMarker,
-} from "@/features/afo/afo-scan-markers";
+import { AFO_LANDMARK_STEPS, AFO_PLANTAR_STEPS, afoStageSnapshot } from "@/features/afo/afo-scan-markers";
 import {
     AFO_MARKER_CLICK_HINT,
     AFO_MARKER_FULL_NAME,
     AFO_MARKER_HELP,
     AFO_MARKER_PILL,
+    type AfoMarkerKey,
     activeAfoTarget,
     afoGuidedProgress,
     afoPlacementComplete,
+    resetAfoAlignmentMarkers,
     skipAfoLandmark,
     undoLastAfoMarker,
-    type AfoMarkerKey,
 } from "@/features/afo/afo-scan-ui";
-import { isOptionalLandmark, skippedLandmarkIds } from "@/lib/geometry/afo/landmark-frame";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
+import { isOptionalLandmark, skippedLandmarkIds } from "@/lib/geometry/afo/landmark-frame";
 import { cn } from "@/lib/utils";
 import { useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -77,11 +73,15 @@ export function AfoScanGuidedCard() {
         useAfoStore.getState().setScanAutoFrameSuppressed(false);
     };
 
-    const onUndoTarget = () => {
-        if (!targetId) return;
-        undoAfoMarker(targetId);
-        useAfoStore.getState().setScanLastUndoId(targetId);
+    const onUndo = () => {
+        undoLastAfoMarker();
     };
+
+    const onReset = () => {
+        resetAfoAlignmentMarkers();
+    };
+
+    const stage1PlantarPlaced = AFO_PLANTAR_STEPS.some((step) => workflow.plantar[step.id]);
 
     const onPointerDownDrag = (event: React.PointerEvent) => {
         dragRef.current = {
@@ -164,7 +164,10 @@ export function AfoScanGuidedCard() {
             {markerKey && targetStep ? (
                 <>
                     <div className="flex items-start gap-2">
-                        <p className="text-sm font-semibold leading-snug" data-testid="afo-guided-marker-name">
+                        <p
+                            className="text-sm font-semibold leading-snug"
+                            data-testid="afo-guided-marker-name"
+                        >
                             {AFO_MARKER_FULL_NAME[markerKey]}
                         </p>
                         {optional ? (
@@ -209,11 +212,22 @@ export function AfoScanGuidedCard() {
                     type="button"
                     data-testid="afo-guided-undo"
                     className="inline-flex h-7 items-center gap-1 rounded-md border border-white/15 px-2 text-[11px] hover:bg-white/10"
-                    onClick={onUndoTarget}
+                    onClick={onUndo}
                 >
                     <Undo2 className="h-3 w-3" />
                     Undo
                 </button>
+                {!workflow.alignmentApplied && stage1PlantarPlaced ? (
+                    <button
+                        type="button"
+                        data-testid="afo-guided-reset"
+                        className="inline-flex h-7 items-center gap-1 rounded-md border border-white/15 px-2 text-[11px] hover:bg-white/10"
+                        onClick={onReset}
+                    >
+                        <RotateCcw className="h-3 w-3" />
+                        Reset
+                    </button>
+                ) : null}
                 <button
                     type="button"
                     data-testid="afo-guided-help"

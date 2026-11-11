@@ -26,7 +26,13 @@ import type {
     AfoTriMesh,
     AfoVec3,
 } from "@/lib/geometry/afo/types";
-import { getAfoState, ingestOrientedScan, patchAfoState, useAfoStore } from "@/stores/afo-store";
+import {
+    getAfoState,
+    ingestOrientedScan,
+    patchAfoState,
+    refreshAfoWorkingMesh,
+    useAfoStore,
+} from "@/stores/afo-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
@@ -228,6 +234,34 @@ export function commitAfoScanPoint(pointMm: AfoVec3, scanId: string, displayScal
     writeWorkflow(wf, "afo-landmark");
     useAfoStore.getState().setScanLandmarkError(null);
     return null;
+}
+
+/** Clear Stage-1 plantar alignment and return to step 1. Does not change trim pins or the imported scan asset. */
+export function resetAfoPlantarAlignment(): void {
+    const wf = getAfoState().scanWorkflow;
+    const hadAlignment = wf.alignmentApplied;
+    const unoriented = useAfoStore.getState().unorientedMesh;
+    writeWorkflow(
+        {
+            ...wf,
+            plantar: {},
+            landmarks: {},
+            skippedLandmarks: [],
+            alignmentApplied: false,
+            levelToRearfoot: false,
+            matrixElements: null,
+            derived: null,
+        },
+        "afo-alignment-reset",
+    );
+    if (hadAlignment && unoriented) {
+        useAfoStore.getState().setSourceMesh(unoriented);
+        refreshAfoWorkingMesh();
+    }
+    useAfoStore.getState().setScanLastUndoId(null);
+    useAfoStore.getState().setScanLandmarkError(null);
+    useAfoStore.getState().setScanPlacement({ redo: AFO_PLANTAR_STEPS[0]?.id ?? null, paused: false });
+    useAfoStore.getState().setScanAutoFrameSuppressed(false);
 }
 
 export function undoAfoMarker(id: string): void {
