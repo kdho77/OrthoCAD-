@@ -114,6 +114,23 @@ const archSchema = z.preprocess(
     z.enum(["low", "medium", "standard", "high"]),
 );
 
+/** Keep aligned with ARCH_RAISE_MM_MIN/MAX in vertex/shared/saved-design-catalog.ts. */
+const ARCH_RAISE_MM_MIN = -10;
+const ARCH_RAISE_MM_MAX = 14;
+/** Keep aligned with ARCH_APEX_SHIFT_MM_MIN/MAX. Positive = forward/anterior. */
+const ARCH_APEX_SHIFT_MM_MIN = -12;
+const ARCH_APEX_SHIFT_MM_MAX = 12;
+
+const archRaiseMmSchema = z.number().finite().min(ARCH_RAISE_MM_MIN).max(ARCH_RAISE_MM_MAX);
+const archApexShiftMmSchema = z.number().finite().min(ARCH_APEX_SHIFT_MM_MIN).max(ARCH_APEX_SHIFT_MM_MAX);
+
+const archSideSchema = z
+    .object({
+        arch_raise_mm: archRaiseMmSchema.optional(),
+        arch_apex_shift_mm: archApexShiftMmSchema.optional(),
+    })
+    .strict();
+
 const savedDesignSliderSchema = z
     .object({
         forefoot_posting_deg: z.number().finite().optional(),
@@ -158,6 +175,21 @@ export const savedDesignCatalogSchema = z
         width: widthSchema.optional(),
         arch: archSchema.optional(),
         flexible_foot: z.boolean().optional(),
+        /** Both feet. Absolute Arch height slider mm. Do not send with arch_by_side. */
+        arch_raise_mm: archRaiseMmSchema.optional(),
+        /**
+         * Both feet. Absolute Apex shift slider mm.
+         * Positive = forward/anterior/distal. Negative = back/posterior.
+         * Do not send with arch_by_side.
+         */
+        arch_apex_shift_mm: archApexShiftMmSchema.optional(),
+        arch_by_side: z
+            .object({
+                left: archSideSchema.optional(),
+                right: archSideSchema.optional(),
+            })
+            .strict()
+            .optional(),
         elements: z
             .array(
                 z
@@ -332,7 +364,15 @@ export const MCP_TOOL_DEFINITIONS = [
             "for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when " +
             "present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, " +
             "shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide), " +
-            "arch (low|medium|standard|high → −3.5|0|0|+3 mm), flexible_foot (true → apex +4 mm on both feet), " +
+            "arch (low|medium|standard|high → −3.5|0|0|+3 mm), flexible_foot (true → apex +4 mm forward on both feet), " +
+            "arch_raise_mm (both feet; absolute Arch height slider mm, inclusive −10 to 14; 0 is the default arch; " +
+            "+3 is the same height as arch high and is not added on top of arch), " +
+            "arch_apex_shift_mm (both feet; absolute Apex shift slider mm, inclusive −12 to 12; " +
+            "positive is forward/anterior/distal toward the toe, negative is back/posterior; " +
+            "+4 forward is the same apex as flexible_foot), " +
+            "arch_by_side.left, arch_by_side.right (same arch_raise_mm and arch_apex_shift_mm for one foot; " +
+            "do not send with the pair-wide numbers). " +
+            "A number that disagrees with arch or flexible_foot is 422. Arch fill and infill are not changed. " +
             "elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), " +
             "sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), " +
             "sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), " +
@@ -369,7 +409,12 @@ export const MCP_TOOL_DEFINITIONS = [
             "Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. " +
             "elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. " +
             "Medium width is used only when width is absent and is recorded as defaulted, not prescribed. " +
-            "Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
+            "Missing shoe size or an unknown hardness returns a question for the user and does not guess. " +
+            "catalog.arch_raise_mm (−10 to 14) and catalog.arch_apex_shift_mm (−12 to 12; positive forward/anterior, " +
+            "negative back/posterior) set the Arch height and Apex shift sliders on both feet. " +
+            "catalog.arch_by_side.left and catalog.arch_by_side.right set one foot. " +
+            "arch high stays +3 mm and flexible_foot stays +4 mm forward. A disagreement is 422. " +
+            "Arch fill and infill are unchanged.",
         inputSchema: createSavedDesignInputSchema,
     },
     {
