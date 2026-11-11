@@ -14,6 +14,12 @@ rs.mock("@/features/designs/SaveControl", () => ({
     SaveControl: () => null,
 }));
 
+const navigateMock = rs.fn();
+rs.mock("@/features/admin/admin-nav", () => ({
+    navigate: (...args: unknown[]) => navigateMock(...args),
+    showSuperAdminLink: (role: string | undefined) => role === "super_admin",
+}));
+
 const clinician: UserProfile = {
     id: "c1",
     email: "clinician@example.com",
@@ -30,6 +36,78 @@ const superAdmin: UserProfile = {
     role: "super_admin",
 };
 
+describe("TopNav logo", () => {
+    let container: HTMLDivElement;
+    let root: Root | null = null;
+
+    beforeEach(() => {
+        container = document.createElement("div");
+        document.body.appendChild(container);
+        useAuthStore.setState({ user: clinician, loading: false });
+        navigateMock.mockReset();
+    });
+
+    afterEach(() => {
+        root?.unmount();
+        root = null;
+        container.remove();
+    });
+
+    test("renders cropped login logo in a client-list control", async () => {
+        await act(async () => {
+            root = createRoot(container);
+            root.render(
+                createElement(TopNav, {
+                    active: "Clients",
+                    onNavigate: () => {},
+                    onOpenPrescription: () => {},
+                }),
+            );
+        });
+        const control = container.querySelector('button[aria-label="Back to client list"]');
+        expect(control).toBeTruthy();
+        const img = control?.querySelector("img");
+        expect(img?.getAttribute("src")).toBe("/brand/orthocad-logo-header.png");
+        expect(img?.className).toContain("h-9");
+    });
+
+    test("navigates to the client list when clicked without a guard", async () => {
+        await act(async () => {
+            root = createRoot(container);
+            root.render(
+                createElement(TopNav, {
+                    active: "Clients",
+                    onNavigate: () => {},
+                    onOpenPrescription: () => {},
+                }),
+            );
+        });
+        const control = container.querySelector('button[aria-label="Back to client list"]') as HTMLButtonElement;
+        control.click();
+        expect(navigateMock.mock.calls.length).toBe(1);
+        expect(navigateMock.mock.calls[0]?.[0]).toBe("/clients");
+    });
+
+    test("uses onLogoNavigate instead of direct navigation when provided", async () => {
+        const onLogoNavigate = rs.fn();
+        await act(async () => {
+            root = createRoot(container);
+            root.render(
+                createElement(TopNav, {
+                    active: "Clients",
+                    onNavigate: () => {},
+                    onOpenPrescription: () => {},
+                    onLogoNavigate,
+                }),
+            );
+        });
+        const control = container.querySelector('button[aria-label="Back to client list"]') as HTMLButtonElement;
+        control.click();
+        expect(onLogoNavigate.mock.calls.length).toBe(1);
+        expect(navigateMock.mock.calls.length).toBe(0);
+    });
+});
+
 describe("TopNav super-admin link", () => {
     let container: HTMLDivElement;
     let root: Root | null = null;
@@ -38,6 +116,7 @@ describe("TopNav super-admin link", () => {
         container = document.createElement("div");
         document.body.appendChild(container);
         useAuthStore.setState({ user: null, license: null, loading: false });
+        navigateMock.mockReset();
     });
 
     afterEach(() => {
