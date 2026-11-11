@@ -466,6 +466,70 @@ function boundaryLoops(pos: BufferGeometry["attributes"]["position"], tris: Sole
     return loops;
 }
 
+/** True when the removed triangle on this loop sits inside the loop. */
+function boundaryFacesRemovedInside(
+    pos: BufferGeometry["attributes"]["position"],
+    tris: SoleTri[],
+    loop: number[],
+): boolean {
+    const owner = new Map<string, SoleTri>();
+    for (const tri of tris) {
+        for (const [u, v] of [
+            [tri.a, tri.b],
+            [tri.b, tri.c],
+            [tri.c, tri.a],
+        ] as const) {
+            owner.set(hostEdgeKey(u, v), tri);
+        }
+    }
+    const poly = loop.map((i) => ({ x: pos.getX(i), y: pos.getY(i), z: 0 }));
+    for (let i = 0; i < loop.length; i++) {
+        const tri = owner.get(hostEdgeKey(loop[i]!, loop[(i + 1) % loop.length]!));
+        if (!tri) continue;
+        const cx = (pos.getX(tri.a) + pos.getX(tri.b) + pos.getX(tri.c)) / 3;
+        const cy = (pos.getY(tri.a) + pos.getY(tri.b) + pos.getY(tri.c)) / 3;
+        return pointInPoly(cx, cy, poly);
+    }
+    return false;
+}
+
+/** Split a boundary that revisits a vertex into simple cycles. */
+function simpleCycles(loop: number[]): number[][] {
+    const out: number[][] = [];
+    const pending: number[][] = [loop];
+    let guard = 0;
+    while (pending.length && guard++ < 32) {
+        const cur = pending.pop()!;
+        const cleaned: number[] = [];
+        for (const id of cur) {
+            if (cleaned[cleaned.length - 1] === id) continue;
+            cleaned.push(id);
+        }
+        if (cleaned.length >= 2 && cleaned[0] === cleaned[cleaned.length - 1]) cleaned.pop();
+        if (cleaned.length < 3) continue;
+        const at = new Map<number, number>();
+        let pinch = -1;
+        for (let i = 0; i < cleaned.length; i++) {
+            const prev = at.get(cleaned[i]!);
+            if (prev !== undefined) {
+                pinch = i;
+                break;
+            }
+            at.set(cleaned[i]!, i);
+        }
+        if (pinch < 0) {
+            out.push(cleaned);
+            continue;
+        }
+        const first = at.get(cleaned[pinch]!)!;
+        const lobe = cleaned.slice(first, pinch);
+        const rest = cleaned.slice(0, first).concat(cleaned.slice(pinch));
+        if (lobe.length >= 3) pending.push(lobe);
+        if (rest.length >= 3 && rest.length < cleaned.length) pending.push(rest);
+    }
+    return out;
+}
+
 function loopAreaIdx(pos: BufferGeometry["attributes"]["position"], loop: number[]): number {
     let s = 0;
     for (let i = 0; i < loop.length; i++) {
@@ -583,6 +647,41 @@ function absorbEnclosed(
     return extra.length ? selected.concat(extra) : selected;
 }
 
+/**
+ * A pocket hole is a kept island in the flat sole. Filling across it and also
+ * keeping the island opens the shared edges. Take the island into the pocket
+ * so one triangulation owns that patch.
+ */
+function absorbHoleIslands(
+    pos: BufferGeometry["attributes"]["position"],
+    sole: SoleTri[],
+    selected: SoleTri[],
+): SoleTri[] {
+    let current = selected;
+    for (let pass = 0; pass < 4; pass++) {
+        const loops = boundaryLoops(pos, current);
+        if (loops.length < 2) break;
+        const chosen = new Set(current.map((tri) => tri.i));
+        const extra: SoleTri[] = [];
+        for (const loop of loops.slice(1)) {
+            if (loop.length < 3) continue;
+            if (boundaryFacesRemovedInside(pos, current, loop)) continue;
+            const poly = loop.map((i) => ({ x: pos.getX(i), y: pos.getY(i), z: 0 }));
+            for (const tri of sole) {
+                if (chosen.has(tri.i)) continue;
+                const cx = (pos.getX(tri.a) + pos.getX(tri.b) + pos.getX(tri.c)) / 3;
+                const cy = (pos.getY(tri.a) + pos.getY(tri.b) + pos.getY(tri.c)) / 3;
+                if (!pointInPoly(cx, cy, poly)) continue;
+                chosen.add(tri.i);
+                extra.push(tri);
+            }
+        }
+        if (!extra.length) break;
+        current = current.concat(extra);
+    }
+    return current;
+}
+
 function hostEdgeKey(a: number, b: number): string {
     return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
@@ -683,10 +782,14 @@ export async function engraveBottomPlanar(
     const clipped = resampleGroups(inset ? clipGlyphs(groups, inset) : groups);
     const { tris: sole, wantNegZ } = collectSole(host);
     const posAttr = host.getAttribute("position");
-    const near = absorbEnclosed(
+    const near = absorbHoleIslands(
         posAttr,
         sole,
-        sole.filter((tri) => glyphHitsTri(posAttr, tri, clipped)),
+        absorbEnclosed(
+            posAttr,
+            sole,
+            sole.filter((tri) => glyphHitsTri(posAttr, tri, clipped)),
+        ),
     );
     if (!near.length) throw new TextMarkingError("boolean", "glyphs missed the sole faces");
     const index = host.getIndex();
@@ -725,7 +828,6 @@ export async function engraveBottomPlanar(
         const outerIdx = loops[0];
         if (!outerIdx || outerIdx.length < 3) continue;
         const outer = outerIdx.map((i) => xyOf(posAttr, i));
-        const pocketHoles = loops.slice(1).map((loop) => loop.map((i) => xyOf(posAttr, i)));
         const boundary = new Map<string, number>();
         const remember = (i: number) => boundary.set(xyKey(posAttr.getX(i), posAttr.getY(i)), i);
         for (const loop of loops) for (const i of loop) remember(i);
@@ -796,19 +898,81 @@ export async function engraveBottomPlanar(
                 holes: refinedHoles.map((h) => h.map((p) => ({ x: p.x, y: p.y, z: 0 }))),
             });
         }
-        const nPocket = pocketHoles.length;
-        const soleLoops = emitCdt(
-            buf,
-            outer,
-            [...pocketHoles, ...glyphHoles],
-            [],
-            0,
-            boundary,
-            wantNegZ,
-            0,
-            (li) => li > nPocket,
+        const cycles = loops.flatMap((loop) => simpleCycles(loop));
+        const asOuter: number[][] = [];
+        const asHole: number[][] = [];
+        for (const loop of cycles) {
+            if (loop.length < 3 || Math.abs(loopAreaIdx(posAttr, loop)) <= 1e-4) continue;
+            // The removed triangle sits inside an outer boundary and outside a hole.
+            if (boundaryFacesRemovedInside(posAttr, part, loop)) asOuter.push(loop);
+            else asHole.push(loop);
+        }
+        if (!asOuter.length && cycles[0]) asOuter.push(cycles[0]);
+        const regions: Array<{ outer: number[]; holes: number[][]; poly: PolyPoint[] }> = asOuter.map(
+            (loop) => ({
+                outer: loop,
+                holes: [] as number[][],
+                poly: loop.map((i) => ({ x: posAttr.getX(i), y: posAttr.getY(i), z: 0 })),
+            }),
         );
-        splitHostSeam(buf, seamEdges, soleLoops);
+        for (const loop of asHole) {
+            let x = 0;
+            let y = 0;
+            for (const i of loop) {
+                x += posAttr.getX(i);
+                y += posAttr.getY(i);
+            }
+            x /= loop.length;
+            y /= loop.length;
+            const parent = regions.find((region) => pointInPoly(x, y, region.poly));
+            if (parent) parent.holes.push(loop);
+            else {
+                regions.push({
+                    outer: loop,
+                    holes: [],
+                    poly: loop.map((i) => ({ x: posAttr.getX(i), y: posAttr.getY(i), z: 0 })),
+                });
+            }
+        }
+        if (!regions.length) {
+            throw new TextMarkingError("boolean", "sole pocket has no boundary");
+        }
+        const glyphLeft = glyphHoles.slice();
+        const glyphsByRegion = regions.map(() => [] as TextXy[][]);
+        for (let i = glyphLeft.length - 1; i >= 0; i--) {
+            const g = glyphLeft[i]!;
+            let x = 0;
+            let y = 0;
+            for (const p of g) {
+                x += p.x;
+                y += p.y;
+            }
+            const regionAt = regions.findIndex((region) =>
+                pointInPoly(x / g.length, y / g.length, region.poly),
+            );
+            const at = regionAt >= 0 ? regionAt : 0;
+            glyphsByRegion[at]!.push(g);
+            glyphLeft.splice(i, 1);
+        }
+        for (let r = 0; r < regions.length; r++) {
+            const region = regions[r]!;
+            const regionOuter = region.outer.map((i) => xyOf(posAttr, i));
+            const regionHoles = region.holes.map((loop) => loop.map((i) => xyOf(posAttr, i)));
+            const glyphsHere = glyphsByRegion[r]!;
+            const nPocket = regionHoles.length;
+            const soleLoops = emitCdt(
+                buf,
+                regionOuter,
+                [...regionHoles, ...glyphsHere],
+                [],
+                0,
+                boundary,
+                wantNegZ,
+                0,
+                (li) => li > nPocket,
+            );
+            splitHostSeam(buf, seamEdges, soleLoops);
+        }
     }
     if (pending.length) {
         throw new TextMarkingError("boolean", "glyph did not land on a sole pocket");
