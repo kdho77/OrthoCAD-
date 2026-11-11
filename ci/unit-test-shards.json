@@ -31,6 +31,7 @@
                 "vertex/src/features/auth/session-profile.test.ts",
                 "vertex/src/features/clients/client-actions.persist.test.ts",
                 "vertex/src/features/elements/ElementHardnessSelector.test.tsx",
+                "vertex/src/features/elements/ElementsPanel.clear-all.test.tsx",
                 "vertex/src/features/exports/export-user-message.test.ts",
                 "vertex/src/features/production/installer-download.test.ts",
                 "vertex/src/lib/clinical/arch-class.test.ts",
