@@ -324,5 +324,42 @@ describe("CAD-operator production claim", () => {
         expect(left.idempotencyKey).not.toBe(right.idempotencyKey);
         expect(left.idempotencyKey).toContain(":left:");
         expect(left.idempotencyKey).toContain("apex-v2-insole-95a");
+        const stl = cadOperatorManufacturingIdentity({ ...base, deliverable: "central_fab_stl" });
+        expect(stl.idempotencyKey).not.toBe(left.idempotencyKey);
+    });
+
+    test("a materialized STL is stored without slicing", async () => {
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(
+            store,
+            insert("left", "stl-fp"),
+            new Date("2026-11-11T00:00:00.000Z"),
+        );
+        let sliced = 0;
+        await executeCadOperatorProduction({
+            row: claimed.row,
+            store,
+            now: () => new Date("2026-11-11T00:00:01.000Z"),
+            deliverMaterializedStl: true,
+            materialize: async () => ({
+                stlStorageKey: "stl/cad-operator/tenant/cred/design/left-1-id.stl",
+                meshFingerprint: "mesh",
+            }),
+            slice: async () => {
+                sliced += 1;
+                return { gcode: "G1\n", jobId: "job" };
+            },
+            uploadGcode: async () => {
+                sliced += 1;
+                return { storageKey: "gcode/should-not" };
+            },
+            charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+        });
+        const row = await store.findById(claimed.row.id);
+        expect(sliced).toBe(0);
+        expect(row?.status).toBe("succeeded");
+        expect(row?.gcodeStorageKey).toBe("stl/cad-operator/tenant/cred/design/left-1-id.stl");
+        if (!row) throw new Error("production row missing");
+        expect(toPublicProduction(row).download?.tool).toBe("get_export_download");
     });
 });

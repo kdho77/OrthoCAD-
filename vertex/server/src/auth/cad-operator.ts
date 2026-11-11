@@ -27,6 +27,9 @@ export const CAD_OPERATOR_BELT_PROFILE_ID = "apex-v2-insole-95a";
 export const CAD_OPERATOR_BELT_MATERIAL = "apex_core";
 export const CAD_OPERATOR_BELT_ANGLE_DEG = 45;
 
+/** Production row preset for the central-fab solid. Not a slicer profile. */
+export const CENTRAL_FAB_STL_PRESET_ID = "central-fab-stl";
+
 export interface CadOperatorCredentialRow {
     id: string;
     revokedAt: string | null;
@@ -113,5 +116,37 @@ export function assertCadOperatorGcodeKey(key: string, credentialId: string): vo
     const prefix = cadOperatorGcodePrefix(credentialId);
     if (!key.startsWith(prefix) || key.includes("..")) {
         throw new Error("Invalid G-code storage key");
+    }
+}
+
+export function cadOperatorCentralFabStlPrefix(credentialId: string): string {
+    return `stl/cad-operator/${DOGFOOD_TENANT_ID}/${credentialId}/`;
+}
+
+/** Durable milling solid. Not under manufacturing-temp, so the TTL job does not delete it. */
+export function buildCadOperatorCentralFabStlKey(
+    credentialId: string,
+    designId: string,
+    side: "left" | "right",
+    stamp = Date.now(),
+    id = randomUUID(),
+): string {
+    return `${cadOperatorCentralFabStlPrefix(credentialId)}${designId}/${side}-${stamp}-${id}.stl`;
+}
+
+export function assertCadOperatorCentralFabStlKey(key: string, credentialId: string): void {
+    const prefix = cadOperatorCentralFabStlPrefix(credentialId);
+    if (!key.startsWith(prefix) || !key.endsWith(".stl") || key.includes("..")) {
+        throw new Error("Invalid central-fab STL storage key");
+    }
+}
+
+/** G-code keys stay on their prefix. Central-fab STL keys are a second prefix for the same credential. */
+export function assertCadOperatorDeliverableKey(key: string, credentialId: string): void {
+    try {
+        assertCadOperatorGcodeKey(key, credentialId);
+        return;
+    } catch {
+        assertCadOperatorCentralFabStlKey(key, credentialId);
     }
 }
