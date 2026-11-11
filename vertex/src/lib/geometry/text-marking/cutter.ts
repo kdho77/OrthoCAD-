@@ -96,10 +96,21 @@ function cdtWithHoles(outer: TextXy[], holes: TextXy[][], extra: TextXy[]): Glyp
     const loops: number[][] = [];
     const pushLoop = (loop: TextXy[]): number[] => {
         const idx: number[] = [];
+        // A pinched sole boundary repeats a vertex. A second copy of the same
+        // coordinates is not in the Delaunay, and constraining it throws.
+        const keyAt = new Map<string, number>();
         for (const p of loop) {
-            idx.push(points.length);
-            points.push({ x: p.x, y: p.y });
+            const k = `${p.x}|${p.y}`;
+            let id = keyAt.get(k);
+            if (id == null) {
+                id = points.length;
+                points.push({ x: p.x, y: p.y });
+                keyAt.set(k, id);
+            }
+            if (idx[idx.length - 1] === id) continue;
+            idx.push(id);
         }
+        if (idx.length >= 2 && idx[0] === idx[idx.length - 1]) idx.pop();
         loops.push(idx);
         return idx;
     };
@@ -119,24 +130,55 @@ function cdtWithHoles(outer: TextXy[], holes: TextXy[][], extra: TextXy[]): Glyp
     }
     if (points.length < 3) return null;
 
-    const coords = new Float64Array(points.length * 2);
-    for (let i = 0; i < points.length; i++) {
-        coords[i * 2] = points[i]!.x;
-        coords[i * 2 + 1] = points[i]!.y;
+    // Delaunator skips near-duplicate and collinear points. A grid-aligned
+    // sole boundary has those, and constraining an edge to a skipped point
+    // throws. Nudge only the skipped points, then restore the host coordinates
+    // so the seam still lands on the original vertices.
+    const original = points.map((p) => ({ x: p.x, y: p.y }));
+    let del: Delaunator<Float64Array> | null = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+        const coords = new Float64Array(points.length * 2);
+        for (let i = 0; i < points.length; i++) {
+            coords[i * 2] = points[i]!.x;
+            coords[i * 2 + 1] = points[i]!.y;
+        }
+        let built: Delaunator<Float64Array>;
+        try {
+            built = new Delaunator(coords);
+        } catch {
+            return null;
+        }
+        const missing = new Constrainautor(built).untriangulatedPoints();
+        if (missing.length === 0) {
+            del = built;
+            break;
+        }
+        for (const i of missing) {
+            const p = original[i]!;
+            const q = original[(i + 1) % original.length] ?? p;
+            const dx = q.x - p.x;
+            const dy = q.y - p.y;
+            const len = Math.hypot(dx, dy) || 1;
+            const eps = 1e-5 * (attempt + 1);
+            points[i] = { x: p.x + (-dy / len) * eps, y: p.y + (dx / len) * eps };
+        }
     }
-    let del: Delaunator<Float64Array>;
-    try {
-        del = new Delaunator(coords);
-    } catch {
-        return null;
-    }
+    for (let i = 0; i < points.length; i++) points[i] = original[i]!;
+    if (!del) return null;
     const barrier = new Set<string>();
-    for (let i = 0; i < nOuter; i++) barrier.add(edgeKey(i, (i + 1) % nOuter));
+    const outerEdges: Array<[number, number]> = [];
+    for (let i = 0; i < nOuter; i++) {
+        const a = outerIdx[i]!;
+        const b = outerIdx[(i + 1) % nOuter]!;
+        if (a === b) continue;
+        const k = edgeKey(a, b);
+        if (barrier.has(k)) continue;
+        barrier.add(k);
+        outerEdges.push([a, b]);
+    }
     for (const e of extraEdges) barrier.add(edgeKey(e[0], e[1]));
     try {
         const con = new Constrainautor(del);
-        const outerEdges: Array<[number, number]> = [];
-        for (let i = 0; i < nOuter; i++) outerEdges.push([i, (i + 1) % nOuter]);
         con.constrainAll(outerEdges);
         for (const e of extraEdges) {
             try {
@@ -208,14 +250,38 @@ function cdtWithHoles(outer: TextXy[], holes: TextXy[][], extra: TextXy[]): Glyp
             }
         }
     }
-    const faces = [...seen]
-        .map((i) => all[i]!)
-        .filter((f) => {
-            const A = points[f[0]!]!;
-            const B = points[f[1]!]!;
-            const C = points[f[2]!]!;
-            return inGlyph((A.x + B.x + C.x) / 3, (A.y + B.y + C.y) / 3, outer, holes);
-        });
+    const seenFaces = [...seen].map((i) => all[i]!);
+    const faces = seenFaces.filter((f) => {
+        const A = points[f[0]!]!;
+        const B = points[f[1]!]!;
+        const C = points[f[2]!]!;
+        return inGlyph((A.x + B.x + C.x) / 3, (A.y + B.y + C.y) / 3, outer, holes);
+    });
+    const faceHas = new Set<string>();
+    const remember = (f: [number, number, number]) => {
+        faceHas.add(edgeKey(f[0], f[1]));
+        faceHas.add(edgeKey(f[1], f[2]));
+        faceHas.add(edgeKey(f[2], f[0]));
+    };
+    for (const f of faces) remember(f);
+    // A concave seam can put the only triangle on a boundary edge outside the
+    // centroid test. Add a triangle only when that edge would otherwise stay open.
+    const pullMissing = (pool: Array<[number, number, number]>, requireInside: boolean) => {
+        for (const f of pool) {
+            const keys = [edgeKey(f[0], f[1]), edgeKey(f[1], f[2]), edgeKey(f[2], f[0])];
+            if (!keys.some((k) => barrier.has(k) && !faceHas.has(k))) continue;
+            if (requireInside) {
+                const A = points[f[0]!]!;
+                const B = points[f[1]!]!;
+                const C = points[f[2]!]!;
+                if (!inGlyph((A.x + B.x + C.x) / 3, (A.y + B.y + C.y) / 3, outer, holes)) continue;
+            }
+            faces.push(f);
+            remember(f);
+        }
+    };
+    pullMissing(all, true);
+    pullMissing(seenFaces, false);
     if (faces.length < 1) return null;
     return { points, faces, loops, feature: [] };
 }
@@ -1259,6 +1325,29 @@ export function qualityCdtFixed(
     for (const p of extra) {
         if (!nearExisting(p, cap.points, 1e-12)) insertSteiner(cap, p);
     }
+    const covered = (mesh: GlyphCap): boolean => {
+        const faceE = new Set<string>();
+        for (const [a, b, c] of mesh.faces) {
+            faceE.add(edgeKey(a, b));
+            faceE.add(edgeKey(b, c));
+            faceE.add(edgeKey(c, a));
+        }
+        for (const loop of mesh.loops) {
+            for (let i = 0; i < loop.length; i++) {
+                if (!faceE.has(edgeKey(loop[i]!, loop[(i + 1) % loop.length]!))) return false;
+            }
+        }
+        return mesh.faces.length > 0;
+    };
+    // Ruppert splits long edges. If that refinement drops a constrained
+    // boundary edge, the engraved sole is an open sheet. Keep the constrained
+    // triangulation instead of the punched one.
+    const snapshot = {
+        points: cap.points.map((p) => ({ x: p.x, y: p.y })),
+        faces: cap.faces.map((f) => [f[0], f[1], f[2]] as [number, number, number]),
+        loops: cap.loops.map((loop) => loop.slice()),
+    };
+    const snapshotCovered = covered(cap);
     // Ruppert splits long edges itself. A prior interior-only midpoint pass leaves
     // the outline intact and shatters the cap into slivers along those edges.
     const feature = new Set<number>();
@@ -1280,6 +1369,11 @@ export function qualityCdtFixed(
         }
     }
     ruppertRefine(cap, options?.lockLoop);
+    if (snapshotCovered && !covered(cap)) {
+        cap.points = snapshot.points;
+        cap.faces = snapshot.faces;
+        cap.loops = snapshot.loops;
+    }
     orientLoops(cap);
     cap.feature = [...feature];
     return cap;
