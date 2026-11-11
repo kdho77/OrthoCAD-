@@ -175,4 +175,43 @@ describe("VertexSlice printer G-code client", () => {
         expect(sliceCalls).toHaveLength(1);
         expect((sliceCalls[0]?.init.body as FormData).get("material")).toBe("apex_light");
     });
+
+    test("POST /v1/slice aborts when sliceTimeoutMs elapses", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        installFetch((url, init) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core", "apex_light"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice")) {
+                expect(init.signal).toBeTruthy();
+                return new Promise<Response>((_resolve, reject) => {
+                    const signal = init.signal;
+                    if (!signal) {
+                        reject(new Error("expected AbortSignal on slice fetch"));
+                        return;
+                    }
+                    const onDeadline = () => {
+                        reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+                    };
+                    if (signal.aborted) {
+                        onDeadline();
+                        return;
+                    }
+                    signal.addEventListener("abort", onDeadline, { once: true });
+                });
+            }
+            return new Response("unexpected", { status: 500 });
+        });
+
+        await expect(
+            sliceWithVertexSlice({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_light",
+                model: new Uint8Array([1]),
+                sliceTimeoutMs: 40,
+                side: "left",
+            }),
+        ).rejects.toThrow("VertexSlice timed out after 1s (left)");
+    });
 });
