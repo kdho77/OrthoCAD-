@@ -62,8 +62,6 @@ export interface ApexPrintMaterialOption {
     disabledReason?: string;
 }
 
-const SETTINGS_NOT_APPROVED = "Disabled until print settings are approved";
-
 /**
  * Apex Light, Apex Core, and Apex Bounce share the locked process profile id.
  * Bounce process deltas (220°C, 0.8× Core speed, 70°C bed) are applied by VertexSlice
