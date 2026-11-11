@@ -207,7 +207,7 @@ const persistPrincipal: CadOperatorPrincipal = {
     scopes: ["design:read", "manufacturing:prepare", "manufacturing:generate", "manufacturing:download"],
 };
 
-function persistPrisma() {
+function persistPrisma(shoeSize = 9) {
     const current = {
         id: PERSIST_DESIGN_ID,
         ownerId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
@@ -228,7 +228,7 @@ function persistPrisma() {
             externalOrderId: "fixture-order",
             sides: "pair",
             shoeSizeSystem: "US_M",
-            shoeSize: 9,
+            shoeSize,
             shoeSizeLeft: null,
             shoeSizeRight: null,
             shoeWidth: "medium",
@@ -251,9 +251,10 @@ function persistPrisma() {
 async function persistedLoftSettings(
     catalog: unknown,
     side: Side,
+    shoeSize = 9,
 ): Promise<{ persisted: unknown; settings: DesignSettingsEnvelope }> {
     const saved = await persistSavedDesignSnapshotOnDesign({
-        prisma: persistPrisma(),
+        prisma: persistPrisma(shoeSize),
         principal: persistPrincipal,
         designId: PERSIST_DESIGN_ID,
         catalog,
@@ -272,8 +273,18 @@ async function persistedLoftSettings(
 function sideCorrection(settingsJson: unknown, side: Side) {
     const corrections = readStoredDesignSettings(settingsJson)?.corrections as
         | {
-              left: { archHeightMm: number; rearfootWedge?: Record<string, unknown> };
-              right: { archHeightMm: number; rearfootWedge?: Record<string, unknown> };
+              left: {
+                  archHeightMm: number;
+                  apexMoveMm: number;
+                  forefootWidthMm: number;
+                  rearfootWedge?: Record<string, unknown>;
+              };
+              right: {
+                  archHeightMm: number;
+                  apexMoveMm: number;
+                  forefootWidthMm: number;
+                  rearfootWedge?: Record<string, unknown>;
+              };
           }
         | undefined;
     if (!corrections) throw new Error("persisted snapshot has no corrections");
@@ -339,6 +350,22 @@ describe("headless canonical export for non-default saved geometry", () => {
             { shoe_size: shoe, rearfoot_wedge: { side: "lateral", value: 3, unit: "mm" } },
             "right",
         );
+        const highFlex = await persistedLoftSettings(
+            { shoe_size: shoe, arch: "high", flexible_foot: true },
+            "left",
+        );
+        expect(sideCorrection(highFlex.persisted, "left").archHeightMm).toBe(3);
+        expect(sideCorrection(highFlex.persisted, "left").apexMoveMm).toBe(4);
+        const wideForefoot = await persistedLoftSettings(
+            {
+                shoe_size: { system: "US_M", size: 7 },
+                width: "medium",
+                sliders: { forefoot_width_mm: 10 },
+            },
+            "right",
+            7,
+        );
+        expect(sideCorrection(wideForefoot.persisted, "right").forefootWidthMm).toBe(10);
         for (const saved of [wedgeLeft.persisted, wedgeRight.persisted]) {
             for (const side of ["left", "right"] as const) {
                 expect(JSON.parse(JSON.stringify(sideCorrection(saved, side).rearfootWedge))).toEqual({
@@ -372,6 +399,8 @@ describe("headless canonical export for non-default saved geometry", () => {
             { label: "high-arch", side: "left", settings: high.settings },
             { label: "wedge-left", side: "left", settings: wedgeLeft.settings },
             { label: "wedge-right", side: "right", settings: wedgeRight.settings },
+            { label: "high-flex-left", side: "left", settings: highFlex.settings },
+            { label: "wide-forefoot-right", side: "right", settings: wideForefoot.settings },
         ];
 
         const dir = mkdtempSync(join(tmpdir(), "canonical-export-geometry-"));

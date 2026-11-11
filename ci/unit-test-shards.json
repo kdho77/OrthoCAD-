@@ -266,6 +266,7 @@
                 "vertex/src/lib/geometry/procedural-wall/stations.test.ts",
                 "vertex/src/lib/geometry/scan-marker-target.test.ts",
                 "vertex/src/lib/geometry/shoe-width.test.ts",
+                "vertex/src/lib/geometry/text-marking/modified-sole.test.ts",
                 "vertex/src/lib/geometry/text-marking/text-marking.test.ts",
                 "vertex/src/lib/geometry/wedge-topcount-diag.test.ts",
                 "vertex/src/lib/trpc-errors.test.ts",
