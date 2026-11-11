@@ -288,10 +288,13 @@ describe("CAD-operator production claim", () => {
         const row = await store.findById(claimed.row.id);
         expect(row?.status).toBe("failed");
         expect(row?.error).toBe(
-            "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.",
+            "Canonical Export mesh is not available headless. Refusing to substitute a different mesh. (Error: Failed to parse URL from /fonts/Inter-Bold.ttf)",
         );
-        expect(logged.join("\n")).toContain("Failed to parse URL from /fonts/Inter-Bold.ttf");
-        expect(logged.join("\n")).not.toContain("Jane Doe");
+        expect(toPublicProduction(row ?? claimed.row).error).toBe(row?.error);
+        const loggedText = logged.join("\n");
+        expect(loggedText).toContain("Failed to parse URL from /fonts/Inter-Bold.ttf");
+        expect(loggedText).toContain('"stack"');
+        expect(loggedText).not.toContain("Jane Doe");
         expect(assetLoadCauseForLog(fontError)).toBe("Failed to parse URL from /fonts/Inter-Bold.ttf");
         const elementError = new Error(
             "Canonical Export mesh is not available headless (Element asset /elements/met_bar_1.right.glb is not a GLB). Refusing to substitute a different mesh.",
@@ -299,6 +302,87 @@ describe("CAD-operator production claim", () => {
         expect(assetLoadCauseForLog(elementError)).toBe(
             "Element asset /elements/met_bar_1.right.glb is not a GLB",
         );
+    });
+
+    test("get_production keeps the refusal and appends a sanitized inner cause", async () => {
+        const store = new MemoryCadProductionStore();
+        const now = new Date("2026-11-09T00:00:00.000Z");
+        const claimed = await claimProduction(store, insert("left", "inner-cause"), now);
+        const cause = new TypeError("Cannot read properties of undefined (reading 'archHeightMm')");
+        cause.stack =
+            "TypeError: Cannot read properties of undefined (reading 'archHeightMm')\n    at buildWedge (wedge.ts:10:1)";
+        const wrapped = new Error(
+            `Canonical Export mesh is not available headless (${cause.name}: ${cause.message}). Refusing to substitute a different mesh.`,
+            { cause },
+        );
+        const logged: string[] = [];
+        const original = console.error;
+        console.error = (...args: unknown[]) => {
+            logged.push(args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "));
+        };
+        try {
+            await executeCadOperatorProduction({
+                row: (await store.findById(claimed.row.id)) ?? claimed.row,
+                store,
+                now: () => new Date("2026-11-09T00:00:01.000Z"),
+                materialize: async () => {
+                    throw wrapped;
+                },
+                slice: async () => ({ gcode: "G1\n", jobId: "job" }),
+                uploadGcode: async () => ({ storageKey: "gcode/cad-operator/t/c/d/left.gcode" }),
+                charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+            });
+        } finally {
+            console.error = original;
+        }
+        const row = await store.findById(claimed.row.id);
+        const text = row?.error ?? "";
+        expect(text).toContain(
+            "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.",
+        );
+        expect(text).toContain("TypeError: Cannot read properties of undefined (reading 'archHeightMm')");
+        expect(toPublicProduction(row ?? claimed.row).error).toBe(text);
+        expect(logged.join("\n")).toContain("at buildWedge (wedge.ts:10:1)");
+        expect(
+            publicProductionError(
+                new Error(
+                    "Canonical Export mesh is not available headless (Jane Doe). Refusing to substitute a different mesh.",
+                ),
+            ),
+        ).toBe("Canonical Export mesh is not available headless. Refusing to substitute a different mesh.");
+        const named = publicProductionError(
+            new Error(
+                "Canonical Export mesh is not available headless (TypeError: loft failed for Jane Doe). Refusing to substitute a different mesh.",
+            ),
+        );
+        expect(named).toContain("TypeError: loft failed for [redacted]");
+        expect(named).not.toContain("Jane Doe");
+        const secret = publicProductionError(
+            new Error(
+                "Canonical Export mesh is not available headless (TypeError: bearer ocad_live_secret rejected). Refusing to substitute a different mesh.",
+            ),
+        );
+        expect(secret).toContain("TypeError:");
+        expect(secret).not.toContain("ocad_live_secret");
+        expect(secret).not.toContain("bearer");
+        const dumped = publicProductionError(
+            new Error(
+                'Canonical Export mesh is not available headless (Error: bad settingsJson {"firstName":"Jane","lastName":"Doe"}). Refusing to substitute a different mesh.',
+            ),
+        );
+        expect(dumped).toBe(
+            "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.",
+        );
+        expect(dumped).not.toContain("Jane");
+        const stl = publicProductionError(
+            new Error(
+                "Canonical Export mesh is not available headless (Error: solid foot facet normal 0 0 1). Refusing to substitute a different mesh.",
+            ),
+        );
+        expect(stl).toBe(
+            "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.",
+        );
+        expect(stl).not.toContain("facet normal");
     });
 
     test("settings identity changes with the foot and stays stable for the same inputs", () => {
