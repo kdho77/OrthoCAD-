@@ -323,6 +323,7 @@
                 "vertex/src/lib/geometry/thickness-datum-clearance.test.ts",
                 "vertex/src/lib/hardness/hash.test.ts",
                 "vertex/src/lib/vite-env.inline.test.ts",
+                "vertex/src/stores/clinical-workflow-navigation.test.ts",
                 "vertex/src/stores/clinical-workflow-store.test.ts",
                 "vertex/tests/occt-dormant.test.ts"
             ]
