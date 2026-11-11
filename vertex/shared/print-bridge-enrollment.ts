@@ -13,7 +13,7 @@ export interface EnrollmentRecord {
     shopId: string;
     bridgeId: string;
     printerIds: string[];
-    audience: typeof BRIDGE_AUDIENCE;
+    audience: string;
     origin: string;
     expiresAt: string;
     usedAt: string | null;

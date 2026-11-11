@@ -4,6 +4,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { BridgeDirectory } from "../../shared/print-bridge-directory.js";
 import { type BridgeCredential, sha256Hex as hashText } from "../../shared/print-bridge-enrollment.js";
+import type { DiscoveryCandidateRecord } from "../../shared/print-bridge-pairing.js";
 import { publicPrinterMessage } from "../../shared/printer-adapter.js";
 import {
     PRINTER_STATES,
@@ -77,6 +78,68 @@ function sliceArtifact(
     };
 }
 
+const BRIDGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function readDiscoveryCandidates(value: unknown): DiscoveryCandidateRecord[] {
+    if (!Array.isArray(value)) return [];
+    const candidates: DiscoveryCandidateRecord[] = [];
+    for (const item of value) {
+        if (!item || typeof item !== "object") continue;
+        const host = "host" in item && typeof item.host === "string" ? item.host : "";
+        const port = "port" in item && typeof item.port === "number" ? item.port : 0;
+        const address = "address" in item && typeof item.address === "string" ? item.address : "";
+        const source =
+            "source" in item && (item.source === "mdns" || item.source === "scan") ? item.source : null;
+        if (!host || !source || !Number.isInteger(port)) continue;
+        const info = "info" in item && item.info && typeof item.info === "object" ? item.info : null;
+        const text = (key: string): string | null => {
+            if (!info || !(key in info)) return null;
+            const field = (info as Record<string, unknown>)[key];
+            return typeof field === "string" && field.length > 0 && field.length <= 120 ? field : null;
+        };
+        candidates.push({
+            host,
+            port,
+            address,
+            source,
+            info: info
+                ? {
+                      hostname: text("hostname"),
+                      moonrakerVersion: text("moonrakerVersion"),
+                      klippyState: text("klippyState"),
+                      apiVersion: text("apiVersion"),
+                  }
+                : null,
+        });
+    }
+    return candidates;
+}
+
+function readConnectionTest(
+    value: unknown,
+): { address: string; info: DiscoveryCandidateRecord["info"] } | null {
+    if (!value || typeof value !== "object") return null;
+    const address = "address" in value && typeof value.address === "string" ? value.address : "";
+    if (!address) return null;
+    const info = "info" in value && value.info && typeof value.info === "object" ? value.info : null;
+    const text = (key: string): string | null => {
+        if (!info || !(key in info)) return null;
+        const field = (info as Record<string, unknown>)[key];
+        return typeof field === "string" && field.length > 0 && field.length <= 120 ? field : null;
+    };
+    return {
+        address,
+        info: info
+            ? {
+                  hostname: text("hostname"),
+                  moonrakerVersion: text("moonrakerVersion"),
+                  klippyState: text("klippyState"),
+                  apiVersion: text("apiVersion"),
+              }
+            : null,
+    };
+}
+
 function isPrinterState(value: string): value is PrinterState {
     return (PRINTER_STATES as readonly string[]).includes(value);
 }
@@ -130,6 +193,45 @@ export async function handlePrintBridgeNode(
             send(res, 201, { credential: result.credential });
             return;
         }
+        if (req.method === "POST" && path === "/print-bridge/v1/pair/begin") {
+            const bridgeId = String(body.bridgeId ?? "");
+            const deviceProof = String(body.deviceProof ?? "");
+            const origin = String(body.origin ?? "");
+            if (!BRIDGE_ID.test(bridgeId)) {
+                send(res, 400, { error: "pairing rejected" });
+                return;
+            }
+            const result = await deps.directory.beginPairing({ bridgeId, deviceProof, origin, now });
+            if (!result.ok) {
+                send(res, result.reason === "already-enrolled" ? 409 : 400, {
+                    error: "pairing rejected",
+                    reason: result.reason,
+                });
+                return;
+            }
+            send(res, 201, { pairingCode: result.pairingCode, expiresAt: result.expiresAt });
+            return;
+        }
+        if (req.method === "POST" && path === "/print-bridge/v1/pair/poll") {
+            const bridgeId = String(body.bridgeId ?? "");
+            const deviceProof = String(body.deviceProof ?? "");
+            const origin = String(body.origin ?? "");
+            const result = await deps.directory.pollPairing({ bridgeId, deviceProof, origin, now });
+            if (result.status === "rejected") {
+                send(res, 401, { error: "pairing rejected" });
+                return;
+            }
+            if (result.status === "ready") {
+                send(res, 200, {
+                    status: "ready",
+                    credential: result.credential,
+                    bridgeId: result.bridgeId,
+                });
+                return;
+            }
+            send(res, 200, { status: result.status });
+            return;
+        }
         const credential = bearer(req);
         const bridgeId = String(body.bridgeId ?? "");
         const bridge = await deps.directory.authenticate(credential, bridgeId);
@@ -181,7 +283,26 @@ export async function handlePrintBridgeNode(
                     action,
                 });
             }
-            send(res, 200, { printers, jobs });
+            const payload: {
+                printers: typeof printers;
+                jobs: typeof jobs;
+                discoveryProbe?: { address: string };
+            } = { printers, jobs };
+            const probe = await deps.directory.pendingDiscoveryProbe(bridge.bridgeId);
+            if (probe) payload.discoveryProbe = probe;
+            send(res, 200, payload);
+            return;
+        }
+        if (path === "/print-bridge/v1/discovery") {
+            const candidates = readDiscoveryCandidates(body.candidates);
+            const connectionTest = readConnectionTest(body.connectionTest);
+            await deps.directory.reportDiscovery({
+                bridge,
+                candidates,
+                connectionTest,
+                now,
+            });
+            send(res, 204, {});
             return;
         }
         if (path === "/print-bridge/v1/artifact") {

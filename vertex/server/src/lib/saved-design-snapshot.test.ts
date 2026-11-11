@@ -136,6 +136,66 @@ describe("persist saved design snapshot", () => {
         expect(updates).toEqual([]);
     });
 
+    test("a bilateral 1.5 mm 1st met head sink is stored and a flat forefoot stays unset", async () => {
+        const { prisma, updates } = fakePrisma();
+        const result = await persistSavedDesignSnapshotOnDesign({
+            prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: {
+                sinks: [
+                    { name: "1st met head", side: "left", depth_mm: 1.5 },
+                    { name: "1st MPJ", side: "right", depth_mm: 1.5 },
+                ],
+            },
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        expect(updates).toHaveLength(1);
+        const settings = readStoredDesignSettings(result.settingsJson);
+        const sinks = settings?.sinks as {
+            left?: Array<{ kind: string; depthMm: number; u?: number; v?: number }>;
+            right?: Array<{ kind: string; depthMm: number; u?: number; v?: number }>;
+        };
+        expect(sinks.left?.[0]).toMatchObject({ kind: "mpj1", depthMm: 1.5 });
+        expect(sinks.right?.[0]).toMatchObject({ kind: "mpj1", depthMm: 1.5 });
+        expect(sinks.left?.[0]?.u).toBeUndefined();
+        expect(sinks.right?.[0]?.v).toBeUndefined();
+        expect(settings?.elements).toEqual([]);
+        const corrections = settings?.corrections as {
+            left: { forefootWedge?: unknown };
+            right: { forefootWedge?: unknown };
+        };
+        expect(corrections.left.forefootWedge).toBeUndefined();
+        expect(corrections.right.forefootWedge).toBeUndefined();
+    });
+
+    test("a sink depth of 0 or above the mpj1 maximum is 422 and does not write", async () => {
+        for (const depth_mm of [0, -1, 5]) {
+            const { prisma, updates } = fakePrisma();
+            await expect(
+                persistSavedDesignSnapshotOnDesign({
+                    prisma,
+                    principal,
+                    designId: DESIGN_ID,
+                    catalog: { sinks: [{ name: "mpj1", side: "left", depth_mm }] },
+                    buildSnapshot: buildSavedDesignSnapshot,
+                }),
+            ).rejects.toMatchObject({ status: 422, message: expect.stringMatching(/depth/) });
+            expect(updates).toEqual([]);
+        }
+        const { prisma, updates } = fakePrisma();
+        await expect(
+            persistSavedDesignSnapshotOnDesign({
+                prisma,
+                principal,
+                designId: DESIGN_ID,
+                catalog: { sinks: [{ name: "no such sink", side: "right" }] },
+                buildSnapshot: buildSavedDesignSnapshot,
+            }),
+        ).rejects.toMatchObject({ status: 422, message: expect.stringMatching(/unrecognized sink/) });
+        expect(updates).toEqual([]);
+    });
+
     test("a conflicting supplied size is 422 and does not write", async () => {
         const { prisma, updates } = fakePrisma();
         await expect(

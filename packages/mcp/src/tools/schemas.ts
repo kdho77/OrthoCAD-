@@ -187,6 +187,21 @@ export const savedDesignCatalogSchema = z
             )
             .max(24)
             .optional(),
+        sinks: z
+            .array(
+                z
+                    .object({
+                        name: z.string().trim().min(1).max(80).optional(),
+                        kind: z.string().trim().min(1).max(80).optional(),
+                        side: z.enum(["left", "right"]),
+                        depth_mm: z.number().finite().optional(),
+                        u: z.number().finite().optional(),
+                        v: z.number().finite().optional(),
+                    })
+                    .strict(),
+            )
+            .max(14)
+            .optional(),
         sliders: savedDesignSliderSchema.optional(),
         sliders_by_side: z
             .object({
@@ -355,6 +370,9 @@ export const MCP_TOOL_DEFINITIONS = [
             "shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide), " +
             "arch (low|medium|standard|high → −3.5|0|0|+3 mm), flexible_foot (true → apex +4 mm on both feet), " +
             "elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), " +
+            "sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), " +
+            "sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), " +
+            "sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), " +
             "sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, " +
             "sliders.lateral_skive_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, " +
             "sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, " +
@@ -382,6 +400,10 @@ export const MCP_TOOL_DEFINITIONS = [
             "A server verifier may bind the verified person for this dogfood order. Caller fields are not that verifier. " +
             "CAD-operator scopes cannot assert the order's person. " +
             "A bound refresh uses the saved-design snapshot rules. No scan upload and no STL. " +
+            "Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. " +
+            "depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). " +
+            "Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. " +
+            "elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. " +
             "Medium width is used only when width is absent and is recorded as defaulted, not prescribed. " +
             "Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
         inputSchema: createSavedDesignInputSchema,

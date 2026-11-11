@@ -1,0 +1,76 @@
+name: Print bridge release
+
+on:
+    workflow_dispatch:
+        inputs:
+            tag:
+                description: Release tag, such as print-bridge-v2026.11.10.1
+                required: true
+                type: string
+    push:
+        tags:
+            - "print-bridge-v*"
+
+jobs:
+    build:
+        uses: ./.github/workflows/print-bridge-package.yml
+        secrets: inherit
+
+    publish:
+        needs: build
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        env:
+            ORTHOCAD_BRIDGE_CLOUD_ORIGIN: https://orthocad.vertexorthopedic.com
+            ORTHOCAD_BRIDGE_UPDATE_MANIFEST_URL: https://github.com/kdho77/OrthoCAD-/releases/latest/download/update-manifest.json
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+            - name: Download installers
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: print-bridge-*
+                  merge-multiple: true
+                  path: release-assets
+            - name: Write and maybe sign the update manifest
+              env:
+                  ORTHOCAD_BRIDGE_UPDATE_PRIVATE_KEY: ${{ secrets.ORTHOCAD_BRIDGE_UPDATE_PRIVATE_KEY }}
+              run: |
+                  set +x
+                  set -euo pipefail
+                  node vertex/print-bridge/packaging/write-release-manifest.mjs release-assets
+                  node vertex/print-bridge/packaging/guard-update-release.mjs
+                  if [ -z "$ORTHOCAD_BRIDGE_UPDATE_PRIVATE_KEY" ]; then
+                    echo "Update manifest signing skipped. Secret ORTHOCAD_BRIDGE_UPDATE_PRIVATE_KEY is absent."
+                    echo "UNSIGNED update manifest" >> "$GITHUB_STEP_SUMMARY"
+                  else
+                    umask 077
+                    key="$(mktemp)"
+                    printf '%s' "$ORTHOCAD_BRIDGE_UPDATE_PRIVATE_KEY" > "$key"
+                    ORTHOCAD_BRIDGE_UPDATE_PRIVATE_KEY_FILE="$key" ORTHOCAD_BRIDGE_UPDATE_KEY_ID="orthocad-print-bridge" node vertex/print-bridge/packaging/sign-update-manifest.mjs release-assets/update-manifest.json
+                    rm -f "$key"
+                    echo "SIGNED update manifest" >> "$GITHUB_STEP_SUMMARY"
+                  fi
+            - name: Publish GitHub Release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+              run: |
+                  test -f release-assets/OrthoCAD-Print-Bridge-Setup.exe
+                  test -f release-assets/OrthoCAD-Print-Bridge.pkg
+                  test -f release-assets/OrthoCAD-Print-Bridge.dmg
+                  assets=(
+                    release-assets/OrthoCAD-Print-Bridge-Setup.exe
+                    release-assets/OrthoCAD-Print-Bridge.pkg
+                    release-assets/OrthoCAD-Print-Bridge.dmg
+                    release-assets/update-manifest.json
+                  )
+                  if [ -f release-assets/SHORT-UNSIGNED.txt ]; then
+                    echo "Release includes unsigned installers. See SHORT-UNSIGNED.txt." >> "$GITHUB_STEP_SUMMARY"
+                    assets+=(release-assets/SHORT-UNSIGNED.txt)
+                  fi
+                  gh release create "$RELEASE_TAG" \
+                    --title "OrthoCAD Print Bridge $RELEASE_TAG" \
+                    --notes "Shop installer for the OrthoCAD print bridge. If SHORT-UNSIGNED.txt is attached, the installers were built without the organization signing secrets." \
+                    "${assets[@]}"

@@ -1,0 +1,133 @@
+name: Print bridge package
+
+on:
+    pull_request:
+        branches: ["main"]
+        paths:
+            - "vertex/print-bridge/**"
+            - "vertex/shared/print-bridge-*"
+            - "vertex/shared/print-bridge-*.ts"
+            - ".github/workflows/print-bridge-package.yml"
+            - ".github/workflows/print-bridge-release.yml"
+    workflow_dispatch:
+    workflow_call:
+
+jobs:
+    package-check:
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+            - name: Setup node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+            - name: Install vertex app dependencies
+              run: npm install --prefix vertex
+            - name: Check installer sources and sign a throwaway manifest
+              working-directory: vertex
+              run: node print-bridge/packaging/check-packaging.mjs
+
+    build-windows:
+        runs-on: windows-latest
+        timeout-minutes: 30
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+            - name: Setup node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+            - name: Install Inno Setup 6
+              run: choco install innosetup --no-progress -y
+            - name: Install vertex app dependencies
+              run: npm install --prefix vertex
+            - name: Bundle the bridge and bake the cloud origin
+              working-directory: vertex
+              env:
+                  ORTHOCAD_BRIDGE_CLOUD_ORIGIN: https://orthocad.vertexorthopedic.com
+                  ORTHOCAD_BRIDGE_UPDATE_MANIFEST_URL: https://github.com/kdho77/OrthoCAD-/releases/latest/download/update-manifest.json
+              run: node print-bridge/packaging/build-payload.mjs
+            - name: Compile OrthoCAD-Print-Bridge-Setup.exe
+              run: pwsh vertex/print-bridge/packaging/windows/build-installer.ps1
+            - name: Sign when the Authenticode secret is present
+              shell: pwsh
+              env:
+                  ORTHOCAD_AUTHENTICODE_THUMBPRINT: ${{ secrets.ORTHOCAD_AUTHENTICODE_THUMBPRINT }}
+              run: |
+                  $installer = "vertex/print-bridge/packaging/dist/OrthoCAD-Print-Bridge-Setup.exe"
+                  if ([string]::IsNullOrWhiteSpace($env:ORTHOCAD_AUTHENTICODE_THUMBPRINT)) {
+                    "SHORT-UNSIGNED`nThis Windows installer is unsigned. Set ORTHOCAD_AUTHENTICODE_THUMBPRINT to sign it." | Set-Content "vertex/print-bridge/packaging/dist/SHORT-UNSIGNED.txt"
+                    "UNSIGNED Windows installer" | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY
+                  } else {
+                    pwsh vertex/print-bridge/packaging/windows/sign-authenticode.ps1 -Installer $installer
+                    "SIGNED Windows installer" | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY
+                  }
+            - name: Upload Windows installer
+              uses: actions/upload-artifact@v4
+              with:
+                  name: print-bridge-windows
+                  path: |
+                      vertex/print-bridge/packaging/dist/OrthoCAD-Print-Bridge-Setup.exe
+                      vertex/print-bridge/packaging/dist/SHORT-UNSIGNED.txt
+                  if-no-files-found: error
+
+    build-macos:
+        runs-on: macos-latest
+        timeout-minutes: 45
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+            - name: Setup node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+            - name: Install vertex app dependencies
+              run: npm install --prefix vertex
+            - name: Bundle the bridge and bake the cloud origin
+              working-directory: vertex
+              env:
+                  ORTHOCAD_BRIDGE_CLOUD_ORIGIN: https://orthocad.vertexorthopedic.com
+                  ORTHOCAD_BRIDGE_UPDATE_MANIFEST_URL: https://github.com/kdho77/OrthoCAD-/releases/latest/download/update-manifest.json
+              run: node print-bridge/packaging/build-payload.mjs
+            - name: Build, sign, and notarize the macOS installers
+              env:
+                  ORTHOCAD_MACOS_DEVID_APP_P12_BASE64: ${{ secrets.ORTHOCAD_MACOS_DEVID_APP_P12_BASE64 }}
+                  ORTHOCAD_MACOS_DEVID_INSTALLER_P12_BASE64: ${{ secrets.ORTHOCAD_MACOS_DEVID_INSTALLER_P12_BASE64 }}
+                  ORTHOCAD_MACOS_P12_PASSWORD: ${{ secrets.ORTHOCAD_MACOS_P12_PASSWORD }}
+                  ORTHOCAD_APPLE_TEAM_ID: ${{ secrets.ORTHOCAD_APPLE_TEAM_ID }}
+                  ORTHOCAD_ASC_API_KEY_P8_BASE64: ${{ secrets.ORTHOCAD_ASC_API_KEY_P8_BASE64 }}
+                  ORTHOCAD_ASC_API_KEY_ID: ${{ secrets.ORTHOCAD_ASC_API_KEY_ID }}
+                  ORTHOCAD_ASC_API_ISSUER_ID: ${{ secrets.ORTHOCAD_ASC_API_ISSUER_ID }}
+                  ORTHOCAD_APPLE_ID: ${{ secrets.ORTHOCAD_APPLE_ID }}
+                  ORTHOCAD_APPLE_APP_PASSWORD: ${{ secrets.ORTHOCAD_APPLE_APP_PASSWORD }}
+              run: |
+                  set +x
+                  set -euo pipefail
+                  bash vertex/print-bridge/packaging/macos/build-release.sh
+                  status="$(tr -d '\r' < vertex/print-bridge/packaging/dist/signing-status.txt || echo unsigned)"
+                  case "$status" in
+                    notarized)
+                      echo "SIGNED and notarized macOS installer" >> "$GITHUB_STEP_SUMMARY"
+                      ;;
+                    signed)
+                      echo "SIGNED macOS installer; notarization skipped" >> "$GITHUB_STEP_SUMMARY"
+                      ;;
+                    *)
+                      printf '%s\n' "SHORT-UNSIGNED" "This macOS package is unsigned and not notarized. Set ORTHOCAD_MACOS_DEVID_APP_P12_BASE64, ORTHOCAD_MACOS_DEVID_INSTALLER_P12_BASE64, ORTHOCAD_MACOS_P12_PASSWORD, and ORTHOCAD_APPLE_TEAM_ID." > vertex/print-bridge/packaging/dist/SHORT-UNSIGNED.txt
+                      echo "UNSIGNED macOS installer" >> "$GITHUB_STEP_SUMMARY"
+                      ;;
+                  esac
+            - name: Delete the temporary signing keychain
+              if: always()
+              run: bash vertex/print-bridge/packaging/macos/notarize-macos.sh cleanup
+            - name: Upload macOS installers
+              uses: actions/upload-artifact@v4
+              with:
+                  name: print-bridge-macos
+                  path: |
+                      vertex/print-bridge/packaging/dist/OrthoCAD-Print-Bridge.pkg
+                      vertex/print-bridge/packaging/dist/OrthoCAD-Print-Bridge.dmg
+                      vertex/print-bridge/packaging/dist/SHORT-UNSIGNED.txt
+                  if-no-files-found: error

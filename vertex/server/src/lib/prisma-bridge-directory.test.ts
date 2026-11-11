@@ -12,6 +12,7 @@ import {
     type EnrollmentRecord,
     sha256Hex,
 } from "../../../shared/print-bridge-enrollment";
+import { containsSecret } from "../../../shared/print-bridge-pairing";
 import { prismaBridgeDirectory } from "./prisma-bridge-directory";
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
@@ -25,7 +26,7 @@ interface EnrollmentRow {
     tenantId: string | null;
     shopId: string;
     bridgeId: string;
-    printerIds: string[];
+    printerIds: unknown;
     audience: string;
     origin: string;
     expiresAt: Date;
@@ -100,7 +101,7 @@ function harness() {
                         tenantId: row.tenantId,
                         shopId: row.shopId,
                         bridgeId: row.bridgeId,
-                        printerIds: [...row.printerIds],
+                        printerIds: Array.isArray(row.printerIds) ? [...row.printerIds] : row.printerIds,
                         audience: row.audience,
                         origin: row.origin,
                     },
@@ -112,11 +113,64 @@ function harness() {
                 return atomic(() => {
                     store.enrollments.push({
                         ...data,
-                        printerIds: [...data.printerIds],
-                        usedAt: data.usedAt,
+                        printerIds: structuredClone(data.printerIds),
+                        usedAt: data.usedAt ?? null,
                     });
                     return data;
                 });
+            },
+            update({ where, data }: { where: { id: string }; data: Partial<EnrollmentRow> }) {
+                return atomic(() => {
+                    const row = store.enrollments.find((item) => item.id === where.id);
+                    if (!row) throw new Error("enrollment missing");
+                    Object.assign(row, data);
+                    return row;
+                });
+            },
+            updateMany({
+                where,
+                data,
+            }: {
+                where: { id: string; usedAt: null };
+                data: Partial<EnrollmentRow>;
+            }) {
+                return atomic(() => {
+                    let count = 0;
+                    for (const row of store.enrollments) {
+                        if (row.id !== where.id) continue;
+                        if (where.usedAt === null && row.usedAt !== null) continue;
+                        Object.assign(row, data);
+                        count += 1;
+                    }
+                    return { count };
+                });
+            },
+            deleteMany({ where }: { where: { bridgeId?: string; audience?: string; usedAt?: null } }) {
+                return atomic(() => {
+                    const before = store.enrollments.length;
+                    store.enrollments = store.enrollments.filter((row) => {
+                        if (where.bridgeId && row.bridgeId !== where.bridgeId) return true;
+                        if (where.audience && row.audience !== where.audience) return true;
+                        if (where.usedAt === null && row.usedAt !== null) return true;
+                        return false;
+                    });
+                    return { count: before - store.enrollments.length };
+                });
+            },
+            findMany({
+                where,
+            }: {
+                where: { audience?: string; tenantId?: string; bridgeId?: string; usedAt?: null };
+            }) {
+                return atomic(() =>
+                    store.enrollments.filter((row) => {
+                        if (where.audience && row.audience !== where.audience) return false;
+                        if (where.tenantId && row.tenantId !== where.tenantId) return false;
+                        if (where.bridgeId && row.bridgeId !== where.bridgeId) return false;
+                        if (where.usedAt === null && row.usedAt !== null) return false;
+                        return true;
+                    }),
+                );
             },
             findUnique({ where }: { where: { proofHash: string } }) {
                 return atomic(
@@ -181,12 +235,20 @@ function harness() {
                         null,
                 );
             },
+            update({ where, data }: { where: { id: string }; data: Partial<BridgeRow> }) {
+                return atomic(() => {
+                    const row = store.bridges.find((item) => item.id === where.id);
+                    if (!row) throw new Error("bridge missing");
+                    Object.assign(row, data);
+                    return row;
+                });
+            },
             updateMany({
                 where,
                 data,
             }: {
                 where: { id: string; tenantId?: string; revokedAt?: null };
-                data: { revokedAt?: Date; lastSeenAt?: Date };
+                data: { revokedAt?: Date; lastSeenAt?: Date; credentialHash?: string };
             }) {
                 return atomic(() => {
                     let count = 0;
@@ -405,5 +467,109 @@ describe("prisma bridge directory", () => {
         expect(await directory.revoke(created.record.bridgeId, TENANT, NOW.toISOString())).toBe(true);
         expect(await directory.authenticate(redeemed.credential, created.record.bridgeId)).toBeNull();
         expect((await directory.findBridge(created.record.bridgeId))?.revokedAt).toBe(NOW.toISOString());
+    });
+
+    test("an already enrolled bridge keeps its credential and is not forced to pair", async () => {
+        const { directory } = harness();
+        const created = enroll();
+        await directory.putEnrollment(created.record, { name: created.name });
+        const redeemed = await directory.redeem({
+            proof: created.proof,
+            bridgeId: created.record.bridgeId,
+            origin: ORIGIN,
+            now: NOW,
+        });
+        if (!redeemed.ok) throw new Error("expected a credential");
+        const pairing = await directory.beginPairing({
+            bridgeId: created.record.bridgeId,
+            deviceProof: "deviceProofSecretValueNotStoredAnywhere32",
+            origin: ORIGIN,
+            now: NOW,
+        });
+        expect(pairing).toEqual({ ok: false, reason: "already-enrolled" });
+        expect(await directory.authenticate(redeemed.credential, created.record.bridgeId)).not.toBeNull();
+    });
+
+    test("a pending pairing code is approved once and the credential is only a hash at rest", async () => {
+        const { store, directory } = harness();
+        const bridgeId = "5598afcd-1111-4111-8111-111111111111";
+        const deviceProof = "deviceProofSecretValueNotStoredAnywhere32";
+        const began = await directory.beginPairing({
+            bridgeId,
+            deviceProof,
+            origin: ORIGIN,
+            now: NOW,
+        });
+        if (!began.ok) throw new Error("pairing did not start");
+        const unapproved = await directory.pollPairing({
+            bridgeId,
+            deviceProof,
+            origin: ORIGIN,
+            now: NOW,
+        });
+        expect(unapproved).toEqual({ status: "pending" });
+        expect("credential" in unapproved).toBe(false);
+        const expired = await directory.approvePairing({
+            code: began.pairingCode,
+            tenantId: TENANT,
+            shopId: TENANT,
+            bridgeName: "Shop computer",
+            now: new Date(NOW.getTime() + 11 * 60 * 1000),
+        });
+        expect(expired).toEqual({ ok: false, reason: "expired" });
+        const approved = await directory.approvePairing({
+            code: began.pairingCode,
+            tenantId: TENANT,
+            shopId: TENANT,
+            bridgeName: "Shop computer",
+            now: NOW,
+        });
+        expect(approved).toEqual({ ok: true, bridgeId });
+        const reused = await directory.approvePairing({
+            code: began.pairingCode,
+            tenantId: TENANT,
+            shopId: TENANT,
+            bridgeName: "Shop computer",
+            now: NOW,
+        });
+        expect(reused).toEqual({ ok: false, reason: "used" });
+        expect(
+            await directory.approvePairing({
+                code: "ZZZZ-ZZZZ",
+                tenantId: TENANT,
+                shopId: TENANT,
+                bridgeName: "Shop computer",
+                now: NOW,
+            }),
+        ).toEqual({ ok: false, reason: "mismatch" });
+        const wrongProof = await directory.pollPairing({
+            bridgeId,
+            deviceProof: "anotherDeviceProofSecretValueNotStored99",
+            origin: ORIGIN,
+            now: NOW,
+        });
+        expect(wrongProof).toEqual({ status: "rejected" });
+        const ready = await directory.pollPairing({
+            bridgeId,
+            deviceProof,
+            origin: ORIGIN,
+            now: NOW,
+        });
+        if (ready.status !== "ready") throw new Error("pairing was not ready");
+        const consumed = await directory.pollPairing({
+            bridgeId,
+            deviceProof,
+            origin: ORIGIN,
+            now: NOW,
+        });
+        expect(consumed).toEqual({ status: "consumed" });
+        const stored = JSON.stringify(store);
+        expect(containsSecret(stored, deviceProof)).toBe(false);
+        expect(containsSecret(stored, ready.credential)).toBe(false);
+        expect(containsSecret(stored, began.pairingCode)).toBe(false);
+        expect(store.bridges.find((row) => row.id === bridgeId)?.credentialHash).toBe(
+            sha256Hex(ready.credential),
+        );
+        expect(await directory.authenticate(ready.credential, bridgeId)).not.toBeNull();
     });
 });

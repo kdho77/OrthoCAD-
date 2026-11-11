@@ -13,7 +13,8 @@
             "!!**/public",
             "!!**/build",
             "!!**/coverage",
-            "!!packages/**/lib"
+            "!!packages/**/lib",
+            "!!vertex/server/src/orthocad-mcp.bundled.mjs"
         ]
     },
     "css": {

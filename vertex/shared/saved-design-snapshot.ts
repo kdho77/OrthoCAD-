@@ -7,9 +7,11 @@ import type {
     DesignState,
     ElementKind,
     PlacedElement,
+    PlacedSink,
     ShapeFinishModifiers,
     Side,
     SideCorrections,
+    SinkKind,
 } from "../src/types/index.js";
 import { canonicalMaterialHardness } from "./dogfood-manufacturing.js";
 import { type HardnessName, migratePrintRecipe } from "./print-recipe/print-recipe.js";
@@ -27,6 +29,7 @@ import {
     type StoredLinkShoe,
     US_WOMEN_TO_MENS_OFFSET,
 } from "./saved-design-catalog.js";
+import { SINK_DEFAULT_DEPTH_MM, SINK_KIND_ORDER, SINK_PROFILES } from "./sink-profiles.js";
 
 /** Men's 9 reference template — matches layout.ts. */
 const INSOLE_LENGTH_MM = 260;
@@ -360,6 +363,119 @@ function elementAliases(): Map<string, ElementKind> {
 
 const ELEMENT_ALIASES = elementAliases();
 
+function sinkAliases(): Map<string, SinkKind> {
+    const aliases = new Map<string, SinkKind>();
+    const add = (alias: string, kind: SinkKind) => {
+        const key = normalizeElementName(alias);
+        const previous = aliases.get(key);
+        if (previous && previous !== kind) {
+            throw new Error(`sink alias "${key}" maps to both ${previous} and ${kind}`);
+        }
+        aliases.set(key, kind);
+    };
+    for (const kind of SINK_KIND_ORDER) {
+        add(kind, kind);
+        add(SINK_PROFILES[kind].label, kind);
+    }
+    add("1st met head", "mpj1");
+    add("1st metatarsal head", "mpj1");
+    add("first met head", "mpj1");
+    add("first mpj", "mpj1");
+    add("1st met head sink", "mpj1");
+    add("2nd met head", "mpj2");
+    add("3rd met head", "mpj3");
+    add("4th met head", "mpj4");
+    add("5th met head", "mpj5");
+    add("5th ipj", "styloid");
+    add("5th styloid", "styloid");
+    return aliases;
+}
+
+const SINK_ALIASES = sinkAliases();
+
+type CatalogSink = NonNullable<SavedDesignCatalog["sinks"]>[number];
+
+function lookupSinkKind(name: string): SinkKind | undefined {
+    return SINK_ALIASES.get(normalizeElementName(name));
+}
+
+function resolveCatalogSinkKind(entry: CatalogSink): SinkKind {
+    if (!entry.name && !entry.kind) {
+        throw new SavedDesignSnapshotError("sink needs a name or kind and a side. Refusing to write.");
+    }
+    const fromName = entry.name ? lookupSinkKind(entry.name) : undefined;
+    const fromKind = entry.kind ? lookupSinkKind(entry.kind) : undefined;
+    if (entry.name && !fromName) {
+        throw new SavedDesignSnapshotError(
+            `unrecognized sink "${entry.name}". Named sinks need a catalog name and a side.`,
+        );
+    }
+    if (entry.kind && !fromKind) {
+        throw new SavedDesignSnapshotError(
+            `unrecognized sink "${entry.kind}". Named sinks need a catalog name and a side.`,
+        );
+    }
+    if (fromName && fromKind && fromName !== fromKind) {
+        throw new SavedDesignSnapshotError(
+            `sink name "${entry.name}" and kind "${entry.kind}" do not match. Refusing to write.`,
+        );
+    }
+    const kind = fromName ?? fromKind;
+    if (!kind) {
+        throw new SavedDesignSnapshotError("sink needs a name or kind and a side. Refusing to write.");
+    }
+    return kind;
+}
+
+function placedSinkFromCatalog(entry: CatalogSink, kind: SinkKind): PlacedSink {
+    const profile = SINK_PROFILES[kind];
+    const label = entry.name ?? entry.kind ?? profile.label;
+    if (entry.depth_mm === undefined && profile.defaultDepthMm !== SINK_DEFAULT_DEPTH_MM) {
+        throw new SavedDesignSnapshotError(
+            "sink default depth is not the built-in profile. Refusing to write.",
+        );
+    }
+    const depthMm = entry.depth_mm ?? SINK_DEFAULT_DEPTH_MM;
+    if (!(depthMm > 0) || depthMm > profile.maxDepthMm) {
+        throw new SavedDesignSnapshotError(
+            `sink "${label}" depth ${depthMm} mm must be greater than 0 and at most ${profile.maxDepthMm} mm (${profile.label}). Refusing to write.`,
+        );
+    }
+    return {
+        id: `snapshot-sink-${kind}-${entry.side}`,
+        kind,
+        depthMm,
+        ...(entry.u !== undefined ? { u: entry.u } : {}),
+        ...(entry.v !== undefined ? { v: entry.v } : {}),
+    };
+}
+
+function assertSameFootSinkRules(
+    elements: PlacedElement[],
+    sinks: { left: PlacedSink[]; right: PlacedSink[] },
+) {
+    for (const side of ["left", "right"] as const) {
+        if (!sinks[side].some((sink) => sink.kind === "rkw")) continue;
+        const sameSide = elements.filter((element) => element.side === side);
+        const has = (kind: ElementKind) => sameSide.some((element) => element.kind === kind);
+        if (has("mortons_extension")) {
+            throw new SavedDesignSnapshotError(
+                "Morton's and the reverse kinetic wedge cannot be on the same foot. Refusing to write.",
+            );
+        }
+        if (has("reverse_mortons")) {
+            throw new SavedDesignSnapshotError(
+                "Reverse Morton's with a reverse kinetic wedge needs an explicit override. Refusing to write.",
+            );
+        }
+        if (has("kinetic_wedge")) {
+            throw new SavedDesignSnapshotError(
+                "A kinetic wedge is already on this foot. A second one is not added. Refusing to write.",
+            );
+        }
+    }
+}
+
 function resolveElementKind(name: string): ElementKind {
     const kind = ELEMENT_ALIASES.get(normalizeElementName(name));
     if (!kind) {
@@ -653,6 +769,28 @@ export function buildSavedDesignSnapshot(input: {
         });
     }
     design.elements = elements;
+
+    const sideSinks: { left: PlacedSink[]; right: PlacedSink[] } = { left: [], right: [] };
+    const seenSinks = new Set<string>();
+    for (const entry of catalog.sinks ?? []) {
+        const kind = resolveCatalogSinkKind(entry);
+        const key = `${kind}:${entry.side}`;
+        if (seenSinks.has(key)) {
+            throw new SavedDesignSnapshotError(
+                `sink "${kind}" is already on the ${entry.side} foot. One of each kind per side. Refusing to write.`,
+            );
+        }
+        seenSinks.add(key);
+        sideSinks[entry.side].push(placedSinkFromCatalog(entry, kind));
+    }
+    assertSameFootSinkRules(elements, sideSinks);
+    if (sideSinks.left.length > 0 || sideSinks.right.length > 0) {
+        design.sinks = {
+            ...(sideSinks.left.length > 0 ? { left: sideSinks.left } : {}),
+            ...(sideSinks.right.length > 0 ? { right: sideSinks.right } : {}),
+        };
+        paths.push("settings.sinks");
+    }
 
     return {
         design,

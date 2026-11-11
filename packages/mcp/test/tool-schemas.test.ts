@@ -84,6 +84,7 @@ describe("OrthoCAD MCP tool schemas", () => {
                     arch: "High",
                     flexible_foot: true,
                     elements: [{ name: "mortons_extension", side: "left" }],
+                    sinks: [{ name: "1st met head", side: "left", depth_mm: 1.5 }],
                 },
                 rx_text: "Morton's extension — ignored",
             },
