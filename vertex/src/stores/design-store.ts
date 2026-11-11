@@ -541,6 +541,8 @@ export interface DesignStore {
     updateElement: (id: string, patch: Partial<PlacedElement>) => void;
     setElementHardness: (id: string, hardness: NamedHardnessClass) => void;
     removeElement: (id: string) => void;
+    /** Remove every placed element on the given foot side(s) in one undo step. */
+    removeElementsForSides: (sides: Side[]) => void;
     addSink: (kind: SinkKind, side: Side) => void;
     updateSink: (
         id: string,
@@ -1220,6 +1222,26 @@ export const useDesignStore = create<DesignStore>()(
                     return {
                         design: next,
                         selectedElementId: s.selectedElementId === id ? null : s.selectedElementId,
+                    };
+                });
+            },
+
+            removeElementsForSides: (sides) => {
+                const sideSet = new Set(sides);
+                const removing = get().design.elements.filter((e) => sideSet.has(e.side));
+                if (removing.length === 0) return;
+                get().checkpoint("remove-elements");
+                const removeIds = new Set(removing.map((e) => e.id));
+                set((s) => {
+                    const nextElements = s.design.elements.filter((e) => !removeIds.has(e.id));
+                    const next = { ...s.design, elements: nextElements };
+                    const eff = buildEffectiveTrimlines(next);
+                    useIssuesStore.getState().recompute(next, eff);
+                    const selectedRemoved =
+                        s.selectedElementId !== null && removeIds.has(s.selectedElementId);
+                    return {
+                        design: next,
+                        selectedElementId: selectedRemoved ? null : s.selectedElementId,
                     };
                 });
             },

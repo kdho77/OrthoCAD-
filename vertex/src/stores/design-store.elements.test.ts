@@ -8,6 +8,7 @@ import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import type { DesignState, ElementKind, PrescriptionParseResult } from "@/types";
 import { defaultShoeChart } from "../../shared/client-files";
 import { useClientStore } from "./client-store";
+import { useClinicalWorkflowStore } from "./clinical-workflow-store";
 import { useDesignStore } from "./design-store";
 
 function freshDesign(): DesignState {
@@ -31,6 +32,7 @@ function prescription(): PrescriptionParseResult {
 describe("elements require explicit library placement", () => {
     beforeEach(() => {
         localStorage.removeItem("vertex-design-session");
+        useClinicalWorkflowStore.setState({ elementPlacementFoot: "both" });
         useDesignStore.setState({
             design: freshDesign(),
             pendingSessionDesign: null,
@@ -172,6 +174,48 @@ describe("elements require explicit library placement", () => {
         expect(useDesignStore.getState().design.elements.map((el) => el.position)).toEqual(
             loaded.map((el) => el.position),
         );
+    });
+
+    test("removeElementsForSides removes only the requested foot sides", () => {
+        const state = useDesignStore.getState();
+        state.addElement("dancers_pad", "left");
+        state.addElement("met_pad", "right");
+        state.addElement("met_bar", "left");
+        useDesignStore.setState({ history: [], future: [] });
+
+        state.removeElementsForSides(["left"]);
+        expect(useDesignStore.getState().design.elements.map((e) => e.side)).toEqual(["right"]);
+
+        useDesignStore.setState({ history: [], future: [] });
+        state.addElement("toe_crest", "left");
+        useDesignStore.setState({ history: [], future: [] });
+        state.removeElementsForSides(["right"]);
+        expect(useDesignStore.getState().design.elements.every((e) => e.side === "left")).toBe(true);
+
+        useDesignStore.setState({ history: [], future: [] });
+        state.removeElementsForSides(["left", "right"]);
+        expect(useDesignStore.getState().design.elements).toEqual([]);
+    });
+
+    test("removeElementsForSides is a no-op with nothing to clear", () => {
+        useDesignStore.getState().addElement("dancers_pad", "left");
+        useDesignStore.setState({ history: [], future: [] });
+        useDesignStore.getState().removeElementsForSides(["right"]);
+        expect(useDesignStore.getState().design.elements).toHaveLength(1);
+        expect(useDesignStore.getState().history).toHaveLength(0);
+    });
+
+    test("removeElementsForSides restores all removed elements in one undo", () => {
+        const state = useDesignStore.getState();
+        state.addElement("dancers_pad", "left");
+        state.addElement("met_pad", "right");
+        const before = JSON.parse(JSON.stringify(useDesignStore.getState().design.elements));
+        useDesignStore.setState({ history: [], future: [] });
+        state.removeElementsForSides(["left", "right"]);
+        expect(useDesignStore.getState().design.elements).toEqual([]);
+        expect(useDesignStore.getState().history).toHaveLength(1);
+        state.undo();
+        expect(useDesignStore.getState().design.elements).toEqual(before);
     });
 
     test("linked sinks keep a requested depth above max on both feet", () => {
