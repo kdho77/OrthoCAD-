@@ -4,13 +4,20 @@
 import type { PrismaClient } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 
+import { readStoredDesignSettings } from "../../../shared/design-settings.js";
+import { migratePrintRecipe, printRecipeV1Schema } from "../../../shared/print-recipe/print-recipe.js";
 import type { CadOperatorPrincipal } from "../auth/cad-operator.js";
-import { assertCadOperatorGcodeKey, buildCadOperatorGcodeKey } from "../auth/cad-operator.js";
+import {
+    assertCadOperatorDeliverableKey,
+    buildCadOperatorGcodeKey,
+    CENTRAL_FAB_STL_PRESET_ID,
+} from "../auth/cad-operator.js";
 import { getSupabaseAdmin } from "../context.js";
 import {
     beginCadOperatorProduction,
     type CadFootSide,
     type CadProductionStatus,
+    CENTRAL_FAB_STL_COST,
     cadOperatorManufacturingIdentity,
     executeCadOperatorProduction,
     expireStaleProduction,
@@ -26,7 +33,7 @@ import {
     archiveManufacturingSourceStl,
     deleteManufacturingTempBestEffort,
 } from "../lib/manufacturing-stl-lifecycle.js";
-import { MANUFACTURING_BUCKET, signedDownloadUrl, uploadAsset } from "../lib/storage.js";
+import { deleteAsset, MANUFACTURING_BUCKET, signedDownloadUrl, uploadAsset } from "../lib/storage.js";
 import { assertActiveLicense, getUserTokenBalance, requireSupabaseAdmin } from "../lib/supabase-db.js";
 import { sliceWithVertexSlice } from "../lib/vertexslice-client.js";
 import {
@@ -252,6 +259,170 @@ export async function runCadOperatorGenerateRequest(args: {
     };
 }
 
+function centralFabRecipe(settingsJson: unknown) {
+    const settings = readStoredDesignSettings(settingsJson);
+    const parsed = printRecipeV1Schema.safeParse(settings?.printRecipe);
+    return parsed.success ? parsed.data : migratePrintRecipe(undefined);
+}
+
+/**
+ * Enqueue the milling solid for one foot. Does not slice and does not write an order status.
+ * Belt generateSolid is a different function.
+ */
+export async function runCadOperatorCentralFabStlRequest(args: {
+    prisma: PrismaClient;
+    principal: CadOperatorPrincipal;
+    ip: string | null;
+    input: { designId: string; side: CadFootSide };
+    schedule?: (work: Promise<void>) => void;
+    now?: () => Date;
+}): Promise<{
+    ok: true;
+    outputType: "stl";
+    productionId: string;
+    status: CadProductionStatus;
+    side: CadFootSide;
+}> {
+    const { design } = await loadDogfoodDesign(args.prisma, args.principal, args.input.designId);
+    if (design.kind === "afo") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "AFO designs are not a central-fab insole STL" });
+    }
+    if (design.method !== "milling_3axis" && design.method !== "printing_solid") {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Central-fab STL uses the milling solid. This design method is not milling or solid.",
+        });
+    }
+    const printRecipe = centralFabRecipe(design.settingsJson);
+    const identity = cadOperatorManufacturingIdentity({
+        designId: args.input.designId,
+        side: args.input.side,
+        presetId: CENTRAL_FAB_STL_PRESET_ID,
+        useSavedDesignMesh: true,
+        material: "central-fab",
+        beltAngleDeg: 0,
+        layerHeightMm: null,
+        printRecipe,
+        settingsJson: design.settingsJson,
+        stlStorageKey: null,
+        deliverable: "central_fab_stl",
+    });
+    const store = new PrismaCadProductionStore(args.prisma);
+    const now = args.now ?? (() => new Date());
+    const plan = {
+        stlStorageKey: null,
+        presetId: CENTRAL_FAB_STL_PRESET_ID,
+        printRecipe,
+        material: "central-fab",
+        beltAngleDeg: 0,
+        ownerId: design.ownerId,
+        useSavedDesignMesh: true,
+        settingsJson: design.settingsJson,
+    };
+    const started = await beginCadOperatorProduction({
+        store,
+        now: now(),
+        schedule: args.schedule ?? scheduleCadProduction,
+        insert: {
+            designId: args.input.designId,
+            side: args.input.side,
+            presetId: CENTRAL_FAB_STL_PRESET_ID,
+            idempotencyKey: identity.idempotencyKey,
+            settingsFingerprint: identity.fingerprint,
+            beltAngleDeg: 0,
+            layerHeightMm: null,
+            material: "central-fab",
+        },
+        preflight: async () => {
+            const admin = requireSupabaseAdmin();
+            await assertActiveLicense(admin, design.ownerId);
+            const balance = await getUserTokenBalance(admin, design.ownerId);
+            if (balance < CENTRAL_FAB_STL_COST) {
+                throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
+            }
+        },
+        execute: (row) =>
+            executeCadOperatorProduction({
+                row,
+                store,
+                now,
+                deliverMaterializedStl: true,
+                materialize: () =>
+                    materializeCadOperatorStl({
+                        plan,
+                        credentialId: args.principal.credentialId,
+                        side: args.input.side,
+                        centralFabSolid: { designId: args.input.designId },
+                        uploadStl: async (key, bytes) => {
+                            await uploadAsset(
+                                requireStorage(),
+                                key,
+                                bytes,
+                                "model/stl",
+                                MANUFACTURING_BUCKET,
+                            );
+                        },
+                    }),
+                slice: async () => {
+                    throw new Error("Central-fab STL is not sliced");
+                },
+                uploadGcode: async () => {
+                    throw new Error("Central-fab STL is not sliced");
+                },
+                charge: async ({ storageKey, jobId, meshFingerprint }) => {
+                    try {
+                        return await chargeExistingProduction(args.prisma, {
+                            userId: design.ownerId,
+                            cost: CENTRAL_FAB_STL_COST,
+                            productionId: row.id,
+                            designId: args.input.designId,
+                            exportFormat: "stl",
+                            side: args.input.side,
+                            fileName: `${args.input.side}.stl`,
+                            presetId: CENTRAL_FAB_STL_PRESET_ID,
+                            beltAngleDeg: 0,
+                            layerHeightMm: null,
+                            isGcode: false,
+                            storageKey,
+                            jobId,
+                            ip: args.ip,
+                            metadata: {
+                                kind: "central_fab_stl",
+                                outputType: "stl",
+                                presetId: CENTRAL_FAB_STL_PRESET_ID,
+                                manufacturingFingerprint: meshFingerprint,
+                                settingsFingerprint: identity.fingerprint,
+                                cadOperatorCredentialId: args.principal.credentialId,
+                                side: args.input.side,
+                                source: "cad_operator_async",
+                            },
+                        });
+                    } catch (error) {
+                        mapChargeFailure(error);
+                    }
+                },
+                deleteTemp: async (stlStorageKey) => {
+                    const supabase = getSupabaseAdmin();
+                    if (!supabase) return;
+                    if (stlStorageKey.startsWith("stl/cad-operator/")) {
+                        await deleteAsset(supabase, stlStorageKey, MANUFACTURING_BUCKET).catch(
+                            () => undefined,
+                        );
+                        return;
+                    }
+                    deleteManufacturingTempBestEffort(supabase, stlStorageKey);
+                },
+            }),
+    });
+    return {
+        ok: true,
+        outputType: "stl",
+        productionId: started.productionId,
+        status: started.status,
+        side: started.side,
+    };
+}
+
 async function assertReadableDesign(args: {
     prisma: PrismaClient;
     principal: CadOperatorPrincipal | null;
@@ -277,7 +448,7 @@ async function assertReadableDesign(args: {
 function hiddenFromOperator(principal: CadOperatorPrincipal | null, storageKey: string | null): boolean {
     if (!principal || !storageKey) return false;
     try {
-        assertCadOperatorGcodeKey(storageKey, principal.credentialId);
+        assertCadOperatorDeliverableKey(storageKey, principal.credentialId);
         return false;
     } catch {
         return true;

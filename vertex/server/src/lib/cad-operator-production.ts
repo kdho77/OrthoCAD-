@@ -21,6 +21,9 @@ export const CAD_PRODUCTION_LEASE_MS = (CAD_PRODUCTION_MAX_DURATION_SEC + 60) * 
 
 export const HYBRID_GCODE_COST = 3;
 
+/** Same token cost as export.authorize format "stl" (vertex/server/src/routers/export.ts). */
+export const CENTRAL_FAB_STL_COST = 1;
+
 export const CAD_PRODUCTION_STATUSES = ["pending", "running", "succeeded", "failed"] as const;
 
 export type CadProductionStatus = (typeof CAD_PRODUCTION_STATUSES)[number];
@@ -197,7 +200,9 @@ export function publicProductionError(error: unknown): string {
         "Production lease expired",
         "CAD-operator manufacturing returns G-code only",
         "Invalid manufacturing STL storage key",
+        "Invalid central-fab STL storage key",
         "Milled orders are not belt G-code",
+        "Central-fab STL uses the milling solid",
         "Storage not available",
         "Supabase admin client not configured",
         "Manufacturing charge failed",
@@ -289,24 +294,24 @@ export function cadOperatorManufacturingIdentity(input: {
     printRecipe: unknown;
     settingsJson: unknown;
     stlStorageKey: string | null;
+    /** Set only for the central-fab solid. Omitted keys keep the belt fingerprint. */
+    deliverable?: "central_fab_stl";
 }): { fingerprint: string; idempotencyKey: string } {
-    const fingerprint = createHash("sha256")
-        .update(
-            stableStringify({
-                version: 1,
-                designId: input.designId,
-                side: input.side,
-                presetId: input.presetId,
-                useSavedDesignMesh: input.useSavedDesignMesh,
-                material: input.material,
-                beltAngleDeg: input.beltAngleDeg,
-                layerHeightMm: input.layerHeightMm,
-                printRecipe: input.printRecipe,
-                settingsJson: input.settingsJson,
-                stlStorageKey: input.useSavedDesignMesh ? null : input.stlStorageKey,
-            }),
-        )
-        .digest("hex");
+    const payload: Record<string, unknown> = {
+        version: 1,
+        designId: input.designId,
+        side: input.side,
+        presetId: input.presetId,
+        useSavedDesignMesh: input.useSavedDesignMesh,
+        material: input.material,
+        beltAngleDeg: input.beltAngleDeg,
+        layerHeightMm: input.layerHeightMm,
+        printRecipe: input.printRecipe,
+        settingsJson: input.settingsJson,
+        stlStorageKey: input.useSavedDesignMesh ? null : input.stlStorageKey,
+    };
+    if (input.deliverable) payload.deliverable = input.deliverable;
+    const fingerprint = createHash("sha256").update(stableStringify(payload)).digest("hex");
     const idempotencyKey = `cadop:v1:${input.designId}:${input.side}:${input.presetId}:${fingerprint}`;
     return { fingerprint, idempotencyKey };
 }
@@ -351,6 +356,11 @@ export interface ExecuteCadProductionArgs {
     }) => Promise<CadChargeResult>;
     archiveTemp?: (args: { stlStorageKey: string; exportId: string }) => Promise<void>;
     deleteTemp?: (stlStorageKey: string) => Promise<void>;
+    /**
+     * The materialized STL is the deliverable. Slice and G-code upload are not called.
+     * Belt productions leave this unset.
+     */
+    deliverMaterializedStl?: boolean;
 }
 
 async function markFailed(store: CadProductionStore, id: string, error: unknown, now: Date): Promise<void> {
@@ -392,6 +402,28 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
 
         const materialized = await args.materialize();
         stlStorageKey = materialized.stlStorageKey;
+        if (args.deliverMaterializedStl) {
+            if (!stlStorageKey) throw new Error("Manufacturing service returned empty output");
+            const charged = await args.charge({
+                storageKey: stlStorageKey,
+                jobId: `stl_${args.row.id}`,
+                meshFingerprint: materialized.meshFingerprint,
+            });
+            await args.store.updateIf(args.row.id, () => true, {
+                chargedAt: args.now(),
+                exportId: charged.exportId,
+                gcodeStorageKey: stlStorageKey,
+                updatedAt: args.now(),
+            });
+            await args.store.updateIf(args.row.id, (row) => row.status !== "succeeded", {
+                status: "succeeded",
+                gcodeStorageKey: stlStorageKey,
+                error: null,
+                updatedAt: args.now(),
+                leaseExpiresAt: null,
+            });
+            return;
+        }
         const sliced = await args.slice(stlStorageKey);
         if (!sliced.gcode) {
             throw new Error("Manufacturing service returned empty output");

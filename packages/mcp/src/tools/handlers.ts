@@ -8,6 +8,7 @@ import { buildVoAttachFilesHandoff, DOGFOOD_HELD_ID_PREFIXES } from "../payload/
 import {
     buildDesignExportedPayloadInputSchema,
     createSavedDesignInputSchema,
+    generateCentralFabStlInputSchema,
     generateGcodeInputSchema,
     getDesignInputSchema,
     getDesignParamsInputSchema,
@@ -339,6 +340,49 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                 };
             }
             return legacy;
+        }
+        case "generate_central_fab_stl": {
+            const input = generateCentralFabStlInputSchema.parse(args);
+            const manufacturing =
+                deps.manufacturing ??
+                (await import("../clients/manufacturing-client.js")).createManufacturingClient({
+                    trpcUrl: deps.config.trpcUrl,
+                    cadOperatorKey: requireCadOperatorKey(deps.config),
+                });
+            assertToolNotHeld(input.design_id);
+            const sides = input.side ? [input.side] : (["left", "right"] as const);
+            const files: Array<{ side: "left" | "right"; production_id: string | null; status: string }> = [];
+            for (const side of sides) {
+                try {
+                    const result = await manufacturing.generateCentralFabStl({
+                        designId: input.design_id,
+                        side,
+                    });
+                    const status =
+                        typeof result.status === "string" && PRODUCTION_STATUSES.has(result.status)
+                            ? result.status
+                            : null;
+                    if (!status) throw new Error("Central-fab STL did not return a production status");
+                    files.push({
+                        side,
+                        production_id: textField(result, "productionId", "production_id"),
+                        status,
+                    });
+                } catch (error) {
+                    if (sides.length > 1) {
+                        throw new Error(
+                            `Central-fab pair failed on the ${side} foot. No partial pair is returned. ${
+                                error instanceof Error ? error.message : String(error)
+                            }`,
+                        );
+                    }
+                    throw error;
+                }
+            }
+            if (files.length !== sides.length) {
+                throw new Error("Central-fab pair did not produce both feet");
+            }
+            return { ok: true, format: "stl", files };
         }
         case "get_production": {
             const input = getProductionInputSchema.parse(args);

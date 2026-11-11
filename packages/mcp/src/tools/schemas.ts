@@ -70,6 +70,14 @@ export const getExportDownloadInputSchema = z.object({
     production_id: z.string().uuid(),
 });
 
+/** Central-fab milling solid. One foot, or both when side is omitted. No belt slice. */
+export const generateCentralFabStlInputSchema = z
+    .object({
+        design_id: z.string().uuid(),
+        side: sideSchema.optional(),
+    })
+    .strict();
+
 export const getProductionInputSchema = z.object({
     production_id: z.string().uuid(),
 });
@@ -203,6 +211,11 @@ export const savedDesignCatalogSchema = z
             })
             .strict()
             .optional(),
+        /**
+         * Shell thickness in mm. Same range as the human Corrections slider (1.5–8).
+         * Omitted keeps the 2 mm default. Out of range is rejected.
+         */
+        thickness_mm: z.number().finite().min(1.5).max(8).optional(),
         rx_text: z.string().max(8000).optional(),
         notes: z.string().max(8000).optional(),
         rigidity: z.string().max(80).optional(),
@@ -299,6 +312,17 @@ export const MCP_TOOL_DEFINITIONS = [
         inputSchema: generateGcodeInputObjectSchema,
     },
     {
+        name: "generate_central_fab_stl",
+        description:
+            "Central-fab milling STL from a saved design. Returns a production_id and status per foot. " +
+            "The server lofts the manufacturing solid (no belt leader, no slice) after that response. " +
+            "Poll get_production. Download with get_export_download only after succeeded. " +
+            "Omitting side enqueues both feet. No G-code bytes and no STL bytes in this response. " +
+            "Does not write an order status. Belt G-code is unchanged. " +
+            "Auth: CAD-operator key, manufacturing:generate.",
+        inputSchema: generateCentralFabStlInputSchema,
+    },
+    {
         name: "get_production",
         description:
             "CAD-operator production status by production_id. Returns id, design, side, preset, status, timestamps, " +
@@ -343,7 +367,12 @@ export const MCP_TOOL_DEFINITIONS = [
             "sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), " +
             "rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, " +
             "forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, " +
-            "full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit. " +
+            "full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit, " +
+            "thickness_mm (shell thickness, design.thicknessMm, 1.5–8 mm inclusive). " +
+            "thickness_mm is the labelled shell/base clearance, not the zonal rear/mid/fore walls. " +
+            "When set, settings store that clearance and uniform shell mode so the loft uses the shell-thickness slider. " +
+            "When omitted, thickness stays 2 mm and the zonal shell is unchanged. " +
+            "Out of range is 422 and is not clamped. " +
             "Ignored and never mapped: rx_text, notes, rigidity, extra_soft. " +
             "hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. " +
             "Absent width is Medium and recorded as defaulted, not prescribed. " +
@@ -363,7 +392,8 @@ export const MCP_TOOL_DEFINITIONS = [
             "When the order-owner verifier is unconfigured or refuses, this does not create a client or a design and does not call integration client upsert. " +
             "A server verifier may bind the verified person for this dogfood order. Caller fields are not that verifier. " +
             "CAD-operator scopes cannot assert the order's person. " +
-            "A bound refresh uses the saved-design snapshot rules. No scan upload and no STL. " +
+            "A bound refresh uses the saved-design snapshot rules. No scan upload. " +
+            "Optional catalog.thickness_mm sets shell thickness in mm (1.5–8, default 2 when omitted). " +
             "Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. " +
             "depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). " +
             "Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. " +
@@ -380,7 +410,10 @@ export const MCP_TOOL_DEFINITIONS = [
             "Each file is separate left or right G-code with exactly one of content_base64 or an https download_url of at most 200 characters. " +
             "A storage key is CAD provenance, not a VO field. design_id and tenant_id are omitted so VO does not run clinic or link checks. " +
             "Does not call VertexOrders and does not write an order status. " +
-            "VO's public tool has no idempotency argument, so a repeat call is not server-side deduplication. STL is refused.",
+            "VO's public tool has no idempotency argument, so a repeat call is not server-side deduplication. " +
+            "G-code stays the default. STL is accepted only when storage_key is a central-fab STL key " +
+            "(stl/cad-operator/…). The retrieved attach_files schema allows format and model/stl. " +
+            "A filename or URL ending in .stl without that key is refused.",
         inputSchema: prepareVoAttachmentInputSchema,
     },
 ] as const;

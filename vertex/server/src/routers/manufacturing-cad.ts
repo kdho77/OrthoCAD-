@@ -18,6 +18,7 @@ import {
 } from "../../../shared/print-recipe/print-recipe.js";
 import {
     assertCadOperatorTempStlKey,
+    buildCadOperatorCentralFabStlKey,
     buildCadOperatorTempStlKey,
     CAD_OPERATOR_BELT_ANGLE_DEG,
     CAD_OPERATOR_BELT_MATERIAL,
@@ -183,12 +184,38 @@ export async function prepareCadOperatorGenerate(args: {
     return { ...shared, stlStorageKey: null, useSavedDesignMesh: true, settingsJson };
 }
 
+/**
+ * Loft copy for the milling solid. Drops print text (CNC does not cut it) and
+ * presents a milling row as printing_solid so the existing solid builder runs.
+ * exportMode is manufacturing for both methods. The stored design is not written.
+ */
+export function settingsForCentralFabSolid(settingsJson: unknown): unknown {
+    if (!settingsJson || typeof settingsJson !== "object") return settingsJson;
+    const envelope = { ...(settingsJson as Record<string, unknown>) };
+    const settings = envelope.settings;
+    if (!settings || typeof settings !== "object") return settingsJson;
+    const next = { ...(settings as Record<string, unknown>) };
+    delete next.textMarking;
+    if (next.method === "milling_3axis") next.method = "printing_solid";
+    const paired = next.paired;
+    if (paired && typeof paired === "object") {
+        const pair = { ...(paired as Record<string, unknown>) };
+        if (pair.leftMethod === "milling_3axis") pair.leftMethod = "printing_solid";
+        if (pair.rightMethod === "milling_3axis") pair.rightMethod = "printing_solid";
+        next.paired = pair;
+    }
+    envelope.settings = next;
+    return envelope;
+}
+
 /** Headless loft and temp STL upload. Runs after the production id is returned. */
 export async function materializeCadOperatorStl(args: {
     plan: CadGeneratePlan;
     credentialId: string;
     side: "left" | "right";
     uploadStl: (key: string, bytes: Buffer) => Promise<void>;
+    /** Central-fab solid: no leader, durable key, text stripped. Belt leaves this unset. */
+    centralFabSolid?: { designId: string };
 }): Promise<{ stlStorageKey: string; meshFingerprint: string | null }> {
     if (!args.plan.useSavedDesignMesh) {
         if (!args.plan.stlStorageKey) {
@@ -199,8 +226,11 @@ export async function materializeCadOperatorStl(args: {
     let foot: Awaited<ReturnType<typeof buildHeadlessFinalizedFoot>>;
     try {
         foot = await buildHeadlessFinalizedFoot({
-            settingsJson: args.plan.settingsJson,
+            settingsJson: args.centralFabSolid
+                ? settingsForCentralFabSolid(args.plan.settingsJson)
+                : args.plan.settingsJson,
             side: args.side,
+            includeLeader: !args.centralFabSolid,
         });
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -209,7 +239,9 @@ export async function materializeCadOperatorStl(args: {
             message,
         });
     }
-    const stlStorageKey = buildCadOperatorTempStlKey(args.credentialId);
+    const stlStorageKey = args.centralFabSolid
+        ? buildCadOperatorCentralFabStlKey(args.credentialId, args.centralFabSolid.designId, args.side)
+        : buildCadOperatorTempStlKey(args.credentialId);
     await args.uploadStl(stlStorageKey, Buffer.from(foot.stl));
     return { stlStorageKey, meshFingerprint: foot.fingerprint };
 }

@@ -173,11 +173,8 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
     if (row?.kind === "afo") {
         throw new SavedDesignSnapshotError("AFO designs are not a SAMPLE_Top insole snapshot.");
     }
-    if (row?.method === "milling_3axis") {
-        throw new SavedDesignSnapshotError(
-            "Milled orders are not belt G-code. Refusing to write a print snapshot.",
-        );
-    }
+    // Milled rows may store the SAMPLE_Top snapshot (default mesh + thickness).
+    // The design method column is not updated. Belt G-code still refuses milling_3axis.
 
     const catalog = parseSavedDesignCatalog(args.catalog);
     const buildSnapshot = args.buildSnapshot ?? buildSavedDesignSnapshot;

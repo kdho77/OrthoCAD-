@@ -2,7 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, test } from "@rstest/core";
 
 import { readStoredDesignSettings } from "../../../shared/design-settings.js";
-import { SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
+import { parseSavedDesignCatalog, SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
 import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot.js";
 import { type CadOperatorPrincipal, DOGFOOD_TENANT_ID } from "../auth/cad-operator.js";
 import { persistSavedDesignSnapshotOnDesign } from "./saved-design-snapshot.js";
@@ -224,13 +224,62 @@ describe("persist saved design snapshot", () => {
         expect(updates[0]?.where.id).not.toBe(DESIGN_ID);
     });
 
-    test("AFO and milled designs are refused", async () => {
-        for (const current of [row({ kind: "afo" }), row({ method: "milling_3axis" })]) {
-            const { prisma, updates } = fakePrisma(current);
-            await expect(
-                persistSavedDesignSnapshotOnDesign({ prisma, principal, designId: DESIGN_ID, catalog: {} }),
-            ).rejects.toBeInstanceOf(SavedDesignSnapshotError);
-            expect(updates).toEqual([]);
+    test("AFO designs are refused", async () => {
+        const { prisma, updates } = fakePrisma(row({ kind: "afo" }));
+        await expect(
+            persistSavedDesignSnapshotOnDesign({ prisma, principal, designId: DESIGN_ID, catalog: {} }),
+        ).rejects.toBeInstanceOf(SavedDesignSnapshotError);
+        expect(updates).toEqual([]);
+    });
+
+    test("omitted thickness stays 2 mm zonal, and 4 mm is stored", () => {
+        const stored = { system: "US_M" as const, size: 9, left: null, right: null, width: "medium" };
+        const omitted = buildSavedDesignSnapshot({ stored, catalog: parseSavedDesignCatalog({}) });
+        const thick = buildSavedDesignSnapshot({
+            stored,
+            catalog: parseSavedDesignCatalog({ thickness_mm: 4 }),
+        });
+        expect(omitted.design.thicknessMm).toBe(2);
+        expect(omitted.design.shellThicknessMode).toBe("zonal");
+        expect(omitted.design.paired?.leftThicknessMm).toBe(2);
+        expect(omitted.design.paired?.rightThicknessMm).toBe(2);
+        expect(thick.design.thicknessMm).toBe(4);
+        expect(thick.design.shellThicknessMode).toBe("uniform");
+        expect(thick.design.paired?.leftThicknessMm).toBe(4);
+        expect(thick.design.paired?.rightThicknessMm).toBe(4);
+        expect(omitted.design.method).toBe(thick.design.method);
+    });
+
+    test("thickness outside 1.5–8 mm is 422", () => {
+        for (const thickness_mm of [1.4, 8.1, 0]) {
+            expect(() => parseSavedDesignCatalog({ thickness_mm })).toThrow(SavedDesignSnapshotError);
+            try {
+                parseSavedDesignCatalog({ thickness_mm });
+            } catch (error) {
+                expect(error).toMatchObject({ status: 422 });
+            }
         }
+    });
+
+    test("a milled row stores shell thickness and does not change method or order status", async () => {
+        const { prisma, updates } = fakePrisma(row({ method: "milling_3axis" }));
+        const result = await persistSavedDesignSnapshotOnDesign({
+            prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: { thickness_mm: 4 },
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        expect(updates).toHaveLength(1);
+        expect(Object.keys(updates[0]?.data ?? {})).toEqual(["settingsJson"]);
+        expect(updates[0]?.data).not.toHaveProperty("method");
+        expect(updates[0]?.data).not.toHaveProperty("status");
+        const settings = readStoredDesignSettings(result.settingsJson);
+        expect(settings?.thicknessMm).toBe(4);
+        expect(settings?.shellThicknessMode).toBe("uniform");
+        expect(
+            (settings?.paired as { leftThicknessMm: number; rightThicknessMm: number }).leftThicknessMm,
+        ).toBe(4);
+        expect((settings?.paired as { rightThicknessMm: number }).rightThicknessMm).toBe(4);
     });
 });
