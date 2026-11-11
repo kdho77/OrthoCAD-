@@ -1,5 +1,9 @@
 import { describe, expect, test } from "@rstest/core";
-import { listSavedDesignCatalogKeyPaths } from "../../../vertex/shared/saved-design-catalog.ts";
+import {
+    listSavedDesignCatalogKeyPaths,
+    parseSavedDesignCatalog,
+} from "../../../vertex/shared/saved-design-catalog.ts";
+import { buildSavedDesignSnapshot } from "../../../vertex/shared/saved-design-snapshot.ts";
 import type { ManufacturingClient } from "../src/clients/manufacturing-client.js";
 import type { OrthocadMcpConfig } from "../src/config.js";
 import { handleOrthocadTool } from "../src/tools/handlers.js";
@@ -93,5 +97,31 @@ describe("persist_saved_design_snapshot tool", () => {
         expect(payload.ask).toBe("user");
         expect(payload.relay).toBe("none");
         expect(payload.questions?.[0]?.field).toBe("shoe_size");
+    });
+
+    test("catalog accepts a bilateral 1st met head sink and rejects an unknown sink field", () => {
+        const catalog = {
+            shoe_size: { system: "US_M" as const, size: 9 },
+            sinks: [
+                { name: "1st met head", side: "left" as const, depth_mm: 1.5 },
+                { kind: "mpj1", side: "right" as const, depth_mm: 1.5 },
+            ],
+        };
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({ design_id: designId, catalog }).success,
+        ).toBe(true);
+        const built = buildSavedDesignSnapshot({
+            stored: { system: "US_M", size: 9, left: null, right: null, width: null },
+            catalog: parseSavedDesignCatalog(catalog),
+        });
+        expect(built.design.sinks?.left?.[0]).toMatchObject({ kind: "mpj1", depthMm: 1.5 });
+        expect(built.design.sinks?.right?.[0]?.u).toBeUndefined();
+        expect(built.design.corrections.left.forefootWedge).toBeUndefined();
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({
+                design_id: designId,
+                catalog: { sinks: [{ name: "mpj1", side: "left", depth_mm: 1.5, size_mm: 22 }] },
+            }).success,
+        ).toBe(false);
     });
 });

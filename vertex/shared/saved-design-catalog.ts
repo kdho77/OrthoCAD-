@@ -104,6 +104,23 @@ const elementSchema = z
     })
     .strict();
 
+/**
+ * Subtractive library sinks. `name` and `kind` accept the same aliases
+ * (mpj1, "1st MPJ", "1st met head", and the other SINK_PROFILES labels).
+ * depth_mm is checked against that kind's max in the snapshot. Omit u and v
+ * so the loft uses the profile the human UI uses.
+ */
+const sinkSchema = z
+    .object({
+        name: z.string().trim().min(1).max(80).optional(),
+        kind: z.string().trim().min(1).max(80).optional(),
+        side: z.enum(["left", "right"]),
+        depth_mm: z.number().finite().optional(),
+        u: z.number().finite().optional(),
+        v: z.number().finite().optional(),
+    })
+    .strict();
+
 export const savedDesignCatalogSchema = z
     .object({
         shoe_size: z
@@ -119,6 +136,7 @@ export const savedDesignCatalogSchema = z
         arch: archSchema.optional(),
         flexible_foot: z.boolean().optional(),
         elements: z.array(elementSchema).max(24).optional(),
+        sinks: z.array(sinkSchema).max(14).optional(),
         sliders: savedDesignSliderSchema.optional(),
         sliders_by_side: z
             .object({

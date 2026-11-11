@@ -9,6 +9,7 @@ import {
 import { designStateFromSavedSettings } from "../../features/exports/saved-design-finalized-mesh";
 import { defaultElementPose, ELEMENT_PROFILES } from "../geometry/elements";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_GLB_PATH } from "../geometry/procedural-wall/sample-top-id";
+import { SINK_DEFAULT_DEPTH_MM, SINK_PROFILES } from "../geometry/sink";
 import { buildSavedDesignSnapshot } from "./saved-design-snapshot";
 
 const storedNine: StoredLinkShoe = {
@@ -156,5 +157,168 @@ describe("SAMPLE_Top saved-design snapshot", () => {
         expect(expect422(() => parseSavedDesignCatalog({ invented_mm: 4 })).message).toMatch(
             /invalid catalog field/,
         );
+    });
+
+    test("1st met head aliases write an mpj1 sink on each named side and leave u and v unset", () => {
+        const aliases = ["mpj1", "1st MPJ", "1st met head"] as const;
+        for (const name of aliases) {
+            const built = build({
+                sinks: [
+                    { name, side: "left", depth_mm: 1.5 },
+                    { kind: name, side: "right", depth_mm: 1.5 },
+                ],
+            });
+            expect(built.design.corrections.left.forefootWedge).toBeUndefined();
+            expect(built.design.corrections.right.forefootWedge).toBeUndefined();
+            expect(built.design.elements).toEqual([]);
+            expect(built.paths).toContain("settings.sinks");
+            for (const side of ["left", "right"] as const) {
+                const sink = built.design.sinks?.[side]?.[0];
+                expect(sink).toEqual({
+                    id: `snapshot-sink-mpj1-${side}`,
+                    kind: "mpj1",
+                    depthMm: 1.5,
+                });
+                expect(sink?.u).toBeUndefined();
+                expect(sink?.v).toBeUndefined();
+            }
+            expect(built.design.sinks?.left?.[0]).not.toBe(built.design.sinks?.right?.[0]);
+        }
+        const placed = build({
+            sinks: [{ name: "mpj1", side: "left", depth_mm: 1.5, u: 0.7, v: 0.2 }],
+        });
+        expect(placed.design.sinks?.left?.[0]).toEqual({
+            id: "snapshot-sink-mpj1-left",
+            kind: "mpj1",
+            depthMm: 1.5,
+            u: 0.7,
+            v: 0.2,
+        });
+    });
+
+    test("an omitted sink depth uses the 2 mm library default and a left-only sink stays on the left", () => {
+        const built = build({ sinks: [{ name: "1st metatarsal head", side: "left" }] });
+        expect(SINK_DEFAULT_DEPTH_MM).toBe(2);
+        expect(SINK_PROFILES.mpj1.defaultDepthMm).toBe(2);
+        expect(SINK_PROFILES.mpj1.maxDepthMm).toBe(4);
+        expect(built.design.sinks?.left).toEqual([
+            { id: "snapshot-sink-mpj1-left", kind: "mpj1", depthMm: 2 },
+        ]);
+        expect(built.design.sinks?.right).toBeUndefined();
+        expect(built.design.corrections.left.forefootWedge).toBeUndefined();
+    });
+
+    test("depth 0, negative, or above the mpj1 maximum is a 422 and does not return a design", () => {
+        for (const depth_mm of [0, -0.5, 5]) {
+            const error = expect422(() =>
+                build({ sinks: [{ name: "1st met head", side: "right", depth_mm }] }),
+            );
+            expect(error.message).toMatch(/depth/);
+            expect(error.message).toMatch(/4 mm/);
+        }
+        expect(
+            expect422(() => build({ sinks: [{ name: "not a real sink", side: "left" }] })).message,
+        ).toMatch(/unrecognized sink/);
+        expect(expect422(() => build({ sinks: [{ side: "left", depth_mm: 1.5 }] })).message).toMatch(
+            /name or kind/,
+        );
+        expect(
+            expect422(() =>
+                build({
+                    sinks: [
+                        { name: "mpj1", side: "left", depth_mm: 1.5 },
+                        { name: "1st MPJ", side: "left", depth_mm: 2 },
+                    ],
+                }),
+            ).message,
+        ).toMatch(/One of each kind per side/);
+    });
+
+    test("elements stay raises, including heel_sink, when a met-head sink is also present", () => {
+        const built = build({
+            elements: [
+                { name: "Met Pad", side: "left", height_mm: 4 },
+                { name: "Heel Sink", side: "right" },
+                { name: "Dancer's pad (1st MPJ relief)", side: "left" },
+            ],
+            sinks: [{ name: "1st met head", side: "left", depth_mm: 1.5 }],
+        });
+        expect(
+            built.design.elements.map((element) => ({
+                kind: element.kind,
+                heightMm: element.heightMm,
+                side: element.side,
+            })),
+        ).toEqual([
+            { kind: "met_pad", heightMm: 4, side: "left" },
+            { kind: "heel_sink", heightMm: ELEMENT_PROFILES.heel_sink.defaultHeightMm, side: "right" },
+            { kind: "dancers_pad", heightMm: ELEMENT_PROFILES.dancers_pad.defaultHeightMm, side: "left" },
+        ]);
+        expect(built.design.sinks?.left?.[0]?.kind).toBe("mpj1");
+        expect(built.design.sinks?.left?.[0]?.depthMm).toBe(1.5);
+        expect(built.design.sinks?.right).toBeUndefined();
+        expect(built.design.elements.some((element) => element.kind === "mpj1")).toBe(false);
+    });
+
+    test("an omitted forefoot wedge stays absent when a sink is present", () => {
+        const withSink = build({
+            sinks: [
+                { name: "mpj1", side: "left", depth_mm: 1.5 },
+                { name: "mpj1", side: "right", depth_mm: 1.5 },
+            ],
+        });
+        expect(withSink.design.corrections.left.forefootWedge).toBeUndefined();
+        expect(withSink.design.corrections.right.forefootWedge).toBeUndefined();
+        expect(withSink.design.corrections.left.rearfootWedge).toBeUndefined();
+        const raised = build({
+            elements: [{ name: "heel_sink", side: "left", height_mm: 3 }],
+        });
+        expect(raised.design.elements[0]?.kind).toBe("heel_sink");
+        expect(raised.design.elements[0]?.heightMm).toBe(3);
+        expect(raised.design.sinks).toBeUndefined();
+    });
+
+    test("another library sink uses its profile default and rejects a depth above its maximum", () => {
+        const omitted = build({ sinks: [{ name: "2nd MPJ", side: "right" }] });
+        expect(omitted.design.sinks?.right).toEqual([
+            { id: "snapshot-sink-mpj2-right", kind: "mpj2", depthMm: SINK_PROFILES.mpj2.defaultDepthMm },
+        ]);
+        expect(omitted.design.sinks?.left).toBeUndefined();
+        expect(SINK_PROFILES.mpj2.maxDepthMm).toBe(3);
+        expect(
+            expect422(() => build({ sinks: [{ kind: "mpj2", side: "right", depth_mm: 4 }] })).message,
+        ).toMatch(/at most 3 mm/);
+        expect(
+            build({ sinks: [{ name: "2nd met head", side: "left", depth_mm: 3 }] }).design.sinks?.left?.[0]
+                ?.depthMm,
+        ).toBe(3);
+    });
+
+    test("Morton's and a reverse kinetic wedge on the same foot are refused", () => {
+        expect(
+            expect422(() =>
+                build({
+                    elements: [{ name: "Morton's Ext.", side: "left" }],
+                    sinks: [{ name: "Reverse kinetic wedge", side: "left", depth_mm: 2 }],
+                }),
+            ).message,
+        ).toMatch(/cannot be on the same foot/);
+        const opposite = build({
+            elements: [{ name: "mortons_extension", side: "left" }],
+            sinks: [
+                { kind: "mpj1", side: "left", depth_mm: 1.5 },
+                { kind: "rkw", side: "right", depth_mm: 2 },
+            ],
+        });
+        expect(opposite.design.elements[0]?.kind).toBe("mortons_extension");
+        expect(opposite.design.sinks?.left?.[0]?.kind).toBe("mpj1");
+        expect(opposite.design.sinks?.right?.[0]?.kind).toBe("rkw");
+        const bothStored = build({
+            sinks: [
+                { name: "1st MPJ", side: "left", depth_mm: 1.5 },
+                { name: "rkw", side: "left", depth_mm: 2 },
+            ],
+        });
+        expect(bothStored.design.sinks?.left?.map((sink) => sink.kind)).toEqual(["mpj1", "rkw"]);
     });
 });
