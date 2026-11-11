@@ -11,6 +11,64 @@ export function cloneMesh(mesh: AfoTriMesh): AfoTriMesh {
     };
 }
 
+/**
+ * Merge corners that occupy the same position.
+ * An imported OBJ component is a triangle soup: each face owns private
+ * vertices, even when those coordinates are copies of one scan vertex.
+ * Smoothing that soup treats every face as its own island and pulls it
+ * toward its centroid, which is the sparse dot cast.
+ * An already-indexed mesh with unique positions is returned unchanged.
+ */
+export function weldCoincidentVertices(mesh: AfoTriMesh): AfoTriMesh {
+    const n = vertexCount(mesh);
+    const first = new Map<string, number>();
+    const remap = new Uint32Array(n);
+    let shared = false;
+    for (let i = 0; i < n; i++) {
+        const x = mesh.positions[i * 3] ?? 0;
+        const y = mesh.positions[i * 3 + 1] ?? 0;
+        const z = mesh.positions[i * 3 + 2] ?? 0;
+        const key = `${x},${y},${z}`;
+        const prior = first.get(key);
+        if (prior == null) {
+            first.set(key, i);
+            remap[i] = i;
+        } else {
+            remap[i] = prior;
+            shared = true;
+        }
+    }
+    if (!shared) return mesh;
+    const compact = new Int32Array(n).fill(-1);
+    const positions: number[] = [];
+    const mapTo = (oldIndex: number): number => {
+        const kept = remap[oldIndex] ?? oldIndex;
+        const existing = compact[kept] ?? -1;
+        if (existing >= 0) return existing;
+        const id = positions.length / 3;
+        compact[kept] = id;
+        positions.push(
+            mesh.positions[kept * 3] ?? 0,
+            mesh.positions[kept * 3 + 1] ?? 0,
+            mesh.positions[kept * 3 + 2] ?? 0,
+        );
+        return id;
+    };
+    const indices: number[] = [];
+    const tris = (mesh.indices.length / 3) | 0;
+    for (let t = 0; t < tris; t++) {
+        const a = mapTo(mesh.indices[t * 3] ?? 0);
+        const b = mapTo(mesh.indices[t * 3 + 1] ?? 0);
+        const c = mapTo(mesh.indices[t * 3 + 2] ?? 0);
+        if (a === b || b === c || c === a) continue;
+        indices.push(a, b, c);
+    }
+    return {
+        positions: new Float32Array(positions),
+        indices: new Uint32Array(indices),
+    };
+}
+
 export function vertexCount(mesh: AfoTriMesh): number {
     return (mesh.positions.length / 3) | 0;
 }

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { AFO_TOE_BOX_PCT_RANGE } from "./defaults";
-import { cloneMesh, computeVertexNormals, vertexCount } from "./mesh-ops";
+import { cloneMesh, computeVertexNormals, vertexCount, weldCoincidentVertices } from "./mesh-ops";
 import {
     applyOffsetField,
     clamp01,
@@ -390,8 +390,9 @@ export function applyClinicalCast(
     extras?: { medialMal?: AfoVec3; lateralMal?: AfoVec3; navicular?: AfoVec3 | null },
     options?: { includeShinBox?: boolean },
 ): { mesh: AfoTriMesh; featherMm: number; meshable: boolean } {
-    const field = evaluateOffsetField(offsetInputFromDesign(mesh, afo, extras));
-    const removed = applyOffsetField(mesh, field);
+    const welded = weldCoincidentVertices(mesh);
+    const field = evaluateOffsetField(offsetInputFromDesign(welded, afo, extras));
+    const removed = applyOffsetField(welded, field);
     const includeShinBox = options?.includeShinBox ?? afo.method !== "printing_shell";
     const nav =
         extras?.navicular ??

@@ -11,7 +11,7 @@ import {
     defaultAfoDesignState,
     defaultAfoSideCorrection,
 } from "@/lib/geometry/afo/defaults";
-import { cloneMesh, orientMeshOutward } from "@/lib/geometry/afo/mesh-ops";
+import { cloneMesh, orientMeshOutward, weldCoincidentVertices } from "@/lib/geometry/afo/mesh-ops";
 import { fitSurfaceSpline, reprojectTrimPins } from "@/lib/geometry/afo/trim-spline";
 import type { AfoClinicalMarkerId, AfoScanWorkflow, AfoTriMesh, AfoVec3 } from "@/lib/geometry/afo/types";
 import { useDesignStore } from "@/stores/design-store";
@@ -199,7 +199,11 @@ export function refreshAfoWorkingMesh(): void {
 }
 
 export function ingestOrientedScan(mesh: AfoTriMesh): void {
-    const oriented = orientMeshOutward(mesh);
+    // Weld before orientation and the cast offset. An OBJ component is stored as
+    // a triangle soup, and a per-vertex offset then pulls each copy of a corner
+    // along a different face normal. The smooth that follows shrinks every face
+    // into a sliver, which is the see-through cast.
+    const oriented = orientMeshOutward(weldCoincidentVertices(mesh));
     useAfoStore.getState().setSourceMesh(oriented);
     const afo = getAfoState();
     const crest = detectTibialCrest(oriented, afo.corrections.braceHeightMm, afo.clinicalMarkers);
