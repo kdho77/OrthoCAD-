@@ -16,19 +16,18 @@ import type { IncomingMessage } from "node:http";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 import { prisma } from "../server/src/lib/prisma.js";
-import {
-    handleOrthocadMcpHttp,
-    MCP_FUNCTION_MAX_DURATION_SECONDS,
-    redactSecrets,
-} from "../server/src/orthocad-mcp.bundled.mjs";
+import { handleOrthocadMcpHttp, redactSecrets } from "../server/src/orthocad-mcp.bundled.mjs";
 
-export const maxDuration = MCP_FUNCTION_MAX_DURATION_SECONDS;
+// Numeric literals on purpose. @vercel/static-config throws
+// `Unhandled type: "Identifier"` when maxDuration is a reference, and that
+// fails the deployment. Keep both equal to MCP_FUNCTION_MAX_DURATION_SECONDS.
+export const maxDuration = 60;
 
 export const config = {
     api: {
         bodyParser: false,
     },
-    maxDuration: MCP_FUNCTION_MAX_DURATION_SECONDS,
+    maxDuration: 60,
 };
 
 async function findCredentialByHash(hash: string) {

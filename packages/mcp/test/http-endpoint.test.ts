@@ -560,7 +560,10 @@ describe("hosted route artifact", () => {
         const bundle = readFileSync(bundlePath, "utf8");
         const route = readFileSync(routePath, "utf8");
         expect(bundle.split("\n")[0]).toBe(`// orthocad-mcp-http-bundle ${orthocadMcpHttpSourceHash()}`);
-        expect(route).toContain("MCP_FUNCTION_MAX_DURATION_SECONDS");
+        expect(route).toContain("export const maxDuration = 60");
+        expect(route).toContain("maxDuration: 60");
+        expect(route).not.toMatch(/maxDuration:\s*[A-Za-z_]/);
+        expect(MCP_FUNCTION_MAX_DURATION_SECONDS).toBe(60);
         expect(route).toContain("findCredentialByHash");
         expect(route).toContain("id: true");
         expect(route).toContain("revokedAt: true");
