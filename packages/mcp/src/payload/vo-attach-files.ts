@@ -10,7 +10,12 @@
 
 import { createHash } from "node:crypto";
 
-import { voAttachArgumentError, VO_ATTACH_TEXT_MAX } from "./vo-attach-contract.js";
+import {
+    buildExportFilename,
+    canonicalExportMaterialName,
+    parsePatientNameForExport,
+} from "../../../../vertex/shared/export-filename.js";
+import { VO_ATTACH_TEXT_MAX, voAttachArgumentError } from "./vo-attach-contract.js";
 
 export const FORBIDDEN_ORDER_STATUSES = [
     "Production",
@@ -31,13 +36,15 @@ export const DOGFOOD_HELD_ID_PREFIXES = [
 /** Retrieved reference: "Export file is over the 100 MB limit". */
 const MAX_ATTACH_BYTES = 100 * 1024 * 1024;
 
-const FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]*$/;
-
 export interface VoAttachFileInput {
     side: "left" | "right";
     /** CAD object key. Recorded in provenance and never placed on the VO file. */
     storage_key?: string;
     filename?: string;
+    /** Optional patient label for the canonical export filename. */
+    patient_name?: string;
+    /** Optional canonical OrthoCAD material (ApexCore, apex_core, …). */
+    material?: string;
     content_base64?: string;
     download_url?: string;
     expires_at?: string;
@@ -47,6 +54,8 @@ export interface VoAttachFilesInput {
     order_id: string;
     /** Kept on the CAD result only. Sending it makes VO check the design link. */
     design_id?: string;
+    patient_name?: string;
+    material?: string;
     files: VoAttachFileInput[];
     now?: number;
 }
@@ -104,7 +113,8 @@ export const VO_ATTACH_RETRY_PACKET = {
     downloadUrlLimit: {
         current: "readShortText TEXT_MAX 200 includes download_url",
         effect: "A signed URL longer than 200 characters is rejected before fetch",
-        proposed: "Do not apply TEXT_MAX to download_url. Keep a single https fetch and the expires_at check.",
+        proposed:
+            "Do not apply TEXT_MAX to download_url. Keep a single https fetch and the expires_at check.",
     },
     acceptance: [
         "Two attach_files calls with the same upload_id and the same files return alreadyStored true and do not fetch those URLs again.",
@@ -136,22 +146,21 @@ function decodeBase64(value: string): Buffer {
     return bytes;
 }
 
-function gcodeFilename(side: "left" | "right", requested: string | undefined): string {
-    const raw = requested?.trim() ?? "";
-    const base = raw.split(/[/\\]/).pop()?.trim() ?? "";
-    const lowered = base.toLowerCase();
-    if (
-        base &&
-        lowered.length <= 180 &&
-        !lowered.includes("..") &&
-        FILENAME_RE.test(base) &&
-        lowered.endsWith(".gcode") &&
-        !lowered.includes(".stl") &&
-        lowered.startsWith(side)
-    ) {
-        return lowered;
-    }
-    return `${side}.gcode`;
+function gcodeFilename(
+    side: "left" | "right",
+    file: VoAttachFileInput,
+    order: Pick<VoAttachFilesInput, "patient_name" | "material">,
+): string {
+    const patientName = file.patient_name?.trim() || order.patient_name?.trim() || "";
+    const patient = parsePatientNameForExport(patientName);
+    const material = canonicalExportMaterialName(file.material ?? order.material);
+    return buildExportFilename({
+        firstName: patient.firstName,
+        lastName: patient.lastName,
+        material,
+        side: side === "right" ? "R" : "L",
+        ext: "gcode",
+    });
 }
 
 export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPreparation {
@@ -171,7 +180,7 @@ export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPr
         if (file.filename && /\.stl($|\?)/i.test(file.filename)) {
             throw new Error("STL files are not attached. G-code only.");
         }
-        const filename = gcodeFilename(file.side, file.filename);
+        const filename = gcodeFilename(file.side, file, input);
         if (filename.toLowerCase().endsWith(".stl")) {
             throw new Error("STL files are not attached. G-code only.");
         }

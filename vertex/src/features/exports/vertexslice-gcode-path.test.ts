@@ -23,10 +23,10 @@ describe("printer G-code VertexSlice fields", () => {
     });
 
     test("paired filenames stay side-specific on the locked Core profile", () => {
-        const left = hybridGcodeFilename("left", "apex-v2-insole-95a", 1793911362202);
-        const right = hybridGcodeFilename("right", "apex-v2-insole-95a", 1793911362202);
-        expect(left).toBe("hybrid-left-apex-v2-insole-95a-1793911362202.gcode");
-        expect(right).toBe("hybrid-right-apex-v2-insole-95a-1793911362202.gcode");
+        const left = hybridGcodeFilename("left", "ApexCore");
+        const right = hybridGcodeFilename("right", "ApexCore");
+        expect(left).toBe("Unknown_Patient_ApexCore_L.gcode");
+        expect(right).toBe("Unknown_Patient_ApexCore_R.gcode");
         expect(left).not.toBe(right);
     });
 

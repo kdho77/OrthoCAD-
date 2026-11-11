@@ -4,6 +4,11 @@
 // a printer or a mill, and does not create customer orders.
 
 import { type Actor, canAccessOrg } from "./client-files.js";
+import {
+    buildExportFilename,
+    canonicalExportMaterialName,
+    parsePatientNameForExport,
+} from "./export-filename.js";
 import { type MockPairingResult, mockMoonrakerPair } from "./mock-moonraker.js";
 import {
     assertSupportedProtocol,
@@ -794,7 +799,18 @@ export async function downloadGcode(
 ): Promise<{ filename: string; gcode: string; sha256: string }> {
     const job = await requireJob(repo, actor, jobId);
     const stored = await readRetainedGcode(repo, job, now);
-    return { filename: `LR-${job.id}.gcode`, gcode: stored.body, sha256: stored.sha256 };
+    const patient = parsePatientNameForExport(job.clientLabel);
+    return {
+        filename: buildExportFilename({
+            firstName: patient.firstName,
+            lastName: patient.lastName,
+            material: canonicalExportMaterialName("ApexCore"),
+            side: "LR",
+            ext: "gcode",
+        }),
+        gcode: stored.body,
+        sha256: stored.sha256,
+    };
 }
 
 function dispatchInFlight(job: ProductionJob): boolean {

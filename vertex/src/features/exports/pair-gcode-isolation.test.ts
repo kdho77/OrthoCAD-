@@ -219,8 +219,8 @@ describe("paired printer G-code isolation", () => {
         expect(footSolids.pairs).toBe(0);
         expect(footSolids.sides).toEqual(["left", "right"]);
         expect(sliceRequests.map((request) => request.side)).toEqual(["left", "right"]);
-        expect(sliceRequests[0]?.fileName).toContain("hybrid-left-");
-        expect(sliceRequests[1]?.fileName).toContain("hybrid-right-");
+        expect(sliceRequests[0]?.fileName).toMatch(/_ApexCore_L\.gcode$/);
+        expect(sliceRequests[1]?.fileName).toMatch(/_ApexCore_R\.gcode$/);
         expect(sliceRequests[0]?.fileName).not.toBe(sliceRequests[1]?.fileName);
         expect(sliceRequests[0]?.stlStorageKey).not.toBe(sliceRequests[1]?.stlStorageKey);
         expect(uploads).toHaveLength(2);
@@ -268,6 +268,6 @@ describe("paired printer G-code isolation", () => {
         expect(footSolids.sides.at(-1)).toBe("right");
         expect(footSolids.pairs).toBe(0);
         expect(sliceRequests.at(-1)?.side).toBe("right");
-        expect(sliceRequests.at(-1)?.fileName).toContain("hybrid-right-");
+        expect(sliceRequests.at(-1)?.fileName).toMatch(/_ApexCore_R\.gcode$/);
     });
 });

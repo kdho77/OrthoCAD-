@@ -208,7 +208,7 @@ describe("production jobs", () => {
         ).toEqual([done]);
         const file = await downloadGcode(local, me, mill.id);
         expect(file.gcode).toBe(`${GCODE}G1 X1\n`);
-        expect(file.filename).toBe(`LR-${mill.id}.gcode`);
+        expect(file.filename).toBe("JD_ApexCore_LR.gcode");
     });
 
     test("re-run queues the same stored G-code and refuses an expired file", async () => {

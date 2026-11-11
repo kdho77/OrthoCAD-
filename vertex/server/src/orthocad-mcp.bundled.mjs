@@ -40087,6 +40087,73 @@ var EMPTY_COMPLETION_RESULT = {
 // node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
 
+// vertex/shared/export-filename.ts
+var EXPORT_PATIENT_FALLBACK = "Unknown_Patient";
+var DEFAULT_EXPORT_MATERIAL_ID = "ApexCore";
+var MATERIAL_ID_BY_COMPACT = /* @__PURE__ */ new Map([
+  ["apexlight", "ApexLight"],
+  ["apexlightfoam", "ApexLight"],
+  ["apexcore", "ApexCore"],
+  ["apexcomfort", "ApexCore"],
+  ["apexbounce", "ApexBounce"],
+  ["apexforge", "ApexForge"],
+  ["apex_light", "ApexLight"],
+  ["apex_core", "ApexCore"],
+  ["apex_bounce", "ApexBounce"],
+  ["apex_forge", "ApexForge"]
+]);
+function compactMaterialKey(value) {
+  return value.trim().toLowerCase().replace(/[\s_-]+/g, "");
+}
+function canonicalExportMaterialName(material) {
+  const raw = material?.trim() ?? "";
+  if (!raw) return DEFAULT_EXPORT_MATERIAL_ID;
+  const compact = compactMaterialKey(raw);
+  const mapped = MATERIAL_ID_BY_COMPACT.get(compact);
+  if (mapped) return mapped;
+  if (/^apex[a-z]+$/i.test(raw.replace(/[\s_-]+/g, ""))) {
+    const title = raw.replace(/[\s_-]+/g, "");
+    const match = title.match(/^apex(.+)$/i);
+    if (match?.[1]) {
+      const tail = match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase();
+      return `Apex${tail}`;
+    }
+  }
+  return sanitizeFilenamePart(raw);
+}
+var UNSAFE_FILENAME_PART = /[^\p{L}\p{N}.'’-]+/gu;
+function sanitizeFilenamePart(part) {
+  const trimmed = part?.trim() ?? "";
+  if (!trimmed) return "";
+  return trimmed.replace(UNSAFE_FILENAME_PART, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+}
+function exportPatientFilenameSegment(firstName, lastName) {
+  const first = sanitizeFilenamePart(firstName);
+  const last = sanitizeFilenamePart(lastName);
+  const parts = [first, last].filter(Boolean);
+  if (parts.length === 0) return EXPORT_PATIENT_FALLBACK;
+  return parts.join("_");
+}
+function parsePatientNameForExport(patientName) {
+  const trimmed = patientName?.trim() ?? "";
+  if (!trimmed) return { firstName: "", lastName: "" };
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return { firstName: "", lastName: "" };
+  if (tokens.length === 1) return { firstName: tokens[0] ?? "", lastName: "" };
+  return { firstName: tokens[0] ?? "", lastName: tokens.slice(1).join(" ") };
+}
+function normalizeExtension(ext) {
+  const trimmed = ext.trim();
+  if (!trimmed) return "";
+  return trimmed.startsWith(".") ? trimmed : `.${trimmed}`;
+}
+function buildExportFilename(input2) {
+  const patient = exportPatientFilenameSegment(input2.firstName, input2.lastName);
+  const material = canonicalExportMaterialName(input2.material);
+  const extension = normalizeExtension(input2.ext);
+  return `${patient}_${material}_${input2.side}${extension}`;
+}
+
 // packages/mcp/src/tools/handlers.ts
 init_integration_client();
 
@@ -40227,7 +40294,6 @@ var DOGFOOD_HELD_ID_PREFIXES = [
   "c4092f6e"
 ];
 var MAX_ATTACH_BYTES = 100 * 1024 * 1024;
-var FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]*$/;
 function assertNotHeld(value) {
   const id = value.trim().toLowerCase();
   for (const prefix of DOGFOOD_HELD_ID_PREFIXES) {
@@ -40246,14 +40312,17 @@ function decodeBase64(value) {
   if (bytes.byteLength > MAX_ATTACH_BYTES) throw new Error("Export file is over the 100 MB limit");
   return bytes;
 }
-function gcodeFilename(side, requested) {
-  const raw = requested?.trim() ?? "";
-  const base = raw.split(/[/\\]/).pop()?.trim() ?? "";
-  const lowered = base.toLowerCase();
-  if (base && lowered.length <= 180 && !lowered.includes("..") && FILENAME_RE.test(base) && lowered.endsWith(".gcode") && !lowered.includes(".stl") && lowered.startsWith(side)) {
-    return lowered;
-  }
-  return `${side}.gcode`;
+function gcodeFilename(side, file2, order) {
+  const patientName = file2.patient_name?.trim() || order.patient_name?.trim() || "";
+  const patient = parsePatientNameForExport(patientName);
+  const material = canonicalExportMaterialName(file2.material ?? order.material);
+  return buildExportFilename({
+    firstName: patient.firstName,
+    lastName: patient.lastName,
+    material,
+    side: side === "right" ? "R" : "L",
+    ext: "gcode"
+  });
 }
 function buildVoAttachFilesHandoff(input2) {
   const orderId = input2.order_id.trim();
@@ -40270,7 +40339,7 @@ function buildVoAttachFilesHandoff(input2) {
     if (file2.filename && /\.stl($|\?)/i.test(file2.filename)) {
       throw new Error("STL files are not attached. G-code only.");
     }
-    const filename = gcodeFilename(file2.side, file2.filename);
+    const filename = gcodeFilename(file2.side, file2, input2);
     if (filename.toLowerCase().endsWith(".stl")) {
       throw new Error("STL files are not attached. G-code only.");
     }
@@ -40390,20 +40459,20 @@ var CANONICAL_INSOLE_PRINT_MATERIALS = {
 function canonicalInsolePrintMaterialCatalog() {
   return CANONICAL_INSOLE_PRINT_MATERIALS;
 }
-function compactMaterialKey(value) {
+function compactMaterialKey2(value) {
   return value.trim().toLowerCase().replace(/[\s_-]+/g, "");
 }
 var SLICE_ID_BY_COMPACT_KEY = /* @__PURE__ */ new Map();
 for (const material of CANONICAL_INSOLE_PRINT_MATERIALS.materials) {
   for (const key of [material.id, material.label, material.vertex_slice_material, ...material.aliases]) {
-    const compact = compactMaterialKey(key);
+    const compact = compactMaterialKey2(key);
     if (compact) SLICE_ID_BY_COMPACT_KEY.set(compact, material.vertex_slice_material);
   }
 }
 function callerPrintMaterial(material) {
   const raw = material?.trim() ?? "";
   if (!raw) return void 0;
-  const id = SLICE_ID_BY_COMPACT_KEY.get(compactMaterialKey(raw));
+  const id = SLICE_ID_BY_COMPACT_KEY.get(compactMaterialKey2(raw));
   if (!id) {
     throw new Error(
       `Unknown print material "${raw}". Use apex_core, apex_light, or apex_bounce. Nothing was substituted.`
@@ -40613,6 +40682,8 @@ var attachFileSchema = external_exports.object({
   /** CAD provenance only. Not copied into the VO file object. */
   storage_key: external_exports.string().trim().min(1).max(500).optional(),
   filename: external_exports.string().max(200).optional(),
+  patient_name: external_exports.string().max(200).optional(),
+  material: external_exports.string().max(80).optional(),
   content_base64: external_exports.string().min(1).optional(),
   download_url: external_exports.string().min(1).max(4e3).optional(),
   expires_at: external_exports.string().min(1).max(80).optional()
@@ -40622,6 +40693,8 @@ var prepareVoAttachmentInputSchema = external_exports.object({
   order_id: external_exports.string().uuid(),
   /** CAD provenance only. Not sent; VO would check the design link. */
   design_id: external_exports.string().uuid().optional(),
+  patient_name: external_exports.string().max(200).optional(),
+  material: external_exports.string().max(80).optional(),
   files: external_exports.array(attachFileSchema).min(1).max(2)
 }).strict();
 var persistSavedDesignSnapshotInputSchema = external_exports.object({
@@ -40700,6 +40773,17 @@ var MCP_TOOL_DEFINITIONS = [
 ];
 
 // packages/mcp/src/tools/handlers.ts
+function mcpGcodeExportFilename(side, patientName, material, fileNameOverride) {
+  if (fileNameOverride?.trim()) return fileNameOverride.trim();
+  const patient = parsePatientNameForExport(patientName);
+  return buildExportFilename({
+    firstName: patient.firstName,
+    lastName: patient.lastName,
+    material: canonicalExportMaterialName(material),
+    side: side === "right" ? "R" : "L",
+    ext: "gcode"
+  });
+}
 function isUserQuestion(value) {
   if (!value || typeof value !== "object") return false;
   const row = value;
@@ -40770,7 +40854,7 @@ function publicProductionFromResult(result) {
     download: status === "succeeded" && productionId ? { tool: "get_export_download", production_id: downloadId ?? productionId } : null
   };
 }
-function gcodeFileFromResult(side, result) {
+function gcodeFileFromResult(side, result, filename) {
   const status = typeof result.status === "string" && PRODUCTION_STATUSES.has(result.status) ? result.status : null;
   if (status) {
     const productionId2 = textField(result, "productionId", "production_id");
@@ -40786,7 +40870,8 @@ function gcodeFileFromResult(side, result) {
     production_id: productionId,
     download_url: download,
     storage_key: storageKey,
-    content_base64: contentBase64
+    content_base64: contentBase64,
+    ...filename ? { filename } : {}
   };
 }
 function integrationNotReady(error62) {
@@ -40866,13 +40951,19 @@ async function dispatchTool(name, args, deps) {
         const sides = input2.side ? [input2.side] : ["left", "right"];
         const files = [];
         for (const side of sides) {
+          const exportFileName = mcpGcodeExportFilename(
+            side,
+            input2.patient_name,
+            material,
+            input2.file_name
+          );
           try {
             const result = await manufacturing.generateFromSavedDesign({
               designId: input2.design_id,
               side,
               presetId,
               material,
-              fileName: input2.file_name ? `${side}-${input2.file_name}` : `${side}.gcode`,
+              fileName: exportFileName,
               patientName: input2.patient_name,
               hardness: input2.hardness
             });
@@ -40884,7 +40975,7 @@ async function dispatchTool(name, args, deps) {
               }
               return result;
             }
-            files.push(gcodeFileFromResult(side, result));
+            files.push(gcodeFileFromResult(side, result, exportFileName));
           } catch (error62) {
             if (sides.length > 1) {
               throw new Error(
@@ -40902,6 +40993,12 @@ async function dispatchTool(name, args, deps) {
       if (!input2.stl_storage_key) {
         throw new Error("stl_storage_key is required unless use_saved_design");
       }
+      const legacyExportFileName = mcpGcodeExportFilename(
+        input2.side ?? "left",
+        input2.patient_name,
+        material,
+        input2.file_name
+      );
       const legacy = await manufacturing.generateGcode({
         designId: input2.design_id,
         side: input2.side,
@@ -40909,7 +41006,7 @@ async function dispatchTool(name, args, deps) {
         stlStorageKey: input2.stl_storage_key,
         outputType: input2.output_type,
         beltAngleDeg: input2.belt_angle_deg,
-        fileName: input2.file_name,
+        fileName: legacyExportFileName,
         material,
         patientName: input2.patient_name
       });
