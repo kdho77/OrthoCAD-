@@ -245,6 +245,7 @@
                 "vertex/shared/moonraker-printer-state.test.ts",
                 "vertex/shared/printer-address-policy.test.ts",
                 "vertex/src/components/layout/right-panel-duplicates.test.ts",
+                "vertex/src/features/clinical/SetupStepPanel.test.tsx",
                 "vertex/src/features/admin/admin-nav.test.ts",
                 "vertex/src/features/clients/DirectoryHeader.test.tsx",
                 "vertex/src/features/clients/start-path.test.ts",
