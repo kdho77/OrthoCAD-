@@ -1,3 +1,5 @@
+import { createServer, type Server } from "node:http";
+
 import { describe, expect, test } from "@rstest/core";
 
 import { HARDNESS_TO_INFILL_PCT } from "../../../shared/print-recipe/hardness-to-infill-pct.js";
@@ -29,6 +31,113 @@ const recipe: PrintRecipeV1 = {
     defaultHardness: "Hard",
     zones: [],
 };
+
+function triangleStl(verts: number[]): Uint8Array {
+    const buf = Buffer.alloc(84 + 50);
+    buf.writeUInt32LE(1, 80);
+    for (let i = 0; i < 9; i++) buf.writeFloatLE(verts[i] ?? 0, 84 + 12 + i * 4);
+    return new Uint8Array(buf);
+}
+
+async function expectHungSliceFails(mode: "never" | "slow"): Promise<void> {
+    const happy = (globalThis as { happyDOM?: { settings: { fetch: { disableSameOriginPolicy: boolean } } } })
+        .happyDOM;
+    const previousCors = happy?.settings.fetch.disableSameOriginPolicy;
+    if (happy) happy.settings.fetch.disableSameOriginPolicy = true;
+    let slowTimer: ReturnType<typeof setInterval> | undefined;
+    const server: Server = createServer((req, res) => {
+        const url = req.url ?? "";
+        if (url.startsWith("/v1/materials")) {
+            res.setHeader("content-type", "application/json");
+            res.end(JSON.stringify(["apex_core"]));
+            return;
+        }
+        if (!url.startsWith("/v1/slice")) {
+            res.statusCode = 404;
+            res.end();
+            return;
+        }
+        if (mode === "slow") {
+            req.pause();
+            slowTimer = setInterval(() => {
+                if (req.destroyed || req.readableEnded) return;
+                req.read(1);
+            }, 200);
+            req.on("close", () => {
+                if (slowTimer) clearInterval(slowTimer);
+            });
+            return;
+        }
+        req.resume();
+    });
+    await new Promise<void>((resolve) => {
+        server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    process.env.VERTEXSLICE_SLICER_URL = `http://127.0.0.1:${port}`;
+    process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+    const timeoutMs = 350;
+    try {
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(store, insert("left", `hang-${mode}`), new Date());
+        const invocationStart = new Date();
+        const sliceAt = new Date(
+            invocationStart.getTime() +
+                (CAD_PRODUCTION_MAX_DURATION_SEC - CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC) * 1000 -
+                timeoutMs,
+        );
+        let nowCalls = 0;
+        const startedAt = Date.now();
+        const done = executeCadOperatorProduction({
+            row: claimed.row,
+            store,
+            now: () => {
+                nowCalls += 1;
+                return nowCalls === 1 ? invocationStart : sliceAt;
+            },
+            materialize: async () => ({ stlStorageKey: "tmp/left.stl", meshFingerprint: null }),
+            slice: async (_stlStorageKey, sliceCtx) => {
+                await sliceWithVertexSlice({
+                    profileId: "apex-v2-insole-95a",
+                    material: "apex_core",
+                    model: triangleStl([0, 0, 0, 120, 0, 0, 0, 40, 8]),
+                    filename: "left.stl",
+                    infillDensityPct: 26,
+                    sliceTimeoutMs: sliceCtx?.sliceTimeoutMs,
+                    side: "left",
+                });
+                return { gcode: "G1\n", jobId: "job" };
+            },
+            uploadGcode: async () => ({ storageKey: "gcode/cad-operator/t/c/d/left.gcode" }),
+            charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+        });
+        const status = await Promise.race([
+            done.then(() => "done" as const),
+            new Promise<"hung">((resolve) => {
+                setTimeout(() => resolve("hung"), 2_500);
+            }),
+        ]);
+        expect(status).toBe("done");
+        expect(Date.now() - startedAt).toBeLessThan(timeoutMs + 1_500);
+        const row = await store.findById(claimed.row.id);
+        const expectedMs = cadVertexSliceSliceTimeoutMs(invocationStart, sliceAt);
+        const expectedSec = Math.max(1, Math.ceil(expectedMs / 1000));
+        expect(expectedMs).toBe(timeoutMs);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toBe(`VertexSlice timed out after ${expectedSec}s (left)`);
+        expect(publicProductionError(new Error(row?.error ?? ""))).toBe(row?.error);
+    } finally {
+        if (slowTimer) clearInterval(slowTimer);
+        server.closeAllConnections?.();
+        await new Promise<void>((resolve) => {
+            server.close(() => resolve());
+        });
+        delete process.env.VERTEXSLICE_SLICER_URL;
+        delete process.env.VERTEXSLICE_API_KEY;
+        if (happy) happy.settings.fetch.disableSameOriginPolicy = previousCors ?? false;
+    }
+}
 
 function insert(side: "left" | "right", fingerprint = "fp-1"): CadProductionInsert {
     return {
@@ -134,6 +243,19 @@ describe("CAD-operator production claim", () => {
         expect(row?.error).toBe(`VertexSlice timed out after ${expectedSec}s (right)`);
         expect(publicProductionError(new Error(row?.error ?? ""))).toBe(row?.error);
     });
+
+    test("a real hung slice and a slow body read fail the production inside the budget", async () => {
+        const originalTimeout = AbortSignal.timeout;
+        // Production missed this deadline: Node's AbortSignal.timeout did not reject the fetch.
+        AbortSignal.timeout = (() => new AbortController().signal) as typeof AbortSignal.timeout;
+        try {
+            await expectHungSliceFails("never");
+            await expectHungSliceFails("slow");
+        } finally {
+            AbortSignal.timeout = originalTimeout;
+        }
+    });
+
     test("begin returns before slicing finishes", async () => {
         const store = new MemoryCadProductionStore();
         let release: () => void = () => {};

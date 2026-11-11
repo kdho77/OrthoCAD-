@@ -292,7 +292,7 @@ export function publicProductionError(error: unknown): string {
         "Supabase admin client not configured",
         "Manufacturing charge failed",
     ];
-    if (message.startsWith("VertexSlice timed out after")) {
+    if (message.startsWith("VertexSlice timed out after") || message.startsWith("Manufacturing STL ")) {
         return message;
     }
     for (const item of allowed) {
@@ -433,6 +433,8 @@ export interface CadChargeResult {
 export interface CadProductionSliceContext {
     sliceTimeoutMs: number;
     sliceTimeoutSec: number;
+    /** executeCadOperatorProduction start. Recompute the slice budget after STL download. */
+    invocationStartedAt: Date;
 }
 
 export interface ExecuteCadProductionArgs {
@@ -496,7 +498,11 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
         const sliceNow = args.now();
         const sliceTimeoutMs = cadVertexSliceSliceTimeoutMs(started, sliceNow);
         const sliceTimeoutSec = Math.max(1, Math.ceil(sliceTimeoutMs / 1000));
-        const sliced = await args.slice(stlStorageKey, { sliceTimeoutMs, sliceTimeoutSec });
+        const sliced = await args.slice(stlStorageKey, {
+            sliceTimeoutMs,
+            sliceTimeoutSec,
+            invocationStartedAt: started,
+        });
         if (!sliced.gcode) {
             throw new Error("Manufacturing service returned empty output");
         }
