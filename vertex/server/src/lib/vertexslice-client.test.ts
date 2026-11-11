@@ -36,12 +36,39 @@ describe("VertexSlice printer G-code client", () => {
         expect(manufacturingBackendForOutput("stl")).toBe("python");
     });
 
-    test("Apex Bounce is allowed and Forge is refused before any slicer call", () => {
+    test("Apex Bounce and Apex Vylon are allowed and Forge is refused before any slicer call", () => {
         expect(assertEnabledVertexSliceMaterial("apex_bounce")).toBe("apex_bounce");
+        expect(assertEnabledVertexSliceMaterial("apex_vylon")).toBe("apex_vylon");
         expect(() => assertEnabledVertexSliceMaterial("apex_forge")).toThrow(
             /disabled until print settings/i,
         );
         expect(() => assertEnabledVertexSliceMaterial("TPU 95A")).toThrow(/Apex Core/);
+        expect(() => assertEnabledVertexSliceMaterial("PLA")).toThrow(/Apex Core/);
+    });
+
+    test("Apex Vylon slice sends the material id and no process override", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const calls = installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core", "apex_vylon"]), { status: 200 });
+            }
+            return new Response("G1 X0\n", { status: 200 });
+        });
+        const gcode = await sliceWithVertexSlice({
+            profileId: "apex-v2-insole-95a",
+            material: "apex_vylon",
+            model: new Uint8Array([1, 2, 3]),
+            infillDensityPct: 32,
+        });
+        expect(gcode).toContain("G1");
+        const form = calls.find((call) => call.url.endsWith("/v1/slice"))?.init.body as FormData;
+        expect(form.get("material")).toBe("apex_vylon");
+        expect(form.get("profile_id")).toBe("apex-v2-insole-95a");
+        expect(form.get("nozzle_temp")).toBeNull();
+        expect(form.get("bed_temp")).toBeNull();
+        expect(form.get("belt_temp")).toBeNull();
+        expect(form.get("wall_loops")).toBeNull();
     });
 
     test("Apex Bounce slice sends the material id and no process override", async () => {

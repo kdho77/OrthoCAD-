@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { BufferAttribute, BufferGeometry } from "three";
+import { afoMeshToGeometry } from "@/lib/geometry/afo/mesh-ops";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { classifyBaseTopFactors, getBaseFootprintFrame } from "@/lib/geometry/base-modifier";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
@@ -31,6 +32,7 @@ import {
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline";
+import { useAfoStore } from "@/stores/afo-store";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -222,6 +224,15 @@ function solidCameFromManufacturingCache(geometry: BufferGeometry | undefined): 
 /** Close, watertight-check, and scale one foot. A bad cache entry is dropped and lofted once. */
 async function closeAndValidateExportGeometry(side: Side): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
+    if (design.productType === "afo") {
+        const shell = useAfoStore.getState().shellMesh;
+        if (!shell) {
+            throw new Error("[EXPORT] Generate the AFO shell on the Print step before exporting STL.");
+        }
+        const geometry = afoMeshToGeometry(shell);
+        assertClosedSolidAcceptable(geometry, 0, null);
+        return geometry;
+    }
     assertShapeFinishExportAllowed(design, side);
     const geometry = await buildModifiedBaseGeometry(design, side, 0);
     if (!geometry) {
