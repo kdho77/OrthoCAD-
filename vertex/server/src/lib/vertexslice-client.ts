@@ -237,9 +237,21 @@ function isMaterialRejection(errorText: string, material: string): boolean {
     return /not available|not found|unknown|unsupported|unrecognized|invalid|not allowed|no such/.test(text);
 }
 
-function isAbortError(err: unknown): boolean {
-    if (err instanceof Error && err.name === "AbortError") return true;
-    if (err instanceof DOMException && err.name === "AbortError") return true;
+function isAbortOrTimeoutError(err: unknown): boolean {
+    if (err instanceof DOMException && (err.name === "AbortError" || err.name === "TimeoutError")) {
+        return true;
+    }
+    if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) {
+        return true;
+    }
+    return false;
+}
+
+function isFetchDeadlineError(err: unknown): boolean {
+    if (isAbortOrTimeoutError(err)) return true;
+    if (err instanceof Error && err.cause !== undefined) {
+        return isFetchDeadlineError(err.cause);
+    }
     return false;
 }
 
@@ -256,7 +268,7 @@ async function vertexSliceFetch(
     try {
         return await fetch(url, init);
     } catch (err: unknown) {
-        if (isAbortError(err) && opts?.timedOut) {
+        if (isFetchDeadlineError(err) && opts?.timedOut) {
             throw vertexSliceTimedOutError(opts.timedOut.timeoutSec, opts.timedOut.side);
         }
         const message = err instanceof Error ? err.message : String(err);

@@ -191,13 +191,14 @@ describe("VertexSlice printer G-code client", () => {
                         reject(new Error("expected AbortSignal on slice fetch"));
                         return;
                     }
+                    const onDeadline = () => {
+                        reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+                    };
                     if (signal.aborted) {
-                        reject(new DOMException("The operation was aborted.", "AbortError"));
+                        onDeadline();
                         return;
                     }
-                    signal.addEventListener("abort", () => {
-                        reject(new DOMException("The operation was aborted.", "AbortError"));
-                    });
+                    signal.addEventListener("abort", onDeadline, { once: true });
                 });
             }
             return new Response("unexpected", { status: 500 });
