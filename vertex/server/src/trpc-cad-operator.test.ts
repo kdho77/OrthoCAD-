@@ -210,14 +210,18 @@ describe("CAD-operator generate honors the caller material", () => {
         expect(sliced.uploadedGcode).toContain("filament_type = apex_core");
     });
 
-    test("unknown material, Apex Forge, and an unlocked preset are rejected before slicing", async () => {
+    test("apex_forge reaches VertexSlice with the locked profile", async () => {
+        const sliced = await sliceCallerMaterial({ material: "apex_forge", presetId: "apex-v2-insole-95a" });
+        expect(sliced.form.get("material")).toBe("apex_forge");
+        expect(sliced.form.get("profile_id")).toBe("apex-v2-insole-95a");
+        expect(sliced.form.get("infill_density")).toBe("32");
+        expect(sliced.form.get("nozzle_temp")).toBeNull();
+        expect(sliced.productionMaterial).toBe("apex_forge");
+        expect(sliced.uploadedGcode).toContain("filament_type = apex_forge");
+    });
+
+    test("unknown material and an unlocked preset are rejected before slicing", async () => {
         await expect(sliceCallerMaterial({ material: "TPU 95A" })).rejects.toThrow(/Unknown print material/);
-        await expect(sliceCallerMaterial({ material: "apex_forge" })).rejects.toThrow(
-            /disabled until print settings/i,
-        );
-        await expect(sliceCallerMaterial({ material: "Apex Forge" })).rejects.toThrow(
-            /disabled until print settings/i,
-        );
         await expect(
             sliceCallerMaterial({ material: "apex_light", presetId: "gyroid-production-v1" }),
         ).rejects.toThrow(/not substituted/);
@@ -267,7 +271,9 @@ async function sliceCallerMaterial(input: { material?: string; presetId?: string
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.endsWith("/v1/materials")) {
-            return new Response(JSON.stringify(["apex_core", "apex_light", "apex_bounce"]), { status: 200 });
+            return new Response(JSON.stringify(["apex_core", "apex_light", "apex_bounce", "apex_forge"]), {
+                status: 200,
+            });
         }
         if (url.endsWith("/v1/slice")) {
             sliceCalls += 1;

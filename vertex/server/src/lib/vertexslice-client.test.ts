@@ -35,12 +35,10 @@ describe("VertexSlice printer G-code client", () => {
         expect(manufacturingBackendForOutput("stl")).toBe("python");
     });
 
-    test("Apex Bounce is allowed and Forge is refused before any slicer call", () => {
+    test("Apex Bounce and Forge are allowed before any slicer call", () => {
         expect(assertEnabledVertexSliceMaterial("apex_bounce")).toBe("apex_bounce");
-        expect(() => assertEnabledVertexSliceMaterial("apex_forge")).toThrow(
-            /disabled until print settings/i,
-        );
-        expect(() => assertEnabledVertexSliceMaterial("TPU 95A")).toThrow(/Apex Core/);
+        expect(assertEnabledVertexSliceMaterial("apex_forge")).toBe("apex_forge");
+        expect(() => assertEnabledVertexSliceMaterial("TPU 95A")).toThrow(/Apex Forge/);
     });
 
     test("Apex Bounce slice sends the material id and no process override", async () => {
@@ -120,6 +118,53 @@ describe("VertexSlice printer G-code client", () => {
         expect(form.get("wall_loops")).toBeNull();
         expect(form.get("print_direction")).toBeNull();
         expect(calls.map((call) => call.url).join(" ")).not.toContain("super-secret-key");
+    });
+
+    test("apex_forge slice request mirrors apex_core except material", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example/";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const stub = new Uint8Array([5, 6, 7]);
+        const infill = 26;
+        let coreForm: FormData | undefined;
+        let forgeForm: FormData | undefined;
+        const calls = installFetch((url, init) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify({ materials: ["apex_core", "apex_forge"] }), {
+                    status: 200,
+                });
+            }
+            const form = init.body as FormData;
+            const material = form.get("material");
+            if (material === "apex_core") coreForm = form;
+            if (material === "apex_forge") forgeForm = form;
+            const temp = material === "apex_forge" ? 245 : 225;
+            return new Response(`M104 S${temp}\nM109 S${temp}\n`, { status: 200 });
+        });
+
+        const coreGcode = await sliceWithVertexSlice({
+            profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+            material: "apex_core",
+            model: stub,
+            infillDensityPct: infill,
+        });
+        const forgeGcode = await sliceWithVertexSlice({
+            profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+            material: "apex_forge",
+            model: stub,
+            infillDensityPct: infill,
+        });
+
+        expect(coreForm?.get("profile_id")).toBe("apex-v2-insole-95a");
+        expect(forgeForm?.get("profile_id")).toBe("apex-v2-insole-95a");
+        expect(coreForm?.get("infill_density")).toBe(String(infill));
+        expect(forgeForm?.get("infill_density")).toBe(String(infill));
+        expect(coreForm?.get("nozzle_temp")).toBeNull();
+        expect(forgeForm?.get("nozzle_temp")).toBeNull();
+        expect(coreForm?.get("material")).toBe("apex_core");
+        expect(forgeForm?.get("material")).toBe("apex_forge");
+        expect(coreGcode).toMatch(/M10[49]\s+S225\b/);
+        expect(forgeGcode).toMatch(/M10[49]\s+S245\b/);
+        expect(calls.filter((call) => call.url.endsWith("/v1/slice"))).toHaveLength(2);
     });
 
     test("fails closed when /v1/materials does not list the material and does not slice", async () => {

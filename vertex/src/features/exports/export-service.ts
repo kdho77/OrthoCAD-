@@ -472,7 +472,7 @@ export async function generateHybridGcode(
     if (outputType === "gcode" && !isApexPrintMaterialExportReady(options.apexMaterialId)) {
         return {
             ok: false,
-            reason: "Pick Apex Light or Apex Core before exporting G-code.",
+            reason: "Pick Apex Light, Apex Core, Apex Bounce, or Apex Forge before exporting G-code.",
         };
     }
     const sliceFields =

@@ -16,6 +16,9 @@ export type VertexSliceMaterialId = "apex_core" | "apex_light" | "apex_forge" | 
  */
 export const APEX_CORE_NOZZLE_TEMP_C = 225;
 
+/** Apex Forge is Apex Core with this approved nozzle delta (VertexSlice `apex_forge`). */
+export const APEX_FORGE_NOZZLE_TEMP_C = 245;
+
 /**
  * Apex Bounce is Apex Core with these approved deltas.
  * Speed is a factor of Core's print speeds. Core's mm/s value is not invented here.
@@ -64,7 +67,7 @@ const SETTINGS_NOT_APPROVED = "Disabled until print settings are approved";
 /**
  * Apex Light, Apex Core, and Apex Bounce share the locked process profile id.
  * Bounce process deltas (220°C, 0.8× Core speed, 70°C bed) are applied by VertexSlice
- * on `apex_bounce`. Forge stays disabled. ApexComfort uses Apex Core.
+ * on `apex_bounce`. Forge matches Core at 245°C on `apex_forge`. ApexComfort uses Apex Core.
  */
 export const APEX_PRINT_MATERIAL_OPTIONS: readonly ApexPrintMaterialOption[] = [
     {
@@ -96,9 +99,8 @@ export const APEX_PRINT_MATERIAL_OPTIONS: readonly ApexPrintMaterialOption[] = [
         label: "Apex Forge",
         lockedProfileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
         vertexSliceMaterial: "apex_forge",
-        shoreLabel: "",
-        enabled: false,
-        disabledReason: SETTINGS_NOT_APPROVED,
+        shoreLabel: "Shore 95A",
+        enabled: true,
     },
 ] as const;
 

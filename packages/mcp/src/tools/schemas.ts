@@ -28,10 +28,10 @@ const MATERIAL_FIELD_DESCRIPTION =
     "Insole print material. Omit for apex_core (Apex Core). " +
     'Enabled values: apex_light (Apex Light; aliases ApexLight, "Apex Light", "ApexLight Foam"), ' +
     'apex_core (Apex Core; aliases ApexCore, "Apex Core", ApexComfort, "Apex Comfort"), ' +
-    'apex_bounce (Apex Bounce; aliases ApexBounce, "Apex Bounce"). ' +
+    'apex_bounce (Apex Bounce; aliases ApexBounce, "Apex Bounce"), ' +
+    'apex_forge (Apex Forge; aliases ApexForge, "Apex Forge"). ' +
     "Spaces, underscores, and hyphens are ignored. " +
-    "ApexLight Foam is Apex Light, not a separate product. " +
-    "apex_forge (Apex Forge) is disabled and rejected. Unknown names are rejected. Nothing is substituted. " +
+    "ApexLight Foam is Apex Light, not a separate product. Unknown names are rejected. Nothing is substituted. " +
     "Call list_materials for the canonical ids, labels, aliases, and enabled flags.";
 
 const PRESET_FIELD_DESCRIPTION =
@@ -313,8 +313,7 @@ export const MCP_TOOL_DEFINITIONS = [
             "and disabled_reason when disabled. " +
             "generate_gcode material accepts vertex_slice_material or any alias. Spaces, underscores, and hyphens are ignored. " +
             'Apex Light / apex_light aliases include "ApexLight Foam" (the VertexOrders label, not a new product). ' +
-            "Apex Core / apex_core aliases include ApexComfort. Apex Bounce / apex_bounce is enabled. " +
-            "Apex Forge / apex_forge is disabled until print settings are approved and is rejected. " +
+            "Apex Core / apex_core aliases include ApexComfort. Apex Bounce / apex_bounce and Apex Forge / apex_forge are enabled. " +
             "Unknown material names are rejected. Nothing is substituted. " +
             "preset_id must be omitted or apex-v2-insole-95a. Any other preset_id is rejected and not substituted.",
         inputSchema: listMaterialsInputSchema,
@@ -328,8 +327,8 @@ export const MCP_TOOL_DEFINITIONS = [
             "No STL deliverable and no G-code bytes. Omitting side enqueues both feet. " +
             "Legacy mode still calls manufacturing.generateSolid → Python /manufacture with stl_storage_key. " +
             "PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck. " +
-            "material: omit for apex_core, or pass apex_light, apex_core, apex_bounce, or a list_materials alias " +
-            '("ApexLight Foam" is apex_light). Unknown materials and disabled apex_forge are rejected and not substituted. ' +
+            "material: omit for apex_core, or pass apex_light, apex_core, apex_bounce, apex_forge, or a list_materials alias " +
+            '("ApexLight Foam" is apex_light). Unknown materials are rejected and not substituted. ' +
             "preset_id: omit or pass apex-v2-insole-95a. Any other preset_id is rejected and not substituted. " +
             "Every enabled insole material keeps that locked profile.",
         inputSchema: generateGcodeInputObjectSchema,
