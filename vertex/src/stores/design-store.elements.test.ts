@@ -2,7 +2,9 @@
 
 import { beforeEach, describe, expect, test } from "@rstest/core";
 import { VERTEX_STARTER_PRESETS } from "@/lib/clinical/correction-presets";
-import { ELEMENT_PROFILES } from "@/lib/geometry/elements";
+import { defaultElementPose, ELEMENT_PROFILES } from "@/lib/geometry/elements";
+import { meshYForAnatomicalSide, meshYSign } from "@/lib/geometry/handedness";
+import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import type { DesignState, ElementKind, PrescriptionParseResult } from "@/types";
 import { defaultShoeChart } from "../../shared/client-files";
 import { useClientStore } from "./client-store";
@@ -126,6 +128,50 @@ describe("elements require explicit library placement", () => {
         expect(useDesignStore.getState().pendingSessionDesign).toBeNull();
         useDesignStore.getState().loadDesign(saved);
         expect(useDesignStore.getState().design.elements).toEqual(saved.elements);
+    });
+
+    test("loading a saved design puts an untouched legacy first-ray pad back under the first ray", () => {
+        const layout = insoleLayoutForUsMenSize(11.5);
+        const half = layout.widthMm / 2;
+        const design = freshDesign();
+        design.usMenSize = 11.5;
+        design.sizeSystem = "us";
+        design.elements = [
+            {
+                id: "legacy-left",
+                kind: "mortons_extension",
+                side: "left",
+                position: { x: 0.78 * layout.lengthMm - layout.lengthMm / 2, y: 0.5 * half },
+                rotationDeg: 0,
+                scale: { x: 1, y: 1 },
+                heightMm: 2,
+            },
+            {
+                id: "legacy-right",
+                kind: "reverse_mortons",
+                side: "right",
+                position: {
+                    x: 0.7 * layout.lengthMm - layout.lengthMm / 2,
+                    y: meshYForAnatomicalSide("right", "lateral", 0.1 * half),
+                },
+                rotationDeg: 0,
+                scale: { x: 1, y: 1 },
+                heightMm: 2.5,
+            },
+        ];
+        useDesignStore.getState().loadDesign(design);
+        const loaded = useDesignStore.getState().design.elements;
+        for (const el of loaded) {
+            const pose = defaultElementPose(el.kind, el.side, layout.lengthMm, layout.widthMm);
+            expect(el.position).toEqual(pose.position);
+            expect(Math.sign(el.position.y)).toBe(meshYSign(el.side, "medial"));
+        }
+        expect(loaded.find((el) => el.id === "legacy-left")?.heightMm).toBe(2);
+        expect(loaded.find((el) => el.id === "legacy-right")?.heightMm).toBe(2.5);
+        useDesignStore.getState().loadDesign(useDesignStore.getState().design);
+        expect(useDesignStore.getState().design.elements.map((el) => el.position)).toEqual(
+            loaded.map((el) => el.position),
+        );
     });
 
     test("linked sinks keep a requested depth above max on both feet", () => {

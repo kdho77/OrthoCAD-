@@ -22,6 +22,7 @@ import {
     mortonsLocalOutline,
     mortonsReferenceWidthMm,
 } from "@/lib/geometry/mortons-extension";
+import { insoleLayoutFromDesign, type ShoeSizingDesign } from "@/lib/geometry/shoe-size";
 import type { ElementKind, PlacedElement, Side } from "@/types";
 
 /**
@@ -596,6 +597,76 @@ export function defaultElementPose(
                 ? "flow"
                 : undefined,
     };
+}
+
+/**
+ * Poses written before the 1st-ray footprint. Y was either height-field
+ * (+Y left medial) or the #285 mesh pose that still parked Reverse Morton's
+ * on the lateral border. A reopened design keeps a moved pad; only these
+ * untouched defaults are rewritten onto {@link defaultElementPose}.
+ */
+const LEGACY_FIRST_RAY_POSES: ReadonlyArray<{
+    kind: "mortons_extension" | "reverse_mortons";
+    u: number;
+    /** Signed fraction of half-width, before the anatomical-side abs. */
+    fraction: number;
+    frame: "height-field" | "mesh-medial" | "mesh-lateral";
+}> = [
+    { kind: "mortons_extension", u: 0.78, fraction: 0.5, frame: "height-field" },
+    { kind: "reverse_mortons", u: 0.7, fraction: -0.1, frame: "height-field" },
+    { kind: "mortons_extension", u: 0.78, fraction: 0.5, frame: "mesh-medial" },
+    { kind: "reverse_mortons", u: 0.7, fraction: 0.1, frame: "mesh-lateral" },
+];
+
+function legacyFirstRayY(
+    side: Side,
+    frame: (typeof LEGACY_FIRST_RAY_POSES)[number]["frame"],
+    fraction: number,
+    halfWidthMm: number,
+): number {
+    if (frame === "height-field") {
+        const sign = side === "left" ? 1 : -1;
+        return fraction * halfWidthMm * sign;
+    }
+    return meshYForAnatomicalSide(
+        side,
+        frame === "mesh-medial" ? "medial" : "lateral",
+        Math.abs(fraction) * halfWidthMm,
+    );
+}
+
+function isUntouchedLegacyFirstRay(el: PlacedElement, lengthMm: number, widthMm: number): boolean {
+    if (el.kind !== "mortons_extension" && el.kind !== "reverse_mortons") return false;
+    if (Math.abs(el.rotationDeg) > 0.05) return false;
+    if (Math.abs(el.scale.x - 1) > 0.05 || Math.abs(el.scale.y - 1) > 0.05) return false;
+    const half = widthMm / 2;
+    return LEGACY_FIRST_RAY_POSES.some((legacy) => {
+        if (legacy.kind !== el.kind) return false;
+        const x = legacy.u * lengthMm - lengthMm / 2;
+        const y = legacyFirstRayY(el.side, legacy.frame, legacy.fraction, half);
+        return Math.abs(el.position.x - x) <= 0.05 && Math.abs(el.position.y - y) <= 0.05;
+    });
+}
+
+/** Move an untouched pre-#300 Morton's or Reverse Morton's onto the 1st ray. */
+export function repositionLegacyFirstRayDesign<T extends ShoeSizingDesign & { elements: PlacedElement[] }>(
+    design: T,
+): T {
+    if (!design.elements.length) return design;
+    const layout = insoleLayoutFromDesign(design);
+    let changed = false;
+    const elements = design.elements.map((el) => {
+        if (!isUntouchedLegacyFirstRay(el, layout.lengthMm, layout.widthMm)) return el;
+        changed = true;
+        const pose = defaultElementPose(
+            el.kind as "mortons_extension" | "reverse_mortons",
+            el.side,
+            layout.lengthMm,
+            layout.widthMm,
+        );
+        return { ...el, position: { x: pose.position.x, y: pose.position.y } };
+    });
+    return changed ? { ...design, elements } : design;
 }
 
 /**
