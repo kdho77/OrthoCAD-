@@ -466,22 +466,22 @@ describe("posting wedge (design viewer height field)", () => {
         expect(heightAt(apexU, apexV, low)).toBeLessThan(apexNeutral);
     });
 
-    test("arch ease is zero at the medial trim rim (right foot v=-0.98)", () => {
+    test("legacy arch ease does not change the height field", () => {
         const ease = baseParams("right", { ...zeroCorrections(), archEaseMm: 6 });
         const plain = baseParams("right", zeroCorrections());
-        const u = 0.42;
-        const medialRimV = -0.98;
-        expect(heightAt(u, medialRimV, ease) - heightAt(u, medialRimV, plain)).toBeLessThan(0.05);
-        const interior = heightAt(u, -0.35, ease) - heightAt(u, -0.35, plain);
-        expect(interior).toBeLessThan(-1);
+        for (let ui = 0; ui <= 1.0001; ui += 0.05) {
+            for (let vi = -1; vi <= 1.0001; vi += 0.1) {
+                expect(heightAt(ui, vi, ease)).toBe(heightAt(ui, vi, plain));
+            }
+        }
     });
 
-    test("arch ease lowers medial arch in heightAt and composePrintSolidTop", async () => {
+    test("legacy arch ease does not lower the medial arch or the composed top", async () => {
         const u = 0.42;
         const v = -0.35;
         const withEase = baseParams("right", { ...zeroCorrections(), archHeightMm: 8, archEaseMm: 3 });
         const plain = baseParams("right", { ...zeroCorrections(), archHeightMm: 8 });
-        expect(heightAt(u, v, withEase)).toBeLessThan(heightAt(u, v, plain) - 0.5);
+        expect(heightAt(u, v, withEase)).toBe(heightAt(u, v, plain));
 
         const buf = readFileSync(SAMPLE_TOP_PATH);
         const raw = await sampleTopFromArrayBuffer(
@@ -503,7 +503,7 @@ describe("posting wedge (design viewer height field)", () => {
         composed.dispose();
         neutral.dispose();
         raw.dispose();
-        expect(maxDrop).toBeGreaterThan(0.5);
+        expect(maxDrop).toBe(0);
     });
 
     test("composePrintSolidTop forefoot lateral 5.5 mm border rise (F02)", async () => {

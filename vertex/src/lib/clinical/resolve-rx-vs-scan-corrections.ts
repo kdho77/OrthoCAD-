@@ -9,7 +9,7 @@ const RX_PRIORITY_KEYS: (keyof SideCorrections)[] = [
     "lateralSkiveMm",
     "archFillMm",
     "archHeightMm",
-    "archEaseMm",
+    "archElongationMm",
     "heelCupDepthMm",
     "heelCupHeightMm",
     "heelCupWidthMm",

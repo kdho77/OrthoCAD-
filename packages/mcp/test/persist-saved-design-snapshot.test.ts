@@ -120,6 +120,12 @@ describe("persist_saved_design_snapshot tool", () => {
         expect(
             persistSavedDesignSnapshotInputSchema.safeParse({
                 design_id: designId,
+                catalog: { sliders: { arch_ease_mm: 6, arch_elongation_mm: 4 } },
+            }).success,
+        ).toBe(true);
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({
+                design_id: designId,
                 catalog: { sinks: [{ name: "mpj1", side: "left", depth_mm: 1.5, size_mm: 22 }] },
             }).success,
         ).toBe(false);
