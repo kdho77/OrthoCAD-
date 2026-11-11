@@ -6,7 +6,9 @@ import {
     buildExportFilename,
     canonicalExportMaterialName,
     exportPatientFilenameSegment,
+    exportPatientPartsForProduction,
     exportSideSuffix,
+    looksLikeInitialsLabel,
     parsePatientNameForExport,
     sanitizeFilenamePart,
 } from "./export-filename.js";
@@ -111,5 +113,40 @@ describe("exportPatientFilenameSegment and exportSideSuffix", () => {
         expect(exportPatientFilenameSegment("", "")).toBe("Unknown_Patient");
         expect(exportSideSuffix(["left", "right"])).toBe("LR");
         expect(exportSideSuffix("right")).toBe("R");
+    });
+});
+
+describe("exportPatientPartsForProduction", () => {
+    test("prefers chart first and last over initials label", () => {
+        expect(
+            exportPatientPartsForProduction({
+                clientFirstName: "Jane",
+                clientLastName: "Doe",
+                clientLabel: "JD",
+            }),
+        ).toEqual({ firstName: "Jane", lastName: "Doe" });
+    });
+
+    test("does not treat initials as a first name", () => {
+        expect(looksLikeInitialsLabel("JD")).toBe(true);
+        expect(exportPatientPartsForProduction({ clientLabel: "JD" })).toEqual({
+            firstName: "",
+            lastName: "",
+        });
+        expect(
+            buildExportFilename({
+                ...exportPatientPartsForProduction({ clientLabel: "JD" }),
+                material: "ApexCore",
+                side: "LR",
+                ext: "gcode",
+            }),
+        ).toBe("Unknown_Patient_ApexCore_LR.gcode");
+    });
+
+    test("parses a multi-word display label when chart names are absent", () => {
+        expect(exportPatientPartsForProduction({ clientLabel: "Jane Doe" })).toEqual({
+            firstName: "Jane",
+            lastName: "Doe",
+        });
     });
 });

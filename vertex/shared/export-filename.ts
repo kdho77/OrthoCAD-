@@ -74,6 +74,38 @@ export function exportPatientFilenameSegment(firstName?: string | null, lastName
     return parts.join("_");
 }
 
+/** Queue shorthand like JD or AM — not used as a legal first name for export filenames. */
+export function looksLikeInitialsLabel(label: string | null | undefined): boolean {
+    const trimmed = label?.trim() ?? "";
+    if (!trimmed) return true;
+    if (/\s/.test(trimmed)) return false;
+    return trimmed.length <= 4;
+}
+
+export interface ProductionExportPatientSource {
+    clientFirstName?: string | null;
+    clientLastName?: string | null;
+    clientLabel?: string | null;
+}
+
+/**
+ * Prefer chart first/last. Use a multi-word display label only when it is not initials.
+ * Otherwise return empty parts so the caller can fall back to Unknown_Patient.
+ */
+export function exportPatientPartsForProduction(input: ProductionExportPatientSource): {
+    firstName: string;
+    lastName: string;
+} {
+    const first = sanitizeFilenamePart(input.clientFirstName);
+    const last = sanitizeFilenamePart(input.clientLastName);
+    if (first || last) return { firstName: first, lastName: last };
+    const label = input.clientLabel?.trim() ?? "";
+    if (label && !looksLikeInitialsLabel(label)) {
+        return parsePatientNameForExport(label);
+    }
+    return { firstName: "", lastName: "" };
+}
+
 export function parsePatientNameForExport(patientName?: string | null): {
     firstName: string;
     lastName: string;

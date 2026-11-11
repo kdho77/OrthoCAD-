@@ -169,7 +169,12 @@ describe("production jobs", () => {
     });
 
     test("retry keeps the same G-code and mill mark-done leaves the queue", async () => {
-        const local = createMemoryProductionRepo({ jobs: [], printers: [], gcode: {} });
+        const local = createMemoryProductionRepo({
+            jobs: [],
+            printers: [],
+            gcode: {},
+            clientPatientParts: { c1: { firstName: "Jane", lastName: "Doe" } },
+        });
         const me = actor("clinician", ORG);
         const failed = await enqueueJob(local, me, {
             designId: "d1",
@@ -208,7 +213,7 @@ describe("production jobs", () => {
         ).toEqual([done]);
         const file = await downloadGcode(local, me, mill.id);
         expect(file.gcode).toBe(`${GCODE}G1 X1\n`);
-        expect(file.filename).toBe("JD_ApexCore_LR.gcode");
+        expect(file.filename).toBe("Jane_Doe_ApexCore_LR.gcode");
     });
 
     test("re-run queues the same stored G-code and refuses an expired file", async () => {
