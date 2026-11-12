@@ -10,13 +10,12 @@ import type { Side } from "@/types";
  * u is the fraction of insole length from the heel. v is the fraction of
  * LOCAL width from the medial edge (0 = medial border, 1 = lateral border).
  * Width uses the station's own medial-to-lateral span, not a fixed millimetre
- * width and not the bounding-box width. The 8 mm fillet, the 2 mm lateral
- * taper, and the proximal feather stay in millimetres. Thickness does not scale.
+ * width and not the bounding-box width. The 8 mm fillet and both feathers
+ * stay in millimetres. Thickness does not scale.
  *
- * The design-view ring is this polygon with a hard edge. The solid tapers
- * inside the lateral border. The proximal (heel-side) end feathers inside
- * that border with a quintic so it meets the insole top with a continuous
- * tangent and continuous curvature.
+ * The design-view ring is this polygon with a hard edge. The solid feathers
+ * inside the lateral border and the proximal border with quintics, so each
+ * edge meets the insole top with continuous tangent and curvature.
  */
 
 /** Proximal arc dips to this u at v = 0.20. */
@@ -27,7 +26,16 @@ export const MORTONS_V_DIP = 0.2;
 /** Lateral border, fraction of local width from the medial edge. */
 export const MORTONS_V_LATERAL = 0.4;
 export const MORTONS_FILLET_MM = 8;
-export const MORTONS_TAPER_LATERAL_MM = 2;
+/**
+ * Lateral-border feather inside the sharp outline, along the body of the
+ * pad. The old 2 mm Hermite bevel peaked near 2.1 mm/mm and drew the streak
+ * on that edge. 15 mm with a quintic stays under 0.40 mm/mm and is C2 at
+ * the surface and at the plateau. It stops short of the anchor, so the
+ * 3 mm peak stays put. {@link lateralFeatherMm} shortens it at the toe.
+ */
+export const MORTONS_TAPER_LATERAL_MM = 15;
+/** Lateral feather on the distal edge, so the toe stays full height. */
+const MORTONS_TAPER_LATERAL_TOE_MM = 6;
 /**
  * Heel-side feather inside the sharp outline. Quintic, so slope and
  * curvature are zero where the pad meets the top and where it reaches
@@ -98,7 +106,10 @@ const EDGE_LATERAL = [
     0.0495,
 ] as const;
 
-const polyCache = new Map<string, { points: PolyPoint[]; anchor: MortonsAnchor; filletMm: number }>();
+const polyCache = new Map<
+    string,
+    { points: PolyPoint[]; anchor: MortonsAnchor; filletMm: number; frameLength: number; originX: number }
+>();
 
 export function mortonsPlanScale(lengthMm: number): number {
     const raw = lengthMm / INSOLE_LENGTH_MM;
@@ -106,15 +117,27 @@ export function mortonsPlanScale(lengthMm: number): number {
     return Math.max(MORTONS_SCALE_MIN, raw);
 }
 
-function smoothstep01(t: number): number {
-    const x = t <= 0 ? 0 : t >= 1 ? 1 : t;
-    return x * x * (3 - 2 * x);
-}
-
 /** C2 step: value, first, and second derivative are 0 at both 0 and 1. */
 function quintic01(t: number): number {
     const x = t <= 0 ? 0 : t >= 1 ? 1 : t;
     return x * x * x * (x * (x * 6 - 15) + 10);
+}
+
+/**
+ * Lateral feather length at length-fraction `u`. Full
+ * {@link MORTONS_TAPER_LATERAL_MM} through the circled lateral border,
+ * then a quintic down to {@link MORTONS_TAPER_LATERAL_TOE_MM} so the
+ * distal edge is not pulled off full height.
+ */
+function lateralFeatherMm(u: number): number {
+    const u0 = 0.9;
+    const u1 = 0.98;
+    if (u <= u0) return MORTONS_TAPER_LATERAL_MM;
+    if (u >= u1) return MORTONS_TAPER_LATERAL_TOE_MM;
+    const t = (u - u0) / (u1 - u0);
+    return (
+        MORTONS_TAPER_LATERAL_MM + (MORTONS_TAPER_LATERAL_TOE_MM - MORTONS_TAPER_LATERAL_MM) * quintic01(t)
+    );
 }
 
 function lerpEdge(u: number): { medial: number; lateral: number } {
@@ -429,7 +452,7 @@ function cachedBuild(
     lengthMm: number,
     widthMm: number,
     outline?: readonly MortonsOutlinePoint[] | null,
-): { points: PolyPoint[]; anchor: MortonsAnchor; filletMm: number } {
+): { points: PolyPoint[]; anchor: MortonsAnchor; filletMm: number; frameLength: number; originX: number } {
     const outlineKey =
         outline && outline.length >= 6
             ? outline.map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(";")
@@ -439,7 +462,13 @@ function cachedBuild(
     if (hit) return hit;
     const built = buildPolygon(side, lengthMm, widthMm, outline);
     const anchor = outlineKey ? aabbCenter(built.points) : formulaAnchor(side, lengthMm, widthMm);
-    const value = { points: built.points, anchor, filletMm: built.filletMm };
+    const value = {
+        points: built.points,
+        anchor,
+        filletMm: built.filletMm,
+        frameLength: built.frameLength,
+        originX: built.originX,
+    };
     if (polyCache.size > 64) polyCache.clear();
     polyCache.set(key, value);
     return value;
@@ -524,10 +553,10 @@ function chainDistance(
 
 /**
  * Solid weight 0..1 at a mesh-local point (origin = anchor, +x distal).
- * Full thickness on the medial edge and the toe edge. Lateral fades over
- * 2 mm (C1). The proximal border feathers over {@link MORTONS_TAPER_PROXIMAL_MM}
- * with a quintic (C2) so the heel-side end has no ledge or crease.
- * Both feathers stay inside the sharp outline.
+ * Full thickness on the medial edge and the toe edge. The lateral border
+ * feathers over {@link MORTONS_TAPER_LATERAL_MM} (shorter at the toe) and
+ * the proximal border over {@link MORTONS_TAPER_PROXIMAL_MM}, both quintic
+ * (C2) and both inside the sharp outline.
  */
 export function mortonsSolidWeight(
     side: Side,
@@ -543,8 +572,10 @@ export function mortonsSolidWeight(
     if (!pointInPoly(x, y, built.points)) return 0;
     let weight = 1;
     const lateral = chainDistance(x, y, built.points, "lateral");
-    if (lateral < MORTONS_TAPER_LATERAL_MM) {
-        weight *= smoothstep01(lateral / MORTONS_TAPER_LATERAL_MM);
+    const u = (x - built.originX) / Math.max(built.frameLength, 1e-6);
+    const lateralMm = lateralFeatherMm(u);
+    if (lateral < lateralMm) {
+        weight *= quintic01(lateral / lateralMm);
     }
     // Fillet stays on the lateral taper only. Including it here pulls a
     // curvature ridge off the corner into the pad.
