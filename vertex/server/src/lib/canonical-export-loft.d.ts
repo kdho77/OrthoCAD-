@@ -16,3 +16,9 @@ export function buildFinalizedFootFromSavedSettings(input: {
     uploadTriangles: number;
     fingerprint: string;
 }>;
+
+export function buildRegional3mfFromSavedSettings(input: {
+    settingsJson: unknown;
+    side: "left" | "right";
+    manufacturingStl: ArrayBuffer;
+}): Promise<{ bytes: Uint8Array; regionCount: number } | null>;

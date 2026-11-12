@@ -7,7 +7,12 @@ import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { AfoCueSphere } from "@/components/viewer/AfoScanMarkers";
-import { AfoLitSurfaceMaterial, AfoPointCloudMaterial } from "@/components/viewer/AfoSurfaceMaterial";
+import {
+    AfoLitSurfaceMaterial,
+    AfoPointCloudMaterial,
+    AFO_LANDMARK_LIT_ROUGHNESS,
+    AFO_LANDMARK_LIT_SURFACE_COLOR,
+} from "@/components/viewer/AfoSurfaceMaterial";
 import {
     AFO_POINT_DEPTH_WINDOW_MM,
     afoCastBodyStyle,
@@ -118,13 +123,27 @@ export function AfoMeshes() {
         const stats = bodyMesh
             ? afoTriangleStats(bodyMesh.positions, bodyMesh.indices)
             : { triangles: 0, degenerateRatio: 1 };
-        return afoCastBodyStyle({
+        const style = afoCastBodyStyle({
             transparentOn: scanMat.transparent,
             heightmap,
             triangleCount: stats.triangles,
             degenerateRatio: stats.degenerateRatio,
         });
-    }, [bodyMesh, scanMat.transparent, heightmap]);
+        if (placingLandmarks) {
+            return {
+                ...style,
+                drawMode: "surface" as const,
+                shaded: true,
+                color: heightmap ? style.color : AFO_LANDMARK_LIT_SURFACE_COLOR,
+                opacity: 1,
+                transparent: false,
+                roughness: AFO_LANDMARK_LIT_ROUGHNESS,
+                depthWrite: true,
+                vertexColors: heightmap,
+            };
+        }
+        return style;
+    }, [bodyMesh, scanMat.transparent, heightmap, placingLandmarks]);
     const markerDrawMode = bodyMesh ? bodyStyle.drawMode : "surface";
     const shadedGeo = useMemo(() => {
         if (!bodyGeo || !bodyStyle.vertexColors || !bodyMesh) return bodyGeo;

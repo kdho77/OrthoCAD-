@@ -8,7 +8,13 @@ import { sinkFootprintPose } from "@/components/viewer/element-footprints";
 import { detectArchSideSign } from "@/lib/geometry/base-modifier";
 import { medialSign } from "@/lib/geometry/handedness";
 import { sampleTopFromArrayBuffer } from "@/lib/geometry/procedural-wall/sample-top-preview";
-import { applySinkCutToGeometry, type SinkOutlinePoint, sinkFrame } from "@/lib/geometry/sink";
+import {
+    applySinkCutToGeometry,
+    RKW_END_FEATHER_MM,
+    type SinkOutlinePoint,
+    sinkCutMm,
+    sinkFrame,
+} from "@/lib/geometry/sink";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import type { PlacedSink, SinkKind } from "@/types";
 
@@ -151,5 +157,38 @@ describe("medialSign", () => {
             left.dispose();
             right.dispose();
         }
+    });
+
+    test("reverse kinetic wedge end feather matches on both feet and stays medial", () => {
+        const lengthMm = 275;
+        const widthMm = 100;
+        const medialY = -widthMm / 2;
+        const lateralY = widthMm / 2;
+        const outline = meshRect(lengthMm, medialY, lateralY);
+        const samples: number[][] = [];
+        for (const side of ["left", "right"] as const) {
+            const sink = { ...placed("rkw", `rkw-${side}`), depthMm: 4 };
+            const ctx = { side, lengthMm, widthMm, sinks: [sink], footOutline: outline };
+            const frame = sinkFrame(sink, ctx)!;
+            expect(Math.abs(frame.cy - medialY)).toBeLessThan(Math.abs(frame.cy - lateralY));
+            const cut = (s: number) => sinkCutMm(frame.dx + frame.tx * s, frame.dy + frame.ty * s, ctx).mm;
+            expect(cut(0)).toBeGreaterThan(3.5);
+            const end = (edge: number, d: number) => cut(edge + Math.sign(edge || 1) * d);
+            samples.push([
+                end(frame.aDist, 8),
+                end(frame.aDist, 16),
+                end(-frame.aProx, 8),
+                end(-frame.aProx, 16),
+                end(frame.aDist, RKW_END_FEATHER_MM),
+                end(-frame.aProx, RKW_END_FEATHER_MM),
+            ]);
+            expect(end(frame.aDist, RKW_END_FEATHER_MM)).toBeLessThan(0.08);
+            expect(end(-frame.aProx, RKW_END_FEATHER_MM)).toBeLessThan(0.08);
+            expect(end(frame.aDist, 8)).toBeGreaterThan(2);
+            expect(end(-frame.aProx, 8)).toBeGreaterThan(2);
+        }
+        const left = samples[0]!;
+        const right = samples[1]!;
+        for (let i = 0; i < left.length; i++) expect(right[i]).toBeCloseTo(left[i]!, 2);
     });
 });

@@ -16,6 +16,7 @@ import {
     type PrintRecipeV1,
     printRecipeV1Schema,
 } from "../../../shared/print-recipe/print-recipe.js";
+import { vertexSliceRegional3mfEnabled } from "../../../shared/vertexslice-regional-3mf.js";
 import {
     assertCadOperatorTempStlKey,
     buildCadOperatorTempStlKey,
@@ -25,7 +26,7 @@ import {
     type CadOperatorPrincipal,
 } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
-import { buildHeadlessFinalizedFoot } from "../lib/finalized-mesh-runner.js";
+import { buildHeadlessFinalizedFoot, buildHeadlessRegional3mf } from "../lib/finalized-mesh-runner.js";
 import {
     envelopeWithLoftTextMarking,
     hasActiveComposedTextMarking,
@@ -215,12 +216,16 @@ export async function materializeCadOperatorStl(args: {
     credentialId: string;
     side: "left" | "right";
     uploadStl: (key: string, bytes: Buffer) => Promise<void>;
-}): Promise<{ stlStorageKey: string; meshFingerprint: string | null }> {
+}): Promise<{
+    stlStorageKey: string;
+    meshFingerprint: string | null;
+    regional3mf: { bytes: Uint8Array; regionCount: number } | null;
+}> {
     if (!args.plan.useSavedDesignMesh) {
         if (!args.plan.stlStorageKey) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid manufacturing STL storage key" });
         }
-        return { stlStorageKey: args.plan.stlStorageKey, meshFingerprint: null };
+        return { stlStorageKey: args.plan.stlStorageKey, meshFingerprint: null, regional3mf: null };
     }
     let foot: Awaited<ReturnType<typeof buildHeadlessFinalizedFoot>>;
     try {
@@ -241,5 +246,12 @@ export async function materializeCadOperatorStl(args: {
     }
     const stlStorageKey = buildCadOperatorTempStlKey(args.credentialId);
     await args.uploadStl(stlStorageKey, Buffer.from(foot.stl));
-    return { stlStorageKey, meshFingerprint: foot.fingerprint };
+    const regional3mf = vertexSliceRegional3mfEnabled()
+        ? await buildHeadlessRegional3mf({
+              settingsJson: args.plan.settingsJson,
+              side: args.side,
+              manufacturingStl: foot.stl,
+          })
+        : null;
+    return { stlStorageKey, meshFingerprint: foot.fingerprint, regional3mf };
 }
