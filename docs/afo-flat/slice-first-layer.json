@@ -1,0 +1,9 @@
+{
+  "z": 0.3,
+  "regions": 2,
+  "extrude": 334,
+  "footprintMm2": 15120.90048858698,
+  "gcodeChars": 1992634,
+  "preset": "apex-belt-v2-shell",
+  "method": "printing_shell"
+}
