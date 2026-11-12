@@ -286,6 +286,106 @@ describe("VertexSlice printer G-code client", () => {
         expect(form.get("profile_id")).toBe("apex-v2-insole-95a");
         expect(form.get("material")).toBe("apex_light");
         expect(form.get("wall_loops")).toBeNull();
+        const model = form.get("model");
+        expect(model).toBeInstanceOf(Blob);
+        expect((model as Blob).type).toBe("model/stl");
+    });
+
+    test("a 3MF with modifiers requires X-VertexSlice-Regions and keeps the global infill", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const modelBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 7, 7, 7]);
+        const appended: Array<{ name: string; filename?: string; type: string }> = [];
+        const originalAppend = FormData.prototype.append;
+        FormData.prototype.append = function (
+            this: FormData,
+            name: string,
+            value: string | Blob,
+            filename?: string,
+        ) {
+            if (typeof value !== "string") appended.push({ name: String(name), filename, type: value.type });
+            return originalAppend.call(this, name, value, filename);
+        } as FormData["append"];
+        const calls = installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            return new Response("G1 X0\n", {
+                status: 200,
+                headers: { "X-VertexSlice-Regions": "2" },
+            });
+        });
+        const gcode = await sliceWithVertexSlice({
+            profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+            material: "apex_core",
+            model: modelBytes,
+            filename: "model.3mf",
+            infillDensityPct: 26,
+            expectedRegionCount: 2,
+            side: "left",
+        });
+        expect(gcode).toContain("G1");
+        const form = calls.find((call) => call.url.endsWith("/v1/slice"))?.init.body as FormData;
+        expect([...form.keys()].sort()).toEqual(["infill_density", "material", "model", "profile_id"]);
+        expect(form.get("infill_density")).toBe("26");
+        expect(form.get("profile_id")).toBe("apex-v2-insole-95a");
+        expect(form.get("material")).toBe("apex_core");
+        FormData.prototype.append = originalAppend;
+        const model = form.get("model");
+        expect(model).toBeInstanceOf(Blob);
+        expect(appended.find((part) => part.name === "model")).toEqual({
+            name: "model",
+            filename: "model.3mf",
+            type: "model/3mf",
+        });
+        expect(new Uint8Array(await (model as Blob).arrayBuffer())).toEqual(modelBytes);
+
+        installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            return new Response("G1 X0\n", { status: 200, headers: { "X-VertexSlice-Regions": "1" } });
+        });
+        await expect(
+            sliceWithVertexSlice({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_core",
+                model: modelBytes,
+                filename: "model.3mf",
+                infillDensityPct: 26,
+                expectedRegionCount: 2,
+            }),
+        ).rejects.toThrow(/Regional hardness applied 1 of 2/);
+
+        installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            return new Response("G1 X0\n", { status: 200 });
+        });
+        await expect(
+            sliceWithVertexSlice({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_core",
+                model: modelBytes,
+                filename: "left.3mf",
+                infillDensityPct: 26,
+                expectedRegionCount: 2,
+            }),
+        ).rejects.toThrow(/missing X-VertexSlice-Regions/);
+
+        const callsBefore = installFetch(() => new Response("nope", { status: 500 }));
+        await expect(
+            sliceWithVertexSlice({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_core",
+                model: new Uint8Array([1, 2, 3]),
+                filename: "left.stl",
+                infillDensityPct: 26,
+                expectedRegionCount: 1,
+            }),
+        ).rejects.toThrow(/not a 3MF/);
+        expect(callsBefore).toHaveLength(0);
     });
 });
 
