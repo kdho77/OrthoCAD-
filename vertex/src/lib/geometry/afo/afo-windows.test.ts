@@ -307,9 +307,11 @@ describe("AFO Windows parity", () => {
             plain: string;
             dancer: string;
         };
+        // Lock main's committed CNC golden. The dancer hash moved in #285; this
+        // test does not recompute it.
         expect(sha).toEqual({
             plain: "70a633cf057b7f5087449e76c5eb553ebe66188e29b8be15df3f99b388a59e17",
-            dancer: "c8d060adb1b30e6443bbee0ee0f05c2e1bf1fd6098325d568bb5456bcc8bfede",
+            dancer: "c4fa5ce08896169110f1d38542f98513846b9b8c778ca08a1542045b97c2e4dd",
         });
     });
 });

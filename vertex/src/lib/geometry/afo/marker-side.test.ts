@@ -3,6 +3,7 @@
 import { describe, expect, test } from "@rstest/core";
 import { defaultElementPose } from "@/lib/geometry/elements";
 import { medialSign, meshYFromAnatomicalLateral } from "@/lib/geometry/handedness";
+import { MORTONS_DEFAULT_MEDIAL } from "@/lib/geometry/mortons-extension";
 import { VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
 import type { Side } from "@/types";
 import {
@@ -78,10 +79,12 @@ describe("insole side rule unchanged", () => {
             expect(meshYFromAnatomicalLateral(-12, side)).toBeCloseTo(medialSign(side) * 12);
             expect(meshYFromAnatomicalLateral(12, side)).toBeCloseTo(-medialSign(side) * 12);
             expect(meshYFromAnatomicalLateral(meshYFromAnatomicalLateral(7.5, side), side)).toBeCloseTo(7.5);
-            // Height-field +Y is the left 1st ray. Right mirrors to −Y.
-            // This is the approved library pose; the AFO camera fix must not move it.
+            // Approved library pose: mesh medial is −Y on the left and +Y on the right.
+            // Magnitude is MORTONS_DEFAULT_MEDIAL times half the 95 mm reference width.
+            // The AFO camera fix must not move it.
             const morton = defaultElementPose("mortons_extension", side, 260, 95);
-            expect(morton.position.y).toBeCloseTo(side === "left" ? 23.75 : -23.75);
+            expect(morton.heightMm).toBe(3);
+            expect(morton.position.y).toBeCloseTo(medialSign(side) * MORTONS_DEFAULT_MEDIAL * (95 / 2));
         }
     });
 });
