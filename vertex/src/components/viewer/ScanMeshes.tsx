@@ -2,6 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
+import { AfoScanStage1Markers } from "@/components/viewer/AfoScanMarkers";
+import { scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
+import { AFO_CAST_SURFACE, activeAfoTarget } from "@/features/afo/afo-scan-ui";
+import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { getMarkerFrame, mirrorBaseLandmarks } from "@/lib/geometry/marker-frame";
 import { extractKeptGeometry, type ScanComponentLabeling } from "@/lib/geometry/scan-components";
@@ -17,8 +21,10 @@ import {
 } from "@/lib/geometry/scan-display";
 import { buildDecimatedPickGeometry, scanNeedsPickProxy } from "@/lib/geometry/scan-pick-mesh";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import { useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
 import { getScanRegistrationMatrix, useScanStore } from "@/stores/scan-store";
+import { AfoLitSurfaceMaterial } from "./AfoSurfaceMaterial";
 
 const CLINICIAN_MARKER_COLOR = "#f59e0b";
 const ARCH_MARKER_COLOR = "#d946ef";
@@ -88,6 +94,10 @@ function RegisteredScanMesh({
     selected,
     heightmap,
     placingMarkers,
+    afoGreyScan,
+    afoKeepSolid,
+    afoPlantar,
+    afoTargetId,
 }: {
     scanId: string;
     geometry: THREE.BufferGeometry;
@@ -99,6 +109,11 @@ function RegisteredScanMesh({
     selected: boolean;
     heightmap: boolean;
     placingMarkers: boolean;
+    afoGreyScan?: boolean;
+    /** AFO uploaded scan stays solid whenever Transparent is off, including an unregistered overlay. */
+    afoKeepSolid?: boolean;
+    afoPlantar?: ReturnType<typeof defaultAfoScanWorkflow>["plantar"];
+    afoTargetId?: string | null;
 }) {
     const deviationOverlay = useScanStore((s) => s.deviationOverlay);
     const setDeviationBusy = useScanStore((s) => s.setDeviationBusy);
@@ -114,7 +129,7 @@ function RegisteredScanMesh({
     const [coloredGeo, setColoredGeo] = useState<THREE.BufferGeometry | null>(null);
     const deviationGenRef = useRef(0);
     /** Depth shading while placing markers, or when Heightmap is on (and not in deviation mode). */
-    const wantDepthShading = placingMarkers || heightmap;
+    const wantDepthShading = (placingMarkers && !afoGreyScan) || heightmap;
 
     const depthGeo = useMemo(() => {
         if (!wantDepthShading || deviationOverlay) return null;
@@ -208,6 +223,7 @@ function RegisteredScanMesh({
 
     const displayGeo = coloredGeo ?? depthGeo ?? geometry;
     const useVertexColors = !!coloredGeo || !!depthGeo;
+    const afoSolidLook = Boolean(afoGreyScan) || Boolean(afoKeepSolid);
     const usMenSize = useDesignStore((s) => s.design.usMenSize);
     const sizeSystem = useDesignStore((s) => s.design.sizeSystem);
     const ukSize = useDesignStore((s) => s.design.ukSize);
@@ -249,26 +265,38 @@ function RegisteredScanMesh({
                     mesh.matrixWorldNeedsUpdate = true;
                 }}
             >
-                <meshStandardMaterial
-                    color={
-                        useVertexColors
-                            ? "#ffffff"
-                            : selected
-                              ? "#e9d5ff"
-                              : registered
-                                ? "#c084fc"
-                                : "#a78bfa"
-                    }
-                    emissive={selected && !useVertexColors ? "#a855f7" : "#000000"}
-                    emissiveIntensity={selected && !useVertexColors ? 0.35 : 0}
-                    metalness={0.05}
-                    roughness={placingMarkers || depthGeo ? 0.55 : 0.8}
-                    transparent={transparent || !!coloredGeo || (!registered && !depthGeo)}
-                    opacity={transparent ? 0.45 : coloredGeo ? 0.9 : depthGeo ? 1 : registered ? 1 : 0.75}
-                    side={THREE.DoubleSide}
-                    vertexColors={useVertexColors}
-                    flatShading={placingMarkers && !coloredGeo}
-                />
+                {afoSolidLook ? (
+                    <AfoLitSurfaceMaterial
+                        color={heightmap && useVertexColors ? "#ffffff" : AFO_CAST_SURFACE}
+                        opacity={1}
+                        transparent={false}
+                        roughness={0.46}
+                        metalness={0}
+                        vertexColors={Boolean(heightmap && useVertexColors)}
+                        depthWrite
+                    />
+                ) : (
+                    <meshStandardMaterial
+                        color={
+                            useVertexColors
+                                ? "#ffffff"
+                                : selected
+                                  ? "#e9d5ff"
+                                  : registered
+                                    ? "#c084fc"
+                                    : "#a78bfa"
+                        }
+                        emissive={selected && !useVertexColors ? "#a855f7" : "#000000"}
+                        emissiveIntensity={selected && !useVertexColors ? 0.35 : 0}
+                        metalness={0.05}
+                        roughness={placingMarkers || depthGeo ? 0.55 : 0.8}
+                        transparent={transparent || !!coloredGeo || (!registered && !depthGeo)}
+                        opacity={transparent ? 0.45 : coloredGeo ? 0.9 : depthGeo ? 1 : registered ? 1 : 0.75}
+                        side={THREE.DoubleSide}
+                        vertexColors={useVertexColors}
+                        flatShading={placingMarkers && !coloredGeo}
+                    />
+                )}
             </mesh>
             {edgeGeo ? (
                 <lineSegments
@@ -372,6 +400,14 @@ function RegisteredScanMesh({
                     <MarkerSphere position={landmarks.B3} color={BASE_LANDMARK_COLOR} radius={1.8} />
                 </>
             ) : null}
+            {afoGreyScan && afoPlantar ? (
+                <AfoScanStage1Markers
+                    plantar={afoPlantar}
+                    displayScale={display.displayScale}
+                    targetId={afoTargetId ?? null}
+                    meshMatrix={meshMatrix}
+                />
+            ) : null}
         </group>
     );
 }
@@ -379,18 +415,27 @@ function RegisteredScanMesh({
 export function ScanMeshes({
     transparent,
     heightmap = false,
+    afoStage1Align = false,
+    afoLandmarkOpaque = false,
 }: {
     transparent: boolean;
     heightmap?: boolean;
+    /** AFO Step 1 plantar alignment — solid grey scan before rigid fit is applied. */
+    afoStage1Align?: boolean;
+    /** Every AFO landmark, not only the first three plantar points, keeps the solid scan. */
+    afoLandmarkOpaque?: boolean;
 }) {
     const scans = useScanStore((s) => s.scans);
     const registrationByScanId = useScanStore((s) => s.registrationByScanId);
     const manualOffsetByScanId = useScanStore((s) => s.manualOffsetByScanId);
     const selectedScanId = useScanStore((s) => s.selectedScanId);
     const placementScanId = useScanStore((s) => s.placementMode?.scanId ?? null);
+    const isAfo = useDesignStore((s) => s.design.productType === "afo");
+    const afoPlacement = useAfoStore((s) => s.scanPlacement);
+    const afoWorkflow = useDesignStore((s) => s.design.afo?.scanWorkflow) ?? defaultAfoScanWorkflow();
+    const afoTargetId = activeAfoTarget(afoWorkflow, afoPlacement?.redo ?? null);
+    const afoAlignScanId = afoWorkflow.scanId ?? scanForAfoWorkflow()?.id ?? null;
 
-    // Stabilize Matrix4 identity across parent re-renders — a fresh matrix each
-    // render re-fires the deviation effect and can exceed React's update depth.
     const registrationMatrices = useMemo(() => {
         const map = new Map<string, THREE.Matrix4 | null>();
         for (const s of scans) {
@@ -416,6 +461,14 @@ export function ScanMeshes({
                         selected={selectedScanId === s.id}
                         heightmap={heightmap}
                         placingMarkers={placementScanId === s.id}
+                        afoGreyScan={
+                            isAfo &&
+                            (afoLandmarkOpaque || afoStage1Align) &&
+                            s.id === (afoAlignScanId ?? s.id)
+                        }
+                        afoKeepSolid={isAfo && !transparent}
+                        afoPlantar={afoWorkflow.plantar}
+                        afoTargetId={afoTargetId}
                     />
                 ))}
         </group>

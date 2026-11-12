@@ -181,7 +181,7 @@ describe("design deep link", () => {
         );
     });
 
-    test("empty store then list load opens an AFO placeholder instead of the session message", async () => {
+    test("empty store then list load opens the AFO editor instead of the session message", async () => {
         const pending = deferred<{ client: ClientRow; designs: DesignRow[] }[]>();
         listQuery.mockReturnValue(pending.promise);
         await renderDesign();
@@ -194,10 +194,11 @@ describe("design deep link", () => {
 
         expect(listQuery).toHaveBeenCalledTimes(1);
         expect(designGet).not.toHaveBeenCalled();
-        expect(container.textContent).toContain("AFO editor coming soon");
+        expect(container.textContent).not.toContain("AFO editor coming soon");
+        expect(container.textContent).toContain("Cast");
         expect(container.textContent).not.toContain(SESSION_MESSAGE);
         expect(designName()).toBe("AFO 1");
-        expect(container.querySelector('[data-testid="viewer"]')).toBeNull();
+        expect(container.querySelector('[data-testid="viewer"]')).not.toBeNull();
     });
 
     test("a missing design shows the session message only after the list settles", async () => {
@@ -243,7 +244,7 @@ describe("design deep link", () => {
         expect(designGet).toHaveBeenCalledTimes(1);
     });
 
-    test("an AFO already in the store skips the list fetch and keeps the placeholder", async () => {
+    test("an AFO already in the store skips the list fetch and opens the editor", async () => {
         useClientStore.setState({
             clients: [clientRow()],
             designs: [
@@ -259,7 +260,9 @@ describe("design deep link", () => {
         expect(designGet).not.toHaveBeenCalled();
         expect(container.textContent).not.toContain("Loading…");
         expect(container.textContent).not.toContain(SESSION_MESSAGE);
-        expect(container.textContent).toContain("AFO editor coming soon");
+        expect(container.textContent).not.toContain("AFO editor coming soon");
+        expect(container.textContent).toContain("Cast");
+        expect(container.querySelector('[data-testid="viewer"]')).not.toBeNull();
         expect(designName()).toBe("AFO 1");
     });
 

@@ -176,6 +176,7 @@ export function renderMesh(
     baseColor: [number, number, number] = [150, 90, 220],
     background = 140,
     focus?: ViewFocus,
+    vertexColor?: (index: number) => [number, number, number],
 ): Uint8Array {
     const { right, up, light } = view;
     const fwd = [
@@ -271,9 +272,10 @@ export function renderMesh(
                 const pi = py * width + px;
                 if (z <= zbuf[pi]!) continue;
                 zbuf[pi] = z;
-                rgb[pi * 3] = Math.min(255, baseColor[0] * shade);
-                rgb[pi * 3 + 1] = Math.min(255, baseColor[1] * shade);
-                rgb[pi * 3 + 2] = Math.min(255, baseColor[2] * shade);
+                const color = vertexColor ? vertexColor(a) : baseColor;
+                rgb[pi * 3] = Math.min(255, color[0] * shade);
+                rgb[pi * 3 + 1] = Math.min(255, color[1] * shade);
+                rgb[pi * 3 + 2] = Math.min(255, color[2] * shade);
             }
         }
     }
