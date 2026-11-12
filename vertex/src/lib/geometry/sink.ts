@@ -67,6 +67,12 @@ export const RKW_MEDIAL_INSET_MM = 3;
  */
 export const RKW_MEDIAL_FADE_MM = 12;
 /**
+ * Distal and proximal cut feather. 32 mm quintic, matching Morton's heel-side
+ * feather. Long sides stay on the profile blend (6 mm). Thickness is not
+ * lengthened with it.
+ */
+export const RKW_END_FEATHER_MM = 32;
+/**
  * Full-depth plateaus stay at least this far apart. The smoothstep taper
  * outside a plateau may overlap; the deeper sink wins, and the depths are
  * never added.
@@ -1121,7 +1127,25 @@ export function ellipseOffsetDistance(px: number, py: number, a: number, b: numb
     return dist;
 }
 
-function eggWeight(frame: SinkOvalFrame, x: number, y: number, blendMm: number): number {
+/**
+ * End blend for the reverse kinetic wedge cut. `endness` is 1 on the long
+ * axis and 0 on the long sides, so a side sample keeps `sideBlendMm`.
+ */
+function rkwCutBlendMm(lx: number, ly: number, a: number, b: number, sideBlendMm: number): number {
+    const ax = Math.abs(lx) / Math.max(a, 1e-6);
+    const ay = Math.abs(ly) / Math.max(b, 1e-6);
+    const endness = ax / Math.max(ax + ay, 1e-12);
+    const endBlend = Math.max(sideBlendMm, RKW_END_FEATHER_MM);
+    return sideBlendMm + (endBlend - sideBlendMm) * smootherstep01(endness);
+}
+
+function eggWeight(
+    frame: SinkOvalFrame,
+    x: number,
+    y: number,
+    blendMm: number,
+    resolveBlend?: (lx: number, ly: number, a: number, b: number, blendMm: number) => number,
+): number {
     const rx = x - frame.dx;
     const ry = y - frame.dy;
     const lx = rx * frame.tx + ry * frame.ty;
@@ -1130,10 +1154,11 @@ function eggWeight(frame: SinkOvalFrame, x: number, y: number, blendMm: number):
     const b = ly >= 0 ? frame.bLat : frame.bMed;
     const r = Math.hypot(lx / a, ly / b);
     if (r <= 1) return 1;
-    if (blendMm <= 1e-9) return 0;
+    const blend = resolveBlend ? resolveBlend(lx, ly, a, b, blendMm) : blendMm;
+    if (blend <= 1e-9) return 0;
     const dist = ellipseOffsetDistance(lx, ly, a, b);
-    if (dist >= blendMm) return 0;
-    return 1 - smootherstep01(dist / blendMm);
+    if (dist >= blend) return 0;
+    return 1 - smootherstep01(dist / blend);
 }
 
 function pointMm(u: number, vSigned: number, ctx: SinkSurfaceContext): { x: number; y: number; v: number } {
@@ -1328,7 +1353,27 @@ export function sinkCutMm(
     let sinkId: string | undefined;
     let weight = 0;
     for (const p of prepare(ctx)) {
-        let w = eggWeight(p.frame, x, yLateral, p.frame.blendMm);
+        // The wedge sits on the medial rim, so a 32 mm end feather would run
+        // along the wall and shear it. The crest keeps the 6 mm taper. The
+        // trough centerline, which is the dip seen from the side, keeps the
+        // 32 mm quintic.
+        const resolveBlend =
+            p.frame.kind === "rkw"
+                ? (lx: number, ly: number, a: number, b: number, sideBlend: number) => {
+                      const endBlend = rkwCutBlendMm(lx, ly, a, b, sideBlend);
+                      if (endBlend <= sideBlend + 1e-6) return endBlend;
+                      const edges = planEdges(ctx);
+                      const u = Math.max(
+                          0,
+                          Math.min(1, (x - edges.originX) / Math.max(edges.lengthMm, 1e-6)),
+                      );
+                      const distInside = yLateral - edges.medialAt(u);
+                      const reach = Math.max(p.frame.cy - edges.medialAt(p.frame.u), RKW_MEDIAL_RAMP_MM);
+                      const t = distInside <= 0 ? 0 : distInside >= reach ? 1 : distInside / reach;
+                      return sideBlend + (endBlend - sideBlend) * smootherstep01(t);
+                  }
+                : undefined;
+        let w = eggWeight(p.frame, x, yLateral, p.frame.blendMm, resolveBlend);
         if (p.frame.kind === "rkw" && w > 0 && rkwOverhangMm(p.frame, ctx) > 0.05) {
             w *= rkwMedialRamp(x, yLateral, ctx);
         }

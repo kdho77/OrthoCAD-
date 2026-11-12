@@ -30,6 +30,7 @@ function pad(
 /** SAMPLE_Top L+R with met_pad + dancer's pad (Phase 1 fixture). */
 export function fixtureSampleTopElements(): DesignState {
     const d = defaultDesign();
+    d.splitElements = true;
     d.elements = [
         pad("el-met-left", "met_pad", "left", {
             hardnessClass: "Soft",

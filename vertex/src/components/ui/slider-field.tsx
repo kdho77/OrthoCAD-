@@ -1,8 +1,26 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { RotateCcw } from "lucide-react";
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { usePerformanceStore } from "@/stores/performance-store";
+
+/** Finite entry, or null while the user is still typing a sign or decimal. */
+export function parseSliderEntry(raw: string): number | null {
+    const trimmed = raw.trim();
+    if (
+        trimmed === "" ||
+        trimmed === "-" ||
+        trimmed === "+" ||
+        trimmed === "." ||
+        trimmed === "-." ||
+        trimmed === "+."
+    ) {
+        return null;
+    }
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+}
 
 interface SliderFieldProps {
     label: string;
@@ -48,6 +66,7 @@ export function SliderField({
     hint,
 }: SliderFieldProps) {
     const setInteracting = usePerformanceStore((s) => s.setInteracting);
+    const [draft, setDraft] = useState<string | null>(null);
     const clamp = (v: number) => Math.min(max, Math.max(min, Number.isFinite(v) ? v : min));
 
     const handlePreview = (v: number) => {
@@ -85,11 +104,24 @@ export function SliderField({
                     ) : (
                         <input
                             type="number"
-                            value={value}
+                            value={draft ?? String(value)}
                             min={min}
                             max={max}
                             step={step}
-                            onChange={(e) => handleCommit(Number(e.target.value))}
+                            onFocus={() => setDraft(String(value))}
+                            onBlur={() => {
+                                if (draft != null) {
+                                    const typed = parseSliderEntry(draft);
+                                    if (typed != null) handleCommit(typed);
+                                }
+                                setDraft(null);
+                            }}
+                            onChange={(e) => {
+                                const raw = e.target.value;
+                                setDraft(raw);
+                                const typed = parseSliderEntry(raw);
+                                if (typed != null) handleCommit(typed);
+                            }}
                             className="h-6 w-16 rounded border border-input bg-background px-1 text-right text-xs tabular-nums focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         />
                     )}

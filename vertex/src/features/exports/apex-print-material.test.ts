@@ -16,8 +16,10 @@ import {
     apexPrintMaterialForOrderMaterial,
     lockedProfileIdForApexMaterial,
     printerPresetForApexMaterial,
+    REGIONAL_INFILL_PRESETS,
     VERTEX_SLICE_APEX_BOUNCE_PACKET,
     vertexSliceMaterialForApexMaterial,
+    vertexSliceRegional3mfEnabled,
 } from "@/features/exports/apex-print-material";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
@@ -83,6 +85,27 @@ describe("Apex print material", () => {
         expect(APEX_FORGE_NOZZLE_TEMP_C).toBe(245);
         expect(APEX_CORE_NOZZLE_TEMP_C).toBe(225);
         expect(printerPresetForApexMaterial("ApexForge").id).toBe(APEX_V2_INSOLE_LOCKED_PROFILE_ID);
+    });
+
+    test("regional hardness uses the same four slice fields and stays gated off", () => {
+        expect(vertexSliceRegional3mfEnabled({})).toBe(false);
+        expect(vertexSliceRegional3mfEnabled({ VERTEXSLICE_REGIONAL_3MF: "1" })).toBe(true);
+        expect(vertexSliceRegional3mfEnabled({ VERTEXSLICE_REGIONAL_3MF: "true" })).toBe(true);
+        expect(vertexSliceRegional3mfEnabled({ VERTEXSLICE_REGIONAL_3MF: "off" })).toBe(false);
+        expect(REGIONAL_INFILL_PRESETS.map((preset) => [preset.hardnessClass, preset.densityPct])).toEqual([
+            ["Extra Soft", 14],
+            ["Soft", 20],
+            ["Medium", 26],
+            ["Hard", 32],
+            ["Extra Hard", 38],
+        ]);
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.sliceFormFieldsSentByOrthocad).toEqual([
+            "profile_id",
+            "material",
+            "infill_density",
+            "model",
+        ]);
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.regionalModelGateEnv).toBe("VERTEXSLICE_REGIONAL_3MF");
     });
 
     describe("ApexPrintMaterialPicker", () => {

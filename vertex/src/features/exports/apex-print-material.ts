@@ -40,6 +40,12 @@ export const VERTEX_SLICE_APEX_BOUNCE_PACKET = {
     speedFactorVersusCore: APEX_BOUNCE_SPEED_FACTOR,
     otherwiseIdenticalTo: "apex_core",
     sliceFormFieldsSentByOrthocad: ["profile_id", "material", "infill_density", "model"],
+    /**
+     * Regional hardness does not add a form field. When VERTEXSLICE_REGIONAL_3MF
+     * is on, `model` is model.3mf (modifier_part). Otherwise it stays the STL.
+     * infill_density remains the device / global percent.
+     */
+    regionalModelGateEnv: "VERTEXSLICE_REGIONAL_3MF",
     coreSpeedMmS: null,
     runtimeProofRequired: [
         "GET /v1/materials on the deployed slicer lists apex_bounce.",
@@ -50,6 +56,92 @@ export const VERTEX_SLICE_APEX_BOUNCE_PACKET = {
 } as const;
 
 export { APEX_V2_INSOLE_LOCKED_PROFILE_ID };
+
+/**
+ * Apex Forge process contract from draft PR #265
+ * (branch cursor/enable-apex-forge-for-clinical-export-... @ fc3e4aa4adc0e6adcfe0c5a1d2b3a2f52db12c64)
+ * and the VertexSlice `apex_forge` registry: nozzle 245°C, bed off (0°C), no wall-loop override.
+ * Forge stays disabled in {@link APEX_PRINT_MATERIAL_OPTIONS}. OrthoCAD does not send these
+ * numbers on `/v1/slice`; VertexSlice applies them from the material id.
+ */
+export const APEX_FORGE_NOZZLE_TEMP_C = 245;
+export const APEX_FORGE_BED_TEMP_C = 0;
+export const APEX_FORGE_BELT_TEMP_C = 0;
+/** Null: VertexSlice `apex_forge` sets no wall-loop override. */
+export const APEX_FORGE_WALL_LOOPS = null;
+
+/** Founder deltas from Apex Forge: heated belt/bed 60°C and wall loops 6. Nozzle stays 245°C. */
+export const APEX_VYLON_NOZZLE_TEMP_C = APEX_FORGE_NOZZLE_TEMP_C;
+export const APEX_VYLON_BED_TEMP_C = 60;
+export const APEX_VYLON_BELT_TEMP_C = 60;
+export const APEX_VYLON_WALL_LOOPS = 6;
+
+export interface ApexProcessSettings {
+    id: string;
+    label: string;
+    vertexSliceMaterial: string;
+    lockedProfileId: string;
+    nozzleTempC: number;
+    bedTempC: number;
+    beltTempC: number;
+    /** Null means the material defines no wall-loop override. */
+    wallLoops: number | null;
+}
+
+export const APEX_FORGE_PROCESS_SETTINGS: ApexProcessSettings = {
+    id: "ApexForge",
+    label: "Apex Forge",
+    vertexSliceMaterial: "apex_forge",
+    lockedProfileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+    nozzleTempC: APEX_FORGE_NOZZLE_TEMP_C,
+    bedTempC: APEX_FORGE_BED_TEMP_C,
+    beltTempC: APEX_FORGE_BELT_TEMP_C,
+    wallLoops: APEX_FORGE_WALL_LOOPS,
+};
+
+/** ApexVylon is Apex Forge with a 60°C belt/bed and 6 wall loops. AFO shell only. */
+export const APEX_VYLON_PROCESS_SETTINGS: ApexProcessSettings = {
+    ...APEX_FORGE_PROCESS_SETTINGS,
+    id: "ApexVylon",
+    label: "ApexVylon",
+    vertexSliceMaterial: "apex_vylon",
+    nozzleTempC: APEX_VYLON_NOZZLE_TEMP_C,
+    bedTempC: APEX_VYLON_BED_TEMP_C,
+    beltTempC: APEX_VYLON_BELT_TEMP_C,
+    wallLoops: APEX_VYLON_WALL_LOOPS,
+};
+
+/**
+ * Bounded packet for the VertexSlice owner. Not applied by this repository.
+ * Clone `apex_forge`, then set belt/bed 60°C and wall loops 6. Nozzle stays 245°C.
+ */
+export const VERTEX_SLICE_APEX_VYLON_PACKET = {
+    owner: "VertexSlice",
+    liveVerified: false,
+    orthocadSendsProcessOverrides: false,
+    materialId: "apex_vylon",
+    cloneFromMaterialId: "apex_forge",
+    nozzleTempC: APEX_VYLON_NOZZLE_TEMP_C,
+    bedTempC: APEX_VYLON_BED_TEMP_C,
+    beltTempC: APEX_VYLON_BELT_TEMP_C,
+    wallLoops: APEX_VYLON_WALL_LOOPS,
+    otherwiseIdenticalTo: "apex_forge",
+    sliceFormFieldsSentByOrthocad: ["profile_id", "material", "infill_density", "model"],
+    regionalModelGateEnv: "VERTEXSLICE_REGIONAL_3MF",
+    runtimeProofRequired: [
+        "GET /v1/materials on the deployed slicer lists apex_vylon.",
+        "POST /v1/slice with profile_id apex-v2-insole-95a and material apex_vylon returns non-empty G-code.",
+        "That G-code sets the hotend to 245C, the heated belt/bed to 60C, and wall loops to 6.",
+    ],
+} as const;
+
+/** AFO shell slice payload. Same locked profile as Apex Forge / Apex Core. Material id `apex_vylon`. */
+export function afoShellSliceFields(): { presetId: string; material: "apex_vylon" } {
+    return {
+        presetId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+        material: "apex_vylon",
+    };
+}
 
 export interface ApexPrintMaterialOption {
     id: ApexPrintMaterialId;
@@ -65,7 +157,8 @@ export interface ApexPrintMaterialOption {
 /**
  * Apex Light, Apex Core, and Apex Bounce share the locked process profile id.
  * Bounce process deltas (220°C, 0.8× Core speed, 70°C bed) are applied by VertexSlice
- * on `apex_bounce`. Forge matches Core at 245°C on `apex_forge`. ApexComfort uses Apex Core.
+ * on `apex_bounce`. Forge matches Core at 245°C on `apex_forge`. ApexVylon is not an insole product; the AFO
+ * shell uses {@link APEX_VYLON_PROCESS_SETTINGS}. ApexComfort uses Apex Core.
  */
 export const APEX_PRINT_MATERIAL_OPTIONS: readonly ApexPrintMaterialOption[] = [
     {
@@ -171,3 +264,9 @@ export function printerPresetForApexMaterial(materialId: ApexPrintMaterialId): P
         bed: belt?.bed ?? { x: 300, y: 100000, z: 200 },
     };
 }
+
+export {
+    REGIONAL_INFILL_PRESETS,
+    VERTEXSLICE_REGIONAL_3MF_ENV,
+    vertexSliceRegional3mfEnabled,
+} from "../../../shared/vertexslice-regional-3mf";
