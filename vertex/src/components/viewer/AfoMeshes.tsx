@@ -40,7 +40,9 @@ export function AfoMeshes() {
     const placingScan = useAfoStore((s) => s.scanPlacement != null);
     const placingTrim = useAfoStore((s) => s.placingTrim);
     const trimHover = useAfoStore((s) => s.trimHover);
-    const draggingTrim = useAfoStore((s) => s.draggingTrimIndex != null);
+    const draggingTrimIndex = useAfoStore((s) => s.draggingTrimIndex);
+    const hoveredTrimIndex = useAfoStore((s) => s.hoveredTrimIndex);
+    const draggingTrim = draggingTrimIndex != null;
     const placingLandmarks = workflowStep === "scan" && placingScan;
     const scanMat = afoUploadedScanMaterial({
         transparentOn: viewerTransparent || afo.cast.transparent,
@@ -53,7 +55,8 @@ export function AfoMeshes() {
     const show3d = afo.cast.show3dModel;
     const working = corrected ?? cast;
 
-    const showShell = Boolean(shell);
+    const liveShell = afo.shellReady ? shell : null;
+    const showShell = Boolean(liveShell);
     const showCorrectedBody = Boolean(corrected) && show3d && !showShell && !placingLandmarks;
     const showSource = Boolean(source ?? working) && show3d && !showShell && !showCorrectedBody;
 
@@ -62,7 +65,7 @@ export function AfoMeshes() {
         [source, working],
     );
     const correctedGeo = useMemo(() => (corrected ? afoMeshToGeometry(corrected) : null), [corrected]);
-    const shellGeo = useMemo(() => (shell ? afoMeshToGeometry(shell) : null), [shell]);
+    const shellGeo = useMemo(() => (liveShell ? afoMeshToGeometry(liveShell) : null), [liveShell]);
     const pickGeo = useMemo(
         () => (placingScan && source ? afoMeshToGeometry(source) : null),
         [placingScan, source],
@@ -139,8 +142,8 @@ export function AfoMeshes() {
         };
     }, [shadedGeo, bodyGeo]);
 
-    const measureMesh = afoMeasureTarget({ shell, corrected, cast });
-    const measureId = afoMeasureSolidId({ shell, corrected, cast });
+    const measureMesh = afoMeasureTarget({ shell: liveShell, corrected, cast });
+    const measureId = afoMeasureSolidId({ shell: liveShell, corrected, cast });
     const measureGeo = useMemo(() => (measureMesh ? afoMeshToGeometry(measureMesh) : null), [measureMesh]);
     useEffect(() => () => measureGeo?.dispose(), [measureGeo]);
     useEffect(() => {
@@ -152,7 +155,7 @@ export function AfoMeshes() {
         measureGeo,
         "afo",
         "afo",
-        `${shell ? "shell" : corrected ? "corrected" : cast ? "cast" : "none"}:${measureGeo?.uuid ?? "none"}`,
+        `${liveShell ? "shell" : corrected ? "corrected" : cast ? "cast" : "none"}:${measureGeo?.uuid ?? "none"}`,
     );
 
     return (
@@ -231,6 +234,8 @@ export function AfoMeshes() {
                 marks={preview.marks}
                 stroke={preview.stroke}
                 cursor={preview.marks.length === 0 ? preview.cursor : null}
+                hoveredIndex={hoveredTrimIndex}
+                dragIndex={draggingTrimIndex}
             />
             {afo.clinicalMarkers.map((lm) => (
                 <AfoCueSphere
@@ -329,14 +334,21 @@ function pointKey(pt: AfoVec3): string {
     return `${pt.x.toFixed(2)},${pt.y.toFixed(2)},${pt.z.toFixed(2)}`;
 }
 
+const TRIM_HOVER = "#fff4a3";
+const TRIM_DRAG = "#ffffff";
+
 function AfoTrimOverlay({
     marks,
     stroke,
     cursor,
+    hoveredIndex,
+    dragIndex,
 }: {
     marks: AfoVec3[];
     stroke: AfoVec3[];
     cursor: AfoVec3 | null;
+    hoveredIndex: number | null;
+    dragIndex: number | null;
 }) {
     const arms = cursor ? cursorCrossSegments(cursor) : [];
     return (
@@ -345,23 +357,35 @@ function AfoTrimOverlay({
                 <FatTrimLine key={pointKey(arm[0])} points={arm} />
             ))}
             {stroke.length >= 2 ? <FatTrimLine points={stroke} /> : null}
-            {marks.map((pt, handle) => (
-                <mesh
-                    key={pointKey(pt)}
-                    position={[pt.x, pt.y, pt.z]}
-                    renderOrder={60}
-                    frustumCulled={false}
-                    userData={{ isAfoTrimHandle: true, trimIndex: handle }}
-                >
-                    <sphereGeometry args={[AFO_TRIM_PIN_RADIUS_MM, 12, 10]} />
-                    <meshBasicMaterial
-                        color={handle === 0 ? TRIM_FIRST : TRIM_YELLOW_GREEN}
-                        depthTest={false}
-                        depthWrite={false}
-                        toneMapped={false}
-                    />
-                </mesh>
-            ))}
+            {marks.map((pt, handle) => {
+                const dragging = dragIndex === handle;
+                const hovered = hoveredIndex === handle;
+                const color = dragging
+                    ? TRIM_DRAG
+                    : hovered
+                      ? TRIM_HOVER
+                      : handle === 0
+                        ? TRIM_FIRST
+                        : TRIM_YELLOW_GREEN;
+                const radius = dragging || hovered ? AFO_TRIM_PIN_RADIUS_MM + 0.7 : AFO_TRIM_PIN_RADIUS_MM;
+                return (
+                    <mesh
+                        key={pointKey(pt)}
+                        position={[pt.x, pt.y, pt.z]}
+                        renderOrder={60}
+                        frustumCulled={false}
+                        userData={{ isAfoTrimHandle: true, trimIndex: handle, trimHot: dragging || hovered }}
+                    >
+                        <sphereGeometry args={[radius, 12, 10]} />
+                        <meshBasicMaterial
+                            color={color}
+                            depthTest={false}
+                            depthWrite={false}
+                            toneMapped={false}
+                        />
+                    </mesh>
+                );
+            })}
         </group>
     );
 }

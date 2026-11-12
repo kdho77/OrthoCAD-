@@ -43,6 +43,10 @@ interface AfoSessionStore {
     /** Cursor sample on the working mesh while a trim line is being placed. */
     trimHover: AfoVec3 | null;
     draggingTrimIndex: number | null;
+    /** Pointer is down on a trim pin. Orbit stays off until pointerup, including the 4 px threshold. */
+    trimGestureActive: boolean;
+    /** Pin under the cursor, in screen space. Null when the pointer is not near a handle. */
+    hoveredTrimIndex: number | null;
     workerProgress: { pct: number; stage: string } | null;
     lastError: string | null;
     setSourceMesh: (mesh: AfoTriMesh | null) => void;
@@ -64,6 +68,8 @@ interface AfoSessionStore {
     setPlacingTrim: (on: boolean) => void;
     setTrimHover: (point: AfoVec3 | null) => void;
     setDraggingTrimIndex: (index: number | null) => void;
+    setTrimGestureActive: (on: boolean) => void;
+    setHoveredTrimIndex: (index: number | null) => void;
     setWorkerProgress: (p: { pct: number; stage: string } | null) => void;
     setLastError: (msg: string | null) => void;
     resetSession: () => void;
@@ -138,9 +144,10 @@ function mergeScanWorkflow(base: AfoScanWorkflow, extra?: AfoScanWorkflow): AfoS
 export function patchAfoState(
     patch: Partial<ReturnType<typeof defaultAfoDesignState>>,
     checkpointLabel = "afo",
+    options?: { history?: boolean },
 ): void {
     const ds = useDesignStore.getState();
-    ds.checkpoint(checkpointLabel);
+    if (options?.history !== false) ds.checkpoint(checkpointLabel);
     const current = ds.design.afo ?? defaultAfoDesignState();
     useDesignStore.setState({
         design: {
@@ -251,6 +258,8 @@ export const useAfoStore = create<AfoSessionStore>((set, get) => ({
     placingTrim: false,
     trimHover: null,
     draggingTrimIndex: null,
+    trimGestureActive: false,
+    hoveredTrimIndex: null,
     workerProgress: null,
     lastError: null,
     setSourceMesh: (mesh) =>
@@ -311,6 +320,8 @@ export const useAfoStore = create<AfoSessionStore>((set, get) => ({
     },
     setTrimHover: (point) => set({ trimHover: point }),
     setDraggingTrimIndex: (index) => set({ draggingTrimIndex: index }),
+    setTrimGestureActive: (on) => set({ trimGestureActive: on }),
+    setHoveredTrimIndex: (index) => set({ hoveredTrimIndex: index }),
     setWorkerProgress: (p) => set({ workerProgress: p }),
     setLastError: (msg) => set({ lastError: msg }),
     resetSession: () =>
@@ -334,6 +345,8 @@ export const useAfoStore = create<AfoSessionStore>((set, get) => ({
             placingTrim: false,
             trimHover: null,
             draggingTrimIndex: null,
+            trimGestureActive: false,
+            hoveredTrimIndex: null,
             workerProgress: null,
             lastError: null,
         }),

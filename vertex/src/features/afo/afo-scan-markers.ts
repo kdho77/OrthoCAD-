@@ -73,17 +73,21 @@ export function activeMarkerPlacementLayer(
 }
 
 /**
- * Design trim and design landmarks must receive clicks even when a scan-marker
- * session is still active. On the scan step, landmark placement keeps the scan layer.
+ * Trim drag is mounted on every AFO step whenever scan-landmark placement is idle,
+ * including confirmed loops on Design and Print. Design keeps the trim layer even
+ * if a scan session was left open, so those clicks are not stolen. An active
+ * scan-landmark session on any other step keeps the scan layer.
  */
 export function afoViewportPlacementLayer(
     step: string,
     isAfo: boolean,
-    placingScanMarkers: boolean,
+    _placingScanMarkers: boolean,
     placingAfoLandmarks = false,
 ): "scan" | "afo-design" | "afo-scan" {
-    if (isAfo && step === "design") return "afo-design";
-    return activeMarkerPlacementLayer(isAfo, placingScanMarkers, placingAfoLandmarks);
+    if (!isAfo) return "scan";
+    if (step === "design") return "afo-design";
+    if (placingAfoLandmarks) return "afo-scan";
+    return "afo-design";
 }
 
 /**

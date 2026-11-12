@@ -127,6 +127,7 @@ export function Viewer3D() {
     const target = useMeshEditStore((s) => s.target);
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const afoDraggingTrim = useAfoStore((s) => s.draggingTrimIndex != null);
+    const afoTrimGesture = useAfoStore((s) => s.trimGestureActive);
     const afoWorkingMesh = useAfoStore((s) => s.castMesh);
     const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
     const confirmTrimlineEdit = useMeshEditStore((s) => s.confirmTrimlineEdit);
@@ -359,7 +360,7 @@ export function Viewer3D() {
                     makeDefault
                     enableDamping
                     dampingFactor={0.1}
-                    enabled={!trimlineEdit?.isDragging && !afoDraggingTrim}
+                    enabled={!trimlineEdit?.isDragging && !afoDraggingTrim && !afoTrimGesture}
                 />
             </Canvas>
 

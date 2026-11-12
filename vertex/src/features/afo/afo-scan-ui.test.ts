@@ -49,6 +49,9 @@ describe("afo scan ui", () => {
         expect(afoViewportPlacementLayer("design", true, false, true)).toBe("afo-design");
         expect(afoViewportPlacementLayer("scan", true, false, true)).toBe("afo-scan");
         expect(afoViewportPlacementLayer("corrections", true, false, false)).toBe("afo-design");
+        expect(afoViewportPlacementLayer("print", true, true, false)).toBe("afo-design");
+        expect(afoViewportPlacementLayer("export", true, false, false)).toBe("afo-design");
+        expect(afoViewportPlacementLayer("scan", true, false, false)).toBe("afo-design");
     });
 
     test("Cast scan defaults to an opaque shaded surface, not points", () => {
