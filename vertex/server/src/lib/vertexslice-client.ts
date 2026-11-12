@@ -8,6 +8,7 @@ import {
     VERTEXSLICE_3MF_FILENAME,
     VERTEXSLICE_REGIONS_HEADER,
 } from "../../../shared/vertexslice-regional-3mf.js";
+import { prepareManufacturingMeshForSlice, sliceMeshStats, UnsliceableMeshError } from "./slice-mesh.js";
 import { readUpstreamErrorText, upstreamErrorText } from "./upstream-error.js";
 
 /** VertexSlice `/v1/slice` material ids. `apex_forge` stays disabled. `apex_vylon` is AFO shell only. */
@@ -258,7 +259,8 @@ function isMaterialRejection(errorText: string, material: string): boolean {
 
 /**
  * One foot plus the 20 mm toe leader. A stray vertex or a unit blow-up is larger.
- * 134,310 triangles (the 6.7 MB hung model) is inside the triangle cap.
+ * 134,310 triangles (the 6.7 MB hung model) is inside this cap.
+ * prepareManufacturingMeshForSlice still rewrites a watertight mesh over 132,000.
  */
 const MAX_SLICE_EXTENT_MM = 450;
 const MAX_SLICE_TRIANGLES = 750_000;
@@ -572,7 +574,7 @@ function regionsHeaderCount(response: Response): number | null {
 export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise<string> {
     const material = assertEnabledVertexSliceMaterial(request.material);
     const profileId = assertLockedVertexSliceProfile(request.profileId.trim());
-    const bytes = new Uint8Array(request.model);
+    let bytes = new Uint8Array(request.model);
     const expectedRegions = request.expectedRegionCount ?? 0;
     const is3mf = isVertexSlice3mfModel(bytes, request.filename);
     if (expectedRegions > 0 && !is3mf) {
@@ -584,9 +586,24 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
     let triangles: number | null = null;
     let extentMm: [number, number, number] | null = null;
     if (!is3mf) {
-        const mesh = inspectManufacturingStl(bytes);
+        let mesh = inspectManufacturingStl(bytes);
         if (mesh.problem) {
             throw new TRPCError({ code: "BAD_REQUEST", message: mesh.problem });
+        }
+        try {
+            const prepared = prepareManufacturingMeshForSlice(bytes);
+            if (prepared !== bytes) {
+                bytes = prepared;
+                mesh = inspectManufacturingStl(bytes);
+                if (mesh.problem) {
+                    throw new TRPCError({ code: "BAD_REQUEST", message: mesh.problem });
+                }
+            }
+        } catch (err) {
+            if (err instanceof UnsliceableMeshError) {
+                throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
+            }
+            throw err;
         }
         triangles = mesh.triangles;
         extentMm = mesh.extentMm;
@@ -649,16 +666,24 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
             authenticated: true,
         });
 
-        const response = await vertexSliceFetch(
-            endpoint,
-            {
-                method: "POST",
-                headers: authHeaders(apiKey),
-                body: form,
-                signal: deadline?.signal,
-            },
-            timedOut ? { timedOut } : undefined,
-        );
+        let response: Response;
+        try {
+            response = await vertexSliceFetch(
+                endpoint,
+                {
+                    method: "POST",
+                    headers: authHeaders(apiKey),
+                    body: form,
+                    signal: deadline?.signal,
+                },
+                timedOut ? { timedOut } : undefined,
+            );
+        } catch (err) {
+            if (err instanceof Error && err.message.startsWith("VertexSlice timed out")) {
+                console.error("[vertexslice] mesh at timeout", sliceMeshStats(bytes));
+            }
+            throw err;
+        }
 
         if (!response.ok) {
             const rawDetail = await settleWithinSignal(response.text(), deadline?.signal, timedOut);

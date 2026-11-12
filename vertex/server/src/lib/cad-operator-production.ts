@@ -299,6 +299,9 @@ export function publicProductionError(error: unknown): string {
     ) {
         return message;
     }
+    if (message.startsWith("Manufacturing mesh is not sliceable")) {
+        return message;
+    }
     for (const item of allowed) {
         if (message === item || message.startsWith(`${item}:`) || message.startsWith(`${item} `)) {
             return item;
