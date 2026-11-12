@@ -37,7 +37,10 @@ export interface SessionManufactureInput {
     fileName?: string;
     material?: string;
     useSavedDesignMesh?: boolean;
-    /** Second upload. Honored only when VERTEXSLICE_REGIONAL_3MF is on. */
+    /**
+     * Second upload. Present only when the design has effective regions.
+     * The gate off refuses the export instead of slicing the STL.
+     */
     regional3mfStorageKey?: string;
     expectedRegionCount?: number;
 }
@@ -223,13 +226,28 @@ export async function runSessionGenerateSolid(args: {
             );
             const stlBytes = await io.downloadStl(stlUrl);
             const regionalGate = vertexSliceRegional3mfEnabled();
-            const regionCount = input.expectedRegionCount ?? 0;
+            const claimedCount = input.expectedRegionCount;
+            const claimedRegions = claimedCount !== undefined || Boolean(input.regional3mfStorageKey);
             let regional3mf: { bytes: Uint8Array; regionCount: number } | null = null;
-            if (regionalGate && regionCount > 0) {
+            if (claimedRegions && !regionalGate) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message:
+                        "Regional hardness is turned off on this server. Refusing a single-density print.",
+                });
+            }
+            if (regionalGate && claimedRegions) {
+                if (claimedCount === undefined) {
+                    throw new TRPCError({
+                        code: "BAD_REQUEST",
+                        message:
+                            "Regional hardness was requested but the modifier count is missing. Refusing a single-density print.",
+                    });
+                }
                 if (!input.regional3mfStorageKey) {
                     throw new TRPCError({
                         code: "BAD_REQUEST",
-                        message: `Regional hardness is enabled but no modifier 3MF was uploaded (${regionCount} regions). Refusing a single-density print.`,
+                        message: `Regional hardness is enabled but no modifier 3MF was uploaded (${claimedCount} regions). Refusing a single-density print.`,
                     });
                 }
                 try {
@@ -242,7 +260,7 @@ export async function runSessionGenerateSolid(args: {
                 }
                 regionalTempKey = input.regional3mfStorageKey;
                 const regionalUrl = await io.signedDownloadUrl(input.regional3mfStorageKey);
-                regional3mf = { bytes: await io.downloadStl(regionalUrl), regionCount };
+                regional3mf = { bytes: await io.downloadStl(regionalUrl), regionCount: claimedCount };
             }
             const upload = selectVertexSliceUpload({
                 stl: stlBytes,

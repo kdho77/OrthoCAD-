@@ -1,7 +1,12 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { afterEach, describe, expect, test } from "@rstest/core";
-import { buildVertexSliceModel } from "@/features/exports/vertexslice-regional-model";
+import {
+    buildVertexSliceModel,
+    parseRegionalCapability,
+    regionalSliceDecision,
+} from "@/features/exports/vertexslice-regional-model";
+import { effectiveHardnessRegions } from "@/lib/hardness/collect";
 import { readPackedHardness3mf } from "@/lib/hardness/export-3mf";
 import { BOTTOM_CLAMP_MM, parseBinaryStl } from "@/lib/hardness/mesh";
 import { defaultDesign } from "@/stores/design-store";
@@ -339,5 +344,111 @@ describe("VertexSlice regional hardness request", () => {
                 regional3mfEnabled: true,
             }),
         ).rejects.toThrow(/not one of the presets/);
+    });
+
+    test("turning split elements off drops element modifiers and keeps zones", async () => {
+        const design = defaultDesign();
+        design.splitElements = true;
+        const recipe = migratePrintRecipe(design.printRecipe);
+        design.printRecipe = {
+            ...recipe,
+            defaultHardness: "Medium",
+            zones: [
+                zone("heel-left", "left", "Extra Soft", 1, [
+                    { x: 40, y: -12 },
+                    { x: 70, y: -12 },
+                    { x: 70, y: 8 },
+                    { x: 40, y: 8 },
+                ]),
+            ],
+        };
+        design.elements = [
+            {
+                id: "met-left",
+                kind: "met_pad",
+                side: "left",
+                position: { x: 40, y: -8 },
+                rotationDeg: 0,
+                scale: { x: 1, y: 1 },
+                heightMm: 5,
+                regionId: "met-left",
+                hardnessClass: "Soft",
+                priority: 2,
+                depth: { type: "element", depthBelowMm: 2 },
+            },
+        ];
+        const stl = footStl("left");
+        const onRegions = effectiveHardnessRegions(design, "left");
+        expect(onRegions.map((region) => region.kind).sort()).toEqual(["element", "zone"]);
+        const on = await buildVertexSliceModel({
+            design,
+            side: "left",
+            manufacturingStl: stl,
+            stlFilename: "left.stl",
+            regional3mfEnabled: true,
+        });
+        const onPacked = await readPackedHardness3mf(on.bytes);
+        expect(onPacked.modifiers.map((part) => part.hardnessClass).sort()).toEqual(["Extra Soft", "Soft"]);
+
+        design.splitElements = false;
+        const offRegions = effectiveHardnessRegions(design, "left");
+        expect(offRegions.map((region) => region.kind)).toEqual(["zone"]);
+        expect(offRegions.every((region) => region.kind !== "element")).toBe(true);
+        const off = await buildVertexSliceModel({
+            design,
+            side: "left",
+            manufacturingStl: stl,
+            stlFilename: "left.stl",
+            regional3mfEnabled: true,
+        });
+        const offPacked = await readPackedHardness3mf(off.bytes);
+        expect(offPacked.modifiers.map((part) => [part.hardnessClass, part.density])).toEqual([
+            ["Extra Soft", "14%"],
+        ]);
+
+        design.printRecipe = { ...design.printRecipe, zones: [] };
+        const stlOnly = await buildVertexSliceModel({
+            design,
+            side: "left",
+            manufacturingStl: stl,
+            stlFilename: "left.stl",
+            regional3mfEnabled: true,
+        });
+        expect(stlOnly.contentType).toBe("model/stl");
+        expect(stlOnly.regionCount).toBe(0);
+        expect(stlOnly.bytes).toEqual(new Uint8Array(stl));
+        expect(effectiveHardnessRegions(design, "left")).toEqual([]);
+    });
+
+    test("a failed capability check is not an STL fallback", () => {
+        expect(
+            regionalSliceDecision({
+                effectiveRegionCount: 0,
+                capability: { state: "unknown", reason: "down" },
+            }),
+        ).toEqual({
+            action: "stl",
+        });
+        expect(parseRegionalCapability({ enabled: true })).toEqual({ state: "enabled" });
+        expect(parseRegionalCapability({ enabled: false })).toEqual({ state: "disabled" });
+        expect(parseRegionalCapability({})).toEqual({
+            state: "unknown",
+            reason: "malformed capability response (missing enabled)",
+        });
+        expect(parseRegionalCapability("nope")).toEqual({
+            state: "unknown",
+            reason: "malformed capability response",
+        });
+        expect(
+            regionalSliceDecision({ effectiveRegionCount: 2, capability: { state: "disabled" } }).action,
+        ).toBe("fail");
+        const unknown = regionalSliceDecision({
+            effectiveRegionCount: 2,
+            capability: { state: "unknown", reason: "HTTP 503" },
+        });
+        expect(unknown.action).toBe("fail");
+        if (unknown.action === "fail") expect(unknown.message).toMatch(/could not be confirmed \(HTTP 503\)/);
+        const off = regionalSliceDecision({ effectiveRegionCount: 1, capability: { state: "disabled" } });
+        if (off.action === "fail") expect(off.message).toMatch(/turned off on this server/);
     });
 });

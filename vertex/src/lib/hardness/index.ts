@@ -12,6 +12,7 @@ export {
 } from "../../../shared/print-recipe/hardness-class-table";
 export {
     collectHardnessRegions,
+    effectiveHardnessRegions,
     elementToRegion,
 } from "./collect";
 export { modelSettingsXml, packHardness3mf, readDesignFrom3mf } from "./export-3mf";

@@ -5,7 +5,7 @@
 // Regions and the gate on: a 3MF whose main object is that same solid
 // and whose modifier volumes stay in that coordinate frame.
 
-import { collectHardnessRegions } from "@/lib/hardness/collect";
+import { effectiveHardnessRegions } from "@/lib/hardness/collect";
 import { readPackedHardness3mf } from "@/lib/hardness/export-3mf";
 import { parseBinaryStl } from "@/lib/hardness/mesh";
 import { exportHardness3mf } from "@/lib/hardness/pipeline";
@@ -16,6 +16,47 @@ import {
     VERTEXSLICE_3MF_FILENAME,
     VERTEXSLICE_STL_CONTENT_TYPE,
 } from "../../../shared/vertexslice-regional-3mf";
+
+export type RegionalCapability =
+    | { state: "enabled" }
+    | { state: "disabled" }
+    | { state: "unknown"; reason: string };
+
+/** A 2xx body is enabled or disabled. Anything else could not be checked. */
+export function parseRegionalCapability(body: unknown): RegionalCapability {
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+        return { state: "unknown", reason: "malformed capability response" };
+    }
+    const enabled = (body as { enabled?: unknown }).enabled;
+    if (typeof enabled !== "boolean") {
+        return { state: "unknown", reason: "malformed capability response (missing enabled)" };
+    }
+    return enabled ? { state: "enabled" } : { state: "disabled" };
+}
+
+/**
+ * No effective regions: today's STL request.
+ * Effective regions and an explicit enabled check: 3MF.
+ * Effective regions and an explicit off, or a check that did not succeed: stop.
+ * A failed check must not fall through to a single-density STL.
+ */
+export function regionalSliceDecision(args: {
+    effectiveRegionCount: number;
+    capability: RegionalCapability;
+}): { action: "stl" } | { action: "3mf" } | { action: "fail"; message: string } {
+    if (args.effectiveRegionCount <= 0) return { action: "stl" };
+    if (args.capability.state === "enabled") return { action: "3mf" };
+    if (args.capability.state === "disabled") {
+        return {
+            action: "fail",
+            message: "Regional hardness is turned off on this server. Refusing a single-density print.",
+        };
+    }
+    return {
+        action: "fail",
+        message: `Regional hardness could not be confirmed (${args.capability.reason}). Refusing a single-density print.`,
+    };
+}
 
 export interface VertexSliceModelPart {
     filename: string;
@@ -48,7 +89,7 @@ export async function buildVertexSliceModel(args: {
     regional3mfEnabled: boolean;
 }): Promise<VertexSliceModelPart> {
     if (!args.regional3mfEnabled) return stlPart(args.manufacturingStl, args.stlFilename);
-    const regions = collectHardnessRegions(args.design, args.side);
+    const regions = effectiveHardnessRegions(args.design, args.side);
     if (regions.length === 0) return stlPart(args.manufacturingStl, args.stlFilename);
 
     for (const region of regions) assertRegionalInfillPreset(region);

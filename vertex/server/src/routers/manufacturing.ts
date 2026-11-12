@@ -79,7 +79,10 @@ const manufactureInputSchema = z.object({
         .max(80)
         .regex(/^[\w .+\-/%()]+$/)
         .optional(),
-    /** Modifier 3MF. The server forwards it only when VERTEXSLICE_REGIONAL_3MF is on. */
+    /**
+     * Modifier 3MF. With the gate off this is a hard failure, not an STL slice.
+     * With the gate on it is required whenever expectedRegionCount is sent.
+     */
     regional3mfStorageKey: z.string().min(1).max(500).optional(),
     expectedRegionCount: z.number().int().min(1).max(64).optional(),
 });

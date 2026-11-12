@@ -8,7 +8,12 @@ import {
 } from "@/features/exports/apex-print-material";
 import { exportMachineFamily, pairExportLayout } from "@/features/exports/machine-export-layout";
 import { stampSingleFootStl } from "@/features/exports/printer-foot-isolation";
-import { buildVertexSliceModel } from "@/features/exports/vertexslice-regional-model";
+import {
+    buildVertexSliceModel,
+    parseRegionalCapability,
+    type RegionalCapability,
+    regionalSliceDecision,
+} from "@/features/exports/vertexslice-regional-model";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { workpiecesFromDesign } from "@/lib/cnc/compose";
 import { generateCncJob } from "@/lib/cnc/export";
@@ -23,7 +28,7 @@ import {
 } from "@/lib/geometry/export-geometry";
 import { binaryStlTriangleCount, manufacturingStlForExportKind } from "@/lib/geometry/leader-block";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
-import { collectHardnessRegions } from "@/lib/hardness/collect";
+import { effectiveHardnessRegions } from "@/lib/hardness/collect";
 import { packHardness3mf } from "@/lib/hardness/export-3mf";
 import { parseBinaryStl, type TriangleMesh } from "@/lib/hardness/mesh";
 import { buildRawModifiers, exportHardness3mf, STL_SHELL_ONLY_WARNING } from "@/lib/hardness/pipeline";
@@ -184,7 +189,8 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
         const auth = await authorize("stl", side, filename);
         if (!auth.ok) return { ok: false, reason: auth.reason };
         recordExport(`STL ${side} (-${TOKEN_COST.stl})`);
-        const warning = collectHardnessRegions(design, side).length > 0 ? STL_SHELL_ONLY_WARNING : undefined;
+        const warning =
+            effectiveHardnessRegions(design, side).length > 0 ? STL_SHELL_ONLY_WARNING : undefined;
         return { ok: true, filename, blob, warning };
     } catch (e) {
         return { ok: false, reason: e instanceof Error ? e.message : "Export failed" };
@@ -200,7 +206,7 @@ function translateMesh(mesh: TriangleMesh, dy: number): TriangleMesh {
 
 function assertHardnessMapped(design: DesignState, side: Side): void {
     const unmapped: string[] = [];
-    for (const region of collectHardnessRegions(design, side)) {
+    for (const region of effectiveHardnessRegions(design, side)) {
         try {
             classDensityPct(region.hardnessClass, region.overrides);
         } catch (err) {
@@ -431,21 +437,23 @@ function yieldToPaint(): Promise<void> {
 }
 
 /**
- * The gate is server-only (`VERTEXSLICE_REGIONAL_3MF`). A missing procedure or a
- * failed check keeps today's STL upload so production exports still run.
+ * Explicit enabled / disabled is a successful check. A missing procedure, a
+ * thrown query (network or non-2xx), or a body without a boolean `enabled`
+ * is "could not check". Callers with effective regions must stop on that.
  */
-async function queryVertexSliceRegional3mf(): Promise<boolean> {
+async function queryVertexSliceRegional3mf(): Promise<RegionalCapability> {
     const manufacturing = trpc.manufacturing as {
-        regional3mfEnabled?: { query: () => Promise<{ enabled: boolean }> };
+        regional3mfEnabled?: { query: () => Promise<unknown> };
     };
     const query = manufacturing.regional3mfEnabled?.query;
-    if (!query) return false;
+    if (!query) {
+        return { state: "unknown", reason: "regional hardness capability check is missing" };
+    }
     try {
-        const res = await query();
-        return res.enabled === true;
+        return parseRegionalCapability(await query());
     } catch (err) {
-        console.warn("[export] regional 3MF gate unavailable; sending the STL", err);
-        return false;
+        const reason = err instanceof Error ? err.message : String(err);
+        return { state: "unknown", reason: reason || "regional hardness capability check failed" };
     }
 }
 
@@ -547,8 +555,15 @@ export async function generateHybridGcode(
             const stopped = abort();
             if (stopped) return stopped;
             const design = useDesignStore.getState().design;
+            const effectiveRegions =
+                outputType === "gcode" && separateFiles ? effectiveHardnessRegions(design, side) : [];
             let regional3mf: { bytes: ArrayBuffer; regionCount: number } | null = null;
-            if (outputType === "gcode" && separateFiles && (await queryVertexSliceRegional3mf())) {
+            if (effectiveRegions.length > 0) {
+                const decision = regionalSliceDecision({
+                    effectiveRegionCount: effectiveRegions.length,
+                    capability: await queryVertexSliceRegional3mf(),
+                });
+                if (decision.action === "fail") throw new Error(decision.message);
                 const model = await buildVertexSliceModel({
                     design,
                     side,
@@ -556,9 +571,12 @@ export async function generateHybridGcode(
                     stlFilename: `${side}.stl`,
                     regional3mfEnabled: true,
                 });
-                if (model.contentType === "model/3mf") {
-                    regional3mf = { bytes: bytesToArrayBuffer(model.bytes), regionCount: model.regionCount };
+                if (model.contentType !== "model/3mf" || model.regionCount < 1) {
+                    throw new Error(
+                        "Regional hardness was requested but the 3MF has no modifier regions. Refusing a single-density print.",
+                    );
                 }
+                regional3mf = { bytes: bytesToArrayBuffer(model.bytes), regionCount: model.regionCount };
             }
             const stoppedBeforeUpload = abort();
             if (stoppedBeforeUpload) return stoppedBeforeUpload;

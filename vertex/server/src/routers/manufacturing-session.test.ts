@@ -4,6 +4,7 @@ import { HARDNESS_TO_INFILL_PCT } from "../../../shared/print-recipe/hardness-to
 import type { PrintRecipeV1 } from "../../../shared/print-recipe/print-recipe.js";
 import { VERTEXSLICE_REGIONAL_3MF_ENV } from "../../../shared/vertexslice-regional-3mf.js";
 import { buildManufacturingTempStlKey } from "../lib/storage.js";
+import { sliceWithVertexSlice } from "../lib/vertexslice-client.js";
 import {
     runSessionGenerateSolid,
     type SessionChargeArgs,
@@ -130,52 +131,85 @@ describe("session generateSolid", () => {
         );
     });
 
-    test("the regional gate off keeps today's STL slice even when a 3MF was uploaded", async () => {
+    test("the regional gate off refuses a regional upload instead of slicing STL", async () => {
         delete process.env[VERTEXSLICE_REGIONAL_3MF_ENV];
         const stl = new Uint8Array([1, 2, 3, 4]);
         const threeMf = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 9]);
         const stlKey = buildManufacturingTempStlKey(userId, 1, "55555555-5555-4555-8555-555555555555");
         const regionalKey = buildManufacturingTempStlKey(userId, 2, "66666666-6666-4666-8666-666666666666");
-        let sliceRequest: {
-            filename?: string;
-            model?: Uint8Array;
-            infillDensityPct?: number;
-            expectedRegionCount?: number;
-        } | null = null;
+        let sliced = false;
         const io = sessionIo({
             stlKey,
             regionalKey,
             stl,
             threeMf,
-            onSlice: (request) => {
-                sliceRequest = {
-                    filename: request.filename,
-                    model: request.model,
-                    infillDensityPct: request.infillDensityPct,
-                    expectedRegionCount: request.expectedRegionCount,
-                };
+            onSlice: () => {
+                sliced = true;
             },
         });
-        await runSessionGenerateSolid({
-            userId,
-            ip: null,
-            input: {
-                side: "left",
-                presetId: "apex-v2-insole-95a",
-                stlStorageKey: stlKey,
-                outputType: "gcode",
-                beltAngleDeg: 45,
-                printRecipe: { ...recipe, defaultHardness: "Medium" },
-                material: "apex_core",
-                regional3mfStorageKey: regionalKey,
-                expectedRegionCount: 1,
-            },
-            io,
-        });
-        expect(sliceRequest?.filename).toBe("left.stl");
-        expect(sliceRequest?.model).toEqual(stl);
-        expect(sliceRequest?.infillDensityPct).toBe(26);
-        expect(sliceRequest?.expectedRegionCount).toBeUndefined();
+        await expect(
+            runSessionGenerateSolid({
+                userId,
+                ip: null,
+                input: {
+                    side: "left",
+                    presetId: "apex-v2-insole-95a",
+                    stlStorageKey: stlKey,
+                    outputType: "gcode",
+                    beltAngleDeg: 45,
+                    printRecipe: { ...recipe, defaultHardness: "Medium" },
+                    material: "apex_core",
+                    regional3mfStorageKey: regionalKey,
+                    expectedRegionCount: 1,
+                },
+                io,
+            }),
+        ).rejects.toThrow(/Regional hardness is turned off on this server/);
+        expect(sliced).toBe(false);
+    });
+
+    test("the regional gate on rejects a 3MF whose modifier count is missing", async () => {
+        process.env[VERTEXSLICE_REGIONAL_3MF_ENV] = "1";
+        try {
+            const stl = new Uint8Array([1, 2, 3, 4]);
+            const threeMf = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 9]);
+            const stlKey = buildManufacturingTempStlKey(userId, 5, "99999999-9999-4999-8999-999999999999");
+            const regionalKey = buildManufacturingTempStlKey(
+                userId,
+                6,
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab",
+            );
+            let sliced = false;
+            const io = sessionIo({
+                stlKey,
+                regionalKey,
+                stl,
+                threeMf,
+                onSlice: () => {
+                    sliced = true;
+                },
+            });
+            await expect(
+                runSessionGenerateSolid({
+                    userId,
+                    ip: null,
+                    input: {
+                        side: "left",
+                        presetId: "apex-v2-insole-95a",
+                        stlStorageKey: stlKey,
+                        outputType: "gcode",
+                        beltAngleDeg: 45,
+                        printRecipe: { ...recipe, defaultHardness: "Medium" },
+                        material: "apex_core",
+                        regional3mfStorageKey: regionalKey,
+                    },
+                    io,
+                }),
+            ).rejects.toThrow(/modifier count is missing/);
+            expect(sliced).toBe(false);
+        } finally {
+            delete process.env[VERTEXSLICE_REGIONAL_3MF_ENV];
+        }
     });
 
     test("the regional gate on sends the 3MF and keeps device infill", async () => {
@@ -231,6 +265,70 @@ describe("session generateSolid", () => {
             expect(sliceRequest?.expectedRegionCount).toBe(1);
         } finally {
             delete process.env[VERTEXSLICE_REGIONAL_3MF_ENV];
+        }
+    });
+
+    test("a missing or short X-VertexSlice-Regions header fails the export", async () => {
+        process.env[VERTEXSLICE_REGIONAL_3MF_ENV] = "1";
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const originalFetch = globalThis.fetch;
+        const headers: Array<string | null> = [null, "0", "nope"];
+        try {
+            for (const regionsHeader of headers) {
+                globalThis.fetch = (async (input: RequestInfo | URL) => {
+                    const url = String(input);
+                    if (url.endsWith("/v1/materials")) {
+                        return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+                    }
+                    const responseHeaders = new Headers();
+                    if (regionsHeader != null) responseHeaders.set("X-VertexSlice-Regions", regionsHeader);
+                    return new Response("G1 X0\n", { status: 200, headers: responseHeaders });
+                }) as typeof fetch;
+                const stl = new Uint8Array([1, 2, 3, 4]);
+                const threeMf = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 9, 9]);
+                const stlKey = buildManufacturingTempStlKey(
+                    userId,
+                    7,
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                );
+                const regionalKey = buildManufacturingTempStlKey(
+                    userId,
+                    8,
+                    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                );
+                const io = sessionIo({
+                    stlKey,
+                    regionalKey,
+                    stl,
+                    threeMf,
+                    onSlice: () => undefined,
+                });
+                io.sliceWithVertexSlice = sliceWithVertexSlice;
+                await expect(
+                    runSessionGenerateSolid({
+                        userId,
+                        ip: null,
+                        input: {
+                            side: "left",
+                            presetId: "apex-v2-insole-95a",
+                            stlStorageKey: stlKey,
+                            outputType: "gcode",
+                            beltAngleDeg: 45,
+                            printRecipe: { ...recipe, defaultHardness: "Medium" },
+                            material: "apex_core",
+                            regional3mfStorageKey: regionalKey,
+                            expectedRegionCount: 1,
+                        },
+                        io,
+                    }),
+                ).rejects.toThrow(/Regional hardness/);
+            }
+        } finally {
+            globalThis.fetch = originalFetch;
+            delete process.env[VERTEXSLICE_REGIONAL_3MF_ENV];
+            delete process.env.VERTEXSLICE_SLICER_URL;
+            delete process.env.VERTEXSLICE_API_KEY;
         }
     });
 });

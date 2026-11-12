@@ -331,6 +331,7 @@
                 "vertex/src/features/clients/NewClientDialog.test.tsx",
                 "vertex/src/features/corrections/skive-derived-display.test.ts",
                 "vertex/src/features/exports/export-panel-clinical.test.ts",
+                "vertex/src/features/exports/vertexslice-regional-capability.test.ts",
                 "vertex/src/features/exports/vertexslice-regional-model.test.ts",
                 "vertex/src/features/measure/MeasurementsPanel.test.tsx",
                 "vertex/src/features/production/bridge-setup.test.tsx",
