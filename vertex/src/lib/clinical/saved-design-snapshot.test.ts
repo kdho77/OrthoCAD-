@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@rstest/core";
 
-import { readStoredDesignSettings } from "../../../shared/design-settings";
+import { DESIGN_SETTINGS_SCHEMA_VERSION, readStoredDesignSettings } from "../../../shared/design-settings";
 import {
     parseSavedDesignCatalog,
     SavedDesignSnapshotError,
@@ -8,7 +8,9 @@ import {
 } from "../../../shared/saved-design-catalog";
 import { designStateFromSavedSettings } from "../../features/exports/saved-design-finalized-mesh";
 import { defaultElementPose, ELEMENT_PROFILES } from "../geometry/elements";
+import { meshYSign } from "../geometry/handedness";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_GLB_PATH } from "../geometry/procedural-wall/sample-top-id";
+import { insoleLayoutForUsMenSize } from "../geometry/shoe-size";
 import { SINK_DEFAULT_DEPTH_MM, SINK_PROFILES } from "../geometry/sink";
 import { buildSavedDesignSnapshot } from "./saved-design-snapshot";
 
@@ -340,5 +342,42 @@ describe("SAMPLE_Top saved-design snapshot", () => {
             ],
         });
         expect(bothStored.design.sinks?.left?.map((sink) => sink.kind)).toEqual(["mpj1", "rkw"]);
+    });
+
+    test("a reopened M11.5 design keeps Morton's and Reverse Morton's on the first ray", () => {
+        const shoe = { ...storedNine, size: 11.5 };
+        const layout = insoleLayoutForUsMenSize(11.5);
+        for (const name of ["Morton's Ext.", "Rev. Morton's"] as const) {
+            const built = build(
+                {
+                    elements: [
+                        { name, side: "left" },
+                        { name, side: "right" },
+                    ],
+                },
+                shoe,
+            );
+            const envelope = { schemaVersion: DESIGN_SETTINGS_SCHEMA_VERSION, settings: built.design };
+            const reopened = designStateFromSavedSettings(envelope);
+            const again = designStateFromSavedSettings({
+                schemaVersion: DESIGN_SETTINGS_SCHEMA_VERSION,
+                settings: reopened,
+            });
+            expect(reopened.elements).toHaveLength(2);
+            for (const el of reopened.elements) {
+                const pose = defaultElementPose(
+                    el.kind as "mortons_extension" | "reverse_mortons",
+                    el.side,
+                    layout.lengthMm,
+                    layout.widthMm,
+                );
+                expect(el.position).toEqual(pose.position);
+                expect(el.heightMm).toBe(3);
+                expect(Math.sign(el.position.y)).toBe(meshYSign(el.side, "medial"));
+            }
+            expect(again.elements.map((el) => el.position)).toEqual(
+                reopened.elements.map((el) => el.position),
+            );
+        }
     });
 });

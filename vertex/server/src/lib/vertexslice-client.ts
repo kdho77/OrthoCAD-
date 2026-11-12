@@ -2,14 +2,32 @@
 
 import { TRPCError } from "@trpc/server";
 import { APEX_V2_INSOLE_LOCKED_PROFILE_ID } from "../../../shared/print-recipe/print-recipe.js";
+import {
+    isVertexSlice3mfModel,
+    VERTEXSLICE_3MF_CONTENT_TYPE,
+    VERTEXSLICE_3MF_FILENAME,
+    VERTEXSLICE_REGIONS_HEADER,
+} from "../../../shared/vertexslice-regional-3mf.js";
+import { prepareManufacturingMeshForSlice, sliceMeshStats, UnsliceableMeshError } from "./slice-mesh.js";
 import { readUpstreamErrorText, upstreamErrorText } from "./upstream-error.js";
 
-/** VertexSlice `/v1/slice` material ids. Enabled printer exports are the first two. */
-export const VERTEX_SLICE_MATERIAL_IDS = ["apex_core", "apex_light", "apex_forge", "apex_bounce"] as const;
+/** VertexSlice `/v1/slice` material ids. `apex_forge` stays disabled. `apex_vylon` is AFO shell only. */
+export const VERTEX_SLICE_MATERIAL_IDS = [
+    "apex_core",
+    "apex_light",
+    "apex_forge",
+    "apex_bounce",
+    "apex_vylon",
+] as const;
 
 export type VertexSliceMaterialId = (typeof VERTEX_SLICE_MATERIAL_IDS)[number];
 
-export const ENABLED_VERTEX_SLICE_MATERIALS = ["apex_core", "apex_light", "apex_bounce"] as const;
+export const ENABLED_VERTEX_SLICE_MATERIALS = [
+    "apex_core",
+    "apex_light",
+    "apex_bounce",
+    "apex_vylon",
+] as const;
 
 export type EnabledVertexSliceMaterial = (typeof ENABLED_VERTEX_SLICE_MATERIALS)[number];
 
@@ -46,7 +64,9 @@ export function manufacturingBackendForOutput(outputType: "gcode" | "stl"): "ver
 /**
  * Apex Forge stays disabled. Apex Bounce is enabled; its temperatures and speed
  * are a VertexSlice material profile, not fields on this form.
- * Any other id, including legacy Shore-A names, is refused. Nothing is substituted.
+ * `apex_vylon` is the AFO shell material (Forge contract, belt/bed 60°C, wall loops 6).
+ * It is not an insole picker option. Any other id, including legacy Shore-A names, is refused.
+ * Nothing is substituted.
  */
 export function assertEnabledVertexSliceMaterial(material: string | undefined): EnabledVertexSliceMaterial {
     const id = material?.trim() ?? "";
@@ -56,7 +76,7 @@ export function assertEnabledVertexSliceMaterial(material: string | undefined): 
             message: "Apex Forge is disabled until print settings are approved",
         });
     }
-    if (id !== "apex_core" && id !== "apex_light" && id !== "apex_bounce") {
+    if (id !== "apex_core" && id !== "apex_light" && id !== "apex_bounce" && id !== "apex_vylon") {
         throw new TRPCError({
             code: "BAD_REQUEST",
             message:
@@ -239,7 +259,8 @@ function isMaterialRejection(errorText: string, material: string): boolean {
 
 /**
  * One foot plus the 20 mm toe leader. A stray vertex or a unit blow-up is larger.
- * 134,310 triangles (the 6.7 MB hung model) is inside the triangle cap.
+ * 134,310 triangles (the 6.7 MB hung model) is inside this cap.
+ * prepareManufacturingMeshForSlice still rewrites a watertight mesh over 132,000.
  */
 const MAX_SLICE_EXTENT_MM = 450;
 const MAX_SLICE_TRIANGLES = 750_000;
@@ -529,6 +550,11 @@ export interface VertexSliceRequest {
     sliceTimeoutMs?: number;
     /** Included in timeout errors when sliceTimeoutMs is set. */
     side?: string;
+    /**
+     * Modifier regions in a 3MF model. The response must include
+     * X-VertexSlice-Regions with at least this count. Omit for an STL.
+     */
+    expectedRegionCount?: number;
 }
 
 /**
@@ -537,13 +563,50 @@ export interface VertexSliceRequest {
  * Does not send wall loops or any other process override.
  * Fails closed when the material is absent from `/v1/materials` or the slice call rejects it.
  */
+function regionsHeaderCount(response: Response): number | null {
+    const raw = response.headers.get(VERTEXSLICE_REGIONS_HEADER);
+    if (raw == null) return null;
+    const text = raw.trim();
+    if (!/^\d+$/.test(text)) return null;
+    return Number(text);
+}
+
 export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise<string> {
     const material = assertEnabledVertexSliceMaterial(request.material);
     const profileId = assertLockedVertexSliceProfile(request.profileId.trim());
-    const bytes = new Uint8Array(request.model);
-    const mesh = inspectManufacturingStl(bytes);
-    if (mesh.problem) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: mesh.problem });
+    let bytes = new Uint8Array(request.model);
+    const expectedRegions = request.expectedRegionCount ?? 0;
+    const is3mf = isVertexSlice3mfModel(bytes, request.filename);
+    if (expectedRegions > 0 && !is3mf) {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Regional hardness expected ${expectedRegions} modifier regions but the model is not a 3MF. Refusing a single-density print.`,
+        });
+    }
+    let triangles: number | null = null;
+    let extentMm: [number, number, number] | null = null;
+    if (!is3mf) {
+        let mesh = inspectManufacturingStl(bytes);
+        if (mesh.problem) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: mesh.problem });
+        }
+        try {
+            const prepared = prepareManufacturingMeshForSlice(bytes);
+            if (prepared !== bytes) {
+                bytes = prepared;
+                mesh = inspectManufacturingStl(bytes);
+                if (mesh.problem) {
+                    throw new TRPCError({ code: "BAD_REQUEST", message: mesh.problem });
+                }
+            }
+        } catch (err) {
+            if (err instanceof UnsliceableMeshError) {
+                throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
+            }
+            throw err;
+        }
+        triangles = mesh.triangles;
+        extentMm = mesh.extentMm;
     }
 
     const sliceTimeoutMs =
@@ -580,7 +643,15 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
             }
             form.append("infill_density", String(pct));
         }
-        form.append("model", new Blob([bytes], { type: "model/stl" }), request.filename ?? "model.stl");
+        if (is3mf) {
+            form.append(
+                "model",
+                new Blob([bytes], { type: VERTEXSLICE_3MF_CONTENT_TYPE }),
+                VERTEXSLICE_3MF_FILENAME,
+            );
+        } else {
+            form.append("model", new Blob([bytes], { type: "model/stl" }), request.filename ?? "model.stl");
+        }
 
         console.log("[vertexslice] -> POST /v1/slice", {
             endpoint,
@@ -588,21 +659,31 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
             material,
             infillDensityPct: request.infillDensityPct ?? null,
             modelBytes: bytes.byteLength,
-            triangles: mesh.triangles,
-            extentMm: mesh.extentMm,
+            model: is3mf ? VERTEXSLICE_3MF_FILENAME : (request.filename ?? "model.stl"),
+            expectedRegions: expectedRegions || null,
+            triangles,
+            extentMm,
             authenticated: true,
         });
 
-        const response = await vertexSliceFetch(
-            endpoint,
-            {
-                method: "POST",
-                headers: authHeaders(apiKey),
-                body: form,
-                signal: deadline?.signal,
-            },
-            timedOut ? { timedOut } : undefined,
-        );
+        let response: Response;
+        try {
+            response = await vertexSliceFetch(
+                endpoint,
+                {
+                    method: "POST",
+                    headers: authHeaders(apiKey),
+                    body: form,
+                    signal: deadline?.signal,
+                },
+                timedOut ? { timedOut } : undefined,
+            );
+        } catch (err) {
+            if (err instanceof Error && err.message.startsWith("VertexSlice timed out")) {
+                console.error("[vertexslice] mesh at timeout", sliceMeshStats(bytes));
+            }
+            throw err;
+        }
 
         if (!response.ok) {
             const rawDetail = await settleWithinSignal(response.text(), deadline?.signal, timedOut);
@@ -628,6 +709,12 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
                     message: materialUnavailableMessage(material, detail),
                 });
             }
+            if (response.status === 422 && expectedRegions > 0) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message: `Regional hardness was rejected by VertexSlice (422): ${detail}`,
+                });
+            }
             throw new TRPCError({
                 code:
                     response.status === 401 || response.status === 403
@@ -635,6 +722,19 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
                         : "INTERNAL_SERVER_ERROR",
                 message: `VertexSlice error (${response.status}): ${detail}`,
             });
+        }
+
+        if (expectedRegions > 0) {
+            const applied = regionsHeaderCount(response);
+            if (applied == null || applied < expectedRegions) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message:
+                        applied == null
+                            ? `Regional hardness was not confirmed (missing ${VERTEXSLICE_REGIONS_HEADER}; sent ${expectedRegions} modifier regions). Refusing a single-density print.`
+                            : `Regional hardness applied ${applied} of ${expectedRegions} modifier regions. Refusing a single-density print.`,
+                });
+            }
         }
 
         const gcode = await settleWithinSignal(response.text(), deadline?.signal, timedOut);

@@ -2941,6 +2941,22 @@ export function applyBaseModifiers(
     const heelCupNarrowing =
         (field.corrections.heelCupWidthMm ?? 0) < 0 || (field.corrections.forefootWidthMm ?? 0) < 0;
 
+    // Zonal shell thickness samples t(u) and never reads thicknessMm, so the
+    // Setup slider was a no-op on Solid print and Milling. Those methods loft a
+    // top-only SAMPLE_Top sheet over a z=0 bottom pattern. Raise the whole sheet
+    // by (thickness − reference) at full strength — the height weight `w` is ~0
+    // on the z≈2 mm floor and would leave that surface parked at 2 mm.
+    // Reference thickness adds 0, so today's 2 mm meshes stay byte-identical.
+    // printing_shell keeps its zonal wall controls. Uniform mode already folds
+    // thicknessMm into correctionDeltaAt, so it is not lifted again.
+    const solidTopLiftMm =
+        !isMultiMesh &&
+        shellMode === "zonal" &&
+        (field.method === "printing_solid" || field.method === "milling_3axis") &&
+        Math.abs(field.thicknessMm - BASE_REFERENCE_THICKNESS_MM) > 1e-9
+            ? field.thicknessMm - BASE_REFERENCE_THICKNESS_MM
+            : 0;
+
     // Parallel composition: vertical, width-lateral, and depth-tangent displacements
     // are each computed from baseline positions (above) and summed here in one pass.
     // Neither width nor depth reads the other's deformed coordinates — clinical
@@ -2998,9 +3014,12 @@ export function applyBaseModifiers(
                       : w > 0.5
                         ? 1
                         : 0;
-            array[i * 3 + thickAxis] = t + vertD + sinkTAt[i]! * sinkW;
+            array[i * 3 + thickAxis] =
+                solidTopLiftMm === 0
+                    ? t + vertD + sinkTAt[i]! * sinkW
+                    : t + vertD + sinkTAt[i]! * sinkW + solidTopLiftMm;
         } else {
-            array[i * 3 + thickAxis] = t + vertD;
+            array[i * 3 + thickAxis] = solidTopLiftMm === 0 ? t + vertD : t + vertD + solidTopLiftMm;
         }
         array[i * 3 + widthAxis] += latD;
         array[i * 3] += dx;

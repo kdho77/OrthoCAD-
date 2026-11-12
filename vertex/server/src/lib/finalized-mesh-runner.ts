@@ -21,6 +21,11 @@ interface FinalizedMeshModule {
         fontBytes?: ArrayBuffer;
         elementsBaseDir?: string;
     }): Promise<HeadlessFinalizedFoot>;
+    buildRegional3mfFromSavedSettings?(input: {
+        settingsJson: unknown;
+        side: "left" | "right";
+        manufacturingStl: ArrayBuffer;
+    }): Promise<{ bytes: Uint8Array; regionCount: number } | null>;
 }
 
 const SAMPLE_TOP_URL = new URL("../../../public/Templates/SAMPLE_Top.glb", import.meta.url);
@@ -115,6 +120,24 @@ export async function buildHeadlessFinalizedFoot(input: {
             { cause: error instanceof Error ? error : undefined },
         );
     }
+}
+
+/**
+ * Modifier volumes for a saved foot. The manufacturing STL is the main 3MF object.
+ * A bundle from before this export refuses the slice instead of dropping regions.
+ */
+export async function buildHeadlessRegional3mf(input: {
+    settingsJson: unknown;
+    side: "left" | "right";
+    manufacturingStl: ArrayBuffer;
+}): Promise<{ bytes: Uint8Array; regionCount: number } | null> {
+    const mod = await loadMeshModule();
+    if (!mod.buildRegional3mfFromSavedSettings) {
+        throw new Error(
+            "Regional hardness is enabled but this server build cannot attach modifier volumes. Refusing a single-density print.",
+        );
+    }
+    return mod.buildRegional3mfFromSavedSettings(input);
 }
 
 export function sampleTopFileUrl(): string {

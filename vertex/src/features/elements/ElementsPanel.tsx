@@ -40,6 +40,7 @@ export function ElementsPanel() {
         addElement,
         updateElement,
         removeElement,
+        removeElementsForSides,
         selectElement,
         selectedElementId,
         addSink,
@@ -109,6 +110,16 @@ export function ElementsPanel() {
     }, []);
 
     const libraryKinds = useMemo(() => new Set(libraryEntries.map((e) => e.kind)), [libraryEntries]);
+
+    const placementSides = useMemo((): Side[] => {
+        if (placementFoot === "both") return ["left", "right"];
+        if (placementFoot === "left" || placementFoot === "right") return [placementFoot];
+        return [exportSide];
+    }, [placementFoot, exportSide]);
+    const clearablePlacedCount = useMemo(
+        () => design.elements.filter((e) => placementSides.includes(e.side)).length,
+        [design.elements, placementSides],
+    );
 
     const elementNotice = useDesignStore((s) => s.elementNotice);
     const clearElementNotice = useDesignStore((s) => s.clearElementNotice);
@@ -308,8 +319,24 @@ export function ElementsPanel() {
             </div>
 
             <div className="space-y-1">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Placed
+                <div className="flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Placed
+                    </div>
+                    {clearablePlacedCount > 0 ? (
+                        <ConfirmDeleteTrigger
+                            title="Clear all placed elements?"
+                            description={
+                                placementFoot === "both"
+                                    ? "Remove all placed elements from the left and right feet?"
+                                    : `Remove all placed elements on the ${placementFoot} foot?`
+                            }
+                            onConfirm={() => removeElementsForSides(placementSides)}
+                            className="shrink-0 text-[10px] font-medium text-muted-foreground underline-offset-2 hover:text-destructive hover:underline"
+                        >
+                            <span data-testid="placed-clear-all">Clear all</span>
+                        </ConfirmDeleteTrigger>
+                    ) : null}
                 </div>
                 {design.elements.length === 0 ? (
                     <p className="rounded-md border border-dashed border-border px-2 py-3 text-center text-xs text-muted-foreground">

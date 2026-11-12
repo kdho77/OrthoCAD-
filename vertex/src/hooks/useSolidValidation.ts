@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { buildValidatedExportGeometry } from "@/lib/geometry/export-geometry";
 import { geometryEngine } from "@/lib/geometry/geometry-engine";
 import type { SolidValidation } from "@/lib/geometry/geometry-kernel";
+import { analyzeManifoldBuffers } from "@/lib/geometry/manifold-core";
+import { useAfoStore } from "@/stores/afo-store";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useKernelStore } from "@/stores/kernel-store";
@@ -26,6 +28,7 @@ export function useSolidValidation(design: DesignState, side: Side, debounceMs =
     const [report, setReport] = useState<ExportSolidValidation>(EMPTY);
     const kernelVersion = useKernelStore((s) => s.version);
     const kernelLoadState = useKernelStore((s) => s.loadState);
+    const afoShell = useAfoStore((s) => s.shellMesh);
 
     const viewer = useDesignStore((s) => s.viewer);
     const pattern = useBottomPatternStore((s) => s.patterns[side]);
@@ -38,6 +41,24 @@ export function useSolidValidation(design: DesignState, side: Side, debounceMs =
         let cancelled = false;
         setReport(EMPTY);
         const timer = setTimeout(() => {
+            if (design.productType === "afo") {
+                if (!afoShell) {
+                    if (!cancelled) setReport(EMPTY);
+                    return;
+                }
+                const r = analyzeManifoldBuffers(afoShell.positions, afoShell.indices);
+                if (!cancelled) {
+                    setReport({
+                        triangleCount: r.triangleCount,
+                        vertexCount: r.vertexCount,
+                        openEdges: r.openEdges,
+                        nonManifoldEdges: r.nonManifoldEdges,
+                        isWatertight: r.isWatertight,
+                        solidClosed: r.isWatertight,
+                    });
+                }
+                return;
+            }
             void (async () => {
                 try {
                     const geometry = await buildValidatedExportGeometry(side);
@@ -61,7 +82,18 @@ export function useSolidValidation(design: DesignState, side: Side, debounceMs =
             cancelled = true;
             clearTimeout(timer);
         };
-    }, [design, side, debounceMs, kernelVersion, kernelLoadState, viewer, pattern, bottomEdit, trimEdit]);
+    }, [
+        design,
+        side,
+        debounceMs,
+        kernelVersion,
+        kernelLoadState,
+        afoShell,
+        viewer,
+        pattern,
+        bottomEdit,
+        trimEdit,
+    ]);
 
     return report;
 }

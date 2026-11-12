@@ -7,10 +7,12 @@ import * as React from "react";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Euler, Vector3 } from "three";
+import { elementPlacementSides } from "@/features/clinical/ActiveFootSideBar";
 import { DESIGN_ELEMENT_COLOR } from "@/lib/geometry/element-visualization";
 import { defaultElementPose } from "@/lib/geometry/elements";
 import { medialSign, meshYSign } from "@/lib/geometry/handedness";
 import { sideOffsetX } from "@/lib/geometry/layout";
+import { mortonsEdgeMm } from "@/lib/geometry/mortons-extension";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { SINK_KIND_ORDER, SINK_PROFILES, sinkCutMm, sinkFrame } from "@/lib/geometry/sink";
 import { projectViewNdcX, projectViewNdcY } from "@/lib/geometry/viewport-side-layout";
@@ -381,5 +383,131 @@ describe("element footprint overlay", () => {
             await act(async () => root.render(createElement(ElementMarkers)));
             expect(container.querySelector("mesh")).toBeNull();
         }
+    });
+});
+
+describe("Morton's and Reverse Morton's first-ray footprints", () => {
+    function boxOutline(length: number, half: number): { x: number; y: number }[] {
+        const pts: { x: number; y: number }[] = [];
+        const n = 12;
+        for (let i = 0; i <= n; i++) pts.push({ x: (i / n) * length, y: -half });
+        for (let i = n; i >= 0; i--) pts.push({ x: (i / n) * length, y: half });
+        return pts;
+    }
+
+    function worldRing(
+        element: PlacedElement,
+        lengthMm: number,
+        widthMm: number,
+        outline?: { x: number; y: number }[] | null,
+    ): { x: number; y: number }[] {
+        const pose = elementFootprintPose(element, lengthMm, widthMm, outline);
+        return pose.outline.map((p) => ({ x: pose.x + p.x, y: pose.y + p.y }));
+    }
+
+    function expectFirstRay(
+        ring: { x: number; y: number }[],
+        side: Side,
+        widthMm: number,
+        toeX: number,
+        outline?: { x: number; y: number }[] | null,
+    ) {
+        const xs = ring.map((p) => p.x);
+        const ys = ring.map((p) => p.y);
+        expect(Math.max(...xs)).toBeCloseTo(toeX, 0);
+        const medial = side === "left" ? Math.min(...ys) : Math.max(...ys);
+        let border = side === "left" ? Infinity : -Infinity;
+        for (let i = 0; i <= 16; i++) {
+            const u = 0.63 + (0.37 * i) / 16;
+            const y = mortonsEdgeMm(u, widthMm, side, outline).medial;
+            border = side === "left" ? Math.min(border, y) : Math.max(border, y);
+        }
+        expect(Math.abs(medial - border)).toBeLessThan(2);
+        if (side === "left") expect(Math.max(...ys)).toBeLessThan(0);
+        else expect(Math.min(...ys)).toBeGreaterThan(0);
+        expect(Math.sign(ys.reduce((sum, y) => sum + y, 0) / ys.length)).toBe(meshYSign(side, "medial"));
+    }
+
+    function facesPartner(view: "top" | "bottom", side: Side, meshX: number, meshY: number, widthMm: number) {
+        const ndc = (y: number) => {
+            const world = new Vector3(meshX, sideOffsetX(side, widthMm) + y, 4).applyEuler(
+                new Euler(-Math.PI / 2, 0, 0),
+            );
+            return projectViewNdcX(view, world);
+        };
+        return Math.abs(ndc(meshY)) < Math.abs(ndc(0));
+    }
+
+    test("left and right rings sit on the medial first ray and end on the toe", () => {
+        const layout = insoleLayoutForUsMenSize(11.5);
+        const { lengthMm, widthMm } = layout;
+        const outline = boxOutline(lengthMm - 8, widthMm * 0.42);
+        const toe = Math.max(...outline.map((p) => p.x));
+        for (const frame of [undefined, outline] as const) {
+            const rings = new Map<string, { x: number; y: number }[]>();
+            for (const kind of ["mortons_extension", "reverse_mortons"] as const) {
+                for (const side of ["left", "right"] as const) {
+                    const pose = defaultElementPose(kind, side, lengthMm, widthMm, frame);
+                    const ring = worldRing(
+                        { id: `${kind}-${side}`, kind, side, ...pose },
+                        lengthMm,
+                        widthMm,
+                        frame,
+                    );
+                    rings.set(`${kind}:${side}`, ring);
+                    expectFirstRay(ring, side, widthMm, frame ? toe : lengthMm, frame);
+                    const meanX = ring.reduce((sum, p) => sum + p.x, 0) / ring.length - lengthMm / 2;
+                    const meanY = ring.reduce((sum, p) => sum + p.y, 0) / ring.length;
+                    expect(facesPartner("top", side, meanX, meanY, widthMm)).toBe(true);
+                    expect(facesPartner("bottom", side, meanX, meanY, widthMm)).toBe(true);
+                }
+            }
+            for (const side of ["left", "right"] as const) {
+                const raised = required(rings.get(`mortons_extension:${side}`));
+                const lowered = required(rings.get(`reverse_mortons:${side}`));
+                expect(lowered.length).toBe(raised.length);
+                for (let i = 0; i < raised.length; i++) {
+                    const a = required(lowered[i]);
+                    const b = required(raised[i]);
+                    expect(a.x).toBeCloseTo(b.x, 4);
+                    expect(a.y).toBeCloseTo(b.y, 4);
+                }
+            }
+            const left = required(rings.get("mortons_extension:left"));
+            const right = required(rings.get("mortons_extension:right"));
+            expect(right.length).toBe(left.length);
+            for (let i = 0; i < left.length; i++) {
+                const l = required(left[i]);
+                const r = required(right[i]);
+                expect(r.x).toBeCloseTo(l.x, 4);
+                expect(r.y).toBeCloseTo(-l.y, 4);
+            }
+        }
+    });
+
+    test("Both (linked) places each pad on the medial first ray of both feet", () => {
+        const layout = insoleLayoutForUsMenSize(11.5);
+        useClinicalWorkflowStore.setState({ elementPlacementFoot: "both" });
+        expect(elementPlacementSides()).toEqual(["left", "right"]);
+        for (const kind of ["mortons_extension", "reverse_mortons"] as const) {
+            const design = JSON.parse(JSON.stringify(useDesignStore.getInitialState().design));
+            design.usMenSize = 11.5;
+            design.sizeSystem = "us";
+            design.elements = [];
+            useDesignStore.setState({ design, selectedElementId: null });
+            for (const side of elementPlacementSides()) {
+                useDesignStore.getState().addElement(kind, side);
+            }
+            const placedElements = useDesignStore.getState().design.elements;
+            expect(placedElements.map((el) => el.side).sort()).toEqual(["left", "right"]);
+            expect(placedElements.every((el) => el.kind === kind && el.heightMm === 3)).toBe(true);
+            for (const el of placedElements) {
+                const ring = worldRing(el, layout.lengthMm, layout.widthMm);
+                expectFirstRay(ring, el.side, layout.widthMm, layout.lengthMm);
+                const pose = defaultElementPose(kind, el.side, layout.lengthMm, layout.widthMm);
+                expect(el.position).toEqual(pose.position);
+            }
+        }
+        useClinicalWorkflowStore.setState({ elementPlacementFoot: "both" });
     });
 });
