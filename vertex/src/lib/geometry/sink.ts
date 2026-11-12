@@ -1353,13 +1353,27 @@ export function sinkCutMm(
     let sinkId: string | undefined;
     let weight = 0;
     for (const p of prepare(ctx)) {
-        let w = eggWeight(
-            p.frame,
-            x,
-            yLateral,
-            p.frame.blendMm,
-            p.frame.kind === "rkw" ? rkwCutBlendMm : undefined,
-        );
+        // The wedge sits on the medial rim, so a 32 mm end feather would run
+        // along the wall and shear it. The crest keeps the 6 mm taper. The
+        // trough centerline, which is the dip seen from the side, keeps the
+        // 32 mm quintic.
+        const resolveBlend =
+            p.frame.kind === "rkw"
+                ? (lx: number, ly: number, a: number, b: number, sideBlend: number) => {
+                      const endBlend = rkwCutBlendMm(lx, ly, a, b, sideBlend);
+                      if (endBlend <= sideBlend + 1e-6) return endBlend;
+                      const edges = planEdges(ctx);
+                      const u = Math.max(
+                          0,
+                          Math.min(1, (x - edges.originX) / Math.max(edges.lengthMm, 1e-6)),
+                      );
+                      const distInside = yLateral - edges.medialAt(u);
+                      const reach = Math.max(p.frame.cy - edges.medialAt(p.frame.u), RKW_MEDIAL_RAMP_MM);
+                      const t = distInside <= 0 ? 0 : distInside >= reach ? 1 : distInside / reach;
+                      return sideBlend + (endBlend - sideBlend) * smootherstep01(t);
+                  }
+                : undefined;
+        let w = eggWeight(p.frame, x, yLateral, p.frame.blendMm, resolveBlend);
         if (p.frame.kind === "rkw" && w > 0 && rkwOverhangMm(p.frame, ctx) > 0.05) {
             w *= rkwMedialRamp(x, yLateral, ctx);
         }
