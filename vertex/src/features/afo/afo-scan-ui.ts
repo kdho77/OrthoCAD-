@@ -506,7 +506,10 @@ const UNDO_ORDER: readonly AfoMarkerKey[] = [
     ...AFO_PLANTAR_STEPS.map((s) => s.id).reverse(),
 ];
 
-export { resetAfoPlantarAlignment as resetAfoAlignmentMarkers } from "./afo-scan-markers";
+export {
+    resetAfoLandmarkSection,
+    resetAfoPlantarAlignment as resetAfoAlignmentMarkers,
+} from "./afo-scan-markers";
 
 export function undoLastAfoMarker(): string | null {
     const wf = getAfoState().scanWorkflow;

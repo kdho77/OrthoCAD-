@@ -236,7 +236,7 @@ export function commitAfoScanPoint(pointMm: AfoVec3, scanId: string, displayScal
     return null;
 }
 
-/** Clear Stage-1 plantar alignment and return to step 1. Does not change trim pins or the imported scan asset. */
+/** Clear Stage-1 plantar points and applied alignment only. Stage-2 landmarks and scan Move are untouched. */
 export function resetAfoPlantarAlignment(): void {
     const wf = getAfoState().scanWorkflow;
     const hadAlignment = wf.alignmentApplied;
@@ -245,8 +245,6 @@ export function resetAfoPlantarAlignment(): void {
         {
             ...wf,
             plantar: {},
-            landmarks: {},
-            skippedLandmarks: [],
             alignmentApplied: false,
             levelToRearfoot: false,
             matrixElements: null,
@@ -258,9 +256,51 @@ export function resetAfoPlantarAlignment(): void {
         useAfoStore.getState().setSourceMesh(unoriented);
         refreshAfoWorkingMesh();
     }
-    useAfoStore.getState().setScanLastUndoId(null);
     useAfoStore.getState().setScanLandmarkError(null);
     useAfoStore.getState().setScanPlacement({ redo: AFO_PLANTAR_STEPS[0]?.id ?? null, paused: false });
+    useAfoStore.getState().setScanAutoFrameSuppressed(false);
+}
+
+/** Clear Stage-2 anatomical landmarks, skips, and derived measurements. Plantar alignment stays applied. */
+export function resetAfoLandmarkSection(): void {
+    const wf = getAfoState().scanWorkflow;
+    if (!wf.alignmentApplied) return;
+    const scan = scanForAfoWorkflow();
+    const side = knownScanSide(scan?.side);
+    if (!side) return;
+    const forefootDeg = wf.derived?.forefootToRearfootDeg ?? null;
+    const cleared: AfoScanWorkflow = {
+        ...wf,
+        landmarks: {},
+        skippedLandmarks: [],
+        levelToRearfoot: false,
+    };
+    const next = withDerived(cleared, side);
+    writeWorkflow(
+        {
+            ...next,
+            derived: next.derived
+                ? { ...next.derived, forefootToRearfootDeg: forefootDeg }
+                : forefootDeg != null
+                  ? {
+                        forefootToRearfootDeg: forefootDeg,
+                        ankleAxis: null,
+                        plannedReliefsMm: { malleoli: -3, navicular: null, styloid: null },
+                        proximalTrimCap: null,
+                        heelCupCenter: null,
+                        mpjBreak: null,
+                        shankTiltDeg: null,
+                        warnings: [],
+                    }
+                  : null,
+        },
+        "afo-landmark-reset",
+    );
+    useAfoStore.getState().setScanLandmarkError(null);
+    useAfoStore.getState().setScanPlacement({
+        redo: AFO_LANDMARK_STEPS[0]?.id ?? null,
+        paused: false,
+    });
     useAfoStore.getState().setScanAutoFrameSuppressed(false);
 }
 

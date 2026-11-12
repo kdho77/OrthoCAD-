@@ -6,7 +6,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import * as THREE from "three";
 import { evaluateScanStepGate } from "@/lib/clinical/clinical-step-gates";
-import { setProductType, useAfoStore } from "@/stores/afo-store";
+import { getAfoState, setProductType, useAfoStore } from "@/stores/afo-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useScanStore } from "@/stores/scan-store";
@@ -20,7 +20,13 @@ import {
     skipAfoLandmark,
     undoAfoMarker,
 } from "./afo-scan-markers";
-import { cameraViewForAfoMarker, resetAfoAlignmentMarkers, undoLastAfoMarker } from "./afo-scan-ui";
+import {
+    afoCastBodyStyle,
+    cameraViewForAfoMarker,
+    resetAfoAlignmentMarkers,
+    resetAfoLandmarkSection,
+    undoLastAfoMarker,
+} from "./afo-scan-ui";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -329,5 +335,103 @@ describe("AFO marker placement helpers", () => {
         });
         expect(buttonByText(container, "Apply alignment").disabled).toBe(true);
         expect(useDesignStore.getState().design.afo?.trimPoints).toHaveLength(1);
+    });
+
+    test("section 1 reset clears plantar alignment but keeps stage-2 landmarks", async () => {
+        armAfo("left");
+        addBox("leg", "left");
+        await renderPanel();
+        await act(async () => {
+            commitAfoScanPoint(HEEL, "leg", 1);
+            commitAfoScanPoint(M1P, "leg", 1);
+            commitAfoScanPoint(M5P, "leg", 1);
+            applyAfoAlignment(false);
+            commitAfoScanPoint({ x: -4, y: 0, z: 12 }, "leg", 1);
+            commitAfoScanPoint({ x: 110, y: -30, z: 8 }, "leg", 1);
+        });
+        const beforeAlign = useAfoStore.getState().sourceMesh;
+        await act(async () => {
+            resetAfoAlignmentMarkers();
+        });
+        const wf = useDesignStore.getState().design.afo?.scanWorkflow;
+        expect(wf?.plantar.heel).toBeFalsy();
+        expect(wf?.alignmentApplied).toBe(false);
+        expect(wf?.matrixElements).toBeNull();
+        expect(wf?.landmarks.posterior_calcaneus).toBeTruthy();
+        expect(wf?.landmarks.m1_mpj).toBeTruthy();
+        expect(useAfoStore.getState().scanPlacement?.redo).toBe("heel");
+        expect(useAfoStore.getState().sourceMesh).not.toBe(beforeAlign);
+
+        await act(async () => {
+            useAfoStore.getState().resetSession();
+        });
+        const reloaded = getAfoState().scanWorkflow;
+        expect(reloaded.plantar.heel).toBeFalsy();
+        expect(reloaded.landmarks.posterior_calcaneus).toBeTruthy();
+    });
+
+    test("section 2 reset clears landmarks and keeps plantar alignment", async () => {
+        armAfo("left");
+        addBox("leg", "left");
+        await renderPanel();
+        await act(async () => {
+            commitAfoScanPoint(HEEL, "leg", 1);
+            commitAfoScanPoint(M1P, "leg", 1);
+            commitAfoScanPoint(M5P, "leg", 1);
+            applyAfoAlignment(false);
+            commitAfoScanPoint({ x: -4, y: 0, z: 12 }, "leg", 1);
+            commitAfoScanPoint({ x: 110, y: -30, z: 8 }, "leg", 1);
+            commitAfoScanPoint({ x: 100, y: 28, z: 8 }, "leg", 1);
+            skipAfoLandmark("navicular");
+        });
+        expect(useDesignStore.getState().design.afo?.scanWorkflow.skippedLandmarks).toContain("navicular");
+
+        await act(async () => {
+            resetAfoLandmarkSection();
+        });
+        const wf = useDesignStore.getState().design.afo?.scanWorkflow;
+        expect(wf?.plantar.heel).toBeTruthy();
+        expect(wf?.alignmentApplied).toBe(true);
+        expect(wf?.matrixElements?.length).toBe(16);
+        expect(wf?.landmarks.posterior_calcaneus).toBeFalsy();
+        expect(wf?.skippedLandmarks).toEqual([]);
+        expect(wf?.derived?.ankleAxis).toBeNull();
+        expect(useAfoStore.getState().scanPlacement?.redo).toBe("posterior_calcaneus");
+
+        await act(async () => {
+            useAfoStore.getState().resetSession();
+        });
+        const reloaded = getAfoState().scanWorkflow;
+        expect(reloaded.landmarks.posterior_calcaneus).toBeFalsy();
+        expect(reloaded.plantar.heel).toBeTruthy();
+    });
+
+    test("panel reset controls and cast stay opaque while placing markers", async () => {
+        armAfo("left");
+        addBox("leg", "left");
+        await renderPanel();
+        const opaque = afoCastBodyStyle({
+            transparentOn: false,
+            heightmap: false,
+            triangleCount: 12,
+            degenerateRatio: 0,
+        });
+        expect(opaque.shaded).toBe(true);
+        expect(opaque.drawMode).toBe("surface");
+        expect(opaque.opacity).toBe(1);
+        await act(async () => {
+            commitAfoScanPoint(HEEL, "leg", 1);
+        });
+        expect(container.querySelector('[data-testid="afo-reset-alignment"]')).toBeTruthy();
+        await act(async () => {
+            commitAfoScanPoint(M1P, "leg", 1);
+            commitAfoScanPoint(M5P, "leg", 1);
+            applyAfoAlignment(false);
+        });
+        expect(container.querySelector('[data-testid="afo-reset-alignment"]')).toBeTruthy();
+        await act(async () => {
+            commitAfoScanPoint({ x: -4, y: 0, z: 12 }, "leg", 1);
+        });
+        expect(container.querySelector('[data-testid="afo-reset-landmarks"]')).toBeTruthy();
     });
 });
