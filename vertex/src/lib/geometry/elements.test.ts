@@ -13,9 +13,10 @@ import {
     elementPlacementRefusal,
     loweringMaterialWarning,
     REMAINING_MATERIAL_MM,
+    repositionLegacyFirstRayDesign,
     rkwPlanMm,
 } from "./elements";
-import { heightFieldYFromMeshY, meshYSign } from "./handedness";
+import { heightFieldYFromMeshY, meshYForAnatomicalSide, meshYSign } from "./handedness";
 import {
     MORTONS_FILLET_MM,
     MORTONS_HEIGHT_DEFAULT_MM,
@@ -474,5 +475,148 @@ describe("anatomical element footprints", () => {
             }),
         ).toBeNull();
         expect(loweringMaterialWarning(3, 4)).toMatch(/1.5/);
+    });
+
+    test("M11.5 Morton's and Reverse Morton's raise or lower the same medial first ray", () => {
+        const layout = insoleLayoutForUsMenSize(11.5);
+        const { lengthMm: length, widthMm: width } = layout;
+        const kinds = ["mortons_extension", "reverse_mortons"] as const;
+        for (const side of ["left", "right"] as const) {
+            const poses = kinds.map((kind) => defaultElementPose(kind, side, length, width));
+            const pose = poses[0];
+            const other = poses[1];
+            if (!pose || !other) throw new Error("missing pose");
+            expect(other.position).toEqual(pose.position);
+            expect(pose.heightMm).toBe(3);
+            expect(other.heightMm).toBe(3);
+            expect(Math.sign(pose.position.y)).toBe(meshYSign(side, "medial"));
+            const el = (kind: (typeof kinds)[number]): PlacedElement => ({
+                id: kind,
+                kind,
+                side,
+                ...pose,
+            });
+            const x = length / 2 + pose.position.x;
+            const onRay = heightFieldYFromMeshY(pose.position.y);
+            const lateral = heightFieldYFromMeshY(meshYForAnatomicalSide(side, "lateral", width * 0.35));
+            expect(elementHeightAt([el("mortons_extension")], x, onRay, length, width)).toBeCloseTo(3, 1);
+            expect(elementHeightAt([el("reverse_mortons")], x, onRay, length, width)).toBeCloseTo(-3, 1);
+            expect(elementHeightAt([el("mortons_extension")], x, lateral, length, width)).toBe(0);
+            expect(elementHeightAt([el("reverse_mortons")], x, lateral, length, width)).toBe(0);
+            const toe = length * 0.99;
+            expect(elementHeightAt([el("mortons_extension")], toe, onRay, length, width)).toBeGreaterThan(2);
+            expect(elementHeightAt([el("reverse_mortons")], toe, onRay, length, width)).toBeLessThan(-2);
+            expect(elementHeightAt([el("mortons_extension")], length + 4, onRay, length, width)).toBe(0);
+        }
+        const left = defaultElementPose("reverse_mortons", "left", length, width);
+        const right = defaultElementPose("reverse_mortons", "right", length, width);
+        expect(right.position.x).toBeCloseTo(left.position.x, 5);
+        expect(right.position.y).toBeCloseTo(-left.position.y, 5);
+    });
+
+    test("an untouched pre-#300 first-ray pose moves onto the medial ray and a moved pad stays", () => {
+        const layout = insoleLayoutForUsMenSize(11.5);
+        const { lengthMm: length, widthMm: width } = layout;
+        const half = width / 2;
+        const pad = (
+            kind: "mortons_extension" | "reverse_mortons" | "met_pad",
+            side: "left" | "right",
+            x: number,
+            y: number,
+            heightMm: number,
+            id = `${kind}-${side}`,
+            extra: Partial<PlacedElement> = {},
+        ): PlacedElement => ({
+            id,
+            kind,
+            side,
+            position: { x, y },
+            rotationDeg: 0,
+            scale: { x: 1, y: 1 },
+            heightMm,
+            ...extra,
+        });
+        const current = defaultElementPose("mortons_extension", "left", length, width);
+        const moved = pad("reverse_mortons", "right", 12, 4, 4, "moved");
+        const rotated = pad(
+            "mortons_extension",
+            "left",
+            0.78 * length - length / 2,
+            0.5 * half,
+            3,
+            "rotated",
+            { rotationDeg: 15 },
+        );
+        const scaled = pad(
+            "reverse_mortons",
+            "right",
+            0.7 * length - length / 2,
+            meshYForAnatomicalSide("right", "lateral", 0.1 * half),
+            2.5,
+            "scaled",
+            { scale: { x: 1.2, y: 1 } },
+        );
+        const met = pad("met_pad", "left", 4, -8, 5, "met");
+        const legacy = [
+            pad("mortons_extension", "left", 0.78 * length - length / 2, 0.5 * half, 2, "hf-l"),
+            pad("mortons_extension", "right", 0.78 * length - length / 2, -0.5 * half, 2, "hf-r"),
+            pad("reverse_mortons", "left", 0.7 * length - length / 2, -0.1 * half, 2.5, "hf-rev-l"),
+            pad("reverse_mortons", "right", 0.7 * length - length / 2, 0.1 * half, 2.5, "hf-rev-r"),
+            pad(
+                "mortons_extension",
+                "left",
+                0.78 * length - length / 2,
+                meshYForAnatomicalSide("left", "medial", 0.5 * half),
+                3,
+                "mesh-l",
+            ),
+            pad(
+                "reverse_mortons",
+                "right",
+                0.7 * length - length / 2,
+                meshYForAnatomicalSide("right", "lateral", 0.1 * half),
+                2.5,
+                "mesh-rev-r",
+            ),
+            pad("mortons_extension", "left", current.position.x, current.position.y, 3, "current"),
+            moved,
+            rotated,
+            scaled,
+            met,
+        ];
+        const design = repositionLegacyFirstRayDesign({
+            sizeSystem: "us",
+            usMenSize: 11.5,
+            elements: legacy,
+        });
+        const byId = new Map(design.elements.map((el) => [el.id, el]));
+        const placedAt = (id: string) => {
+            const el = byId.get(id);
+            if (!el) throw new Error(`missing ${id}`);
+            return el;
+        };
+        for (const id of ["hf-l", "hf-r", "mesh-l", "current"]) {
+            const el = placedAt(id);
+            const pose = defaultElementPose("mortons_extension", el.side, length, width);
+            expect(el.position).toEqual(pose.position);
+            expect(Math.sign(el.position.y)).toBe(meshYSign(el.side, "medial"));
+        }
+        for (const id of ["hf-rev-l", "hf-rev-r", "mesh-rev-r"]) {
+            const el = placedAt(id);
+            const pose = defaultElementPose("reverse_mortons", el.side, length, width);
+            expect(el.position).toEqual(pose.position);
+            expect(Math.sign(el.position.y)).toBe(meshYSign(el.side, "medial"));
+        }
+        expect(byId.get("hf-l")?.heightMm).toBe(2);
+        expect(byId.get("hf-rev-l")?.heightMm).toBe(2.5);
+        expect(byId.get("moved")?.position).toEqual(moved.position);
+        expect(byId.get("rotated")?.position.y).toBeCloseTo(0.5 * half, 5);
+        expect(byId.get("scaled")?.position.y).toBeCloseTo(
+            meshYForAnatomicalSide("right", "lateral", 0.1 * half),
+            5,
+        );
+        expect(byId.get("met")?.position).toEqual(met.position);
+        const again = repositionLegacyFirstRayDesign(design);
+        expect(again.elements.map((el) => el.position)).toEqual(design.elements.map((el) => el.position));
     });
 });
