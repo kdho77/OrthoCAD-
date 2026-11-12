@@ -533,6 +533,272 @@ describe("anatomical element footprints", () => {
         expect(right.position.y).toBeCloseTo(-left.position.y, 5);
     });
 
+    test("proximal end of Morton's and Reverse Morton's feathers into the top on both feet", () => {
+        // The 6 mm C1 bevel peaked at 0.74 mm/mm with a 0.42 /mm curvature jump.
+        const slopeMax = 0.22;
+        const secondMax = 0.06;
+        const stepMm = 1;
+        const stations = [0.08, 0.2, 0.32];
+        const kinds = ["mortons_extension", "reverse_mortons"] as const;
+
+        const heightAtStation = (
+            kind: (typeof kinds)[number],
+            side: "left" | "right",
+            length: number,
+            width: number,
+            v: number,
+            distalMm: number,
+        ): number => {
+            const pose = defaultElementPose(kind, side, length, width);
+            const u = mortonsProximalU(v, length) + distalMm / length;
+            const edge = mortonsEdgeMm(Math.min(0.999, Math.max(0, u)), width, side);
+            const meshY = edge.medial + v * (edge.lateral - edge.medial);
+            return elementHeightAt(
+                [{ id: kind, kind, side, ...pose }],
+                u * length,
+                heightFieldYFromMeshY(meshY),
+                length,
+                width,
+            );
+        };
+
+        for (const men of [9, 11.5]) {
+            const { lengthMm: length, widthMm: width } = insoleLayoutForUsMenSize(men);
+            const leftProfile: number[] = [];
+            const rightProfile: number[] = [];
+            for (const side of ["left", "right"] as const) {
+                const metrics = mortonsExtensionMetrics(length, width, side);
+                expect(metrics.maxU).toBeGreaterThanOrEqual(0.999);
+                expect(metrics.minU).toBeGreaterThanOrEqual(MORTONS_U_DIP - 0.01);
+                expect(metrics.minU).toBeLessThanOrEqual(MORTONS_U_CORNER + 0.005);
+                expect(metrics.lengthMm / length).toBeCloseTo(1 - MORTONS_U_DIP, 2);
+                const morton = defaultElementPose("mortons_extension", side, length, width);
+                const reverse = defaultElementPose("reverse_mortons", side, length, width);
+                expect(reverse.position).toEqual(morton.position);
+                expect(morton.heightMm).toBe(MORTONS_HEIGHT_DEFAULT_MM);
+                expect(reverse.heightMm).toBe(MORTONS_HEIGHT_DEFAULT_MM);
+                const anchorX = length / 2 + morton.position.x;
+                const onRay = heightFieldYFromMeshY(morton.position.y);
+                expect(
+                    elementHeightAt(
+                        [{ id: "m", kind: "mortons_extension", side, ...morton }],
+                        anchorX,
+                        onRay,
+                        length,
+                        width,
+                    ),
+                ).toBeCloseTo(3, 2);
+                expect(
+                    elementHeightAt(
+                        [{ id: "r", kind: "reverse_mortons", side, ...reverse }],
+                        anchorX,
+                        onRay,
+                        length,
+                        width,
+                    ),
+                ).toBeCloseTo(-3, 2);
+
+                const stationSlopes: number[] = [];
+                for (const v of stations) {
+                    const distal: number[] = [];
+                    const raised: number[] = [];
+                    for (let s = -4; s <= MORTONS_TAPER_PROXIMAL_MM + 6; s += stepMm) {
+                        distal.push(s);
+                        raised.push(heightAtStation("mortons_extension", side, length, width, v, s));
+                    }
+                    for (let i = 0; i < raised.length; i++) {
+                        const up = raised[i] ?? 0;
+                        const down = heightAtStation(
+                            "reverse_mortons",
+                            side,
+                            length,
+                            width,
+                            v,
+                            distal[i] ?? 0,
+                        );
+                        expect(Number.isFinite(up)).toBe(true);
+                        expect(down).toBeCloseTo(-up, 5);
+                        expect(up).toBeGreaterThanOrEqual(-1e-6);
+                        expect(up).toBeLessThanOrEqual(MORTONS_HEIGHT_DEFAULT_MM + 1e-6);
+                        // Same floor the print solid uses. A recess must not open the bottom.
+                        expect(Math.max(REMAINING_MATERIAL_MM, 2 + down)).toBeGreaterThanOrEqual(
+                            REMAINING_MATERIAL_MM,
+                        );
+                        if ((distal[i] ?? 0) >= 0 && i > 0) {
+                            expect(up).toBeGreaterThanOrEqual((raised[i - 1] ?? 0) - 0.02);
+                        }
+                    }
+                    const slopes: number[] = [];
+                    for (let i = 1; i < raised.length; i++) {
+                        slopes.push(((raised[i] ?? 0) - (raised[i - 1] ?? 0)) / stepMm);
+                    }
+                    const seconds: number[] = [];
+                    for (let i = 1; i < slopes.length; i++) {
+                        seconds.push(((slopes[i] ?? 0) - (slopes[i - 1] ?? 0)) / stepMm);
+                    }
+                    const maxSlope = Math.max(...slopes.map((s) => Math.abs(s)));
+                    const maxSecond = Math.max(...seconds.map((s) => Math.abs(s)));
+                    expect(maxSlope).toBeLessThan(slopeMax);
+                    expect(maxSecond).toBeLessThan(secondMax);
+                    if (v <= 0.2) stationSlopes.push(maxSlope);
+
+                    const at = (s: number) => heightAtStation("mortons_extension", side, length, width, v, s);
+                    expect(at(-4)).toBe(0);
+                    expect(Math.abs(at(2) - at(0)) / 2).toBeLessThan(0.05);
+                    expect(
+                        Math.abs(at(MORTONS_TAPER_PROXIMAL_MM + 2) - at(MORTONS_TAPER_PROXIMAL_MM)) / 2,
+                    ).toBeLessThan(0.05);
+                    // v=0.32 sits inside the lateral feather, so it does not reach the 3 mm plateau.
+                    if (v <= 0.2) expect(at(MORTONS_TAPER_PROXIMAL_MM + 4)).toBeGreaterThan(2.9);
+                    if (v === 0.2) {
+                        const toeDistal = (0.995 - mortonsProximalU(v, length)) * length;
+                        expect(at(toeDistal)).toBeGreaterThan(2.9);
+                    }
+                    if (side === "left" && v === 0.2) leftProfile.push(...raised);
+                    if (side === "right" && v === 0.2) rightProfile.push(...raised);
+                }
+                const slopeSpread = Math.max(...stationSlopes) - Math.min(...stationSlopes);
+                expect(slopeSpread).toBeLessThan(0.05);
+
+                const span = mortonsLocalWidthMm(0.85, width, side);
+                const sideHeights: number[] = [];
+                for (let s = 0; s <= MORTONS_TAPER_LATERAL_MM + 2; s += 0.5) {
+                    const v = MORTONS_V_LATERAL - s / span;
+                    const distal = (0.85 - mortonsProximalU(v, length)) * length;
+                    sideHeights.push(heightAtStation("mortons_extension", side, length, width, v, distal));
+                }
+                let sideSlope = 0;
+                for (let i = 1; i < sideHeights.length; i++) {
+                    sideSlope = Math.max(
+                        sideSlope,
+                        Math.abs((sideHeights[i] ?? 0) - (sideHeights[i - 1] ?? 0)) / 0.5,
+                    );
+                }
+                expect(Math.max(...stationSlopes)).toBeLessThan(sideSlope);
+            }
+            expect(rightProfile.length).toBe(leftProfile.length);
+            for (let i = 0; i < leftProfile.length; i++) {
+                expect(rightProfile[i]).toBeCloseTo(leftProfile[i] ?? 0, 4);
+            }
+        }
+    });
+
+    test("lateral edge and proximal-lateral corner of Morton's feather into the top on both feet", () => {
+        // The 2 mm C1 bevel peaked near 2.1 mm/mm with a 2.3 /mm curvature jump.
+        const slopeMax = 0.42;
+        const secondMax = 0.12;
+        const stepMm = 0.5;
+
+        const heightAcross = (
+            kind: "mortons_extension" | "reverse_mortons",
+            side: "left" | "right",
+            length: number,
+            width: number,
+            u: number,
+            insetMm: number,
+        ): number => {
+            const pose = defaultElementPose(kind, side, length, width);
+            const span = mortonsLocalWidthMm(u, width, side);
+            const v = MORTONS_V_LATERAL - insetMm / span;
+            const edge = mortonsEdgeMm(Math.min(0.999, Math.max(0, u)), width, side);
+            const meshY = edge.medial + v * (edge.lateral - edge.medial);
+            return elementHeightAt(
+                [{ id: kind, kind, side, ...pose }],
+                u * length,
+                heightFieldYFromMeshY(meshY),
+                length,
+                width,
+            );
+        };
+
+        for (const men of [9, 11.5, 15]) {
+            const { lengthMm: length, widthMm: width } = insoleLayoutForUsMenSize(men);
+            const leftProfile: number[] = [];
+            const rightProfile: number[] = [];
+            for (const side of ["left", "right"] as const) {
+                const morton = defaultElementPose("mortons_extension", side, length, width);
+                const anchorX = length / 2 + morton.position.x;
+                const onRay = heightFieldYFromMeshY(morton.position.y);
+                expect(
+                    elementHeightAt(
+                        [{ id: "m", kind: "mortons_extension", side, ...morton }],
+                        anchorX,
+                        onRay,
+                        length,
+                        width,
+                    ),
+                ).toBeCloseTo(3, 2);
+                const toeSpan = mortonsLocalWidthMm(0.995, width, side);
+                expect(
+                    heightAcross(
+                        "mortons_extension",
+                        side,
+                        length,
+                        width,
+                        0.995,
+                        (MORTONS_V_LATERAL - 0.2) * toeSpan,
+                    ),
+                ).toBeGreaterThan(2.9);
+
+                const stations = [
+                    0.85,
+                    mortonsProximalU(MORTONS_V_LATERAL, length) + 8 / length,
+                    mortonsProximalU(MORTONS_V_LATERAL, length) + 20 / length,
+                ];
+                for (const u of stations) {
+                    const insets: number[] = [];
+                    const raised: number[] = [];
+                    for (let s = -2; s <= MORTONS_TAPER_LATERAL_MM + 4; s += stepMm) {
+                        insets.push(s);
+                        raised.push(heightAcross("mortons_extension", side, length, width, u, s));
+                    }
+                    for (let i = 0; i < raised.length; i++) {
+                        const up = raised[i] ?? 0;
+                        const down = heightAcross("reverse_mortons", side, length, width, u, insets[i] ?? 0);
+                        expect(down).toBeCloseTo(-up, 5);
+                        expect(up).toBeGreaterThanOrEqual(-1e-6);
+                        expect(up).toBeLessThanOrEqual(MORTONS_HEIGHT_DEFAULT_MM + 1e-6);
+                        // Same floor the print solid uses. A recess must not open the bottom.
+                        expect(Math.max(REMAINING_MATERIAL_MM, 2 + down)).toBeGreaterThanOrEqual(
+                            REMAINING_MATERIAL_MM,
+                        );
+                    }
+                    const slopes: number[] = [];
+                    for (let i = 1; i < raised.length; i++) {
+                        slopes.push(((raised[i] ?? 0) - (raised[i - 1] ?? 0)) / stepMm);
+                    }
+                    const seconds: number[] = [];
+                    for (let i = 1; i < slopes.length; i++) {
+                        seconds.push(((slopes[i] ?? 0) - (slopes[i - 1] ?? 0)) / stepMm);
+                    }
+                    expect(Math.max(...slopes.map((s) => Math.abs(s)))).toBeLessThan(slopeMax);
+                    expect(Math.max(...seconds.map((s) => Math.abs(s)))).toBeLessThan(secondMax);
+                    if (u === 0.85) {
+                        expect(heightAcross("mortons_extension", side, length, width, u, 0)).toBeLessThan(
+                            0.05,
+                        );
+                        expect(
+                            heightAcross(
+                                "mortons_extension",
+                                side,
+                                length,
+                                width,
+                                u,
+                                MORTONS_TAPER_LATERAL_MM + 2,
+                            ),
+                        ).toBeGreaterThan(2.9);
+                        if (side === "left") leftProfile.push(...raised);
+                        if (side === "right") rightProfile.push(...raised);
+                    }
+                }
+            }
+            expect(rightProfile.length).toBe(leftProfile.length);
+            for (let i = 0; i < leftProfile.length; i++) {
+                expect(rightProfile[i]).toBeCloseTo(leftProfile[i] ?? 0, 4);
+            }
+        }
+    });
+
     test("an untouched pre-#300 first-ray pose moves onto the medial ray and a moved pad stays", () => {
         const layout = insoleLayoutForUsMenSize(11.5);
         const { lengthMm: length, widthMm: width } = layout;
