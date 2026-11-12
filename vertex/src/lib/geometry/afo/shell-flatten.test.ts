@@ -1,0 +1,453 @@
+// Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
+
+import { describe, expect, test } from "@rstest/core";
+import { medialSign } from "@/lib/geometry/handedness";
+import { analyzeManifoldBuffers } from "@/lib/geometry/manifold-core";
+import type { Side } from "@/types";
+import { buildCurledAfoCast, buildCurledSoleSheet, curledSoleZ, soleSheetBoundary } from "./curled-afo-cast";
+import { AFO_EDGE_MM, AFO_FLARE_MM, defaultAfoDesignState } from "./defaults";
+import { buildAfoShell, trimPolygonForShell } from "./shell";
+import {
+    AFO_FOREFOOT_BLEND_MM,
+    AFO_FOREFOOT_PLANAR_MM,
+    afoFlatPlateInputFields,
+    contactPlanesFromLandmarks,
+    flattenKeepSurface,
+    heightAboveContact,
+    signedAheadOfMetLine,
+} from "./shell-flatten";
+import { buildLiveFrameLeg } from "./synthetic-leg";
+import { fitSurfaceSpline, posteriorLeafPins } from "./trim-spline";
+import type { AfoTriMesh, AfoVec3 } from "./types";
+
+const LEFT_TRIPOD = {
+    heel: { x: 42, y: 0, z: 0 },
+    m1: { x: 152, y: -28, z: 0 },
+    m5: { x: 128, y: 28, z: 0 },
+    thicknessMm: 3.2,
+};
+
+describe("AFO forefoot contact plane", () => {
+    test("the plane comes from the plantar tripod and points up on both feet", () => {
+        const left = contactPlanesFromLandmarks(LEFT_TRIPOD);
+        const right = contactPlanesFromLandmarks({
+            ...LEFT_TRIPOD,
+            m1: { x: 152, y: 28, z: 0 },
+            m5: { x: 128, y: -28, z: 0 },
+        });
+        expect(left.normal.z).toBeGreaterThan(0.99);
+        expect(right.normal.z).toBeGreaterThan(0.99);
+        expect(left.thicknessMm).toBe(3.2);
+        expect(left.blendBehindMm).toBe(AFO_FOREFOOT_BLEND_MM);
+        expect(Math.abs(heightAboveContact(left.m1, left))).toBeLessThan(1e-6);
+        expect(Math.abs(heightAboveContact(left.m5, left))).toBeLessThan(1e-6);
+        expect(Math.abs(signedAheadOfMetLine(left.m1, left))).toBeLessThan(1e-6);
+        expect(Math.abs(signedAheadOfMetLine(left.m5, left))).toBeLessThan(1e-6);
+    });
+
+    test("distance is measured from the angled M1–M5 line, not the average X", () => {
+        const planes = contactPlanesFromLandmarks(LEFT_TRIPOD);
+        const averageX = (LEFT_TRIPOD.m1.x + LEFT_TRIPOD.m5.x) / 2;
+        const lateralEarly = { x: 139, y: 28, z: 4 };
+        const medialLate = { x: 145, y: -28, z: 4 };
+        expect(lateralEarly.x).toBeLessThan(averageX);
+        expect(medialLate.x).toBeGreaterThan(averageX);
+        expect(signedAheadOfMetLine(lateralEarly, planes)).toBeGreaterThan(2);
+        expect(signedAheadOfMetLine(medialLate, planes)).toBeLessThan(-2);
+    });
+
+    test("a stray low vertex does not move the contact plane or the thickness", () => {
+        const planes = contactPlanesFromLandmarks(LEFT_TRIPOD);
+        const spiked = buildCurledSoleSheet("left", 24, 12);
+        let low = 0;
+        let lowZ = Infinity;
+        for (let i = 0; i < spiked.mesh.positions.length / 3; i++) {
+            const z = spiked.mesh.positions[i * 3 + 2] ?? 0;
+            if (z < lowZ) {
+                lowZ = z;
+                low = i;
+            }
+        }
+        spiked.mesh.positions[low * 3 + 2] = -40;
+        const again = contactPlanesFromLandmarks({
+            heel: spiked.heel,
+            m1: spiked.m1,
+            m5: spiked.m5,
+            thicknessMm: 5.5,
+        });
+        expect(again.thicknessMm).toBe(5.5);
+        expect(again.origin.z).toBeCloseTo(spiked.heel.z, 5);
+        expect(again.origin.z).toBeGreaterThan(-1);
+        expect(planes.thicknessMm).toBe(3.2);
+    });
+});
+
+describe("inner forefoot flatten before thickness", () => {
+    test("left and right forefeet are planar forward of the met line and the toe lip is gone", () => {
+        for (const side of ["left", "right"] as const) {
+            const sheet = buildCurledSoleSheet(side);
+            const before = new Float32Array(sheet.mesh.positions);
+            const boundary = soleSheetBoundary(sheet.mesh);
+            const lock = flattenKeepSurface(sheet.mesh.positions, sheet.mesh.indices, boundary, {
+                heel: sheet.heel,
+                m1: sheet.m1,
+                m5: sheet.m5,
+                thicknessMm: side === "left" ? 3 : 5.5,
+            });
+            const planes = lock.planes;
+            let forward = 0;
+            let forwardWorst = 0;
+            let lip = 0;
+            let curlBefore = 0;
+            for (let i = 0; i < lock.flat.length; i++) {
+                const p = point(sheet.mesh, i);
+                const ahead = signedAheadOfMetLine(p, planes);
+                if (ahead < 1 || !lock.flat[i]) continue;
+                forward++;
+                const h = Math.abs(heightAboveContact(p, planes));
+                forwardWorst = Math.max(forwardWorst, h);
+                const bz = before[i * 3 + 2] ?? 0;
+                if (bz > 4) {
+                    lip++;
+                    curlBefore = Math.max(curlBefore, bz);
+                }
+            }
+            expect(forward, side).toBeGreaterThan(30);
+            expect(forwardWorst, side).toBeLessThanOrEqual(AFO_FOREFOOT_PLANAR_MM);
+            expect(lip, side).toBeGreaterThan(5);
+            expect(curlBefore, side).toBeGreaterThan(8);
+        }
+    });
+
+    test("the lateral forefoot flattens where it crosses the angled line, before the average X", () => {
+        const sheet = buildCurledSoleSheet("left", 60, 24);
+        const before = new Float32Array(sheet.mesh.positions);
+        const lock = flattenKeepSurface(
+            sheet.mesh.positions,
+            sheet.mesh.indices,
+            soleSheetBoundary(sheet.mesh),
+            { heel: sheet.heel, m1: sheet.m1, m5: sheet.m5, thicknessMm: 4 },
+        );
+        const averageX = (sheet.m1.x + sheet.m5.x) / 2;
+        let earlyLateral = 0;
+        let medialStillBehind = 0;
+        for (let i = 0; i < lock.flat.length; i++) {
+            const p = point(sheet.mesh, i);
+            const was = before[i * 3 + 2] ?? 0;
+            const ahead = signedAheadOfMetLine({ x: p.x, y: p.y, z: was }, lock.planes);
+            if (p.y > 18 && p.x < averageX - 1 && p.x > 110 && ahead > 1 && was > 2) {
+                earlyLateral++;
+                expect(Math.abs(heightAboveContact(p, lock.planes))).toBeLessThanOrEqual(
+                    AFO_FOREFOOT_PLANAR_MM,
+                );
+            }
+            if (p.y < -18 && ahead < -AFO_FOREFOOT_BLEND_MM && was > 3 && p.x > 80 && p.x < averageX) {
+                medialStillBehind++;
+                expect(Math.abs(p.z - was)).toBeLessThan(0.4);
+            }
+        }
+        expect(earlyLateral).toBeGreaterThan(0);
+        expect(medialStillBehind).toBeGreaterThan(0);
+    });
+
+    test("the arch behind the blend and the heel cup stay, and left mirrors right", () => {
+        const left = flattenSide("left");
+        const right = flattenSide("right");
+        expect(left.archKept).toBeGreaterThan(4);
+        expect(right.archKept).toBeGreaterThan(4);
+        expect(left.heelKept).toBeGreaterThan(3);
+        expect(right.heelKept).toBeGreaterThan(3);
+        expect(left.archHeight).toBeGreaterThan(4);
+        expect(right.archHeight).toBeGreaterThan(4);
+        const rightAt = new Map(right.samples.map((s) => [`${s.x.toFixed(2)}|${s.y.toFixed(2)}`, s.z]));
+        let compared = 0;
+        let worst = 0;
+        for (const sample of left.samples) {
+            const mirror = rightAt.get(`${sample.x.toFixed(2)}|${(-sample.y).toFixed(2)}`);
+            if (mirror == null) continue;
+            compared++;
+            worst = Math.max(worst, Math.abs(sample.z - mirror));
+        }
+        expect(compared).toBeGreaterThan(40);
+        expect(worst).toBeLessThan(0.75);
+    });
+
+    test("a 100k-triangle sole flattens in a few seconds", () => {
+        const sheet = buildCurledSoleSheet("left", 250, 201);
+        const tris = sheet.mesh.indices.length / 3;
+        expect(tris).toBeGreaterThan(90_000);
+        const started = performance.now();
+        const lock = flattenKeepSurface(
+            sheet.mesh.positions,
+            sheet.mesh.indices,
+            soleSheetBoundary(sheet.mesh),
+            { heel: sheet.heel, m1: sheet.m1, m5: sheet.m5, thicknessMm: 4 },
+        );
+        const seconds = (performance.now() - started) / 1000;
+        expect(seconds).toBeLessThan(8);
+        expect(lock.flat.some((v) => v === 1)).toBe(true);
+    });
+});
+
+describe("generate-shell inner forefoot", () => {
+    test("the shell inner forefoot is flat and the upper brace matches the unflattened shell", () => {
+        for (const side of ["left", "right"] as const) {
+            const cast = buildCurledAfoCast(side, 28, 12);
+            const built = shellPair(cast.mesh, side, cast, 4);
+            const n = built.flat.outerVertex0 ?? 0;
+            const planes = contactPlanesFromLandmarks({
+                heel: cast.heel,
+                m1: cast.m1,
+                m5: cast.m5,
+                thicknessMm: 4,
+            });
+            let forward = 0;
+            let worst = 0;
+            for (let i = 0; i < n; i++) {
+                const p = point(built.flat, i);
+                const ahead = signedAheadOfMetLine(p, planes);
+                const h = heightAboveContact(p, planes);
+                if (ahead > 2 && h < 12 && p.z < 30) {
+                    forward++;
+                    worst = Math.max(worst, Math.abs(h));
+                }
+            }
+            const report = analyzeManifoldBuffers(built.flat.positions, built.flat.indices);
+            expect(report.openEdges, side).toBe(0);
+            expect(report.nonManifoldEdges, side).toBe(0);
+            expect(forward, side).toBeGreaterThan(8);
+            expect(worst, side).toBeLessThanOrEqual(0.35);
+        }
+    });
+
+    test("the upper brace of a leg shell is unchanged while the forefoot gets flatter", () => {
+        for (const side of ["left", "right"] as const) {
+            const leg = buildLiveFrameLeg(side, 20);
+            const marks = legTripod(leg, side);
+            const afo = defaultAfoDesignState(side);
+            afo.landmarks = [{ id: "distal", point: marks.distal, vertexIndex: 0 }];
+            const placed = posteriorLeafPins(leg, afo);
+            const fit = fitSurfaceSpline(leg, placed.pins, { closed: true, quick: true });
+            expect(fit.ok, fit.reasons.join(" | ")).toBe(true);
+            const polygon = trimPolygonForShell(fit.curve, true) ?? undefined;
+            const common = {
+                thicknessMm: 4,
+                edgeMm: AFO_EDGE_MM,
+                flareMm: 0,
+                trimPolygon: polygon,
+                heelSeed: marks.heel,
+            };
+            const flat = buildAfoShell(leg, [0, 1, 2], {
+                ...common,
+                flatPlate: { ...marks, thicknessMm: 4 },
+            });
+            const plain = buildAfoShell(leg, [0, 1, 2], common);
+            const planes = contactPlanesFromLandmarks({ ...marks, thicknessMm: 4 });
+            const n = Math.min(flat.outerVertex0 ?? 0, plain.outerVertex0 ?? 0);
+            let upper = 0;
+            let upperMoved = 0;
+            let toeCurl = 0;
+            let toeFlat = 0;
+            for (let i = 0; i < n; i++) {
+                const p = point(flat, i);
+                const q = point(plain, i);
+                if (q.z > 90) {
+                    upper++;
+                    upperMoved = Math.max(upperMoved, Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z));
+                }
+                const ahead = signedAheadOfMetLine(q, planes);
+                if (ahead > 4 && q.z < 40) {
+                    const before = Math.abs(heightAboveContact(q, planes));
+                    const after = Math.abs(heightAboveContact(p, planes));
+                    if (before > 2) {
+                        toeCurl++;
+                        toeFlat = Math.max(toeFlat, after);
+                    }
+                }
+            }
+            expect(upper, side).toBeGreaterThan(5);
+            expect(upperMoved, side).toBeLessThan(0.5);
+            expect(toeCurl, side).toBeGreaterThan(3);
+            expect(toeFlat, side).toBeLessThanOrEqual(0.45);
+        }
+    });
+});
+
+describe("shell input includes flattening", () => {
+    test("the fingerprint fields carry the tripod, the blend, and the selected thickness", () => {
+        const afo = defaultAfoDesignState("right");
+        afo.print.thicknessMm = 5.5;
+        afo.print.edgeMm = 2;
+        afo.scanWorkflow.plantar = {
+            heel: { x: 1, y: 2, z: 3 },
+            m1p: { x: 4, y: 5, z: 6 },
+            m5p: { x: 7, y: 8, z: 9 },
+        };
+        const fields = afoFlatPlateInputFields(afo);
+        expect(fields.enabled).toBe(true);
+        expect(fields.blendBehindMm).toBe(AFO_FOREFOOT_BLEND_MM);
+        expect(fields.thicknessMm).toBe(5.5);
+        expect(fields.edgeMm).toBe(2);
+        expect(fields.m1).toEqual({ x: 4, y: 5, z: 6 });
+        expect(fields.m5).toEqual({ x: 7, y: 8, z: 9 });
+    });
+});
+
+function flattenSide(side: Side): {
+    archKept: number;
+    heelKept: number;
+    archHeight: number;
+    samples: AfoVec3[];
+} {
+    const sheet = buildCurledSoleSheet(side, 36, 16);
+    const before = new Float32Array(sheet.mesh.positions);
+    const lock = flattenKeepSurface(sheet.mesh.positions, sheet.mesh.indices, soleSheetBoundary(sheet.mesh), {
+        heel: sheet.heel,
+        m1: sheet.m1,
+        m5: sheet.m5,
+        thicknessMm: 4,
+    });
+    let archKept = 0;
+    let heelKept = 0;
+    let archHeight = 0;
+    const samples: AfoVec3[] = [];
+    const med = medialSign(side);
+    for (let i = 0; i < lock.flat.length; i++) {
+        const x = sheet.mesh.positions[i * 3] ?? 0;
+        const y = sheet.mesh.positions[i * 3 + 1] ?? 0;
+        const z = sheet.mesh.positions[i * 3 + 2] ?? 0;
+        const was = before[i * 3 + 2] ?? 0;
+        if (Math.abs(was - curledSoleZ(x, y, side)) < 3 && was > 4 && med * y > 8 && x > 90 && x < 120) {
+            if (Math.abs(z - was) < 0.4) {
+                archKept++;
+                archHeight = Math.max(archHeight, z);
+            }
+        }
+        if (x < 14 && was > 8 && Math.abs(z - was) < 0.4) heelKept++;
+        samples.push({ x, y, z });
+    }
+    return { archKept, heelKept, archHeight, samples };
+}
+
+function shellPair(
+    mesh: AfoTriMesh,
+    side: Side,
+    cast: { heel: AfoVec3; m1: AfoVec3; m5: AfoVec3 },
+    thicknessMm: number,
+): { flat: AfoTriMesh; plain: AfoTriMesh } {
+    const polygon = trimPolygonForShell(footplateLoop(mesh, side), true) ?? undefined;
+    const common = {
+        thicknessMm,
+        edgeMm: AFO_EDGE_MM,
+        flareMm: AFO_FLARE_MM,
+        trimPolygon: polygon,
+        heelSeed: cast.heel,
+    };
+    const flat = buildAfoShell(mesh, [0, 1, 2], {
+        ...common,
+        flatPlate: { heel: cast.heel, m1: cast.m1, m5: cast.m5, thicknessMm },
+    });
+    const plain = buildAfoShell(mesh, [0, 1, 2], common);
+    return { flat, plain };
+}
+
+function footplateLoop(mesh: AfoTriMesh, side: Side): AfoVec3[] {
+    const s = medialSign(side);
+    const raw: AfoVec3[] = [
+        { x: 16, y: 0, z: 155 },
+        { x: 20, y: s * 26, z: 125 },
+        { x: 28, y: s * 36, z: 80 },
+        { x: 24, y: s * 30, z: 40 },
+        { x: 48, y: s * 34, z: 6 },
+        { x: 110, y: s * 34, z: 8 },
+        { x: 160, y: s * 28, z: 12 },
+        { x: 190, y: s * 12, z: 18 },
+        { x: 194, y: 0, z: 20 },
+        { x: 190, y: -s * 12, z: 18 },
+        { x: 160, y: -s * 28, z: 12 },
+        { x: 110, y: -s * 34, z: 6 },
+        { x: 48, y: -s * 34, z: 6 },
+        { x: 24, y: -s * 30, z: 40 },
+        { x: 26, y: -s * 36, z: 80 },
+        { x: 20, y: -s * 26, z: 125 },
+    ];
+    const dense: AfoVec3[] = [];
+    for (let i = 0; i < raw.length; i++) {
+        const a = raw[i]!;
+        const b = raw[(i + 1) % raw.length]!;
+        const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) / 7));
+        for (let k = 0; k < steps; k++) {
+            const t = k / steps;
+            dense.push(
+                nearestPoint(mesh, {
+                    x: a.x + (b.x - a.x) * t,
+                    y: a.y + (b.y - a.y) * t,
+                    z: a.z + (b.z - a.z) * t,
+                }),
+            );
+        }
+    }
+    const uniq: AfoVec3[] = [];
+    for (const p of dense) {
+        const prev = uniq[uniq.length - 1];
+        if (prev && Math.hypot(p.x - prev.x, p.y - prev.y, p.z - prev.z) < 1) continue;
+        uniq.push(p);
+    }
+    return uniq;
+}
+
+function nearestPoint(mesh: AfoTriMesh, p: AfoVec3): AfoVec3 {
+    const n = (mesh.positions.length / 3) | 0;
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < n; i++) {
+        const dx = (mesh.positions[i * 3] ?? 0) - p.x;
+        const dy = (mesh.positions[i * 3 + 1] ?? 0) - p.y;
+        const dz = (mesh.positions[i * 3 + 2] ?? 0) - p.z;
+        const d = dx * dx + dy * dy + dz * dz;
+        if (d < bestD) {
+            bestD = d;
+            best = i;
+        }
+    }
+    return point(mesh, best);
+}
+
+function legTripod(
+    mesh: AfoTriMesh,
+    side: Side,
+): { heel: AfoVec3; m1: AfoVec3; m5: AfoVec3; distal: AfoVec3 } {
+    const s = medialSign(side);
+    return {
+        heel: nearestLow(mesh, 25, 0),
+        m1: nearestLow(mesh, 145, s * 18),
+        m5: nearestLow(mesh, 125, -s * 18),
+        distal: nearestLow(mesh, 165, 0),
+    };
+}
+
+function nearestLow(mesh: AfoTriMesh, x: number, y: number): AfoVec3 {
+    const n = (mesh.positions.length / 3) | 0;
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < n; i++) {
+        const dx = (mesh.positions[i * 3] ?? 0) - x;
+        const dy = (mesh.positions[i * 3 + 1] ?? 0) - y;
+        const dz = mesh.positions[i * 3 + 2] ?? 0;
+        if (dz > 30) continue;
+        const d = dx * dx + dy * dy + dz * dz;
+        if (d < bestD) {
+            bestD = d;
+            best = i;
+        }
+    }
+    return point(mesh, best);
+}
+
+function point(mesh: AfoTriMesh, i: number): AfoVec3 {
+    return {
+        x: mesh.positions[i * 3] ?? 0,
+        y: mesh.positions[i * 3 + 1] ?? 0,
+        z: mesh.positions[i * 3 + 2] ?? 0,
+    };
+}

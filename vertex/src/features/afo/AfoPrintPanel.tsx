@@ -14,6 +14,7 @@ import {
     defaultAfoPrint,
 } from "@/lib/geometry/afo/defaults";
 import { trimPolygonForShell } from "@/lib/geometry/afo/shell";
+import { flatPlateSpecFromAfo } from "@/lib/geometry/afo/shell-flatten";
 import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import type { AfoTriMesh } from "@/lib/geometry/afo/types";
 import { evaluateAfoWarnings } from "@/lib/geometry/afo/warnings";
@@ -50,6 +51,11 @@ export function AfoPrintPanel() {
             setError("Confirm a closed trim loop first.");
             return;
         }
+        const flatPlate = flatPlateSpecFromAfo(getAfoState(), print.thicknessMm);
+        if (!flatPlate) {
+            setError("Place the plantar heel, 1st met head, and 5th met head before generating the shell.");
+            return;
+        }
         setError(null);
         setProgress({ pct: 0, stage: "shell" });
         try {
@@ -67,7 +73,8 @@ export function AfoPrintPanel() {
                     edgeMm: print.edgeMm,
                     flareMm: print.flareMm,
                     trimPolygon: polygon ?? undefined,
-                    heelSeed: afo.scanWorkflow.derived?.heelCupCenter ?? undefined,
+                    heelSeed: afo.scanWorkflow.derived?.heelCupCenter ?? flatPlate.heel,
+                    flatPlate,
                     onProgress: (pct, stage) => setProgress({ pct, stage }),
                 },
             );

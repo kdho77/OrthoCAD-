@@ -11,6 +11,7 @@ import { geodesicVertexPath } from "./geodesic";
 import { cloneMesh, computeVertexNormals, meshProjector, nearestVertex, vertexCount } from "./mesh-ops";
 import { offsetMeshAlongNormals } from "./sdf-offset";
 import { embedTrimPolyline } from "./shell-cut";
+import { type FlatPlateLock, flattenKeepSurface, reseatInnerForefoot } from "./shell-flatten";
 import {
     boundaryLoops,
     closeShellWithRoundRim,
@@ -54,13 +55,21 @@ export function buildAfoShell(
         ),
         options.trimPolygon,
     );
+    options.onProgress?.(0.2, "flatten-forefoot");
+    // Inner forefoot is flattened before any thickness is generated. The
+    // outer plate (P2) is built from this surface, not by flattening both
+    // skins after the shell exists.
+    const plate = options.flatPlate
+        ? flattenKeepSurface(keep.positions, keep.indices, keep.boundary, options.flatPlate)
+        : null;
     options.onProgress?.(0.25, "thicken");
-    const shell = thickenOpenSurface(keep, options.thicknessMm, options.edgeMm, options.flareMm);
+    const shell = thickenOpenSurface(keep, options.thicknessMm, options.edgeMm, options.flareMm, plate);
     tightenBoundaryToCurve(shell, options.trimPolygon);
     finishShellLip(shell);
     enforceShellClearance(shell, options.thicknessMm, options.edgeMm);
     repairFlippedOffsets(shell);
     straightenFeatureLoops(shell);
+    if (plate) reseatInnerForefoot(shell, plate);
     options.onProgress?.(1, "done");
     return shell;
 }
@@ -1198,6 +1207,7 @@ function thickenOpenSurface(
     thicknessMm: number,
     edgeMm: number,
     flareMm: number,
+    plate: FlatPlateLock | null = null,
 ): AfoTriMesh {
     const surface = surfaceIn;
     const inner: AfoTriMesh = {
@@ -1240,6 +1250,9 @@ function thickenOpenSurface(
         const falloff = 1 - blend;
         const onSole = plantar.has(i);
         blendAt.push(rimT);
+        // The forefoot rim is allowed to leave the cast. Holding the old curl
+        // here is what kept the upturned toe edge.
+        if (plate?.flat[i]) continue;
         // Sole contact stays on the cast. The footplate edge keeps the full cap.
         if (onSole && dist >= 0.5) continue;
         let hx = outward[i * 3] ?? 0;
@@ -1292,7 +1305,7 @@ function thickenOpenSurface(
         inner.positions[i * 3] = (inner.positions[i * 3] ?? 0) + (flareDisp[i * 3] ?? 0);
         inner.positions[i * 3 + 1] = (inner.positions[i * 3 + 1] ?? 0) + (flareDisp[i * 3 + 1] ?? 0);
         const z = (inner.positions[i * 3 + 2] ?? 0) + (flareDisp[i * 3 + 2] ?? 0);
-        inner.positions[i * 3 + 2] = Math.max(minZ, z);
+        inner.positions[i * 3 + 2] = plate?.flat[i] ? z : Math.max(minZ, z);
     }
     // Nick smoothing runs after the lift. The plain opening is the curve, so
     // only the flared shell gets the wider pass.
@@ -1300,6 +1313,7 @@ function thickenOpenSurface(
     // After the lift, pull longer opening nicks toward their chord, but only
     // by a little so the plain curve stays inside the 0.1 mm Hausdorff gate.
     relaxSharpBoundaryTurns(inner, flareMm > 0 ? 4 : 3, 30, 0.02, 1);
+    if (plate) reseatInnerForefoot({ ...inner, outerVertex0: vertexCount(inner) }, plate);
     const outer = cloneMesh(inner);
     for (let i = 0; i < n; i++) {
         const blend = blendAt[i] ?? 0;
