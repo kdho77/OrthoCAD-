@@ -623,6 +623,12 @@ describe("CAD-operator production claim", () => {
         const right = cadOperatorManufacturingIdentity({ ...base, side: "right" });
         expect(left.idempotencyKey).toBe(again.idempotencyKey);
         expect(left.idempotencyKey).not.toBe(right.idempotencyKey);
+        expect(cadOperatorManufacturingIdentity({ ...base, regional3mf: false }).idempotencyKey).toBe(
+            left.idempotencyKey,
+        );
+        expect(cadOperatorManufacturingIdentity({ ...base, regional3mf: true }).idempotencyKey).not.toBe(
+            left.idempotencyKey,
+        );
         expect(left.idempotencyKey).toContain(":left:");
         expect(left.idempotencyKey).toContain("apex-v2-insole-95a");
     });

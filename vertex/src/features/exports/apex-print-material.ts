@@ -37,6 +37,12 @@ export const VERTEX_SLICE_APEX_BOUNCE_PACKET = {
     speedFactorVersusCore: APEX_BOUNCE_SPEED_FACTOR,
     otherwiseIdenticalTo: "apex_core",
     sliceFormFieldsSentByOrthocad: ["profile_id", "material", "infill_density", "model"],
+    /**
+     * Regional hardness does not add a form field. When VERTEXSLICE_REGIONAL_3MF
+     * is on, `model` is model.3mf (modifier_part). Otherwise it stays the STL.
+     * infill_density remains the device / global percent.
+     */
+    regionalModelGateEnv: "VERTEXSLICE_REGIONAL_3MF",
     coreSpeedMmS: null,
     runtimeProofRequired: [
         "GET /v1/materials on the deployed slicer lists apex_bounce.",
@@ -118,6 +124,7 @@ export const VERTEX_SLICE_APEX_VYLON_PACKET = {
     wallLoops: APEX_VYLON_WALL_LOOPS,
     otherwiseIdenticalTo: "apex_forge",
     sliceFormFieldsSentByOrthocad: ["profile_id", "material", "infill_density", "model"],
+    regionalModelGateEnv: "VERTEXSLICE_REGIONAL_3MF",
     runtimeProofRequired: [
         "GET /v1/materials on the deployed slicer lists apex_vylon.",
         "POST /v1/slice with profile_id apex-v2-insole-95a and material apex_vylon returns non-empty G-code.",
@@ -257,3 +264,9 @@ export function printerPresetForApexMaterial(materialId: ApexPrintMaterialId): P
         bed: belt?.bed ?? { x: 300, y: 100000, z: 200 },
     };
 }
+
+export {
+    REGIONAL_INFILL_PRESETS,
+    VERTEXSLICE_REGIONAL_3MF_ENV,
+    vertexSliceRegional3mfEnabled,
+} from "../../../shared/vertexslice-regional-3mf";
