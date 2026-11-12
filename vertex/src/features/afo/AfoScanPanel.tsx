@@ -23,7 +23,9 @@ import {
     ensureAfoScanPlacement,
     jumpToFirstMissingRequired,
     resetAfoAlignmentMarkers,
+    resetAfoLandmarkSection,
 } from "@/features/afo/afo-scan-ui";
+import { skippedLandmarkIds } from "@/lib/geometry/afo/landmark-frame";
 import { ScanImport } from "@/features/scans/ScanImport";
 import { selectAfoLandmarkRevision, selectScanGateRevision } from "@/lib/clinical/clinical-step-gates";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
@@ -59,6 +61,13 @@ export function AfoScanPanel() {
     const [alignError, setAlignError] = useState<string | null>(null);
     const plantarReady = Boolean(workflow.plantar.heel && workflow.plantar.m1p && workflow.plantar.m5p);
     const stage1PlantarPlaced = AFO_PLANTAR_STEPS.some((step) => workflow.plantar[step.id]);
+    const stage1ResetVisible = stage1PlantarPlaced || workflow.alignmentApplied;
+    const skippedLandmarks = skippedLandmarkIds(workflow);
+    const stage2ResetVisible =
+        workflow.alignmentApplied &&
+        (AFO_LANDMARK_STEPS.some((step) => workflow.landmarks[step.id]) ||
+            skippedLandmarks.length > 0 ||
+            afoPlacementComplete(workflow));
     const hasMalleoli = Boolean(workflow.landmarks.medial_malleolus && workflow.landmarks.lateral_malleolus);
 
     const forefoot = useMemo(() => previewForefoot(workflow, scanTick), [workflow, scanTick]);
@@ -171,11 +180,14 @@ export function AfoScanPanel() {
                 >
                     Apply alignment
                 </button>
-                {!workflow.alignmentApplied && stage1PlantarPlaced ? (
+                {stage1ResetVisible ? (
                     <button
                         type="button"
                         data-testid="afo-reset-alignment"
-                        onClick={() => resetAfoAlignmentMarkers()}
+                        onClick={() => {
+                            resetAfoAlignmentMarkers();
+                            setAlignError(null);
+                        }}
                         className="h-8 shrink-0 rounded-md border border-border bg-background px-3 text-[12px] text-foreground hover:bg-muted/40"
                     >
                         Reset
@@ -268,14 +280,26 @@ export function AfoScanPanel() {
                 </div>
             ) : null}
 
-            <button
-                type="button"
-                data-testid="afo-place"
-                onClick={() => jumpToFirstMissingRequired()}
-                className="h-8 w-full rounded-md bg-muted text-[12px] font-medium text-foreground"
-            >
-                Done
-            </button>
+            <div className="flex gap-2">
+                <button
+                    type="button"
+                    data-testid="afo-place"
+                    onClick={() => jumpToFirstMissingRequired()}
+                    className="h-8 min-w-0 flex-1 rounded-md bg-muted text-[12px] font-medium text-foreground"
+                >
+                    Done
+                </button>
+                {stage2ResetVisible ? (
+                    <button
+                        type="button"
+                        data-testid="afo-reset-landmarks"
+                        onClick={() => resetAfoLandmarkSection()}
+                        className="h-8 shrink-0 rounded-md border border-border bg-background px-3 text-[12px] text-foreground hover:bg-muted/40"
+                    >
+                        Reset
+                    </button>
+                ) : null}
+            </div>
 
             <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
                 <input
