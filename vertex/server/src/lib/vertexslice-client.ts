@@ -2,6 +2,12 @@
 
 import { TRPCError } from "@trpc/server";
 import { APEX_V2_INSOLE_LOCKED_PROFILE_ID } from "../../../shared/print-recipe/print-recipe.js";
+import {
+    isVertexSlice3mfModel,
+    VERTEXSLICE_3MF_CONTENT_TYPE,
+    VERTEXSLICE_3MF_FILENAME,
+    VERTEXSLICE_REGIONS_HEADER,
+} from "../../../shared/vertexslice-regional-3mf.js";
 import { readUpstreamErrorText, upstreamErrorText } from "./upstream-error.js";
 
 /** VertexSlice `/v1/slice` material ids. `apex_forge` stays disabled. `apex_vylon` is AFO shell only. */
@@ -542,6 +548,11 @@ export interface VertexSliceRequest {
     sliceTimeoutMs?: number;
     /** Included in timeout errors when sliceTimeoutMs is set. */
     side?: string;
+    /**
+     * Modifier regions in a 3MF model. The response must include
+     * X-VertexSlice-Regions with at least this count. Omit for an STL.
+     */
+    expectedRegionCount?: number;
 }
 
 /**
@@ -550,13 +561,35 @@ export interface VertexSliceRequest {
  * Does not send wall loops or any other process override.
  * Fails closed when the material is absent from `/v1/materials` or the slice call rejects it.
  */
+function regionsHeaderCount(response: Response): number | null {
+    const raw = response.headers.get(VERTEXSLICE_REGIONS_HEADER);
+    if (raw == null) return null;
+    const text = raw.trim();
+    if (!/^\d+$/.test(text)) return null;
+    return Number(text);
+}
+
 export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise<string> {
     const material = assertEnabledVertexSliceMaterial(request.material);
     const profileId = assertLockedVertexSliceProfile(request.profileId.trim());
     const bytes = new Uint8Array(request.model);
-    const mesh = inspectManufacturingStl(bytes);
-    if (mesh.problem) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: mesh.problem });
+    const expectedRegions = request.expectedRegionCount ?? 0;
+    const is3mf = isVertexSlice3mfModel(bytes, request.filename);
+    if (expectedRegions > 0 && !is3mf) {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Regional hardness expected ${expectedRegions} modifier regions but the model is not a 3MF. Refusing a single-density print.`,
+        });
+    }
+    let triangles: number | null = null;
+    let extentMm: [number, number, number] | null = null;
+    if (!is3mf) {
+        const mesh = inspectManufacturingStl(bytes);
+        if (mesh.problem) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: mesh.problem });
+        }
+        triangles = mesh.triangles;
+        extentMm = mesh.extentMm;
     }
 
     const sliceTimeoutMs =
@@ -593,7 +626,15 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
             }
             form.append("infill_density", String(pct));
         }
-        form.append("model", new Blob([bytes], { type: "model/stl" }), request.filename ?? "model.stl");
+        if (is3mf) {
+            form.append(
+                "model",
+                new Blob([bytes], { type: VERTEXSLICE_3MF_CONTENT_TYPE }),
+                VERTEXSLICE_3MF_FILENAME,
+            );
+        } else {
+            form.append("model", new Blob([bytes], { type: "model/stl" }), request.filename ?? "model.stl");
+        }
 
         console.log("[vertexslice] -> POST /v1/slice", {
             endpoint,
@@ -601,8 +642,10 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
             material,
             infillDensityPct: request.infillDensityPct ?? null,
             modelBytes: bytes.byteLength,
-            triangles: mesh.triangles,
-            extentMm: mesh.extentMm,
+            model: is3mf ? VERTEXSLICE_3MF_FILENAME : (request.filename ?? "model.stl"),
+            expectedRegions: expectedRegions || null,
+            triangles,
+            extentMm,
             authenticated: true,
         });
 
@@ -641,6 +684,12 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
                     message: materialUnavailableMessage(material, detail),
                 });
             }
+            if (response.status === 422 && expectedRegions > 0) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message: `Regional hardness was rejected by VertexSlice (422): ${detail}`,
+                });
+            }
             throw new TRPCError({
                 code:
                     response.status === 401 || response.status === 403
@@ -648,6 +697,19 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
                         : "INTERNAL_SERVER_ERROR",
                 message: `VertexSlice error (${response.status}): ${detail}`,
             });
+        }
+
+        if (expectedRegions > 0) {
+            const applied = regionsHeaderCount(response);
+            if (applied == null || applied < expectedRegions) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message:
+                        applied == null
+                            ? `Regional hardness was not confirmed (missing ${VERTEXSLICE_REGIONS_HEADER}; sent ${expectedRegions} modifier regions). Refusing a single-density print.`
+                            : `Regional hardness applied ${applied} of ${expectedRegions} modifier regions. Refusing a single-density print.`,
+                });
+            }
         }
 
         const gcode = await settleWithinSignal(response.text(), deadline?.signal, timedOut);

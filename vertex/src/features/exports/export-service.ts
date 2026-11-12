@@ -8,6 +8,7 @@ import {
 } from "@/features/exports/apex-print-material";
 import { exportMachineFamily, pairExportLayout } from "@/features/exports/machine-export-layout";
 import { stampSingleFootStl } from "@/features/exports/printer-foot-isolation";
+import { buildVertexSliceModel } from "@/features/exports/vertexslice-regional-model";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { workpiecesFromDesign } from "@/lib/cnc/compose";
 import { generateCncJob } from "@/lib/cnc/export";
@@ -88,17 +89,21 @@ function applyServerBalance(balance: number | undefined): void {
     if (user) setUser({ ...user, tokenBalance: balance });
 }
 
-async function uploadManufacturingStlDirect(side: Side, stlBuffer: ArrayBuffer): Promise<string> {
+async function uploadManufacturingStlDirect(
+    side: Side,
+    body: ArrayBuffer,
+    contentType: "model/stl" | "model/3mf" = "model/stl",
+): Promise<string> {
     const prep = await trpc.manufacturing.prepareManufacturingStlUpload.mutate({
         side,
-        fileName: `manufacturing-${side}.stl`,
+        fileName: contentType === "model/3mf" ? `manufacturing-${side}.3mf` : `manufacturing-${side}.stl`,
     });
-    const putHeaders: Record<string, string> = { "Content-Type": "model/stl" };
+    const putHeaders: Record<string, string> = { "Content-Type": contentType };
     if (prep.token) putHeaders.Authorization = `Bearer ${prep.token}`;
     const putRes = await fetch(prep.uploadUrl, {
         method: "PUT",
         headers: putHeaders,
-        body: stlBuffer,
+        body,
     });
     if (!putRes.ok) {
         const detail = await putRes.text().catch(() => "");
@@ -425,6 +430,31 @@ function yieldToPaint(): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/**
+ * The gate is server-only (`VERTEXSLICE_REGIONAL_3MF`). A missing procedure or a
+ * failed check keeps today's STL upload so production exports still run.
+ */
+async function queryVertexSliceRegional3mf(): Promise<boolean> {
+    const manufacturing = trpc.manufacturing as {
+        regional3mfEnabled?: { query: () => Promise<{ enabled: boolean }> };
+    };
+    const query = manufacturing.regional3mfEnabled?.query;
+    if (!query) return false;
+    try {
+        const res = await query();
+        return res.enabled === true;
+    } catch (err) {
+        console.warn("[export] regional 3MF gate unavailable; sending the STL", err);
+        return false;
+    }
+}
+
+function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+    const copy = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(copy).set(bytes);
+    return copy;
+}
+
 export async function exportGcode(
     side: Side,
     preset: PrinterPreset,
@@ -516,12 +546,30 @@ export async function generateHybridGcode(
                   })();
             const stopped = abort();
             if (stopped) return stopped;
+            const design = useDesignStore.getState().design;
+            let regional3mf: { bytes: ArrayBuffer; regionCount: number } | null = null;
+            if (outputType === "gcode" && separateFiles && (await queryVertexSliceRegional3mf())) {
+                const model = await buildVertexSliceModel({
+                    design,
+                    side,
+                    manufacturingStl: stlBuffer,
+                    stlFilename: `${side}.stl`,
+                    regional3mfEnabled: true,
+                });
+                if (model.contentType === "model/3mf") {
+                    regional3mf = { bytes: bytesToArrayBuffer(model.bytes), regionCount: model.regionCount };
+                }
+            }
+            const stoppedBeforeUpload = abort();
+            if (stoppedBeforeUpload) return stoppedBeforeUpload;
             report?.(GCODE_EXPORT_STEPS.upload);
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
+            const regional3mfStorageKey = regional3mf
+                ? await uploadManufacturingStlDirect(side, regional3mf.bytes, "model/3mf")
+                : undefined;
             const stoppedAfterUpload = abort();
             if (stoppedAfterUpload) return stoppedAfterUpload;
 
-            const design = useDesignStore.getState().design;
             const presetId = sliceFields?.presetId ?? preset.id;
             const printRecipe = bindPrintRecipeProfile(design.printRecipe, presetId);
 
@@ -539,6 +587,9 @@ export async function generateHybridGcode(
                 grindingStyle,
                 fileName: filename,
                 ...(sliceFields ? { material: sliceFields.material } : {}),
+                ...(regional3mf && regional3mfStorageKey
+                    ? { regional3mfStorageKey, expectedRegionCount: regional3mf.regionCount }
+                    : {}),
             });
 
             if (!res?.ok) {
