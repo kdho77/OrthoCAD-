@@ -231,6 +231,7 @@
                 "vertex/src/lib/geometry/procedural-wall/modifiers.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/preview-loft-ui.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/reconstruct-sliver.test.ts",
+                "vertex/src/lib/geometry/procedural-wall/round-first-ray-grinding.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/station-gates.test.ts",
                 "vertex/src/lib/geometry/scan-manual-offset.test.ts",
                 "vertex/src/lib/geometry/shoe-size.test.ts",
