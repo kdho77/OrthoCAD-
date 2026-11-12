@@ -14,6 +14,12 @@ import {
     defaultAfoPrint,
 } from "@/lib/geometry/afo/defaults";
 import { trimPolygonForShell } from "@/lib/geometry/afo/shell";
+import {
+    beginShellGeneration,
+    commitShellIfCurrent,
+    currentAfoShellFingerprint,
+    useAfoShellCurrent,
+} from "@/lib/geometry/afo/shell-fingerprint";
 import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import type { AfoTriMesh } from "@/lib/geometry/afo/types";
 import { evaluateAfoWarnings } from "@/lib/geometry/afo/warnings";
@@ -40,8 +46,8 @@ export function AfoPrintPanel() {
     const working = afoPrintShellInput(correctedMesh, castMesh);
     const progress = useAfoStore((s) => s.workerProgress);
     const lastError = useAfoStore((s) => s.lastError);
-    const setShell = useAfoStore((s) => s.setShellMesh);
     const setProgress = useAfoStore((s) => s.setWorkerProgress);
+    const shellCurrent = useAfoShellCurrent();
     const setError = useAfoStore((s) => s.setLastError);
     const warnings = evaluateAfoWarnings(afo, working);
 
@@ -50,6 +56,8 @@ export function AfoPrintPanel() {
             setError("Confirm a closed trim loop first.");
             return;
         }
+        const startedFingerprint = currentAfoShellFingerprint();
+        const startedToken = beginShellGeneration();
         setError(null);
         setProgress({ pct: 0, stage: "shell" });
         try {
@@ -71,11 +79,10 @@ export function AfoPrintPanel() {
                     onProgress: (pct, stage) => setProgress({ pct, stage }),
                 },
             );
-            setShell(shell);
-            patchAfoState({ shellReady: true }, "afo-shell");
-            setProgress(null);
+            commitShellIfCurrent({ startedFingerprint, startedToken, shell });
         } catch (e) {
             setError(e instanceof Error ? e.message : "Shell failed");
+        } finally {
             setProgress(null);
         }
     };
@@ -148,7 +155,7 @@ export function AfoPrintPanel() {
                     Warn: {w.message}
                 </p>
             ))}
-            {afo.shellReady ? <p className="text-emerald-300">Watertight shell ready. Cast hidden.</p> : null}
+            {shellCurrent ? <p className="text-emerald-300">Watertight shell ready. Cast hidden.</p> : null}
         </div>
     );
 }

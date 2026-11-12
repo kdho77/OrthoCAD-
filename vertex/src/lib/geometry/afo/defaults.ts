@@ -319,6 +319,7 @@ export function defaultAfoDesignState(side: Side = "left"): AfoDesignState {
         trimClosed: false,
         trimConfirmed: false,
         print: defaultAfoPrint(),
+        flatAfo: null,
         shellReady: false,
     };
 }

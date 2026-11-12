@@ -19,6 +19,7 @@ import {
 import { usePublishMeasureSolid } from "@/features/measure/publish-solid";
 import { AFO_TRIM_PIN_RADIUS_MM } from "@/lib/geometry/afo/defaults";
 import { afoMeshToGeometry, meshCentroid } from "@/lib/geometry/afo/mesh-ops";
+import { useAfoShellCurrent } from "@/lib/geometry/afo/shell-fingerprint";
 import { afoTrimPreview, cursorCrossSegments } from "@/lib/geometry/afo/trim-preview";
 import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import type { AfoVec3 } from "@/lib/geometry/afo/types";
@@ -55,7 +56,8 @@ export function AfoMeshes() {
     const show3d = afo.cast.show3dModel;
     const working = corrected ?? cast;
 
-    const liveShell = afo.shellReady ? shell : null;
+    const shellCurrent = useAfoShellCurrent();
+    const liveShell = shellCurrent ? shell : null;
     const showShell = Boolean(liveShell);
     const showCorrectedBody = Boolean(corrected) && show3d && !showShell && !placingLandmarks;
     const showSource = Boolean(source ?? working) && show3d && !showShell && !showCorrectedBody;
