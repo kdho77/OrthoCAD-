@@ -8,6 +8,12 @@ import {
 } from "@/features/exports/apex-print-material";
 import { exportMachineFamily, pairExportLayout } from "@/features/exports/machine-export-layout";
 import { stampSingleFootStl } from "@/features/exports/printer-foot-isolation";
+import {
+    buildVertexSliceModel,
+    parseRegionalCapability,
+    type RegionalCapability,
+    regionalSliceDecision,
+} from "@/features/exports/vertexslice-regional-model";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { workpiecesFromDesign } from "@/lib/cnc/compose";
 import { generateCncJob } from "@/lib/cnc/export";
@@ -22,7 +28,7 @@ import {
 } from "@/lib/geometry/export-geometry";
 import { binaryStlTriangleCount, manufacturingStlForExportKind } from "@/lib/geometry/leader-block";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
-import { collectHardnessRegions } from "@/lib/hardness/collect";
+import { effectiveHardnessRegions } from "@/lib/hardness/collect";
 import { packHardness3mf } from "@/lib/hardness/export-3mf";
 import { parseBinaryStl, type TriangleMesh } from "@/lib/hardness/mesh";
 import { buildRawModifiers, exportHardness3mf, STL_SHELL_ONLY_WARNING } from "@/lib/hardness/pipeline";
@@ -88,17 +94,21 @@ function applyServerBalance(balance: number | undefined): void {
     if (user) setUser({ ...user, tokenBalance: balance });
 }
 
-async function uploadManufacturingStlDirect(side: Side, stlBuffer: ArrayBuffer): Promise<string> {
+async function uploadManufacturingStlDirect(
+    side: Side,
+    body: ArrayBuffer,
+    contentType: "model/stl" | "model/3mf" = "model/stl",
+): Promise<string> {
     const prep = await trpc.manufacturing.prepareManufacturingStlUpload.mutate({
         side,
-        fileName: `manufacturing-${side}.stl`,
+        fileName: contentType === "model/3mf" ? `manufacturing-${side}.3mf` : `manufacturing-${side}.stl`,
     });
-    const putHeaders: Record<string, string> = { "Content-Type": "model/stl" };
+    const putHeaders: Record<string, string> = { "Content-Type": contentType };
     if (prep.token) putHeaders.Authorization = `Bearer ${prep.token}`;
     const putRes = await fetch(prep.uploadUrl, {
         method: "PUT",
         headers: putHeaders,
-        body: stlBuffer,
+        body,
     });
     if (!putRes.ok) {
         const detail = await putRes.text().catch(() => "");
@@ -179,7 +189,8 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
         const auth = await authorize("stl", side, filename);
         if (!auth.ok) return { ok: false, reason: auth.reason };
         recordExport(`STL ${side} (-${TOKEN_COST.stl})`);
-        const warning = collectHardnessRegions(design, side).length > 0 ? STL_SHELL_ONLY_WARNING : undefined;
+        const warning =
+            effectiveHardnessRegions(design, side).length > 0 ? STL_SHELL_ONLY_WARNING : undefined;
         return { ok: true, filename, blob, warning };
     } catch (e) {
         return { ok: false, reason: e instanceof Error ? e.message : "Export failed" };
@@ -195,7 +206,7 @@ function translateMesh(mesh: TriangleMesh, dy: number): TriangleMesh {
 
 function assertHardnessMapped(design: DesignState, side: Side): void {
     const unmapped: string[] = [];
-    for (const region of collectHardnessRegions(design, side)) {
+    for (const region of effectiveHardnessRegions(design, side)) {
         try {
             classDensityPct(region.hardnessClass, region.overrides);
         } catch (err) {
@@ -425,6 +436,33 @@ function yieldToPaint(): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/**
+ * Explicit enabled / disabled is a successful check. A missing procedure, a
+ * thrown query (network or non-2xx), or a body without a boolean `enabled`
+ * is "could not check". Callers with effective regions must stop on that.
+ */
+async function queryVertexSliceRegional3mf(): Promise<RegionalCapability> {
+    const manufacturing = trpc.manufacturing as {
+        regional3mfEnabled?: { query: () => Promise<unknown> };
+    };
+    const query = manufacturing.regional3mfEnabled?.query;
+    if (!query) {
+        return { state: "unknown", reason: "regional hardness capability check is missing" };
+    }
+    try {
+        return parseRegionalCapability(await query());
+    } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return { state: "unknown", reason: reason || "regional hardness capability check failed" };
+    }
+}
+
+function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+    const copy = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(copy).set(bytes);
+    return copy;
+}
+
 export async function exportGcode(
     side: Side,
     preset: PrinterPreset,
@@ -516,12 +554,40 @@ export async function generateHybridGcode(
                   })();
             const stopped = abort();
             if (stopped) return stopped;
+            const design = useDesignStore.getState().design;
+            const effectiveRegions =
+                outputType === "gcode" && separateFiles ? effectiveHardnessRegions(design, side) : [];
+            let regional3mf: { bytes: ArrayBuffer; regionCount: number } | null = null;
+            if (effectiveRegions.length > 0) {
+                const decision = regionalSliceDecision({
+                    effectiveRegionCount: effectiveRegions.length,
+                    capability: await queryVertexSliceRegional3mf(),
+                });
+                if (decision.action === "fail") throw new Error(decision.message);
+                const model = await buildVertexSliceModel({
+                    design,
+                    side,
+                    manufacturingStl: stlBuffer,
+                    stlFilename: `${side}.stl`,
+                    regional3mfEnabled: true,
+                });
+                if (model.contentType !== "model/3mf" || model.regionCount < 1) {
+                    throw new Error(
+                        "Regional hardness was requested but the 3MF has no modifier regions. Refusing a single-density print.",
+                    );
+                }
+                regional3mf = { bytes: bytesToArrayBuffer(model.bytes), regionCount: model.regionCount };
+            }
+            const stoppedBeforeUpload = abort();
+            if (stoppedBeforeUpload) return stoppedBeforeUpload;
             report?.(GCODE_EXPORT_STEPS.upload);
             const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
+            const regional3mfStorageKey = regional3mf
+                ? await uploadManufacturingStlDirect(side, regional3mf.bytes, "model/3mf")
+                : undefined;
             const stoppedAfterUpload = abort();
             if (stoppedAfterUpload) return stoppedAfterUpload;
 
-            const design = useDesignStore.getState().design;
             const presetId = sliceFields?.presetId ?? preset.id;
             const printRecipe = bindPrintRecipeProfile(design.printRecipe, presetId);
 
@@ -539,6 +605,9 @@ export async function generateHybridGcode(
                 grindingStyle,
                 fileName: filename,
                 ...(sliceFields ? { material: sliceFields.material } : {}),
+                ...(regional3mf && regional3mfStorageKey
+                    ? { regional3mfStorageKey, expectedRegionCount: regional3mf.regionCount }
+                    : {}),
             });
 
             if (!res?.ok) {
