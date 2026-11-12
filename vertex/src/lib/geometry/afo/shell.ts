@@ -11,7 +11,13 @@ import { geodesicVertexPath } from "./geodesic";
 import { cloneMesh, computeVertexNormals, meshProjector, nearestVertex, vertexCount } from "./mesh-ops";
 import { offsetMeshAlongNormals } from "./sdf-offset";
 import { embedTrimPolyline } from "./shell-cut";
-import { type FlatPlateLock, flattenKeepSurface, reseatInnerForefoot } from "./shell-flatten";
+import {
+    type FlatPlateLock,
+    flattenKeepSurface,
+    rememberFlatPlate,
+    reseatFlatPlate,
+    reseatInnerForefoot,
+} from "./shell-flatten";
 import {
     boundaryLoops,
     closeShellWithRoundRim,
@@ -69,7 +75,10 @@ export function buildAfoShell(
     enforceShellClearance(shell, options.thicknessMm, options.edgeMm);
     repairFlippedOffsets(shell);
     straightenFeatureLoops(shell);
-    if (plate) reseatInnerForefoot(shell, plate);
+    if (plate) {
+        reseatFlatPlate(shell, plate);
+        rememberFlatPlate(shell, plate);
+    }
     options.onProgress?.(1, "done");
     return shell;
 }

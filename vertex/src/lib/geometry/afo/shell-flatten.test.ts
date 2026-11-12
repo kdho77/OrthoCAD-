@@ -6,15 +6,18 @@ import { analyzeManifoldBuffers } from "@/lib/geometry/manifold-core";
 import type { Side } from "@/types";
 import { buildCurledAfoCast, buildCurledSoleSheet, curledSoleZ, soleSheetBoundary } from "./curled-afo-cast";
 import { AFO_EDGE_MM, AFO_FLARE_MM, defaultAfoDesignState } from "./defaults";
+import { countTriangleSelfIntersections } from "./self-intersection";
 import { buildAfoShell, trimPolygonForShell } from "./shell";
 import {
     AFO_FOREFOOT_BLEND_MM,
     AFO_FOREFOOT_PLANAR_MM,
     afoFlatPlateInputFields,
     contactPlanesFromLandmarks,
+    flatPlateLockOf,
     flattenKeepSurface,
     heightAboveContact,
     signedAheadOfMetLine,
+    validateFlatPlate,
 } from "./shell-flatten";
 import { buildLiveFrameLeg } from "./synthetic-leg";
 import { fitSurfaceSpline, posteriorLeafPins } from "./trim-spline";
@@ -269,6 +272,141 @@ describe("generate-shell inner forefoot", () => {
             expect(upperMoved, side).toBeLessThan(0.5);
             expect(toeCurl, side).toBeGreaterThan(3);
             expect(toeFlat, side).toBeLessThanOrEqual(0.45);
+        }
+    });
+});
+
+describe("flat plate solid", () => {
+    test("left and right plates match two thicknesses and stay a closed solid", () => {
+        for (const side of ["left", "right"] as const) {
+            for (const thickness of [4, 5.5]) {
+                const cast = buildCurledAfoCast(side, 28, 12);
+                const built = shellPair(cast.mesh, side, cast, thickness);
+                const lock = flatPlateLockOf(built.flat);
+                expect(lock, side).toBeTruthy();
+                const report = validateFlatPlate(built.flat, lock!, AFO_EDGE_MM);
+                const plainSi = countTriangleSelfIntersections(built.plain);
+                const tag = `${side} ${thickness}`;
+                expect(report.soleCount, tag).toBeGreaterThan(20);
+                expect(report.openEdges, tag).toBe(0);
+                expect(report.nonManifoldEdges, tag).toBe(0);
+                expect(report.degenerateFaces, tag).toBe(0);
+                expect(report.forefootPlanarityMm, tag).toBeLessThanOrEqual(0.1);
+                expect(report.bottomPlanarityMm, tag).toBeLessThanOrEqual(0.1);
+                expect(report.plateMinMm, tag).toBeGreaterThanOrEqual(thickness - 0.05);
+                expect(report.plateMaxMm, tag).toBeLessThanOrEqual(thickness + 0.05);
+                expect(report.minWallMm, tag).toBeGreaterThanOrEqual(1);
+                expect(report.footprintComponents, tag).toBe(1);
+                expect(report.footprintHoles, tag).toBe(0);
+                expect(report.footprintAreaMm2, tag).toBeGreaterThan(5000);
+                expect(report.toeLipMm, tag).toBeLessThanOrEqual(0.1);
+                expect(report.selfIntersections, tag).toBeLessThan(plainSi + 80);
+            }
+        }
+    });
+
+    test("a stray low vertex does not change the plate thickness", () => {
+        const cast = buildCurledAfoCast("left", 28, 12);
+        const clean = shellPair(cast.mesh, "left", cast, 4).flat;
+        const dropped = cast.mesh.positions.slice();
+        let low = 0;
+        for (let i = 1; i < dropped.length / 3; i++) {
+            if ((dropped[i * 3 + 2] ?? 0) < (dropped[low * 3 + 2] ?? 0)) low = i;
+        }
+        dropped[low * 3 + 2] = -40;
+        const strayMesh = { positions: dropped, indices: cast.mesh.indices };
+        const stray = shellPair(strayMesh, "left", cast, 4).flat;
+        const a = validateFlatPlate(clean, flatPlateLockOf(clean)!, AFO_EDGE_MM);
+        const b = validateFlatPlate(stray, flatPlateLockOf(stray)!, AFO_EDGE_MM);
+        expect(Math.abs(a.plateMinMm - 4)).toBeLessThan(0.15);
+        expect(Math.abs(b.plateMinMm - 4)).toBeLessThan(0.15);
+        expect(Math.abs(a.plateMaxMm - b.plateMaxMm)).toBeLessThan(0.2);
+    });
+
+    test("the blend slope stays bounded and malleoli on the leg stay put", () => {
+        for (const side of ["left", "right"] as const) {
+            const leg = buildLiveFrameLeg(side, 20);
+            const marks = legTripod(leg, side);
+            const afo = defaultAfoDesignState(side);
+            afo.landmarks = [{ id: "distal", point: marks.distal, vertexIndex: 0 }];
+            const placed = posteriorLeafPins(leg, afo);
+            const fit = fitSurfaceSpline(leg, placed.pins, { closed: true, quick: true });
+            expect(fit.ok, fit.reasons.join(" | ")).toBe(true);
+            const polygon = trimPolygonForShell(fit.curve, true) ?? undefined;
+            const common = {
+                thicknessMm: 4,
+                edgeMm: AFO_EDGE_MM,
+                flareMm: 0,
+                trimPolygon: polygon,
+                heelSeed: marks.heel,
+            };
+            const flat = buildAfoShell(leg, [0, 1, 2], {
+                ...common,
+                flatPlate: { ...marks, thicknessMm: 4 },
+            });
+            const plain = buildAfoShell(leg, [0, 1, 2], common);
+            const lock = flatPlateLockOf(flat);
+            expect(lock).toBeTruthy();
+            const report = validateFlatPlate(flat, lock!, AFO_EDGE_MM);
+            const plainSi = countTriangleSelfIntersections(plain);
+            expect(report.openEdges, side).toBe(0);
+            expect(report.nonManifoldEdges, side).toBe(0);
+            expect(report.invertedEdges, side).toBe(0);
+            expect(report.degenerateFaces, side).toBe(0);
+            expect(report.forefootPlanarityMm, side).toBeLessThanOrEqual(0.1);
+            expect(report.bottomPlanarityMm, side).toBeLessThanOrEqual(0.1);
+            expect(report.plateMinMm, side).toBeGreaterThanOrEqual(3.95);
+            expect(report.plateMaxMm, side).toBeLessThanOrEqual(4.05);
+            expect(report.minWallMm, side).toBeGreaterThanOrEqual(AFO_EDGE_MM - 0.15);
+            expect(report.footprintComponents, side).toBe(1);
+            expect(report.footprintHoles, side).toBe(0);
+            expect(report.toeLipMm, side).toBeLessThanOrEqual(0.1);
+            expect(report.selfIntersections, side).toBeLessThan(plainSi + 250);
+            let slope = 0;
+            const n = flat.outerVertex0 ?? 0;
+            const adj = new Map<number, number[]>();
+            const link = (a: number, b: number) => {
+                if (a >= n || b >= n) return;
+                const list = adj.get(a) ?? [];
+                list.push(b);
+                adj.set(a, list);
+            };
+            const faces = (flat.indices.length / 3) | 0;
+            for (let i = 0; i < faces; i++) {
+                const a = flat.indices[i * 3] ?? 0;
+                const b = flat.indices[i * 3 + 1] ?? 0;
+                const c = flat.indices[i * 3 + 2] ?? 0;
+                if (a < n && b < n && c < n) {
+                    link(a, b);
+                    link(b, c);
+                    link(c, a);
+                }
+            }
+            for (let i = 0; i < n; i++) {
+                if (!lock!.flat[i]) continue;
+                const p = point(flat, i);
+                const hp = heightAboveContact(p, lock!.planes);
+                for (const j of adj.get(i) ?? []) {
+                    if (!lock!.flat[j]) continue;
+                    const q = point(flat, j);
+                    const ds = Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
+                    if (ds < 0.5) continue;
+                    slope = Math.max(slope, Math.abs(hp - heightAboveContact(q, lock!.planes)) / ds);
+                }
+            }
+            expect(slope, side).toBeLessThan(1.2);
+            let malleoli = 0;
+            let moved = 0;
+            const limit = Math.min(n, plain.outerVertex0 ?? 0);
+            for (let i = 0; i < limit; i++) {
+                const q = point(plain, i);
+                if (q.z < 55 || q.z > 110 || q.x > 70) continue;
+                malleoli++;
+                const p = point(flat, i);
+                moved = Math.max(moved, Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z));
+            }
+            expect(malleoli, side).toBeGreaterThan(4);
+            expect(moved, side).toBeLessThan(0.6);
         }
     });
 });
