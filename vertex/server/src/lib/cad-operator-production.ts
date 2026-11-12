@@ -292,7 +292,14 @@ export function publicProductionError(error: unknown): string {
         "Supabase admin client not configured",
         "Manufacturing charge failed",
     ];
-    if (message.startsWith("VertexSlice timed out after")) {
+    if (
+        message.startsWith("VertexSlice timed out after") ||
+        message.startsWith("Manufacturing STL ") ||
+        message.startsWith("Regional hardness")
+    ) {
+        return message;
+    }
+    if (message.startsWith("Manufacturing mesh is not sliceable")) {
         return message;
     }
     for (const item of allowed) {
@@ -382,6 +389,8 @@ export function cadOperatorManufacturingIdentity(input: {
     printRecipe: unknown;
     settingsJson: unknown;
     stlStorageKey: string | null;
+    /** Included only when true, so an off gate keeps today's fingerprint. */
+    regional3mf?: boolean;
 }): { fingerprint: string; idempotencyKey: string } {
     const fingerprint = createHash("sha256")
         .update(
@@ -397,6 +406,7 @@ export function cadOperatorManufacturingIdentity(input: {
                 printRecipe: input.printRecipe,
                 settingsJson: input.settingsJson,
                 stlStorageKey: input.useSavedDesignMesh ? null : input.stlStorageKey,
+                ...(input.regional3mf ? { regional3mf: true } : {}),
             }),
         )
         .digest("hex");
@@ -433,6 +443,8 @@ export interface CadChargeResult {
 export interface CadProductionSliceContext {
     sliceTimeoutMs: number;
     sliceTimeoutSec: number;
+    /** executeCadOperatorProduction start. Recompute the slice budget after STL download. */
+    invocationStartedAt: Date;
 }
 
 export interface ExecuteCadProductionArgs {
@@ -496,7 +508,11 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
         const sliceNow = args.now();
         const sliceTimeoutMs = cadVertexSliceSliceTimeoutMs(started, sliceNow);
         const sliceTimeoutSec = Math.max(1, Math.ceil(sliceTimeoutMs / 1000));
-        const sliced = await args.slice(stlStorageKey, { sliceTimeoutMs, sliceTimeoutSec });
+        const sliced = await args.slice(stlStorageKey, {
+            sliceTimeoutMs,
+            sliceTimeoutSec,
+            invocationStartedAt: started,
+        });
         if (!sliced.gcode) {
             throw new Error("Manufacturing service returned empty output");
         }
