@@ -177,6 +177,10 @@ interface OpenSurface {
 }
 
 /** Closed on-surface trim passed into the shell as the inner boundary. */
+/**
+ * The shell edge is this trim curve. Display-only smoothing does not belong
+ * here; the opening is not run through a separate edge filter.
+ */
 export function trimPolygonForShell(curve: AfoVec3[], closed: boolean): AfoVec3[] | null {
     if (!closed || curve.length < 3) return null;
     return curve.map((p) => ({ x: p.x, y: p.y, z: p.z }));

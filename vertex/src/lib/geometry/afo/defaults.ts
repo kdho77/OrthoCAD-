@@ -140,6 +140,8 @@ export const AFO_TRIM_SAMPLE_MM = 0.5;
 export const AFO_TRIM_SAMPLE_MAX_MM = 1;
 /** Lift the drawn stroke off the surface so it does not z-fight. */
 export const AFO_TRIM_DRAW_OFFSET_MM = 0.3;
+/** Average face normals over this arc length before the display lift. */
+export const AFO_TRIM_DISPLAY_NORMAL_MM = 4;
 /** Reject a hit with no mesh point inside this distance. */
 export const AFO_TRIM_PROJECT_MAX_MM = 3;
 /** Local plane fit is allowed out to this distance when the mesh is farther than 3 mm. */

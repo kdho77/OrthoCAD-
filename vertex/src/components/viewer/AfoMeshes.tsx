@@ -10,7 +10,7 @@ import { AfoCueSphere } from "@/components/viewer/AfoScanMarkers";
 import { AfoLitSurfaceMaterial, AfoPointCloudMaterial } from "@/components/viewer/AfoSurfaceMaterial";
 import {
     AFO_POINT_DEPTH_WINDOW_MM,
-    afoCastBodyStyle,
+    afoCastStyleDuringPlacement,
     afoHeightColors,
     afoTriangleStats,
     afoUploadedScanMaterial,
@@ -44,6 +44,7 @@ export function AfoMeshes() {
     const draggingTrimIndex = useAfoStore((s) => s.draggingTrimIndex);
     const hoveredTrimIndex = useAfoStore((s) => s.hoveredTrimIndex);
     const draggingTrim = draggingTrimIndex != null;
+    const placingDesign = useAfoStore((s) => s.placingDesignLandmarks);
     const placingLandmarks = workflowStep === "scan" && placingScan;
     const scanMat = afoUploadedScanMaterial({
         transparentOn: viewerTransparent || afo.cast.transparent,
@@ -123,13 +124,23 @@ export function AfoMeshes() {
         const stats = bodyMesh
             ? afoTriangleStats(bodyMesh.positions, bodyMesh.indices)
             : { triangles: 0, degenerateRatio: 1 };
-        return afoCastBodyStyle({
+        return afoCastStyleDuringPlacement({
+            placingTrim: placingTrim || draggingTrim,
+            placingMarkers: placingLandmarks || placingDesign,
             transparentOn: scanMat.transparent,
             heightmap,
             triangleCount: stats.triangles,
             degenerateRatio: stats.degenerateRatio,
         });
-    }, [bodyMesh, scanMat.transparent, heightmap]);
+    }, [
+        bodyMesh,
+        scanMat.transparent,
+        heightmap,
+        placingTrim,
+        draggingTrim,
+        placingLandmarks,
+        placingDesign,
+    ]);
     const markerDrawMode = bodyMesh ? bodyStyle.drawMode : "surface";
     const shadedGeo = useMemo(() => {
         if (!bodyGeo || !bodyStyle.vertexColors || !bodyMesh) return bodyGeo;

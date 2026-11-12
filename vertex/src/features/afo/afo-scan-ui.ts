@@ -305,6 +305,45 @@ export function afoHeightColors(positions: ArrayLike<number>): Float32Array {
     return colors;
 }
 
+/**
+ * Marker placement and trim placement always draw a triangulated cast as an
+ * opaque shaded solid. Transparent and the point-cloud fallback stay available
+ * when nobody is placing.
+ */
+export function afoCastStyleDuringPlacement(opts: {
+    placingTrim: boolean;
+    placingMarkers: boolean;
+    transparentOn: boolean;
+    heightmap: boolean;
+    triangleCount: number;
+    degenerateRatio: number;
+}): AfoCastBodyStyle {
+    const placing = opts.placingTrim || opts.placingMarkers;
+    if (!placing) {
+        return afoCastBodyStyle({
+            transparentOn: opts.transparentOn,
+            heightmap: opts.heightmap,
+            triangleCount: opts.triangleCount,
+            degenerateRatio: opts.degenerateRatio,
+        });
+    }
+    const style = afoCastBodyStyle({
+        transparentOn: false,
+        heightmap: opts.heightmap,
+        triangleCount: opts.triangleCount,
+        degenerateRatio: opts.triangleCount > 0 ? 0 : opts.degenerateRatio,
+    });
+    if (opts.triangleCount <= 0) return style;
+    return {
+        ...style,
+        drawMode: "surface",
+        shaded: true,
+        opacity: 1,
+        transparent: false,
+        depthWrite: true,
+    };
+}
+
 /** Default Cast / landmark body: opaque shaded surface. Heightmap and Transparent still apply. */
 export function afoCastBodyStyle(opts: {
     transparentOn: boolean;
