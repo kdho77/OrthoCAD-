@@ -3,7 +3,10 @@
 
 import type { PrismaClient } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
-
+import {
+    selectVertexSliceUpload,
+    vertexSliceRegional3mfEnabled,
+} from "../../../shared/vertexslice-regional-3mf.js";
 import type { CadOperatorPrincipal } from "../auth/cad-operator.js";
 import { assertCadOperatorGcodeKey, buildCadOperatorGcodeKey } from "../auth/cad-operator.js";
 import { getSupabaseAdmin } from "../context.js";
@@ -113,6 +116,7 @@ export async function runCadOperatorGenerateRequest(args: {
         printRecipe: plan.printRecipe,
         settingsJson: plan.settingsJson,
         stlStorageKey: plan.stlStorageKey,
+        regional3mf: vertexSliceRegional3mfEnabled(),
     });
     const store = new PrismaCadProductionStore(args.prisma);
     const now = args.now ?? (() => new Date());
@@ -138,13 +142,14 @@ export async function runCadOperatorGenerateRequest(args: {
                 throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
             }
         },
-        execute: (row) =>
-            executeCadOperatorProduction({
+        execute: (row) => {
+            let regional3mf: { bytes: Uint8Array; regionCount: number } | null = null;
+            return executeCadOperatorProduction({
                 row,
                 store,
                 now,
-                materialize: () =>
-                    materializeCadOperatorStl({
+                materialize: async () => {
+                    const materialized = await materializeCadOperatorStl({
                         plan,
                         credentialId: args.principal.credentialId,
                         side: input.side,
@@ -157,7 +162,13 @@ export async function runCadOperatorGenerateRequest(args: {
                                 MANUFACTURING_BUCKET,
                             );
                         },
-                    }),
+                    });
+                    regional3mf = materialized.regional3mf;
+                    return {
+                        stlStorageKey: materialized.stlStorageKey,
+                        meshFingerprint: materialized.meshFingerprint,
+                    };
+                },
                 slice: async (stlStorageKey, sliceCtx) => {
                     const supabase = requireStorage();
                     const stlUrl = await signedDownloadUrl(
@@ -171,12 +182,19 @@ export async function runCadOperatorGenerateRequest(args: {
                     const sliceTimeoutMs = sliceCtx?.invocationStartedAt
                         ? cadVertexSliceSliceTimeoutMs(sliceCtx.invocationStartedAt, now())
                         : sliceCtx?.sliceTimeoutMs;
+                    const upload = selectVertexSliceUpload({
+                        stl: stlBytes,
+                        stlFilename: `${input.side}.stl`,
+                        regional3mf,
+                        regional3mfEnabled: vertexSliceRegional3mfEnabled(),
+                    });
                     const gcode = await sliceWithVertexSlice({
                         profileId: plan.presetId,
                         material: plan.material,
-                        model: stlBytes,
-                        filename: `${input.side}.stl`,
+                        model: upload.bytes,
+                        filename: upload.filename,
                         infillDensityPct,
+                        expectedRegionCount: upload.expectedRegionCount,
                         sliceTimeoutMs,
                         side: input.side,
                     });
@@ -254,7 +272,8 @@ export async function runCadOperatorGenerateRequest(args: {
                 deleteTemp: async (stlStorageKey) => {
                     deleteManufacturingTempBestEffort(getSupabaseAdmin(), stlStorageKey);
                 },
-            }),
+            });
+        },
     });
     return {
         ok: true,

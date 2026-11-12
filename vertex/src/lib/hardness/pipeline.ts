@@ -4,7 +4,7 @@ import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import type { DesignState, Side } from "@/types";
 import { classDensityPct } from "../../../shared/print-recipe/hardness-class-table";
-import { collectHardnessRegions, findElement } from "./collect";
+import { effectiveHardnessRegions, findElement } from "./collect";
 import { packHardness3mf } from "./export-3mf";
 import type { TriangleMesh } from "./mesh";
 import { buildHeightFieldPrism, makeParametricSampler, type RawModifier, type SurfaceSampler } from "./prism";
@@ -33,8 +33,8 @@ export function buildRawModifiers(
     design: DesignState,
     side: Side,
     sampler?: SurfaceSampler,
-): { requested: ReturnType<typeof collectHardnessRegions>; raw: RawModifier[] } {
-    const requested = collectHardnessRegions(design, side);
+): { requested: ReturnType<typeof effectiveHardnessRegions>; raw: RawModifier[] } {
+    const requested = effectiveHardnessRegions(design, side);
     const raw: RawModifier[] = [];
     for (const region of requested) {
         const el = findElement(design, region);

@@ -19,6 +19,10 @@ import {
     printRecipeToSnake,
     resolveGyroidManufacturingPrintRecipe,
 } from "../../../shared/print-recipe/print-recipe.js";
+import {
+    selectVertexSliceUpload,
+    vertexSliceRegional3mfEnabled,
+} from "../../../shared/vertexslice-regional-3mf.js";
 import { HYBRID_GCODE_COST } from "../lib/cad-operator-production.js";
 import type { ManufacturePayload, ManufactureResult } from "../lib/manufacturing-client.js";
 import { assertManufacturingTempKeyForUser } from "../lib/storage.js";
@@ -40,6 +44,12 @@ export interface SessionManufactureInput {
     fileName?: string;
     material?: string;
     useSavedDesignMesh?: boolean;
+    /**
+     * Second upload. Present only when the design has effective regions.
+     * The gate off refuses the export instead of slicing the STL.
+     */
+    regional3mfStorageKey?: string;
+    expectedRegionCount?: number;
 }
 
 export interface SessionChargeArgs {
@@ -199,6 +209,7 @@ export async function runSessionGenerateSolid(args: {
     }
 
     const tempStlKey = stlStorageKey;
+    let regionalTempKey: string | null = null;
 
     try {
         await io.assertActiveLicense(actorUserId);
@@ -244,12 +255,56 @@ export async function runSessionGenerateSolid(args: {
                 resolvedPrintRecipe.hardnessToInfillPct,
             );
             const stlBytes = await io.downloadStl(stlUrl);
+            const regionalGate = vertexSliceRegional3mfEnabled();
+            const claimedCount = input.expectedRegionCount;
+            const claimedRegions = claimedCount !== undefined || Boolean(input.regional3mfStorageKey);
+            let regional3mf: { bytes: Uint8Array; regionCount: number } | null = null;
+            if (claimedRegions && !regionalGate) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message:
+                        "Regional hardness is turned off on this server. Refusing a single-density print.",
+                });
+            }
+            if (regionalGate && claimedRegions) {
+                if (claimedCount === undefined) {
+                    throw new TRPCError({
+                        code: "BAD_REQUEST",
+                        message:
+                            "Regional hardness was requested but the modifier count is missing. Refusing a single-density print.",
+                    });
+                }
+                if (!input.regional3mfStorageKey) {
+                    throw new TRPCError({
+                        code: "BAD_REQUEST",
+                        message: `Regional hardness is enabled but no modifier 3MF was uploaded (${claimedCount} regions). Refusing a single-density print.`,
+                    });
+                }
+                try {
+                    assertManufacturingTempKeyForUser(input.regional3mfStorageKey, actorUserId);
+                } catch {
+                    throw new TRPCError({
+                        code: "BAD_REQUEST",
+                        message: "Invalid regional 3MF storage key",
+                    });
+                }
+                regionalTempKey = input.regional3mfStorageKey;
+                const regionalUrl = await io.signedDownloadUrl(input.regional3mfStorageKey);
+                regional3mf = { bytes: await io.downloadStl(regionalUrl), regionCount: claimedCount };
+            }
+            const upload = selectVertexSliceUpload({
+                stl: stlBytes,
+                stlFilename: `${input.side ?? "model"}.stl`,
+                regional3mf,
+                regional3mfEnabled: regionalGate,
+            });
             const gcode = await io.sliceWithVertexSlice({
                 profileId: presetId,
                 material: material ?? "",
-                model: stlBytes,
-                filename: `${input.side ?? "model"}.stl`,
+                model: upload.bytes,
+                filename: upload.filename,
                 infillDensityPct,
+                expectedRegionCount: upload.expectedRegionCount,
             });
             outputBytes = Buffer.from(gcode, "utf-8");
             outputType = "gcode";
@@ -352,6 +407,7 @@ export async function runSessionGenerateSolid(args: {
             exportId: result.exportId,
             tempStlKey,
         });
+        if (regionalTempKey) await io.deleteTemp(regionalTempKey);
 
         console.log("[manufacturing] generateSolid success", {
             userId: actorUserId,
@@ -378,6 +434,7 @@ export async function runSessionGenerateSolid(args: {
         };
     } catch (error) {
         await io.deleteTemp(tempStlKey);
+        if (regionalTempKey) await io.deleteTemp(regionalTempKey);
         throw error;
     }
 }

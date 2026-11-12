@@ -3,6 +3,7 @@ import { z } from "zod";
 import { DogfoodUserQuestion } from "../../../shared/dogfood-manufacturing.js";
 import { printRecipeV1Schema } from "../../../shared/print-recipe/print-recipe.js";
 import { SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
+import { vertexSliceRegional3mfEnabled } from "../../../shared/vertexslice-regional-3mf.js";
 import { assertCadOperatorGcodeKey, buildCadOperatorTempStlKey } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { getSupabaseAdmin } from "../context.js";
@@ -83,6 +84,12 @@ const manufactureInputSchema = z.object({
         .max(80)
         .regex(/^[\w .+\-/%()]+$/)
         .optional(),
+    /**
+     * Modifier 3MF. With the gate off this is a hard failure, not an STL slice.
+     * With the gate on it is required whenever expectedRegionCount is sent.
+     */
+    regional3mfStorageKey: z.string().min(1).max(500).optional(),
+    expectedRegionCount: z.number().int().min(1).max(64).optional(),
 });
 
 const uploadStlInputSchema = z.object({
@@ -289,6 +296,14 @@ export const manufacturingRouter = router({
 
             return { ok: true as const, stlUrl, storageKey: key };
         }),
+
+    /**
+     * Off until VertexSlice applies modifier_part. The browser asks before it
+     * builds a 3MF so a slicer that only accepts STL still receives today's request.
+     */
+    regional3mfEnabled: sessionOrCadOperatorProcedure("manufacturing:generate").query(() => {
+        return { enabled: vertexSliceRegional3mfEnabled() };
+    }),
 
     generateSolid: rateLimitedSessionOrCadProcedure(
         RATE_LIMITS.export,
