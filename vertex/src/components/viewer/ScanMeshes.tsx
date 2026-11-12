@@ -284,7 +284,9 @@ function RegisteredScanMesh({
                         transparent={false}
                         roughness={landmarkSurface?.roughness ?? 0.46}
                         metalness={0}
-                        vertexColors={Boolean(landmarkSurface?.vertexColors ?? heightmap && useVertexColors)}
+                        vertexColors={Boolean(
+                            landmarkSurface?.vertexColors ?? (heightmap && useVertexColors),
+                        )}
                         depthWrite
                     />
                 ) : (
