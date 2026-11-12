@@ -47,6 +47,21 @@ export function collectHardnessRegions(design: DesignState, side?: Side): Hardne
     return [...fromZones, ...fromElements];
 }
 
+/**
+ * Regions the hardness preview and every manufacturing 3MF actually apply.
+ *
+ * Element-derived rows (placed elements, and recipe rows with kind "element")
+ * count only while Split elements is on. Turning the toggle off keeps the
+ * hardness fields on the elements and drops those modifiers from the preview
+ * and from export. Explicit zones and freehand regions are not split-element
+ * modifiers, so they stay when the toggle is off.
+ */
+export function effectiveHardnessRegions(design: DesignState, side?: Side): HardnessRegion[] {
+    const regions = collectHardnessRegions(design, side);
+    if (design.splitElements === true) return regions;
+    return regions.filter((region) => region.kind !== "element");
+}
+
 export function findElement(design: DesignState, region: HardnessRegion): PlacedElement | undefined {
     if (region.kind !== "element") return undefined;
     const id = region.elementId ?? region.regionId;

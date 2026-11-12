@@ -20,7 +20,11 @@ import {
 } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
-import { defaultElementPose, elementPlacementRefusal } from "@/lib/geometry/elements";
+import {
+    defaultElementPose,
+    elementPlacementRefusal,
+    repositionLegacyFirstRayDesign,
+} from "@/lib/geometry/elements";
 import {
     migrateCorrections,
     migrateDesignSinks,
@@ -218,6 +222,7 @@ function defaultShapeFinishModifiers(method: ProductionMethod = "printing_solid"
 
 export function defaultDesign(): DesignState {
     return {
+        productType: "insole",
         pattern: "full_contact",
         method: "printing_solid",
         printRecipe: migratePrintRecipe(undefined),
@@ -247,7 +252,7 @@ export function defaultDesign(): DesignState {
  * the faired bottom pattern. Legacy Default.glb is never injected here.
  */
 export function createDesignWithStockPlaceholder(design?: DesignState): DesignState {
-    const d = replaceBuiltinDefaultWithSampleTop(design ?? defaultDesign());
+    const d = repositionLegacyFirstRayDesign(replaceBuiltinDefaultWithSampleTop(design ?? defaultDesign()));
     stockFixLog("createDesignWithStockPlaceholder() SAMPLE_Top pair", {
         leftName: d.paired?.leftBase?.name,
         rightName: d.paired?.rightBase?.name,
@@ -385,6 +390,10 @@ function upgradeStockBaseAsync(apply: () => Promise<void>, reason: string): void
  * Safe to call repeatedly — dedupes in-flight requests and re-runs after auth is ready.
  */
 export function ensureDefaultStockBaseResolved(): void {
+    if (useDesignStore.getState().design.productType === "afo") {
+        stockFixLog("ensureDefaultStockBaseResolved() skipped — AFO product");
+        return;
+    }
     if (!isApiConfigured()) {
         stockFixLog("ensureDefaultStockBaseResolved() skipped — API not configured");
         if (useDesignStore.getState().stockBaseLoading) {
@@ -1352,16 +1361,17 @@ export const useDesignStore = create<DesignStore>()(
                 useIssuesStore.getState().clear();
                 get().clearHistory(); // Loaded design becomes the new undo root.
                 // Sanitize on load so persisted or imported designs are always valid.
-                const r = constrainSideCorrections(incoming.corrections.left, incoming.thicknessMm);
-                const r2 = constrainSideCorrections(incoming.corrections.right, r.thicknessMm);
+                const placed = repositionLegacyFirstRayDesign(incoming);
+                const r = constrainSideCorrections(placed.corrections.left, placed.thicknessMm);
+                const r2 = constrainSideCorrections(placed.corrections.right, r.thicknessMm);
                 let safeDesign: DesignState = migrateDesignSinks({
-                    ...incoming,
-                    printRecipe: migratePrintRecipe(incoming.printRecipe),
+                    ...placed,
+                    printRecipe: migratePrintRecipe(placed.printRecipe),
                     thicknessMm: r.thicknessMm,
                     corrections: {
-                        ...incoming.corrections,
+                        ...placed.corrections,
                         left: r.constrained,
-                        right: incoming.corrections.linked ? r.constrained : r2.constrained,
+                        right: placed.corrections.linked ? r.constrained : r2.constrained,
                     },
                 });
                 // Legacy or parametric-only saved designs: inject SAMPLE_Top.
@@ -1659,6 +1669,19 @@ export const useDesignStore = create<DesignStore>()(
             },
             onRehydrateStorage: () => (state) => {
                 if (!state?.design) return;
+                if (state.design.productType === "afo") {
+                    const design = {
+                        ...state.design,
+                        corrections: migrateCorrections(state.design.corrections),
+                    };
+                    useDesignStore.setState({
+                        design,
+                        stockBaseError: null,
+                        stockBaseLoading: false,
+                        stockBaseResolutionState: "resolved",
+                    });
+                    return;
+                }
                 let design = migrateDesignSinks(
                     replaceBuiltinDefaultWithSampleTop(sanitizeDesignStockBases(state.design)),
                 );

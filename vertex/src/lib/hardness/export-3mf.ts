@@ -264,3 +264,89 @@ export async function readDesignFrom3mf(bytes: Uint8Array): Promise<{
     const designHash = sha256Utf8(designJson);
     return { designJson, designHash, embeddedHash };
 }
+
+function xmlUnescape(s: string): string {
+    return s
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"');
+}
+
+function meshFromObjectXml(body: string): TriangleMesh {
+    const positions: number[] = [];
+    const vertRe = /<vertex x="([^"]+)" y="([^"]+)" z="([^"]+)"\/>/g;
+    for (const match of body.matchAll(vertRe)) {
+        positions.push(Number(match[1]), Number(match[2]), Number(match[3]));
+    }
+    const indices: number[] = [];
+    const triRe = /<triangle v1="(\d+)" v2="(\d+)" v3="(\d+)"\/>/g;
+    for (const match of body.matchAll(triRe)) {
+        indices.push(Number(match[1]), Number(match[2]), Number(match[3]));
+    }
+    return { positions: new Float32Array(positions), indices: new Uint32Array(indices) };
+}
+
+export interface Packed3mfModifierPart {
+    id: string;
+    name: string;
+    density: string;
+    pattern: string;
+    priority: string;
+    hardnessClass: string;
+    lineWidth: string;
+    speed?: string;
+    depth: string;
+    mesh: TriangleMesh;
+}
+
+/** Shell is object id 2 (the manufacturing solid). Modifier parts follow file order. */
+export async function readPackedHardness3mf(bytes: Uint8Array): Promise<{
+    shell: TriangleMesh;
+    modifiers: Packed3mfModifierPart[];
+}> {
+    const zip = await JSZip.loadAsync(bytes);
+    const modelXmlText = await zip.file("3D/3dmodel.model")?.async("string");
+    const settingsXml = await zip.file("Metadata/model_settings.config")?.async("string");
+    if (!modelXmlText) throw new Error("3MF missing 3D/3dmodel.model");
+    if (!settingsXml) throw new Error("3MF missing Metadata/model_settings.config");
+
+    const objects = new Map<string, TriangleMesh>();
+    const objectRe = /<object id="(\d+)" type="model">([\s\S]*?)<\/object>/g;
+    for (const match of modelXmlText.matchAll(objectRe)) {
+        const id = match[1] ?? "";
+        const body = match[2] ?? "";
+        if (!body.includes("<mesh>")) continue;
+        objects.set(id, meshFromObjectXml(body));
+    }
+    const shell = objects.get("2");
+    if (!shell) throw new Error("3MF missing shell object id 2");
+
+    const modifiers: Packed3mfModifierPart[] = [];
+    const partRe = /<part id="(\d+)" subtype="([^"]+)">([\s\S]*?)<\/part>/g;
+    for (const match of settingsXml.matchAll(partRe)) {
+        const id = match[1] ?? "";
+        const subtype = match[2] ?? "";
+        if (subtype !== "modifier_part") continue;
+        const meta = new Map<string, string>();
+        const metaRe = /<metadata type="volume" key="([^"]+)" value="([^"]*)"\/>/g;
+        for (const item of (match[3] ?? "").matchAll(metaRe)) {
+            meta.set(item[1] ?? "", xmlUnescape(item[2] ?? ""));
+        }
+        const mesh = objects.get(id);
+        if (!mesh) throw new Error(`3MF modifier part ${id} has no mesh`);
+        modifiers.push({
+            id,
+            name: meta.get("name") ?? "",
+            density: meta.get("sparse_infill_density") ?? "",
+            pattern: meta.get("sparse_infill_pattern") ?? "",
+            priority: meta.get("priority") ?? "",
+            hardnessClass: meta.get("hardnessClass") ?? "",
+            lineWidth: meta.get("sparse_infill_line_width") ?? "",
+            speed: meta.get("sparse_infill_speed"),
+            depth: meta.get("depth") ?? "",
+            mesh,
+        });
+    }
+    return { shell, modifiers };
+}
