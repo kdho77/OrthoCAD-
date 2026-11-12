@@ -12,7 +12,6 @@ import {
     defaultAfoSideCorrection,
 } from "@/lib/geometry/afo/defaults";
 import { cloneMesh, orientMeshOutward, weldCoincidentVertices } from "@/lib/geometry/afo/mesh-ops";
-import { afoFlatPlateInputFields } from "@/lib/geometry/afo/shell-flatten";
 import { fitSurfaceSpline, reprojectTrimPins } from "@/lib/geometry/afo/trim-spline";
 import type { AfoClinicalMarkerId, AfoScanWorkflow, AfoTriMesh, AfoVec3 } from "@/lib/geometry/afo/types";
 import { useDesignStore } from "@/stores/design-store";
@@ -134,27 +133,6 @@ function mergeScanWorkflow(base: AfoScanWorkflow, extra?: AfoScanWorkflow): AfoS
         skippedLandmarks: extra.skippedLandmarks ?? base.skippedLandmarks ?? [],
         derived: extra.derived === undefined ? base.derived : extra.derived,
     };
-}
-
-/**
- * Shell inputs that include the mandatory forefoot plate.
- * A parallel shell-input fingerprint should spread this object in
- * beside cast, corrections, trim, and thickness.
- */
-export function afoShellInputFingerprint(afo = getAfoState()): string {
-    const plate = afoFlatPlateInputFields(afo);
-    return JSON.stringify({
-        cast: afo.cast,
-        corrections: afo.corrections,
-        trimClosed: afo.trimClosed,
-        trimConfirmed: afo.trimConfirmed,
-        trimCurve: afo.trimCurve,
-        thicknessMm: afo.print.thicknessMm,
-        edgeMm: afo.print.edgeMm,
-        flareMm: afo.print.flareMm,
-        material: afo.print.material,
-        flatten: plate,
-    });
 }
 
 export function patchAfoState(

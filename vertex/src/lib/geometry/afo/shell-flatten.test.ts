@@ -17,7 +17,9 @@ import {
     AFO_FOREFOOT_BLEND_MM,
     AFO_FOREFOOT_PLANAR_MM,
     afoFlatPlateInputFields,
+    assertFlatPlateAccepted,
     contactPlanesFromLandmarks,
+    FlatPlateRejected,
     flatPlateLockOf,
     flattenKeepSurface,
     heightAboveContact,
@@ -306,18 +308,30 @@ describe("flat plate solid", () => {
                 expect(report.bottomPlanarityMm, tag).toBeLessThanOrEqual(0.1);
                 expect(report.plateMinMm, tag).toBeGreaterThanOrEqual(thickness - 0.05);
                 expect(report.plateMaxMm, tag).toBeLessThanOrEqual(thickness + 0.05);
-                expect(report.minWallMm, tag).toBeGreaterThanOrEqual(1);
+                expect(
+                    report.minWallMm,
+                    `${tag} min wall ${report.minWallMm.toFixed(3)} mm >= edge ${AFO_EDGE_MM} mm`,
+                ).toBeGreaterThanOrEqual(AFO_EDGE_MM - 1e-3);
+                expect(report.excludedOuter, `${tag} excluded outer`).toBe(0);
+                expect(
+                    report.maxOuterAboveInnerMm,
+                    `${tag} max outer above inner ${report.maxOuterAboveInnerMm.toFixed(3)} mm`,
+                ).toBeLessThanOrEqual(0);
+                expect(report.rimAboveInner, `${tag} rim above inner`).toBe(0);
                 expect(report.footprintComponents, tag).toBe(1);
                 expect(report.footprintHoles, tag).toBe(0);
                 expect(report.footprintAreaMm2, tag).toBeGreaterThan(5000);
                 expect(report.toeLipMm, tag).toBeLessThanOrEqual(0.1);
-                expect(report.selfIntersections, tag).toBeLessThan(plainSi + 80);
+                expect(
+                    report.selfIntersections,
+                    `${tag} self-intersections ${report.selfIntersections} <= pre-flatten ${plainSi} (zero new pairs at >= 0.2 mm penetration)`,
+                ).toBeLessThanOrEqual(plainSi);
                 expect(lock!.planes.normal.z, tag).toBeGreaterThan(0.99);
                 let seatedBottom = 0;
                 let seatedN = 0;
                 const nv = built.flat.outerVertex0 ?? 0;
-                for (let i = 0; i < nv && i < lock!.sole.length; i++) {
-                    if (!lock!.sole[i]) continue;
+                for (let i = 0; i < nv && i < lock!.flat.length; i++) {
+                    if (!lock!.flat[i]) continue;
                     const ahead = signedAheadOfMetLine(point(built.flat, i), lock!.planes);
                     if (ahead < 1) continue;
                     seatedN++;
@@ -329,6 +343,34 @@ describe("flat plate solid", () => {
                 expect(seatedN, tag).toBeGreaterThan(8);
                 expect(seatedBottom, tag).toBeLessThanOrEqual(0.15);
             }
+        }
+    });
+
+    test("a finished shell thinner than the edge is rejected and the prior mesh is not replaced", () => {
+        const cast = buildCurledAfoCast("left", 28, 12);
+        const built = shellPair(cast.mesh, "left", cast, 5.5);
+        const prior = built.flat.positions.slice();
+        const lock = flatPlateLockOf(built.flat);
+        expect(lock).toBeTruthy();
+        assertFlatPlateAccepted(built.flat, lock!, AFO_EDGE_MM);
+        const n = built.flat.outerVertex0 ?? 0;
+        let victim = n;
+        for (let i = 0; i < n; i++) {
+            if (lock!.flat[i]) continue;
+            victim = n + i;
+            break;
+        }
+        built.flat.positions[victim * 3] = built.flat.positions[(victim - n) * 3] ?? 0;
+        built.flat.positions[victim * 3 + 1] = built.flat.positions[(victim - n) * 3 + 1] ?? 0;
+        built.flat.positions[victim * 3 + 2] = built.flat.positions[(victim - n) * 3 + 2] ?? 0;
+        expect(() => assertFlatPlateAccepted(built.flat, lock!, AFO_EDGE_MM)).toThrow(FlatPlateRejected);
+        expect(() => assertFlatPlateAccepted(built.flat, lock!, AFO_EDGE_MM)).toThrow(/minimum wall/i);
+        expect(() => assertFlatPlateAccepted(built.flat, lock!, AFO_EDGE_MM)).toThrow(
+            /previous shell was kept/i,
+        );
+        for (let i = 0; i < prior.length; i++) {
+            if (i >= victim * 3 && i < victim * 3 + 3) continue;
+            expect(built.flat.positions[i]).toBe(prior[i]);
         }
     });
 
@@ -384,11 +426,20 @@ describe("flat plate solid", () => {
             expect(report.bottomPlanarityMm, side).toBeLessThanOrEqual(0.1);
             expect(report.plateMinMm, side).toBeGreaterThanOrEqual(3.95);
             expect(report.plateMaxMm, side).toBeLessThanOrEqual(4.05);
-            expect(report.minWallMm, side).toBeGreaterThanOrEqual(AFO_EDGE_MM - 0.15);
+            expect(
+                report.minWallMm,
+                `${side} min wall ${report.minWallMm.toFixed(3)} mm >= edge ${AFO_EDGE_MM} mm`,
+            ).toBeGreaterThanOrEqual(AFO_EDGE_MM - 1e-3);
+            expect(report.excludedOuter, side).toBe(0);
+            expect(report.maxOuterAboveInnerMm, side).toBeLessThanOrEqual(0);
+            expect(report.rimAboveInner, side).toBe(0);
             expect(report.footprintComponents, side).toBe(1);
             expect(report.footprintHoles, side).toBe(0);
             expect(report.toeLipMm, side).toBeLessThanOrEqual(0.1);
-            expect(report.selfIntersections, side).toBeLessThan(plainSi + 250);
+            expect(
+                report.selfIntersections,
+                `${side} self-intersections ${report.selfIntersections} <= pre-flatten ${plainSi} (zero new pairs at >= 0.2 mm penetration)`,
+            ).toBeLessThanOrEqual(plainSi);
             let slope = 0;
             const n = flat.outerVertex0 ?? 0;
             const adj = new Map<number, number[]>();
@@ -481,7 +532,7 @@ describe("belt seat and leader", () => {
 });
 
 describe("shell input includes flattening", () => {
-    test("the fingerprint fields carry the tripod, the blend, and the selected thickness", () => {
+    test("flat-plate fields are the object PR #338's shell fingerprint should spread", () => {
         const afo = defaultAfoDesignState("right");
         afo.print.thicknessMm = 5.5;
         afo.print.edgeMm = 2;

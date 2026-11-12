@@ -137,8 +137,10 @@ export function flatPlateSpecFromAfo(afo: AfoDesignState, thicknessMm: number): 
 }
 
 /**
- * Fields the shell consumes for flattening. A shell-input fingerprint
- * (cast, corrections, trim, thickness) should spread this in.
+ * Flattening inputs (tripod, blend, thickness, edge). This branch does not
+ * define `afoShellInputFingerprint` — PR #338 owns that name in
+ * `shell-fingerprint.ts`. Spread this object into that hash under `flatPlate`
+ * when the two branches merge.
  */
 export function afoFlatPlateInputFields(afo: AfoDesignState): {
     enabled: true;
@@ -226,12 +228,17 @@ export function flattenKeepSurface(
     for (let i = 0; i < n; i++) {
         const h = height[i] ?? 0;
         const nd = ndot(i);
-        if (nd < -0.6 && h < 18 && h > -8) sole[i] = 1;
+        // The sole is the down-facing sheet within 10 mm of the contact plane.
+        // A wider band pulled the lower side wall onto the plate and folded its rim.
+        if (nd < -0.6 && h < 10 && h > -8) sole[i] = 1;
         if (!plantar[i]) continue;
         const a = ahead[i] ?? 0;
         if (a <= -blend || h > 42) continue;
         flat[i] = 1;
-        if (h < 14) sole[i] = 1;
+        // Every flattened vertex, including the curled toe that started high,
+        // gets an outer on the bottom plane. Gating on the pre-flatten height
+        // left those outers up on the offset and folded the rim.
+        sole[i] = 1;
         const t = a >= 0 ? 1 : smoothstep((a + blend) / blend);
         // The blend eases to the arch. A dip below the contact plane is filled, not kept.
         targetH[i] = a >= 0 ? 0 : Math.max(0, h * (1 - t));
@@ -262,9 +269,10 @@ export function reseatInnerForefoot(shell: AfoTriMesh, lock: FlatPlateLock): voi
 }
 
 /**
- * Inner forefoot back on its blend, sole outer skin on the bottom plane
- * (exactly one selected thickness below the contact plane), and the sole rim
- * pulled onto those rulings so the toe lip cannot stay curled.
+ * Inner forefoot back on its blend, every flattened vertex's outer skin on
+ * the bottom plane (exactly one selected thickness below the contact plane),
+ * and that vertex's rim pulled onto the new ruling so it cannot stay folded
+ * above the inner surface.
  */
 export function reseatFlatPlate(shell: AfoTriMesh, lock: FlatPlateLock): void {
     reseatInnerForefoot(shell, lock);
@@ -277,16 +285,147 @@ export function reseatFlatPlate(shell: AfoTriMesh, lock: FlatPlateLock): void {
         }
     }
     const bottom = -lock.planes.thicknessMm;
-    const limit = Math.min(n, lock.sole.length);
+    const up = lock.planes.normal;
+    const limit = Math.min(n, lock.sole.length, lock.flat.length);
+    const adj = adjacency(shell.indices, (shell.positions.length / 3) | 0);
+    let cx = 0;
+    let cy = 0;
+    let cnt = 0;
     for (let i = 0; i < limit; i++) {
-        if (!lock.sole[i]) continue;
+        if (!lock.flat[i]) continue;
+        cx += shell.positions[i * 3] ?? 0;
+        cy += shell.positions[i * 3 + 1] ?? 0;
+        cnt++;
+    }
+    cx = cnt ? cx / cnt : 0;
+    cy = cnt ? cy / cnt : 0;
+    for (let i = 0; i < limit; i++) {
+        if (!lock.sole[i] && !lock.flat[i]) continue;
         const inner = at(shell.positions, i);
         const drop = bottom - heightAboveContact(inner, lock.planes);
-        const up = lock.planes.normal;
+        let ox = inner.x + up.x * drop;
+        let oy = inner.y + up.y * drop;
+        let oz = inner.z + up.z * drop;
+        let edge = false;
+        for (const u of adj[i] ?? []) {
+            if (u >= n * 2 || (u < n && !lock.flat[u] && !lock.sole[u])) edge = true;
+        }
+        if (edge) {
+            let dx = inner.x - cx;
+            let dy = inner.y - cy;
+            let dz = inner.z - (cnt ? 0 : 0);
+            const along = dx * up.x + dy * up.y + dz * up.z;
+            dx -= up.x * along;
+            dy -= up.y * along;
+            dz -= up.z * along;
+            const hl = Math.hypot(dx, dy, dz) || 1;
+            const step = 1.5;
+            ox += (dx / hl) * step;
+            oy += (dy / hl) * step;
+            oz += (dz / hl) * step;
+        }
         const o = n + i;
-        shell.positions[o * 3] = inner.x + up.x * drop;
-        shell.positions[o * 3 + 1] = inner.y + up.y * drop;
-        shell.positions[o * 3 + 2] = inner.z + up.z * drop;
+        shell.positions[o * 3] = ox;
+        shell.positions[o * 3 + 1] = oy;
+        shell.positions[o * 3 + 2] = oz;
+    }
+    uncrossFlatPlate(shell, lock, n);
+    snapSoleRim(shell, lock, n);
+}
+
+/** Nudge flat vertices whose edges cross another flat triangle in the plate, inner and outer together. */
+function uncrossFlatPlate(shell: AfoTriMesh, lock: FlatPlateLock, n: number): void {
+    const uv = (i: number): [number, number] => {
+        const p = at(shell.positions, i);
+        const o = lock.planes.origin;
+        const dx = p.x - o.x;
+        const dy = p.y - o.y;
+        const dz = p.z - o.z;
+        return [
+            dx * lock.planes.forward.x + dy * lock.planes.forward.y + dz * lock.planes.forward.z,
+            dx * lock.planes.along.x + dy * lock.planes.along.y + dz * lock.planes.along.z,
+        ];
+    };
+    const cross = (ax: number, ay: number, bx: number, by: number) => ax * by - ay * bx;
+    const crosses = (a: [number, number], b: [number, number], c: [number, number], d: [number, number]) => {
+        const d1 = cross(b[0] - a[0], b[1] - a[1], c[0] - a[0], c[1] - a[1]);
+        const d2 = cross(b[0] - a[0], b[1] - a[1], d[0] - a[0], d[1] - a[1]);
+        const d3 = cross(d[0] - c[0], d[1] - c[1], a[0] - c[0], a[1] - c[1]);
+        const d4 = cross(d[0] - c[0], d[1] - c[1], b[0] - c[0], b[1] - c[1]);
+        return d1 * d2 < -1e-8 && d3 * d4 < -1e-8;
+    };
+    const faces: number[][] = [];
+    const t = (shell.indices.length / 3) | 0;
+    for (let f = 0; f < t; f++) {
+        const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+        if (vs.every((v) => v < n && lock.flat[v] === 1)) faces.push(vs);
+    }
+    const up = lock.planes.normal;
+    const used = new Set<number>();
+    let nudged = 0;
+    for (const vs of faces) {
+        const tri = vs.map((v) => uv(v));
+        const mx = (tri[0]![0] + tri[1]![0] + tri[2]![0]) / 3;
+        const my = (tri[0]![1] + tri[1]![1] + tri[2]![1]) / 3;
+        for (const edge of faces) {
+            if (edge.some((v) => vs.includes(v))) continue;
+            for (let e = 0; e < 3; e++) {
+                const i0 = edge[e]!;
+                const i1 = edge[(e + 1) % 3]!;
+                const a = uv(i0);
+                const b = uv(i1);
+                let hit = false;
+                for (let k = 0; k < 3; k++) {
+                    if (crosses(a, b, tri[k]!, tri[(k + 1) % 3]!)) hit = true;
+                }
+                if (!hit) continue;
+                const end = Math.hypot(a[0] - mx, a[1] - my) < Math.hypot(b[0] - mx, b[1] - my) ? i0 : i1;
+                if (used.has(end)) continue;
+                used.add(end);
+                const p = uv(end);
+                const dx = p[0] - mx;
+                const dy = p[1] - my;
+                const hl = Math.hypot(dx, dy) || 1;
+                const step = 0.45;
+                const wx = lock.planes.forward.x * (dx / hl) * step + lock.planes.along.x * (dy / hl) * step;
+                const wy = lock.planes.forward.y * (dx / hl) * step + lock.planes.along.y * (dy / hl) * step;
+                const wz = lock.planes.forward.z * (dx / hl) * step + lock.planes.along.z * (dy / hl) * step;
+                const along = wx * up.x + wy * up.y + wz * up.z;
+                for (const v of [end, n + end]) {
+                    shell.positions[v * 3] = (shell.positions[v * 3] ?? 0) + wx - up.x * along;
+                    shell.positions[v * 3 + 1] = (shell.positions[v * 3 + 1] ?? 0) + wy - up.y * along;
+                    shell.positions[v * 3 + 2] = (shell.positions[v * 3 + 2] ?? 0) + wz - up.z * along;
+                }
+                nudged++;
+                if (nudged > 4) return;
+            }
+        }
+    }
+}
+
+/**
+ * The toe-lip rim is built on the pre-plate ruling, so it can stay above the
+ * flattened inner after the outer drops to the bottom plane. Move only those
+ * raised rim vertices straight down (keeping their plan position) until they
+ * sit in the plate wall.
+ */
+function snapSoleRim(shell: AfoTriMesh, lock: FlatPlateLock, n: number): void {
+    const total = (shell.positions.length / 3) | 0;
+    if (total <= n * 2) return;
+    const adj = adjacency(shell.indices, total);
+    const bottom = -lock.planes.thicknessMm;
+    for (let v = n * 2; v < total; v++) {
+        let minH = Infinity;
+        for (const u of adj[v] ?? []) {
+            const i = u < n ? u : u < n * 2 ? u - n : -1;
+            if (i < 0 || !lock.flat[i]) continue;
+            minH = Math.min(minH, heightAboveContact(at(shell.positions, i), lock.planes));
+        }
+        if (!Number.isFinite(minH)) continue;
+        const h = heightAboveContact(at(shell.positions, v), lock.planes);
+        if (h <= minH + 0.02 || h > minH + lock.planes.thicknessMm + 4) continue;
+        const target = Math.max(bottom + 0.2, Math.min(minH - 0.05, (minH + bottom) * 0.5));
+        placeAtHeight(shell.positions, v, lock.planes, target);
     }
 }
 
@@ -306,6 +445,40 @@ export interface FlatPlateValidation {
     footprintAreaMm2: number;
     toeLipMm: number;
     soleCount: number;
+    /** Flattened vertices whose paired outer is off the bottom plane. */
+    excludedOuter: number;
+    /** Max (outer height − inner height) over flattened pairs. Positive means the outer is above the inner. */
+    maxOuterAboveInnerMm: number;
+    /** Rim vertices of a flattened ruling that sit above the paired inner. */
+    rimAboveInner: number;
+}
+
+/** Generate shell failed the finished-plate check. The caller must not replace the previous shell. */
+export class FlatPlateRejected extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "FlatPlateRejected";
+    }
+}
+
+/**
+ * Last construction check. Minimum wall is the edge thickness (1 µm of
+ * numeric room). Every flattened outer is on the bottom plane and none of
+ * them, nor their rim, sits above the paired inner. Throws so Generate shell
+ * can keep the previous shell.
+ */
+export function assertFlatPlateAccepted(shell: AfoTriMesh, lock: FlatPlateLock, edgeMm: number): void {
+    const stats = plateRegionStats(shell, lock, edgeMm);
+    if (stats.minWallMm < edgeMm - 1e-3) {
+        throw new FlatPlateRejected(
+            `Shell rejected: minimum wall is ${stats.minWallMm.toFixed(3)} mm, below the ${edgeMm.toFixed(3)} mm edge thickness. The previous shell was kept.`,
+        );
+    }
+    if (stats.excludedOuter > 0 || stats.maxOuterAboveInnerMm > 1e-3 || stats.rimAboveInner > 0) {
+        throw new FlatPlateRejected(
+            `Shell rejected: ${stats.excludedOuter} flattened forefoot vertices have outer geometry off the bottom plate (${stats.rimAboveInner} rim vertices above the inner surface, max outer above inner ${stats.maxOuterAboveInnerMm.toFixed(2)} mm). The previous shell was kept.`,
+        );
+    }
 }
 
 /** Closed-solid checks for the finished flat plate. Connectivity alone is not enough. */
@@ -316,6 +489,38 @@ export function validateFlatPlate(
 ): FlatPlateValidation {
     const report = analyzeManifoldBuffers(shell.positions, shell.indices);
     const winding = faceWinding(shell);
+    const stats = plateRegionStats(shell, lock, edgeMm);
+    const n = shell.outerVertex0 ?? 0;
+    const foot = soleFootprint(shell, lock, n);
+    return {
+        openEdges: report.openEdges,
+        nonManifoldEdges: report.nonManifoldEdges,
+        degenerateFaces: winding.degenerate,
+        invertedEdges: winding.inverted,
+        selfIntersections: countTriangleSelfIntersections(shell),
+        ...stats,
+        footprintComponents: foot.components,
+        footprintHoles: foot.holes,
+        footprintAreaMm2: foot.areaMm2,
+    };
+}
+
+function plateRegionStats(
+    shell: AfoTriMesh,
+    lock: FlatPlateLock,
+    edgeMm: number,
+): {
+    forefootPlanarityMm: number;
+    bottomPlanarityMm: number;
+    plateMinMm: number;
+    plateMaxMm: number;
+    minWallMm: number;
+    toeLipMm: number;
+    soleCount: number;
+    excludedOuter: number;
+    maxOuterAboveInnerMm: number;
+    rimAboveInner: number;
+} {
     const n = shell.outerVertex0 ?? 0;
     const planes = lock.planes;
     let fore = 0;
@@ -324,43 +529,61 @@ export function validateFlatPlate(
     let plateMax = 0;
     let toeLip = 0;
     let soleCount = 0;
+    let excludedOuter = 0;
+    let maxOuterAboveInnerMm = -Infinity;
     for (let i = 0; i < n && i < lock.flat.length; i++) {
+        if (lock.sole[i]) soleCount++;
+        if (!lock.flat[i]) continue;
         const inner = at(shell.positions, i);
         const ahead = signedAheadOfMetLine(inner, planes);
         const h = heightAboveContact(inner, planes);
-        if (lock.flat[i] && ahead > 0.5) {
+        if (ahead > 0.5) {
             fore = Math.max(fore, Math.abs(h));
             toeLip = Math.max(toeLip, Math.abs(h));
         }
-        if (!lock.sole[i]) continue;
-        soleCount++;
         const outer = at(shell.positions, n + i);
         const ho = heightAboveContact(outer, planes);
         const gap = h - ho;
+        // Every flattened outer, including ones the old sole mask skipped.
+        bottom = Math.max(bottom, Math.abs(ho + planes.thicknessMm));
+        if (Math.abs(ho + planes.thicknessMm) > 0.15) excludedOuter++;
+        maxOuterAboveInnerMm = Math.max(maxOuterAboveInnerMm, ho - h);
         if (ahead > 0.5 && Math.abs(h) < 0.4) {
-            bottom = Math.max(bottom, Math.abs(ho + planes.thicknessMm));
             plateMin = Math.min(plateMin, gap);
             plateMax = Math.max(plateMax, gap);
         }
     }
-    const foot = soleFootprint(shell, lock, n);
     return {
-        openEdges: report.openEdges,
-        nonManifoldEdges: report.nonManifoldEdges,
-        degenerateFaces: winding.degenerate,
-        invertedEdges: winding.inverted,
-        selfIntersections: countTriangleSelfIntersections(shell),
         forefootPlanarityMm: fore,
         bottomPlanarityMm: bottom,
         plateMinMm: Number.isFinite(plateMin) ? plateMin : 0,
         plateMaxMm: plateMax,
         minWallMm: minWallMm(shell, n, edgeMm),
-        footprintComponents: foot.components,
-        footprintHoles: foot.holes,
-        footprintAreaMm2: foot.areaMm2,
         toeLipMm: toeLip,
         soleCount,
+        excludedOuter,
+        maxOuterAboveInnerMm: Number.isFinite(maxOuterAboveInnerMm) ? maxOuterAboveInnerMm : 0,
+        rimAboveInner: countRimAboveInner(shell, lock, n),
     };
+}
+
+function countRimAboveInner(shell: AfoTriMesh, lock: FlatPlateLock, n: number): number {
+    const total = (shell.positions.length / 3) | 0;
+    if (n <= 0 || total <= n * 2) return 0;
+    const adj = adjacency(shell.indices, total);
+    let above = 0;
+    for (let v = n * 2; v < total; v++) {
+        let minH = Infinity;
+        for (const u of adj[v] ?? []) {
+            const i = u < n ? u : u < n * 2 ? u - n : -1;
+            if (i < 0 || !lock.flat[i]) continue;
+            minH = Math.min(minH, heightAboveContact(at(shell.positions, i), lock.planes));
+        }
+        if (!Number.isFinite(minH)) continue;
+        const ho = heightAboveContact(at(shell.positions, v), lock.planes);
+        if (ho > minH + 0.05 && ho <= minH + lock.planes.thicknessMm + 4) above++;
+    }
+    return above;
 }
 
 function faceWinding(shell: AfoTriMesh): { degenerate: number; inverted: number } {
@@ -405,8 +628,7 @@ function minWallMm(shell: AfoTriMesh, n: number, edgeMm: number): number {
     }
     let min = Infinity;
     const total = Math.min((shell.positions.length / 3) | 0, n * 2);
-    const step = total > 4000 ? 2 : 1;
-    for (let v = n; v < total; v += step) {
+    for (let v = n; v < total; v++) {
         const p = at(shell.positions, v);
         let best = Infinity;
         for (const f of innerFaces) {
@@ -472,7 +694,7 @@ function soleFootprint(
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
-    const onSole = (v: number) => v >= n && v < n * 2 && lock.sole[v - n] === 1;
+    const onSole = (v: number) => v >= n && v < n * 2 && (lock.flat[v - n] === 1 || lock.sole[v - n] === 1);
     for (let i = 0; i < t; i++) {
         const a = shell.indices[i * 3] ?? 0;
         const b = shell.indices[i * 3 + 1] ?? 0;

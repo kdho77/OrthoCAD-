@@ -32,20 +32,17 @@ describe("AFO flat plate review", () => {
             const lock = flatPlateLockOf(shell);
             expect(lock, side).toBeTruthy();
             const lift = lock!.planes.origin.z;
-            const original = samples(cast.mesh, () => true).map((p) => ({ x: p.x, y: p.y, z: p.z + lift }));
-            const n = shell.outerVertex0 ?? 0;
-            const inner = samples(shell, (_p, i) => i < n);
-            const outer = samples(shell, (_p, i) => i >= n && i < n * 2);
-            writePng(join(OUT, `${side}-side.png`), sideView(original, inner, outer));
             const metX = (cast.m1.x + cast.m5.x) / 2;
-            writePng(
-                join(OUT, `${side}-sections.png`),
-                sections(original, inner, outer, [28, 108, metX, 186]),
-            );
+            const sidePng = renderSide(cast.mesh, shell, lift);
+            const sectionPng = renderSections(cast.mesh, shell, lift, [28, 108, metX, 186]);
+            expect(filledPixels(sidePng), side).toBeGreaterThan(8000);
+            expect(filledPixels(sectionPng), side).toBeGreaterThan(1500);
+            writePng(join(OUT, `${side}-side.png`), sidePng);
+            writePng(join(OUT, `${side}-sections.png`), sectionPng);
         }
     });
 
-    test("the shell preset's first layer is one sole footprint, and G-code is produced", () => {
+    test("local slicer only: the shell preset's first layer is one sole footprint", () => {
         const cast = buildCurledAfoCast("left", 28, 12);
         const shell = buildAfoShell(cast.mesh, [0, 1, 2], {
             thicknessMm: 4,
@@ -77,7 +74,19 @@ describe("AFO flat plate review", () => {
         expect(gcode).toContain("G1");
         writeFileSync(
             join(OUT, "slice-first-layer.json"),
-            `${JSON.stringify({ ...layer, gcodeChars: gcode.length, preset: preset!.id, method: preset!.method }, null, 2)}\n`,
+            `${JSON.stringify(
+                {
+                    path: "local-slicer-only",
+                    productionVertexSlice: false,
+                    note: "Production G-code goes through generateHybridGcode to VertexSlice generateSolid. This record is the local Kiri slicer and is not production-belt-proven.",
+                    ...layer,
+                    gcodeChars: gcode.length,
+                    preset: preset!.id,
+                    method: preset!.method,
+                },
+                null,
+                2,
+            )}\n`,
         );
     });
 });
@@ -139,86 +148,201 @@ function nearest(mesh: AfoTriMesh, p: AfoVec3): AfoVec3 {
     };
 }
 
-function samples(mesh: AfoTriMesh, keep: (p: AfoVec3, i: number) => boolean): AfoVec3[] {
-    const n = (mesh.positions.length / 3) | 0;
-    const out: AfoVec3[] = [];
-    for (let i = 0; i < n; i++) {
-        const p = {
-            x: mesh.positions[i * 3] ?? 0,
-            y: mesh.positions[i * 3 + 1] ?? 0,
-            z: mesh.positions[i * 3 + 2] ?? 0,
-        };
-        if (keep(p, i)) out.push(p);
-    }
-    return out;
+type RGB = [number, number, number];
+type V3 = [number, number, number];
+
+function vert(mesh: AfoTriMesh, i: number, lift: number): V3 {
+    return [
+        mesh.positions[i * 3] ?? 0,
+        mesh.positions[i * 3 + 1] ?? 0,
+        (mesh.positions[i * 3 + 2] ?? 0) + lift,
+    ];
 }
 
-type Plot = { x: number; y: number; z: number };
-
-function sideView(original: Plot[], inner: Plot[], outer: Plot[]): PNG {
-    const png = blank(920, 420);
-    const foot = (p: Plot) => p.z < 55;
-    const map = scaler(
-        [...original, ...inner, ...outer].filter(foot),
-        (p) => p.x,
-        (p) => p.z,
-        40,
-        36,
-        860,
-        350,
-    );
-    dots(png, original.filter(foot), map, [170, 170, 170]);
-    dots(png, inner.filter(foot), map, [30, 90, 180]);
-    dots(png, outer.filter(foot), map, [20, 130, 70]);
+/** Side profile, camera looking along +Y. Original curl in gray, finished solid over it. */
+function renderSide(original: AfoTriMesh, finished: AfoTriMesh, lift: number): PNG {
+    const png = blank(960, 440);
+    const frame = boundsOf(original, finished, lift, 55);
+    paintMesh(png, original, lift, frame, [186, 190, 194], 55);
+    paintMesh(png, finished, 0, frame, [36, 92, 150], 55);
     return png;
 }
 
-function sections(original: Plot[], inner: Plot[], outer: Plot[], xs: number[]): PNG {
-    const png = blank(1100, 320);
-    const w = 260;
+/** Heel, arch, met heads, toe. Plane cuts of the original and the finished solid. */
+function renderSections(original: AfoTriMesh, finished: AfoTriMesh, lift: number, xs: number[]): PNG {
+    const png = blank(1200, 380);
+    const panel = 290;
     xs.forEach((x0, i) => {
-        const near = (p: Plot) => Math.abs(p.x - x0) < 6;
-        const all = [...original, ...inner, ...outer].filter(near);
-        const map = scaler(
-            all,
-            (p) => p.y,
-            (p) => p.z,
-            16 + i * w,
-            28,
-            w - 28,
-            270,
-        );
-        dots(png, original.filter(near), map, [160, 160, 160]);
-        dots(png, inner.filter(near), map, [30, 90, 180]);
-        dots(png, outer.filter(near), map, [20, 130, 70]);
+        const left = 16 + i * panel;
+        const segs = [...sectionSegments(original, lift, x0), ...sectionSegments(finished, 0, x0)];
+        let minY = Infinity;
+        let maxY = -Infinity;
+        let minZ = Infinity;
+        let maxZ = -Infinity;
+        for (const [a, b] of segs) {
+            minY = Math.min(minY, a[0], b[0]);
+            maxY = Math.max(maxY, a[0], b[0]);
+            minZ = Math.min(minZ, a[1], b[1]);
+            maxZ = Math.max(maxZ, a[1], b[1]);
+        }
+        if (!Number.isFinite(minY)) return;
+        const pad = 4;
+        minY -= pad;
+        maxY += pad;
+        minZ = Math.min(minZ, 0) - pad;
+        maxZ += pad;
+        const map = (y: number, z: number): [number, number] => [
+            left + ((y - minY) / Math.max(1, maxY - minY)) * (panel - 36),
+            24 + (1 - (z - minZ) / Math.max(1, maxZ - minZ)) * 320,
+        ];
+        for (const [a, b] of sectionSegments(original, lift, x0)) {
+            line(png, map(a[0], a[1]), map(b[0], b[1]), [168, 172, 176], 2);
+        }
+        for (const [a, b] of sectionSegments(finished, 0, x0)) {
+            line(png, map(a[0], a[1]), map(b[0], b[1]), [20, 110, 78], 3);
+        }
     });
     return png;
 }
 
-function scaler(
-    pts: Plot[],
-    fx: (p: Plot) => number,
-    fy: (p: Plot) => number,
-    left: number,
-    top: number,
-    width: number,
-    height: number,
-): (p: Plot) => [number, number] {
+function boundsOf(original: AfoTriMesh, finished: AfoTriMesh, lift: number, zMax: number) {
     let minX = Infinity;
     let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    for (const p of pts) {
-        const x = fx(p);
-        const y = fy(p);
-        minX = Math.min(minX, x);
-        maxX = Math.max(maxX, x);
-        minY = Math.min(minY, y);
-        maxY = Math.max(maxY, y);
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    const take = (mesh: AfoTriMesh, dz: number) => {
+        const n = (mesh.positions.length / 3) | 0;
+        for (let i = 0; i < n; i++) {
+            const z = (mesh.positions[i * 3 + 2] ?? 0) + dz;
+            if (z > zMax) continue;
+            const x = mesh.positions[i * 3] ?? 0;
+            minX = Math.min(minX, x);
+            maxX = Math.max(maxX, x);
+            minZ = Math.min(minZ, z);
+            maxZ = Math.max(maxZ, z);
+        }
+    };
+    take(original, lift);
+    take(finished, 0);
+    return { minX, maxX, minZ, maxZ };
+}
+
+function paintMesh(
+    png: PNG,
+    mesh: AfoTriMesh,
+    lift: number,
+    frame: ReturnType<typeof boundsOf>,
+    rgb: RGB,
+    zMax: number,
+) {
+    const tris: { y: number; p: [V3, V3, V3] }[] = [];
+    const faces = (mesh.indices.length / 3) | 0;
+    for (let f = 0; f < faces; f++) {
+        const p = [0, 1, 2].map((k) => vert(mesh, mesh.indices[f * 3 + k] ?? 0, lift)) as [V3, V3, V3];
+        const zc = (p[0][2] + p[1][2] + p[2][2]) / 3;
+        if (zc > zMax) continue;
+        tris.push({ y: (p[0][1] + p[1][1] + p[2][1]) / 3, p });
     }
-    const sx = width / Math.max(1, maxX - minX);
-    const sy = height / Math.max(1, maxY - minY);
-    return (p) => [left + (fx(p) - minX) * sx, top + height - (fy(p) - minY) * sy];
+    tris.sort((a, b) => a.y - b.y);
+    const sx = 880 / Math.max(1, frame.maxX - frame.minX);
+    const sy = 380 / Math.max(1, frame.maxZ - frame.minZ);
+    const project = (p: V3): [number, number] => [
+        40 + (p[0] - frame.minX) * sx,
+        24 + (frame.maxZ - p[2]) * sy,
+    ];
+    for (const tri of tris) {
+        const [a, b, c] = tri.p;
+        const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        const ny = e1[2]! * e2[0]! - e1[0]! * e2[2]!;
+        const nl = Math.hypot(e1[1]! * e2[2]! - e1[2]! * e2[1]!, ny, e1[0]! * e2[1]! - e1[1]! * e2[0]!);
+        const facing = nl > 1e-8 ? Math.abs(ny) / nl : 0.4;
+        const shade = 0.42 + 0.58 * facing;
+        fillTri(png, project(a), project(b), project(c), [
+            Math.round(rgb[0] * shade),
+            Math.round(rgb[1] * shade),
+            Math.round(rgb[2] * shade),
+        ]);
+    }
+}
+
+function sectionSegments(
+    mesh: AfoTriMesh,
+    lift: number,
+    x0: number,
+): Array<[[number, number], [number, number]]> {
+    const out: Array<[[number, number], [number, number]]> = [];
+    const faces = (mesh.indices.length / 3) | 0;
+    for (let f = 0; f < faces; f++) {
+        const p = [0, 1, 2].map((k) => vert(mesh, mesh.indices[f * 3 + k] ?? 0, lift)) as [V3, V3, V3];
+        const hits: [number, number][] = [];
+        for (let e = 0; e < 3; e++) {
+            const a = p[e]!;
+            const b = p[(e + 1) % 3]!;
+            const da = a[0] - x0;
+            const db = b[0] - x0;
+            if (da === 0 && db === 0) continue;
+            if (da * db > 0) continue;
+            const den = da - db;
+            if (Math.abs(den) < 1e-12) continue;
+            const t = da / den;
+            if (t < -1e-6 || t > 1 + 1e-6) continue;
+            hits.push([a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]);
+        }
+        if (hits.length >= 2) out.push([hits[0]!, hits[1]!]);
+    }
+    return out;
+}
+
+function fillTri(png: PNG, a: [number, number], b: [number, number], c: [number, number], rgb: RGB) {
+    const pts = [a, b, c].sort((p, q) => p[1] - q[1]);
+    const y0 = Math.max(0, Math.ceil(pts[0]![1]));
+    const y1 = Math.min(png.height - 1, Math.floor(pts[2]![1]));
+    for (let y = y0; y <= y1; y++) {
+        const long = span(pts[0]!, pts[2]!, y);
+        const short = y < pts[1]![1] ? span(pts[0]!, pts[1]!, y) : span(pts[1]!, pts[2]!, y);
+        const x0 = Math.max(0, Math.ceil(Math.min(long, short)));
+        const x1 = Math.min(png.width - 1, Math.floor(Math.max(long, short)));
+        for (let x = x0; x <= x1; x++) plot(png, x, y, rgb);
+    }
+}
+
+function span(a: [number, number], b: [number, number], y: number): number {
+    const dy = b[1] - a[1];
+    if (Math.abs(dy) < 1e-6) return a[0];
+    return a[0] + ((y - a[1]) / dy) * (b[0] - a[0]);
+}
+
+function line(png: PNG, a: [number, number], b: [number, number], rgb: RGB, width: number) {
+    const steps = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1])));
+    for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const x = a[0] + (b[0] - a[0]) * t;
+        const y = a[1] + (b[1] - a[1]) * t;
+        for (let dy = -width; dy <= width; dy++) {
+            for (let dx = -width; dx <= width; dx++) {
+                if (dx * dx + dy * dy > width * width) continue;
+                plot(png, Math.round(x + dx), Math.round(y + dy), rgb);
+            }
+        }
+    }
+}
+
+function plot(png: PNG, x: number, y: number, rgb: RGB) {
+    if (x < 0 || y < 0 || x >= png.width || y >= png.height) return;
+    const i = (y * png.width + x) * 4;
+    png.data[i] = rgb[0];
+    png.data[i + 1] = rgb[1];
+    png.data[i + 2] = rgb[2];
+    png.data[i + 3] = 255;
+}
+
+function filledPixels(png: PNG): number {
+    let n = 0;
+    for (let i = 0; i < png.data.length; i += 4) {
+        if (png.data[i] !== 255 || png.data[i + 1] !== 255 || png.data[i + 2] !== 255) n++;
+    }
+    return n;
 }
 
 function blank(width: number, height: number): PNG {
@@ -230,33 +354,6 @@ function blank(width: number, height: number): PNG {
         png.data[i + 3] = 255;
     }
     return png;
-}
-
-function dots(
-    png: PNG,
-    pts: Plot[],
-    map: (p: Plot) => [number, number],
-    rgb: [number, number, number],
-): void {
-    for (const p of pts) {
-        const [x, y] = map(p);
-        stamp(png, x, y, rgb);
-    }
-}
-
-function stamp(png: PNG, x: number, y: number, rgb: [number, number, number]): void {
-    for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-            const px = Math.round(x + dx);
-            const py = Math.round(y + dy);
-            if (px < 0 || py < 0 || px >= png.width || py >= png.height) continue;
-            const i = (py * png.width + px) * 4;
-            png.data[i] = rgb[0];
-            png.data[i + 1] = rgb[1];
-            png.data[i + 2] = rgb[2];
-            png.data[i + 3] = 255;
-        }
-    }
 }
 
 function writePng(path: string, png: PNG): void {

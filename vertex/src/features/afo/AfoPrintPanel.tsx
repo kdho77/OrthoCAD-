@@ -82,6 +82,7 @@ export function AfoPrintPanel() {
             patchAfoState({ shellReady: true }, "afo-shell");
             setProgress(null);
         } catch (e) {
+            // Rejection throws before setShell, so the previous shell stays.
             setError(e instanceof Error ? e.message : "Shell failed");
             setProgress(null);
         }
