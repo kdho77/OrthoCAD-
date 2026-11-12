@@ -1193,7 +1193,12 @@ function enforceShellClearance(
         const dOpen = distOpen(ix, iy, iz);
         const linear = edgeMm + (thicknessMm - edgeMm) * clamp01(dOpen / AFO_RIM_BAND_MM);
         const pinned = dOpen <= 0.4 || dOpen >= AFO_RIM_BAND_MM;
-        const target = Math.max(edgeMm + 0.08, pinned ? (dOpen <= 0.4 ? edgeMm : thicknessMm) : linear);
+        const base = pinned ? (dOpen <= 0.4 ? edgeMm : thicknessMm) : linear;
+        // The plain shell keeps the original edge target. A plate pass has
+        // to land on the edge after the sole is seated, so it aims slightly
+        // past the edge and will not stop short of it.
+        const platePass = hold != null;
+        const target = platePass ? Math.max(edgeMm + 0.08, base) : base;
         let px = shell.positions[(n + i) * 3] ?? 0;
         let py = shell.positions[(n + i) * 3 + 1] ?? 0;
         let pz = shell.positions[(n + i) * 3 + 2] ?? 0;
@@ -1201,12 +1206,18 @@ function enforceShellClearance(
         const oy = py - iy;
         const oz = pz - iz;
         let gap = proj.closest({ x: px, y: py, z: pz }).errorMm;
-        const off = gap < edgeMm - 1e-3 || (pinned ? Math.abs(gap - target) > 0.08 : gap < target - 0.08);
+        const off = platePass
+            ? gap < edgeMm - 1e-3 || (pinned ? Math.abs(gap - target) > 0.08 : gap < target - 0.08)
+            : pinned
+              ? Math.abs(gap - target) > 0.08
+              : gap < target - 0.08;
         if (!off) continue;
-        for (let k = 0; k < 8; k++) {
+        for (let k = 0; k < (platePass ? 8 : 5); k++) {
             const hit = proj.closest({ x: px, y: py, z: pz });
             gap = hit.errorMm;
-            if (gap >= edgeMm && (gap + 1e-3 >= target || Math.abs(gap - target) <= 0.04)) break;
+            if (platePass) {
+                if (gap >= edgeMm && (gap + 1e-3 >= target || Math.abs(gap - target) <= 0.04)) break;
+            } else if (Math.abs(gap - target) <= 0.04) break;
             let vx = px - hit.point.x;
             let vy = py - hit.point.y;
             let vz = pz - hit.point.z;
@@ -1218,7 +1229,7 @@ function enforceShellClearance(
                 vl = Math.hypot(vx, vy, vz) || 1;
             }
             const sign = vx * ox + vy * oy + vz * oz >= 0 ? 1 : -1;
-            const aim = Math.max(target, edgeMm + 0.08);
+            const aim = platePass ? Math.max(target, edgeMm + 0.08) : target;
             px = hit.point.x + (vx / vl) * sign * aim;
             py = hit.point.y + (vy / vl) * sign * aim;
             pz = hit.point.z + (vz / vl) * sign * aim;
