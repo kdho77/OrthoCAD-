@@ -4,6 +4,13 @@
 
 import { TRPCError } from "@trpc/server";
 import {
+    type Actor,
+    ClientFileError,
+    type ClientFileRepo,
+    type DesignRow,
+    getDesignFile,
+} from "../../../shared/client-files.js";
+import {
     gyroidInfillPctForHardness,
     isGyroidManufacturingPreset,
     migratePrintRecipe,
@@ -59,8 +66,31 @@ export interface SessionChargeResult {
     jobId: string;
 }
 
+/**
+ * Same door as design.save: getDesignFile → canAccessOrg.
+ * Tenant match or super_admin may export a design they did not create.
+ * A missing design and a different-tenant read both stay FORBIDDEN.
+ * License and token charge stay on the exporting user; this function does not charge.
+ */
+export async function assertDesignExportAccess(
+    repo: ClientFileRepo,
+    actor: Actor,
+    designId: string,
+    deniedMessage = "Design not found or access denied",
+): Promise<DesignRow> {
+    try {
+        return await getDesignFile(repo, actor, designId);
+    } catch (error) {
+        if (error instanceof ClientFileError && (error.code === "NOT_FOUND" || error.code === "FORBIDDEN")) {
+            throw new TRPCError({ code: "FORBIDDEN", message: deniedMessage });
+        }
+        throw error;
+    }
+}
+
 export interface SessionManufacturingIo {
     assertActiveLicense(userId: string): Promise<void>;
+    /** Org access for designId, not designs.ownerId === userId. */
     verifyDesignOwner(designId: string, userId: string): Promise<void>;
     getTokenBalance(userId: string): Promise<number>;
     storageAvailable(): boolean;
