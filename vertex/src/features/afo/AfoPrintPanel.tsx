@@ -20,6 +20,7 @@ import {
     currentAfoShellFingerprint,
     useAfoShellCurrent,
 } from "@/lib/geometry/afo/shell-fingerprint";
+import { applyAfoTrimCleanup } from "@/lib/geometry/afo/trim-cleanup";
 import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import type { AfoTriMesh } from "@/lib/geometry/afo/types";
 import { evaluateAfoWarnings } from "@/lib/geometry/afo/warnings";
@@ -137,6 +138,16 @@ export function AfoPrintPanel() {
                     ))}
                 </select>
             </label>
+            <button
+                type="button"
+                disabled={!working || afo.trimPoints.length < 2}
+                className="h-8 w-full rounded-md border border-border bg-background disabled:opacity-40"
+                onClick={() => {
+                    applyAfoTrimCleanup();
+                }}
+            >
+                Clean up
+            </button>
             <button
                 type="button"
                 onClick={() => void generate()}

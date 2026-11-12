@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { AFO_DESIGN_MARKERS } from "@/lib/geometry/afo/defaults";
 import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
+import { applyAfoTrimCleanup } from "@/lib/geometry/afo/trim-cleanup";
 import { loopNearZ, validateTrimLoop } from "@/lib/geometry/afo/trim-loop";
 import { AFO_TRIM_NO_MESH } from "@/lib/geometry/afo/trim-preview";
 import { balanceBracePins, fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
@@ -259,6 +260,16 @@ export function AfoDesignPanel() {
                     onClick={closeLoop}
                 >
                     Close loop
+                </button>
+                <button
+                    type="button"
+                    disabled={!working || afo.trimPoints.length < 2}
+                    className="h-8 w-full rounded-md border border-border bg-background disabled:opacity-40"
+                    onClick={() => {
+                        applyAfoTrimCleanup();
+                    }}
+                >
+                    Clean up
                 </button>
                 <button
                     type="button"
