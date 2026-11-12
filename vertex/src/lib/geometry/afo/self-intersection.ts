@@ -87,6 +87,19 @@ function triTri(V: number[][], U: number[][]): boolean {
     const du = U.map((p) => dot(N1, p) + d1);
     if (sameSign(du[0]!, du[1]!, du[2]!)) return false;
     const N2 = normal(U[0]!, U[1]!, U[2]!);
+    const n1 = Math.hypot(N1[0]!, N1[1]!, N1[2]!);
+    const n2 = Math.hypot(N2[0]!, N2[1]!, N2[2]!);
+    const cx = N1[1]! * N2[2]! - N1[2]! * N2[1]!;
+    const cy = N1[2]! * N2[0]! - N1[0]! * N2[2]!;
+    const cz = N1[0]! * N2[1]! - N1[1]! * N2[0]!;
+    if (
+        n1 > 1e-12 &&
+        n2 > 1e-12 &&
+        Math.hypot(cx, cy, cz) <= 1e-5 * n1 * n2 &&
+        du.every((d) => Math.abs(d) < 0.02)
+    ) {
+        return false;
+    }
     const d2 = -dot(N2, U[0]!);
     const dv = V.map((p) => dot(N2, p) + d2);
     if (sameSign(dv[0]!, dv[1]!, dv[2]!)) return false;

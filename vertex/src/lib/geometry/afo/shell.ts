@@ -17,6 +17,7 @@ import {
     rememberFlatPlate,
     reseatFlatPlate,
     reseatInnerForefoot,
+    seatBottomPlaneAtZ0,
 } from "./shell-flatten";
 import {
     boundaryLoops,
@@ -77,6 +78,7 @@ export function buildAfoShell(
     straightenFeatureLoops(shell);
     if (plate) {
         reseatFlatPlate(shell, plate);
+        plate.planes = seatBottomPlaneAtZ0(shell, plate.planes);
         rememberFlatPlate(shell, plate);
     }
     options.onProgress?.(1, "done");

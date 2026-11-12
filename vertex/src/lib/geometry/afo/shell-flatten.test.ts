@@ -2,6 +2,11 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { medialSign } from "@/lib/geometry/handedness";
+import {
+    applySacrificialLeaderBlock,
+    binaryStlBounds,
+    binaryStlTriangleCount,
+} from "@/lib/geometry/leader-block";
 import { analyzeManifoldBuffers } from "@/lib/geometry/manifold-core";
 import type { Side } from "@/types";
 import { buildCurledAfoCast, buildCurledSoleSheet, curledSoleZ, soleSheetBoundary } from "./curled-afo-cast";
@@ -16,6 +21,7 @@ import {
     flatPlateLockOf,
     flattenKeepSurface,
     heightAboveContact,
+    seatBottomPlaneAtZ0,
     signedAheadOfMetLine,
     validateFlatPlate,
 } from "./shell-flatten";
@@ -198,12 +204,9 @@ describe("generate-shell inner forefoot", () => {
             const cast = buildCurledAfoCast(side, 28, 12);
             const built = shellPair(cast.mesh, side, cast, 4);
             const n = built.flat.outerVertex0 ?? 0;
-            const planes = contactPlanesFromLandmarks({
-                heel: cast.heel,
-                m1: cast.m1,
-                m5: cast.m5,
-                thicknessMm: 4,
-            });
+            const planes = flatPlateLockOf(built.flat)?.planes;
+            expect(planes, side).toBeTruthy();
+            expect(planes!.normal.z, side).toBeGreaterThan(0.99);
             let forward = 0;
             let worst = 0;
             for (let i = 0; i < n; i++) {
@@ -245,7 +248,14 @@ describe("generate-shell inner forefoot", () => {
                 flatPlate: { ...marks, thicknessMm: 4 },
             });
             const plain = buildAfoShell(leg, [0, 1, 2], common);
+            const seated = flatPlateLockOf(flat)?.planes;
+            expect(seated, side).toBeTruthy();
             const planes = contactPlanesFromLandmarks({ ...marks, thicknessMm: 4 });
+            const plainSeated = {
+                positions: new Float32Array(plain.positions),
+                indices: plain.indices,
+            };
+            seatBottomPlaneAtZ0(plainSeated, planes);
             const n = Math.min(flat.outerVertex0 ?? 0, plain.outerVertex0 ?? 0);
             let upper = 0;
             let upperMoved = 0;
@@ -256,12 +266,13 @@ describe("generate-shell inner forefoot", () => {
                 const q = point(plain, i);
                 if (q.z > 90) {
                     upper++;
-                    upperMoved = Math.max(upperMoved, Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z));
+                    const s = point(plainSeated, i);
+                    upperMoved = Math.max(upperMoved, Math.hypot(p.x - s.x, p.y - s.y, p.z - s.z));
                 }
                 const ahead = signedAheadOfMetLine(q, planes);
                 if (ahead > 4 && q.z < 40) {
                     const before = Math.abs(heightAboveContact(q, planes));
-                    const after = Math.abs(heightAboveContact(p, planes));
+                    const after = Math.abs(heightAboveContact(p, seated!));
                     if (before > 2) {
                         toeCurl++;
                         toeFlat = Math.max(toeFlat, after);
@@ -301,6 +312,22 @@ describe("flat plate solid", () => {
                 expect(report.footprintAreaMm2, tag).toBeGreaterThan(5000);
                 expect(report.toeLipMm, tag).toBeLessThanOrEqual(0.1);
                 expect(report.selfIntersections, tag).toBeLessThan(plainSi + 80);
+                expect(lock!.planes.normal.z, tag).toBeGreaterThan(0.99);
+                let seatedBottom = 0;
+                let seatedN = 0;
+                const nv = built.flat.outerVertex0 ?? 0;
+                for (let i = 0; i < nv && i < lock!.sole.length; i++) {
+                    if (!lock!.sole[i]) continue;
+                    const ahead = signedAheadOfMetLine(point(built.flat, i), lock!.planes);
+                    if (ahead < 1) continue;
+                    seatedN++;
+                    seatedBottom = Math.max(
+                        seatedBottom,
+                        Math.abs(built.flat.positions[(nv + i) * 3 + 2] ?? 0),
+                    );
+                }
+                expect(seatedN, tag).toBeGreaterThan(8);
+                expect(seatedBottom, tag).toBeLessThanOrEqual(0.15);
             }
         }
     });
@@ -398,15 +425,57 @@ describe("flat plate solid", () => {
             let malleoli = 0;
             let moved = 0;
             const limit = Math.min(n, plain.outerVertex0 ?? 0);
+            const plainSeated = {
+                positions: new Float32Array(plain.positions),
+                indices: plain.indices,
+            };
+            seatBottomPlaneAtZ0(plainSeated, contactPlanesFromLandmarks({ ...marks, thicknessMm: 4 }));
             for (let i = 0; i < limit; i++) {
                 const q = point(plain, i);
                 if (q.z < 55 || q.z > 110 || q.x > 70) continue;
                 malleoli++;
                 const p = point(flat, i);
-                moved = Math.max(moved, Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z));
+                const s = point(plainSeated, i);
+                moved = Math.max(moved, Math.hypot(p.x - s.x, p.y - s.y, p.z - s.z));
             }
             expect(malleoli, side).toBeGreaterThan(4);
             expect(moved, side).toBeLessThan(0.6);
+        }
+    });
+});
+
+describe("belt seat and leader", () => {
+    test("the seated leg takes a leader at the toe and is measured against the belt", () => {
+        const bed = { x: 300, y: 100000, z: 200 };
+        for (const side of ["left", "right"] as const) {
+            const leg = buildLiveFrameLeg(side, 18);
+            const marks = legTripod(leg, side);
+            const afo = defaultAfoDesignState(side);
+            afo.landmarks = [{ id: "distal", point: marks.distal, vertexIndex: 0 }];
+            const placed = posteriorLeafPins(leg, afo);
+            const fit = fitSurfaceSpline(leg, placed.pins, { closed: true, quick: true });
+            expect(fit.ok, fit.reasons.join(" | ")).toBe(true);
+            const shell = buildAfoShell(leg, [0, 1, 2], {
+                thicknessMm: 4,
+                edgeMm: AFO_EDGE_MM,
+                flareMm: 0,
+                trimPolygon: trimPolygonForShell(fit.curve, true) ?? undefined,
+                heelSeed: marks.heel,
+                flatPlate: { ...marks, thicknessMm: 4 },
+            });
+            const solid = meshBinaryStl(shell);
+            const withLeader = applySacrificialLeaderBlock(solid);
+            const solidTris = binaryStlTriangleCount(solid);
+            const uploadTris = binaryStlTriangleCount(withLeader);
+            const bounds = binaryStlBounds(withLeader);
+            const ySpan = bounds.maxY - bounds.minY;
+            const zSpan = bounds.maxZ - bounds.minZ;
+            expect(uploadTris, side).toBeGreaterThan(solidTris);
+            expect(bounds.minZ, side).toBeGreaterThanOrEqual(-0.05);
+            expect(bounds.minZ, side).toBeLessThanOrEqual(0.2);
+            expect(ySpan, side).toBeLessThan(bed.x);
+            expect(zSpan, side).toBeGreaterThan(4);
+            expect(bounds.maxX, side).toBeGreaterThan(binaryStlBounds(solid).maxX);
         }
     });
 });
@@ -430,6 +499,32 @@ describe("shell input includes flattening", () => {
         expect(fields.m5).toEqual({ x: 7, y: 8, z: 9 });
     });
 });
+
+function meshBinaryStl(mesh: AfoTriMesh): ArrayBuffer {
+    const t = (mesh.indices.length / 3) | 0;
+    const buf = new ArrayBuffer(84 + t * 50);
+    const view = new DataView(buf);
+    view.setUint32(80, t, true);
+    let o = 84;
+    const w = (x: number) => {
+        view.setFloat32(o, x, true);
+        o += 4;
+    };
+    for (let i = 0; i < t; i++) {
+        w(0);
+        w(0);
+        w(0);
+        for (let k = 0; k < 3; k++) {
+            const v = mesh.indices[i * 3 + k] ?? 0;
+            w(mesh.positions[v * 3] ?? 0);
+            w(mesh.positions[v * 3 + 1] ?? 0);
+            w(mesh.positions[v * 3 + 2] ?? 0);
+        }
+        view.setUint16(o, 0, true);
+        o += 2;
+    }
+    return buf;
+}
 
 function flattenSide(side: Side): {
     archKept: number;
