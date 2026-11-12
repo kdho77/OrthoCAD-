@@ -29,6 +29,7 @@ rs.mock("@react-three/fiber", () => ({
     // to export only Canvas, so those renders threw "useThree is not a function".
     useThree: (selector?: (state: typeof fiberState) => unknown) =>
         typeof selector === "function" ? selector(fiberState) : fiberState,
+    useFrame: () => {},
 }));
 rs.mock("@react-three/drei", () => ({ OrbitControls: () => null, Html: () => null }));
 rs.mock("./BaseInsoleMesh", () => ({ BaseInsoleMesh: () => null }));
