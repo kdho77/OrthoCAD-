@@ -264,6 +264,7 @@
                 "vertex/src/lib/geometry/procedural-wall/export-parity.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/outline-clean.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/print-solid-compose.test.ts",
+                "vertex/src/lib/geometry/procedural-wall/solid-thickness-raise.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/ring-seam.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/stations.test.ts",
                 "vertex/src/lib/geometry/scan-marker-target.test.ts",
