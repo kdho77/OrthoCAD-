@@ -4,6 +4,35 @@ import { useEffect, useMemo } from "react";
 import { DoubleSide, MeshStandardMaterial, PointsMaterial } from "three";
 import { type AfoPointCloudShader, patchAfoPointCloudShaders } from "@/features/afo/afo-scan-ui";
 
+/** Slightly darker than {@link AFO_CAST_SURFACE} so relief reads under raking light. */
+export const AFO_LANDMARK_LIT_SURFACE_COLOR = "#C5CAD2";
+export const AFO_LANDMARK_LIT_ROUGHNESS = 0.68;
+
+export type AfoScanLandmarkLitSurfaceSpec = {
+    materialKind: "afo-lit-surface";
+    color: string;
+    opacity: 1;
+    transparent: false;
+    roughness: number;
+    metalness: 0;
+    vertexColors: boolean;
+    depthWrite: true;
+};
+
+/** Opaque shaded mesh for AFO marker placement — never point sprites or transparency. */
+export function afoScanLandmarkLitSurfaceSpec(vertexColors = false): AfoScanLandmarkLitSurfaceSpec {
+    return {
+        materialKind: "afo-lit-surface",
+        color: AFO_LANDMARK_LIT_SURFACE_COLOR,
+        opacity: 1,
+        transparent: false,
+        roughness: AFO_LANDMARK_LIT_ROUGHNESS,
+        metalness: 0,
+        vertexColors,
+        depthWrite: true,
+    };
+}
+
 /**
  * Lit AFO scan/cast surface. Flips the normal on the back face so a left-side
  * view is shaded instead of a black shell. Insole materials do not use this.

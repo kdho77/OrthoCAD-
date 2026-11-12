@@ -24,7 +24,10 @@ import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
 import { getScanRegistrationMatrix, useScanStore } from "@/stores/scan-store";
-import { AfoLitSurfaceMaterial } from "./AfoSurfaceMaterial";
+import {
+    AfoLitSurfaceMaterial,
+    afoScanLandmarkLitSurfaceSpec,
+} from "./AfoSurfaceMaterial";
 
 const CLINICIAN_MARKER_COLOR = "#f59e0b";
 const ARCH_MARKER_COLOR = "#d946ef";
@@ -224,6 +227,9 @@ function RegisteredScanMesh({
     const displayGeo = coloredGeo ?? depthGeo ?? geometry;
     const useVertexColors = !!coloredGeo || !!depthGeo;
     const afoSolidLook = Boolean(afoGreyScan) || Boolean(afoKeepSolid);
+    const afoLandmarkShaded =
+        afoGreyScan && placingMarkers && !heightmap && !coloredGeo && !depthGeo;
+    const landmarkSurface = afoLandmarkShaded ? afoScanLandmarkLitSurfaceSpec(false) : null;
     const usMenSize = useDesignStore((s) => s.design.usMenSize);
     const sizeSystem = useDesignStore((s) => s.design.sizeSystem);
     const ukSize = useDesignStore((s) => s.design.ukSize);
@@ -267,12 +273,18 @@ function RegisteredScanMesh({
             >
                 {afoSolidLook ? (
                     <AfoLitSurfaceMaterial
-                        color={heightmap && useVertexColors ? "#ffffff" : AFO_CAST_SURFACE}
+                        color={
+                            landmarkSurface
+                                ? landmarkSurface.color
+                                : heightmap && useVertexColors
+                                  ? "#ffffff"
+                                  : AFO_CAST_SURFACE
+                        }
                         opacity={1}
                         transparent={false}
-                        roughness={0.46}
+                        roughness={landmarkSurface?.roughness ?? 0.46}
                         metalness={0}
-                        vertexColors={Boolean(heightmap && useVertexColors)}
+                        vertexColors={Boolean(landmarkSurface?.vertexColors ?? heightmap && useVertexColors)}
                         depthWrite
                     />
                 ) : (
