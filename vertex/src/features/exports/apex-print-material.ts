@@ -16,9 +16,6 @@ export type VertexSliceMaterialId = "apex_core" | "apex_light" | "apex_forge" | 
  */
 export const APEX_CORE_NOZZLE_TEMP_C = 225;
 
-/** Apex Forge is Apex Core with this approved nozzle delta (VertexSlice `apex_forge`). */
-export const APEX_FORGE_NOZZLE_TEMP_C = 245;
-
 /**
  * Apex Bounce is Apex Core with these approved deltas.
  * Speed is a factor of Core's print speeds. Core's mm/s value is not invented here.
@@ -61,8 +58,7 @@ export { APEX_V2_INSOLE_LOCKED_PROFILE_ID };
  * Apex Forge process contract from draft PR #265
  * (branch cursor/enable-apex-forge-for-clinical-export-... @ fc3e4aa4adc0e6adcfe0c5a1d2b3a2f52db12c64)
  * and the VertexSlice `apex_forge` registry: nozzle 245°C, bed off (0°C), no wall-loop override.
- * Forge stays disabled in {@link APEX_PRINT_MATERIAL_OPTIONS}. OrthoCAD does not send these
- * numbers on `/v1/slice`; VertexSlice applies them from the material id.
+ * OrthoCAD does not send these numbers on `/v1/slice`; VertexSlice applies them from the material id.
  */
 export const APEX_FORGE_NOZZLE_TEMP_C = 245;
 export const APEX_FORGE_BED_TEMP_C = 0;
