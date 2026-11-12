@@ -45,6 +45,11 @@ export const RKW_WIDTH_OF_LOCAL = 0.32;
 export const RKW_DEEPEST_PROXIMAL_MM = 3;
 export const RKW_MAX_OVERHANG_MM = 2;
 export const RKW_TAPER_MM = 6;
+/**
+ * Distal and proximal ends only. A 32 mm quintic, the same feather Morton's
+ * uses on its heel side. The long sides stay on {@link RKW_TAPER_MM}.
+ */
+export const RKW_END_FEATHER_MM = 32;
 export const RKW_MEDIAL_RAMP_MM = 5;
 export const RKW_BORDER_DEPTH_FRACTION = 0.5;
 export const RKW_DEPTH_DEFAULT_MM = 2;
@@ -271,13 +276,30 @@ function smoothstep01(t: number): number {
     return x * x * (3 - 2 * x);
 }
 
-/** Ellipse weight. 1 inside, smoothstep to 0 across `taperMm` outside. */
+/** C2 quintic. Value, slope, and curvature are 0 at both 0 and 1. */
+function quintic01(t: number): number {
+    const x = t <= 0 ? 0 : t >= 1 ? 1 : t;
+    return x * x * x * (x * (x * 6 - 15) + 10);
+}
+
+/**
+ * Ellipse weight. 1 inside the oval. Long sides keep the 6 mm smoothstep.
+ * Distal and proximal ends feather with a 32 mm quintic so the trough meets
+ * the top instead of dropping in like a pocket. A pure side sample
+ * (`localX === 0`) is unchanged.
+ */
 export function rkwOvalWeight(localX: number, localY: number, halfLength: number, halfWidth: number): number {
-    const r = Math.hypot(localX / Math.max(halfLength, 1e-6), localY / Math.max(halfWidth, 1e-6));
+    const hl = Math.max(halfLength, 1e-6);
+    const hw = Math.max(halfWidth, 1e-6);
+    const ax = Math.abs(localX) / hl;
+    const ay = Math.abs(localY) / hw;
+    const r = Math.hypot(ax, ay);
     if (r <= 1) return 1;
-    const excess = (r - 1) * Math.max(halfLength, halfWidth);
-    if (excess >= RKW_TAPER_MM) return 0;
-    return 1 - smoothstep01(excess / RKW_TAPER_MM);
+    const excess = (r - 1) * Math.max(hl, hw);
+    const sideW = excess >= RKW_TAPER_MM ? 0 : 1 - smoothstep01(excess / RKW_TAPER_MM);
+    const endW = excess >= RKW_END_FEATHER_MM ? 0 : 1 - quintic01(excess / RKW_END_FEATHER_MM);
+    const mix = quintic01(ax / Math.max(ax + ay, 1e-12));
+    return sideW * (1 - mix) + endW * mix;
 }
 
 export function kineticWedgeLocalOutline(
