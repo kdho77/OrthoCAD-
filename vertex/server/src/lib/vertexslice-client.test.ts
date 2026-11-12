@@ -287,6 +287,66 @@ describe("VertexSlice printer G-code client", () => {
         expect(form.get("material")).toBe("apex_light");
         expect(form.get("wall_loops")).toBeNull();
     });
+
+    test("a slice timeout logs mesh bytes, triangles, bounds, and the manifold check", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const errors: unknown[] = [];
+        const spy = rs.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+            errors.push(args);
+        });
+        installFetch((url, init) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_light"]), { status: 200 });
+            }
+            return new Promise<Response>((_resolve, reject) => {
+                init.signal?.addEventListener(
+                    "abort",
+                    () =>
+                        reject(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+                    { once: true },
+                );
+            });
+        });
+        const model = triangleStl([0, 0, 0, 120, 0, 0, 0, 40, 8]);
+        await expect(
+            sliceWithVertexSlice({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_light",
+                model,
+                sliceTimeoutMs: 40,
+                side: "left",
+            }),
+        ).rejects.toThrow("VertexSlice timed out after 1s (left)");
+        expect(errors.flat()).toContain("[vertexslice] mesh at timeout");
+        const stats = errors
+            .flat()
+            .find((item) => item && typeof item === "object" && "triangles" in item) as {
+            bytes: number;
+            triangles: number;
+            bbox: { minX: number; maxX: number };
+            manifold: { openEdges: number };
+        };
+        expect(stats.bytes).toBe(model.byteLength);
+        expect(stats.triangles).toBe(1);
+        expect(stats.bbox.maxX).toBeGreaterThan(stats.bbox.minX);
+        expect(stats.manifold.openEdges).toBeGreaterThan(0);
+        spy.mockRestore();
+    });
+
+    test("a mesh past the belt plate is refused before any slicer call", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const calls = installFetch(() => new Response("nope", { status: 500 }));
+        await expect(
+            sliceWithVertexSlice({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_light",
+                model: triangleStl([600, 0, 0, 600.2, 0, 0, 600, 0.2, 0]),
+            }),
+        ).rejects.toThrow(/Manufacturing mesh is not sliceable/);
+        expect(calls).toHaveLength(0);
+    });
 });
 
 function triangleStl(verts: number[]): Uint8Array {
