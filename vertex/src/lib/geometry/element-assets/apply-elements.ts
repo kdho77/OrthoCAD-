@@ -206,7 +206,11 @@ async function applyAssetContext(
         const x = arr[i * 3]!;
         const y = arr[i * 3 + 1]!;
         const { u, vSigned } = vertexFootprintAt(frame, uvArr, i);
-        const rim = rimBandFadeFactor(u, vSigned, field);
+        // Cluffy's GLB already feathers to z = 0 on its own border (sidecar
+        // featherMm is 0). The print-rim quintic starts at 55% of the local
+        // half-width and zeros that hallux edge, so the solid pad sits inboard
+        // of the preview. Keep the authored footprint out to the sheet edge.
+        const rim = ctx.placed.kind === "cluffy_wedge" ? 1 : rimBandFadeFactor(u, vSigned, field);
         if (rim <= 1e-9) continue;
         const { lx, ly } = localCoordsFlow(x, y, anchor.x, anchor.y, ctx.transform.rotationDeg);
         const assetH = sampleGridBilinear(grid, lx, ly);

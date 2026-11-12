@@ -1,8 +1,25 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
-import { Euler, Vector3 } from "three";
-import type { ElementKind, PlacedElement } from "@/types";
+import { type BufferGeometry, Euler, Vector3 } from "three";
+import {
+    BASE_REFERENCE_THICKNESS_MM,
+    getBaseFootprintFrame,
+    vertexFootprintAt,
+} from "@/lib/geometry/base-modifier";
+import { applyElementsToTopMeshLast, rimBandFadeFactor } from "@/lib/geometry/element-assets/apply-elements";
+import {
+    loadTransformedAssetPositions,
+    resolvePlacedAssetContexts,
+} from "@/lib/geometry/element-assets/element-asset";
+import { sampleGridBilinear } from "@/lib/geometry/element-assets/height-grid";
+import { anchorMmFromPlacement } from "@/lib/geometry/element-assets/no-flow-blend";
+import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import { sampleTopFromArrayBuffer } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import { mirrorGeometry } from "@/lib/library/loaders";
+import type { ElementKind, PlacedElement, Side, SideCorrections } from "@/types";
 import {
     defaultElementPose,
     ELEMENT_HEIGHT_LIMITS,
@@ -13,6 +30,8 @@ import {
     elementPlacementRefusal,
     loweringMaterialWarning,
     REMAINING_MATERIAL_MM,
+    RKW_END_FEATHER_MM,
+    RKW_TAPER_MM,
     repositionLegacyFirstRayDesign,
     rkwPlanMm,
 } from "./elements";
@@ -40,7 +59,7 @@ import {
     mortonsProximalU,
     mortonsWeightAtUV,
 } from "./mortons-extension";
-import { insoleLayoutForUsMenSize } from "./shoe-size";
+import { insoleLayoutForUsMenSize, scaleGeometryToInsoleSize } from "./shoe-size";
 import { SINK_PROFILES } from "./sink";
 import { instanceWorldPosition, projectViewNdcX } from "./viewport-side-layout";
 
@@ -619,4 +638,208 @@ describe("anatomical element footprints", () => {
         const again = repositionLegacyFirstRayDesign(design);
         expect(again.elements.map((el) => el.position)).toEqual(design.elements.map((el) => el.position));
     });
+
+    test("kinetic wedge long sides stay on the 6 mm taper and both ends use the 32 mm quintic", () => {
+        const smooth = (t: number) => {
+            const x = t <= 0 ? 0 : t >= 1 ? 1 : t;
+            return x * x * (3 - 2 * x);
+        };
+        for (const men of [9, 15] as const) {
+            const layout = insoleLayoutForUsMenSize(men);
+            for (const side of ["left", "right"] as const) {
+                const edge = mortonsEdgeMm(0.665, layout.widthMm, side);
+                const span = Math.abs(edge.lateral - edge.medial);
+                const plan = rkwPlanMm(layout.lengthMm, span);
+                const halfL = plan.lengthMm / 2;
+                const halfW = plan.widthMm / 2;
+                const pose = defaultElementPose("kinetic_wedge", side, layout.lengthMm, layout.widthMm);
+                const el: PlacedElement = {
+                    id: `kw-${men}-${side}`,
+                    kind: "kinetic_wedge",
+                    side,
+                    ...pose,
+                    heightMm: 4,
+                };
+                const anchorX = layout.lengthMm / 2 + pose.position.x;
+                const y0 = heightFieldYFromMeshY(pose.position.y);
+                const depthAt = (dx: number, dy = 0) =>
+                    -elementHeightAt([el], anchorX + dx, y0 + dy, layout.lengthMm, layout.widthMm);
+                expect(depthAt(0)).toBeCloseTo(4, 1);
+                expect(depthAt(halfL - 1)).toBeGreaterThan(3.6);
+                expect(depthAt(-(halfL - 1))).toBeGreaterThan(3.6);
+                expect(depthAt(halfL + 6)).toBeGreaterThan(3.2);
+                expect(depthAt(-(halfL + 6))).toBeGreaterThan(3.2);
+                expect(depthAt(halfL + RKW_END_FEATHER_MM)).toBeLessThan(0.1);
+                expect(depthAt(-(halfL + RKW_END_FEATHER_MM))).toBeLessThan(0.1);
+                const h = 0.5;
+                for (const dir of [1, -1]) {
+                    const edgeX = dir * halfL;
+                    const at = (d: number) => depthAt(edgeX + dir * d);
+                    let maxSlope = 0;
+                    let maxSecond = 0;
+                    for (let d = 0; d <= RKW_END_FEATHER_MM; d += 1) {
+                        const slope = (at(d + h) - at(d - h)) / (2 * h);
+                        const second = (at(d + h) - 2 * at(d) + at(d - h)) / (h * h);
+                        maxSlope = Math.max(maxSlope, Math.abs(slope));
+                        maxSecond = Math.max(maxSecond, Math.abs(second));
+                    }
+                    expect(Math.abs((at(h) - at(-h)) / (2 * h))).toBeLessThan(0.08);
+                    expect(maxSlope).toBeLessThan(0.3);
+                    expect(maxSecond).toBeLessThan(0.12);
+                }
+                const legacySide = (pastMm: number) => {
+                    const ly = halfW + pastMm;
+                    const r = ly / halfW;
+                    const excess = (r - 1) * Math.max(halfL, halfW);
+                    if (excess >= RKW_TAPER_MM) return 0;
+                    return 4 * (1 - smooth(excess / RKW_TAPER_MM));
+                };
+                const lateralDy = -meshYSign(side, "lateral") * (halfW + 2);
+                expect(depthAt(0, lateralDy)).toBeCloseTo(legacySide(2), 2);
+                const pastSide = -meshYSign(side, "lateral") * (halfW + RKW_TAPER_MM + 1);
+                expect(depthAt(0, pastSide)).toBeLessThan(0.08);
+            }
+        }
+    });
+});
+
+const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
+
+function zeroCluffyCorrections(): SideCorrections {
+    return {
+        forefootPostingDeg: 0,
+        rearfootPostingDeg: 0,
+        medialSkiveMm: 0,
+        lateralSkiveMm: 0,
+        archFillMm: 0,
+        archHeightMm: 0,
+        archEaseMm: 0,
+        heelCupDepthMm: 0,
+        heelCupHeightMm: 0,
+        heelCupWidthMm: 0,
+        heelLiftMm: 0,
+        apexMoveMm: 0,
+        medialFlangeMm: 0,
+        lateralFlangeMm: 0,
+    };
+}
+
+async function loadStockTop(side: Side): Promise<BufferGeometry> {
+    const buf = readFileSync(SAMPLE_TOP_PATH);
+    let raw = await sampleTopFromArrayBuffer(
+        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+    );
+    if (side === "left") {
+        const mirrored = mirrorGeometry(raw);
+        raw.dispose();
+        raw = mirrored;
+    }
+    return raw;
+}
+
+describe("solid Cluffy footprint", () => {
+    test("stays flush with the preview on M9 and M15, both feet", async () => {
+        const native = await loadStockTop("right");
+        const nativeFrame = getBaseFootprintFrame(native, "right");
+        const m9 = insoleLayoutForUsMenSize(9);
+        const m15 = insoleLayoutForUsMenSize(15);
+        const ratio = m15.lengthMm / m9.lengthMm;
+        const sized = new Map<number, { lengthMm: number; widthMm: number }>([
+            [9, { lengthMm: nativeFrame.lenSize, widthMm: nativeFrame.widSize }],
+            [
+                15,
+                {
+                    lengthMm: nativeFrame.lenSize * ratio,
+                    widthMm: nativeFrame.widSize * ratio,
+                },
+            ],
+        ]);
+        native.dispose();
+        for (const men of [9, 15] as const) {
+            const target = sized.get(men)!;
+            for (const side of ["left", "right"] as const) {
+                const stock = await loadStockTop(side);
+                const mesh =
+                    men === 9 ? stock : scaleGeometryToInsoleSize(stock, target.lengthMm, target.widthMm);
+                if (mesh !== stock) stock.dispose();
+                const frame = getBaseFootprintFrame(mesh, side);
+                const pose = defaultElementPose(
+                    "cluffy_wedge",
+                    side,
+                    m9.lengthMm * (men === 15 ? ratio : 1),
+                    m9.widthMm * (men === 15 ? ratio : 1),
+                );
+                const placed: PlacedElement = {
+                    id: `cluffy-${men}-${side}`,
+                    kind: "cluffy_wedge",
+                    side,
+                    ...pose,
+                };
+                const field: HeightFieldParams = {
+                    side,
+                    lengthMm: frame.lenSize,
+                    widthMm: frame.widSize,
+                    thicknessMm: BASE_REFERENCE_THICKNESS_MM,
+                    corrections: zeroCluffyCorrections(),
+                    elements: [placed],
+                    includeSkives: false,
+                    includeElements: true,
+                    trimline: null,
+                };
+                const plain = mesh.clone();
+                const solid = mesh.clone();
+                await applyElementsToTopMeshLast(solid, mesh, field, { subdivide: false });
+                const ctx = await resolvePlacedAssetContexts(
+                    [placed],
+                    side,
+                    field.lengthMm,
+                    field.widthMm,
+                    mesh,
+                );
+                expect(ctx.length).toBe(1);
+                const { grid } = await loadTransformedAssetPositions(ctx[0]!.assetId, ctx[0]!.transform);
+                const anchor = anchorMmFromPlacement(mesh, side, placed.position.x, placed.position.y);
+                const sign = meshYSign(side, "medial");
+                const medial = (y: number) => (y - frame.widCenter) * sign;
+                const pa = plain.getAttribute("position")!.array as Float32Array;
+                const pb = solid.getAttribute("position")!.array as Float32Array;
+                const ta = frame.thickAxis;
+                const threshold = 0.08;
+                let preview = -Infinity;
+                let solidM = -Infinity;
+                let faded = -Infinity;
+                let previewX = frame.lenMin + frame.lenSize * 0.77;
+                for (let i = 0; i < pa.length / 3; i++) {
+                    const x = pa[i * 3]!;
+                    const y = pa[i * 3 + 1]!;
+                    const h = sampleGridBilinear(grid, x - anchor.x, y - anchor.y);
+                    const lift = pb[i * 3 + ta]! - pa[i * 3 + ta]!;
+                    const m = medial(y);
+                    const { u, vSigned } = vertexFootprintAt(frame, pa, i);
+                    const fadedH = h * rimBandFadeFactor(u, vSigned, field);
+                    if (h > threshold && m > preview) {
+                        preview = m;
+                        previewX = x;
+                    }
+                    if (lift > threshold && m > solidM) solidM = m;
+                    if (fadedH > threshold && m > faded) faded = m;
+                }
+                let rim = -Infinity;
+                for (let i = 0; i < pa.length / 3; i++) {
+                    if (Math.abs(pa[i * 3]! - previewX) > 4) continue;
+                    rim = Math.max(rim, medial(pa[i * 3 + 1]!));
+                }
+                expect(preview).toBeGreaterThan(0);
+                expect(solidM).toBeGreaterThan(0);
+                expect(Math.abs(preview - solidM)).toBeLessThan(2);
+                expect(rim - solidM).toBeLessThan(3.5);
+                expect(rim - solidM).toBeGreaterThan(-0.5);
+                expect(preview - faded).toBeGreaterThan(2);
+                expect(Math.sign(placed.position.y)).toBe(sign);
+                plain.dispose();
+                solid.dispose();
+                mesh.dispose();
+            }
+        }
+    }, 180_000);
 });

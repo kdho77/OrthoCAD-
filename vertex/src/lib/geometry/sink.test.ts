@@ -20,6 +20,7 @@ import {
     LATERAL_WALL_MIN_MM,
     PLATEAU_GAP_MM,
     plateauGapMm,
+    RKW_END_FEATHER_MM,
     SINK_DEFAULT_DEPTH_MM,
     SINK_KIND_ORDER,
     SINK_PROFILES,
@@ -897,6 +898,82 @@ describe("sink scalar field", () => {
         expect(tiny.rimMarginMm).toBeLessThan(STYLOID_RIM_OVERRIDE_FLOOR_MM);
         expect(tiny.rimBlocked).toBe(true);
         expect(tiny.rimWarning?.code).toBe("rim-hard-stop");
+    });
+
+    test("reverse kinetic wedge ends feather over 32 mm and the oval stays put on M9 and M15", () => {
+        const depths = new Map<number, number>();
+        const lengths = new Map<number, number>();
+        for (const menSize of [9, 15] as const) {
+            const layout = insoleLayoutForUsMenSize(menSize);
+            for (const side of SIDES) {
+                const depth = 4;
+                const sink = placed("rkw", depth);
+                const ctx = surface(menSize, side, [sink]);
+                const frame = sinkFrame(sink, ctx)!;
+                expect(frame.blendMm).toBe(SINK_PROFILES.rkw.blendMm);
+                expect(frame.u).toBeCloseTo(SINK_PROFILES.rkw.u, 3);
+                expect(frame.v).toBeGreaterThan(0.1);
+                expect(frame.v).toBeLessThan(0.25);
+                expect(frame.cx / layout.lengthMm).toBeCloseTo(SINK_PROFILES.rkw.u, 3);
+                const floor = sinkCutMm(frame.dx, frame.dy, ctx).mm;
+                expect(floor).toBeCloseTo(depth, 2);
+                expect(sinkThicknessMm(frame.dx, frame.dy, ctx) - floor).toBeGreaterThanOrEqual(0.5 - 1e-3);
+                const inside = sinkCutMm(
+                    frame.dx + frame.tx * (frame.aDist - 1),
+                    frame.dy + frame.ty * (frame.aDist - 1),
+                    ctx,
+                ).mm;
+                expect(inside).toBeGreaterThan(depth * 0.95);
+                const cut = (s: number) =>
+                    sinkCutMm(frame.dx + frame.tx * s, frame.dy + frame.ty * s, ctx).mm;
+                for (const edge of [frame.aDist, -frame.aProx]) {
+                    const dir = Math.sign(edge) || 1;
+                    const at = (dMm: number) => cut(edge + dir * dMm);
+                    expect(at(0)).toBeGreaterThan(depth * 0.95);
+                    expect(at(6)).toBeGreaterThan(depth * 0.8);
+                    expect(at(RKW_END_FEATHER_MM)).toBeLessThan(0.08);
+                    expect(at(RKW_END_FEATHER_MM + 3)).toBeLessThan(0.05);
+                    const h = 0.5;
+                    let maxSlope = 0;
+                    let maxSecond = 0;
+                    for (let d = 0; d <= RKW_END_FEATHER_MM; d += 1) {
+                        const s0 = edge + dir * d;
+                        const slope = (cut(s0 + dir * h) - cut(s0 - dir * h)) / (2 * h);
+                        const second = (cut(s0 + h) - 2 * cut(s0) + cut(s0 - h)) / (h * h);
+                        maxSlope = Math.max(maxSlope, Math.abs(slope));
+                        maxSecond = Math.max(maxSecond, Math.abs(second));
+                    }
+                    expect(Math.abs((at(h) - at(-h)) / (2 * h))).toBeLessThan(0.08);
+                    expect(
+                        Math.abs((at(RKW_END_FEATHER_MM + h) - at(RKW_END_FEATHER_MM - h)) / (2 * h)),
+                    ).toBeLessThan(0.08);
+                    expect(maxSlope).toBeLessThan(0.3);
+                    expect(maxSecond).toBeLessThan(0.12);
+                }
+                const lateral = (dMm: number) =>
+                    sinkCutMm(
+                        frame.dx + frame.nx * (frame.bLat + dMm),
+                        frame.dy + frame.ny * (frame.bLat + dMm),
+                        ctx,
+                    ).mm;
+                expect(lateral(0)).toBeGreaterThan(depth * 0.9);
+                expect(lateral(3)).toBeGreaterThan(depth * 0.15);
+                expect(lateral(3)).toBeLessThan(depth * 0.9);
+                expect(lateral(7.5)).toBeLessThan(0.08);
+                depths.set(menSize, floor);
+                lengths.set(menSize, frame.halfLengthMm);
+            }
+            const left = sinkFrame(placed("rkw", 4, "L"), surface(menSize, "left", [placed("rkw", 4, "L")]))!;
+            const right = sinkFrame(
+                placed("rkw", 4, "R"),
+                surface(menSize, "right", [placed("rkw", 4, "R")]),
+            )!;
+            expect(right.halfLengthMm).toBeCloseTo(left.halfLengthMm, 3);
+            expect(right.halfWidthMm).toBeCloseTo(left.halfWidthMm, 3);
+            expect(right.cx).toBeCloseTo(left.cx, 3);
+        }
+        expect(lengths.get(15)).toBeGreaterThan(lengths.get(9)!);
+        expect(depths.get(15)).toBeCloseTo(depths.get(9)!, 2);
     });
 
     test("migrateDesignSinks leaves a missing list and splits a legacy array per side", () => {
