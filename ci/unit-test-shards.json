@@ -295,6 +295,7 @@
                 "vertex/src/lib/clinical/one-click-recipe.test.ts",
                 "vertex/src/lib/geometry/afo/afo-flat-review.test.ts",
                 "vertex/src/lib/geometry/afo/afo-scan-pick.test.ts",
+                "vertex/src/lib/geometry/afo/flat-plate-trim.test.ts",
                 "vertex/src/lib/geometry/afo/marker-side-world.test.ts",
                 "vertex/src/lib/geometry/afo/trim-drag.test.ts",
                 "vertex/src/lib/geometry/base-modifier.test.ts",
