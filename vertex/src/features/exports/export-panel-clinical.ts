@@ -163,19 +163,27 @@ export async function exportClinicalPrinterGcode(input: {
         return { ok: false, reason: `This order has no ${input.feet ?? input.side} foot to export.` };
     }
     const many = feet.length > 1;
+    if (input.shouldAbort?.()) {
+        return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
+    }
+    const results = await Promise.all(
+        feet.map(async (foot) => {
+            const options = {
+                apexMaterialId,
+                includeLeaderBlock: input.includeLeaderBlock !== false,
+                deferDownload: true,
+                shouldAbort: input.shouldAbort,
+                onProgress: (step: string) =>
+                    input.onProgress?.(many ? `${SIDE_LABELS[foot]}: ${step}` : step),
+            };
+            return {
+                foot,
+                res: await generateHybridGcode(foot, preset, grindingStyle, overrides, options),
+            };
+        }),
+    );
     const built: { side: Side; filename: string; blob: Blob }[] = [];
-    for (const foot of feet) {
-        if (input.shouldAbort?.()) {
-            return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
-        }
-        const options = {
-            apexMaterialId,
-            includeLeaderBlock: input.includeLeaderBlock !== false,
-            deferDownload: true,
-            shouldAbort: input.shouldAbort,
-            onProgress: (step: string) => input.onProgress?.(many ? `${SIDE_LABELS[foot]}: ${step}` : step),
-        };
-        const res = await generateHybridGcode(foot, preset, grindingStyle, overrides, options);
+    for (const { foot, res } of results) {
         if (res.cancelled || input.shouldAbort?.()) {
             return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
         }

@@ -847,7 +847,18 @@ export async function loadBaseGeometry(
         });
 
         try {
-            const group = await loadGlbFromUrl(fetchUrl);
+            const signedRead = classifyStockUrl(fetchUrl) === "signed";
+            const group = signedRead
+                ? await (async () => {
+                      const response = await fetch(fetchUrl, { cache: "no-store" });
+                      if (!response.ok) {
+                          throw new StockGlbLoadError(fetchUrl, new Error(`HTTP ${response.status}`));
+                      }
+                      const buffer = await response.arrayBuffer();
+                      const { loadGlbFromBuffer } = await import("@/lib/library/loaders");
+                      return loadGlbFromBuffer(buffer);
+                  })()
+                : await loadGlbFromUrl(fetchUrl);
             const merged = await mergeLoadedGlbGroup(group, options);
             geo = merged?.geometry ?? null;
             if (!geo) {

@@ -2,6 +2,7 @@
 // Session-user generateSolid. Same synchronous charge-then-upload result as before.
 // CAD-operator calls do not enter this function.
 
+import { gunzipSync } from "node:zlib";
 import { TRPCError } from "@trpc/server";
 import {
     type Actor,
@@ -101,6 +102,14 @@ export async function assertDesignExportAccess(
         }
         throw error;
     }
+}
+
+/** Storage may hold client gzip; VertexSlice still sees the original STL bytes. */
+export function decodeManufacturingUploadBytes(bytes: Uint8Array): Uint8Array {
+    if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+        return gunzipSync(bytes);
+    }
+    return bytes;
 }
 
 export interface SessionManufacturingIo {
@@ -259,7 +268,7 @@ export async function runSessionGenerateSolid(args: {
                 resolvedPrintRecipe.defaultHardness,
                 resolvedPrintRecipe.hardnessToInfillPct,
             );
-            const stlBytes = await io.downloadStl(stlUrl);
+            const stlBytes = decodeManufacturingUploadBytes(await io.downloadStl(stlUrl));
             const regionalGate = vertexSliceRegional3mfEnabled();
             const claimedCount = input.expectedRegionCount;
             const claimedRegions = claimedCount !== undefined || Boolean(input.regional3mfStorageKey);
@@ -295,7 +304,10 @@ export async function runSessionGenerateSolid(args: {
                 }
                 regionalTempKey = input.regional3mfStorageKey;
                 const regionalUrl = await io.signedDownloadUrl(input.regional3mfStorageKey);
-                regional3mf = { bytes: await io.downloadStl(regionalUrl), regionCount: claimedCount };
+                regional3mf = {
+                    bytes: decodeManufacturingUploadBytes(await io.downloadStl(regionalUrl)),
+                    regionCount: claimedCount,
+                };
             }
             const upload = selectVertexSliceUpload({
                 stl: stlBytes,

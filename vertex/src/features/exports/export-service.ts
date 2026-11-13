@@ -8,6 +8,10 @@ import {
     vertexSliceMaterialForApexMaterial,
 } from "@/features/exports/apex-print-material";
 import { exportMachineFamily, pairExportLayout } from "@/features/exports/machine-export-layout";
+import {
+    buildManufacturingUploadBody,
+    type ManufacturingUploadBody,
+} from "@/features/exports/manufacturing-stl-upload";
 import { stampSingleFootStl } from "@/features/exports/printer-foot-isolation";
 import {
     buildVertexSliceModel,
@@ -28,6 +32,7 @@ import {
     orderDownloadSides,
 } from "@/lib/geometry/export-geometry";
 import { binaryStlTriangleCount, manufacturingStlForExportKind } from "@/lib/geometry/leader-block";
+import { perfMark } from "@/lib/geometry/perf/load-export-perf";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { effectiveHardnessRegions } from "@/lib/hardness/collect";
 import { packHardness3mf } from "@/lib/hardness/export-3mf";
@@ -137,12 +142,15 @@ async function uploadManufacturingStlDirect(
         side,
         fileName: contentType === "model/3mf" ? `manufacturing-${side}.3mf` : `manufacturing-${side}.stl`,
     });
+    const packed: ManufacturingUploadBody = await buildManufacturingUploadBody(body);
     const putHeaders: Record<string, string> = { "Content-Type": contentType };
+    if (packed.contentEncoding) putHeaders["Content-Encoding"] = packed.contentEncoding;
     if (prep.token) putHeaders.Authorization = `Bearer ${prep.token}`;
+    perfMark("export:upload", { side, compressed: packed.compressed, bytes: body.byteLength });
     const putRes = await fetch(prep.uploadUrl, {
         method: "PUT",
         headers: putHeaders,
-        body,
+        body: packed.body,
     });
     if (!putRes.ok) {
         const detail = await putRes.text().catch(() => "");
@@ -674,6 +682,7 @@ export async function generateHybridGcode(
             const printRecipe = bindPrintRecipeProfile(design.printRecipe, presetId);
 
             report?.(GCODE_EXPORT_STEPS.slice);
+            perfMark("export:server-slice", { side, outputType });
             const res = await trpc.manufacturing.generateSolid.mutate({
                 designId: activeDesignId || undefined,
                 side,
