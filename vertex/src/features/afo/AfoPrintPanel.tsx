@@ -14,7 +14,14 @@ import {
     defaultAfoPrint,
 } from "@/lib/geometry/afo/defaults";
 import { trimPolygonForShell } from "@/lib/geometry/afo/shell";
+import {
+    beginShellGeneration,
+    commitShellIfCurrent,
+    currentAfoShellFingerprint,
+    useAfoShellCurrent,
+} from "@/lib/geometry/afo/shell-fingerprint";
 import { flatPlateSpecFromAfo } from "@/lib/geometry/afo/shell-flatten";
+import { applyAfoTrimCleanup } from "@/lib/geometry/afo/trim-cleanup";
 import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import type { AfoTriMesh } from "@/lib/geometry/afo/types";
 import { evaluateAfoWarnings } from "@/lib/geometry/afo/warnings";
@@ -41,8 +48,8 @@ export function AfoPrintPanel() {
     const working = afoPrintShellInput(correctedMesh, castMesh);
     const progress = useAfoStore((s) => s.workerProgress);
     const lastError = useAfoStore((s) => s.lastError);
-    const setShell = useAfoStore((s) => s.setShellMesh);
     const setProgress = useAfoStore((s) => s.setWorkerProgress);
+    const shellCurrent = useAfoShellCurrent();
     const setError = useAfoStore((s) => s.setLastError);
     const warnings = evaluateAfoWarnings(afo, working);
 
@@ -56,6 +63,8 @@ export function AfoPrintPanel() {
             setError("Place the plantar heel, 1st met head, and 5th met head before generating the shell.");
             return;
         }
+        const startedFingerprint = currentAfoShellFingerprint();
+        const startedToken = beginShellGeneration();
         setError(null);
         setProgress({ pct: 0, stage: "shell" });
         try {
@@ -78,12 +87,11 @@ export function AfoPrintPanel() {
                     onProgress: (pct, stage) => setProgress({ pct, stage }),
                 },
             );
-            setShell(shell);
-            patchAfoState({ shellReady: true }, "afo-shell");
-            setProgress(null);
+            commitShellIfCurrent({ startedFingerprint, startedToken, shell });
         } catch (e) {
             // Rejection throws before setShell, so the previous shell stays.
             setError(e instanceof Error ? e.message : "Shell failed");
+        } finally {
             setProgress(null);
         }
     };
@@ -140,6 +148,16 @@ export function AfoPrintPanel() {
             </label>
             <button
                 type="button"
+                disabled={!working || afo.trimPoints.length < 2}
+                className="h-8 w-full rounded-md border border-border bg-background disabled:opacity-40"
+                onClick={() => {
+                    applyAfoTrimCleanup();
+                }}
+            >
+                Clean up
+            </button>
+            <button
+                type="button"
                 onClick={() => void generate()}
                 className="h-8 w-full rounded-md bg-primary text-[12px] font-medium text-primary-foreground"
             >
@@ -156,7 +174,7 @@ export function AfoPrintPanel() {
                     Warn: {w.message}
                 </p>
             ))}
-            {afo.shellReady ? <p className="text-emerald-300">Watertight shell ready. Cast hidden.</p> : null}
+            {shellCurrent ? <p className="text-emerald-300">Watertight shell ready. Cast hidden.</p> : null}
         </div>
     );
 }

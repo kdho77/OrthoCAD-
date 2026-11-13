@@ -11,6 +11,7 @@ import {
     AFO_POINT_BRIGHTNESS_MIN,
     type AfoPointCloudShader,
     afoCastBodyStyle,
+    afoCastStyleDuringPlacement,
     afoHeightColors,
     afoMarkerDisplayCue,
     afoPointCloudGlsl,
@@ -49,6 +50,9 @@ describe("afo scan ui", () => {
         expect(afoViewportPlacementLayer("design", true, false, true)).toBe("afo-design");
         expect(afoViewportPlacementLayer("scan", true, false, true)).toBe("afo-scan");
         expect(afoViewportPlacementLayer("corrections", true, false, false)).toBe("afo-design");
+        expect(afoViewportPlacementLayer("print", true, true, false)).toBe("afo-design");
+        expect(afoViewportPlacementLayer("export", true, false, false)).toBe("afo-design");
+        expect(afoViewportPlacementLayer("scan", true, false, false)).toBe("afo-design");
     });
 
     test("Cast scan defaults to an opaque shaded surface, not points", () => {
@@ -73,6 +77,45 @@ describe("afo scan ui", () => {
         expect(style.markerDepthTest).toBe(AFO_MARKER_DEPTH_TEST);
         expect(style.markerDepthTest).toBe(false);
         expect(style.markerRenderOrder).toBeGreaterThan(1);
+    });
+
+    test("marker and trim placement keep a triangulated cast opaque and shaded", () => {
+        const trim = afoCastStyleDuringPlacement({
+            placingTrim: true,
+            placingMarkers: false,
+            transparentOn: true,
+            heightmap: true,
+            triangleCount: 12,
+            degenerateRatio: 1,
+        });
+        expect(trim.drawMode).toBe("surface");
+        expect(trim.shaded).toBe(true);
+        expect(trim.opacity).toBe(1);
+        expect(trim.transparent).toBe(false);
+        expect(trim.depthWrite).toBe(true);
+        const markers = afoCastStyleDuringPlacement({
+            placingTrim: false,
+            placingMarkers: true,
+            transparentOn: true,
+            heightmap: false,
+            triangleCount: 4,
+            degenerateRatio: 0.95,
+        });
+        expect(markers.drawMode).toBe("surface");
+        expect(markers.opacity).toBe(1);
+        expect(markers.transparent).toBe(false);
+        expect(markers.shaded).toBe(true);
+        const idle = afoCastStyleDuringPlacement({
+            placingTrim: false,
+            placingMarkers: false,
+            transparentOn: true,
+            heightmap: false,
+            triangleCount: 4,
+            degenerateRatio: 0,
+        });
+        expect(idle.transparent).toBe(true);
+        expect(idle.opacity).toBe(0.45);
+        expect(idle.drawMode).toBe("surface");
     });
 
     test("Transparent and Heightmap still change the Cast surface", () => {

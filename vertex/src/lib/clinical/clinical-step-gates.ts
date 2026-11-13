@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { evaluateAfoScanProgress } from "@/lib/geometry/afo/landmark-frame";
+import { afoShellIsCurrent } from "@/lib/geometry/afo/shell-fingerprint";
 import { designHasBase, designNeedsDefaultStockResolution } from "@/lib/geometry/base-asset";
 import { getAfoState } from "@/stores/afo-store";
 import type { ClinicalStepId } from "@/stores/clinical-workflow-store";
@@ -116,8 +117,7 @@ export function evaluateNextGate(fromStep: ClinicalStepId): StepGateResult {
         }
     }
     if (product === "afo" && fromStep === "print") {
-        const afo = useDesignStore.getState().design.afo;
-        if (!afo?.shellReady) {
+        if (!afoShellIsCurrent()) {
             return { ok: false, reason: "Generate the watertight shell before Export." };
         }
     }

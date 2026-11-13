@@ -159,6 +159,16 @@ export interface AfoTrimPoint {
 /** AFO shell filament. The Print step offers this id and no other. */
 export type AfoPrintMaterialId = "ApexVylon";
 
+/**
+ * Plug-in for the flat-AFO pass. The shell fingerprint hashes this object, so
+ * that work can store unwrap settings without adding a second validity check.
+ * Null until the flat-AFO pass writes it.
+ */
+export interface AfoFlatAfoSettings {
+    revision: number;
+    values: Record<string, string | number | boolean | null>;
+}
+
 export interface AfoPrintParams {
     thicknessMm: number;
     edgeMm: number;
@@ -241,6 +251,8 @@ export interface AfoDesignState {
     trimClosed: boolean;
     trimConfirmed: boolean;
     print: AfoPrintParams;
+    /** Null until the flat-AFO pass stores unwrap settings. Hashed into the shell fingerprint. */
+    flatAfo: AfoFlatAfoSettings | null;
     shellReady: boolean;
 }
 

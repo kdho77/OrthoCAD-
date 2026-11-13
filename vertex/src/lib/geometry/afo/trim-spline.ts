@@ -2,6 +2,7 @@
 
 import { medialSign } from "@/lib/geometry/handedness";
 import {
+    AFO_TRIM_DISPLAY_NORMAL_MM,
     AFO_TRIM_DRAW_OFFSET_MM,
     AFO_TRIM_PLANE_MAX_MM,
     AFO_TRIM_PROJECT_MAX_MM,
@@ -541,18 +542,55 @@ function resliceKeepingClean(
     return out;
 }
 
+function averagedDisplayNormal(projector: MeshProjector, curve: AfoVec3[], index: number): AfoVec3 {
+    let sx = 0;
+    let sy = 0;
+    let sz = 0;
+    const addAt = (i: number) => {
+        const normal = projector.closest(curve[i] ?? curve[index]!).normal;
+        sx += normal.x;
+        sy += normal.y;
+        sz += normal.z;
+    };
+    addAt(index);
+    let behind = 0;
+    for (let step = 1; step < curve.length; step++) {
+        const i = index - step;
+        if (i < 0) break;
+        behind += dist(curve[i + 1]!, curve[i]!);
+        if (behind > AFO_TRIM_DISPLAY_NORMAL_MM) break;
+        addAt(i);
+    }
+    let ahead = 0;
+    for (let step = 1; step < curve.length; step++) {
+        const i = index + step;
+        if (i >= curve.length) break;
+        ahead += dist(curve[i - 1]!, curve[i]!);
+        if (ahead > AFO_TRIM_DISPLAY_NORMAL_MM) break;
+        addAt(i);
+    }
+    const length = Math.hypot(sx, sy, sz);
+    if (length < 1e-8) return projector.closest(curve[index]!).normal;
+    return { x: sx / length, y: sy / length, z: sz / length };
+}
+
 function offsetDisplay(projector: MeshProjector, curve: AfoVec3[]): AfoVec3[] {
-    return curve.map((p) => {
-        const hit = projector.closest(p);
+    return curve.map((p, index) => {
+        const normal = averagedDisplayNormal(projector, curve, index);
         let d = AFO_TRIM_DRAW_OFFSET_MM;
         for (let k = 0; k < 4; k++) {
-            const q = add(p, scale(hit.normal, d));
+            const q = add(p, scale(normal, d));
             const back = projector.closest(q);
             if (dist(back.point, p) <= 0.35 && back.errorMm <= d + 0.08) return q;
             d *= 0.5;
         }
         return { ...p };
     });
+}
+
+/** Yellow trim stroke: the trim curve lifted along a 4 mm averaged normal. */
+export function trimDisplayPoints(mesh: AfoTriMesh, curve: AfoVec3[]): AfoVec3[] {
+    return offsetDisplay(meshProjector(mesh), curve);
 }
 
 export interface BalanceBrace {

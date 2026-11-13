@@ -45,9 +45,12 @@ const EXPORT_KIND_LABEL: Record<ClinicalExportKind, string> = {
 export function ExportPanel({
     clinicalExportStep = false,
     hideOutputSide = false,
+    exportLocked = false,
 }: {
     clinicalExportStep?: boolean;
     hideOutputSide?: boolean;
+    /** AFO shell inputs moved. STL, 3MF, and G-code stay disabled. */
+    exportLocked?: boolean;
 }) {
     const { user, license } = useAuthStore();
     const { design, exportSide, setExportSide, viewer } = useDesignStore();
@@ -100,7 +103,7 @@ export function ExportPanel({
     };
 
     const runExport = async () => {
-        if (!exportKind) return;
+        if (exportLocked || !exportKind) return;
         abortRef.current = false;
         setBusyKind(exportKind);
         if (exportKind === "gcode") {
@@ -260,7 +263,12 @@ export function ExportPanel({
                     className="w-full"
                     data-testid="clinical-export-download"
                     aria-busy={busy}
-                    disabled={!activeCheck.ok || busy || (exportKind === "gcode" && gcodeFeet.length === 0)}
+                    disabled={
+                        exportLocked ||
+                        !activeCheck.ok ||
+                        busy ||
+                        (exportKind === "gcode" && gcodeFeet.length === 0)
+                    }
                     onClick={() => void runExport()}
                 >
                     {busyKind ? (
@@ -306,11 +314,17 @@ export function ExportPanel({
         );
     }
 
-    return <LegacyExportPanel hideOutputSide={hideOutputSide} />;
+    return <LegacyExportPanel hideOutputSide={hideOutputSide} exportLocked={exportLocked} />;
 }
 
 /** Full export panel for Print advanced and legacy paths. */
-function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolean }) {
+function LegacyExportPanel({
+    hideOutputSide = false,
+    exportLocked = false,
+}: {
+    hideOutputSide?: boolean;
+    exportLocked?: boolean;
+}) {
     const { user, license } = useAuthStore();
     const { design, exportSide, setExportSide } = useDesignStore();
     const kernelName = useKernelStore((s) => s.name);
@@ -326,6 +340,7 @@ function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolea
     const busy = busyKind !== null;
 
     const handleStl = async () => {
+        if (exportLocked) return;
         setBusyKind("stl");
         try {
             const res = await exportDesign("stl", exportSide);
@@ -343,6 +358,7 @@ function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolea
     };
 
     const handle3mf = async () => {
+        if (exportLocked) return;
         setBusyKind("3mf");
         setStatus("Building 3MF with hardness modifiers…");
         try {
@@ -362,6 +378,7 @@ function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolea
     };
 
     const handleGlb = async () => {
+        if (exportLocked) return;
         setBusyKind("glb");
         setStatus("Generating GLB…");
         try {
@@ -452,7 +469,7 @@ function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolea
 
             <Button
                 className="w-full"
-                disabled={!stlCheck.ok || busy || design.method === "milling_3axis"}
+                disabled={exportLocked || !stlCheck.ok || busy || design.method === "milling_3axis"}
                 onClick={handleStl}
             >
                 {busyKind === "stl" ? (
@@ -468,7 +485,7 @@ function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolea
 
             <Button
                 className="w-full"
-                disabled={!threeMfCheck.ok || busy || design.method === "milling_3axis"}
+                disabled={exportLocked || !threeMfCheck.ok || busy || design.method === "milling_3axis"}
                 onClick={handle3mf}
             >
                 {busyKind === "3mf" ? (
@@ -485,7 +502,7 @@ function LegacyExportPanel({ hideOutputSide = false }: { hideOutputSide?: boolea
             <Button
                 variant="secondary"
                 className="w-full"
-                disabled={!glbCheck.ok || busy || design.method === "milling_3axis"}
+                disabled={exportLocked || !glbCheck.ok || busy || design.method === "milling_3axis"}
                 onClick={handleGlb}
                 title="Download a watertight, print-ready GLB (top + tapered side walls + bottom) of the current trimline."
             >

@@ -24,6 +24,10 @@ interface AfoSessionStore {
     castMesh: AfoTriMesh | null;
     correctedMesh: AfoTriMesh | null;
     shellMesh: AfoTriMesh | null;
+    /** Fingerprint of the inputs `shellMesh` was built from. Null when no shell is current. */
+    shellFingerprint: string | null;
+    /** Bumps whenever the cast or corrected mesh is replaced. Part of the shell fingerprint. */
+    meshRevision: number;
     /** Scaled scan before the plantar rigid map. Level to rearfoot rebuilds from this. */
     unorientedMesh: AfoTriMesh | null;
     /** Active Stage 1 / Stage 2 click session. `redo` replaces that marker on the next click. */
@@ -43,12 +47,18 @@ interface AfoSessionStore {
     /** Cursor sample on the working mesh while a trim line is being placed. */
     trimHover: AfoVec3 | null;
     draggingTrimIndex: number | null;
+    /** Pointer is down on a trim pin. Orbit stays off until pointerup, including the 4 px threshold. */
+    trimGestureActive: boolean;
+    /** Pin under the cursor, in screen space. Null when the pointer is not near a handle. */
+    hoveredTrimIndex: number | null;
     workerProgress: { pct: number; stage: string } | null;
     lastError: string | null;
     setSourceMesh: (mesh: AfoTriMesh | null) => void;
     setCastMesh: (mesh: AfoTriMesh | null) => void;
     setCorrectedMesh: (mesh: AfoTriMesh | null) => void;
     setShellMesh: (mesh: AfoTriMesh | null) => void;
+    /** Store a generated shell together with the fingerprint of the inputs that produced it. */
+    commitShell: (mesh: AfoTriMesh, fingerprint: string) => void;
     setUnorientedMesh: (mesh: AfoTriMesh | null) => void;
     setScanPlacement: (placement: { redo: string | null; paused?: boolean } | null) => void;
     setScanLandmarkError: (message: string | null) => void;
@@ -64,6 +74,8 @@ interface AfoSessionStore {
     setPlacingTrim: (on: boolean) => void;
     setTrimHover: (point: AfoVec3 | null) => void;
     setDraggingTrimIndex: (index: number | null) => void;
+    setTrimGestureActive: (on: boolean) => void;
+    setHoveredTrimIndex: (index: number | null) => void;
     setWorkerProgress: (p: { pct: number; stage: string } | null) => void;
     setLastError: (msg: string | null) => void;
     resetSession: () => void;
@@ -90,6 +102,7 @@ export function getAfoState() {
         scanWorkflow: mergeScanWorkflow(base.scanWorkflow, design.afo.scanWorkflow),
         trimPoints: design.afo.trimPoints ?? [],
         trimCurve: design.afo.trimCurve ?? [],
+        flatAfo: design.afo.flatAfo ?? null,
     };
 }
 
@@ -138,9 +151,10 @@ function mergeScanWorkflow(base: AfoScanWorkflow, extra?: AfoScanWorkflow): AfoS
 export function patchAfoState(
     patch: Partial<ReturnType<typeof defaultAfoDesignState>>,
     checkpointLabel = "afo",
+    options?: { history?: boolean },
 ): void {
     const ds = useDesignStore.getState();
-    ds.checkpoint(checkpointLabel);
+    if (options?.history !== false) ds.checkpoint(checkpointLabel);
     const current = ds.design.afo ?? defaultAfoDesignState();
     useDesignStore.setState({
         design: {
@@ -236,6 +250,8 @@ export const useAfoStore = create<AfoSessionStore>((set, get) => ({
     castMesh: null,
     correctedMesh: null,
     shellMesh: null,
+    shellFingerprint: null,
+    meshRevision: 0,
     unorientedMesh: null,
     scanPlacement: null,
     scanLandmarkError: null,
@@ -251,16 +267,36 @@ export const useAfoStore = create<AfoSessionStore>((set, get) => ({
     placingTrim: false,
     trimHover: null,
     draggingTrimIndex: null,
+    trimGestureActive: false,
+    hoveredTrimIndex: null,
     workerProgress: null,
     lastError: null,
     setSourceMesh: (mesh) =>
-        set({
+        set((s) => ({
             sourceMesh: mesh ? cloneMesh(mesh) : null,
             castMesh: mesh ? cloneMesh(mesh) : null,
+            meshRevision: s.meshRevision + 1,
+        })),
+    setCastMesh: (mesh) =>
+        set((s) => ({
+            castMesh: mesh ? cloneMesh(mesh) : null,
+            meshRevision: s.meshRevision + 1,
+        })),
+    setCorrectedMesh: (mesh) =>
+        set((s) => ({
+            correctedMesh: mesh ? cloneMesh(mesh) : null,
+            meshRevision: s.meshRevision + 1,
+        })),
+    setShellMesh: (mesh) =>
+        set({
+            shellMesh: mesh ? cloneMesh(mesh) : null,
+            shellFingerprint: null,
         }),
-    setCastMesh: (mesh) => set({ castMesh: mesh ? cloneMesh(mesh) : null }),
-    setCorrectedMesh: (mesh) => set({ correctedMesh: mesh ? cloneMesh(mesh) : null }),
-    setShellMesh: (mesh) => set({ shellMesh: mesh ? cloneMesh(mesh) : null }),
+    commitShell: (mesh, fingerprint) =>
+        set({
+            shellMesh: cloneMesh(mesh),
+            shellFingerprint: fingerprint,
+        }),
     setUnorientedMesh: (mesh) => set({ unorientedMesh: mesh ? cloneMesh(mesh) : null }),
     setScanPlacement: (placement) => set({ scanPlacement: placement }),
     setScanLandmarkError: (message) => set({ scanLandmarkError: message }),
@@ -311,6 +347,8 @@ export const useAfoStore = create<AfoSessionStore>((set, get) => ({
     },
     setTrimHover: (point) => set({ trimHover: point }),
     setDraggingTrimIndex: (index) => set({ draggingTrimIndex: index }),
+    setTrimGestureActive: (on) => set({ trimGestureActive: on }),
+    setHoveredTrimIndex: (index) => set({ hoveredTrimIndex: index }),
     setWorkerProgress: (p) => set({ workerProgress: p }),
     setLastError: (msg) => set({ lastError: msg }),
     resetSession: () =>
@@ -319,6 +357,8 @@ export const useAfoStore = create<AfoSessionStore>((set, get) => ({
             castMesh: null,
             correctedMesh: null,
             shellMesh: null,
+            shellFingerprint: null,
+            meshRevision: 0,
             unorientedMesh: null,
             scanPlacement: null,
             scanLandmarkError: null,
@@ -334,6 +374,8 @@ export const useAfoStore = create<AfoSessionStore>((set, get) => ({
             placingTrim: false,
             trimHover: null,
             draggingTrimIndex: null,
+            trimGestureActive: false,
+            hoveredTrimIndex: null,
             workerProgress: null,
             lastError: null,
         }),
