@@ -2,9 +2,12 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { CaseSummaryBar } from "@/components/clinical/CaseSummaryBar";
 import { ClinicalStepRail } from "@/components/clinical/ClinicalStepRail";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { AppVersionWatcher } from "@/components/layout/AppVersionWatcher";
 import { KernelLoadingBanner } from "@/components/layout/KernelLoadingBanner";
+import { NewVersionBanner } from "@/components/layout/NewVersionBanner";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { SessionRecoveryDialog } from "@/components/layout/SessionRecoveryDialog";
+import { StaleBuildExportDialog } from "@/components/layout/StaleBuildExportDialog";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { type NavItem, TopNav } from "@/components/layout/TopNav";
 import { PrescriptionUpload } from "@/components/prescription-upload/PrescriptionUpload";
@@ -15,8 +18,8 @@ import { ProductTypeBar } from "@/features/afo/ProductTypeBar";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { ClientFilePage } from "@/features/clients/ClientFilePage";
 import { ClientListPage } from "@/features/clients/ClientListPage";
-import { EditorChrome, useDesignRoute } from "@/features/clients/EditorChrome";
 import { CLIENT_LIST_PATH } from "@/features/clients/client-list-nav";
+import { EditorChrome, useDesignRoute } from "@/features/clients/EditorChrome";
 import { InactivityGuard } from "@/features/clients/InactivityGuard";
 import { parseClinicalPath } from "@/features/clients/routes";
 import { exportDesign } from "@/features/exports/export-service";
@@ -64,6 +67,9 @@ export default function App() {
 
     return (
         <>
+            <AppVersionWatcher />
+            <NewVersionBanner />
+            <StaleBuildExportDialog />
             <InactivityGuard />
             <ClinicalRoutes pathname={pathname} />
         </>
