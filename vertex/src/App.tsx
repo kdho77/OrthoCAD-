@@ -20,6 +20,7 @@ import { ClientFilePage } from "@/features/clients/ClientFilePage";
 import { ClientListPage } from "@/features/clients/ClientListPage";
 import { CLIENT_LIST_PATH } from "@/features/clients/client-list-nav";
 import { EditorChrome, useDesignRoute } from "@/features/clients/EditorChrome";
+import { usePersistDesignWorkflow } from "@/features/clients/usePersistDesignWorkflow";
 import { InactivityGuard } from "@/features/clients/InactivityGuard";
 import { parseClinicalPath } from "@/features/clients/routes";
 import { exportDesign } from "@/features/exports/export-service";
@@ -94,7 +95,8 @@ function ClinicalRoutes({ pathname }: { pathname: string }) {
 }
 
 export function CadApp({ clientId, designId }: { clientId: string; designId: string }) {
-    const { record, resolving } = useDesignRoute(clientId, designId);
+    const { record, ready, resolving } = useDesignRoute(clientId, designId);
+    usePersistDesignWorkflow(designId, ready && record?.kind !== "afo");
     const [rxOpen, setRxOpen] = useState(false);
     const applyPrescription = useDesignStore((s) => s.applyPrescription);
     const method = useDesignStore((s) => s.design.method);

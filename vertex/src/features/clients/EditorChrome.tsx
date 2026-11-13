@@ -13,6 +13,7 @@ import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/desig
 import { formatClientName } from "../../../shared/client-files";
 import { hydrateDesignForEditor } from "./client-actions";
 import { clientFilePath } from "./routes";
+import { loadDesignWorkflowSession } from "./design-workflow-session";
 import { beginInsoleDesignSession, parseDesignEntryParam } from "./start-path";
 
 export function useDesignRoute(clientId: string, designId: string) {
@@ -33,6 +34,7 @@ export function useDesignRoute(clientId: string, designId: string) {
 
     useEffect(() => {
         if (resolving) return;
+        setReady(false);
         let cancelled = false;
         const open = async () => {
             const persist = useDesignStore.persist;
@@ -70,14 +72,23 @@ export function useDesignRoute(clientId: string, designId: string) {
                 const nextUrl = `${window.location.pathname}${rest ? `?${rest}` : ""}`;
                 window.history.replaceState(null, "", nextUrl);
             } else {
-                useClinicalWorkflowStore.setState({
-                    step: "scan",
-                    designStartPath: null,
-                    completedSteps: [],
-                    footSideExplicitlyChosen: false,
-                    scanGateStickyReason: null,
-                    nextBlockReason: null,
-                });
+                const saved = loadDesignWorkflowSession(designId);
+                if (saved) {
+                    useClinicalWorkflowStore.setState({
+                        ...saved,
+                        scanGateStickyReason: null,
+                        nextBlockReason: null,
+                    });
+                } else {
+                    useClinicalWorkflowStore.setState({
+                        step: "scan",
+                        designStartPath: null,
+                        completedSteps: [],
+                        footSideExplicitlyChosen: false,
+                        scanGateStickyReason: null,
+                        nextBlockReason: null,
+                    });
+                }
             }
             setReady(true);
         };

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { shouldDeferTopMeshLoad } from "@/features/clients/start-path";
 import { evaluateAfoScanProgress } from "@/lib/geometry/afo/landmark-frame";
 import { afoShellIsCurrent } from "@/lib/geometry/afo/shell-fingerprint";
 import { designHasBase, designNeedsDefaultStockResolution } from "@/lib/geometry/base-asset";
@@ -59,8 +60,11 @@ export function evaluateScanStepGate(): StepGateResult {
         return evaluateAfoScanProgress(getAfoState().scanWorkflow);
     }
 
-    const ready = isReadyToShape();
-    if (!ready.ok) return ready;
+    const { designStartPath, step } = useClinicalWorkflowStore.getState();
+    if (!shouldDeferTopMeshLoad(designStartPath, step)) {
+        const ready = isReadyToShape();
+        if (!ready.ok) return ready;
+    }
 
     const scans = useScanStore.getState().scans;
     if (scans.length === 0) {

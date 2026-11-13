@@ -19,6 +19,14 @@ export function parseDesignEntryParam(raw: string | null): InsoleDesignStartPath
 }
 
 /** Reset workflow rail for a newly opened design (UI routing only). */
+/** New designs from 3D scan defer SAMPLE_Top until the clinician leaves Scan. */
+export function shouldDeferTopMeshLoad(
+    startPath: InsoleDesignStartPath | null,
+    step: ClinicalStepId,
+): boolean {
+    return startPath === "scan" && step === "scan";
+}
+
 export function beginInsoleDesignSession(startPath: InsoleDesignStartPath): void {
     useClinicalWorkflowStore.setState({
         step: landingStepForStartPath(startPath),
