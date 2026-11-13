@@ -174,7 +174,7 @@ describe("sacrificial leader block", () => {
         expect(LEADER_BRIDGE_EMBED_MM).toBe(1);
         expect(LEADER_BRIDGE_BLOCK_OVERLAP_MM).toBe(1);
         expect(LEADER_BLOCK_WIDTH_INNER_MM).toBe(20);
-        expect(LEADER_BLOCK_WIDTH_OUTER_MM).toBe(40);
+        expect(LEADER_BLOCK_WIDTH_OUTER_MM).toBe(30);
     });
 
     test("places the bridge and trapezoid on the thinner max-X toe", () => {
@@ -190,6 +190,8 @@ describe("sacrificial leader block", () => {
         expect(after.maxZ).toBeCloseTo(Math.max(before.maxZ, LEADER_BLOCK_HEIGHT_MM), 3);
         expect(after.minZ).toBeCloseTo(0, 3);
         const outer = verticesNear(withLeader, expectedMaxX);
+        const outerYExtent = Math.max(...outer.map((v) => v[1])) - Math.min(...outer.map((v) => v[1]));
+        expect(outerYExtent).toBeCloseTo(LEADER_BLOCK_WIDTH_OUTER_MM, 2);
         expect(outer.some((v) => Math.abs(v[1] - LEADER_BLOCK_WIDTH_OUTER_MM / 2) < 0.01 && v[2] === 0)).toBe(
             true,
         );
