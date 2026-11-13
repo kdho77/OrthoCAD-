@@ -1,0 +1,144 @@
+{
+    "branch": "cursor/start-path-step-routing-and-lazy-top-glb-load-29b0",
+    "testedAt": "2026-11-13T13:31:10.714Z",
+    "host": {
+        "pr": "http://localhost:5180",
+        "prod": "https://orthocad.vertexorthopedic.com"
+    },
+    "templateRuns": [
+        {
+            "firstPaint": 351,
+            "meshReady": 11599,
+            "glb": [
+                {
+                    "url": "http://localhost:5180/Templates/SAMPLE_Top.glb",
+                    "status": 200,
+                    "size": 277032,
+                    "atMs": 1794576591008
+                }
+            ],
+            "step": "setup",
+            "cache": "cold"
+        },
+        {
+            "firstPaint": 175,
+            "meshReady": 185,
+            "glb": [],
+            "step": "setup",
+            "cache": "warm"
+        },
+        {
+            "firstPaint": 151,
+            "meshReady": 159,
+            "glb": [],
+            "step": "setup",
+            "cache": "warm"
+        }
+    ],
+    "scanRuns": [
+        {
+            "firstPaint": 81,
+            "flags": {
+                "loadingTopMesh": false,
+                "baseSampleTop": true,
+                "modifiersApplied": true
+            },
+            "glb": [],
+            "step": "Scan",
+            "cache": "cold"
+        },
+        {
+            "firstPaint": 75,
+            "flags": {
+                "loadingTopMesh": false,
+                "baseSampleTop": true,
+                "modifiersApplied": true
+            },
+            "glb": [],
+            "step": "Scan",
+            "cache": "cold"
+        },
+        {
+            "firstPaint": 73,
+            "flags": {
+                "loadingTopMesh": false,
+                "baseSampleTop": true,
+                "modifiersApplied": true
+            },
+            "glb": [],
+            "step": "Scan",
+            "cache": "cold"
+        }
+    ],
+    "aiRuns": [
+        {
+            "firstPaint": 182,
+            "meshReady": 187,
+            "glb": [],
+            "step": "Setup",
+            "flags": {
+                "loadingTopMesh": false,
+                "baseSampleTop": true,
+                "modifiersApplied": true
+            },
+            "cache": "cold"
+        },
+        {
+            "firstPaint": 183,
+            "meshReady": 189,
+            "glb": [],
+            "step": "Setup",
+            "flags": {
+                "loadingTopMesh": false,
+                "baseSampleTop": true,
+                "modifiersApplied": true
+            },
+            "cache": "cold"
+        },
+        {
+            "firstPaint": 189,
+            "meshReady": 194,
+            "glb": [],
+            "step": "Setup",
+            "flags": {
+                "loadingTopMesh": false,
+                "baseSampleTop": true,
+                "modifiersApplied": true
+            },
+            "cache": "cold"
+        }
+    ],
+    "reopen": {
+        "stepAfterReopen": "Scan",
+        "pass": false
+    },
+    "prodTemplate": {
+        "error": "page.waitForURL: Timeout 20000ms exceeded.\n=========================== logs ===========================\nwaiting for navigation until \"load\"\n============================================================"
+    },
+    "medians": {
+        "template": {
+            "firstPaintMs": 175,
+            "meshReadyMs": 185
+        },
+        "scan": {
+            "firstPaintMs": 75
+        },
+        "ai": {
+            "firstPaintMs": 183,
+            "meshReadyMs": 189
+        }
+    },
+    "mainTemplate": {
+        "branch": "origin/main",
+        "firstPaint": 162,
+        "meshReady": 165,
+        "glb": [],
+        "cache": "cold"
+    },
+    "compare": {
+        "prColdMeshReadyMs": 11599,
+        "mainColdMeshReadyMs": 165,
+        "deltaMs": 11434,
+        "note": "PR branch vs local main (offline dev, headless Chromium)"
+    }
+}
