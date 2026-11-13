@@ -20,6 +20,8 @@ import {
     findDuplicateClients,
     formatClientName,
     hardDeleteClientFile,
+    IDLE_LOGOUT_MS,
+    IDLE_WARNING_MS,
     inactivityPhase,
     listClientFiles,
     type MemoryDb,
@@ -524,10 +526,8 @@ describe("client list query and PHI chrome", () => {
     });
 
     test("inactivity warning is the minute before logout", () => {
-        expect(inactivityPhase(IDLE_WARNING_MS_LOCAL - 1)).toBe("active");
-        expect(inactivityPhase(14 * 60 * 1000)).toBe("warning");
-        expect(inactivityPhase(15 * 60 * 1000)).toBe("logout");
+        expect(inactivityPhase(IDLE_WARNING_MS - 1)).toBe("active");
+        expect(inactivityPhase(IDLE_WARNING_MS)).toBe("warning");
+        expect(inactivityPhase(IDLE_LOGOUT_MS)).toBe("logout");
     });
 });
-
-const IDLE_WARNING_MS_LOCAL = 14 * 60 * 1000;

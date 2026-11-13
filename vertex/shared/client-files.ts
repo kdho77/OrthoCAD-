@@ -19,7 +19,7 @@ export const CLIENT_PAGE_SIZE = 50;
 export const DESIGN_NOTES_MAX = 500;
 export const CLIENT_NOTES_MAX = 2000;
 export const DESIGN_RESTORE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
-export const IDLE_LOGOUT_MS = 15 * 60 * 1000;
+export const IDLE_LOGOUT_MS = 30 * 60 * 1000;
 export const IDLE_WARNING_MS = IDLE_LOGOUT_MS - 60 * 1000;
 export const CLINICAL_DOCUMENT_TITLE = "OrthoCAD · Client";
 
