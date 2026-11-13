@@ -9,6 +9,7 @@ import {
 } from "@/lib/geometry/leader-block";
 import type { PrinterPreset } from "@/lib/kiri";
 import { useDesignStore } from "@/stores/design-store";
+import { decodeManufacturingUploadBytes } from "../../../server/src/routers/manufacturing-session";
 import { generateHybridGcode } from "./export-service";
 import { isolatedPrinterFootStls, readSingleFootStamp, stampSingleFootStl } from "./printer-foot-isolation";
 
@@ -191,8 +192,15 @@ beforeEach(() => {
     });
     originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-        if (init?.method === "PUT" && init.body instanceof ArrayBuffer) {
-            uploads.push({ url: String(input), bytes: new Uint8Array(init.body) });
+        if (init?.method === "PUT" && init?.body != null) {
+            const raw = init.body;
+            let bytes: Uint8Array;
+            if (raw instanceof ArrayBuffer) bytes = new Uint8Array(raw);
+            else if (ArrayBuffer.isView(raw))
+                bytes = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+            else if (raw instanceof Blob) bytes = new Uint8Array(await raw.arrayBuffer());
+            else return new Response("bad put body", { status: 500 });
+            uploads.push({ url: String(input), bytes });
             return new Response("", { status: 200 });
         }
         return new Response("missing", { status: 404 });
@@ -225,21 +233,25 @@ describe("paired printer G-code isolation", () => {
         expect(sliceRequests[0]?.stlStorageKey).not.toBe(sliceRequests[1]?.stlStorageKey);
         expect(uploads).toHaveLength(2);
 
-        const leftUpload = uploads[0]?.bytes;
-        const rightUpload = uploads[1]?.bytes;
+        const leftRow = uploads.find((row) => row.url.includes("/left/"));
+        const rightRow = uploads.find((row) => row.url.includes("/right/"));
+        const leftUpload = leftRow?.bytes;
+        const rightUpload = rightRow?.bytes;
         if (!leftUpload || !rightUpload) throw new Error("missing uploads");
-        const leftBytes = leftUpload.buffer.slice(
-            leftUpload.byteOffset,
-            leftUpload.byteOffset + leftUpload.byteLength,
+        const leftDecoded = decodeManufacturingUploadBytes(leftUpload);
+        const rightDecoded = decodeManufacturingUploadBytes(rightUpload);
+        const leftBytes = leftDecoded.buffer.slice(
+            leftDecoded.byteOffset,
+            leftDecoded.byteOffset + leftDecoded.byteLength,
         );
-        const rightBytes = rightUpload.buffer.slice(
-            rightUpload.byteOffset,
-            rightUpload.byteOffset + rightUpload.byteLength,
+        const rightBytes = rightDecoded.buffer.slice(
+            rightDecoded.byteOffset,
+            rightDecoded.byteOffset + rightDecoded.byteLength,
         );
         const leftExpected = expectedUpload(footSolids.left, "left");
         const rightExpected = expectedUpload(footSolids.right, "right");
-        expect(leftUpload).toEqual(new Uint8Array(leftExpected));
-        expect(rightUpload).toEqual(new Uint8Array(rightExpected));
+        expect(leftDecoded).toEqual(new Uint8Array(leftExpected));
+        expect(rightDecoded).toEqual(new Uint8Array(rightExpected));
         expect(binaryStlTriangleCount(leftBytes)).toBe(binaryStlTriangleCount(leftExpected));
         expect(binaryStlTriangleCount(footSolids.pair)).toBe(
             binaryStlTriangleCount(footSolids.left) + binaryStlTriangleCount(footSolids.right),
@@ -250,8 +262,8 @@ describe("paired printer G-code isolation", () => {
         expect(readSingleFootStamp(rightBytes)).toBe("right");
         const isolated = isolatedPrinterFootStls(leftBytes, rightBytes, pairSpan);
         expect(isolated.ok).toBe(true);
-        expect(uploads[0]?.url).toContain("/left/");
-        expect(uploads[1]?.url).toContain("/right/");
+        expect(leftRow?.url).toContain("/left/");
+        expect(rightRow?.url).toContain("/right/");
 
         const rightOnly = await generateHybridGcode(
             "right",

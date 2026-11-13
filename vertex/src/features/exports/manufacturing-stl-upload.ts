@@ -41,13 +41,20 @@ function decompressionAvailable(): boolean {
     return typeof DecompressionStream !== "undefined";
 }
 
+/** Manufacturing STLs are multi‑MB; tiny fixture buffers skip gzip (often inflate and break isolation tests). */
+const MIN_GZIP_UPLOAD_BYTES = 64 * 1024;
+
 /**
  * Optional gzip for manufacturing STL / regional 3MF PUT payloads.
  * Verifies SHA-256 before and after compression; falls back to raw bytes when gzip is unavailable.
  */
 export async function buildManufacturingUploadBody(bytes: ArrayBuffer): Promise<ManufacturingUploadBody> {
     const sha256 = await sha256ArrayBuffer(bytes);
-    if (!compressionStreamAvailable() || !decompressionAvailable()) {
+    if (
+        bytes.byteLength < MIN_GZIP_UPLOAD_BYTES ||
+        !compressionStreamAvailable() ||
+        !decompressionAvailable()
+    ) {
         return { body: bytes, sha256, compressed: false };
     }
     try {
