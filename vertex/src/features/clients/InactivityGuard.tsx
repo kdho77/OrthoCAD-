@@ -4,6 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { navigate } from "@/features/admin/admin-nav";
+import {
+    inactivityPhaseDuringExport,
+    markPendingManualSignOut,
+} from "@/features/auth/auth-session-resilience";
+import { ReAuthModal } from "@/features/auth/ReAuthModal";
+import { isExportInProgress } from "@/features/exports/export-service";
 import { getSupabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
 import {
@@ -41,7 +47,14 @@ export function InactivityGuard() {
     const signedOut = useRef(false);
     const channelRef = useRef<BroadcastChannel | null>(null);
 
-    const bumpClock = () => setNow(Date.now());
+    const bumpClock = () => {
+        if (isExportInProgress()) {
+            const t = Date.now();
+            localLast.current = Math.max(localLast.current, t);
+            persistFromLocal();
+        }
+        setNow(Date.now());
+    };
 
     const persistFromLocal = (force = false) => {
         const stored = readSharedActivity();
@@ -107,13 +120,14 @@ export function InactivityGuard() {
     }, []);
 
     const idle = crossTabIdleMs(now, localLast.current, readSharedActivity());
-    const phase = inactivityPhase(idle);
+    const phase = inactivityPhaseDuringExport(idle, isExportInProgress());
 
     useEffect(() => {
-        if (phase !== "logout" || signedOut.current) return;
+        if (phase !== "logout" || signedOut.current || isExportInProgress()) return;
         const freshIdle = crossTabIdleMs(Date.now(), localLast.current, readSharedActivity());
         if (inactivityPhase(freshIdle) !== "logout") return;
         signedOut.current = true;
+        markPendingManualSignOut();
         const supabase = getSupabase();
         if (supabase) void supabase.auth.signOut(idleLogoutSignOutOptions);
         useAuthStore.getState().setUser(null);
@@ -121,23 +135,29 @@ export function InactivityGuard() {
         navigate("/");
     }, [phase]);
 
-    if (phase !== "warning") return null;
     const seconds = Math.max(0, Math.ceil((IDLE_LOGOUT_MS - idle) / 1000));
 
     return (
-        <Dialog open>
-            <DialogContent className="max-w-sm">
-                <DialogHeader>
-                    <DialogTitle>Still there?</DialogTitle>
-                    <p className="text-sm text-muted-foreground">You will be signed out in {seconds}s.</p>
-                </DialogHeader>
-                <div className="flex justify-end">
-                    <Button type="button" className="min-h-11" onClick={() => markActivity(true)}>
-                        Stay signed in
-                    </Button>
-                </div>
-            </DialogContent>
-        </Dialog>
+        <>
+            <ReAuthModal />
+            {phase === "warning" ? (
+                <Dialog open>
+                    <DialogContent className="max-w-sm">
+                        <DialogHeader>
+                            <DialogTitle>Still there?</DialogTitle>
+                            <p className="text-sm text-muted-foreground">
+                                You will be signed out in {seconds}s.
+                            </p>
+                        </DialogHeader>
+                        <div className="flex justify-end">
+                            <Button type="button" className="min-h-11" onClick={() => markActivity(true)}>
+                                Stay signed in
+                            </Button>
+                        </div>
+                    </DialogContent>
+                </Dialog>
+            ) : null}
+        </>
     );
 }
 
