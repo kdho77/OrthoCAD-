@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { ArrowLeft } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { navigate } from "@/features/admin/admin-nav";
@@ -90,7 +90,15 @@ export function useDesignRoute(clientId: string, designId: string) {
     return { record, ready, resolving };
 }
 
-export function EditorChrome({ clientId, designId }: { clientId: string; designId: string }) {
+export function EditorChrome({
+    clientId,
+    designId,
+    onRegisterLeave,
+}: {
+    clientId: string;
+    designId: string;
+    onRegisterLeave?: (leave: (href: string) => void) => void;
+}) {
     const client = useClientStore((s) => s.clients.find((row) => row.id === clientId) ?? null);
     const record = useClientStore((s) => s.designs.find((design) => design.id === designId) ?? null);
     const [name, setName] = useState(record?.name ?? "");
@@ -138,10 +146,14 @@ export function EditorChrome({ clientId, designId }: { clientId: string; designI
         };
     }, [record?.id, record?.kind]);
 
-    const leave = (href: string) => {
+    const leave = useCallback((href: string) => {
         if (dirtyRef.current) setPendingHref(href);
         else navigate(href);
-    };
+    }, []);
+
+    useEffect(() => {
+        onRegisterLeave?.(leave);
+    }, [leave, onRegisterLeave]);
 
     const clientLabel = client ? formatClientName(client) : "Client";
     const savedLabel = savedAt

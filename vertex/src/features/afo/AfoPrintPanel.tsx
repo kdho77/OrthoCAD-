@@ -20,6 +20,7 @@ import {
     currentAfoShellFingerprint,
     useAfoShellCurrent,
 } from "@/lib/geometry/afo/shell-fingerprint";
+import { flatPlateSpecFromAfo } from "@/lib/geometry/afo/shell-flatten";
 import { applyAfoTrimCleanup } from "@/lib/geometry/afo/trim-cleanup";
 import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
 import type { AfoTriMesh } from "@/lib/geometry/afo/types";
@@ -57,6 +58,11 @@ export function AfoPrintPanel() {
             setError("Confirm a closed trim loop first.");
             return;
         }
+        const flatPlate = flatPlateSpecFromAfo(getAfoState(), print.thicknessMm);
+        if (!flatPlate) {
+            setError("Place the plantar heel, 1st met head, and 5th met head before generating the shell.");
+            return;
+        }
         const startedFingerprint = currentAfoShellFingerprint();
         const startedToken = beginShellGeneration();
         setError(null);
@@ -76,12 +82,14 @@ export function AfoPrintPanel() {
                     edgeMm: print.edgeMm,
                     flareMm: print.flareMm,
                     trimPolygon: polygon ?? undefined,
-                    heelSeed: afo.scanWorkflow.derived?.heelCupCenter ?? undefined,
+                    heelSeed: afo.scanWorkflow.derived?.heelCupCenter ?? flatPlate.heel,
+                    flatPlate,
                     onProgress: (pct, stage) => setProgress({ pct, stage }),
                 },
             );
             commitShellIfCurrent({ startedFingerprint, startedToken, shell });
         } catch (e) {
+            // Rejection throws before setShell, so the previous shell stays.
             setError(e instanceof Error ? e.message : "Shell failed");
         } finally {
             setProgress(null);

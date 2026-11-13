@@ -263,6 +263,28 @@ export interface AfoOffsetOptions {
     onProgress?: (pct: number, stage: string) => void;
 }
 
+/**
+ * Plantar tripod for the mandatory forefoot plate.
+ * The contact plane is the plane through these landmarks. It is never the
+ * lowest mesh vertex. The bottom (belt) plane is exactly `thicknessMm` below it.
+ */
+export interface AfoFlatPlateSpec {
+    heel: AfoVec3;
+    /** Plantar 1st met head. */
+    m1: AfoVec3;
+    /** Plantar 5th met head. */
+    m5: AfoVec3;
+    /** Selected plate / shell thickness. Not a hard-coded 4 mm. */
+    thicknessMm: number;
+    /**
+     * Blend length behind the M1–M5 line, in millimetres.
+     * Fixed construction parameter. Not a UI control.
+     */
+    blendBehindMm?: number;
+    /** Preferred up direction. Plantar alignment uses +Z. */
+    upHint?: AfoVec3;
+}
+
 export interface AfoShellOptions {
     thicknessMm: number;
     edgeMm: number;
@@ -276,6 +298,11 @@ export interface AfoShellOptions {
     trimPolygon?: AfoVec3[];
     /** Plantar / heel seed for the kept posterior-leaf region, in mesh millimetres. */
     heelSeed?: AfoVec3;
+    /**
+     * Forefoot plate. Generate shell always sets this. Primitive shells
+     * (a sphere, a trim-only fixture) omit it and keep the plain offset.
+     */
+    flatPlate?: AfoFlatPlateSpec;
 }
 
 export interface TrimLoopValidation {

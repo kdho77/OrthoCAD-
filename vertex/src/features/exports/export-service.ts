@@ -403,6 +403,45 @@ export function printerGcodeSliceFields(apexMaterialId: ApexPrintMaterialId): {
     };
 }
 
+export interface HybridSliceRoute {
+    presetId: string;
+    material: "apex_vylon" | VertexSliceMaterialId;
+    /** Local belt slicer method. AFO is a shell, never the insole solid infill. */
+    method: "printing_shell" | "printing_solid";
+    /** Local Kiri preset. AFO uses the shell belt, not apex-belt-v2. */
+    localPresetId: string;
+}
+
+/**
+ * AFO G-code uses the ApexVylon shell profile, including when the insole
+ * picker still says Apex Core. Send to VertexSlice and the normal export
+ * share this route.
+ */
+export function resolveHybridSlice(
+    design: { productType?: string },
+    options: { afoSliceMaterial?: "apex_vylon"; apexMaterialId?: ApexPrintMaterialId } = {},
+): HybridSliceRoute | null {
+    if (design.productType === "afo" || options.afoSliceMaterial === "apex_vylon") {
+        const fields = afoShellSliceFields();
+        return {
+            presetId: fields.presetId,
+            material: fields.material,
+            method: "printing_shell",
+            localPresetId: "apex-belt-v2-shell",
+        };
+    }
+    if (options.apexMaterialId && isApexPrintMaterialExportReady(options.apexMaterialId)) {
+        const fields = printerGcodeSliceFields(options.apexMaterialId);
+        return {
+            presetId: fields.presetId,
+            material: fields.material,
+            method: "printing_solid",
+            localPresetId: "apex-belt-v2",
+        };
+    }
+    return null;
+}
+
 /**
  * One foot, in its own frame. This is the only mesh the belt slicer receives.
  * It calls {@link buildExportStl} for `side` and never the Y-shifted pair.
@@ -516,17 +555,14 @@ export async function generateHybridGcode(
     // Belt: one local-frame STL per foot. Bed printers keep the side-by-side pair STL.
     const separateFiles = pairExportLayout(family) === "separate-files";
     const outputType = separateFiles ? "gcode" : "stl";
-    const afoSlice = options.afoSliceMaterial === "apex_vylon" ? afoShellSliceFields() : null;
-    if (outputType === "gcode" && !afoSlice && !isApexPrintMaterialExportReady(options.apexMaterialId)) {
+    const sliceRoute = resolveHybridSlice(useDesignStore.getState().design, options);
+    if (outputType === "gcode" && !sliceRoute) {
         return {
             ok: false,
-            reason: "Pick Apex Light or Apex Core before exporting G-code.",
+            reason: "Pick Apex Light, Apex Core, Apex Bounce, or Apex Forge before exporting G-code.",
         };
     }
-    const sliceFields =
-        outputType === "gcode"
-            ? (afoSlice ?? (options.apexMaterialId ? printerGcodeSliceFields(options.apexMaterialId) : null))
-            : null;
+    const sliceFields = outputType === "gcode" ? sliceRoute : null;
     const ext = outputType === "gcode" ? "gcode" : "stl";
     const filename =
         outputType === "gcode"

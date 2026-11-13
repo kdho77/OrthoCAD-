@@ -1,0 +1,12 @@
+{
+  "path": "local-slicer-only",
+  "productionVertexSlice": false,
+  "note": "Production G-code goes through generateHybridGcode to VertexSlice generateSolid. This record is the local Kiri slicer and is not production-belt-proven.",
+  "z": 0.3,
+  "regions": 2,
+  "extrude": 339,
+  "footprintMm2": 15164.37060956487,
+  "gcodeChars": 2018184,
+  "preset": "apex-belt-v2-shell",
+  "method": "printing_shell"
+}
