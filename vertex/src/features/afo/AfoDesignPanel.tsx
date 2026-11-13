@@ -3,10 +3,11 @@
 import { useEffect } from "react";
 import { AFO_DESIGN_MARKERS } from "@/lib/geometry/afo/defaults";
 import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
+import { flatPlateSpecFromAfo } from "@/lib/geometry/afo/shell-flatten";
 import { applyAfoTrimCleanup } from "@/lib/geometry/afo/trim-cleanup";
 import { loopNearZ, validateTrimLoop } from "@/lib/geometry/afo/trim-loop";
 import { AFO_TRIM_NO_MESH } from "@/lib/geometry/afo/trim-preview";
-import { balanceBracePins, fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
+import { balanceBracePins, fitSurfaceSpline, flatPlateTrimLoop } from "@/lib/geometry/afo/trim-spline";
 import { getAfoState, patchAfoState, useAfoStore } from "@/stores/afo-store";
 import { useDesignStore } from "@/stores/design-store";
 
@@ -104,6 +105,33 @@ export function AfoDesignPanel() {
                 trimConfirmed: false,
             },
             "afo-trim-spline",
+        );
+    };
+
+    const placeFlatPlateTrim = () => {
+        if (!working) return;
+        const spec = flatPlateSpecFromAfo(afo, afo.print.thicknessMm);
+        if (!spec) {
+            useAfoStore.getState().setLastError("Place the plantar heel, 1st met head, and 5th met head first.");
+            return;
+        }
+        const loop = flatPlateTrimLoop(working, spec);
+        if (loop.pins.length < 3) {
+            useAfoStore.getState().setLastError("Could not derive a flat-plate trim from this cast.");
+            return;
+        }
+        useAfoStore.getState().setLastError(null);
+        patchAfoState(
+            {
+                trimCurve: loop.curve,
+                trimPoints: loop.pins.map((point) => ({
+                    point,
+                    vertexIndex: nearestVertex(working, point).index,
+                })),
+                trimClosed: true,
+                trimConfirmed: false,
+            },
+            "afo-flat-plate-trim",
         );
     };
 
@@ -236,6 +264,14 @@ export function AfoDesignPanel() {
                     onClick={fitSpline}
                 >
                     Fit smooth trim
+                </button>
+                <button
+                    type="button"
+                    disabled={!working}
+                    className="h-8 w-full rounded-md border border-border bg-background"
+                    onClick={placeFlatPlateTrim}
+                >
+                    Flat plate trim
                 </button>
                 <button
                     type="button"

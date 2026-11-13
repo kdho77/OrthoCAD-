@@ -12,6 +12,7 @@ import { buildCurledAfoCast } from "./curled-afo-cast";
 import { AFO_EDGE_MM, AFO_FLARE_MM } from "./defaults";
 import { buildAfoShell, trimPolygonForShell } from "./shell";
 import { flatPlateLockOf } from "./shell-flatten";
+import { flatPlateTrimLoop } from "./trim-spline";
 import type { AfoTriMesh, AfoVec3 } from "./types";
 
 const OUT = join(process.cwd(), "docs/afo-flat");
@@ -39,6 +40,40 @@ describe("AFO flat plate review", () => {
             expect(filledPixels(sectionPng), side).toBeGreaterThan(1500);
             writePng(join(OUT, `${side}-side.png`), sidePng);
             writePng(join(OUT, `${side}-sections.png`), sectionPng);
+        }
+    });
+
+    test("bottom and oblique views of the ragged edge and the smooth plate trim", () => {
+        mkdirSync(OUT, { recursive: true });
+        const cast = buildCurledAfoCast("left", 36, 16);
+        const spec = { heel: cast.heel, m1: cast.m1, m5: cast.m5, thicknessMm: 4 };
+        const ragged = footplate(cast.mesh, "left");
+        const smooth = flatPlateTrimLoop(cast.mesh, spec).curve;
+        const options = {
+            thicknessMm: 4,
+            edgeMm: AFO_EDGE_MM,
+            flareMm: AFO_FLARE_MM,
+            heelSeed: cast.heel,
+            flatPlate: spec,
+        };
+        const before = buildAfoShell(cast.mesh, [0, 1, 2], {
+            ...options,
+            trimPolygon: trimPolygonForShell(ragged, true) ?? undefined,
+        });
+        const after = buildAfoShell(cast.mesh, [0, 1, 2], {
+            ...options,
+            trimPolygon: trimPolygonForShell(smooth, true) ?? undefined,
+        });
+        const shots: Array<["before" | "after", "bottom" | "oblique", AfoTriMesh, AfoVec3[]]> = [
+            ["before", "bottom", before, ragged],
+            ["before", "oblique", before, ragged],
+            ["after", "bottom", after, smooth],
+            ["after", "oblique", after, smooth],
+        ];
+        for (const [name, view, mesh, curve] of shots) {
+            const png = renderPlate(mesh, curve, view);
+            expect(filledPixels(png), `${name}-${view}`).toBeGreaterThan(4000);
+            writePng(join(OUT, `${name}-${view}.png`), png);
         }
     });
 
@@ -359,6 +394,63 @@ function blank(width: number, height: number): PNG {
 function writePng(path: string, png: PNG): void {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, PNG.sync.write(png));
+}
+
+/** Bottom view looks down +Z. Oblique looks from the front-lateral side, above the plate. */
+function renderPlate(mesh: AfoTriMesh, curve: AfoVec3[], view: "bottom" | "oblique"): PNG {
+    const png = blank(880, 640);
+    const project = (p: V3): [number, number, number] => {
+        if (view === "bottom") return [p[0], -p[1], p[2]];
+        return [p[0] * 0.78 + p[1] * 0.5, -p[2] * 0.92 + p[1] * 0.22 + p[0] * 0.08, -p[1] * 0.65 + p[2] * 0.35 + p[0] * 0.12];
+    };
+    const faces = (mesh.indices.length / 3) | 0;
+    const tris: { depth: number; p: [V3, V3, V3] }[] = [];
+    let minU = Infinity;
+    let maxU = -Infinity;
+    let minV = Infinity;
+    let maxV = -Infinity;
+    const consider = (q: [number, number, number]) => {
+        minU = Math.min(minU, q[0]);
+        maxU = Math.max(maxU, q[0]);
+        minV = Math.min(minV, q[1]);
+        maxV = Math.max(maxV, q[1]);
+    };
+    for (let f = 0; f < faces; f++) {
+        const p = [0, 1, 2].map((k) => vert(mesh, mesh.indices[f * 3 + k] ?? 0, 0)) as [V3, V3, V3];
+        tris.push({ depth: (project(p[0]).at(2)! + project(p[1]).at(2)! + project(p[2]).at(2)!) / 3, p });
+        for (const corner of p) consider(project(corner));
+    }
+    for (const point of curve) consider(project([point.x, point.y, point.z]));
+    const sx = 800 / Math.max(1, maxU - minU);
+    const sy = 560 / Math.max(1, maxV - minV);
+    const scale = Math.min(sx, sy);
+    const toPx = (q: [number, number, number]): [number, number] => [
+        40 + (q[0] - minU) * scale,
+        40 + (maxV - q[1]) * scale,
+    ];
+    const light: V3 = [0.35, -0.72, 0.6];
+    tris.sort((a, b) => a.depth - b.depth);
+    for (const tri of tris) {
+        const [a, b, c] = tri.p;
+        const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        const n: V3 = [
+            e1[1]! * e2[2]! - e1[2]! * e2[1]!,
+            e1[2]! * e2[0]! - e1[0]! * e2[2]!,
+            e1[0]! * e2[1]! - e1[1]! * e2[0]!,
+        ];
+        const nl = Math.hypot(n[0], n[1], n[2]) || 1;
+        const facing = Math.abs((n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / nl);
+        const shade = 0.38 + 0.62 * facing;
+        const rgb: RGB = [Math.round(36 * shade), Math.round(92 * shade), Math.round(150 * shade)];
+        fillTri(png, toPx(project(a)), toPx(project(b)), toPx(project(c)), rgb);
+    }
+    for (let i = 0; i < curve.length; i++) {
+        const a = curve[i]!;
+        const b = curve[(i + 1) % curve.length]!;
+        line(png, toPx(project([a.x, a.y, a.z])), toPx(project([b.x, b.y, b.z])), [232, 176, 32], 2);
+    }
+    return png;
 }
 
 function firstLayer(moves: Move[]): { z: number; regions: number; extrude: number; footprintMm2: number } {

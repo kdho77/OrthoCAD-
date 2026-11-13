@@ -150,6 +150,47 @@ export const AFO_TRIM_NORMAL_RAY_MM = 5;
 /** Adjacent projected samples farther than this multiple of the spacing are subdivided. */
 export const AFO_TRIM_JUMP_FACTOR = 3;
 
+/**
+ * Flat-plate trim, measured in the contact plane from the cast silhouette.
+ *
+ * An M10.5-scale sole is about 80 mm wide. One third of that width is the
+ * lateral inset at midfoot, so the lateral line sits well inside the ragged
+ * cast edge. The medial line stays close to the medial border through the
+ * heel and midfoot, then sweeps across the forefoot. Heel and toe close on
+ * arcs of at least {@link AFO_FLAT_TRIM_MIN_RADIUS_MM}, and a straight run
+ * eases into those arcs over {@link AFO_FLAT_TRIM_BLEND_MM}.
+ */
+/** Fraction of the local plate width taken off the lateral cast edge. One third at midfoot. */
+export const AFO_FLAT_TRIM_LATERAL_INSET_RATIO = 1 / 3;
+/** Medial inset from the cast edge along the heel cup and midfoot (mm). */
+export const AFO_FLAT_TRIM_MEDIAL_INSET_MM = 6;
+/** Posterior inset of the heel U from the cast's posterior sole edge (mm). */
+export const AFO_FLAT_TRIM_HEEL_INSET_MM = 10;
+/**
+ * Anterior inset of the toe closure (mm). This cuts off the flared toe tab
+ * instead of tracing it.
+ */
+export const AFO_FLAT_TRIM_TOE_INSET_MM = 22;
+/**
+ * Minimum radius of curvature of the flat-plate trim (mm).
+ * 15 mm is the floor on the plate. The default loop builds its fillets and
+ * heel/toe caps at least 8 mm larger than this, so a straight run meeting an
+ * arc does not show up as a short kink.
+ */
+export const AFO_FLAT_TRIM_MIN_RADIUS_MM = 15;
+/**
+ * Length of the straight run that leads into a heel or toe cap (mm).
+ * The side meets the cap tangent to that run, over at least this distance.
+ */
+export const AFO_FLAT_TRIM_BLEND_MM = 25;
+/**
+ * Intended even break of the printed trim edge (mm). The cut itself follows
+ * the smooth trim loop. Pulling sole vertices in by this amount adds
+ * self-intersections on the plate, so the sole stays on the belt and this
+ * value is the break to apply once that move can be made cleanly.
+ */
+export const AFO_FLAT_TRIM_CHAMFER_MM = 1;
+
 export const AFO_DESIGN_MARKERS = [
     { id: "proximal_medial", label: "Proximal medial", view: "medial" },
     { id: "proximal_lateral", label: "Proximal lateral", view: "lateral" },
