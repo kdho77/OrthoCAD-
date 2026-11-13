@@ -254,6 +254,8 @@ const attachFileSchema = z
         /** CAD provenance only. Not copied into the VO file object. */
         storage_key: z.string().trim().min(1).max(500).optional(),
         filename: z.string().max(200).optional(),
+        patient_name: z.string().max(200).optional(),
+        material: z.string().max(80).optional(),
         content_base64: z.string().min(1).optional(),
         download_url: z.string().min(1).max(4000).optional(),
         expires_at: z.string().min(1).max(80).optional(),
@@ -266,6 +268,8 @@ export const prepareVoAttachmentInputSchema = z
         order_id: z.string().uuid(),
         /** CAD provenance only. Not sent; VO would check the design link. */
         design_id: z.string().uuid().optional(),
+        patient_name: z.string().max(200).optional(),
+        material: z.string().max(80).optional(),
         files: z.array(attachFileSchema).min(1).max(2),
     })
     .strict();

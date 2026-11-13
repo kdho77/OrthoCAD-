@@ -505,5 +505,13 @@ export function prismaProductionRepo(prisma: PrismaClient): ProductionRepo {
         async clearGcode(jobId) {
             await prisma.jobGcode.deleteMany({ where: { jobId } });
         },
+        async getClientPatientParts(clientId) {
+            const row = await prisma.client.findUnique({
+                where: { id: clientId },
+                select: { firstName: true, lastName: true },
+            });
+            if (!row) return null;
+            return { firstName: row.firstName ?? "", lastName: row.lastName ?? "" };
+        },
     };
 }

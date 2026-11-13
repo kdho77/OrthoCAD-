@@ -1,6 +1,7 @@
 import {
     type ApexPrintMaterialId,
     afoShellSliceFields,
+    DEFAULT_APEX_PRINT_MATERIAL_ID,
     isApexPrintMaterialExportReady,
     lockedProfileIdForApexMaterial,
     type VertexSliceMaterialId,
@@ -43,8 +44,41 @@ import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
 import type { DesignState, ExportFormat, GrindingStyle, Side } from "@/types";
+import {
+    buildExportFilename,
+    canonicalExportMaterialName,
+    exportSideSuffix,
+} from "../../../shared/export-filename";
 import { classDensityPct } from "../../../shared/print-recipe/hardness-class-table";
 import { bindPrintRecipeProfile } from "../../../shared/print-recipe/print-recipe";
+
+function activeExportPatientParts(): { firstName: string; lastName: string } {
+    const { activeClientId, clients } = useClientStore.getState();
+    if (!activeClientId) return { firstName: "", lastName: "" };
+    const client = clients.find((row) => row.id === activeClientId);
+    if (!client) return { firstName: "", lastName: "" };
+    return { firstName: client.firstName ?? "", lastName: client.lastName ?? "" };
+}
+
+function userExportFilename(input: {
+    sides: Side | Side[];
+    ext: string;
+    material?: string | ApexPrintMaterialId | null;
+}): string {
+    const patient = activeExportPatientParts();
+    const sideArg = Array.isArray(input.sides) ? input.sides : input.sides;
+    const material =
+        input.material != null && String(input.material).trim()
+            ? canonicalExportMaterialName(String(input.material))
+            : DEFAULT_APEX_PRINT_MATERIAL_ID;
+    return buildExportFilename({
+        firstName: patient.firstName,
+        lastName: patient.lastName,
+        material,
+        side: exportSideSuffix(sideArg),
+        ext: input.ext,
+    });
+}
 
 // Re-export for convenience in UI components
 export type GrindingStyleInput = GrindingStyle;
@@ -172,9 +206,7 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
     const { design } = useDesignStore.getState();
     const afoExport = design.productType === "afo";
     const sides = afoExport ? [side] : orderDownloadSides(design);
-    const filename = afoExport
-        ? `afo-${side}-${Date.now()}.stl`
-        : `insole-${sides.join("-")}-${Date.now()}.stl`;
+    const filename = userExportFilename({ sides: sides.length > 1 ? sides : side, ext: "stl" });
     try {
         const stl =
             sides.length > 1
@@ -289,7 +321,7 @@ export async function export3mf(side: Side): Promise<ExportOutcome> {
     if (!check.ok) return { ok: false, reason: check.reason };
     const { design } = useDesignStore.getState();
     const sides = orderDownloadSides(design);
-    const filename = `insole-${sides.join("-")}-${Date.now()}.3mf`;
+    const filename = userExportFilename({ sides: sides.length > 1 ? sides : side, ext: "3mf" });
     try {
         const packed = sides.length > 1 ? await packOrder3mf(design, sides) : await packOne3mf(design, side);
         const blob = new Blob([packed.bytes], { type: "model/3mf" });
@@ -308,7 +340,7 @@ export async function exportGlb(side: Side): Promise<ExportOutcome> {
     const { user, license } = useAuthStore.getState();
     const check = canExport(user, license, "glb");
     if (!check.ok) return { ok: false, reason: check.reason };
-    const filename = `insole-${side}-${Date.now()}.glb`;
+    const filename = userExportFilename({ sides: side, ext: "glb" });
     try {
         const arrayBuffer = await buildExportGlb(side);
         const blob = new Blob([arrayBuffer], { type: "model/gltf-binary" });
@@ -324,7 +356,12 @@ export async function exportCncGcode(sides: Side[], profile: MillingProfile): Pr
     const { design } = useDesignStore.getState();
     const millSides = cncSidesForOrder(design, sides);
     const before = JSON.stringify(design);
-    const filename = `insole-cnc-${millSides.join("-")}-${Date.now()}${profile.fileExtension || ".gcode"}`;
+    const cncExt = (profile.fileExtension || ".gcode").replace(/^\./, "");
+    const filename = userExportFilename({
+        sides: millSides.length > 1 ? millSides : (millSides[0] ?? "left"),
+        ext: cncExt,
+        material: DEFAULT_APEX_PRINT_MATERIAL_ID,
+    });
     try {
         const parts = await workpiecesFromDesign(design, millSides, profile);
         if (parts.length === 0) {
@@ -384,8 +421,11 @@ export interface HybridGcodeOptions {
     shouldAbort?: () => boolean;
 }
 
-export function hybridGcodeFilename(side: Side, presetId: string, now = Date.now()): string {
-    return `hybrid-${side}-${presetId}-${now}.gcode`;
+export function hybridGcodeFilename(
+    side: Side,
+    material: ApexPrintMaterialId | string = DEFAULT_APEX_PRINT_MATERIAL_ID,
+): string {
+    return userExportFilename({ sides: side, ext: "gcode", material });
 }
 
 function exportCancelled(): ExportOutcome {
@@ -514,7 +554,11 @@ export async function exportGcode(
     options.onProgress?.(GCODE_EXPORT_STEPS.prepare);
     await yieldToPaint();
     const sides = orderDownloadSides(design);
-    const filename = `insole-${sides.join("-")}-${preset.id}-${Date.now()}.gcode`;
+    const filename = userExportFilename({
+        sides: sides.length > 1 ? sides : side,
+        ext: "gcode",
+        material: canonicalExportMaterialName(preset.material),
+    });
     const auth = await authorize("gcode", side, filename);
     if (!auth.ok) return { ok: false, reason: auth.reason };
     const geometry = await buildOrderPairGeometry();
@@ -564,10 +608,12 @@ export async function generateHybridGcode(
     }
     const sliceFields = outputType === "gcode" ? sliceRoute : null;
     const ext = outputType === "gcode" ? "gcode" : "stl";
-    const filename =
-        outputType === "gcode"
-            ? hybridGcodeFilename(side, sliceFields?.presetId ?? preset.id)
-            : `hybrid-${side}-${sliceFields?.presetId ?? preset.id}-${Date.now()}.${ext}`;
+    const exportMaterial =
+        options.apexMaterialId ??
+        (sliceFields?.material
+            ? canonicalExportMaterialName(sliceFields.material)
+            : DEFAULT_APEX_PRINT_MATERIAL_ID);
+    const filename = userExportFilename({ sides: side, ext, material: exportMaterial });
 
     if (outputType === "gcode" && !isApiConfigured()) {
         return {
@@ -710,7 +756,12 @@ export async function downloadGcodeByProductionId(productionId: string): Promise
             throw new Error(`Failed to fetch G-code (status ${textResp.status})`);
         }
         const gcodeText = await textResp.text();
-        const filename = `hybrid-${productionId}.gcode`;
+        const { design } = useDesignStore.getState();
+        const feet = orderDownloadSides(design);
+        const filename = userExportFilename({
+            sides: feet.length === 1 ? (feet[0] ?? "left") : "left",
+            ext: "gcode",
+        });
         const blob = new Blob([gcodeText], { type: "text/plain" });
         downloadBlob(blob, filename);
         recordExport(`Hybrid G-code re-download via productionId ${productionId}`);

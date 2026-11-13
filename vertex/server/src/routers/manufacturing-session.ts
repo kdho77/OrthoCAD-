@@ -11,6 +11,11 @@ import {
     getDesignFile,
 } from "../../../shared/client-files.js";
 import {
+    buildExportFilename,
+    canonicalExportMaterialName,
+    exportSideSuffix,
+} from "../../../shared/export-filename.js";
+import {
     gyroidInfillPctForHardness,
     isGyroidManufacturingPreset,
     migratePrintRecipe,
@@ -346,8 +351,16 @@ export async function runSessionGenerateSolid(args: {
             });
         }
 
-        const defaultName = isGcode ? `hybrid-${presetId}.gcode` : `hybrid-${presetId}.stl`;
-        const safeName = (input.fileName || defaultName).replace(/[^a-zA-Z0-9_.-]/g, "_");
+        const userExportFileName =
+            input.fileName?.trim() ||
+            buildExportFilename({
+                firstName: "",
+                lastName: "",
+                material: canonicalExportMaterialName(material),
+                side: exportSideSuffix(input.side ?? "left"),
+                ext: isGcode ? "gcode" : "stl",
+            });
+        const safeName = userExportFileName.replace(/[^a-zA-Z0-9_.-]/g, "_");
         const storagePrefix = isGcode ? "gcode" : "manufacturing-output";
         const storageKey = `${storagePrefix}/${input.designId || "adhoc"}/${Date.now()}-${safeName}`;
         const contentType = isGcode ? "text/plain" : "model/stl";

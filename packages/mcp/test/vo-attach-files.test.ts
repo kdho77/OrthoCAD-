@@ -65,11 +65,12 @@ describe("shipping attach_files contract", () => {
             {
                 order_id: orderId,
                 design_id: designId,
+                patient_name: "Jane Doe",
+                material: "apex_core",
                 files: produced.files.map((file) => ({
                     side: file.side,
                     content_base64: file.content_base64,
                     storage_key: file.storage_key,
-                    filename: "File Ready",
                 })),
             },
             { config, manufacturing },
@@ -77,7 +78,11 @@ describe("shipping attach_files contract", () => {
         expect(attached.isError).toBeUndefined();
         const payload = toolJson(attached) as {
             vo_attach_files: Record<string, unknown> & { files: Array<Record<string, unknown>> };
-            cad_provenance: { design_id: string; vo_duplicate_suppression: string; files: Array<{ storage_key: string }> };
+            cad_provenance: {
+                design_id: string;
+                vo_duplicate_suppression: string;
+                files: Array<{ storage_key: string }>;
+            };
             order_status_written: boolean;
         };
         expect(voAttachArgumentError(payload.vo_attach_files, now)).toBeNull();
@@ -88,8 +93,18 @@ describe("shipping attach_files contract", () => {
             "source",
         ]);
         expect(payload.vo_attach_files.files.map((file) => file.side)).toEqual(["left", "right"]);
-        expect(payload.vo_attach_files.files.map((file) => file.filename)).toEqual(["left.gcode", "right.gcode"]);
-        for (const key of ["order_id", "storage_key", "idempotency_key", "tenant_id", "design_id", "status"]) {
+        expect(payload.vo_attach_files.files.map((file) => file.filename)).toEqual([
+            "Jane_Doe_ApexCore_L.gcode",
+            "Jane_Doe_ApexCore_R.gcode",
+        ]);
+        for (const key of [
+            "order_id",
+            "storage_key",
+            "idempotency_key",
+            "tenant_id",
+            "design_id",
+            "status",
+        ]) {
             expect(payload.vo_attach_files).not.toHaveProperty(key);
         }
         for (const key of ["storage_key", "idempotency_key", "status"]) {
@@ -187,7 +202,13 @@ describe("shipping attach_files contract", () => {
         expect(() =>
             buildVoAttachFilesHandoff({
                 order_id: orderId,
-                files: [{ side: "left", content_base64: leftGcode, download_url: "https://files.example.test/a.gcode" }],
+                files: [
+                    {
+                        side: "left",
+                        content_base64: leftGcode,
+                        download_url: "https://files.example.test/a.gcode",
+                    },
+                ],
             }),
         ).toThrow(/not both/);
         expect(() =>
@@ -246,7 +267,7 @@ describe("status and hold guards", () => {
             files: [{ side: "left", content_base64: leftGcode, filename: "left file ready.gcode" }],
             now,
         });
-        expect(prepared.vo_attach_files.files[0]?.filename).toBe("left file ready.gcode");
+        expect(prepared.vo_attach_files.files[0]?.filename).toBe("Unknown_Patient_ApexCore_L.gcode");
         expect(prepared.order_status_written).toBe(false);
         expect(prepared.vo_attach_files).not.toHaveProperty("design_id");
         expect(prepared.vo_attach_files).not.toHaveProperty("tenant_id");

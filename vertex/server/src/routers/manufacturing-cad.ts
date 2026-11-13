@@ -48,6 +48,8 @@ export interface CadGeneratePlan {
     ownerId: string;
     useSavedDesignMesh: boolean;
     settingsJson: unknown;
+    clientFirstName: string;
+    clientLastName: string;
 }
 
 const designSelect = {
@@ -198,6 +200,8 @@ export async function prepareCadOperatorGenerate(args: {
         material,
         beltAngleDeg: CAD_OPERATOR_BELT_ANGLE_DEG,
         ownerId: design.ownerId,
+        clientFirstName: row?.client.firstName ?? "",
+        clientLastName: row?.client.lastName ?? "",
     };
     if (!args.useSavedDesignMesh) {
         try {

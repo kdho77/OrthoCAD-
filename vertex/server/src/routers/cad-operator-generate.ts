@@ -4,6 +4,11 @@
 import type { PrismaClient } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 import {
+    buildExportFilename,
+    canonicalExportMaterialName,
+    exportSideSuffix,
+} from "../../../shared/export-filename.js";
+import {
     selectVertexSliceUpload,
     vertexSliceRegional3mfEnabled,
 } from "../../../shared/vertexslice-regional-3mf.js";
@@ -42,6 +47,20 @@ import {
 import { assertDesignExportAccess } from "./manufacturing-session.js";
 
 type SessionExportUser = { id: string; email: string; role: string };
+
+function cadOperatorUserExportFilename(
+    input: CadGenerateRequestInput,
+    plan: Awaited<ReturnType<typeof prepareCadOperatorGenerate>>,
+): string {
+    if (input.fileName?.trim()) return input.fileName.trim();
+    return buildExportFilename({
+        firstName: plan.clientFirstName,
+        lastName: plan.clientLastName,
+        material: canonicalExportMaterialName(plan.material),
+        side: exportSideSuffix(input.side),
+        ext: "gcode",
+    });
+}
 
 export interface CadGenerateRequestInput {
     designId: string;
@@ -105,6 +124,7 @@ export async function runCadOperatorGenerateRequest(args: {
         presetId: input.presetId,
         material: input.material,
     });
+    const userExportFileName = cadOperatorUserExportFilename(input, plan);
     const identity = cadOperatorManufacturingIdentity({
         designId: input.designId,
         side: input.side,
@@ -202,10 +222,7 @@ export async function runCadOperatorGenerateRequest(args: {
                     return { gcode, jobId: `vs_${jobStamp}` };
                 },
                 uploadGcode: async (gcode) => {
-                    const safeName = (input.fileName || `hybrid-${plan.presetId}.gcode`).replace(
-                        /[^a-zA-Z0-9_.-]/g,
-                        "_",
-                    );
+                    const safeName = userExportFileName.replace(/[^a-zA-Z0-9_.-]/g, "_");
                     const storageKey = buildCadOperatorGcodeKey(
                         args.principal.credentialId,
                         input.designId,
@@ -229,10 +246,7 @@ export async function runCadOperatorGenerateRequest(args: {
                             designId: input.designId,
                             exportFormat: "gcode",
                             side: input.side,
-                            fileName: (input.fileName || `hybrid-${plan.presetId}.gcode`).replace(
-                                /[^a-zA-Z0-9_.-]/g,
-                                "_",
-                            ),
+                            fileName: userExportFileName.replace(/[^a-zA-Z0-9_.-]/g, "_"),
                             presetId: plan.presetId,
                             beltAngleDeg: plan.beltAngleDeg,
                             layerHeightMm: input.layerHeightMm ?? null,
