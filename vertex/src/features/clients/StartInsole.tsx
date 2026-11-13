@@ -4,6 +4,7 @@
 import { Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { ShoeSizeSelect } from "@/features/clients/ShoeSizeSelect";
 import { designFromScan } from "@/lib/clinical/chart-design";
 import { classifyArchHeightMm } from "@/lib/clinical/one-click-adapter";
 import {
@@ -67,25 +68,28 @@ export function ShoeChartPanel({
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 {chart.shoeSizesSplit ? (
                     <>
-                        <SizeField
+                        <ShoeSizeSelect
                             label="Left size"
                             testId="shoe-size-left"
                             value={chart.shoeSizeLeftUs}
-                            onChange={(shoeSizeLeftUs) => set({ shoeSizeLeftUs })}
+                            onChange={(shoeSizeLeftUs) => shoeSizeLeftUs != null && set({ shoeSizeLeftUs })}
                         />
-                        <SizeField
+                        <ShoeSizeSelect
                             label="Right size"
                             testId="shoe-size-right"
                             value={chart.shoeSizeRightUs}
-                            onChange={(shoeSizeRightUs) => set({ shoeSizeRightUs })}
+                            onChange={(shoeSizeRightUs) =>
+                                shoeSizeRightUs != null && set({ shoeSizeRightUs })
+                            }
                         />
                     </>
                 ) : (
-                    <SizeField
-                        label="Shoe size (US men's)"
+                    <ShoeSizeSelect
+                        label="Shoe size"
                         testId="shoe-size"
                         value={chart.shoeSizeUs}
                         onChange={(shoeSizeUs) =>
+                            shoeSizeUs != null &&
                             set({ shoeSizeUs, shoeSizeLeftUs: shoeSizeUs, shoeSizeRightUs: shoeSizeUs })
                         }
                     />
@@ -111,35 +115,6 @@ export function ShoeChartPanel({
                 Generated size US men's {chartGeneratedSize(chart)}. Width {WIDTH_LABELS[chart.shoeWidth]}.
             </p>
         </section>
-    );
-}
-
-function SizeField({
-    label,
-    testId,
-    value,
-    onChange,
-}: {
-    label: string;
-    testId: string;
-    value: number;
-    onChange: (value: number) => void;
-}) {
-    return (
-        <label className="text-xs text-muted-foreground">
-            {label}
-            <input
-                data-testid={testId}
-                aria-label={label}
-                type="number"
-                min={1}
-                max={16}
-                step={0.5}
-                value={value}
-                className="mt-1 block min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
-                onChange={(event) => onChange(Number(event.target.value))}
-            />
-        </label>
     );
 }
 

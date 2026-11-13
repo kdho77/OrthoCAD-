@@ -19,6 +19,7 @@ import {
     reseatFlatPlate,
     reseatInnerForefoot,
     seatBottomPlaneAtZ0,
+    smoothPlateCut,
 } from "./shell-flatten";
 import {
     boundaryLoops,
@@ -87,6 +88,9 @@ export function buildAfoShell(
         reseatFlatPlate(shell, plate);
         enforceShellClearance(shell, options.thicknessMm, options.edgeMm, plate.sole);
         plate.planes = seatBottomPlaneAtZ0(shell, plate.planes);
+        // The plate cut is the trim polyline. smoothPlateCut is the hook for
+        // an edge break that does not lift the sole or add intersections.
+        smoothPlateCut(shell, plate);
         rememberFlatPlate(shell, plate);
         assertFlatPlateAccepted(shell, plate, options.edgeMm);
     }

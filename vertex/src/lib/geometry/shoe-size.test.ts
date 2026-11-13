@@ -6,20 +6,28 @@ import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import {
     convertSizingToSystem,
     DEFAULT_US_MEN_SIZE,
+    displaySizeForUsMen,
+    euShoeSizeOptions,
+    euToUsMen,
     footLengthMmOptions,
+    formatEuShoeSizeLabel,
     formatUkShoeSizeLabel,
     formatUsShoeSizeLabel,
     insoleLayoutForFootLengthMm,
     insoleLayoutForUkSize,
     insoleLayoutForUsMenSize,
     insoleLayoutFromDesign,
+    normalizeFootLengthMm,
     normalizeUsMenSize,
     REFERENCE_US_MEN_SIZE,
     scaleGeometryToInsoleSize,
     scaleSourceShapeToFootprint,
+    shoeSizePickerOptions,
     ukFootLengthMm,
     ukShoeSizeOptions,
     usMenFootLengthMm,
+    usMenSizeFromDisplayUnit,
+    usMenToEu,
     usMenToUk,
     usShoeSizeOptions,
     usWomenFromMen,
@@ -152,6 +160,56 @@ describe("UK and mm sizing systems", () => {
         const mm = insoleLayoutFromDesign({ sizeSystem: "mm", footLengthMm: 270 });
         expect(mm.sizeSystem).toBe("mm");
         expect(mm.footLengthMm).toBe(270);
+    });
+});
+
+describe("EU sizing and client picker", () => {
+    test("EU labels and US men's 9 maps to EU 42", () => {
+        expect(usMenToEu(9)).toBe(42);
+        expect(formatEuShoeSizeLabel(42)).toBe("EU 42");
+        expect(euToUsMen(42)).toBe(9);
+    });
+
+    test("picker labels keep M/W/Youth on one line", () => {
+        const us = shoeSizePickerOptions("us");
+        expect(us.find((o) => o.value === 12)?.label).toBe("M 12 / W 13.5");
+        expect(us.find((o) => o.value === 5.5)?.label).toBe("M 5.5 / W 7 / Youth 5.5");
+    });
+
+    test("US, UK, EU and mm selections map to the same canonical men's 9", () => {
+        const layout9 = insoleLayoutForUsMenSize(9);
+        expect(usMenSizeFromDisplayUnit("us", 9)).toBe(9);
+        expect(usMenSizeFromDisplayUnit("uk", usMenToUk(9))).toBe(9);
+        expect(usMenSizeFromDisplayUnit("eu", usMenToEu(9))).toBe(9);
+        const mmNine = displaySizeForUsMen("mm", 9);
+        expect(mmNine).toBe(260);
+        expect(Math.abs(usMenSizeFromDisplayUnit("mm", mmNine) - 9)).toBeLessThanOrEqual(1);
+        expect(layout9.lengthMm).toBeCloseTo(INSOLE_LENGTH_MM, 6);
+
+        const euOpts = euShoeSizeOptions();
+        const eu42 = euOpts.find((o) => o.euSize === 42);
+        expect(eu42?.usMenSize).toBe(9);
+        expect(eu42?.footLengthMm).toBeCloseTo(usMenFootLengthMm(9), 6);
+    });
+
+    test("round-trip saved US men's size shows the correct option in each unit", () => {
+        const saved = 10.5;
+        expect(displaySizeForUsMen("us", saved)).toBe(10.5);
+        expect(displaySizeForUsMen("uk", saved)).toBe(usMenToUk(10.5));
+        expect(displaySizeForUsMen("eu", saved)).toBe(usMenToEu(10.5));
+        expect(displaySizeForUsMen("mm", saved)).toBe(normalizeFootLengthMm(usMenFootLengthMm(saved)));
+
+        const usLabel = shoeSizePickerOptions("us").find((o) => o.value === saved)?.label;
+        expect(usLabel).toBe(formatUsShoeSizeLabel(saved));
+
+        expect(usMenSizeFromDisplayUnit("eu", displaySizeForUsMen("eu", saved))).toBe(saved);
+        expect(usMenSizeFromDisplayUnit("uk", displaySizeForUsMen("uk", saved))).toBe(saved);
+        expect(usMenSizeFromDisplayUnit("us", displaySizeForUsMen("us", saved))).toBe(saved);
+    });
+
+    test("mm options expose canonical men's size for export", () => {
+        const mm260 = footLengthMmOptions().find((o) => o.footLengthMm === 260);
+        expect(mm260?.usMenSize).toBe(usMenSizeFromDisplayUnit("mm", 260));
     });
 });
 
