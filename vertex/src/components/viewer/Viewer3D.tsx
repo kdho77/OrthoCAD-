@@ -20,6 +20,7 @@ import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { AfoScanGuidedCard } from "@/features/afo/AfoScanGuidedCard";
 import { afoViewportPlacementLayer, scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
+import { shouldDeferTopMeshLoad } from "@/features/clients/start-path";
 import { afoPlacementComplete, ensureAfoScanPlacement } from "@/features/afo/afo-scan-ui";
 import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
 import { MeasureOverlay } from "@/features/measure/MeasureOverlay";
@@ -121,6 +122,8 @@ export function Viewer3D() {
     }, [layoutLengthMm, layoutWidthMm, setRegistrationTargetLayout]);
     const editMode = useMeshEditStore((s) => s.editMode);
     const workflowStep = useClinicalWorkflowStore((s) => s.step);
+    const designStartPath = useClinicalWorkflowStore((s) => s.designStartPath);
+    const deferTopMeshChip = shouldDeferTopMeshLoad(designStartPath, workflowStep);
     const printPreview = workflowStep === "print" || workflowStep === "export";
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
@@ -455,7 +458,7 @@ export function Viewer3D() {
                         <Layers className="h-3 w-3" />
                         {afoDesignBaseLabel(true, SAMPLE_TOP_NAME)}
                     </span>
-                ) : designMode.mode === "base" ? (
+                ) : designMode.mode === "base" && !deferTopMeshChip ? (
                     <span className="flex w-fit items-center gap-1 rounded bg-violet-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         <Layers className="h-3 w-3" />
                         Base:{" "}
