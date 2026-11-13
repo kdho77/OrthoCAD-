@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { ShoeSizeSelect } from "@/features/clients/ShoeSizeSelect";
 import type { ClientInput, ClientRecord } from "@/stores/client-store";
 import {
     CHART_SHOE_SIZE_MESSAGE,
@@ -328,13 +329,13 @@ function CreateClientShoeFields({
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 {split ? (
                     <>
-                        <DraftSizeField
+                        <ShoeSizeSelect
                             label="Left size"
                             testId="shoe-size-left"
                             value={form.shoeSizeLeftUs}
                             onChange={(shoeSizeLeftUs) => onChange({ shoeSizeLeftUs })}
                         />
-                        <DraftSizeField
+                        <ShoeSizeSelect
                             label="Right size"
                             testId="shoe-size-right"
                             value={form.shoeSizeRightUs}
@@ -342,8 +343,8 @@ function CreateClientShoeFields({
                         />
                     </>
                 ) : (
-                    <DraftSizeField
-                        label="Shoe size (US men's)"
+                    <ShoeSizeSelect
+                        label="Shoe size"
                         testId="shoe-size"
                         value={form.shoeSizeUs}
                         onChange={(shoeSizeUs) =>
@@ -382,42 +383,5 @@ function CreateClientShoeFields({
                 <p className="mt-2 text-xs text-muted-foreground">{CHART_SHOE_SIZE_MESSAGE}</p>
             )}
         </div>
-    );
-}
-
-function DraftSizeField({
-    label,
-    testId,
-    value,
-    onChange,
-}: {
-    label: string;
-    testId: string;
-    value: number | undefined;
-    onChange: (value: number | undefined) => void;
-}) {
-    return (
-        <label className="text-xs text-muted-foreground">
-            {label}
-            <input
-                data-testid={testId}
-                aria-label={label}
-                type="number"
-                min={1}
-                max={16}
-                step={0.5}
-                value={value ?? ""}
-                className="mt-1 block min-h-11 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
-                onChange={(event) => {
-                    const raw = event.target.value.trim();
-                    if (!raw) {
-                        onChange(undefined);
-                        return;
-                    }
-                    const next = Number(raw);
-                    onChange(Number.isFinite(next) ? next : undefined);
-                }}
-            />
-        </label>
     );
 }

@@ -35,6 +35,7 @@ function excludedUnitTest(file) {
     if (base.includes(".optional.test.")) return true;
     if (base.startsWith("dump-") && /\.test\.tsx?$/.test(base)) return true;
     if (base === "pressure-map.webgl.test.ts") return true;
+    if (file.startsWith("scripts/perf/") && /\.test\.tsx?$/.test(file)) return true;
     return false;
 }
 

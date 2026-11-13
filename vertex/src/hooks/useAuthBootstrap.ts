@@ -1,12 +1,21 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 import { useEffect } from "react";
+import {
+    consumePendingManualSignOut,
+    logAuthRefreshAttempt,
+    logAuthStateChange,
+    resolveSessionLossAfterFailedRefresh,
+    shouldRetrySessionRefresh,
+} from "@/features/auth/auth-session-resilience";
 import type { SessionIdentity } from "@/features/auth/session-profile";
 import {
     licenseFromMe,
     mergeSessionIdentity,
     shouldReloadAuthoritativeProfile,
 } from "@/features/auth/session-profile";
+import { isExportInProgress } from "@/features/exports/export-service";
 import {
     DEV_SUPER_ADMIN,
     isLocalDevServer,
@@ -31,6 +40,7 @@ export function useAuthBootstrap() {
 
     useEffect(() => {
         let active = true;
+        let refreshInFlight: Promise<void> | null = null;
 
         const applyIdentity = (u: {
             id: string;
@@ -72,7 +82,81 @@ export function useAuthBootstrap() {
             }
         };
 
+        const clearSignedInUser = () => {
+            setUser(null);
+            setLicense(null);
+        };
+
         let authSubscription: { unsubscribe: () => void } | undefined;
+
+        const handleNullSession = async (
+            event: AuthChangeEvent,
+            supabase: NonNullable<ReturnType<typeof getSupabase>>,
+        ) => {
+            const manual = consumePendingManualSignOut();
+            const hadUser = Boolean(useAuthStore.getState().user);
+
+            if (manual) {
+                clearSignedInUser();
+                return;
+            }
+
+            if (!shouldRetrySessionRefresh(event, hadUser, manual)) {
+                if (!hadUser) clearSignedInUser();
+                return;
+            }
+
+            if (!refreshInFlight) {
+                refreshInFlight = (async () => {
+                    const { data, error } = await supabase.auth.refreshSession();
+                    if (!active) return;
+                    if (data.session?.user) {
+                        logAuthRefreshAttempt(event, "ok");
+                        applyIdentity(data.session.user);
+                        useAuthStore.getState().setReAuthRequired(false);
+                        void loadAuthoritativeProfile();
+                        return;
+                    }
+                    logAuthRefreshAttempt(event, "failed", error?.message);
+                    const decision = resolveSessionLossAfterFailedRefresh({
+                        manualSignOut: false,
+                        exportBusy: isExportInProgress(),
+                        event,
+                        refreshError: error,
+                    });
+                    if (decision === "reauth") {
+                        useAuthStore.getState().setReAuthRequired(true);
+                        console.warn("[auth] session lost — re-auth required", { event, at: Date.now() });
+                        return;
+                    }
+                    clearSignedInUser();
+                })().finally(() => {
+                    refreshInFlight = null;
+                });
+            }
+            await refreshInFlight;
+        };
+
+        const handleAuthChange = (event: AuthChangeEvent, session: Session | null) => {
+            if (!active) return;
+            logAuthStateChange(event, Boolean(session?.user));
+
+            if (session?.user) {
+                useAuthStore.getState().setReAuthRequired(false);
+                applyIdentity(session.user);
+                if (shouldReloadAuthoritativeProfile(event)) {
+                    void loadAuthoritativeProfile();
+                }
+                return;
+            }
+
+            const supabase = getSupabase();
+            if (!supabase) {
+                clearSignedInUser();
+                return;
+            }
+            void handleNullSession(event, supabase);
+        };
 
         async function bootstrap() {
             const forceLogin = new URLSearchParams(window.location.search).has("e2eLogin");
@@ -105,16 +189,7 @@ export function useAuthBootstrap() {
             setLoading(false);
 
             const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
-                if (!active) return;
-                if (session?.user) {
-                    applyIdentity(session.user);
-                    if (shouldReloadAuthoritativeProfile(event)) {
-                        void loadAuthoritativeProfile();
-                    }
-                } else {
-                    setUser(null);
-                    setLicense(null);
-                }
+                handleAuthChange(event, session);
             });
             if (!active) {
                 listener.subscription.unsubscribe();

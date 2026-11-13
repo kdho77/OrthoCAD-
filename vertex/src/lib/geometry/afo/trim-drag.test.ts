@@ -142,6 +142,40 @@ describe("AFO trim drag gesture", () => {
         expect(blocked.captured).toBe(false);
     });
 
+    test("a far-side trim pin ignores pointer-down and does not arm a drag", () => {
+        expect(
+            trimPinDragAllowed({
+                pinIndex: 1,
+                trimConfirmed: true,
+                scanPlacementActive: false,
+                facesCamera: false,
+            }),
+        ).toBe(false);
+        const blocked = beginTrimPinPress({
+            pinIndex: 1,
+            trimConfirmed: true,
+            scanPlacementActive: false,
+            facesCamera: false,
+            pointerId: 2,
+            x: 10,
+            y: 10,
+            element: { setPointerCapture: () => undefined },
+        });
+        expect(blocked.gesture).toBeNull();
+        expect(blocked.cameraEnabled).toBe(true);
+        const allowed = beginTrimPinPress({
+            pinIndex: 1,
+            trimConfirmed: true,
+            scanPlacementActive: false,
+            facesCamera: true,
+            pointerId: 3,
+            x: 10,
+            y: 10,
+            element: { setPointerCapture: () => undefined },
+        });
+        expect(allowed.gesture).not.toBeNull();
+    });
+
     test("trim drag is mounted on Design and Print whenever scan placement is idle", () => {
         expect(afoViewportPlacementLayer("design", true, false, false)).toBe("afo-design");
         expect(afoViewportPlacementLayer("design", true, true, true)).toBe("afo-design");

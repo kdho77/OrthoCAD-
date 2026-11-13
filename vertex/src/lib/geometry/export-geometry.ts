@@ -14,6 +14,7 @@ import {
     closeGlbInsoleToSolid,
     DEFAULT_GLB_CLOSED_BASELINE,
 } from "@/lib/geometry/mesh-close";
+import { perfMark } from "@/lib/geometry/perf/load-export-perf";
 import { resolveLiveBottomPattern } from "@/lib/geometry/procedural-wall/live-bottom-pattern";
 import {
     dropManufacturingSolid,
@@ -243,6 +244,7 @@ async function closeAndValidateExportGeometry(side: Side): Promise<BufferGeometr
     const fromCache = solidCameFromManufacturingCache(geometry);
     let solid: BufferGeometry | undefined;
     try {
+        perfMark("export:close");
         solid = closeGlbInsoleToSolid(geometry);
         const topN = (solid.userData as { topVertexCount?: number }).topVertexCount ?? 0;
         // topVertexCount is also set by SAMPLE_Top lofts; it is not evidence
@@ -253,6 +255,7 @@ async function closeAndValidateExportGeometry(side: Side): Promise<BufferGeometr
                 : topN > 0
                   ? DEFAULT_GLB_CLOSED_BASELINE
                   : null;
+        perfMark("export:validate");
         assertClosedSolidAcceptable(solid, topN, baseline);
         // Procedural solids are lofted on the already-scaled outline
         // (printSolidOptions.footprintScale). Scaling the finished mesh in XY
@@ -324,6 +327,7 @@ export async function buildOrderPairGeometry(): Promise<BufferGeometry> {
 export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
     const solid = await buildClosedExportGeometry(side);
     try {
+        perfMark("export:stl", { side });
         return geometryToBinarySTL(solid);
     } finally {
         solid.dispose();

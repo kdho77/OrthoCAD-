@@ -171,7 +171,7 @@ describe("export panel clinical gcode", () => {
         });
         expect(cancelled.ok).toBe(false);
         expect(cancelled.cancelled).toBe(true);
-        expect(hybridSpy).toHaveBeenCalledTimes(1);
+        expect(hybridSpy).toHaveBeenCalledTimes(2);
         expect(created).toEqual([]);
         URL.createObjectURL = original;
     });

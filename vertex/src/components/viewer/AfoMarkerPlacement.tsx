@@ -3,6 +3,7 @@
 import { useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
+import { afoTrimPinFacesCamera } from "@/components/viewer/AfoScanMarkers";
 import { markerPlacementBlocked } from "@/features/measure/exclusive-mode";
 import { AFO_DESIGN_MARKERS, AFO_TRIM_CLOSE_PX } from "@/lib/geometry/afo/defaults";
 import {
@@ -10,7 +11,7 @@ import {
     cameraViewForAfoMarkerId,
     orientedPlantarSides,
 } from "@/lib/geometry/afo/marker-side";
-import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
+import { meshCentroid, nearestVertex } from "@/lib/geometry/afo/mesh-ops";
 import {
     beginTrimPinPress,
     markTrimDragHistory,
@@ -242,10 +243,19 @@ export function AfoMarkerPlacement() {
                     ? nearestPinPx(ev.clientX, ev.clientY)
                     : null;
             const pinIndex = near && near.px <= AFO_TRIM_CLOSE_PX ? near.index : null;
+            const mesh = workingRef.current;
+            let pinFacesCamera = true;
+            if (pinIndex != null && mesh) {
+                const pin = loop.trimPoints[pinIndex]?.point;
+                if (pin) {
+                    pinFacesCamera = afoTrimPinFacesCamera(pin, camera.position, meshCentroid(mesh));
+                }
+            }
             const press = beginTrimPinPress({
                 pinIndex,
                 trimConfirmed: loop.trimConfirmed,
                 scanPlacementActive: useAfoStore.getState().scanPlacement != null,
+                facesCamera: pinFacesCamera,
                 pointerId: ev.pointerId,
                 x: ev.clientX,
                 y: ev.clientY,

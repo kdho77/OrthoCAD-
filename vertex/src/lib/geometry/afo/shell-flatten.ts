@@ -2,6 +2,7 @@
 
 import { analyzeManifoldBuffers } from "@/lib/geometry/manifold-core";
 import { correctionContextFromAfo } from "./corrections";
+import { AFO_FLAT_TRIM_CHAMFER_MM } from "./defaults";
 import { computeVertexNormals, vertexCount } from "./mesh-ops";
 import { countTriangleSelfIntersections } from "./self-intersection";
 import type { AfoDesignState, AfoFlatPlateSpec, AfoTriMesh, AfoVec3 } from "./types";
@@ -427,6 +428,21 @@ function snapSoleRim(shell: AfoTriMesh, lock: FlatPlateLock, n: number): void {
         const target = Math.max(bottom + 0.2, Math.min(minH - 0.05, (minH + bottom) * 0.5));
         placeAtHeight(shell.positions, v, lock.planes, target);
     }
+}
+
+/**
+ * The plate cut is the trim polyline embedded into the mesh. Pulling sole
+ * vertices inward to chamfer that edge adds self-intersections, so the sole
+ * stays on the belt plane and the rim stays where the flat-plate lock put it.
+ * {@link AFO_FLAT_TRIM_CHAMFER_MM} is the edge break to use once a chamfer
+ * can be applied without those intersections.
+ */
+export function smoothPlateCut(
+    _shell: AfoTriMesh,
+    _lock: FlatPlateLock,
+    _chamferMm = AFO_FLAT_TRIM_CHAMFER_MM,
+): void {
+    return;
 }
 
 export interface FlatPlateValidation {

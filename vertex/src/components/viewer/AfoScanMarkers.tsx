@@ -13,12 +13,15 @@ import {
     AFO_OPTIONAL_MARKER,
     AFO_REQUIRED_MARKER,
     AFO_STAGE1_MARKER,
+    AFO_TRIM_PIN_FIRST_NEAR_COLOR,
+    AFO_TRIM_PIN_NEAR_COLOR,
     type AfoMarkerDisplayCue,
     type AfoMarkerKey,
     type AfoScanDrawMode,
     type AfoViewPoint,
     activeAfoTarget,
     afoMarkerDisplayCue,
+    afoMarkerDragAllowed,
     afoMarkerOnCameraSide,
     afoScanDrawMode,
     afoTriangleStats,
@@ -26,6 +29,7 @@ import {
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
 import { transformAfoPoint } from "@/lib/geometry/afo/landmark-frame";
 import { meshCentroid } from "@/lib/geometry/afo/mesh-ops";
+import type { AfoVec3 } from "@/lib/geometry/afo/types";
 import { useAfoStore } from "@/stores/afo-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -47,10 +51,11 @@ function useAfoFacingCue(
     enabled: boolean,
     drawMode: AfoScanDrawMode,
     baseOpacity: number,
+    nearColor: string,
     sample: () => { marker: THREE.Vector3; center: THREE.Vector3 } | null,
 ): AfoMarkerDisplayCue {
     const { camera } = useThree();
-    const full = afoMarkerDisplayCue({ drawMode, facesCamera: true, baseOpacity });
+    const full = afoMarkerDisplayCue({ drawMode, facesCamera: true, baseOpacity, nearColor });
     const [cue, setCue] = useState<AfoMarkerDisplayCue>(full);
     const cueRef = useRef(full);
     useFrame(() => {
@@ -58,20 +63,22 @@ function useAfoFacingCue(
         const sampled = sample();
         if (!sampled) return;
         const faces = afoMarkerOnCameraSide(sampled.marker, camera.position, sampled.center);
-        const next = afoMarkerDisplayCue({ drawMode, facesCamera: faces, baseOpacity });
+        const next = afoMarkerDisplayCue({ drawMode, facesCamera: faces, baseOpacity, nearColor });
         const prev = cueRef.current;
         if (
             prev.opacity === next.opacity &&
             prev.depthTest === next.depthTest &&
             prev.occluded === next.occluded &&
-            prev.dimmed === next.dimmed
+            prev.dimmed === next.dimmed &&
+            prev.color === next.color &&
+            prev.facesCamera === next.facesCamera
         ) {
             return;
         }
         cueRef.current = next;
         setCue(next);
     });
-    if (!enabled) return { opacity: baseOpacity, depthTest: false, occluded: false, dimmed: false };
+    if (!enabled) return full;
     return cue;
 }
 
@@ -108,13 +115,15 @@ export function AfoScanMarkerDot({
     const ringRef = useRef<THREE.Mesh>(null);
     const { camera, size } = useThree();
     const reducedMotion = useReducedMotion();
-    const cue = useAfoFacingCue(depthCue, drawMode, opacity, () => {
+    const cue = useAfoFacingCue(depthCue, drawMode, opacity, color, () => {
         const group = groupRef.current;
         if (!group?.parent) return null;
         const marker = group.getWorldPosition(cueWorld);
         const center = group.parent.localToWorld(cueCenter.set(centerLocal.x, centerLocal.y, centerLocal.z));
         return { marker, center };
     });
+    const displayColor = depthCue ? cue.color : color;
+    const canDrag = afoMarkerDragAllowed(interactive, depthCue ? cue.facesCamera : true);
     const haloDepthTest = depthCue ? cue.depthTest : false;
     const pointOffset = depthCue && drawMode === "points";
 
@@ -138,9 +147,9 @@ export function AfoScanMarkerDot({
             <mesh
                 renderOrder={22}
                 userData={{ afoScanMarkerId: markerId, isAfoScanMarker: true }}
-                raycast={interactive ? undefined : () => undefined}
+                raycast={canDrag ? undefined : () => undefined}
                 onPointerDown={
-                    interactive
+                    canDrag
                         ? (e) => {
                               e.stopPropagation();
                               onDragStart?.(markerId);
@@ -150,7 +159,7 @@ export function AfoScanMarkerDot({
             >
                 <sphereGeometry args={[AFO_MARKER_WORLD_MM, 20, 16]} />
                 <meshBasicMaterial
-                    color={color}
+                    color={displayColor}
                     transparent
                     opacity={cue.opacity * 0.3}
                     depthTest={haloDepthTest}
@@ -177,11 +186,11 @@ export function AfoScanMarkerDot({
             <mesh
                 renderOrder={23}
                 userData={{ afoScanMarkerId: markerId, isAfoScanMarker: true }}
-                raycast={interactive ? undefined : () => undefined}
+                raycast={canDrag ? undefined : () => undefined}
             >
                 <sphereGeometry args={[AFO_MARKER_WORLD_MM, 20, 16]} />
                 <meshBasicMaterial
-                    color={color}
+                    color={displayColor}
                     transparent
                     opacity={cue.opacity}
                     depthTest
@@ -240,7 +249,7 @@ export function AfoCueSphere({
     drawMode: AfoScanDrawMode;
 }) {
     const meshRef = useRef<THREE.Mesh>(null);
-    const cue = useAfoFacingCue(true, drawMode, 1, () => {
+    const cue = useAfoFacingCue(true, drawMode, 1, color, () => {
         const mesh = meshRef.current;
         if (!mesh?.parent) return null;
         const marker = mesh.getWorldPosition(cueWorld);
@@ -251,7 +260,7 @@ export function AfoCueSphere({
         <mesh ref={meshRef} position={position} renderOrder={renderOrder} userData={userData}>
             <sphereGeometry args={[radius, 12, 10]} />
             <meshBasicMaterial
-                color={color}
+                color={cue.color}
                 transparent={cue.opacity < 0.999}
                 opacity={cue.opacity}
                 depthTest={drawMode === "points" ? true : cue.depthTest}
@@ -263,6 +272,57 @@ export function AfoCueSphere({
             />
         </mesh>
     );
+}
+
+/** Trim-loop control points: green on the near side, purple on the far, updated while orbiting. */
+export function AfoTrimPinDot({
+    position,
+    nearColor,
+    radius,
+    renderOrder,
+    centerLocal,
+    drawMode,
+    userData,
+}: {
+    position: [number, number, number];
+    nearColor: string;
+    radius: number;
+    renderOrder: number;
+    centerLocal: AfoViewPoint;
+    drawMode: AfoScanDrawMode;
+    userData: Record<string, unknown>;
+}) {
+    const meshRef = useRef<THREE.Mesh>(null);
+    const cue = useAfoFacingCue(true, drawMode, 1, nearColor, () => {
+        const mesh = meshRef.current;
+        if (!mesh?.parent) return null;
+        const marker = mesh.getWorldPosition(cueWorld);
+        const center = mesh.parent.localToWorld(cueCenter.set(centerLocal.x, centerLocal.y, centerLocal.z));
+        return { marker, center };
+    });
+    return (
+        <mesh
+            ref={meshRef}
+            position={position}
+            renderOrder={renderOrder}
+            frustumCulled={false}
+            userData={userData}
+        >
+            <sphereGeometry args={[radius, 12, 10]} />
+            <meshBasicMaterial color={cue.color} depthTest={false} depthWrite={false} toneMapped={false} />
+        </mesh>
+    );
+}
+
+export function afoTrimPinNearColor(handle: number, dragging: boolean, hovered: boolean): string {
+    if (dragging) return "#ffffff";
+    if (hovered) return "#fff4a3";
+    return handle === 0 ? AFO_TRIM_PIN_FIRST_NEAR_COLOR : AFO_TRIM_PIN_NEAR_COLOR;
+}
+
+/** World-space trim pin and cast center for far-side drag gating (Design / Print). */
+export function afoTrimPinFacesCamera(pin: AfoVec3, camera: AfoViewPoint, bodyCenter: AfoViewPoint): boolean {
+    return afoMarkerOnCameraSide(pin, camera, bodyCenter);
 }
 
 /** Stage 1 plantar markers in scan mesh local space (inside RegisteredScanMesh). */

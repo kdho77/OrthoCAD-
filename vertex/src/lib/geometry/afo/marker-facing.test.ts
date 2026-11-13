@@ -3,6 +3,7 @@
 import { describe, expect, test } from "@rstest/core";
 import { Euler, Matrix4, Vector3 } from "three";
 import {
+    AFO_FAR_MARKER_COLOR,
     afoCameraProximity,
     afoCastBodyStyle,
     afoMarkerDisplayCue,
@@ -310,7 +311,10 @@ describe("AFO marker cameras on a tumbled foot+leg scan", () => {
                 expect(far.dimmed).toBe(true);
                 expect(far.depthTest).toBe(true);
                 expect(far.opacity).toBeLessThan(nearCue.opacity * 0.5);
+                expect(far.color).toBe(AFO_FAR_MARKER_COLOR);
                 expect(nearCue.occluded).toBe(false);
+                expect(nearCue.facesCamera).toBe(true);
+                expect(far.facesCamera).toBe(false);
                 const degenerate = afoTriangleStats(aligned.mesh.positions, new Uint32Array([0, 0, 0]));
                 expect(afoScanDrawMode(degenerate.triangles, degenerate.degenerateRatio)).toBe("points");
                 const pointStyle = afoCastBodyStyle({

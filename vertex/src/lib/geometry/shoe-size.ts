@@ -9,6 +9,8 @@ import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
  * Systems (default **US**):
  * - **US** — Men's half-size key; labels combine Women's (+1.5) and Youth (≤7)
  * - **UK** — Adult UK size (same for M/W); Wikipedia: size ≈ 3×foot_in − 23
+ * - **EU** — Adult EU (Paris point / ISO 19407 retail table); EU ≈ US men + 33
+ *   (same half steps; see ISO 19407:2015 / Wikipedia "Shoe size" conversion table)
  * - **mm** — Direct Mondopoint-style foot length in millimetres
  *
  * Physical scale always comes from foot length vs the Men's 9 / 260×95 mm template.
@@ -18,6 +20,10 @@ import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
  */
 
 export type ShoeSizeSystem = "us" | "uk" | "mm";
+
+/** International sizing units offered in the client shoe-size picker (stored value stays US men's). */
+export const SHOE_SIZE_UNITS = ["us", "uk", "eu", "mm"] as const;
+export type ShoeSizeDisplayUnit = (typeof SHOE_SIZE_UNITS)[number];
 
 /** Reference US men's size matching {@link INSOLE_LENGTH_MM}. */
 export const REFERENCE_US_MEN_SIZE = 9;
@@ -35,6 +41,10 @@ export const US_MEN_SIZE_MAX = 16;
 /** Inclusive UK adult half-size range. */
 export const UK_SIZE_MIN = 1;
 export const UK_SIZE_MAX = 15;
+
+/** Inclusive EU half-size range (ISO 19407 retail table: EU ≈ US men + 33). */
+export const EU_SIZE_MIN = US_MEN_SIZE_MIN + 33;
+export const EU_SIZE_MAX = US_MEN_SIZE_MAX + 33;
 
 /** Youth / big-kid labels share the US men's number in this band. */
 export const US_YOUTH_MEN_MAX = 7;
@@ -143,6 +153,42 @@ export function footLengthMmToUk(mm: number): number {
     return normalizeUkSize(size);
 }
 
+/** EU adult size for the same foot length as a US men's size (ISO 19407 retail: EU ≈ US + 33). */
+export function usMenToEu(menSize: number): number {
+    return normalizeEuSize(normalizeUsMenSize(menSize) + 33);
+}
+
+/** Nearest US men's size for an EU adult size. */
+export function euToUsMen(euSize: number): number {
+    return normalizeUsMenSize(normalizeEuSize(euSize) - 33);
+}
+
+/** Snap to a supported EU half-size within the offered range (US 1–16 → EU 34–49). */
+export function normalizeEuSize(euSize: number): number {
+    if (!Number.isFinite(euSize)) return DEFAULT_US_MEN_SIZE + 33;
+    const clamped = Math.min(EU_SIZE_MAX, Math.max(EU_SIZE_MIN, euSize));
+    return Math.round(clamped * 2) / 2;
+}
+
+/** Nearest EU size for a foot length in mm. */
+export function footLengthMmToEu(mm: number): number {
+    return usMenToEu(footLengthMmToUsMen(mm));
+}
+
+/** EU adult foot length in millimetres (via canonical US men's conversion). */
+export function euFootLengthMm(euSize: number): number {
+    return usMenFootLengthMm(euToUsMen(euSize));
+}
+
+/** All selectable EU sizes (half steps). */
+export function listEuSizes(): number[] {
+    const out: number[] = [];
+    for (let s = EU_SIZE_MIN; s <= EU_SIZE_MAX + 1e-9; s += 0.5) {
+        out.push(normalizeEuSize(s));
+    }
+    return out;
+}
+
 export function formatHalfSize(size: number): string {
     const n = Math.round(size * 2) / 2;
     return Number.isInteger(n) ? String(n) : n.toFixed(1);
@@ -164,6 +210,10 @@ export function formatUkShoeSizeLabel(ukSize: number): string {
     return `UK ${formatHalfSize(normalizeUkSize(ukSize))}`;
 }
 
+export function formatEuShoeSizeLabel(euSize: number): string {
+    return `EU ${formatHalfSize(normalizeEuSize(euSize))}`;
+}
+
 export function formatFootLengthLabel(mm: number): string {
     const n = normalizeFootLengthMm(mm);
     return `${n} mm`;
@@ -175,6 +225,8 @@ export interface InsoleLayout {
     usMenSize: number;
     /** Equivalent UK size when applicable. */
     ukSize: number;
+    /** Equivalent EU size when applicable. */
+    euSize: number;
     /** Foot length used for scaling (Mondopoint-style mm). */
     footLengthMm: number;
     lengthMm: number;
@@ -195,6 +247,7 @@ export function insoleLayoutForFootLengthMm(
         sizeSystem,
         usMenSize,
         ukSize: footLengthMmToUk(foot),
+        euSize: footLengthMmToEu(foot),
         footLengthMm: sizeSystem === "mm" ? normalizeFootLengthMm(foot) : foot,
         lengthMm: INSOLE_LENGTH_MM * scale,
         widthMm: INSOLE_WIDTH_MM * scale,
@@ -293,11 +346,20 @@ export interface UkShoeSizeOption {
     widthMm: number;
 }
 
+export interface EuShoeSizeOption {
+    euSize: number;
+    label: string;
+    /** Canonical US men's size stored on the client chart. */
+    usMenSize: number;
+    footLengthMm: number;
+}
+
 export interface FootLengthOption {
     footLengthMm: number;
     label: string;
     lengthMm: number;
     widthMm: number;
+    usMenSize: number;
 }
 
 /** Options for the US size dropdown. */
@@ -326,6 +388,19 @@ export function ukShoeSizeOptions(): UkShoeSizeOption[] {
     });
 }
 
+/** Options for the EU size dropdown. */
+export function euShoeSizeOptions(): EuShoeSizeOption[] {
+    return listEuSizes().map((euSize) => {
+        const usMenSize = euToUsMen(euSize);
+        return {
+            euSize,
+            label: formatEuShoeSizeLabel(euSize),
+            usMenSize,
+            footLengthMm: usMenFootLengthMm(usMenSize),
+        };
+    });
+}
+
 /** Options for the millimetre length dropdown. */
 export function footLengthMmOptions(): FootLengthOption[] {
     return listFootLengthMmOptions().map((footLengthMm) => {
@@ -335,8 +410,66 @@ export function footLengthMmOptions(): FootLengthOption[] {
             label: formatFootLengthLabel(footLengthMm),
             lengthMm: layout.lengthMm,
             widthMm: layout.widthMm,
+            usMenSize: layout.usMenSize,
         };
     });
+}
+
+/** Display-unit value for a stored US men's chart size (for dropdown selection). */
+export function displaySizeForUsMen(unit: ShoeSizeDisplayUnit, usMenSize: number): number {
+    const men = normalizeUsMenSize(usMenSize);
+    switch (unit) {
+        case "uk":
+            return usMenToUk(men);
+        case "eu":
+            return usMenToEu(men);
+        case "mm":
+            return normalizeFootLengthMm(usMenFootLengthMm(men));
+        default:
+            return men;
+    }
+}
+
+/** Map a picker value in the active display unit to the canonical US men's chart size. */
+export function usMenSizeFromDisplayUnit(unit: ShoeSizeDisplayUnit, value: number): number {
+    if (!Number.isFinite(value)) return DEFAULT_US_MEN_SIZE;
+    switch (unit) {
+        case "uk":
+            return ukToUsMen(value);
+        case "eu":
+            return euToUsMen(value);
+        case "mm":
+            return footLengthMmToUsMen(normalizeFootLengthMm(value));
+        default:
+            return normalizeUsMenSize(value);
+    }
+}
+
+export function formatShoeSizeOptionLabel(unit: ShoeSizeDisplayUnit, value: number): string {
+    switch (unit) {
+        case "uk":
+            return formatUkShoeSizeLabel(value);
+        case "eu":
+            return formatEuShoeSizeLabel(value);
+        case "mm":
+            return formatFootLengthLabel(value);
+        default:
+            return formatUsShoeSizeLabel(value);
+    }
+}
+
+/** All dropdown rows for a display unit (values are in that unit). */
+export function shoeSizePickerOptions(unit: ShoeSizeDisplayUnit): { value: number; label: string }[] {
+    switch (unit) {
+        case "uk":
+            return ukShoeSizeOptions().map((o) => ({ value: o.ukSize, label: o.label }));
+        case "eu":
+            return euShoeSizeOptions().map((o) => ({ value: o.euSize, label: o.label }));
+        case "mm":
+            return footLengthMmOptions().map((o) => ({ value: o.footLengthMm, label: o.label }));
+        default:
+            return usShoeSizeOptions().map((o) => ({ value: o.menSize, label: o.label }));
+    }
 }
 
 /** XY map from a native footprint bbox onto a target insole length/width. */
