@@ -12,6 +12,15 @@ import { cloneMesh, computeVertexNormals, meshProjector, nearestVertex, vertexCo
 import { offsetMeshAlongNormals } from "./sdf-offset";
 import { embedTrimPolyline } from "./shell-cut";
 import {
+    assertFlatPlateAccepted,
+    type FlatPlateLock,
+    flattenKeepSurface,
+    rememberFlatPlate,
+    reseatFlatPlate,
+    reseatInnerForefoot,
+    seatBottomPlaneAtZ0,
+} from "./shell-flatten";
+import {
     boundaryLoops,
     closeShellWithRoundRim,
     finishShellLip,
@@ -54,13 +63,33 @@ export function buildAfoShell(
         ),
         options.trimPolygon,
     );
+    options.onProgress?.(0.2, "flatten-forefoot");
+    // Inner forefoot is flattened before any thickness is generated. The
+    // outer plate (P2) is built from this surface, not by flattening both
+    // skins after the shell exists.
+    const plate = options.flatPlate
+        ? flattenKeepSurface(keep.positions, keep.indices, keep.boundary, options.flatPlate)
+        : null;
     options.onProgress?.(0.25, "thicken");
-    const shell = thickenOpenSurface(keep, options.thicknessMm, options.edgeMm, options.flareMm);
+    const shell = thickenOpenSurface(keep, options.thicknessMm, options.edgeMm, options.flareMm, plate);
     tightenBoundaryToCurve(shell, options.trimPolygon);
     finishShellLip(shell);
-    enforceShellClearance(shell, options.thicknessMm, options.edgeMm);
+    enforceShellClearance(shell, options.thicknessMm, options.edgeMm, null);
     repairFlippedOffsets(shell);
     straightenFeatureLoops(shell);
+    if (plate) {
+        // Clearance and lip repair run on the pre-plate skin. Re-seat the
+        // inner surface, restore wall clearance against that final inner
+        // (plate outers stay on the plane), then drop the plate again so the
+        // last geometry change is still the flat bottom.
+        reseatFlatPlate(shell, plate);
+        enforceShellClearance(shell, options.thicknessMm, options.edgeMm, plate.sole);
+        reseatFlatPlate(shell, plate);
+        enforceShellClearance(shell, options.thicknessMm, options.edgeMm, plate.sole);
+        plate.planes = seatBottomPlaneAtZ0(shell, plate.planes);
+        rememberFlatPlate(shell, plate);
+        assertFlatPlateAccepted(shell, plate, options.edgeMm);
+    }
     options.onProgress?.(1, "done");
     return shell;
 }
@@ -1064,7 +1093,12 @@ function snapBoundaryToCurve(surface: OpenSurface, curve: AfoVec3[] | undefined)
  * The opening target is the edge thickness, the far wall is the full
  * thickness, and the band between them stays at least on the linear blend.
  */
-function enforceShellClearance(shell: AfoTriMesh, thicknessMm: number, edgeMm: number): void {
+function enforceShellClearance(
+    shell: AfoTriMesh,
+    thicknessMm: number,
+    edgeMm: number,
+    hold: Uint8Array | null,
+): void {
     const n = shell.outerVertex0;
     const face0 = shell.rimFaceStart;
     if (n == null || face0 == null || thicknessMm < 1) return;
@@ -1152,13 +1186,19 @@ function enforceShellClearance(shell: AfoTriMesh, thicknessMm: number, edgeMm: n
         indices: new Uint32Array(innerIdx),
     });
     for (let i = 0; i < n; i++) {
+        if (hold?.[i]) continue;
         const ix = shell.positions[i * 3] ?? 0;
         const iy = shell.positions[i * 3 + 1] ?? 0;
         const iz = shell.positions[i * 3 + 2] ?? 0;
         const dOpen = distOpen(ix, iy, iz);
         const linear = edgeMm + (thicknessMm - edgeMm) * clamp01(dOpen / AFO_RIM_BAND_MM);
         const pinned = dOpen <= 0.4 || dOpen >= AFO_RIM_BAND_MM;
-        const target = pinned ? (dOpen <= 0.4 ? edgeMm : thicknessMm) : linear;
+        const base = pinned ? (dOpen <= 0.4 ? edgeMm : thicknessMm) : linear;
+        // The plain shell keeps the original edge target. A plate pass has
+        // to land on the edge after the sole is seated, so it aims slightly
+        // past the edge and will not stop short of it.
+        const platePass = hold != null;
+        const target = platePass ? Math.max(edgeMm + 0.08, base) : base;
         let px = shell.positions[(n + i) * 3] ?? 0;
         let py = shell.positions[(n + i) * 3 + 1] ?? 0;
         let pz = shell.positions[(n + i) * 3 + 2] ?? 0;
@@ -1166,12 +1206,18 @@ function enforceShellClearance(shell: AfoTriMesh, thicknessMm: number, edgeMm: n
         const oy = py - iy;
         const oz = pz - iz;
         let gap = proj.closest({ x: px, y: py, z: pz }).errorMm;
-        const off = pinned ? Math.abs(gap - target) > 0.08 : gap < target - 0.08;
+        const off = platePass
+            ? gap < edgeMm - 1e-3 || (pinned ? Math.abs(gap - target) > 0.08 : gap < target - 0.08)
+            : pinned
+              ? Math.abs(gap - target) > 0.08
+              : gap < target - 0.08;
         if (!off) continue;
-        for (let k = 0; k < 5; k++) {
+        for (let k = 0; k < (platePass ? 8 : 5); k++) {
             const hit = proj.closest({ x: px, y: py, z: pz });
             gap = hit.errorMm;
-            if (Math.abs(gap - target) <= 0.04) break;
+            if (platePass) {
+                if (gap >= edgeMm && (gap + 1e-3 >= target || Math.abs(gap - target) <= 0.04)) break;
+            } else if (Math.abs(gap - target) <= 0.04) break;
             let vx = px - hit.point.x;
             let vy = py - hit.point.y;
             let vz = pz - hit.point.z;
@@ -1183,9 +1229,10 @@ function enforceShellClearance(shell: AfoTriMesh, thicknessMm: number, edgeMm: n
                 vl = Math.hypot(vx, vy, vz) || 1;
             }
             const sign = vx * ox + vy * oy + vz * oz >= 0 ? 1 : -1;
-            px = hit.point.x + (vx / vl) * sign * target;
-            py = hit.point.y + (vy / vl) * sign * target;
-            pz = hit.point.z + (vz / vl) * sign * target;
+            const aim = platePass ? Math.max(target, edgeMm + 0.08) : target;
+            px = hit.point.x + (vx / vl) * sign * aim;
+            py = hit.point.y + (vy / vl) * sign * aim;
+            pz = hit.point.z + (vz / vl) * sign * aim;
         }
         shell.positions[(n + i) * 3] = px;
         shell.positions[(n + i) * 3 + 1] = py;
@@ -1198,6 +1245,7 @@ function thickenOpenSurface(
     thicknessMm: number,
     edgeMm: number,
     flareMm: number,
+    plate: FlatPlateLock | null = null,
 ): AfoTriMesh {
     const surface = surfaceIn;
     const inner: AfoTriMesh = {
@@ -1240,6 +1288,9 @@ function thickenOpenSurface(
         const falloff = 1 - blend;
         const onSole = plantar.has(i);
         blendAt.push(rimT);
+        // The forefoot rim is allowed to leave the cast. Holding the old curl
+        // here is what kept the upturned toe edge.
+        if (plate?.flat[i]) continue;
         // Sole contact stays on the cast. The footplate edge keeps the full cap.
         if (onSole && dist >= 0.5) continue;
         let hx = outward[i * 3] ?? 0;
@@ -1292,7 +1343,7 @@ function thickenOpenSurface(
         inner.positions[i * 3] = (inner.positions[i * 3] ?? 0) + (flareDisp[i * 3] ?? 0);
         inner.positions[i * 3 + 1] = (inner.positions[i * 3 + 1] ?? 0) + (flareDisp[i * 3 + 1] ?? 0);
         const z = (inner.positions[i * 3 + 2] ?? 0) + (flareDisp[i * 3 + 2] ?? 0);
-        inner.positions[i * 3 + 2] = Math.max(minZ, z);
+        inner.positions[i * 3 + 2] = plate?.flat[i] ? z : Math.max(minZ, z);
     }
     // Nick smoothing runs after the lift. The plain opening is the curve, so
     // only the flared shell gets the wider pass.
@@ -1300,6 +1351,7 @@ function thickenOpenSurface(
     // After the lift, pull longer opening nicks toward their chord, but only
     // by a little so the plain curve stays inside the 0.1 mm Hausdorff gate.
     relaxSharpBoundaryTurns(inner, flareMm > 0 ? 4 : 3, 30, 0.02, 1);
+    if (plate) reseatInnerForefoot({ ...inner, outerVertex0: vertexCount(inner) }, plate);
     const outer = cloneMesh(inner);
     for (let i = 0; i < n; i++) {
         const blend = blendAt[i] ?? 0;
