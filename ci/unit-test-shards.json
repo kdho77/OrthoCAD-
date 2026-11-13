@@ -213,6 +213,7 @@
                 "vertex/src/features/admin/admin-nav.test.ts",
                 "vertex/src/features/auth/session-profile.test.ts",
                 "vertex/src/features/clients/client-actions.persist.test.ts",
+                "vertex/src/features/clients/client-list-nav.test.ts",
                 "vertex/src/features/corrections/skive-derived-display.test.ts",
                 "vertex/src/features/exports/apex-print-material.test.ts",
                 "vertex/src/features/measure/MeasurementsPanel.test.tsx",
