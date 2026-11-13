@@ -2,19 +2,20 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { Matrix4, Mesh, Points, Vector3 } from "three";
-import { afoCastBodyStyle, afoTriangleStats } from "@/features/afo/afo-scan-ui";
 import {
     afoScanLandmarkKeyLightOffAxisDistanceMm,
     afoScanLandmarkKeyLightPosition,
 } from "@/components/viewer/afo-scan-landmark-lighting-config";
+import { afoCastBodyStyle, afoTriangleStats } from "@/features/afo/afo-scan-ui";
+import { buildCurledAfoCast } from "./curled-afo-cast";
 import {
+    AFO_EDGE_MM,
+    AFO_FLARE_MM,
     AFO_FLAT_TRIM_BLEND_MM,
     AFO_FLAT_TRIM_LATERAL_INSET_RATIO,
     AFO_FLAT_TRIM_MEDIAL_INSET_MM,
     AFO_FLAT_TRIM_MIN_RADIUS_MM,
     AFO_FLAT_TRIM_TOE_INSET_MM,
-    AFO_EDGE_MM,
-    AFO_FLARE_MM,
 } from "./defaults";
 import { afoMeshToGeometry } from "./mesh-ops";
 import { buildAfoShell, trimPolygonForShell } from "./shell";
@@ -24,7 +25,6 @@ import {
     heightAboveContact,
     validateFlatPlate,
 } from "./shell-flatten";
-import { buildCurledAfoCast } from "./curled-afo-cast";
 import { fairTrimNearPins, flatPlateTrimLoop } from "./trim-spline";
 import type { AfoTriMesh, AfoVec3 } from "./types";
 
@@ -131,8 +131,12 @@ describe("flat plate trim", () => {
             const medial = Math.min(...near.map((p) => p.v));
             const lateralInset = edge!.vLat - lateral;
             const medialInset = medial - edge!.vMed;
-            expect(lateralInset, `${side} lateral inset`).toBeGreaterThan(width * AFO_FLAT_TRIM_LATERAL_INSET_RATIO * 0.55);
-            expect(lateralInset, `${side} lateral inset`).toBeLessThan(width * AFO_FLAT_TRIM_LATERAL_INSET_RATIO * 1.45);
+            expect(lateralInset, `${side} lateral inset`).toBeGreaterThan(
+                width * AFO_FLAT_TRIM_LATERAL_INSET_RATIO * 0.55,
+            );
+            expect(lateralInset, `${side} lateral inset`).toBeLessThan(
+                width * AFO_FLAT_TRIM_LATERAL_INSET_RATIO * 1.45,
+            );
             expect(medialInset, `${side} medial inset`).toBeGreaterThan(1);
             expect(medialInset, `${side} medial inset`).toBeLessThan(AFO_FLAT_TRIM_MEDIAL_INSET_MM + 10);
             expect(lateralInset, side).toBeGreaterThan(medialInset);
@@ -268,7 +272,11 @@ describe("flat plate trim", () => {
         let counted = 0;
         const faces = (shell.indices.length / 3) | 0;
         for (let f = 0; f < faces; f++) {
-            const vs = [shell.indices[f * 3] ?? 0, shell.indices[f * 3 + 1] ?? 0, shell.indices[f * 3 + 2] ?? 0];
+            const vs = [
+                shell.indices[f * 3] ?? 0,
+                shell.indices[f * 3 + 1] ?? 0,
+                shell.indices[f * 3 + 2] ?? 0,
+            ];
             if (!vs.every((v) => v < n && lock!.flat[v])) continue;
             const pts = vs.map((v) => ({
                 x: shell.positions[v * 3] ?? 0,

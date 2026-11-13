@@ -401,7 +401,11 @@ function renderPlate(mesh: AfoTriMesh, curve: AfoVec3[], view: "bottom" | "obliq
     const png = blank(880, 640);
     const project = (p: V3): [number, number, number] => {
         if (view === "bottom") return [p[0], -p[1], p[2]];
-        return [p[0] * 0.78 + p[1] * 0.5, -p[2] * 0.92 + p[1] * 0.22 + p[0] * 0.08, -p[1] * 0.65 + p[2] * 0.35 + p[0] * 0.12];
+        return [
+            p[0] * 0.78 + p[1] * 0.5,
+            -p[2] * 0.92 + p[1] * 0.22 + p[0] * 0.08,
+            -p[1] * 0.65 + p[2] * 0.35 + p[0] * 0.12,
+        ];
     };
     const faces = (mesh.indices.length / 3) | 0;
     const tris: { depth: number; p: [V3, V3, V3] }[] = [];

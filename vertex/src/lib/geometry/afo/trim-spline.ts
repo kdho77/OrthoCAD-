@@ -786,7 +786,6 @@ export function landmarksFromPins(pins: AfoVec3[], mesh: AfoTriMesh): AfoLandmar
     });
 }
 
-
 function samplesWithin(curve: AfoVec3[], index: number, reachMm: number): { back: number; fore: number } {
     const n = curve.length;
     let back = (index - 1 + n) % n;
@@ -988,9 +987,10 @@ function buildInsetLoop(bins: SilhouetteBin[]): AfoVec3[] {
     const toeS = sToe - AFO_FLAT_TRIM_BLEND_MM;
     const heelVL = lateralV(heelS);
     const heelVM = medialV(heelS);
-    let toeVL = lateralV(toeS);
+    const toeVL = lateralV(toeS);
     let toeVM = sweepV(toeS);
-    if (toeVL - toeVM < AFO_FLAT_TRIM_MIN_RADIUS_MM * 2 + 16) toeVM = toeVL - (AFO_FLAT_TRIM_MIN_RADIUS_MM * 2 + 16);
+    if (toeVL - toeVM < AFO_FLAT_TRIM_MIN_RADIUS_MM * 2 + 16)
+        toeVM = toeVL - (AFO_FLAT_TRIM_MIN_RADIUS_MM * 2 + 16);
     const lateral = filletOpen(
         [
             inPlane(heelS, heelVL),
@@ -1031,7 +1031,9 @@ function filletOpen(points: AfoVec3[], radius: number, spacing: number): AfoVec3
     if (n < 2) return points.map((p) => ({ ...p }));
     const trimA = new Array<number>(n - 1).fill(0);
     const trimB = new Array<number>(n - 1).fill(0);
-    const corner: Array<{ start: AfoVec3; end: AfoVec3; center: AfoVec3; r: number } | null> = new Array(n).fill(null);
+    const corner: Array<{ start: AfoVec3; end: AfoVec3; center: AfoVec3; r: number } | null> = new Array(
+        n,
+    ).fill(null);
     for (let i = 1; i < n - 1; i++) {
         const prev = points[i - 1]!;
         const cur = points[i]!;
@@ -1105,7 +1107,7 @@ function circularArc(a: AfoVec3, b: AfoVec3, dir: 1 | -1): AfoVec3[] {
         px = -px;
         py = -py;
     }
-    const h = Math.sqrt(Math.max(0, radius * radius - (chord * 0.5) * (chord * 0.5)));
+    const h = Math.sqrt(Math.max(0, radius * radius - chord * 0.5 * (chord * 0.5)));
     const center = { x: mid.x - px * h, y: mid.y - py * h, z: 0 };
     const angA = Math.atan2(a.y - center.y, a.x - center.x);
     let sweep = Math.atan2(b.y - center.y, b.x - center.x) - angA;

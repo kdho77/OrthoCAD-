@@ -69,6 +69,7 @@ export function manufacturingLoftStats(): ManufacturingLoftStats {
 export function resetManufacturingSolidCache(): void {
     for (const slot of slots.values()) slot.geometry.dispose();
     slots.clear();
+    inflightLofts.clear();
     stats.built = 0;
     stats.reused = 0;
     stats.published = 0;
@@ -231,4 +232,37 @@ export function noteManufacturingSolidReused(side: Side, elapsedMs: number): voi
     stats.reused += 1;
     stats.reusedBySide[side] += 1;
     stats.lastReuseMs = elapsedMs;
+}
+
+function inflightLoftKey(fingerprint: string, side: Side): string {
+    return `${side}:${fingerprint}`;
+}
+
+const inflightLofts = new Map<string, Promise<void>>();
+
+/** Preview / export share one in-flight loft per side+fingerprint. Export awaits instead of duplicating. */
+export function trackManufacturingLoftInflight(
+    fingerprint: string,
+    side: Side,
+    work: Promise<unknown>,
+): void {
+    const key = inflightLoftKey(fingerprint, side);
+    const tracked = work
+        .then(
+            () => undefined,
+            () => undefined,
+        )
+        .finally(() => {
+            if (inflightLofts.get(key) === tracked) inflightLofts.delete(key);
+        });
+    inflightLofts.set(key, tracked);
+}
+
+export async function awaitManufacturingLoftInflight(fingerprint: string, side: Side): Promise<void> {
+    const pending = inflightLofts.get(inflightLoftKey(fingerprint, side));
+    if (pending) await pending;
+}
+
+export function resetManufacturingLoftInflightForTests(): void {
+    inflightLofts.clear();
 }

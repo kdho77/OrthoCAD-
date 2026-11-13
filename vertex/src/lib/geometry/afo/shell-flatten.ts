@@ -437,10 +437,13 @@ function snapSoleRim(shell: AfoTriMesh, lock: FlatPlateLock, n: number): void {
  * {@link AFO_FLAT_TRIM_CHAMFER_MM} is the edge break to use once a chamfer
  * can be applied without those intersections.
  */
-export function smoothPlateCut(_shell: AfoTriMesh, _lock: FlatPlateLock, _chamferMm = AFO_FLAT_TRIM_CHAMFER_MM): void {
+export function smoothPlateCut(
+    _shell: AfoTriMesh,
+    _lock: FlatPlateLock,
+    _chamferMm = AFO_FLAT_TRIM_CHAMFER_MM,
+): void {
     return;
 }
-
 
 export interface FlatPlateValidation {
     openEdges: number;
