@@ -58,8 +58,7 @@ export { APEX_V2_INSOLE_LOCKED_PROFILE_ID };
  * Apex Forge process contract from draft PR #265
  * (branch cursor/enable-apex-forge-for-clinical-export-... @ fc3e4aa4adc0e6adcfe0c5a1d2b3a2f52db12c64)
  * and the VertexSlice `apex_forge` registry: nozzle 245°C, bed off (0°C), no wall-loop override.
- * Forge stays disabled in {@link APEX_PRINT_MATERIAL_OPTIONS}. OrthoCAD does not send these
- * numbers on `/v1/slice`; VertexSlice applies them from the material id.
+ * OrthoCAD does not send these numbers on `/v1/slice`; VertexSlice applies them from the material id.
  */
 export const APEX_FORGE_NOZZLE_TEMP_C = 245;
 export const APEX_FORGE_BED_TEMP_C = 0;
@@ -151,12 +150,10 @@ export interface ApexPrintMaterialOption {
     disabledReason?: string;
 }
 
-const SETTINGS_NOT_APPROVED = "Disabled until print settings are approved";
-
 /**
  * Apex Light, Apex Core, and Apex Bounce share the locked process profile id.
  * Bounce process deltas (220°C, 0.8× Core speed, 70°C bed) are applied by VertexSlice
- * on `apex_bounce`. Forge stays disabled. ApexVylon is not an insole product; the AFO
+ * on `apex_bounce`. Forge matches Core at 245°C on `apex_forge`. ApexVylon is not an insole product; the AFO
  * shell uses {@link APEX_VYLON_PROCESS_SETTINGS}. ApexComfort uses Apex Core.
  */
 export const APEX_PRINT_MATERIAL_OPTIONS: readonly ApexPrintMaterialOption[] = [
@@ -189,9 +186,8 @@ export const APEX_PRINT_MATERIAL_OPTIONS: readonly ApexPrintMaterialOption[] = [
         label: "Apex Forge",
         lockedProfileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
         vertexSliceMaterial: "apex_forge",
-        shoreLabel: "",
-        enabled: false,
-        disabledReason: SETTINGS_NOT_APPROVED,
+        shoreLabel: "Shore 95A",
+        enabled: true,
     },
 ] as const;
 

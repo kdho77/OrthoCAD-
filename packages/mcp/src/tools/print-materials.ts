@@ -40,10 +40,9 @@ export const CANONICAL_INSOLE_PRINT_MATERIALS = {
             id: "ApexForge",
             label: "Apex Forge",
             vertex_slice_material: "apex_forge",
-            enabled: false,
+            enabled: true,
             locked_preset_id: LOCKED_INSOLE_PRESET_ID,
             aliases: ["ApexForge", "Apex Forge", "apex_forge"],
-            disabled_reason: "Disabled until print settings are approved",
         },
     ],
 } as const;
@@ -72,7 +71,7 @@ for (const material of CANONICAL_INSOLE_PRINT_MATERIALS.materials) {
 /**
  * Validate a generate_gcode material. Returns the trimmed caller string so the
  * server can normalize aliases. Omitted material stays omitted (server default
- * apex_core). Unknown names and Apex Forge throw. Nothing is substituted.
+ * apex_core). Unknown names throw. Nothing is substituted.
  */
 export function callerPrintMaterial(material: string | undefined): string | undefined {
     const raw = material?.trim() ?? "";
@@ -80,11 +79,8 @@ export function callerPrintMaterial(material: string | undefined): string | unde
     const id = SLICE_ID_BY_COMPACT_KEY.get(compactMaterialKey(raw));
     if (!id) {
         throw new Error(
-            `Unknown print material "${raw}". Use apex_core, apex_light, or apex_bounce. Nothing was substituted.`,
+            `Unknown print material "${raw}". Use apex_core, apex_light, apex_bounce, or apex_forge. Nothing was substituted.`,
         );
-    }
-    if (id === "apex_forge") {
-        throw new Error("Apex Forge is disabled until print settings are approved");
     }
     return raw;
 }

@@ -217,7 +217,7 @@ describe("saved-design belt G-code tool", () => {
         expect(seen).toEqual([{ material: undefined, presetId: undefined }]);
     });
 
-    test("unknown material and disabled Apex Forge are rejected and not sent", async () => {
+    test("unknown material is rejected and apex_forge is accepted", async () => {
         let calls = 0;
         const manufacturing = {
             generateFromSavedDesign: async () => {
@@ -236,22 +236,30 @@ describe("saved-design belt G-code tool", () => {
             { ...base, material: "TPU 95A" },
             { config, manufacturing },
         );
+        let forgeMaterial: string | undefined;
+        const manufacturingForge = {
+            generateFromSavedDesign: async (input: { material?: string }) => {
+                forgeMaterial = input.material;
+                calls += 1;
+                return { ok: true, productionId: "prod-forge", status: "pending" };
+            },
+        } as unknown as ManufacturingClient;
         const forge = await handleOrthocadTool(
             "generate_gcode",
             { ...base, material: "apex_forge" },
-            { config, manufacturing },
+            { config, manufacturing: manufacturingForge },
         );
         const unlocked = await handleOrthocadTool(
             "generate_gcode",
             { ...base, preset_id: "gyroid-production-v1", material: "apex_light" },
             { config, manufacturing },
         );
-        expect(calls).toBe(0);
+        expect(calls).toBe(1);
+        expect(forgeMaterial).toBe("apex_forge");
+        expect(forge.isError).toBeUndefined();
         expect(unknown.isError).toBe(true);
         expect(unknown.content[0]?.text).toMatch(/Unknown print material/);
         expect(unknown.content[0]?.text).toMatch(/Nothing was substituted/);
-        expect(forge.isError).toBe(true);
-        expect(forge.content[0]?.text).toMatch(/Apex Forge is disabled/);
         expect(unlocked.isError).toBe(true);
         expect(unlocked.content[0]?.text).toMatch(/apex-v2-insole-95a/);
         expect(unlocked.content[0]?.text).toMatch(/not substituted/);

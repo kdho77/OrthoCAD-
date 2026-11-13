@@ -121,14 +121,14 @@ describe("AFO ApexVylon print material", () => {
         expect(proof).toMatch(/wall loops to 6/);
     });
 
-    test("insole print materials stay Light, Core, Bounce, and disabled Forge", () => {
+    test("insole print materials stay Light, Core, Bounce, and enabled Forge", () => {
         expect(
             APEX_PRINT_MATERIAL_OPTIONS.map((opt) => [opt.id, opt.enabled, opt.vertexSliceMaterial]),
         ).toEqual([
             ["ApexLight", true, "apex_light"],
             ["ApexCore", true, "apex_core"],
             ["ApexBounce", true, "apex_bounce"],
-            ["ApexForge", false, "apex_forge"],
+            ["ApexForge", true, "apex_forge"],
         ]);
         expect(APEX_PRINT_MATERIAL_OPTIONS.map((opt) => opt.id)).not.toContain("ApexVylon");
     });
