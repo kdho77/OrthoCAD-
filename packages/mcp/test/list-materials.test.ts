@@ -32,7 +32,8 @@ describe("list_materials", () => {
         expect(light?.aliases).toEqual(["ApexLight", "Apex Light", "apex_light", "ApexLight Foam"]);
         expect(forge).toMatchObject({
             vertex_slice_material: "apex_forge",
-            enabled: false,
+            enabled: true,
+            locked_preset_id: "apex-v2-insole-95a",
         });
         expect(payload.materials.map((material) => material.vertex_slice_material)).toEqual([
             "apex_light",

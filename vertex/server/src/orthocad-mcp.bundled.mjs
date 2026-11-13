@@ -40449,10 +40449,9 @@ var CANONICAL_INSOLE_PRINT_MATERIALS = {
       id: "ApexForge",
       label: "Apex Forge",
       vertex_slice_material: "apex_forge",
-      enabled: false,
+      enabled: true,
       locked_preset_id: LOCKED_INSOLE_PRESET_ID,
-      aliases: ["ApexForge", "Apex Forge", "apex_forge"],
-      disabled_reason: "Disabled until print settings are approved"
+      aliases: ["ApexForge", "Apex Forge", "apex_forge"]
     }
   ]
 };
@@ -40475,11 +40474,8 @@ function callerPrintMaterial(material) {
   const id = SLICE_ID_BY_COMPACT_KEY.get(compactMaterialKey2(raw));
   if (!id) {
     throw new Error(
-      `Unknown print material "${raw}". Use apex_core, apex_light, or apex_bounce. Nothing was substituted.`
+      `Unknown print material "${raw}". Use apex_core, apex_light, apex_bounce, or apex_forge. Nothing was substituted.`
     );
-  }
-  if (id === "apex_forge") {
-    throw new Error("Apex Forge is disabled until print settings are approved");
   }
   return raw;
 }
@@ -40513,7 +40509,7 @@ var prepareManufacturingStlUploadInputSchema = external_exports.object({
   file_name: external_exports.string().max(200).optional()
 });
 var listMaterialsInputSchema = external_exports.object({}).strict();
-var MATERIAL_FIELD_DESCRIPTION = 'Insole print material. Omit for apex_core (Apex Core). Enabled values: apex_light (Apex Light; aliases ApexLight, "Apex Light", "ApexLight Foam"), apex_core (Apex Core; aliases ApexCore, "Apex Core", ApexComfort, "Apex Comfort"), apex_bounce (Apex Bounce; aliases ApexBounce, "Apex Bounce"). Spaces, underscores, and hyphens are ignored. ApexLight Foam is Apex Light, not a separate product. apex_forge (Apex Forge) is disabled and rejected. Unknown names are rejected. Nothing is substituted. Call list_materials for the canonical ids, labels, aliases, and enabled flags.';
+var MATERIAL_FIELD_DESCRIPTION = 'Insole print material. Omit for apex_core (Apex Core). Enabled values: apex_light (Apex Light; aliases ApexLight, "Apex Light", "ApexLight Foam"), apex_core (Apex Core; aliases ApexCore, "Apex Core", ApexComfort, "Apex Comfort"), apex_bounce (Apex Bounce; aliases ApexBounce, "Apex Bounce"), apex_forge (Apex Forge; aliases ApexForge, "Apex Forge"). Spaces, underscores, and hyphens are ignored. ApexLight Foam is Apex Light, not a separate product. Unknown names are rejected. Nothing is substituted. Call list_materials for the canonical ids, labels, aliases, and enabled flags.';
 var PRESET_FIELD_DESCRIPTION = "Locked process profile apex-v2-insole-95a. Omit preset_id or pass that exact id. Any other preset_id is rejected and is not substituted. The same locked profile is used for every enabled insole material.";
 var generateGcodeInputObjectSchema = external_exports.object({
   design_id: external_exports.string().uuid().optional(),
@@ -40602,6 +40598,8 @@ var savedDesignSliderSchema = external_exports.object({
   rearfoot_posting_deg: external_exports.number().finite().optional(),
   medial_skive_mm: external_exports.number().finite().optional(),
   lateral_skive_mm: external_exports.number().finite().optional(),
+  arch_elongation_mm: external_exports.number().finite().optional(),
+  /** Legacy. Accepted so old catalogs load. Not copied onto the design. */
   arch_ease_mm: external_exports.number().finite().optional(),
   heel_cup_depth_mm: external_exports.number().finite().optional(),
   heel_cup_height_mm: external_exports.number().finite().optional(),
@@ -40727,12 +40725,12 @@ var MCP_TOOL_DEFINITIONS = [
   },
   {
     name: "list_materials",
-    description: 'Read-only catalog of insole print materials for generate_gcode. No arguments and no writes. Returns locked_preset_id (apex-v2-insole-95a), default_material (apex_core when material is omitted), and materials[] with id, label, vertex_slice_material, enabled, locked_preset_id, aliases, and disabled_reason when disabled. generate_gcode material accepts vertex_slice_material or any alias. Spaces, underscores, and hyphens are ignored. Apex Light / apex_light aliases include "ApexLight Foam" (the VertexOrders label, not a new product). Apex Core / apex_core aliases include ApexComfort. Apex Bounce / apex_bounce is enabled. Apex Forge / apex_forge is disabled until print settings are approved and is rejected. Unknown material names are rejected. Nothing is substituted. preset_id must be omitted or apex-v2-insole-95a. Any other preset_id is rejected and not substituted.',
+    description: 'Read-only catalog of insole print materials for generate_gcode. No arguments and no writes. Returns locked_preset_id (apex-v2-insole-95a), default_material (apex_core when material is omitted), and materials[] with id, label, vertex_slice_material, enabled, locked_preset_id, aliases, and disabled_reason when disabled. generate_gcode material accepts vertex_slice_material or any alias. Spaces, underscores, and hyphens are ignored. Apex Light / apex_light aliases include "ApexLight Foam" (the VertexOrders label, not a new product). Apex Core / apex_core aliases include ApexComfort. Apex Bounce / apex_bounce and Apex Forge / apex_forge are enabled. Unknown material names are rejected. Nothing is substituted. preset_id must be omitted or apex-v2-insole-95a. Any other preset_id is rejected and not substituted.',
     inputSchema: listMaterialsInputSchema
   },
   {
     name: "generate_gcode",
-    description: 'Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. The server lofts and slices after that response. Poll get_production. Download with get_export_download only after succeeded. A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset. No STL deliverable and no G-code bytes. Omitting side enqueues both feet. Legacy mode still calls manufacturing.generateSolid \u2192 Python /manufacture with stl_storage_key. PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck. material: omit for apex_core, or pass apex_light, apex_core, apex_bounce, or a list_materials alias ("ApexLight Foam" is apex_light). Unknown materials and disabled apex_forge are rejected and not substituted. preset_id: omit or pass apex-v2-insole-95a. Any other preset_id is rejected and not substituted. Every enabled insole material keeps that locked profile.',
+    description: 'Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. The server lofts and slices after that response. Poll get_production. Download with get_export_download only after succeeded. A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset. No STL deliverable and no G-code bytes. Omitting side enqueues both feet. Legacy mode still calls manufacturing.generateSolid \u2192 Python /manufacture with stl_storage_key. PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck. material: omit for apex_core, or pass apex_light, apex_core, apex_bounce, apex_forge, or a list_materials alias ("ApexLight Foam" is apex_light). Unknown materials are rejected and not substituted. preset_id: omit or pass apex-v2-insole-95a. Any other preset_id is rejected and not substituted. Every enabled insole material keeps that locked profile.',
     inputSchema: generateGcodeInputObjectSchema
   },
   {
@@ -40757,7 +40755,7 @@ var MCP_TOOL_DEFINITIONS = [
   },
   {
     name: "persist_saved_design_snapshot",
-    description: "Update one existing design's settingsJson in place with a loftable SAMPLE_Top parameter snapshot for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide), arch (low|medium|standard|high \u2192 \u22123.5|0|0|+3 mm), flexible_foot (true \u2192 apex +4 mm on both feet), elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, sliders.lateral_skive_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit. Ignored and never mapped: rx_text, notes, rigidity, extra_soft. hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. Absent width is Medium and recorded as defaulted, not prescribed. 422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
+    description: "Update one existing design's settingsJson in place with a loftable SAMPLE_Top parameter snapshot for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide), arch (low|medium|standard|high \u2192 \u22123.5|0|0|+3 mm), flexible_foot (true \u2192 apex +4 mm on both feet), elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit. Ignored and never mapped: rx_text, notes, rigidity, extra_soft. sliders.arch_ease_mm is accepted and not applied (migrated to 0). sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. Absent width is Medium and recorded as defaulted, not prescribed. 422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
     inputSchema: persistSavedDesignSnapshotInputSchema
   },
   {

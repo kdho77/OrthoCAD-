@@ -28,10 +28,10 @@ const MATERIAL_FIELD_DESCRIPTION =
     "Insole print material. Omit for apex_core (Apex Core). " +
     'Enabled values: apex_light (Apex Light; aliases ApexLight, "Apex Light", "ApexLight Foam"), ' +
     'apex_core (Apex Core; aliases ApexCore, "Apex Core", ApexComfort, "Apex Comfort"), ' +
-    'apex_bounce (Apex Bounce; aliases ApexBounce, "Apex Bounce"). ' +
+    'apex_bounce (Apex Bounce; aliases ApexBounce, "Apex Bounce"), ' +
+    'apex_forge (Apex Forge; aliases ApexForge, "Apex Forge"). ' +
     "Spaces, underscores, and hyphens are ignored. " +
-    "ApexLight Foam is Apex Light, not a separate product. " +
-    "apex_forge (Apex Forge) is disabled and rejected. Unknown names are rejected. Nothing is substituted. " +
+    "ApexLight Foam is Apex Light, not a separate product. Unknown names are rejected. Nothing is substituted. " +
     "Call list_materials for the canonical ids, labels, aliases, and enabled flags.";
 
 const PRESET_FIELD_DESCRIPTION =
@@ -137,6 +137,8 @@ const savedDesignSliderSchema = z
         rearfoot_posting_deg: z.number().finite().optional(),
         medial_skive_mm: z.number().finite().optional(),
         lateral_skive_mm: z.number().finite().optional(),
+        arch_elongation_mm: z.number().finite().optional(),
+        /** Legacy. Accepted so old catalogs load. Not copied onto the design. */
         arch_ease_mm: z.number().finite().optional(),
         heel_cup_depth_mm: z.number().finite().optional(),
         heel_cup_height_mm: z.number().finite().optional(),
@@ -317,8 +319,7 @@ export const MCP_TOOL_DEFINITIONS = [
             "and disabled_reason when disabled. " +
             "generate_gcode material accepts vertex_slice_material or any alias. Spaces, underscores, and hyphens are ignored. " +
             'Apex Light / apex_light aliases include "ApexLight Foam" (the VertexOrders label, not a new product). ' +
-            "Apex Core / apex_core aliases include ApexComfort. Apex Bounce / apex_bounce is enabled. " +
-            "Apex Forge / apex_forge is disabled until print settings are approved and is rejected. " +
+            "Apex Core / apex_core aliases include ApexComfort. Apex Bounce / apex_bounce and Apex Forge / apex_forge are enabled. " +
             "Unknown material names are rejected. Nothing is substituted. " +
             "preset_id must be omitted or apex-v2-insole-95a. Any other preset_id is rejected and not substituted.",
         inputSchema: listMaterialsInputSchema,
@@ -332,8 +333,8 @@ export const MCP_TOOL_DEFINITIONS = [
             "No STL deliverable and no G-code bytes. Omitting side enqueues both feet. " +
             "Legacy mode still calls manufacturing.generateSolid → Python /manufacture with stl_storage_key. " +
             "PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck. " +
-            "material: omit for apex_core, or pass apex_light, apex_core, apex_bounce, or a list_materials alias " +
-            '("ApexLight Foam" is apex_light). Unknown materials and disabled apex_forge are rejected and not substituted. ' +
+            "material: omit for apex_core, or pass apex_light, apex_core, apex_bounce, apex_forge, or a list_materials alias " +
+            '("ApexLight Foam" is apex_light). Unknown materials are rejected and not substituted. ' +
             "preset_id: omit or pass apex-v2-insole-95a. Any other preset_id is rejected and not substituted. " +
             "Every enabled insole material keeps that locked profile.",
         inputSchema: generateGcodeInputObjectSchema,
@@ -378,13 +379,15 @@ export const MCP_TOOL_DEFINITIONS = [
             "sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), " +
             "sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), " +
             "sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, " +
-            "sliders.lateral_skive_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, " +
+            "sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, " +
             "sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, " +
             "sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), " +
             "rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, " +
             "forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, " +
             "full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit. " +
             "Ignored and never mapped: rx_text, notes, rigidity, extra_soft. " +
+            "sliders.arch_ease_mm is accepted and not applied (migrated to 0). " +
+            "sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. " +
             "hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. " +
             "Absent width is Medium and recorded as defaulted, not prescribed. " +
             "422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, " +

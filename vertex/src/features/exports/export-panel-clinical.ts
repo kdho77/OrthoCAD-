@@ -122,7 +122,7 @@ export async function exportClinicalPrinterGcode(input: {
     feet?: GcodeFootScope;
     design: DesignState;
     wallStyle?: Parameters<typeof resolveViewerWallStyle>[0];
-    /** Apex product. Defaults to Apex Core. Forge is refused. Bounce uses the approved Core deltas. */
+    /** Apex product. Defaults to Apex Core. Bounce and Forge use VertexSlice material profiles. */
     apexMaterialId?: ApexPrintMaterialId;
     /** Belt G-code adds the sacrificial leader before the slicer. Default on. */
     includeLeaderBlock?: boolean;

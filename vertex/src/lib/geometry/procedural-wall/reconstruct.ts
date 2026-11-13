@@ -154,6 +154,7 @@ function zeroCorrections(): SideCorrections {
         archFillMm: 0,
         archHeightMm: 0,
         archEaseMm: 0,
+        archElongationMm: 0,
         heelCupDepthMm: 0,
         heelCupHeightMm: 0,
         heelCupWidthMm: 0,
@@ -190,7 +191,6 @@ export function hasCurveOrTopModifiers(input: ReconstructOptions): boolean {
         c.heelLiftMm > 0 ||
         c.archHeightMm !== 0 ||
         c.archFillMm !== 0 ||
-        (c.archEaseMm ?? 0) !== 0 ||
         (c.rearfootPostingDeg ?? 0) !== 0 ||
         (c.forefootPostingDeg ?? 0) !== 0 ||
         c.heelCupHeightMm !== 0 ||

@@ -603,7 +603,7 @@ export async function generateHybridGcode(
     if (outputType === "gcode" && !sliceRoute) {
         return {
             ok: false,
-            reason: "Pick Apex Light or Apex Core before exporting G-code.",
+            reason: "Pick Apex Light, Apex Core, Apex Bounce, or Apex Forge before exporting G-code.",
         };
     }
     const sliceFields = outputType === "gcode" ? sliceRoute : null;

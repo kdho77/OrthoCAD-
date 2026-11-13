@@ -53,9 +53,9 @@ export const PRINT_SOLID_CORRECTION_AUDIT: PrintSolidAuditRow[] = [
     },
     {
         id: "arch-height",
-        label: "Arch height / arch ease",
+        label: "Arch height / arch elongation",
         verdict: "survives",
-        drop: "applyBaseModifiers heightAt dome on the composed top.",
+        drop: "applyBaseModifiers heightAt dome on the composed top. Elongation lengthens the dome; peak and apex stay put.",
         proposedFix: "Keep.",
     },
     {

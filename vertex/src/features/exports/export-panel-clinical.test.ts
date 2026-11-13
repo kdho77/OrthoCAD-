@@ -69,7 +69,7 @@ describe("export panel clinical gcode", () => {
         expect(options.material).toBeUndefined();
     });
 
-    test("Apex Light and Apex Bounce are passed through and Forge is refused before slicing", async () => {
+    test("Apex Light, Bounce, and Forge are passed through before slicing", async () => {
         const res = await exportClinicalPrinterGcode({
             side: "left",
             design: useDesignStore.getState().design,
@@ -95,13 +95,16 @@ describe("export panel clinical gcode", () => {
             "ApexBounce",
         );
 
+        hybridSpy.mockClear();
         const forge = await exportClinicalPrinterGcode({
             side: "left",
             design: useDesignStore.getState().design,
             apexMaterialId: "ApexForge",
         });
-        expect(forge.ok).toBe(false);
-        expect(hybridSpy).toHaveBeenCalledTimes(2);
+        expect(forge.ok).toBe(true);
+        expect((hybridSpy.mock.calls[0]?.[4] as { apexMaterialId?: string }).apexMaterialId).toBe(
+            "ApexForge",
+        );
     });
 
     test("paired export requests both feet and a single side stays one foot", async () => {
