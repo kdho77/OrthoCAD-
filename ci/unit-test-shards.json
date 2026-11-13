@@ -55,6 +55,7 @@
                 "vertex/src/lib/geometry/procedural-wall/solid-thickness-raise.test.ts",
                 "vertex/src/lib/geometry/scan-components.test.ts",
                 "vertex/src/lib/geometry/shell-thickness-zonal.test.ts",
+                "vertex/src/lib/geometry/text-marking/bottom-engrave.test.ts",
                 "vertex/src/lib/geometry/text-marking/font.test.ts",
                 "vertex/src/lib/geometry/trimline.test.ts",
                 "vertex/src/lib/library/loaders.test.ts",
