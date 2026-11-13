@@ -6,14 +6,19 @@ import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
 import { afoViewportPlacementLayer } from "./afo-scan-markers";
 import {
     AFO_CAST_SURFACE,
+    AFO_FAR_MARKER_COLOR,
     AFO_FAR_MARKER_OPACITY,
     AFO_MARKER_DEPTH_TEST,
+    AFO_NEAR_MARKER_COLOR,
     AFO_POINT_BRIGHTNESS_MIN,
+    AFO_TRIM_PIN_NEAR_COLOR,
     type AfoPointCloudShader,
     afoCastBodyStyle,
     afoCastStyleDuringPlacement,
     afoHeightColors,
     afoMarkerDisplayCue,
+    afoMarkerDragAllowed,
+    afoMarkerOnCameraSide,
     afoPointCloudGlsl,
     afoScanAutoFrameAllowed,
     afoTriangleStats,
@@ -188,6 +193,49 @@ describe("afo scan ui", () => {
         expect(shader.vertexShader).toContain("vAfoViewZ");
         expect(shader.uniforms.afoNear?.value).toBeGreaterThan(0);
         expect(shader.uniforms.afoFar?.value).toBeGreaterThan(shader.uniforms.afoNear?.value ?? 0);
+    });
+
+    test("near markers stay green and far markers turn purple on the shaded cast", () => {
+        const near = afoMarkerDisplayCue({
+            drawMode: "surface",
+            facesCamera: true,
+            nearColor: AFO_TRIM_PIN_NEAR_COLOR,
+        });
+        const far = afoMarkerDisplayCue({
+            drawMode: "surface",
+            facesCamera: false,
+            nearColor: AFO_TRIM_PIN_NEAR_COLOR,
+        });
+        expect(near.color).toBe(AFO_TRIM_PIN_NEAR_COLOR);
+        expect(far.color).toBe(AFO_FAR_MARKER_COLOR);
+        expect(near.opacity).toBe(1);
+        expect(far.opacity).toBe(1);
+        expect(afoMarkerDragAllowed(true, true)).toBe(true);
+        expect(afoMarkerDragAllowed(true, false)).toBe(false);
+        expect(afoMarkerDragAllowed(false, true)).toBe(false);
+    });
+
+    test("marker color flips when the camera crosses to the other side of the cast", () => {
+        const center = { x: 0, y: 0, z: 0 };
+        const marker = { x: 40, y: 0, z: 0 };
+        const camNear = { x: 80, y: 0, z: 0 };
+        const camFar = { x: -80, y: 0, z: 0 };
+        const nearSide = afoMarkerOnCameraSide(marker, camNear, center);
+        const farSide = afoMarkerOnCameraSide(marker, camFar, center);
+        expect(nearSide).toBe(true);
+        expect(farSide).toBe(false);
+        const facing = afoMarkerDisplayCue({
+            drawMode: "surface",
+            facesCamera: nearSide,
+            nearColor: AFO_NEAR_MARKER_COLOR,
+        });
+        const away = afoMarkerDisplayCue({
+            drawMode: "surface",
+            facesCamera: farSide,
+            nearColor: AFO_NEAR_MARKER_COLOR,
+        });
+        expect(facing.color).toBe(AFO_NEAR_MARKER_COLOR);
+        expect(away.color).toBe(AFO_FAR_MARKER_COLOR);
     });
 
     test("medial and lateral views flip with foot side", () => {

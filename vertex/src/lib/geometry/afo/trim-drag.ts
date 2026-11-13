@@ -25,7 +25,10 @@ export function trimPinDragAllowed(args: {
     pinIndex: number | null;
     trimConfirmed: boolean;
     scanPlacementActive: boolean;
+    /** False when the pin sits on the far side of the cast from the camera. */
+    facesCamera?: boolean;
 }): boolean {
+    if (args.facesCamera === false) return false;
     if (args.scanPlacementActive) return false;
     if (args.pinIndex == null) return false;
     return Number.isInteger(args.pinIndex) && args.pinIndex >= 0;
@@ -78,6 +81,7 @@ export function beginTrimPinPress(args: {
     pinIndex: number | null;
     trimConfirmed: boolean;
     scanPlacementActive: boolean;
+    facesCamera?: boolean;
     pointerId: number;
     x: number;
     y: number;
@@ -88,6 +92,7 @@ export function beginTrimPinPress(args: {
             pinIndex: args.pinIndex,
             trimConfirmed: args.trimConfirmed,
             scanPlacementActive: args.scanPlacementActive,
+            facesCamera: args.facesCamera,
         }) ||
         args.pinIndex == null
     ) {
