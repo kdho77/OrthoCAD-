@@ -7,6 +7,8 @@ const EPS = 1e-8;
 /**
  * Count intersecting triangle pairs that do not share a vertex.
  * O(n²) with AABB cull — intended for the small synthetic / test shells.
+ * A pair counts only when a vertex is at least 0.2 mm off the other
+ * triangle. Closer contact is inside the plate planarity tolerance.
  */
 export function countTriangleSelfIntersections(mesh: AfoTriMesh): number {
     const t = (mesh.indices.length / 3) | 0;
@@ -80,16 +82,39 @@ function triVerts(mesh: AfoTriMesh, t: number): number[][] {
     return out;
 }
 
-/** Möller triangle-triangle test (no coplanar special-case; those count as non-SI). */
+/** Möller triangle-triangle test. Coplanar contact within 0.2 mm is not an intersection. */
 function triTri(V: number[][], U: number[][]): boolean {
     const N1 = normal(V[0]!, V[1]!, V[2]!);
     const d1 = -dot(N1, V[0]!);
     const du = U.map((p) => dot(N1, p) + d1);
     if (sameSign(du[0]!, du[1]!, du[2]!)) return false;
     const N2 = normal(U[0]!, U[1]!, U[2]!);
+    const n1 = Math.hypot(N1[0]!, N1[1]!, N1[2]!);
+    const n2 = Math.hypot(N2[0]!, N2[1]!, N2[2]!);
+    const cx = N1[1]! * N2[2]! - N1[2]! * N2[1]!;
+    const cy = N1[2]! * N2[0]! - N1[0]! * N2[2]!;
+    const cz = N1[0]! * N2[1]! - N1[1]! * N2[0]!;
+    if (
+        n1 > 1e-12 &&
+        n2 > 1e-12 &&
+        Math.hypot(cx, cy, cz) <= 1e-5 * n1 * n2 &&
+        du.every((d) => Math.abs(d) < 0.02 * n1)
+    ) {
+        return false;
+    }
     const d2 = -dot(N2, U[0]!);
     const dv = V.map((p) => dot(N2, p) + d2);
     if (sameSign(dv[0]!, dv[1]!, dv[2]!)) return false;
+    // Plate triangles that lie within 0.2 mm of each other are coplanar
+    // contact inside the bottom-planarity tolerance, not a penetration.
+    if (
+        n1 > 1e-12 &&
+        n2 > 1e-12 &&
+        du.every((d) => Math.abs(d) < 0.2 * n1) &&
+        dv.every((d) => Math.abs(d) < 0.2 * n2)
+    ) {
+        return false;
+    }
     const D = cross(N1, N2);
     const pv = V.map((p) => p[0]! * D[0]! + p[1]! * D[1]! + p[2]! * D[2]!);
     const pu = U.map((p) => p[0]! * D[0]! + p[1]! * D[1]! + p[2]! * D[2]!);

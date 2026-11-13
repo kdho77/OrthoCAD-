@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { CaseSummaryBar } from "@/components/clinical/CaseSummaryBar";
 import { ClinicalStepRail } from "@/components/clinical/ClinicalStepRail";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -16,6 +16,7 @@ import { LoginScreen } from "@/features/auth/LoginScreen";
 import { ClientFilePage } from "@/features/clients/ClientFilePage";
 import { ClientListPage } from "@/features/clients/ClientListPage";
 import { EditorChrome, useDesignRoute } from "@/features/clients/EditorChrome";
+import { CLIENT_LIST_PATH } from "@/features/clients/client-list-nav";
 import { InactivityGuard } from "@/features/clients/InactivityGuard";
 import { parseClinicalPath } from "@/features/clients/routes";
 import { exportDesign } from "@/features/exports/export-service";
@@ -148,9 +149,11 @@ export function CadApp({ clientId, designId }: { clientId: string; designId: str
     });
 
     const go = (item: NavItem) => {
-        if (item === "Clients") navigate("/clients");
+        if (item === "Clients") navigate(CLIENT_LIST_PATH);
         else navigate("/production/queue");
     };
+
+    const leaveNavigateRef = useRef<(href: string) => void>((href) => navigate(href));
 
     return (
         <div className="flex h-full flex-col">
@@ -160,7 +163,16 @@ export function CadApp({ clientId, designId }: { clientId: string; designId: str
                 active="Clients"
                 onNavigate={go}
                 onOpenPrescription={() => setRxOpen(true)}
-                leading={<EditorChrome clientId={clientId} designId={designId} />}
+                onLogoNavigate={() => leaveNavigateRef.current(CLIENT_LIST_PATH)}
+                leading={
+                    <EditorChrome
+                        clientId={clientId}
+                        designId={designId}
+                        onRegisterLeave={(leave) => {
+                            leaveNavigateRef.current = leave;
+                        }}
+                    />
+                }
             />
             {resolving ? (
                 <div className="flex min-h-0 flex-1 flex-col">
