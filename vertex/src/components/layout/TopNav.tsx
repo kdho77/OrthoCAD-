@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { AccountMenu } from "@/components/layout/AccountMenu";
 import { Button } from "@/components/ui/button";
 import { navigate, showSuperAdminLink } from "@/features/admin/admin-nav";
+import { CLIENT_LIST_PATH } from "@/features/clients/client-list-nav";
 import { SaveControl } from "@/features/designs/SaveControl";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
@@ -10,27 +11,41 @@ import { useAuthStore } from "@/stores/auth-store";
 const NAV = ["Clients", "Production"] as const;
 type NavItem = (typeof NAV)[number];
 
+const HEADER_LOGO_SRC = "/brand/orthocad-logo-header.png";
+
 interface TopNavProps {
     active: NavItem;
     onNavigate: (item: NavItem) => void;
     onOpenPrescription: () => void;
     /** Replaces the workspace links. Used by the design editor breadcrumb. */
     leading?: ReactNode;
+    /** When set (design editor), use guarded navigation e.g. unsaved-changes prompt. */
+    onLogoNavigate?: () => void;
 }
 
-export function TopNav({ active, onNavigate, onOpenPrescription, leading }: TopNavProps) {
+export function TopNav({ active, onNavigate, onOpenPrescription, leading, onLogoNavigate }: TopNavProps) {
+    const goToClientList = () => {
+        if (onLogoNavigate) onLogoNavigate();
+        else navigate(CLIENT_LIST_PATH);
+    };
     const { user, license } = useAuthStore();
 
     return (
         <header className="flex min-h-12 flex-wrap items-center justify-between gap-2 border-b border-border bg-panel px-2 sm:px-3">
             <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4">
-                <div className="flex shrink-0 items-center pr-1 sm:pr-2">
+                <button
+                    type="button"
+                    onClick={goToClientList}
+                    className="flex shrink-0 items-center rounded pr-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:pr-2"
+                    aria-label="Back to client list"
+                >
                     <img
-                        src="/orthocad-logo.webp"
-                        alt="Vertex Orthopedic"
-                        className="h-7 w-auto object-contain"
+                        src={HEADER_LOGO_SRC}
+                        alt="OrthoCAD by Vertex Orthopedic Group"
+                        className="h-9 w-auto max-w-[7.5rem] object-contain sm:max-w-[8.75rem]"
+                        decoding="async"
                     />
-                </div>
+                </button>
                 {leading ? <div className="min-w-0 flex-1">{leading}</div> : null}
                 <nav
                     className={cn(

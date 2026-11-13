@@ -7,6 +7,7 @@ import { vertexSliceRegional3mfEnabled } from "../../../shared/vertexslice-regio
 import { assertCadOperatorGcodeKey, buildCadOperatorTempStlKey } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { getSupabaseAdmin } from "../context.js";
+import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
 import { runtimeDogfoodOrderOwnerVerifier } from "../lib/dogfood-order-owner-wire.js";
 import {
     createDogfoodSavedDesign,
@@ -42,7 +43,11 @@ import {
     readCadOperatorProduction,
     runCadOperatorGenerateRequest,
 } from "./cad-operator-generate.js";
-import { runSessionGenerateSolid, type SessionManufacturingIo } from "./manufacturing-session.js";
+import {
+    assertDesignExportAccess,
+    runSessionGenerateSolid,
+    type SessionManufacturingIo,
+} from "./manufacturing-session.js";
 
 const MAX_INLINE_STL_BYTES = 8 * 1024 * 1024;
 
@@ -98,29 +103,23 @@ async function assertActiveLicenseForUser(userId: string): Promise<void> {
     await assertActiveLicense(supabase, userId);
 }
 
-function sessionManufacturingIo(): SessionManufacturingIo {
+function sessionManufacturingIo(user: { id: string; email: string; role: string }): SessionManufacturingIo {
     const supabase = getSupabaseAdmin();
     return {
         assertActiveLicense: assertActiveLicenseForUser,
         async verifyDesignOwner(designId, userId) {
-            const admin = requireSupabaseAdmin();
-            const { data: design, error: designError } = await admin
-                .from("designs")
-                .select("id")
-                .eq("id", designId)
-                .eq("ownerId", userId)
-                .maybeSingle();
-            if (designError) {
-                throw new TRPCError({
-                    code: "INTERNAL_SERVER_ERROR",
-                    message: `Failed to verify design ownership: ${designError.message}`,
-                });
-            }
-            if (!design) {
+            if (userId !== user.id) {
                 throw new TRPCError({
                     code: "FORBIDDEN",
                     message: "Design not found or access denied",
                 });
+            }
+            try {
+                const { repo, actor } = await openClientFiles(user);
+                await assertDesignExportAccess(repo, actor, designId);
+            } catch (error) {
+                if (error instanceof TRPCError) throw error;
+                rethrowClientFile(error);
             }
         },
         async getTokenBalance(userId) {
@@ -359,7 +358,7 @@ export const manufacturingRouter = router({
                     ...input,
                     presetId: input.presetId ?? "",
                 },
-                io: sessionManufacturingIo(),
+                io: sessionManufacturingIo(ctx.user),
             });
         }),
 
@@ -369,7 +368,7 @@ export const manufacturingRouter = router({
             return readCadOperatorProduction({
                 prisma: ctx.prisma,
                 principal: ctx.user ? null : (ctx.cadOperator ?? null),
-                userId: ctx.user?.id ?? null,
+                user: ctx.user,
                 productionId: input.productionId,
             });
         }),
@@ -386,7 +385,7 @@ export const manufacturingRouter = router({
             return listCadOperatorProductions({
                 prisma: ctx.prisma,
                 principal: ctx.user ? null : (ctx.cadOperator ?? null),
-                userId: ctx.user?.id ?? null,
+                user: ctx.user,
                 designId: input.designId,
                 side: input.side,
                 presetId: input.presetId,
@@ -588,21 +587,17 @@ export const manufacturingRouter = router({
                 return { downloadUrl, productionId: production.id };
             }
 
-            const { data: design, error: designError } = await supabase
-                .from("designs")
-                .select("ownerId")
-                .eq("id", production.designId)
-                .maybeSingle();
-
-            if (designError) {
-                throw new TRPCError({
-                    code: "INTERNAL_SERVER_ERROR",
-                    message: `Failed to verify production ownership: ${designError.message}`,
-                });
-            }
-
-            if (!design || design.ownerId !== ctx.user.id) {
-                throw new TRPCError({ code: "FORBIDDEN", message: "Production not found or access denied" });
+            try {
+                const { repo, actor } = await openClientFiles(ctx.user);
+                await assertDesignExportAccess(
+                    repo,
+                    actor,
+                    production.designId,
+                    "Production not found or access denied",
+                );
+            } catch (error) {
+                if (error instanceof TRPCError) throw error;
+                rethrowClientFile(error);
             }
             if (!production.gcodeStorageKey) {
                 throw new TRPCError({

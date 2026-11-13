@@ -30,6 +30,7 @@ import {
     toPublicProduction,
 } from "../lib/cad-operator-production.js";
 import { chargeExistingProduction, PrismaCadProductionStore } from "../lib/cad-operator-production-prisma.js";
+import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
 import { downloadManufacturingStl } from "../lib/manufacturing-stl-download.js";
 import {
     archiveManufacturingSourceStl,
@@ -43,6 +44,9 @@ import {
     materializeCadOperatorStl,
     prepareCadOperatorGenerate,
 } from "./manufacturing-cad.js";
+import { assertDesignExportAccess } from "./manufacturing-session.js";
+
+type SessionExportUser = { id: string; email: string; role: string };
 
 function cadOperatorUserExportFilename(
     input: CadGenerateRequestInput,
@@ -297,22 +301,27 @@ export async function runCadOperatorGenerateRequest(args: {
 async function assertReadableDesign(args: {
     prisma: PrismaClient;
     principal: CadOperatorPrincipal | null;
-    userId: string | null;
+    user: SessionExportUser | null;
     designId: string;
 }): Promise<void> {
-    if (args.principal && !args.userId) {
+    if (args.principal && !args.user) {
         await loadDogfoodDesign(args.prisma, args.principal, args.designId);
         return;
     }
-    if (!args.userId) {
+    if (!args.user) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Authentication required" });
     }
-    const design = await args.prisma.design.findUnique({
-        where: { id: args.designId },
-        select: { ownerId: true, deletedAt: true },
-    });
-    if (!design || design.deletedAt || design.ownerId !== args.userId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Production not found or access denied" });
+    const denied = "Production not found or access denied";
+    let design;
+    try {
+        const { repo, actor } = await openClientFiles(args.user);
+        design = await assertDesignExportAccess(repo, actor, args.designId, denied);
+    } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        rethrowClientFile(error);
+    }
+    if (design.deletedAt) {
+        throw new TRPCError({ code: "FORBIDDEN", message: denied });
     }
 }
 
@@ -329,7 +338,7 @@ function hiddenFromOperator(principal: CadOperatorPrincipal | null, storageKey: 
 export async function readCadOperatorProduction(args: {
     prisma: PrismaClient;
     principal: CadOperatorPrincipal | null;
-    userId: string | null;
+    user: SessionExportUser | null;
     productionId: string;
     now?: Date;
 }): Promise<PublicProduction> {
@@ -341,7 +350,7 @@ export async function readCadOperatorProduction(args: {
     await assertReadableDesign({
         prisma: args.prisma,
         principal: args.principal,
-        userId: args.userId,
+        user: args.user,
         designId: row.designId,
     });
     if (hiddenFromOperator(args.principal, row.gcodeStorageKey)) {
@@ -354,7 +363,7 @@ export async function readCadOperatorProduction(args: {
 export async function listCadOperatorProductions(args: {
     prisma: PrismaClient;
     principal: CadOperatorPrincipal | null;
-    userId: string | null;
+    user: SessionExportUser | null;
     designId: string;
     side?: CadFootSide;
     presetId?: string;

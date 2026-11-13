@@ -583,6 +583,63 @@ function absorbEnclosed(
     return extra.length ? selected.concat(extra) : selected;
 }
 
+/**
+ * A boundary vertex with more than two boundary edges is a pinch: two fans of
+ * the pocket meet only at that vertex. The outline then repeats the vertex,
+ * Delaunator drops one copy, and the constrained CDT refuses the seam.
+ * Pull in the other sole triangles at that vertex so the fans join and the
+ * outline becomes a set of simple loops. Long names hit this; short ones do not.
+ */
+function absorbPinches(sole: SoleTri[], selected: SoleTri[]): SoleTri[] {
+    const byVert = new Map<number, SoleTri[]>();
+    for (const tri of sole) {
+        for (const v of [tri.a, tri.b, tri.c]) {
+            let list = byVert.get(v);
+            if (!list) {
+                list = [];
+                byVert.set(v, list);
+            }
+            list.push(tri);
+        }
+    }
+    const chosen = new Set(selected.map((t) => t.i));
+    let cur = selected;
+    for (let pass = 0; pass < 8; pass++) {
+        const deg = new Map<number, number>();
+        const edgeCount = new Map<string, number>();
+        for (const tri of cur) {
+            for (const [u, v] of [
+                [tri.a, tri.b],
+                [tri.b, tri.c],
+                [tri.c, tri.a],
+            ] as const) {
+                const k = hostEdgeKey(u, v);
+                edgeCount.set(k, (edgeCount.get(k) ?? 0) + 1);
+            }
+        }
+        for (const [k, n] of edgeCount) {
+            if (n !== 1) continue;
+            const bar = k.indexOf("|");
+            const a = Number(k.slice(0, bar));
+            const b = Number(k.slice(bar + 1));
+            deg.set(a, (deg.get(a) ?? 0) + 1);
+            deg.set(b, (deg.get(b) ?? 0) + 1);
+        }
+        const extra: SoleTri[] = [];
+        for (const [v, d] of deg) {
+            if (d <= 2) continue;
+            for (const tri of byVert.get(v) ?? []) {
+                if (chosen.has(tri.i)) continue;
+                chosen.add(tri.i);
+                extra.push(tri);
+            }
+        }
+        if (!extra.length) break;
+        cur = cur.concat(extra);
+    }
+    return cur;
+}
+
 function hostEdgeKey(a: number, b: number): string {
     return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
@@ -683,10 +740,13 @@ export async function engraveBottomPlanar(
     const clipped = resampleGroups(inset ? clipGlyphs(groups, inset) : groups);
     const { tris: sole, wantNegZ } = collectSole(host);
     const posAttr = host.getAttribute("position");
-    const near = absorbEnclosed(
-        posAttr,
+    const near = absorbPinches(
         sole,
-        sole.filter((tri) => glyphHitsTri(posAttr, tri, clipped)),
+        absorbEnclosed(
+            posAttr,
+            sole,
+            sole.filter((tri) => glyphHitsTri(posAttr, tri, clipped)),
+        ),
     );
     if (!near.length) throw new TextMarkingError("boolean", "glyphs missed the sole faces");
     const index = host.getIndex();
