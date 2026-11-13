@@ -7,6 +7,7 @@ import {
     type VertexSliceMaterialId,
     vertexSliceMaterialForApexMaterial,
 } from "@/features/exports/apex-print-material";
+import { blockExportIfStaleBuild, staleBuildExportOutcome } from "@/features/exports/export-build-gate";
 import { exportMachineFamily, pairExportLayout } from "@/features/exports/machine-export-layout";
 import {
     buildManufacturingUploadBody,
@@ -200,6 +201,7 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 export async function exportDesign(format: ExportFormat, side: Side = "left"): Promise<ExportOutcome> {
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
     const blocked = refuseMilledPrint(useDesignStore.getState().design);
     if (blocked) return blocked;
     if (format === "gcode") {
@@ -322,6 +324,7 @@ export async function packOrder3mf(
 }
 
 export async function export3mf(side: Side): Promise<ExportOutcome> {
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
     const blocked = refuseMilledPrint(useDesignStore.getState().design);
     if (blocked) return blocked;
     const { user, license, deductTokens } = useAuthStore.getState();
@@ -343,6 +346,7 @@ export async function export3mf(side: Side): Promise<ExportOutcome> {
 }
 
 export async function exportGlb(side: Side): Promise<ExportOutcome> {
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
     const blocked = refuseMilledPrint(useDesignStore.getState().design);
     if (blocked) return blocked;
     const { user, license } = useAuthStore.getState();
@@ -361,6 +365,7 @@ export async function exportGlb(side: Side): Promise<ExportOutcome> {
 }
 
 export async function exportCncGcode(sides: Side[], profile: MillingProfile): Promise<ExportOutcome> {
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
     const { design } = useDesignStore.getState();
     const millSides = cncSidesForOrder(design, sides);
     const before = JSON.stringify(design);
@@ -556,6 +561,7 @@ export async function exportGcode(
     overrides: CamOverrides = {},
     options: HybridGcodeOptions = {},
 ): Promise<ExportOutcome> {
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
     const { design } = useDesignStore.getState();
     const blocked = refuseMilledPrint(design);
     if (blocked) return blocked;
@@ -591,6 +597,7 @@ export async function generateHybridGcode(
     overrides: CamOverrides = {},
     options: HybridGcodeOptions = {},
 ): Promise<ExportOutcome> {
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
     const blocked = refuseMilledPrint(useDesignStore.getState().design);
     if (blocked) return blocked;
     const report = options.onProgress;
@@ -752,6 +759,7 @@ export async function generateHybridGcode(
 }
 
 export async function downloadGcodeByProductionId(productionId: string): Promise<ExportOutcome> {
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
     if (!isApiConfigured()) {
         return { ok: false, reason: "API not configured; server G-code download requires backend" };
     }

@@ -39,6 +39,14 @@
                     "value": "public, max-age=86400, stale-while-revalidate=604800"
                 }
             ]
+        },
+        {
+            "source": "/version.json",
+            "headers": [{ "key": "Cache-Control", "value": "no-store" }]
+        },
+        {
+            "source": "/index.html",
+            "headers": [{ "key": "Cache-Control", "value": "no-store" }]
         }
     ]
 }
