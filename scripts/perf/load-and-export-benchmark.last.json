@@ -1,0 +1,46 @@
+{
+    "fixture": "SAMPLE_Top.glb",
+    "glbBytes": 277032,
+    "cacheHeaders": "Templates/* not covered by /assets immutable header (SPA rewrite only)",
+    "layoutM9": {
+        "footLengthMm": 262.4666666666667,
+        "lengthMm": 260,
+        "widthMm": 95,
+        "scale": 1
+    },
+    "layout275Foot": {
+        "footLengthMm": 275,
+        "lengthMm": 272.416,
+        "widthMm": 99.536,
+        "scale": 1.0477520955041908
+    },
+    "stl": {
+        "bytes": 5515484,
+        "triangles": 110308,
+        "vertices": 55156
+    },
+    "ms": {
+        "diskRead": 0,
+        "glbParse": 1,
+        "extractMergeWelding": 50,
+        "reorientFootprint": 50,
+        "sampleTopPipeline": 51,
+        "loadSampleTopCachedClone": 1,
+        "viewerPatternOnly": 4403,
+        "proceduralLoftM9": 17281,
+        "proceduralLoftFoot275": 25721,
+        "exportLoftCold": 17262,
+        "exportLoftManufacturingCacheWarm": 1,
+        "meshClose": 492,
+        "watertightValidate": 1111,
+        "stlSerialize": 477,
+        "buildExportStlCold": 18255,
+        "buildExportStlWarm": 1076
+    },
+    "host": {
+        "node": "v22.23.4",
+        "platform": "linux",
+        "cwd": "/agent/repos/OrthoCAD-"
+    },
+    "measuredAt": "2026-11-13T03:25:59.491Z"
+}
