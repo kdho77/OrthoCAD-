@@ -294,6 +294,7 @@
                 "vertex/src/lib/geometry/procedural-wall/live-bottom-pattern.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/posting-golden.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/quad-grid.test.ts",
+                "vertex/src/lib/geometry/procedural-wall/round-first-ray-grinding.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/sample-top-preview.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/wall-spline.test.ts",
                 "vertex/src/lib/geometry/scan-registration-phase2.test.ts",

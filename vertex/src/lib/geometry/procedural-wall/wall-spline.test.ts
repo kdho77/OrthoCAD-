@@ -10,12 +10,14 @@ import {
     buildPolylineDensityTable,
     chooseRimDiagonal,
     clampLandingFractions,
+    clampLipTurnsToPlanarSpan,
     columnChordsOk,
     controlPointsSpaced,
     curveSTFromPolyline,
     enforceMonotoneF,
     evalClampedCubic,
     evalQuadraticBezier,
+    feasibleLipTurn,
     fromSz,
     HYBRID_ARCH_LB_MM,
     hybridArchWeight,
@@ -24,6 +26,7 @@ import {
     jointDensityTable,
     lipArcEnd,
     lipBlockCount,
+    lipTurnLandsOnPlanarSpan,
     lipTurnTargetFromLambda,
     minSOfSamples,
     parabolaHandleM,
@@ -381,6 +384,66 @@ describe("quadratic wall parabola", () => {
         expect(alreadyIn.lipTurn).toBe(0);
         expect(alreadyIn.E.s).toBeCloseTo(0, 8);
         expect(alreadyIn.E.z).toBeCloseTo(H, 8);
+    });
+
+    test("a feasible lip turn is left exactly as requested", () => {
+        const tR = { s: -1, z: 0 };
+        const H = 12;
+        const Ls = 10;
+        const r1 = 0.5;
+        const raw = lipTurnTargetFromLambda(tR, H, Ls, r1, SPLINE_LAMBDA);
+        expect(feasibleLipTurn(tR, H, Ls, r1, raw.theta)).toBe(raw.theta);
+        const joint = solveLipParabolaJoint(tR, H, Ls, r1, SPLINE_LAMBDA);
+        const direct = buildJointFromTheta(tR, H, Ls, r1, raw.theta, SPLINE_LAMBDA);
+        expect(joint.lipTurn).toBe(direct.lipTurn);
+        expect(joint.E.s).toBe(direct.E.s);
+        expect(joint.E.z).toBe(direct.E.z);
+        expect(joint.M.s).toBe(direct.M.s);
+        expect(joint.M.z).toBe(direct.M.z);
+        expect(joint.zeroLip).toBe(false);
+        const thetas = [raw.theta, raw.theta, raw.theta];
+        const arc = [0, 8, 16];
+        const kept = clampLipTurnsToPlanarSpan(thetas, arc, 24, () => ({ tR, H, Ls, r1 }), true);
+        expect(kept).toBe(thetas);
+    });
+
+    test("smoothing that drops M outside the rim is clamped back onto the plantar span", () => {
+        // Right Morton's + Cluffy, short toe station: raw θ lands, smoothed θ does not.
+        const tR = { s: -1, z: -0.0039 };
+        const H = 5.7148;
+        const Ls = 1.1535;
+        const r1 = 0.18;
+        const smoothed = 1.5134;
+        const raw = 1.6675;
+        expect(lipTurnLandsOnPlanarSpan(tR, H, Ls, r1, smoothed)).toBe(false);
+        expect(lipTurnLandsOnPlanarSpan(tR, H, Ls, r1, raw)).toBe(true);
+        const fixed = feasibleLipTurn(tR, H, Ls, r1, smoothed);
+        expect(fixed).toBeGreaterThan(smoothed);
+        expect(fixed).toBeLessThanOrEqual(raw);
+        expect(lipTurnLandsOnPlanarSpan(tR, H, Ls, r1, fixed)).toBe(true);
+        const joint = buildJointFromTheta(tR, H, Ls, r1, fixed, SPLINE_LAMBDA);
+        expect(joint.M.s + 1e-9).toBeGreaterThanOrEqual(joint.E.s);
+        expect(joint.M.s - 1e-9).toBeLessThanOrEqual(Ls);
+        const thetas = [raw, smoothed, raw];
+        const clamped = clampLipTurnsToPlanarSpan(thetas, [0, 4, 8], 12, () => ({ tR, H, Ls, r1 }), true);
+        expect(clamped).not.toBe(thetas);
+        for (const theta of clamped) {
+            expect(lipTurnLandsOnPlanarSpan(tR, H, Ls, r1, theta)).toBe(true);
+        }
+    });
+
+    test("an upward rim tangent is not treated as an already-aimed lip", () => {
+        const tR = { s: -0.15, z: 0.98 };
+        const H = 8;
+        const Ls = 12;
+        const r1 = 0.5;
+        expect(lipTurnTargetFromLambda(tR, H, Ls, r1, SPLINE_LAMBDA).theta).toBe(0);
+        expect(lipTurnLandsOnPlanarSpan(tR, H, Ls, r1, 0)).toBe(false);
+        const joint = solveLipParabolaJoint(tR, H, Ls, r1, SPLINE_LAMBDA);
+        expect(joint.lipTurn).toBeGreaterThan(0.5);
+        expect(joint.M.s + 1e-9).toBeGreaterThanOrEqual(joint.E.s);
+        expect(joint.M.s - 1e-9).toBeLessThanOrEqual(Ls);
+        expect(joint.M.z).toBeCloseTo(0, 8);
     });
 
     test("one-source theta: E and tE from the same sweep; lambda does not move M", () => {
