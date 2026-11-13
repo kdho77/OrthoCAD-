@@ -83,7 +83,7 @@ function sourceField(
         thicknessMm: BASE_REFERENCE_THICKNESS_MM,
         elements: [],
         includeElements: false,
-        includeSkives: extra.includeSkives ?? false,
+        includeSkives: false,
         trimline: null,
         ...extra,
         side,
