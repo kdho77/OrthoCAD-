@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
+import { shouldDeferTopMeshLoad } from "@/features/clients/start-path";
 import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
 import {
     baseModifierField,
@@ -163,6 +164,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         return s.phaseBySide[active] === "ready";
     });
     const clinicalStep = useClinicalWorkflowStore((s) => s.step);
+    const designStartPath = useClinicalWorkflowStore((s) => s.designStartPath);
     const setLoftPhase = usePreviewLoftStatusStore((s) => s.setSidePhase);
     const setLoftError = usePreviewLoftStatusStore((s) => s.setError);
     const lastLoftKeyRef = useRef<string | null>(null);
@@ -198,6 +200,15 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     // biome-ignore lint/correctness/useExhaustiveDependencies: loadKey captures asset + mirror variant
     useEffect(() => {
         let cancelled = false;
+        if (shouldDeferTopMeshLoad(designStartPath, clinicalStep)) {
+            setBuilding(false);
+            setBaseMeshLoading(side, false);
+            setLoftPhase(side, "idle", "Top mesh loads on Setup");
+            return () => {
+                cancelled = true;
+                setBaseMeshLoading(side, false);
+            };
+        }
         if (forefootBaseRef.current) {
             forefootBaseRef.current.geo.dispose();
             forefootBaseRef.current = null;
@@ -357,7 +368,18 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             cancelled = true;
             setBaseMeshLoading(side, false);
         };
-    }, [loadKey, stockGate, setBaseMeshLoading, side, retryNonce, setLoftPhase, setLoftError, wallModel]);
+    }, [
+        loadKey,
+        stockGate,
+        setBaseMeshLoading,
+        side,
+        retryNonce,
+        setLoftPhase,
+        setLoftError,
+        wallModel,
+        designStartPath,
+        clinicalStep,
+    ]);
 
     // Scale native template to the selected shoe size; publish outline/bounds for the sized mesh.
     // biome-ignore lint/correctness/useExhaustiveDependencies: rebuild when native load finishes (building→false)
