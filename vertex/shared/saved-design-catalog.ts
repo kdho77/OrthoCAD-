@@ -30,7 +30,7 @@ export const SLIDER_FIELDS = {
     rearfoot_posting_deg: "rearfootPostingDeg",
     medial_skive_mm: "medialSkiveMm",
     lateral_skive_mm: "lateralSkiveMm",
-    arch_ease_mm: "archEaseMm",
+    arch_elongation_mm: "archElongationMm",
     heel_cup_depth_mm: "heelCupDepthMm",
     heel_cup_height_mm: "heelCupHeightMm",
     heel_cup_width_mm: "heelCupWidthMm",
@@ -67,7 +67,7 @@ const sliderShape = {
     rearfoot_posting_deg: z.number().finite().optional(),
     medial_skive_mm: z.number().finite().optional(),
     lateral_skive_mm: z.number().finite().optional(),
-    arch_ease_mm: z.number().finite().optional(),
+    arch_elongation_mm: z.number().finite().optional(),
     heel_cup_depth_mm: z.number().finite().optional(),
     heel_cup_height_mm: z.number().finite().optional(),
     heel_cup_width_mm: z.number().finite().optional(),
@@ -77,7 +77,13 @@ const sliderShape = {
     lateral_flange_mm: z.number().finite().optional(),
 } satisfies Record<SliderField, z.ZodOptional<z.ZodNumber>>;
 
-export const savedDesignSliderSchema = z.object(sliderShape).strict();
+export const savedDesignSliderSchema = z
+    .object({
+        ...sliderShape,
+        /** Legacy. Accepted so old catalogs load. Not copied onto the design. */
+        arch_ease_mm: z.number().finite().optional(),
+    })
+    .strict();
 
 const wedgeSchema = z
     .object({

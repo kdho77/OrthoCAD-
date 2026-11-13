@@ -180,10 +180,15 @@ export interface SideCorrections {
     archFillMm: number;
     archHeightMm: number;
     /**
-     * Medial arch contact relief (mm downward) after arch height — eases shell
-     * tightness so soft tissue can spread. Distinct from arch height.
+     * @deprecated Lowered the arch at the same apex as arch height.
+     * Loaded designs migrate this to 0. The height field does not apply it.
      */
     archEaseMm: number;
+    /**
+     * Lengthwise stretch of the medial arch dome (mm), symmetric about the apex.
+     * Peak height and apex position stay put. 0 is the unstretched dome. Range 0–5.
+     */
+    archElongationMm?: number;
     heelCupDepthMm: number;
     heelCupHeightMm: number;
     /**

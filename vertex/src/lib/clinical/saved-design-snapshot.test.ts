@@ -139,6 +139,26 @@ describe("SAMPLE_Top saved-design snapshot", () => {
         );
     });
 
+    test("arch_ease_mm loads and is ignored; arch_elongation_mm is stored", () => {
+        const legacy = build({ sliders: { arch_ease_mm: 6 } });
+        expect(legacy.design.corrections.left.archEaseMm).toBe(0);
+        expect(legacy.design.corrections.right.archEaseMm).toBe(0);
+        expect(legacy.design.corrections.left.archElongationMm).toBe(0);
+        expect(legacy.paths.some((path) => path.includes("archEase"))).toBe(false);
+
+        const stretched = build({
+            sliders: { arch_ease_mm: 6, arch_elongation_mm: 4 },
+        });
+        expect(stretched.design.corrections.left.archEaseMm).toBe(0);
+        expect(stretched.design.corrections.right.archEaseMm).toBe(0);
+        expect(stretched.design.corrections.left.archElongationMm).toBe(4);
+        expect(stretched.design.corrections.right.archElongationMm).toBe(4);
+        expect(stretched.design.corrections.left.archHeightMm).toBe(0);
+        expect(stretched.design.corrections.left.apexMoveMm).toBe(0);
+        expect(stretched.paths).toContain("settings.corrections.left.archElongationMm");
+        expect(stretched.paths).toContain("settings.corrections.right.archElongationMm");
+    });
+
     test("missing shoe size, EU, split sizes, and conflicts fail closed", () => {
         expect(expect422(() => build({}, { ...storedNine, size: null })).message).toMatch(
             /shoe size is required/,

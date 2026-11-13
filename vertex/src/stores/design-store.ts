@@ -100,6 +100,7 @@ function defaultSideCorrections(): SideCorrections {
         archFillMm: 0,
         archHeightMm: 0,
         archEaseMm: 0,
+        archElongationMm: 0,
         heelCupDepthMm: 0,
         heelCupHeightMm: 0,
         heelCupWidthMm: 0,
