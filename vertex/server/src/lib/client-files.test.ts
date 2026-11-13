@@ -13,6 +13,7 @@ import {
     createClientFile,
     createDesignFile,
     createMemoryClientFileRepo,
+    crossTabIdleMs,
     defaultClientListQuery,
     defaultShoeChart,
     duplicateDesignFile,
@@ -22,9 +23,12 @@ import {
     hardDeleteClientFile,
     IDLE_LOGOUT_MS,
     IDLE_WARNING_MS,
+    idleLogoutSignOutOptions,
     inactivityPhase,
     listClientFiles,
     type MemoryDb,
+    mergeActivityTimestamp,
+    nextSharedActivityTimestamp,
     parseClientListQuery,
     parseStorePhiFlag,
     planOrphanAttachment,
@@ -529,5 +533,62 @@ describe("client list query and PHI chrome", () => {
         expect(inactivityPhase(IDLE_WARNING_MS - 1)).toBe("active");
         expect(inactivityPhase(IDLE_WARNING_MS)).toBe("warning");
         expect(inactivityPhase(IDLE_LOGOUT_MS)).toBe("logout");
+    });
+
+    test("idle logout signs out with local scope only", () => {
+        expect(idleLogoutSignOutOptions).toEqual({ scope: "local" });
+    });
+
+    test("shared activity in another tab prevents logout while this tab looked idle", () => {
+        const now = 1_700_000_000_000;
+        const tabBLocal = now - 31 * 60 * 1000;
+        const tabAStored = now - 60 * 1000;
+        const idle = crossTabIdleMs(now, tabBLocal, tabAStored);
+        expect(idle).toBe(60 * 1000);
+        expect(inactivityPhase(idle)).toBe("active");
+    });
+
+    test("all tabs idle for 30 minutes reaches logout", () => {
+        const now = 1_700_000_000_000;
+        const stale = now - IDLE_LOGOUT_MS;
+        expect(mergeActivityTimestamp(stale, stale)).toBe(stale);
+        const idle = crossTabIdleMs(now, stale, stale);
+        expect(inactivityPhase(idle)).toBe("logout");
+    });
+
+    test("warning at 29 minutes uses the newest activity across tabs", () => {
+        const now = 1_700_000_000_000;
+        const idle = crossTabIdleMs(now, now - IDLE_WARNING_MS, now - IDLE_WARNING_MS);
+        expect(inactivityPhase(idle)).toBe("warning");
+    });
+
+    test("shared activity writes throttle to about five seconds unless forced", () => {
+        const t0 = 1_700_000_000_000;
+        const first = nextSharedActivityTimestamp(t0, null, 0, false, t0);
+        expect(first.persist).toBe(true);
+        const blocked = nextSharedActivityTimestamp(
+            t0 + 1000,
+            first.value,
+            first.lastPersistMs,
+            false,
+            t0 + 1000,
+        );
+        expect(blocked.persist).toBe(false);
+        const allowed = nextSharedActivityTimestamp(
+            t0 + 5000,
+            blocked.value,
+            first.lastPersistMs,
+            false,
+            t0 + 5000,
+        );
+        expect(allowed.persist).toBe(true);
+        const forced = nextSharedActivityTimestamp(
+            t0 + 1000,
+            blocked.value,
+            first.lastPersistMs,
+            true,
+            t0 + 1000,
+        );
+        expect(forced.persist).toBe(true);
     });
 });

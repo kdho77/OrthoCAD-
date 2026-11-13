@@ -21,6 +21,12 @@ export const CLIENT_NOTES_MAX = 2000;
 export const DESIGN_RESTORE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 export const IDLE_LOGOUT_MS = 30 * 60 * 1000;
 export const IDLE_WARNING_MS = IDLE_LOGOUT_MS - 60 * 1000;
+/** Latest input activity across OrthoCAD tabs (ISO ms string). */
+export const VERTEX_LAST_ACTIVITY_KEY = "vertex.lastActivityAt";
+export const VERTEX_IDLE_ACTIVITY_CHANNEL = "vertex-idle-activity";
+export const IDLE_ACTIVITY_PERSIST_THROTTLE_MS = 5000;
+/** Idle timeout must not revoke refresh tokens on other devices. */
+export const idleLogoutSignOutOptions = { scope: "local" as const };
 export const CLINICAL_DOCUMENT_TITLE = "OrthoCAD · Client";
 
 /** US men's half sizes offered on the client chart. Matches the CAD size range. */
@@ -614,6 +620,50 @@ export function inactivityPhase(
     if (idleMs >= logoutAt) return "logout";
     if (idleMs >= warnAt) return "warning";
     return "active";
+}
+
+export function readStoredActivityMs(
+    getItem: (key: string) => string | null,
+    key = VERTEX_LAST_ACTIVITY_KEY,
+): number | null {
+    const raw = getItem(key);
+    if (raw == null) return null;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : null;
+}
+
+export function mergeActivityTimestamp(localMs: number, storedMs: number | null): number {
+    return storedMs == null ? localMs : Math.max(localMs, storedMs);
+}
+
+/** Idle time from the latest activity in this tab or any other tab. */
+export function crossTabIdleMs(nowMs: number, localLastMs: number, storedLastMs: number | null): number {
+    const last = mergeActivityTimestamp(localLastMs, storedLastMs);
+    return Math.max(0, nowMs - last);
+}
+
+export function shouldPersistSharedActivity(
+    nowMs: number,
+    lastPersistMs: number,
+    throttleMs = IDLE_ACTIVITY_PERSIST_THROTTLE_MS,
+): boolean {
+    return lastPersistMs === 0 || nowMs - lastPersistMs >= throttleMs;
+}
+
+export function nextSharedActivityTimestamp(
+    activityMs: number,
+    storedMs: number | null,
+    lastPersistMs: number,
+    force: boolean,
+    nowMs = activityMs,
+): { value: number; persist: boolean; lastPersistMs: number } {
+    const merged = mergeActivityTimestamp(activityMs, storedMs);
+    const persist = force || shouldPersistSharedActivity(nowMs, lastPersistMs);
+    return {
+        value: merged,
+        persist,
+        lastPersistMs: persist ? nowMs : lastPersistMs,
+    };
 }
 
 export interface NotesDraft {
