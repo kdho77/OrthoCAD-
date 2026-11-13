@@ -6,15 +6,17 @@ import { BufferAttribute, type BufferGeometry, DoubleSide, FrontSide, type Point
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
-import { AfoCueSphere } from "@/components/viewer/AfoScanMarkers";
+import { AfoCueSphere, AfoTrimPinDot, afoTrimPinNearColor } from "@/components/viewer/AfoScanMarkers";
 import {
-    AfoLitSurfaceMaterial,
-    AfoPointCloudMaterial,
     AFO_LANDMARK_LIT_ROUGHNESS,
     AFO_LANDMARK_LIT_SURFACE_COLOR,
+    AfoLitSurfaceMaterial,
+    AfoPointCloudMaterial,
 } from "@/components/viewer/AfoSurfaceMaterial";
 import {
     AFO_POINT_DEPTH_WINDOW_MM,
+    AFO_TRIM_PIN_NEAR_COLOR,
+    type AfoScanDrawMode,
     afoCastStyleDuringPlacement,
     afoHeightColors,
     afoTriangleStats,
@@ -34,9 +36,6 @@ import { publishExportMeasureMesh } from "@/lib/geometry/measure/registry";
 import { getAfoState, useAfoStore } from "@/stores/afo-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
-
-const TRIM_YELLOW_GREEN = "#c6ef3a";
-const TRIM_FIRST = "#7dff6a";
 
 export function AfoMeshes() {
     const afo = useDesignStore((s) => s.design.afo) ?? getAfoState();
@@ -268,6 +267,8 @@ export function AfoMeshes() {
                 cursor={preview.marks.length === 0 ? preview.cursor : null}
                 hoveredIndex={hoveredTrimIndex}
                 dragIndex={draggingTrimIndex}
+                centerLocal={markerCenter}
+                drawMode={markerDrawMode}
             />
             {afo.clinicalMarkers.map((lm) => (
                 <AfoCueSphere
@@ -366,21 +367,22 @@ function pointKey(pt: AfoVec3): string {
     return `${pt.x.toFixed(2)},${pt.y.toFixed(2)},${pt.z.toFixed(2)}`;
 }
 
-const TRIM_HOVER = "#fff4a3";
-const TRIM_DRAG = "#ffffff";
-
 function AfoTrimOverlay({
     marks,
     stroke,
     cursor,
     hoveredIndex,
     dragIndex,
+    centerLocal,
+    drawMode,
 }: {
     marks: AfoVec3[];
     stroke: AfoVec3[];
     cursor: AfoVec3 | null;
     hoveredIndex: number | null;
     dragIndex: number | null;
+    centerLocal: AfoVec3;
+    drawMode: AfoScanDrawMode;
 }) {
     const arms = cursor ? cursorCrossSegments(cursor) : [];
     return (
@@ -392,30 +394,19 @@ function AfoTrimOverlay({
             {marks.map((pt, handle) => {
                 const dragging = dragIndex === handle;
                 const hovered = hoveredIndex === handle;
-                const color = dragging
-                    ? TRIM_DRAG
-                    : hovered
-                      ? TRIM_HOVER
-                      : handle === 0
-                        ? TRIM_FIRST
-                        : TRIM_YELLOW_GREEN;
+                const nearColor = afoTrimPinNearColor(handle, dragging, hovered);
                 const radius = dragging || hovered ? AFO_TRIM_PIN_RADIUS_MM + 0.7 : AFO_TRIM_PIN_RADIUS_MM;
                 return (
-                    <mesh
+                    <AfoTrimPinDot
                         key={pointKey(pt)}
                         position={[pt.x, pt.y, pt.z]}
+                        nearColor={nearColor}
+                        radius={radius}
                         renderOrder={60}
-                        frustumCulled={false}
+                        centerLocal={centerLocal}
+                        drawMode={drawMode}
                         userData={{ isAfoTrimHandle: true, trimIndex: handle, trimHot: dragging || hovered }}
-                    >
-                        <sphereGeometry args={[radius, 12, 10]} />
-                        <meshBasicMaterial
-                            color={color}
-                            depthTest={false}
-                            depthWrite={false}
-                            toneMapped={false}
-                        />
-                    </mesh>
+                    />
                 );
             })}
         </group>
@@ -427,7 +418,7 @@ function FatTrimLine({ points }: { points: AfoVec3[] }) {
     const line = useMemo(() => {
         const geometry = new LineGeometry();
         const material = new LineMaterial({
-            color: TRIM_YELLOW_GREEN,
+            color: AFO_TRIM_PIN_NEAR_COLOR,
             linewidth: 2.5,
             depthTest: false,
             depthWrite: false,

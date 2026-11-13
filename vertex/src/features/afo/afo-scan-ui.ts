@@ -40,6 +40,12 @@ export const AFO_MARKER_DEPTH_TEST = false;
 export const AFO_POINT_SIZE_MM = 2.4;
 /** Far point-cloud markers stay faintly visible where the depth splat has a hole. */
 export const AFO_FAR_MARKER_OPACITY = 0.16;
+/** Far-side trim dots and landmarks (not facing the camera). */
+export const AFO_FAR_MARKER_COLOR = "#9b59f5";
+/** Near-side markers when no per-marker color is supplied (trim pins use their green). */
+export const AFO_NEAR_MARKER_COLOR = "#22c55e";
+export const AFO_TRIM_PIN_NEAR_COLOR = "#c6ef3a";
+export const AFO_TRIM_PIN_FIRST_NEAR_COLOR = "#7dff6a";
 /** Hidden splats overlap neighbouring samples so the cloud occludes the far side. */
 export const AFO_POINT_DEPTH_SPLAT_SCALE = 2.6;
 /**
@@ -160,6 +166,8 @@ export interface AfoMarkerDisplayCue {
     /** Far point-cloud markers are occluded, not only dimmed. */
     occluded: boolean;
     dimmed: boolean;
+    facesCamera: boolean;
+    color: string;
 }
 
 /** Display cue for one marker. Placement and the camera preset stay on the shared side rule. */
@@ -167,23 +175,35 @@ export function afoMarkerDisplayCue(opts: {
     drawMode: AfoScanDrawMode;
     facesCamera: boolean;
     baseOpacity?: number;
+    nearColor?: string;
 }): AfoMarkerDisplayCue {
     const base = opts.baseOpacity ?? 1;
     const far = !opts.facesCamera;
+    const nearColor = opts.nearColor ?? AFO_NEAR_MARKER_COLOR;
+    const color = far ? AFO_FAR_MARKER_COLOR : nearColor;
     if (opts.drawMode === "points") {
         return {
             opacity: far ? base * AFO_FAR_MARKER_OPACITY : base,
             depthTest: true,
             occluded: far,
             dimmed: far,
+            facesCamera: opts.facesCamera,
+            color,
         };
     }
     return {
-        opacity: far ? base * AFO_FAR_MARKER_OPACITY : base,
+        opacity: base,
         depthTest: far,
         occluded: false,
         dimmed: far,
+        facesCamera: opts.facesCamera,
+        color,
     };
+}
+
+/** Scan markers and trim pins drag only on the near side of the cast. */
+export function afoMarkerDragAllowed(interactive: boolean, facesCamera: boolean): boolean {
+    return interactive && facesCamera;
 }
 
 export interface AfoPointCloudShader {
