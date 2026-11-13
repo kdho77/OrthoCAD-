@@ -458,7 +458,7 @@ export function Viewer3D() {
                         <Layers className="h-3 w-3" />
                         {afoDesignBaseLabel(true, SAMPLE_TOP_NAME)}
                     </span>
-                ) : designMode.mode === "base" && !deferTopMeshChip ? (
+                ) : deferTopMeshChip ? null : designMode.mode === "base" ? (
                     <span className="flex w-fit items-center gap-1 rounded bg-violet-500/90 px-2 py-0.5 text-[11px] font-semibold text-white shadow">
                         <Layers className="h-3 w-3" />
                         Base:{" "}

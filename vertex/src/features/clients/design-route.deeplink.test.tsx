@@ -5,8 +5,10 @@ import * as React from "react";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { CadApp } from "@/App";
+import { saveDesignWorkflowSession } from "@/features/clients/design-workflow-session";
 import { useAuthStore } from "@/stores/auth-store";
 import { resetClientDirectoryLoad, useClientStore } from "@/stores/client-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
 import type { UserProfile } from "@/types";
 import {
@@ -135,6 +137,14 @@ describe("design deep link", () => {
         useAuthStore.setState({ user: clinician, license: null, loading: false });
         useDesignStore.setState({ pendingSessionDesign: null });
         localStorage.removeItem("vertex-design-session");
+        localStorage.removeItem("vertex-design-workflow");
+        useClinicalWorkflowStore.setState({
+            productType: "insole",
+            step: "scan",
+            designStartPath: null,
+            completedSteps: [],
+            footSideExplicitlyChosen: false,
+        });
         window.history.replaceState(null, "", `/clients/${CLIENT_ID}/designs/${DESIGN_ID}`);
         container = document.createElement("div");
         document.body.appendChild(container);
@@ -264,6 +274,32 @@ describe("design deep link", () => {
         expect(container.textContent).toContain("Cast");
         expect(container.querySelector('[data-testid="viewer"]')).not.toBeNull();
         expect(designName()).toBe("AFO 1");
+    });
+
+    test("reopening without entry restores the saved clinical step", async () => {
+        saveDesignWorkflowSession(DESIGN_ID, {
+            step: "corrections",
+            completedSteps: ["scan", "setup", "base"],
+            footSideExplicitlyChosen: true,
+            designStartPath: null,
+        });
+        useClientStore.setState({
+            clients: [clientRow()],
+            designs: [
+                {
+                    ...designRow(DESIGN_ID, "insole", "Insole 1"),
+                    state: createDesignWithStockPlaceholder(),
+                },
+            ],
+            directoryStatus: "idle",
+        });
+        await renderDesign();
+        expect(useClinicalWorkflowStore.getState().step).toBe("corrections");
+        expect(useClinicalWorkflowStore.getState().completedSteps).toEqual([
+            "scan",
+            "setup",
+            "base",
+        ]);
     });
 
     test("after the directory is loaded, an unknown design shows the session message without another fetch", async () => {

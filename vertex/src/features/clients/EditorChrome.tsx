@@ -34,6 +34,7 @@ export function useDesignRoute(clientId: string, designId: string) {
 
     useEffect(() => {
         if (resolving) return;
+        setReady(false);
         let cancelled = false;
         const open = async () => {
             const persist = useDesignStore.persist;

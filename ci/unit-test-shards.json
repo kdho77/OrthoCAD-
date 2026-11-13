@@ -93,6 +93,7 @@
                 "vertex/shared/moonraker-printer-state.test.ts",
                 "vertex/shared/printer-address-policy.test.ts",
                 "vertex/src/components/layout/right-panel-duplicates.test.ts",
+                "vertex/src/components/viewer/Viewer3D.defer-base-chip.test.tsx",
                 "vertex/src/components/viewer/Viewer3D.print-selection.test.tsx",
                 "vertex/src/features/afo/afo-apex-vylon.test.ts",
                 "vertex/src/features/clients/ClientFileHeaderSummary.test.tsx",
