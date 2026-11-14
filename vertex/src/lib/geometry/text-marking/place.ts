@@ -594,9 +594,8 @@ export function placeBottomText(
             y: (p.y - local.y) * s,
         }));
         const rotated = transformGroups(pivoted, (p) => rotateAbout(p, { x: 0, y: 0 }, marking.rotationDeg));
-        // Mirror so the recess reads correctly when the insole is flipped (pancake about X).
-        const mirrored = transformGroups(rotated, (p) => ({ x: p.x, y: -p.y }));
-        return transformGroups(mirrored, (p) => ({ x: p.x + cx, y: p.y + cy }));
+        const glyphPlaced = transformGroups(rotated, (p) => ({ x: -p.x, y: p.y }));
+        return transformGroups(glyphPlaced, (p) => ({ x: p.x + cx, y: p.y + cy }));
     };
 
     let placed = applyAt(flat, 1);
