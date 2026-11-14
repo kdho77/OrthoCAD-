@@ -94,7 +94,7 @@ describe("text marking SAMPLE_Top apply guards", () => {
         }
     }, 60_000);
 
-    test("bottom flipped-render occupancy IoU >= 0.9 vs mirrored glyphs", async () => {
+    test("bottom glyphs keep +X advance and put the cap toward −Y", async () => {
         const font = await loadTextFont();
         const flat = flattenText(font, SAMPLE, 6, 0.6, true);
         expect(flat.minStrokeMm).toBeGreaterThanOrEqual(TEXT_MIN_STROKE_MM);
@@ -110,15 +110,18 @@ describe("text marking SAMPLE_Top apply guards", () => {
             const cents = meta?.centroids ?? [];
             expect(cents.length).toBeGreaterThan(3);
             const cx = cents.reduce((s, p) => s + p.x, 0) / cents.length;
-            const placedXs = cents.map((p) => p.x - cx);
+            const cy = cents.reduce((s, p) => s + p.y, 0) / cents.length;
             const src = flat.centroids;
             const srcCx = src.reduce((s, p) => s + p.x, 0) / Math.max(1, src.length);
-            const srcXs = src.map((p) => p.x - srcCx);
-            // Bottom glyph placement flips X (−x) so centered placement matches negated source X.
+            const srcCy = src.reduce((s, p) => s + p.y, 0) / Math.max(1, src.length);
+            // getPath is canvas-down and flattenPath negates Y, so source caps point +Y.
+            // Bottom placement negates Y (cap toward −Y) and keeps the +X advance.
             let match = 0;
-            const n = Math.min(placedXs.length, srcXs.length);
+            const n = Math.min(cents.length, src.length);
             for (let i = 0; i < n; i++) {
-                if (Math.abs(placedXs[i]! + srcXs[i]!) < 1.2) match++;
+                const dx = cents[i]!.x - cx - (src[i]!.x - srcCx);
+                const dy = cents[i]!.y - cy + (src[i]!.y - srcCy);
+                if (Math.hypot(dx, dy) < 1.2) match++;
             }
             expect(match / n).toBeGreaterThanOrEqual(0.9);
             tagged.dispose();

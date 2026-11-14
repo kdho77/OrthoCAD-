@@ -474,11 +474,16 @@ export function compositeBottomAndCurvature(
     return { rgb, width, height };
 }
 
-/** Camera at −Z looking +Z; toe (+world X) at the top of the image. */
+/**
+ * Looking up at the sole from below. Toe (+X) is screen-right; screen-up is −Y,
+ * so the left-foot medial arch is at the top of the image and the right-foot
+ * arch is at the bottom. right × up = −Z only as a screen basis — the pixels
+ * are the first +Z hits, i.e. the Z-min face.
+ */
 export const PLANTAR_BELOW_VIEW: RenderView = {
-    right: [0, -1, 0],
-    up: [1, 0, 0],
-    light: [0.1, 0.12, -1],
+    right: [1, 0, 0],
+    up: [0, -1, 0],
+    light: [0, 0, -1],
 };
 
 type PlantarOutlineLoop = Array<{ x: number; y: number; z: number }>;
@@ -672,4 +677,107 @@ export function projectPlantarBelow(
         x: ox + (px - bounds.minX) * scale,
         y: height - (oy + (py - bounds.minY) * scale),
     };
+}
+
+export interface SoleHeightmap {
+    /** Min hit Z of a +Z ray from minZ − 5 mm. Infinity on a miss. Row iy increases with +Y. */
+    z: Float32Array;
+    nx: number;
+    ny: number;
+    minX: number;
+    minY: number;
+    step: number;
+}
+
+/**
+ * PM from-below heightmap: rays along +Z from below the sole, one sample per
+ * `step` mm in XY, keeping the first hit. Display with screen-right = +X and
+ * screen-up = −Y (row 0 is the −Y side).
+ */
+export function soleHeightmapFromBelow(
+    pos: Float32Array,
+    index: ArrayLike<number> | null,
+    step = 0.4,
+): SoleHeightmap {
+    const triCount = index ? Math.floor(index.length / 3) : Math.floor(pos.length / 9);
+    const vert = (t: number, k: number, c: number) => {
+        const vi = index ? index[t * 3 + k]! : t * 3 + k;
+        return pos[vi * 3 + c]!;
+    };
+    let minX = Infinity;
+    let minY = Infinity;
+    let minZ = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < pos.length; i += 3) {
+        const x = pos[i]!;
+        const y = pos[i + 1]!;
+        const z = pos[i + 2]!;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        if (z < minZ) minZ = z;
+    }
+    const cell = 4;
+    const grid = new Map<string, number[]>();
+    for (let t = 0; t < triCount; t++) {
+        const ax = vert(t, 0, 0);
+        const ay = vert(t, 0, 1);
+        const bx = vert(t, 1, 0);
+        const by = vert(t, 1, 1);
+        const cx = vert(t, 2, 0);
+        const cy = vert(t, 2, 1);
+        const x0 = Math.floor(Math.min(ax, bx, cx) / cell);
+        const x1 = Math.floor(Math.max(ax, bx, cx) / cell);
+        const y0 = Math.floor(Math.min(ay, by, cy) / cell);
+        const y1 = Math.floor(Math.max(ay, by, cy) / cell);
+        for (let ix = x0; ix <= x1; ix++) {
+            for (let iy = y0; iy <= y1; iy++) {
+                const key = `${ix},${iy}`;
+                let bucket = grid.get(key);
+                if (!bucket) {
+                    bucket = [];
+                    grid.set(key, bucket);
+                }
+                bucket.push(t);
+            }
+        }
+    }
+    const nx = Math.max(1, Math.ceil((maxX - minX) / step));
+    const ny = Math.max(1, Math.ceil((maxY - minY) / step));
+    const z = new Float32Array(nx * ny);
+    z.fill(Number.POSITIVE_INFINITY);
+    const z0 = minZ - 5;
+    for (let iy = 0; iy < ny; iy++) {
+        const y = minY + (iy + 0.5) * step;
+        const gy = Math.floor(y / cell);
+        for (let ix = 0; ix < nx; ix++) {
+            const x = minX + (ix + 0.5) * step;
+            const bucket = grid.get(`${Math.floor(x / cell)},${gy}`);
+            if (!bucket) continue;
+            let best = Number.POSITIVE_INFINITY;
+            for (const t of bucket) {
+                const ax = vert(t, 0, 0);
+                const ay = vert(t, 0, 1);
+                const az = vert(t, 0, 2);
+                const bx = vert(t, 1, 0);
+                const by = vert(t, 1, 1);
+                const bz = vert(t, 1, 2);
+                const cx = vert(t, 2, 0);
+                const cy = vert(t, 2, 1);
+                const cz = vert(t, 2, 2);
+                const denom = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+                if (Math.abs(denom) < 1e-12) continue;
+                const w0 = ((by - cy) * (x - cx) + (cx - bx) * (y - cy)) / denom;
+                const w1 = ((cy - ay) * (x - cx) + (ax - cx) * (y - cy)) / denom;
+                const w2 = 1 - w0 - w1;
+                if (w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4) continue;
+                const hz = w0 * az + w1 * bz + w2 * cz;
+                if (hz >= z0 && hz < best) best = hz;
+            }
+            if (best < Number.POSITIVE_INFINITY) z[iy * nx + ix] = best;
+        }
+    }
+    return { z, nx, ny, minX, minY, step };
 }

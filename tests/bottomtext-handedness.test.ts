@@ -19,6 +19,8 @@ import {
     encodePng,
     projectPlantarBelow,
     renderPlantarFromBelow,
+    type SoleHeightmap,
+    soleHeightmapFromBelow,
 } from "./helpers/render-png";
 
 const SAMPLE_TOP_FIXTURE = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
@@ -139,7 +141,7 @@ function writeDiagnosticPng(geo: BufferGeometry, side: Side, slug: string): Uint
     return rgb;
 }
 
-/** Engrave outlines must span the frame (not a tight grey crop). */
+/** From-below, the name is a horizontal band: long in +X, short in the cap. */
 function assertOutlineSpansFrame(geo: BufferGeometry, outlines: BottomOutlineWorld[]): void {
     const pos = posOf(geo);
     let minX = Infinity;
@@ -155,9 +157,12 @@ function assertOutlineSpansFrame(geo: BufferGeometry, outlines: BottomOutlineWor
             maxY = Math.max(maxY, s.y);
         }
     }
-    expect(maxX - minX).toBeGreaterThan(PNG_W * 0.035);
-    expect(maxY - minY).toBeGreaterThan(PNG_H * 0.1);
-    expect(maxY - minY).toBeLessThan(PNG_H * 0.45);
+    const spanX = maxX - minX;
+    const spanY = maxY - minY;
+    expect(spanX).toBeGreaterThan(PNG_W * 0.12);
+    expect(spanX).toBeGreaterThan(spanY * 2);
+    expect(spanY).toBeGreaterThan(20);
+    expect(spanY).toBeLessThan(PNG_H * 0.45);
 }
 
 function posOf(geo: BufferGeometry): Float32Array {
@@ -205,18 +210,143 @@ function bboxMm(geo: BufferGeometry): { x: number; y: number; z: number } {
     };
 }
 
-/** First glyph sits to the left of the last on screen when read in the string direction (below view, toe up). */
-function assertScreenLtrFromBelow(geo: BufferGeometry, outlines: BottomOutlineWorld[]): void {
+const ENGRAVE_FLOOR_LO = 0.45;
+const ENGRAVE_FLOOR_HI = 0.85;
+
+function isFloor(z: number): boolean {
+    return Number.isFinite(z) && z > ENGRAVE_FLOOR_LO && z < ENGRAVE_FLOOR_HI;
+}
+
+/**
+ * From-below heightmap of the exported sole. Screen-right is +X, screen-up is
+ * −Y. TIMOTHY is wider than HARTER, so a left-to-right name puts the longer
+ * glyph run on the reader's left. The leftmost glyph is T; its crossbar is the
+ * widest floor row and sits toward −Y when the cap is upright.
+ */
+function assertTimothyReadsFromBelow(geo: BufferGeometry, side: Side): void {
     const pos = posOf(geo);
-    const first = projectPlantarBelow(glyphCentroid(outlines[0]!), pos, PNG_W, PNG_H);
-    const last = projectPlantarBelow(glyphCentroid(outlines[outlines.length - 1]!), pos, PNG_W, PNG_H);
-    const dx = last.x - first.x;
-    const dy = last.y - first.y;
-    if (Math.abs(dx) >= Math.abs(dy)) {
-        expect(dx).toBeGreaterThan(8);
-    } else {
-        expect(dy).toBeGreaterThan(8);
+    const hm = soleHeightmapFromBelow(pos, geo.getIndex()?.array ?? null, 0.4);
+    const midY = midfootCentroidY(hm);
+    expect(side === "left" ? midY : -midY, `${side} medial arch`).toBeGreaterThan(0.5);
+
+    const { y0, y1 } = textBand(hm);
+    expect(y1 - y0, "engrave band height in rows").toBeGreaterThan(12);
+    const spans = glyphSpans(hm, y0, y1);
+    expect(spans.length).toBeGreaterThanOrEqual(10);
+
+    const textMid = (spans[0]![0] + spans[spans.length - 1]![1]) / 2;
+    let gapAt = 0;
+    let gap = 0;
+    let gapDist = Infinity;
+    for (let i = 1; i < spans.length; i++) {
+        const g = spans[i]![0] - spans[i - 1]![1];
+        if (g < 8) continue;
+        const mid = (spans[i - 1]![1] + spans[i]![0]) / 2;
+        const dist = Math.abs(mid - textMid);
+        if (dist < gapDist) {
+            gapDist = dist;
+            gap = g;
+            gapAt = i;
+        }
     }
+    expect(gap, "word space between TIMOTHY and HARTER").toBeGreaterThan(8);
+    const left = spans.slice(0, gapAt);
+    const right = spans.slice(gapAt);
+    expect(left.length).toBeGreaterThanOrEqual(5);
+    expect(right.length).toBeGreaterThanOrEqual(4);
+    const leftMm = (left[left.length - 1]![1] - left[0]![0]) * hm.step;
+    const rightMm = (right[right.length - 1]![1] - right[0]![0]) * hm.step;
+    expect(left[0]![0], `${side}: first glyph column is on the reader's left`).toBeLessThan(textMid);
+    expect(leftMm, `${side}: TIMOTHY is on the reader's left`).toBeGreaterThan(rightMm + 4);
+    assertTeeBarTowardScreenUp(hm, spans[0]!, y0, y1, side);
+}
+
+/** Leftmost glyph is T. Its crossbar is the widest floor row and must sit toward −Y. */
+function assertTeeBarTowardScreenUp(
+    hm: SoleHeightmap,
+    span: [number, number],
+    y0: number,
+    y1: number,
+    side: Side,
+): void {
+    let bestIy = y0;
+    let best = -1;
+    let minIy = Infinity;
+    let maxIy = -Infinity;
+    for (let iy = y0; iy <= y1; iy++) {
+        let n = 0;
+        for (let ix = span[0]; ix <= span[1]; ix++) {
+            if (isFloor(hm.z[iy * hm.nx + ix]!)) n++;
+        }
+        if (n > 0) {
+            minIy = Math.min(minIy, iy);
+            maxIy = Math.max(maxIy, iy);
+        }
+        if (n > best) {
+            best = n;
+            bestIy = iy;
+        }
+    }
+    expect(best, `${side}: T crossbar has floor hits`).toBeGreaterThan(8);
+    expect(bestIy, `${side}: T crossbar is toward screen-up (−Y)`).toBeLessThan((minIy + maxIy) / 2);
+}
+
+function midfootCentroidY(hm: SoleHeightmap): number {
+    const length = hm.nx * hm.step;
+    const xLo = hm.minX + length * 0.38;
+    const xHi = hm.minX + length * 0.55;
+    let sy = 0;
+    let n = 0;
+    for (let iy = 0; iy < hm.ny; iy++) {
+        const y = hm.minY + (iy + 0.5) * hm.step;
+        for (let ix = 0; ix < hm.nx; ix++) {
+            const x = hm.minX + (ix + 0.5) * hm.step;
+            if (x < xLo || x > xHi) continue;
+            if (!Number.isFinite(hm.z[iy * hm.nx + ix]!)) continue;
+            sy += y;
+            n++;
+        }
+    }
+    return n ? sy / n : 0;
+}
+
+function textBand(hm: SoleHeightmap): { y0: number; y1: number } {
+    const rows = new Int32Array(hm.ny);
+    for (let iy = 0; iy < hm.ny; iy++) {
+        for (let ix = 0; ix < hm.nx; ix++) {
+            const x = hm.minX + (ix + 0.5) * hm.step;
+            if (x < 30 || x > 200) continue;
+            if (isFloor(hm.z[iy * hm.nx + ix]!)) rows[iy]!++;
+        }
+    }
+    let y0 = -1;
+    let y1 = -1;
+    for (let iy = 0; iy < hm.ny; iy++) {
+        if ((rows[iy] ?? 0) <= 80) continue;
+        if (y0 < 0) y0 = iy;
+        y1 = iy;
+    }
+    return { y0, y1 };
+}
+
+function glyphSpans(hm: SoleHeightmap, y0: number, y1: number): Array<[number, number]> {
+    const col = new Int32Array(hm.nx);
+    for (let iy = y0; iy <= y1; iy++) {
+        for (let ix = 0; ix < hm.nx; ix++) {
+            if (isFloor(hm.z[iy * hm.nx + ix]!)) col[ix]!++;
+        }
+    }
+    const spans: Array<[number, number]> = [];
+    let start = -1;
+    for (let ix = 0; ix <= hm.nx; ix++) {
+        const on = ix < hm.nx && (col[ix] ?? 0) > 3;
+        if (on && start < 0) start = ix;
+        if (!on && start >= 0) {
+            if (ix - start >= 8) spans.push([start, ix - 1]);
+            start = -1;
+        }
+    }
+    return spans;
 }
 
 function writeStlProofPng(solid: BufferGeometry, filenameBase: string): Uint8Array {
@@ -285,7 +415,6 @@ describe("diagnostic printable STLs (TIMOTHY HARTER)", () => {
             const solid = await buildValidatedExportGeometry(side);
             const outlines = bottomOutlines(solid);
             expect(outlines.length).toBeGreaterThan(0);
-            assertScreenLtrFromBelow(solid, outlines);
 
             const suffix = side === "left" ? "L" : "R";
             const filename = `Timothy_Harter_ApexCore_${suffix}.stl`;
@@ -297,6 +426,7 @@ describe("diagnostic printable STLs (TIMOTHY HARTER)", () => {
 
             const reloaded = binaryStlToGeometry(stlBytes);
             try {
+                assertTimothyReadsFromBelow(reloaded, side);
                 await assertExactManifold(solid);
                 const manifold = analyzeManifold(reloaded);
                 expect(manifold.isWatertight).toBe(true);
