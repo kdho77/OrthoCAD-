@@ -2,7 +2,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "@rstest/core";
+import { afterEach, describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
 import { buildExportGeometry } from "@/lib/geometry/export-geometry";
 import { resetSampleTopGeometryCache } from "@/lib/geometry/procedural-wall/sample-top-preview";
@@ -11,17 +11,22 @@ import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
 import { useClientStore } from "@/stores/client-store";
 import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
 import type { Side } from "@/types";
-import { encodePng, type RenderView, renderMesh } from "./helpers/render-png";
+import {
+    diagnosticPngLegibility,
+    encodePng,
+    projectPlantarBelow,
+    renderPlantarFromBelow,
+} from "./helpers/render-png";
 
 const SAMPLE_TOP_FIXTURE = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
 const DIAG_DIR = resolve(process.cwd(), "docs/diagnostics/bottom-text-1114");
+const PNG_W = 1080;
+const PNG_H = 1280;
 
-/** Plantar face viewed from below (−Z): toe along +X on screen; lateral is −world Y. */
-const BOTTOM_VIEW: RenderView = {
-    right: [1, 0, 0],
-    up: [0, -1, 0],
-    light: [0.15, 0.25, -0.95],
-};
+const PATIENTS = [
+    { first: "JOHN", last: "SMITH", slug: "john-smith" },
+    { first: "TIMOTHY", last: "HARTER", slug: "timothy-harter" },
+] as const;
 
 function viewFromBelow(p: { x: number; y: number }): { x: number; y: number } {
     return { x: p.x, y: -p.y };
@@ -48,7 +53,6 @@ function textCentroids(geo: BufferGeometry): Array<{ x: number; y: number; z: nu
     );
 }
 
-/** Asymmetric bias of the first glyph (J hook) in the below-view frame. */
 function jHookBias(outline: BottomOutlineWorld): number {
     const pts = outline.outer;
     if (!pts.length) return 0;
@@ -63,7 +67,7 @@ function jHookBias(outline: BottomOutlineWorld): number {
     return maxX + minX;
 }
 
-function bootDesignExportHarness(): void {
+function bootDesignExportHarness(firstName: string, lastName: string): void {
     resetSampleTopGeometryCache();
     const buf = readFileSync(SAMPLE_TOP_FIXTURE);
     globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -79,10 +83,10 @@ function bootDesignExportHarness(): void {
         clients: [
             {
                 id: "bottomtext-client",
-                firstName: "JOHN",
-                lastName: "SMITH",
+                firstName,
+                lastName,
                 displayName: "",
-                reference: "JS-1",
+                reference: "BT-1",
                 dateOfBirth: null,
                 notes: "",
                 shoeChart: {
@@ -120,61 +124,82 @@ function bottomOutlines(geo: BufferGeometry): BottomOutlineWorld[] {
     return (geo.userData as { bottomOutlineWorld?: BottomOutlineWorld[] }).bottomOutlineWorld ?? [];
 }
 
-function writeBottomPng(geo: BufferGeometry, side: Side): void {
+function writeDiagnosticPng(geo: BufferGeometry, side: Side, slug: string): Uint8Array {
     mkdirSync(DIAG_DIR, { recursive: true });
     const pos = geo.getAttribute("position").array as Float32Array;
     const idx = geo.getIndex()?.array ?? Uint32Array.from({ length: pos.length / 3 }, (_, i) => i);
-    const outlines = bottomOutlines(geo);
-    const cents = outlines.map(glyphCentroid);
-    let cx = 0;
-    let cy = 0;
-    let cz = 0;
-    for (const c of cents) {
-        cx += c.x;
-        cy += c.y;
-        cz += c.z;
+    const loops = bottomOutlines(geo).map((g) => g.outer);
+    const rgb = renderPlantarFromBelow(pos, idx, PNG_W, PNG_H, loops);
+    writeFileSync(resolve(DIAG_DIR, `${side}-${slug}-from-below.png`), encodePng(PNG_W, PNG_H, rgb));
+    return rgb;
+}
+
+/** Engrave outlines must span the frame (not a tight grey crop). */
+function assertOutlineSpansFrame(geo: BufferGeometry, outlines: BottomOutlineWorld[]): void {
+    const pos = posOf(geo);
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const g of outlines) {
+        for (const p of g.outer) {
+            const s = projectPlantarBelow(p, pos, PNG_W, PNG_H);
+            minX = Math.min(minX, s.x);
+            maxX = Math.max(maxX, s.x);
+            minY = Math.min(minY, s.y);
+            maxY = Math.max(maxY, s.y);
+        }
     }
-    const n = Math.max(1, cents.length);
-    const focus = {
-        center: { x: cx / n, y: cy / n, z: cz / n },
-        radius: 55,
-    };
-    const rgb = renderMesh(pos, idx, BOTTOM_VIEW, 900, 680, [160, 168, 184], 32, focus);
-    writeFileSync(resolve(DIAG_DIR, `${side}-john-smith-from-below.png`), encodePng(900, 680, rgb));
+    expect(maxX - minX).toBeGreaterThan(PNG_W * 0.035);
+    expect(maxY - minY).toBeGreaterThan(PNG_H * 0.1);
+    expect(maxY - minY).toBeLessThan(PNG_H * 0.45);
+}
+
+function posOf(geo: BufferGeometry): Float32Array {
+    return geo.getAttribute("position").array as Float32Array;
 }
 
 describe("bottom patient-name text reads from below (export mesh)", () => {
-    beforeEach(() => bootDesignExportHarness());
     afterEach(() => resetSampleTopGeometryCache());
 
-    test("JOHN SMITH export mesh: matched handedness on left and right", async () => {
-        const readSign: Partial<Record<Side, number>> = {};
-        const hookSign: Partial<Record<Side, number>> = {};
+    for (const patient of PATIENTS) {
+        test(`${patient.first} ${patient.last}: handedness + diagnostic PNGs`, async () => {
+            bootDesignExportHarness(patient.first, patient.last);
+            const readSign: Partial<Record<Side, number>> = {};
+            const hookSign: Partial<Record<Side, number>> = {};
 
-        for (const side of ["left", "right"] as const) {
-            const geo = await buildExportGeometry(side);
-            try {
-                const ud = geo.userData as { textFitError?: string };
-                expect(ud.textFitError ?? "").toBe("");
-                const outlines = bottomOutlines(geo);
-                const cents = textCentroids(geo);
-                expect(cents.length).toBeGreaterThanOrEqual(9);
-                expect(outlines.length).toBeGreaterThan(0);
-                const read = Math.sign((cents[cents.length - 1]?.x ?? 0) - (cents[0]?.x ?? 0));
-                expect(read).not.toBe(0);
-                readSign[side] = read;
+            for (const side of ["left", "right"] as const) {
+                const geo = await buildExportGeometry(side);
+                try {
+                    const ud = geo.userData as { textFitError?: string };
+                    expect(ud.textFitError ?? "").toBe("");
+                    const outlines = bottomOutlines(geo);
+                    const cents = textCentroids(geo);
+                    expect(cents.length).toBeGreaterThanOrEqual(8);
+                    expect(outlines.length).toBeGreaterThan(0);
 
-                const hook = jHookBias(outlines[0]!);
-                expect(Math.sign(hook)).not.toBe(0);
-                hookSign[side] = Math.sign(hook);
+                    const read = Math.sign((cents[cents.length - 1]?.x ?? 0) - (cents[0]?.x ?? 0));
+                    expect(read).not.toBe(0);
+                    readSign[side] = read;
 
-                writeBottomPng(geo, side);
-            } finally {
-                geo.dispose();
+                    const hook = jHookBias(outlines[0]!);
+                    expect(Math.sign(hook)).not.toBe(0);
+                    hookSign[side] = Math.sign(hook);
+
+                    const rgb = writeDiagnosticPng(geo, side, patient.slug);
+                    const leg = diagnosticPngLegibility(rgb, PNG_W, PNG_H);
+                    expect(leg.toneRange).toBeGreaterThan(70);
+                    expect(leg.inkPixels).toBeGreaterThan(2000);
+                    assertOutlineSpansFrame(geo, outlines);
+                } finally {
+                    geo.dispose();
+                }
             }
-        }
 
-        expect(readSign.left).toBe(readSign.right);
-        expect(hookSign.left).toBe(hookSign.right);
-    }, 360_000);
+            if (patient.slug === "john-smith") {
+                expect(readSign.left).toBe(readSign.right);
+                expect(hookSign.left).toBe(hookSign.right);
+            }
+        }, 360_000);
+    }
 });

@@ -473,3 +473,203 @@ export function compositeBottomAndCurvature(
     blit(curveRgb, curveW, curveH, meshH);
     return { rgb, width, height };
 }
+
+/** Camera at −Z looking +Z; toe (+world X) at the top of the image. */
+export const PLANTAR_BELOW_VIEW: RenderView = {
+    right: [0, -1, 0],
+    up: [1, 0, 0],
+    light: [0.1, 0.12, -1],
+};
+
+type PlantarOutlineLoop = Array<{ x: number; y: number; z: number }>;
+
+/**
+ * Full plantar footprint from below: depth shading on the exterior bottom shell plus
+ * optional engrave outline overlays for legibility.
+ */
+export function renderPlantarFromBelow(
+    pos: Float32Array,
+    index: ArrayLike<number>,
+    width: number,
+    height: number,
+    outlineLoops?: PlantarOutlineLoop[],
+): Uint8Array {
+    const view = PLANTAR_BELOW_VIEW;
+    const { right, up } = view;
+    const n = pos.length / 3;
+    const projX = new Float32Array(n);
+    const projY = new Float32Array(n);
+    const worldZ = new Float32Array(n);
+    const bounds = viewBounds(pos, view);
+    const margin = 14;
+    const scale = Math.min(
+        (width - 2 * margin) / Math.max(1e-6, bounds.maxX - bounds.minX),
+        (height - 2 * margin) / Math.max(1e-6, bounds.maxY - bounds.minY),
+    );
+    const ox = (width - scale * (bounds.maxX - bounds.minX)) / 2;
+    const oy = (height - scale * (bounds.maxY - bounds.minY)) / 2;
+
+    for (let i = 0; i < n; i++) {
+        const x = pos[i * 3]!;
+        const y = pos[i * 3 + 1]!;
+        const z = pos[i * 3 + 2]!;
+        worldZ[i] = z;
+        projX[i] = x * right[0] + y * right[1] + z * right[2];
+        projY[i] = x * up[0] + y * up[1] + z * up[2];
+    }
+
+    const toPx = (vi: number): [number, number] => [
+        ox + (projX[vi]! - bounds.minX) * scale,
+        height - (oy + (projY[vi]! - bounds.minY) * scale),
+    ];
+
+    const rgb = new Uint8Array(width * height * 3);
+    rgb.fill(22);
+    const zbuf = new Float32Array(width * height).fill(Number.POSITIVE_INFINITY);
+    let zMin = Number.POSITIVE_INFINITY;
+    let zMax = Number.NEGATIVE_INFINITY;
+
+    for (let f = 0; f + 2 < index.length; f += 3) {
+        const a = index[f]!;
+        const b = index[f + 1]!;
+        const c = index[f + 2]!;
+        const az = worldZ[a]!;
+        const bz = worldZ[b]!;
+        const cz = worldZ[c]!;
+        if (Math.max(az, bz, cz) > 20) continue;
+
+        const ax = pos[a * 3]!;
+        const ay = pos[a * 3 + 1]!;
+        const bx = pos[b * 3]!;
+        const by = pos[b * 3 + 1]!;
+        const cx = pos[c * 3]!;
+        const cy = pos[c * 3 + 1]!;
+        const ux = bx - ax;
+        const uy = by - ay;
+        const uz = bz - az;
+        const vx = cx - ax;
+        const vy = cy - ay;
+        const vz = cz - az;
+        const nx = uy * vz - uz * vy;
+        const ny = uz * vx - ux * vz;
+        const nz = ux * vy - uy * vx;
+        if (nz > -0.08) continue;
+
+        const [x0, y0] = toPx(a);
+        const [x1, y1] = toPx(b);
+        const [x2, y2] = toPx(c);
+        const minPx = Math.max(0, Math.floor(Math.min(x0, x1, x2)));
+        const maxPx = Math.min(width - 1, Math.ceil(Math.max(x0, x1, x2)));
+        const minPy = Math.max(0, Math.floor(Math.min(y0, y1, y2)));
+        const maxPy = Math.min(height - 1, Math.ceil(Math.max(y0, y1, y2)));
+        if (maxPx < minPx || maxPy < minPy) continue;
+
+        const denom = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2);
+        if (Math.abs(denom) < 1e-12) continue;
+
+        for (let py = minPy; py <= maxPy; py++) {
+            for (let px = minPx; px <= maxPx; px++) {
+                const w0 = ((y1 - y2) * (px + 0.5 - x2) + (x2 - x1) * (py + 0.5 - y2)) / denom;
+                const w1 = ((y2 - y0) * (px + 0.5 - x2) + (x0 - x2) * (py + 0.5 - y2)) / denom;
+                const w2 = 1 - w0 - w1;
+                if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+                const z = w0 * az + w1 * bz + w2 * cz;
+                const pi = py * width + px;
+                if (z >= zbuf[pi]!) continue;
+                zbuf[pi] = z;
+                if (z < zMin) zMin = z;
+                if (z > zMax) zMax = z;
+            }
+        }
+    }
+
+    const zSpan = Math.max(0.15, zMax - zMin);
+    for (let py = 0; py < height; py++) {
+        for (let px = 0; px < width; px++) {
+            const pi = py * width + px;
+            const z = zbuf[pi]!;
+            if (!Number.isFinite(z)) continue;
+            const t = Math.max(0, Math.min(1, (z - zMin) / zSpan));
+            const base = Math.round(248 - t * 205);
+            const o = pi * 3;
+            rgb[o] = base;
+            rgb[o + 1] = Math.round(base * 0.94);
+            rgb[o + 2] = Math.round(base * 0.88);
+        }
+    }
+
+    const outlineColor: [number, number, number] = [18, 42, 88];
+    const projectWorld = (p: { x: number; y: number; z: number }) => {
+        const sx = p.x * right[0] + p.y * right[1] + p.z * right[2];
+        const sy = p.x * up[0] + p.y * up[1] + p.z * up[2];
+        return {
+            x: ox + (sx - bounds.minX) * scale,
+            y: height - (oy + (sy - bounds.minY) * scale),
+        };
+    };
+
+    for (const loop of outlineLoops ?? []) {
+        const pts = loop.map(projectWorld);
+        drawPolyline(rgb, width, height, pts, outlineColor, true);
+        for (const p of pts) {
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    setPixel(rgb, width, height, p.x + dx, p.y + dy, outlineColor);
+                }
+            }
+        }
+    }
+
+    return rgb;
+}
+
+/** Contrast / ink pixels in the central frame (legibility guard for diagnostic PNGs). */
+export function diagnosticPngLegibility(
+    rgb: Uint8Array,
+    width: number,
+    height: number,
+): {
+    toneRange: number;
+    inkPixels: number;
+} {
+    let min = 255;
+    let max = 0;
+    let inkPixels = 0;
+    const y0 = Math.floor(height * 0.12);
+    const y1 = Math.floor(height * 0.92);
+    const x0 = Math.floor(width * 0.1);
+    const x1 = Math.floor(width * 0.9);
+    for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+            const g = rgb[(y * width + x) * 3]!;
+            min = Math.min(min, g);
+            max = Math.max(max, g);
+            if (g < 100) inkPixels++;
+        }
+    }
+    return { toneRange: max - min, inkPixels };
+}
+
+export function projectPlantarBelow(
+    p: { x: number; y: number; z: number },
+    pos: Float32Array,
+    width: number,
+    height: number,
+): { x: number; y: number } {
+    const view = PLANTAR_BELOW_VIEW;
+    const bounds = viewBounds(pos, view);
+    const margin = 14;
+    const scale = Math.min(
+        (width - 2 * margin) / Math.max(1e-6, bounds.maxX - bounds.minX),
+        (height - 2 * margin) / Math.max(1e-6, bounds.maxY - bounds.minY),
+    );
+    const ox = (width - scale * (bounds.maxX - bounds.minX)) / 2;
+    const oy = (height - scale * (bounds.maxY - bounds.minY)) / 2;
+    const { right, up } = view;
+    const px = p.x * right[0] + p.y * right[1] + p.z * right[2];
+    const py = p.x * up[0] + p.y * up[1] + p.z * up[2];
+    return {
+        x: ox + (px - bounds.minX) * scale,
+        y: height - (oy + (py - bounds.minY) * scale),
+    };
+}
