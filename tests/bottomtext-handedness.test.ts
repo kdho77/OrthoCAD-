@@ -259,6 +259,157 @@ function assertTimothyReadsFromBelow(geo: BufferGeometry, side: Side): void {
     expect(left[0]![0], `${side}: first glyph column is on the reader's left`).toBeLessThan(textMid);
     expect(leftMm, `${side}: TIMOTHY is on the reader's left`).toBeGreaterThan(rightMm + 4);
     assertTeeBarTowardScreenUp(hm, spans[0]!, y0, y1, side);
+    assertOpenCounters(hm, left, right, y0, y1, side);
+}
+
+const SOLE_Z = 0.25;
+
+interface SoleBlob {
+    ix: number;
+    iy: number;
+    z: number;
+    n: number;
+    strokeZ: number;
+    centered: boolean;
+}
+
+/** Sole-height island enclosed by the engraved stroke. */
+function enclosedBlobs(hm: SoleHeightmap, span: [number, number], y0: number, y1: number): SoleBlob[] {
+    let fx0 = span[1];
+    let fx1 = span[0];
+    let fy0 = y1;
+    let fy1 = y0;
+    let any = false;
+    for (let iy = y0; iy <= y1; iy++) {
+        for (let ix = span[0]; ix <= span[1]; ix++) {
+            if (!isFloor(hm.z[iy * hm.nx + ix]!)) continue;
+            any = true;
+            fx0 = Math.min(fx0, ix);
+            fx1 = Math.max(fx1, ix);
+            fy0 = Math.min(fy0, iy);
+            fy1 = Math.max(fy1, iy);
+        }
+    }
+    if (!any || fx1 - fx0 < 4 || fy1 - fy0 < 4) return [];
+    const w = fx1 - fx0 + 1;
+    const h = fy1 - fy0 + 1;
+    const soleAt = (ix: number, iy: number) => {
+        const z = hm.z[iy * hm.nx + ix]!;
+        return Number.isFinite(z) && z < SOLE_Z;
+    };
+    const seen = new Uint8Array(w * h);
+    const at = (ix: number, iy: number) => (iy - fy0) * w + (ix - fx0);
+    const q: number[] = [];
+    const pushOpen = (ix: number, iy: number) => {
+        if (ix < fx0 || ix > fx1 || iy < fy0 || iy > fy1) return;
+        const k = at(ix, iy);
+        if (seen[k] || !soleAt(ix, iy)) return;
+        seen[k] = 1;
+        q.push(ix, iy);
+    };
+    for (let ix = fx0; ix <= fx1; ix++) {
+        pushOpen(ix, fy0);
+        pushOpen(ix, fy1);
+    }
+    for (let iy = fy0; iy <= fy1; iy++) {
+        pushOpen(fx0, iy);
+        pushOpen(fx1, iy);
+    }
+    for (let qi = 0; qi < q.length; qi += 2) {
+        const ix = q[qi]!;
+        const iy = q[qi + 1]!;
+        pushOpen(ix - 1, iy);
+        pushOpen(ix + 1, iy);
+        pushOpen(ix, iy - 1);
+        pushOpen(ix, iy + 1);
+    }
+    const blobs: SoleBlob[] = [];
+    for (let iy = fy0 + 1; iy < fy1; iy++) {
+        for (let ix = fx0 + 1; ix < fx1; ix++) {
+            const k = at(ix, iy);
+            if (seen[k] || !soleAt(ix, iy)) continue;
+            let n = 0;
+            let sx = 0;
+            let sy = 0;
+            let sz = 0;
+            const bq = [ix, iy];
+            seen[k] = 1;
+            for (let bi = 0; bi < bq.length; bi += 2) {
+                const bx = bq[bi]!;
+                const by = bq[bi + 1]!;
+                n++;
+                sx += bx;
+                sy += by;
+                sz += hm.z[by * hm.nx + bx]!;
+                for (const [dx, dy] of [
+                    [1, 0],
+                    [-1, 0],
+                    [0, 1],
+                    [0, -1],
+                ] as const) {
+                    const nx = bx + dx;
+                    const ny = by + dy;
+                    if (nx <= fx0 || nx >= fx1 || ny <= fy0 || ny >= fy1) continue;
+                    const nk = at(nx, ny);
+                    if (seen[nk] || !soleAt(nx, ny)) continue;
+                    seen[nk] = 1;
+                    bq.push(nx, ny);
+                }
+            }
+            if (n < 8) continue;
+            const cx = sx / n;
+            const cy = sy / n;
+            let strokeZ = Number.NaN;
+            let best = Infinity;
+            for (let syy = fy0; syy <= fy1; syy++) {
+                for (let sxx = fx0; sxx <= fx1; sxx++) {
+                    const z = hm.z[syy * hm.nx + sxx]!;
+                    if (!isFloor(z)) continue;
+                    const d = (sxx - cx) ** 2 + (syy - cy) ** 2;
+                    if (d < best) {
+                        best = d;
+                        strokeZ = z;
+                    }
+                }
+            }
+            const midX = (fx0 + fx1) / 2;
+            const midY = (fy0 + fy1) / 2;
+            blobs.push({
+                ix: Math.round(cx),
+                iy: Math.round(cy),
+                z: sz / n,
+                n,
+                strokeZ,
+                centered: Math.abs(cx - midX) < w * 0.22 && Math.abs(cy - midY) < h * 0.22,
+            });
+        }
+    }
+    return blobs;
+}
+
+function assertOpenCounters(
+    hm: SoleHeightmap,
+    left: Array<[number, number]>,
+    right: Array<[number, number]>,
+    y0: number,
+    y1: number,
+    side: Side,
+): void {
+    const blobsOf = (spans: Array<[number, number]>) =>
+        spans.flatMap((span) => enclosedBlobs(hm, span, y0, y1));
+    const o = blobsOf(left).find((b) => b.centered);
+    expect(o, `${side}: O counter is an unengraved island`).toBeDefined();
+    if (!o) return;
+    expect(isFloor(o.z), `${side}: O counter centre is not engraved`).toBe(false);
+    expect(o.z, `${side}: O counter sits on the sole`).toBeLessThan(SOLE_Z);
+    expect(isFloor(o.strokeZ), `${side}: O stroke is engraved`).toBe(true);
+
+    const bowl = blobsOf(right).sort((a, b) => b.n - a.n)[0];
+    expect(bowl, `${side}: A or R counter is an unengraved island`).toBeDefined();
+    if (!bowl) return;
+    expect(isFloor(bowl.z), `${side}: A/R counter centre is not engraved`).toBe(false);
+    expect(bowl.z, `${side}: A/R counter sits on the sole`).toBeLessThan(SOLE_Z);
+    expect(isFloor(bowl.strokeZ), `${side}: A/R stroke is engraved`).toBe(true);
 }
 
 /** Leftmost glyph is T. Its crossbar is the widest floor row and must sit toward −Y. */

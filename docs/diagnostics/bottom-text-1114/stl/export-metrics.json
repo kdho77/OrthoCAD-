@@ -3,7 +3,7 @@
     "m9LengthMm": 275,
     "left": {
         "filename": "Timothy_Harter_ApexCore_L.stl",
-        "triangles": 108232,
+        "triangles": 108802,
         "openEdges": 0,
         "bboxMm": {
             "x": 273.11007618904114,
@@ -12,12 +12,12 @@
         },
         "legibility": {
             "toneRange": 230,
-            "inkPixels": 639904
+            "inkPixels": 640055
         }
     },
     "right": {
         "filename": "Timothy_Harter_ApexCore_R.stl",
-        "triangles": 107970,
+        "triangles": 108508,
         "openEdges": 0,
         "bboxMm": {
             "x": 273.10448211431503,
@@ -26,7 +26,7 @@
         },
         "legibility": {
             "toneRange": 230,
-            "inkPixels": 639894
+            "inkPixels": 640040
         }
     }
 }
