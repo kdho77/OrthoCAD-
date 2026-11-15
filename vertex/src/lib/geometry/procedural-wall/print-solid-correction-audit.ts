@@ -90,7 +90,7 @@ export const PRINT_SOLID_CORRECTION_AUDIT: PrintSolidAuditRow[] = [
         id: "elements",
         label: "Placed elements (met pad, bar, …)",
         verdict: "survives",
-        drop: "sourceField.elements + includeElements → heightAt → elementHeightAt with rim feathering.",
+        drop: "composePrintSolidTop → applyElementsToTopMeshLast. Authored height is kept out to the sheet edge.",
         proposedFix: "Keep.",
     },
     {

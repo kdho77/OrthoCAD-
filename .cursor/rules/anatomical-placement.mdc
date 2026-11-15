@@ -10,7 +10,7 @@ alwaysApply: false
 
 Footprint-frame mesh Y: medial is −Y on the left foot and +Y on the right. In the Top view those borders face each other. Lateral is the opposite. Mirror means medial-to-medial and lateral-to-lateral, never the same world Y on both feet. Sample the mesh in those millimeters (`heightFieldYFromMeshY`); do not multiply by the local outline half-width.
 
-Design-view planforms are opaque and hard-edged. Feathering belongs only on the exported solid.
+Design-view planforms are opaque and hard-edged. The generated solid keeps that authored element height out to the trimline. Do not reapply the print-rim quintic or the numeric AABB margin on library elements.
 
 All element and sink placement uses `meshYForAnatomicalSide` / `meshYSign` in `vertex/src/lib/geometry/handedness.ts`. Declare `anatomicalSide` on the element or sink profile. Do not add a private left/right Y flip.
 
