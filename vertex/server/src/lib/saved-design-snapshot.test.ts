@@ -5,6 +5,7 @@ import { readStoredDesignSettings } from "../../../shared/design-settings.js";
 import { SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
 import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot.js";
 import { type CadOperatorPrincipal, DOGFOOD_TENANT_ID } from "../auth/cad-operator.js";
+import { settingsEnvelopeForSave } from "./design-schema.js";
 import { persistSavedDesignSnapshotOnDesign } from "./saved-design-snapshot.js";
 
 const DESIGN_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -61,6 +62,20 @@ function fakePrisma(current = row()) {
         },
     };
     return { prisma: prisma as unknown as PrismaClient, updates };
+}
+
+function prescribedHighArchSnapshot() {
+    const built = buildSavedDesignSnapshot({
+        stored: null,
+        catalog: {
+            shoe_size: { system: "US_M", size: 9 },
+            arch: "high",
+            flexible_foot: true,
+            hardness: "Hard",
+            elements: [{ name: "Met Pad", side: "left" }],
+        },
+    });
+    return settingsEnvelopeForSave(built.design);
 }
 
 describe("persist saved design snapshot", () => {
@@ -281,6 +296,114 @@ describe("persist saved design snapshot", () => {
             });
             expect(JSON.stringify(wedgeCorrections[side].rearfootWedge)).not.toContain("degree");
         }
+    });
+
+    test("a second persist with only shoe_size keeps stored arch, apex, hardness, and elements", async () => {
+        const existing = prescribedHighArchSnapshot();
+        const { prisma, updates } = fakePrisma(
+            row({
+                settingsJson: existing,
+                integrationLink: {
+                    ...row().integrationLink,
+                    shoeSize: 10,
+                },
+            }),
+        );
+        const result = await persistSavedDesignSnapshotOnDesign({
+            prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: { shoe_size: { system: "US_M", size: 10 } },
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        expect(updates).toHaveLength(1);
+        const settings = readStoredDesignSettings(result.settingsJson);
+        expect(settings?.usMenSize).toBe(10);
+        const corrections = settings?.corrections as {
+            left: { archHeightMm: number; apexMoveMm: number };
+            right: { archHeightMm: number; apexMoveMm: number };
+        };
+        expect(corrections.left.archHeightMm).toBe(3);
+        expect(corrections.right.archHeightMm).toBe(3);
+        expect(corrections.left.apexMoveMm).toBe(4);
+        expect(corrections.right.apexMoveMm).toBe(4);
+        expect((settings?.printRecipe as { defaultHardness?: string })?.defaultHardness).toBe("Hard");
+        expect(
+            (settings?.dogfoodManufacturing as { hardnessSource?: string } | undefined)?.hardnessSource,
+        ).toBe("prescribed");
+        const elements = settings?.elements as Array<{ kind: string }>;
+        expect(elements).toHaveLength(1);
+        expect(elements[0]?.kind).toBe("met_pad");
+        expect(result.hardness_source).toBe("prescribed");
+    });
+
+    test("explicit arch, flexible_foot, and hardness still replace stored values", async () => {
+        const existing = prescribedHighArchSnapshot();
+        const { prisma } = fakePrisma(row({ settingsJson: existing }));
+        const result = await persistSavedDesignSnapshotOnDesign({
+            prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: { arch: "low", flexible_foot: false, hardness: "Medium" },
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        const settings = readStoredDesignSettings(result.settingsJson);
+        const corrections = settings?.corrections as {
+            left: { archHeightMm: number; apexMoveMm: number };
+        };
+        expect(corrections.left.archHeightMm).toBe(-3.5);
+        expect(corrections.left.apexMoveMm).toBe(0);
+        expect((settings?.printRecipe as { defaultHardness?: string })?.defaultHardness).toBe("Medium");
+        expect(result.hardness_source).toBe("prescribed");
+    });
+
+    test("an empty catalog on an existing design keeps clinical fields", async () => {
+        const existing = prescribedHighArchSnapshot();
+        const { prisma, updates } = fakePrisma(row({ settingsJson: existing }));
+        const result = await persistSavedDesignSnapshotOnDesign({
+            prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: {},
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        expect(updates).toHaveLength(1);
+        const settings = readStoredDesignSettings(result.settingsJson);
+        const corrections = settings?.corrections as {
+            left: { archHeightMm: number; apexMoveMm: number };
+            right: { archHeightMm: number; apexMoveMm: number };
+        };
+        expect(corrections.left.archHeightMm).toBe(3);
+        expect(corrections.right.archHeightMm).toBe(3);
+        expect(corrections.left.apexMoveMm).toBe(4);
+        expect(corrections.right.apexMoveMm).toBe(4);
+        expect((settings?.printRecipe as { defaultHardness?: string })?.defaultHardness).toBe("Hard");
+        expect(
+            (settings?.dogfoodManufacturing as { hardnessSource?: string } | undefined)?.hardnessSource,
+        ).toBe("prescribed");
+        const elements = settings?.elements as Array<{ kind: string }>;
+        expect(elements).toHaveLength(1);
+        expect(elements[0]?.kind).toBe("met_pad");
+    });
+
+    test("null settingsJson still builds from the SAMPLE_Top template", async () => {
+        const { prisma, updates } = fakePrisma(row({ settingsJson: null }));
+        const result = await persistSavedDesignSnapshotOnDesign({
+            prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: {},
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        expect(updates).toHaveLength(1);
+        const settings = readStoredDesignSettings(result.settingsJson);
+        expect(
+            (settings?.corrections as { left: { archHeightMm: number; apexMoveMm: number } }).left
+                .archHeightMm,
+        ).toBe(0);
+        expect((settings?.corrections as { left: { apexMoveMm: number } }).left.apexMoveMm).toBe(0);
+        expect(settings?.elements).toEqual([]);
+        expect(result.hardness_source).toBe("unspecified");
     });
 
     test("AFO and milled designs are refused", async () => {
