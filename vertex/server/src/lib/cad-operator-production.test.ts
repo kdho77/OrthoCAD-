@@ -367,11 +367,14 @@ describe("CAD-operator production claim", () => {
         const store = new MemoryCadProductionStore();
         let charges = 0;
         let scheduled: Promise<void> | null = null;
-        const start = (slice: () => Promise<{ gcode: string; jobId: string }>) =>
+        const start = (
+            slice: () => Promise<{ gcode: string; jobId: string }>,
+            claimNow = new Date("2026-11-09T00:00:00.000Z"),
+        ) =>
             beginCadOperatorProduction({
                 store,
                 insert: insert("left"),
-                now: new Date("2026-11-09T00:00:00.000Z"),
+                now: claimNow,
                 schedule: (work) => {
                     scheduled = work;
                 },
@@ -396,16 +399,30 @@ describe("CAD-operator production claim", () => {
         await scheduled;
         const row = await store.findById(failed.productionId);
         expect(row?.status).toBe("failed");
-        expect(row?.error).toBe("Manufacturing failed");
+        expect(row?.error).toBe("Manufacturing failed (left): patient [redacted] loft exploded");
         expect(row?.error).not.toMatch(/Jane/);
         expect(charges).toBe(0);
 
-        const again = await start(async () => ({ gcode: "G1 X0\n", jobId: "job-2" }));
+        const staleKey = "gcode/cad-operator/stale/left.gcode";
+        await store.updateIf(failed.productionId, () => true, { gcodeStorageKey: staleKey });
+        const failCreatedAt = row?.createdAt;
+
+        const again = await start(
+            async () => ({ gcode: "G1 X0\n", jobId: "job-2" }),
+            new Date("2026-11-09T00:02:00.000Z"),
+        );
         expect(again.productionId).toBe(failed.productionId);
         expect(again.status).toBe("pending");
+        const claimed = await store.findById(again.productionId);
+        expect(claimed?.error).toBeNull();
+        expect(claimed?.gcodeStorageKey).toBeNull();
+        expect(claimed?.createdAt.getTime()).toBeGreaterThan(failCreatedAt?.getTime() ?? 0);
         await scheduled;
         expect(charges).toBe(1);
-        expect((await store.findById(again.productionId))?.status).toBe("succeeded");
+        const succeeded = await store.findById(again.productionId);
+        expect(succeeded?.status).toBe("succeeded");
+        expect(succeeded?.gcodeStorageKey).toBe("gcode/cad-operator/t/c/d/left.gcode");
+        expect(succeeded?.gcodeStorageKey).not.toBe(staleKey);
     });
 
     test("concurrent claims share one row and an expired lease can be retried", async () => {
@@ -631,5 +648,50 @@ describe("CAD-operator production claim", () => {
         );
         expect(left.idempotencyKey).toContain(":left:");
         expect(left.idempotencyKey).toContain("apex-v2-insole-95a");
+    });
+});
+
+describe("publicProductionError operational messages", () => {
+    test("preserves VertexSlice, mesh, and manufacturing errors without PHI", () => {
+        expect(publicProductionError(new Error("VertexSlice error (500): mesh not manifold"))).toBe(
+            "VertexSlice error (500): mesh not manifold",
+        );
+        expect(publicProductionError(new Error("VertexSlice returned empty G-code"))).toBe(
+            "VertexSlice returned empty G-code",
+        );
+        expect(
+            publicProductionError(
+                new Error("Could not reach VertexSlice (https://slicer.example): socket hang up"),
+            ),
+        ).toBe("Could not reach VertexSlice: socket hang up");
+        expect(publicProductionError(new Error("Material apex_core not available on slicer"))).toBe(
+            "Material apex_core not available on slicer",
+        );
+        expect(
+            publicProductionError(new Error("Hardness 3MF export failed: Jane Doe region boolean failed")),
+        ).toBe("Hardness 3MF export failed: [redacted] region boolean failed");
+        expect(publicProductionError(new Error("manifold-3d rejected mesh for right met pad volume"))).toBe(
+            "manifold-3d rejected mesh for right met pad volume",
+        );
+        expect(
+            publicProductionError(new Error("manifold-3d subtract failed for heel cup: bad topology")),
+        ).toBe("manifold-3d subtract failed for heel cup: bad topology");
+        expect(publicProductionError(new Error("3MF missing /components/3/3/model.model"))).toBe(
+            "3MF missing /components/3/3/model.model",
+        );
+        expect(publicProductionError(new Error("binary STL truncated after 84 bytes"))).toBe(
+            "binary STL truncated after 84 bytes",
+        );
+        expect(publicProductionError(new Error("connect ETIMEDOUT 203.0.113.1:443"), "right")).toBe(
+            "Manufacturing timed out (right)",
+        );
+        expect(publicProductionError(new Error("patient Jane Doe loft exploded"), "left")).toBe(
+            "Manufacturing failed (left): patient [redacted] loft exploded",
+        );
+        const email = publicProductionError(
+            new Error("VertexSlice error (502): rejected patient jane.doe@example.com"),
+        );
+        expect(email).toBe("VertexSlice error (502): rejected patient [redacted]");
+        expect(email.length).toBeLessThanOrEqual(200);
     });
 });
