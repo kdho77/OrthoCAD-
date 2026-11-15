@@ -54,7 +54,7 @@ const shoeSystemSchema = z.preprocess(
 
 const widthSchema = z.preprocess(
     (value) => (typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, "_") : value),
-    z.enum(["narrow", "medium", "wide", "extra_narrow", "extra_wide"]),
+    z.enum(["narrow", "medium", "wide", "extra_narrow", "extra_wide", "xx_wide"]),
 );
 
 const archSchema = z.preprocess(

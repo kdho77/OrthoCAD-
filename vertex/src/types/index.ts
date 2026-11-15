@@ -447,11 +447,11 @@ export interface DesignState {
     /** Foot length in mm (Mondopoint-style). Used when `sizeSystem` is `"mm"`. */
     footLengthMm?: number;
     /** Last width vs Medium. Forefoot Δ −10/−5/0/+5/+10 mm (width only); heel capped ±2 mm. */
-    shoeWidth?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
+    shoeWidth?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide" | "xx_wide";
     /** Per-foot width when L/R corrections are unlinked. Linked designs use `shoeWidth`. */
     shoeWidthBySide?: {
-        left?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
-        right?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
+        left?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide" | "xx_wide";
+        right?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide" | "xx_wide";
     };
     corrections: Corrections;
     elements: PlacedElement[];
@@ -494,7 +494,7 @@ export interface DesignState {
     dogfoodManufacturing?: {
         template: "SAMPLE_Top";
         scansUsed: false;
-        shoeWidth: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
+        shoeWidth: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide" | "xx_wide";
         shoeWidthSource: "prescribed" | "defaulted";
         hardness: HardnessName | null;
         hardnessSource: "prescribed" | "unspecified";

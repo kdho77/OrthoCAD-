@@ -32,6 +32,21 @@ describe("persist_saved_design_snapshot tool", () => {
         }
     });
 
+    test("catalog width accepts xx_wide and rejects unknown values", () => {
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({
+                design_id: designId,
+                catalog: { width: "xx_wide" },
+            }).success,
+        ).toBe(true);
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({
+                design_id: designId,
+                catalog: { width: "giant" },
+            }).success,
+        ).toBe(false);
+    });
+
     test("design_id is required and rx_text is not a clinical field", () => {
         expect(persistSavedDesignSnapshotInputSchema.safeParse({}).success).toBe(false);
         expect(

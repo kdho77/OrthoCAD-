@@ -51,7 +51,7 @@ import {
     type ShoeSizeSystem,
     usMenToUk,
 } from "@/lib/geometry/shoe-size";
-import { normalizeShoeWidth } from "@/lib/geometry/shoe-width";
+import { normalizeShoeWidth, type ShoeWidthId } from "@/lib/geometry/shoe-width";
 import { SINK_DEFAULT_DEPTH_MM } from "@/lib/geometry/sink";
 import { stockDebug, stockFixLog, stockGlbLog, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
@@ -527,7 +527,7 @@ export interface DesignStore {
     setUkShoeSize: (ukSize: number) => void;
     /** Change foot length in mm and auto-scale. */
     setFootLengthMm: (mm: number) => void;
-    setShoeWidth: (width: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide", side?: Side) => void;
+    setShoeWidth: (width: ShoeWidthId, side?: Side) => void;
 
     /** Patch corrections for a side. When linked, mirrors to the other side. */
     updateCorrection: (side: Side, patch: Partial<SideCorrections>) => void;

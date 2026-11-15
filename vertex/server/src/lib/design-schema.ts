@@ -91,7 +91,7 @@ const placedElement = z
     })
     .passthrough();
 
-const shoeWidth = z.enum(["extra_narrow", "narrow", "medium", "wide", "extra_wide"]);
+const shoeWidth = z.enum(["extra_narrow", "narrow", "medium", "wide", "extra_wide", "xx_wide"]);
 
 const designBase = z
     .object({

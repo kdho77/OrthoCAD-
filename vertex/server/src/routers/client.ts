@@ -31,7 +31,7 @@ const clientInput = z.object({
     shoeSizesSplit: z.boolean().optional(),
     shoeSizeLeftUs: z.number().min(1).max(16).optional(),
     shoeSizeRightUs: z.number().min(1).max(16).optional(),
-    shoeWidth: z.enum(["narrow", "medium", "wide", "extra_wide"]).optional(),
+    shoeWidth: z.enum(["narrow", "medium", "wide", "extra_wide", "xx_wide"]).optional(),
 });
 
 async function scope(ctx: { user: { id: string; email: string; role: string } }) {

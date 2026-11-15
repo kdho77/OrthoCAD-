@@ -142,6 +142,11 @@ describe("design settings round trip", () => {
         expect(JSON.stringify(raw)).not.toContain("vertices");
     });
 
+    test("xx_wide round-trips through the design save schema", () => {
+        const settings = { ...settingsFixture(), shoeWidth: "xx_wide" as const };
+        expect(settingsForDesignSave(settings).shoeWidth).toBe("xx_wide");
+    });
+
     test("the editor's default design settings survive save unchanged", () => {
         const design = createDesignWithStockPlaceholder();
         const plain = JSON.parse(JSON.stringify(design)) as Record<string, unknown>;

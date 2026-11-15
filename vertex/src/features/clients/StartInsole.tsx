@@ -33,7 +33,7 @@ const WIDTH_LABELS: Record<ChartShoeWidth, string> = {
     narrow: "Narrow",
     medium: "Medium",
     wide: "Wide",
-    extra_wide: "Extra wide",
+    extra_wide: "Extra Wide",
 };
 
 export function ShoeChartPanel({

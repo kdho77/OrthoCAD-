@@ -640,10 +640,12 @@ describe("integration link width", () => {
         expect([...CHART_SHOE_WIDTHS]).toEqual(["narrow", "medium", "wide", "extra_wide"]);
         expect(normalizeShoeWidth("extra_narrow")).toBe("extra_narrow");
         expect(normalizeShoeWidth("extra_wide")).toBe("extra_wide");
+        expect(normalizeShoeWidth("xx_wide")).toBe("xx_wide");
         expect(normalizeShoeWidth("wide")).toBe("wide");
         expect(normalizeShoeWidth(undefined)).toBe("medium");
         expect(parseSavedDesignCatalog({ width: "extra_narrow" }).width).toBe("extra_narrow");
         expect(parseSavedDesignCatalog({ width: "extra_wide" }).width).toBe("extra_wide");
+        expect(parseSavedDesignCatalog({ width: "xx_wide" }).width).toBe("xx_wide");
         const prescribed = buildSavedDesignSnapshot({
             stored: null,
             catalog: parseSavedDesignCatalog({

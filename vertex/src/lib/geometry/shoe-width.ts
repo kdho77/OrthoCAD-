@@ -2,11 +2,11 @@
 
 import type { BufferGeometry } from "three";
 
-export type ShoeWidthId = "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
+export type ShoeWidthId = "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide" | "xx_wide";
 
 /**
  * Forefoot ball-width deltas (mm) vs Medium. Width only: length (X) is unchanged.
- * 2X Narrow −10, Narrow −5, Medium 0, Wide +5, 2X Wide +10.
+ * 2X Narrow −10, Narrow −5, Medium 0, Wide +5, Extra Wide +10, 2X Wide +15.
  */
 export const SHOE_WIDTH_BALL_DELTA_MM: Record<ShoeWidthId, number> = {
     extra_narrow: -10,
@@ -14,6 +14,7 @@ export const SHOE_WIDTH_BALL_DELTA_MM: Record<ShoeWidthId, number> = {
     medium: 0,
     wide: 5,
     extra_wide: 10,
+    xx_wide: 15,
 };
 
 /** Heel may move at most this many mm from Medium. */
@@ -24,11 +25,13 @@ export const SHOE_WIDTH_LABELS: Record<ShoeWidthId, string> = {
     narrow: "Narrow",
     medium: "Medium",
     wide: "Wide",
-    extra_wide: "2X Wide",
+    extra_wide: "Extra Wide",
+    xx_wide: "2X Wide",
 };
 
 export function normalizeShoeWidth(id?: string | null): ShoeWidthId {
-    if (id === "extra_narrow" || id === "narrow" || id === "wide" || id === "extra_wide") return id;
+    if (id === "extra_narrow" || id === "narrow" || id === "wide" || id === "extra_wide" || id === "xx_wide")
+        return id;
     return "medium";
 }
 
