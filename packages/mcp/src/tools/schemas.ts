@@ -159,6 +159,19 @@ const wedgeSchema = z
     })
     .strict();
 
+const flangeLevelSchema = z.preprocess(
+    (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+    z.enum(["mild", "standard", "high"]),
+);
+
+const flangeSideSchema = z
+    .object({
+        medial_mm: z.number().finite().optional(),
+        lateral_mm: z.number().finite().optional(),
+        level: flangeLevelSchema.optional(),
+    })
+    .strict();
+
 /**
  * VertexOrders catalog. Keep keys aligned with vertex/shared/saved-design-catalog.ts.
  * rx_text, notes, rigidity, extra_soft, and hardness are accepted and not mapped.
@@ -219,6 +232,13 @@ export const savedDesignCatalogSchema = z
                 side: z.enum(["medial", "lateral"]),
                 value: z.number().finite(),
                 unit: z.enum(["mm", "deg"]),
+            })
+            .strict()
+            .optional(),
+        flange: z
+            .object({
+                left: flangeSideSchema.optional(),
+                right: flangeSideSchema.optional(),
             })
             .strict()
             .optional(),
@@ -382,6 +402,10 @@ export const MCP_TOOL_DEFINITIONS = [
             "sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, " +
             "sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, " +
             "sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), " +
+            "flange.left, flange.right, flange.left.medial_mm, flange.left.lateral_mm, flange.left.level, " +
+            "flange.right.medial_mm, flange.right.lateral_mm, flange.right.level " +
+            "(per-foot medial/lateral flange 0–8 mm; omit medial_mm and lateral_mm for 3 mm default, mild level 2 mm, " +
+            "standard/unspecified 3 mm, high 6 mm; out of range is 422, not clamped; omitted flange leaves flanges unchanged), " +
             "rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, " +
             "forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, " +
             "full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit. " +
@@ -410,6 +434,8 @@ export const MCP_TOOL_DEFINITIONS = [
             "Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. " +
             "depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). " +
             "Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. " +
+            "flange.left / flange.right set medial_mm and lateral_mm (0–8) per foot; omit those mm for 3 mm default, " +
+            "or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. " +
             "elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. " +
             "Medium width is used only when width is absent and is recorded as defaulted, not prescribed. " +
             "Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
