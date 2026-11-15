@@ -25104,12 +25104,7 @@ function voAttachArgumentError(args, now = Date.now()) {
 }
 
 // packages/mcp/src/payload/vo-attach-files.ts
-var DOGFOOD_HELD_ID_PREFIXES = [
-  "ae30903d-d205-426b-a384-152810510248",
-  "886ffef7",
-  "11e0ec9b",
-  "c4092f6e"
-];
+var DOGFOOD_HELD_ID_PREFIXES = ["886ffef7", "11e0ec9b", "c4092f6e"];
 var MAX_ATTACH_BYTES = 100 * 1024 * 1024;
 var FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]*$/;
 function assertNotHeld(value) {
