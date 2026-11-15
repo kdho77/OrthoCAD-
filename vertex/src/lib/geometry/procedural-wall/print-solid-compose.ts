@@ -33,7 +33,7 @@ export interface PrintSolidShoeWidth {
 }
 
 export interface ComposePrintSolidInput {
-    /** Full viewer field: elements + rim feather, shapeFinish, Kirby after F. */
+    /** Full viewer field: elements at authored height, shapeFinish, Kirby after F. */
     sourceField: HeightFieldParams;
     shoeWidth?: PrintSolidShoeWidth | null;
     /** Clip before rim extraction. Falls back to sourceField.trimline. */

@@ -21,7 +21,7 @@ import {
 import { applySinkCutToGeometry, sinksActive } from "@/lib/geometry/sink";
 import type { PlacedElement } from "@/types";
 import { loadTransformedAssetPositions, resolvePlacedAssetContexts } from "./element-asset";
-import { gridEdgeRingMax, sampleGridBilinear } from "./height-grid";
+import { sampleGridBilinear } from "./height-grid";
 import {
     anchorMmFromPlacement,
     defaultNoFlowHeightHooks,
@@ -31,20 +31,12 @@ import {
 } from "./no-flow-blend";
 import {
     ELEMENT_SUBDIVIDE_EDGE_MM,
-    type ElementFeatherMm,
     LIBRARY_HEIGHT_FIELD_KINDS,
     NO_FLOW_SMOOTH_MAX_K_MM,
     type PlacedElementAssetContext,
 } from "./types";
 
 const DEG = Math.PI / 180;
-
-function c1Smoothstep01(t: number): number {
-    const x = Math.max(0, Math.min(1, t));
-    return x * x * (3 - 2 * x);
-}
-
-const HIGH_EDGE_RING_MM = 1;
 
 function rimBandClipFactor(u: number, vSigned: number, field: HeightFieldParams): number {
     const av = Math.abs(vSigned);
@@ -109,32 +101,6 @@ export function ensureTopEdgeAvProfile(field: HeightFieldParams, base: BufferGeo
     };
 }
 
-function flowFeatherWeight(
-    lx: number,
-    ly: number,
-    gridOriginX: number,
-    gridOriginY: number,
-    nx: number,
-    ny: number,
-    cellMm: number,
-    featherMm: ElementFeatherMm,
-): number {
-    // Per-edge sidecar feathers are already authored into the mesh (edge z=0).
-    // Extra AABB would reshape the CAD-approved height field — do not apply.
-    if (typeof featherMm !== "number") return 1;
-    const margin = featherMm;
-    if (margin <= 1e-9) return 1;
-    const minX = gridOriginX + margin;
-    const maxX = gridOriginX + nx * cellMm - margin;
-    const minY = gridOriginY + margin;
-    const maxY = gridOriginY + ny * cellMm - margin;
-    const dx = Math.min(lx - minX, maxX - lx, margin);
-    const dy = Math.min(ly - minY, maxY - ly, margin);
-    const d = Math.min(dx, dy);
-    if (d >= margin) return 1;
-    return c1Smoothstep01(d / Math.max(1e-6, margin));
-}
-
 function localCoordsFlow(
     x: number,
     y: number,
@@ -161,8 +127,6 @@ async function applyAssetContext(
     const frame = getBaseFootprintFrame(base, field.side);
     const pos = geometry.getAttribute("position") as BufferAttribute;
     const arr = pos.array as Float32Array;
-    const basePos = base.getAttribute("position")?.array as Float32Array | undefined;
-    const uvArr = basePos && basePos.length === arr.length ? basePos : arr;
     const { grid } = await loadTransformedAssetPositions(ctx.assetId, ctx.transform);
     const anchor = anchorMmFromPlacement(base, field.side, ctx.placed.position.x, ctx.placed.position.y);
     const sign = ctx.sidecar.category === "sink" ? -1 : 1;
@@ -171,8 +135,8 @@ async function applyAssetContext(
     if (ctx.transform.placementMode === "noFlow") {
         const baseZ = hooks.baseHeightAtAnchor(geometry, anchor.x, anchor.y, ta);
         const k = NO_FLOW_SMOOTH_MAX_K_MM;
-        const edgeRing = ctx.sidecar.edgeRingMaxMm ?? gridEdgeRingMax(grid);
-        const fadeHighEdge = edgeRing > HIGH_EDGE_RING_MM;
+        // Same rule as flow: the design preview shows the authored height out
+        // to the sheet edge. Do not quintic-fade it off the trimline.
         for (let i = 0; i < pos.count; i++) {
             const x = arr[i * 3]!;
             const y = arr[i * 3 + 1]!;
@@ -180,53 +144,34 @@ async function applyAssetContext(
             const { lx, ly } = localCoordsFlow(x, y, anchor.x, anchor.y, ctx.transform.rotationDeg);
             const hMag = sampleGridBilinear(grid, lx, ly);
             if (hMag <= 1e-9) continue;
-            const { u, vSigned } = vertexFootprintAt(frame, uvArr, i);
-            const rim = fadeHighEdge
-                ? rimBandFadeFactor(u, vSigned, field)
-                : rimBandClipFactor(u, vSigned, field);
-            if (rim <= 1e-6) continue;
             if (ctx.sidecar.category === "add") {
                 const stamp = baseZ + hMag + ctx.transform.zOffsetMm;
-                const elementTop = z + (stamp - z) * rim;
-                if (elementTop <= z - k) continue;
-                const next = smoothMaxMm(z, elementTop, k);
+                if (stamp <= z - k) continue;
+                const next = smoothMaxMm(z, stamp, k);
                 arr[i * 3 + ta] = Math.max(z, next);
             } else {
                 const stamp = baseZ - hMag + ctx.transform.zOffsetMm;
-                const elementFloor = z + (stamp - z) * rim;
-                if (elementFloor >= z + k) continue;
-                const next = smoothMinMm(z, elementFloor, k);
+                if (stamp >= z + k) continue;
+                const next = smoothMinMm(z, stamp, k);
                 arr[i * 3 + ta] = Math.min(z, next);
             }
         }
         return;
     }
 
+    // Design display drapes the authored GLB out to the sheet edge. Two solid-only
+    // fades were stopping that footprint short of the trimline: the print-rim
+    // quintic (0 at the sheet edge, ease from 55% of the local half-width) and
+    // the numeric sidecar AABB margin. Neither is the minimum-wall clamp
+    // (clampPostingOnTopSheet only undoes downward posting). Keep the authored
+    // height, including on the trimline.
     for (let i = 0; i < pos.count; i++) {
         const x = arr[i * 3]!;
         const y = arr[i * 3 + 1]!;
-        const { u, vSigned } = vertexFootprintAt(frame, uvArr, i);
-        // Cluffy's GLB already feathers to z = 0 on its own border (sidecar
-        // featherMm is 0). The print-rim quintic starts at 55% of the local
-        // half-width and zeros that hallux edge, so the solid pad sits inboard
-        // of the preview. Keep the authored footprint out to the sheet edge.
-        const rim = ctx.placed.kind === "cluffy_wedge" ? 1 : rimBandFadeFactor(u, vSigned, field);
-        if (rim <= 1e-9) continue;
         const { lx, ly } = localCoordsFlow(x, y, anchor.x, anchor.y, ctx.transform.rotationDeg);
         const assetH = sampleGridBilinear(grid, lx, ly);
         if (assetH <= 1e-9) continue;
-        const w = flowFeatherWeight(
-            lx,
-            ly,
-            grid.originX,
-            grid.originY,
-            grid.nx,
-            grid.ny,
-            grid.cellMm,
-            ctx.sidecar.featherMm,
-        );
-        const lift = (sign * assetH * w + ctx.transform.zOffsetMm * w) * rim;
-        arr[i * 3 + ta] += lift;
+        arr[i * 3 + ta] += sign * assetH + ctx.transform.zOffsetMm;
     }
 }
 

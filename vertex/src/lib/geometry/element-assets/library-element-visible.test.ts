@@ -5,11 +5,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
-import {
-    BASE_REFERENCE_THICKNESS_MM,
-    getBaseFootprintFrame,
-    vertexFootprintAt,
-} from "@/lib/geometry/base-modifier";
+import { BASE_REFERENCE_THICKNESS_MM, getBaseFootprintFrame } from "@/lib/geometry/base-modifier";
 import { defaultElementPose } from "@/lib/geometry/elements";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
@@ -18,7 +14,7 @@ import { weldAndLabelComponents } from "@/lib/geometry/scan-components";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import type { ElementKind, PlacedElement, Side, SideCorrections } from "@/types";
-import { applyElementsToTopMeshLast, rimBandFadeFactor } from "./apply-elements";
+import { applyElementsToTopMeshLast } from "./apply-elements";
 import {
     assertElementAssetBytes,
     isHtmlAssetPayload,
@@ -113,14 +109,9 @@ async function maxDeltaZInsideFootprint(
     for (let i = 0; i < a.length / 3; i++) {
         const h = sampleGridBilinear(grid, a[i * 3]! - anchor.x, a[i * 3 + 1]! - anchor.y);
         if (flowField) {
-            const { u, vSigned } = vertexFootprintAt(anchor.frame, a, i);
-            // Cluffy already feathers to 0 on the authored border. The solid
-            // keeps that height through the sheet edge so the pad stays flush
-            // with the preview. Other flow assets still take the print-rim quintic.
-            const fade = el.kind === "cluffy_wedge" ? 1 : rimBandFadeFactor(u, vSigned, flowField);
-            const expected = h * fade;
-            expectedFlowMaxDz = Math.max(expectedFlowMaxDz, expected);
-            maxFlowError = Math.max(maxFlowError, Math.abs(b[i * 3 + ta]! - a[i * 3 + ta]! - expected));
+            // Flow placement keeps the authored grid height through the sheet edge.
+            expectedFlowMaxDz = Math.max(expectedFlowMaxDz, h);
+            maxFlowError = Math.max(maxFlowError, Math.abs(b[i * 3 + ta]! - a[i * 3 + ta]! - h));
         }
         sampledMaxZ = Math.max(sampledMaxZ, h);
         if (h <= 1e-9) continue;
@@ -201,7 +192,7 @@ describe("library element visible placement", () => {
         raw.dispose();
     }, 300_000);
 
-    test("Met pad and Cluffy preserve authored height and apply the print rim blend at their default anchors", async () => {
+    test("Met pad and Cluffy keep authored height through the sheet edge at their default anchors", async () => {
         const cases: { kind: ElementKind; expectedMm: number }[] = [
             { kind: "met_pad", expectedMm: 5.0 },
             { kind: "cluffy_wedge", expectedMm: 2.4 },
