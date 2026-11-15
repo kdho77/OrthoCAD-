@@ -25,7 +25,9 @@ import { type HeightFieldParams, heightAt } from "./height-field";
 
 export type OperatorKind =
     | "arch_dome"
+    /** @deprecated Ignored. Arch ease no longer changes the surface. */
     | "arch_ease"
+    | "arch_elongation"
     | "arch_fill"
     | "heel_cup"
     | "rearfoot_posting"
@@ -120,6 +122,11 @@ export function evaluateOperator(
     const p = op.params;
 
     switch (op.kind) {
+        case "arch_ease":
+        case "arch_elongation":
+            // The height field stretches the arch dome. A graph delta here would
+            // stack a second change on that same apex.
+            return 0;
         case "arch_dome":
         case "arch_fill": {
             const h = (p.height as number) || 0;

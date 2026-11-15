@@ -1,5 +1,6 @@
 import { createTRPCClient, httpBatchLink } from "@trpc/client";
 import superjson from "superjson";
+import { useAuthStore } from "@/stores/auth-store";
 import type { AppRouter } from "../../server/src/routers";
 import { devAuthHeaderValue } from "./dev-auth";
 import { getSupabase, isSupabaseConfigured } from "./supabase";
@@ -38,8 +39,13 @@ export const trpc = createTRPCClient<AppRouter>({
             async headers() {
                 const supabase = getSupabase();
                 if (supabase) {
-                    const { data } = await supabase.auth.getSession();
-                    const token = data.session?.access_token;
+                    let { data } = await supabase.auth.getSession();
+                    let token = data.session?.access_token;
+                    if (!token && useAuthStore.getState().user) {
+                        await supabase.auth.refreshSession();
+                        ({ data } = await supabase.auth.getSession());
+                        token = data.session?.access_token;
+                    }
                     if (token) return { authorization: `Bearer ${token}` };
                 }
                 if (!isSupabaseConfigured()) {

@@ -1,12 +1,25 @@
 import {
     type ApexPrintMaterialId,
+    afoShellSliceFields,
+    DEFAULT_APEX_PRINT_MATERIAL_ID,
     isApexPrintMaterialExportReady,
     lockedProfileIdForApexMaterial,
     type VertexSliceMaterialId,
     vertexSliceMaterialForApexMaterial,
 } from "@/features/exports/apex-print-material";
+import { blockExportIfStaleBuild, staleBuildExportOutcome } from "@/features/exports/export-build-gate";
 import { exportMachineFamily, pairExportLayout } from "@/features/exports/machine-export-layout";
+import {
+    buildManufacturingUploadBody,
+    type ManufacturingUploadBody,
+} from "@/features/exports/manufacturing-stl-upload";
 import { stampSingleFootStl } from "@/features/exports/printer-foot-isolation";
+import {
+    buildVertexSliceModel,
+    parseRegionalCapability,
+    type RegionalCapability,
+    regionalSliceDecision,
+} from "@/features/exports/vertexslice-regional-model";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
 import { workpiecesFromDesign } from "@/lib/cnc/compose";
 import { generateCncJob } from "@/lib/cnc/export";
@@ -20,8 +33,9 @@ import {
     orderDownloadSides,
 } from "@/lib/geometry/export-geometry";
 import { binaryStlTriangleCount, manufacturingStlForExportKind } from "@/lib/geometry/leader-block";
+import { perfMark } from "@/lib/geometry/perf/load-export-perf";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
-import { collectHardnessRegions } from "@/lib/hardness/collect";
+import { effectiveHardnessRegions } from "@/lib/hardness/collect";
 import { packHardness3mf } from "@/lib/hardness/export-3mf";
 import { parseBinaryStl, type TriangleMesh } from "@/lib/hardness/mesh";
 import { buildRawModifiers, exportHardness3mf, STL_SHELL_ONLY_WARNING } from "@/lib/hardness/pipeline";
@@ -36,8 +50,65 @@ import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
 import type { DesignState, ExportFormat, GrindingStyle, Side } from "@/types";
+import {
+    buildExportFilename,
+    canonicalExportMaterialName,
+    exportSideSuffix,
+} from "../../../shared/export-filename";
 import { classDensityPct } from "../../../shared/print-recipe/hardness-class-table";
 import { bindPrintRecipeProfile } from "../../../shared/print-recipe/print-recipe";
+
+let exportBusyDepth = 0;
+
+/** True while a solid build or G-code download is in flight (see generateHybridGcode). */
+export function isExportInProgress(): boolean {
+    return exportBusyDepth > 0;
+}
+
+function beginExportBusy(): void {
+    exportBusyDepth += 1;
+}
+
+function endExportBusy(): void {
+    exportBusyDepth = Math.max(0, exportBusyDepth - 1);
+}
+
+async function withExportBusy<T>(run: () => Promise<T>): Promise<T> {
+    beginExportBusy();
+    try {
+        return await run();
+    } finally {
+        endExportBusy();
+    }
+}
+
+function activeExportPatientParts(): { firstName: string; lastName: string } {
+    const { activeClientId, clients } = useClientStore.getState();
+    if (!activeClientId) return { firstName: "", lastName: "" };
+    const client = clients.find((row) => row.id === activeClientId);
+    if (!client) return { firstName: "", lastName: "" };
+    return { firstName: client.firstName ?? "", lastName: client.lastName ?? "" };
+}
+
+function userExportFilename(input: {
+    sides: Side | Side[];
+    ext: string;
+    material?: string | ApexPrintMaterialId | null;
+}): string {
+    const patient = activeExportPatientParts();
+    const sideArg = Array.isArray(input.sides) ? input.sides : input.sides;
+    const material =
+        input.material != null && String(input.material).trim()
+            ? canonicalExportMaterialName(String(input.material))
+            : DEFAULT_APEX_PRINT_MATERIAL_ID;
+    return buildExportFilename({
+        firstName: patient.firstName,
+        lastName: patient.lastName,
+        material,
+        side: exportSideSuffix(sideArg),
+        ext: input.ext,
+    });
+}
 
 // Re-export for convenience in UI components
 export type GrindingStyleInput = GrindingStyle;
@@ -87,17 +158,24 @@ function applyServerBalance(balance: number | undefined): void {
     if (user) setUser({ ...user, tokenBalance: balance });
 }
 
-async function uploadManufacturingStlDirect(side: Side, stlBuffer: ArrayBuffer): Promise<string> {
+async function uploadManufacturingStlDirect(
+    side: Side,
+    body: ArrayBuffer,
+    contentType: "model/stl" | "model/3mf" = "model/stl",
+): Promise<string> {
     const prep = await trpc.manufacturing.prepareManufacturingStlUpload.mutate({
         side,
-        fileName: `manufacturing-${side}.stl`,
+        fileName: contentType === "model/3mf" ? `manufacturing-${side}.3mf` : `manufacturing-${side}.stl`,
     });
-    const putHeaders: Record<string, string> = { "Content-Type": "model/stl" };
+    const packed: ManufacturingUploadBody = await buildManufacturingUploadBody(body);
+    const putHeaders: Record<string, string> = { "Content-Type": contentType };
+    if (packed.contentEncoding) putHeaders["Content-Encoding"] = packed.contentEncoding;
     if (prep.token) putHeaders.Authorization = `Bearer ${prep.token}`;
+    perfMark("export:upload", { side, compressed: packed.compressed, bytes: body.byteLength });
     const putRes = await fetch(prep.uploadUrl, {
         method: "PUT",
         headers: putHeaders,
-        body: stlBuffer,
+        body: packed.body,
     });
     if (!putRes.ok) {
         const detail = await putRes.text().catch(() => "");
@@ -147,6 +225,7 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 export async function exportDesign(format: ExportFormat, side: Side = "left"): Promise<ExportOutcome> {
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
     const blocked = refuseMilledPrint(useDesignStore.getState().design);
     if (blocked) return blocked;
     if (format === "gcode") {
@@ -159,8 +238,9 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
         return export3mf(side);
     }
     const { design } = useDesignStore.getState();
-    const sides = orderDownloadSides(design);
-    const filename = `insole-${sides.join("-")}-${Date.now()}.stl`;
+    const afoExport = design.productType === "afo";
+    const sides = afoExport ? [side] : orderDownloadSides(design);
+    const filename = userExportFilename({ sides: sides.length > 1 ? sides : side, ext: "stl" });
     try {
         const stl =
             sides.length > 1
@@ -175,7 +255,8 @@ export async function exportDesign(format: ExportFormat, side: Side = "left"): P
         const auth = await authorize("stl", side, filename);
         if (!auth.ok) return { ok: false, reason: auth.reason };
         recordExport(`STL ${side} (-${TOKEN_COST.stl})`);
-        const warning = collectHardnessRegions(design, side).length > 0 ? STL_SHELL_ONLY_WARNING : undefined;
+        const warning =
+            effectiveHardnessRegions(design, side).length > 0 ? STL_SHELL_ONLY_WARNING : undefined;
         return { ok: true, filename, blob, warning };
     } catch (e) {
         return { ok: false, reason: e instanceof Error ? e.message : "Export failed" };
@@ -191,7 +272,7 @@ function translateMesh(mesh: TriangleMesh, dy: number): TriangleMesh {
 
 function assertHardnessMapped(design: DesignState, side: Side): void {
     const unmapped: string[] = [];
-    for (const region of collectHardnessRegions(design, side)) {
+    for (const region of effectiveHardnessRegions(design, side)) {
         try {
             classDensityPct(region.hardnessClass, region.overrides);
         } catch (err) {
@@ -267,6 +348,7 @@ export async function packOrder3mf(
 }
 
 export async function export3mf(side: Side): Promise<ExportOutcome> {
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
     const blocked = refuseMilledPrint(useDesignStore.getState().design);
     if (blocked) return blocked;
     const { user, license, deductTokens } = useAuthStore.getState();
@@ -274,7 +356,7 @@ export async function export3mf(side: Side): Promise<ExportOutcome> {
     if (!check.ok) return { ok: false, reason: check.reason };
     const { design } = useDesignStore.getState();
     const sides = orderDownloadSides(design);
-    const filename = `insole-${sides.join("-")}-${Date.now()}.3mf`;
+    const filename = userExportFilename({ sides: sides.length > 1 ? sides : side, ext: "3mf" });
     try {
         const packed = sides.length > 1 ? await packOrder3mf(design, sides) : await packOne3mf(design, side);
         const blob = new Blob([packed.bytes], { type: "model/3mf" });
@@ -288,12 +370,13 @@ export async function export3mf(side: Side): Promise<ExportOutcome> {
 }
 
 export async function exportGlb(side: Side): Promise<ExportOutcome> {
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
     const blocked = refuseMilledPrint(useDesignStore.getState().design);
     if (blocked) return blocked;
     const { user, license } = useAuthStore.getState();
     const check = canExport(user, license, "glb");
     if (!check.ok) return { ok: false, reason: check.reason };
-    const filename = `insole-${side}-${Date.now()}.glb`;
+    const filename = userExportFilename({ sides: side, ext: "glb" });
     try {
         const arrayBuffer = await buildExportGlb(side);
         const blob = new Blob([arrayBuffer], { type: "model/gltf-binary" });
@@ -306,10 +389,16 @@ export async function exportGlb(side: Side): Promise<ExportOutcome> {
 }
 
 export async function exportCncGcode(sides: Side[], profile: MillingProfile): Promise<ExportOutcome> {
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
     const { design } = useDesignStore.getState();
     const millSides = cncSidesForOrder(design, sides);
     const before = JSON.stringify(design);
-    const filename = `insole-cnc-${millSides.join("-")}-${Date.now()}${profile.fileExtension || ".gcode"}`;
+    const cncExt = (profile.fileExtension || ".gcode").replace(/^\./, "");
+    const filename = userExportFilename({
+        sides: millSides.length > 1 ? millSides : (millSides[0] ?? "left"),
+        ext: cncExt,
+        material: DEFAULT_APEX_PRINT_MATERIAL_ID,
+    });
     try {
         const parts = await workpiecesFromDesign(design, millSides, profile);
         if (parts.length === 0) {
@@ -356,6 +445,11 @@ export interface HybridGcodeOptions {
     /** @deprecated Shore-A names are not printer materials. Use apexMaterialId. */
     material?: string;
     apexMaterialId?: ApexPrintMaterialId;
+    /**
+     * AFO shell only. Sends `apex_vylon` on the locked Apex V2 profile.
+     * Insole exports leave this unset and keep the Apex Light / Core / Bounce picker.
+     */
+    afoSliceMaterial?: "apex_vylon";
     /** Default on for belt G-code. Mesh and CNC callers leave this unset. */
     includeLeaderBlock?: boolean;
     onProgress?: (step: string) => void;
@@ -364,8 +458,11 @@ export interface HybridGcodeOptions {
     shouldAbort?: () => boolean;
 }
 
-export function hybridGcodeFilename(side: Side, presetId: string, now = Date.now()): string {
-    return `hybrid-${side}-${presetId}-${now}.gcode`;
+export function hybridGcodeFilename(
+    side: Side,
+    material: ApexPrintMaterialId | string = DEFAULT_APEX_PRINT_MATERIAL_ID,
+): string {
+    return userExportFilename({ sides: side, ext: "gcode", material });
 }
 
 function exportCancelled(): ExportOutcome {
@@ -381,6 +478,45 @@ export function printerGcodeSliceFields(apexMaterialId: ApexPrintMaterialId): {
         presetId: lockedProfileIdForApexMaterial(apexMaterialId),
         material: vertexSliceMaterialForApexMaterial(apexMaterialId),
     };
+}
+
+export interface HybridSliceRoute {
+    presetId: string;
+    material: "apex_vylon" | VertexSliceMaterialId;
+    /** Local belt slicer method. AFO is a shell, never the insole solid infill. */
+    method: "printing_shell" | "printing_solid";
+    /** Local Kiri preset. AFO uses the shell belt, not apex-belt-v2. */
+    localPresetId: string;
+}
+
+/**
+ * AFO G-code uses the ApexVylon shell profile, including when the insole
+ * picker still says Apex Core. Send to VertexSlice and the normal export
+ * share this route.
+ */
+export function resolveHybridSlice(
+    design: { productType?: string },
+    options: { afoSliceMaterial?: "apex_vylon"; apexMaterialId?: ApexPrintMaterialId } = {},
+): HybridSliceRoute | null {
+    if (design.productType === "afo" || options.afoSliceMaterial === "apex_vylon") {
+        const fields = afoShellSliceFields();
+        return {
+            presetId: fields.presetId,
+            material: fields.material,
+            method: "printing_shell",
+            localPresetId: "apex-belt-v2-shell",
+        };
+    }
+    if (options.apexMaterialId && isApexPrintMaterialExportReady(options.apexMaterialId)) {
+        const fields = printerGcodeSliceFields(options.apexMaterialId);
+        return {
+            presetId: fields.presetId,
+            material: fields.material,
+            method: "printing_solid",
+            localPresetId: "apex-belt-v2",
+        };
+    }
+    return null;
 }
 
 /**
@@ -416,30 +552,64 @@ function yieldToPaint(): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/**
+ * Explicit enabled / disabled is a successful check. A missing procedure, a
+ * thrown query (network or non-2xx), or a body without a boolean `enabled`
+ * is "could not check". Callers with effective regions must stop on that.
+ */
+async function queryVertexSliceRegional3mf(): Promise<RegionalCapability> {
+    const manufacturing = trpc.manufacturing as {
+        regional3mfEnabled?: { query: () => Promise<unknown> };
+    };
+    const query = manufacturing.regional3mfEnabled?.query;
+    if (!query) {
+        return { state: "unknown", reason: "regional hardness capability check is missing" };
+    }
+    try {
+        return parseRegionalCapability(await query());
+    } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return { state: "unknown", reason: reason || "regional hardness capability check failed" };
+    }
+}
+
+function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+    const copy = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(copy).set(bytes);
+    return copy;
+}
+
 export async function exportGcode(
     side: Side,
     preset: PrinterPreset,
     overrides: CamOverrides = {},
     options: HybridGcodeOptions = {},
 ): Promise<ExportOutcome> {
-    const { design } = useDesignStore.getState();
-    const blocked = refuseMilledPrint(design);
-    if (blocked) return blocked;
-    options.onProgress?.(GCODE_EXPORT_STEPS.prepare);
-    await yieldToPaint();
-    const sides = orderDownloadSides(design);
-    const filename = `insole-${sides.join("-")}-${preset.id}-${Date.now()}.gcode`;
-    const auth = await authorize("gcode", side, filename);
-    if (!auth.ok) return { ok: false, reason: auth.reason };
-    const geometry = await buildOrderPairGeometry();
-    options.onProgress?.(GCODE_EXPORT_STEPS.slice);
-    const presetForSlice = options.material ? { ...preset, material: options.material } : preset;
-    const { gcode, stats } = generateGcode(geometry, presetForSlice, overrides);
-    geometry.dispose();
-    const blob = new Blob([gcode], { type: "text/plain" });
-    if (!options.deferDownload) downloadBlob(blob, filename);
-    recordExport(`G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
-    return { ok: true, filename, blob, stats };
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
+    return withExportBusy(async () => {
+        const { design } = useDesignStore.getState();
+        const blocked = refuseMilledPrint(design);
+        if (blocked) return blocked;
+        options.onProgress?.(GCODE_EXPORT_STEPS.prepare);
+        await yieldToPaint();
+        const sides = orderDownloadSides(design);
+        const filename = userExportFilename({
+            sides: sides.length > 1 ? sides : side,
+            ext: "gcode",
+            material: canonicalExportMaterialName(preset.material),
+        });
+        const auth = await authorize("gcode", side, filename);
+        if (!auth.ok) return { ok: false, reason: auth.reason };
+        const geometry = await buildOrderPairGeometry();
+        options.onProgress?.(GCODE_EXPORT_STEPS.slice);
+        const presetForSlice = options.material ? { ...preset, material: options.material } : preset;
+        const { gcode, stats } = generateGcode(geometry, presetForSlice, overrides);
+        geometry.dispose();
+        const blob = new Blob([gcode], { type: "text/plain" });
+        if (!options.deferDownload) downloadBlob(blob, filename);
+        recordExport(`G-code ${side} · ${preset.name} (-${TOKEN_COST.gcode})`);
+        return { ok: true, filename, blob, stats };
+    });
 }
 
 /**
@@ -453,157 +623,200 @@ export async function generateHybridGcode(
     overrides: CamOverrides = {},
     options: HybridGcodeOptions = {},
 ): Promise<ExportOutcome> {
-    const blocked = refuseMilledPrint(useDesignStore.getState().design);
-    if (blocked) return blocked;
-    const report = options.onProgress;
-    const abort = (): ExportOutcome | null => (options.shouldAbort?.() ? exportCancelled() : null);
-    report?.(GCODE_EXPORT_STEPS.prepare);
-    await yieldToPaint();
-    const aborted = abort();
-    if (aborted) return aborted;
-    const activeDesignId = useClientStore.getState().activeDesignId;
-    const family = exportMachineFamily({
-        method: useDesignStore.getState().design.method,
-        beltAngleDeg: preset.beltAngleDeg,
-    });
-    // Belt: one local-frame STL per foot. Bed printers keep the side-by-side pair STL.
-    const separateFiles = pairExportLayout(family) === "separate-files";
-    const outputType = separateFiles ? "gcode" : "stl";
-    if (outputType === "gcode" && !isApexPrintMaterialExportReady(options.apexMaterialId)) {
-        return {
-            ok: false,
-            reason: "Pick Apex Light or Apex Core before exporting G-code.",
-        };
-    }
-    const sliceFields =
-        outputType === "gcode" && options.apexMaterialId
-            ? printerGcodeSliceFields(options.apexMaterialId)
-            : null;
-    const ext = outputType === "gcode" ? "gcode" : "stl";
-    const filename =
-        outputType === "gcode"
-            ? hybridGcodeFilename(side, sliceFields?.presetId ?? preset.id)
-            : `hybrid-${side}-${sliceFields?.presetId ?? preset.id}-${Date.now()}.${ext}`;
-
-    if (outputType === "gcode" && !isApiConfigured()) {
-        return {
-            ok: false,
-            reason: "Printer G-code requires the VertexSlice server. Local slicing is disabled so the leader block is not dropped.",
-        };
-    }
-
-    if (isApiConfigured()) {
-        try {
-            const includeLeader = separateFiles && options.includeLeaderBlock !== false;
-            const stlBuffer = separateFiles
-                ? (await buildPrinterFootManufacturingStl(side, includeLeader)).stl
-                : await (async () => {
-                      const designForStl = useDesignStore.getState().design;
-                      const stlSides = orderDownloadSides(designForStl);
-                      return stlSides.length > 1
-                          ? await buildOrderPairStl()
-                          : await buildManufacturingStl(side);
-                  })();
-            const stopped = abort();
-            if (stopped) return stopped;
-            report?.(GCODE_EXPORT_STEPS.upload);
-            const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
-            const stoppedAfterUpload = abort();
-            if (stoppedAfterUpload) return stoppedAfterUpload;
-
-            const design = useDesignStore.getState().design;
-            const presetId = sliceFields?.presetId ?? preset.id;
-            const printRecipe = bindPrintRecipeProfile(design.printRecipe, presetId);
-
-            report?.(GCODE_EXPORT_STEPS.slice);
-            const res = await trpc.manufacturing.generateSolid.mutate({
-                designId: activeDesignId || undefined,
-                side,
-                presetId,
-                stlStorageKey,
-                outputType,
-                beltAngleDeg: preset.beltAngleDeg ?? 45,
-                layerHeightMm: outputType === "gcode" ? undefined : overrides.layerHeightMm,
-                printRecipe,
-                perimeters: outputType === "gcode" ? undefined : overrides.perimeters,
-                grindingStyle,
-                fileName: filename,
-                ...(sliceFields ? { material: sliceFields.material } : {}),
-            });
-
-            if (!res?.ok) {
-                return { ok: false, reason: "Server manufacturing request failed" };
-            }
-            applyServerBalance(res.balance);
-
-            let blob: Blob | undefined;
-            const downloadUrl = res.downloadUrl ?? res.gcodeDownloadUrl;
-
-            const stoppedBeforeDownload = abort();
-            if (stoppedBeforeDownload) return stoppedBeforeDownload;
-            report?.(GCODE_EXPORT_STEPS.download);
-            if (downloadUrl) {
-                const resp = await fetch(downloadUrl);
-                if (!resp.ok) throw new Error(`Download failed with status ${resp.status}`);
-                const data = await resp.arrayBuffer();
-                const mime = outputType === "gcode" ? "text/plain" : "model/stl";
-                blob = new Blob([data], { type: mime });
-            } else if (outputType === "gcode" && res.gcode) {
-                blob = new Blob([res.gcode], { type: "text/plain" });
-            } else if (outputType === "stl" && res.stlBase64) {
-                const bytes = Uint8Array.from(atob(res.stlBase64), (c) => c.charCodeAt(0));
-                blob = new Blob([bytes], { type: "model/stl" });
-            } else {
-                return { ok: false, reason: "Server did not return a downloadable output file" };
-            }
-            if (!options.deferDownload) downloadBlob(blob, filename);
-
-            recordExport(
-                `Hybrid ${outputType.toUpperCase()} ${side} · ${preset.name} (${grindingStyle.type}) (productionId=${res.productionId || "n/a"})`,
-            );
-
-            return { ok: true, filename, blob, productionId: res.productionId ?? undefined };
-        } catch (e) {
-            const raw = e instanceof Error ? e.message : "Hybrid manufacturing failed (server)";
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
+    return withExportBusy(async () => {
+        const blocked = refuseMilledPrint(useDesignStore.getState().design);
+        if (blocked) return blocked;
+        const report = options.onProgress;
+        const abort = (): ExportOutcome | null => (options.shouldAbort?.() ? exportCancelled() : null);
+        report?.(GCODE_EXPORT_STEPS.prepare);
+        await yieldToPaint();
+        const aborted = abort();
+        if (aborted) return aborted;
+        const activeDesignId = useClientStore.getState().activeDesignId;
+        const family = exportMachineFamily({
+            method: useDesignStore.getState().design.method,
+            beltAngleDeg: preset.beltAngleDeg,
+        });
+        // Belt: one local-frame STL per foot. Bed printers keep the side-by-side pair STL.
+        const separateFiles = pairExportLayout(family) === "separate-files";
+        const outputType = separateFiles ? "gcode" : "stl";
+        const sliceRoute = resolveHybridSlice(useDesignStore.getState().design, options);
+        if (outputType === "gcode" && !sliceRoute) {
             return {
                 ok: false,
-                reason: mapClientRpcError(raw, "Hybrid manufacturing failed (server)"),
+                reason: "Pick Apex Light, Apex Core, Apex Bounce, or Apex Forge before exporting G-code.",
             };
         }
-    }
+        const sliceFields = outputType === "gcode" ? sliceRoute : null;
+        const ext = outputType === "gcode" ? "gcode" : "stl";
+        const exportMaterial =
+            options.apexMaterialId ??
+            (sliceFields?.material
+                ? canonicalExportMaterialName(sliceFields.material)
+                : DEFAULT_APEX_PRINT_MATERIAL_ID);
+        const filename = userExportFilename({ sides: side, ext, material: exportMaterial });
 
-    if (outputType === "gcode") {
-        return {
-            ok: false,
-            reason: "Printer G-code requires the VertexSlice server. Local slicing is disabled so the leader block is not dropped.",
-        };
-    }
-    return exportDesign("stl", side);
+        if (outputType === "gcode" && !isApiConfigured()) {
+            return {
+                ok: false,
+                reason: "Printer G-code requires the VertexSlice server. Local slicing is disabled so the leader block is not dropped.",
+            };
+        }
+
+        if (isApiConfigured()) {
+            try {
+                const includeLeader = separateFiles && options.includeLeaderBlock !== false;
+                const stlBuffer = separateFiles
+                    ? (await buildPrinterFootManufacturingStl(side, includeLeader)).stl
+                    : await (async () => {
+                          const designForStl = useDesignStore.getState().design;
+                          const stlSides = orderDownloadSides(designForStl);
+                          return stlSides.length > 1
+                              ? await buildOrderPairStl()
+                              : await buildManufacturingStl(side);
+                      })();
+                const stopped = abort();
+                if (stopped) return stopped;
+                const design = useDesignStore.getState().design;
+                const effectiveRegions =
+                    outputType === "gcode" && separateFiles ? effectiveHardnessRegions(design, side) : [];
+                let regional3mf: { bytes: ArrayBuffer; regionCount: number } | null = null;
+                if (effectiveRegions.length > 0) {
+                    const decision = regionalSliceDecision({
+                        effectiveRegionCount: effectiveRegions.length,
+                        capability: await queryVertexSliceRegional3mf(),
+                    });
+                    if (decision.action === "fail") throw new Error(decision.message);
+                    const model = await buildVertexSliceModel({
+                        design,
+                        side,
+                        manufacturingStl: stlBuffer,
+                        stlFilename: `${side}.stl`,
+                        regional3mfEnabled: true,
+                    });
+                    if (model.contentType !== "model/3mf" || model.regionCount < 1) {
+                        throw new Error(
+                            "Regional hardness was requested but the 3MF has no modifier regions. Refusing a single-density print.",
+                        );
+                    }
+                    regional3mf = { bytes: bytesToArrayBuffer(model.bytes), regionCount: model.regionCount };
+                }
+                const stoppedBeforeUpload = abort();
+                if (stoppedBeforeUpload) return stoppedBeforeUpload;
+                report?.(GCODE_EXPORT_STEPS.upload);
+                const stlStorageKey = await uploadManufacturingStlDirect(side, stlBuffer);
+                const regional3mfStorageKey = regional3mf
+                    ? await uploadManufacturingStlDirect(side, regional3mf.bytes, "model/3mf")
+                    : undefined;
+                const stoppedAfterUpload = abort();
+                if (stoppedAfterUpload) return stoppedAfterUpload;
+
+                const presetId = sliceFields?.presetId ?? preset.id;
+                const printRecipe = bindPrintRecipeProfile(design.printRecipe, presetId);
+
+                report?.(GCODE_EXPORT_STEPS.slice);
+                perfMark("export:server-slice", { side, outputType });
+                const res = await trpc.manufacturing.generateSolid.mutate({
+                    designId: activeDesignId || undefined,
+                    side,
+                    presetId,
+                    stlStorageKey,
+                    outputType,
+                    beltAngleDeg: preset.beltAngleDeg ?? 45,
+                    layerHeightMm: outputType === "gcode" ? undefined : overrides.layerHeightMm,
+                    printRecipe,
+                    perimeters: outputType === "gcode" ? undefined : overrides.perimeters,
+                    grindingStyle,
+                    fileName: filename,
+                    ...(sliceFields ? { material: sliceFields.material } : {}),
+                    ...(regional3mf && regional3mfStorageKey
+                        ? { regional3mfStorageKey, expectedRegionCount: regional3mf.regionCount }
+                        : {}),
+                });
+
+                if (!res?.ok) {
+                    return { ok: false, reason: "Server manufacturing request failed" };
+                }
+                applyServerBalance(res.balance);
+
+                let blob: Blob | undefined;
+                const downloadUrl = res.downloadUrl ?? res.gcodeDownloadUrl;
+
+                const stoppedBeforeDownload = abort();
+                if (stoppedBeforeDownload) return stoppedBeforeDownload;
+                report?.(GCODE_EXPORT_STEPS.download);
+                if (downloadUrl) {
+                    const resp = await fetch(downloadUrl);
+                    if (!resp.ok) throw new Error(`Download failed with status ${resp.status}`);
+                    const data = await resp.arrayBuffer();
+                    const mime = outputType === "gcode" ? "text/plain" : "model/stl";
+                    blob = new Blob([data], { type: mime });
+                } else if (outputType === "gcode" && res.gcode) {
+                    blob = new Blob([res.gcode], { type: "text/plain" });
+                } else if (outputType === "stl" && res.stlBase64) {
+                    const bytes = Uint8Array.from(atob(res.stlBase64), (c) => c.charCodeAt(0));
+                    blob = new Blob([bytes], { type: "model/stl" });
+                } else {
+                    return { ok: false, reason: "Server did not return a downloadable output file" };
+                }
+                if (!options.deferDownload) downloadBlob(blob, filename);
+
+                recordExport(
+                    `Hybrid ${outputType.toUpperCase()} ${side} · ${preset.name} (${grindingStyle.type}) (productionId=${res.productionId || "n/a"})`,
+                );
+
+                return { ok: true, filename, blob, productionId: res.productionId ?? undefined };
+            } catch (e) {
+                const raw = e instanceof Error ? e.message : "Hybrid manufacturing failed (server)";
+                return {
+                    ok: false,
+                    reason: mapClientRpcError(raw, "Hybrid manufacturing failed (server)"),
+                };
+            }
+        }
+
+        if (outputType === "gcode") {
+            return {
+                ok: false,
+                reason: "Printer G-code requires the VertexSlice server. Local slicing is disabled so the leader block is not dropped.",
+            };
+        }
+        return exportDesign("stl", side);
+    });
 }
 
 export async function downloadGcodeByProductionId(productionId: string): Promise<ExportOutcome> {
-    if (!isApiConfigured()) {
-        return { ok: false, reason: "API not configured; server G-code download requires backend" };
-    }
-    try {
-        const res = await trpc.manufacturing.getGcodeDownloadUrl.query({ productionId });
-        if (!res?.downloadUrl) {
-            return { ok: false, reason: "No download URL returned for production" };
+    if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
+    return withExportBusy(async () => {
+        if (!isApiConfigured()) {
+            return { ok: false, reason: "API not configured; server G-code download requires backend" };
         }
-        const textResp = await fetch(res.downloadUrl);
-        if (!textResp.ok) {
-            throw new Error(`Failed to fetch G-code (status ${textResp.status})`);
+        try {
+            const res = await trpc.manufacturing.getGcodeDownloadUrl.query({ productionId });
+            if (!res?.downloadUrl) {
+                return { ok: false, reason: "No download URL returned for production" };
+            }
+            const textResp = await fetch(res.downloadUrl);
+            if (!textResp.ok) {
+                throw new Error(`Failed to fetch G-code (status ${textResp.status})`);
+            }
+            const gcodeText = await textResp.text();
+            const { design } = useDesignStore.getState();
+            const feet = orderDownloadSides(design);
+            const filename = userExportFilename({
+                sides: feet.length === 1 ? (feet[0] ?? "left") : "left",
+                ext: "gcode",
+            });
+            const blob = new Blob([gcodeText], { type: "text/plain" });
+            downloadBlob(blob, filename);
+            recordExport(`Hybrid G-code re-download via productionId ${productionId}`);
+            return { ok: true, filename, blob, productionId };
+        } catch (e) {
+            return {
+                ok: false,
+                reason: e instanceof Error ? e.message : "G-code download by productionId failed",
+            };
         }
-        const gcodeText = await textResp.text();
-        const filename = `hybrid-${productionId}.gcode`;
-        const blob = new Blob([gcodeText], { type: "text/plain" });
-        downloadBlob(blob, filename);
-        recordExport(`Hybrid G-code re-download via productionId ${productionId}`);
-        return { ok: true, filename, blob, productionId };
-    } catch (e) {
-        return {
-            ok: false,
-            reason: e instanceof Error ? e.message : "G-code download by productionId failed",
-        };
-    }
+    });
 }

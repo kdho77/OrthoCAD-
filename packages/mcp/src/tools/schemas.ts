@@ -22,16 +22,33 @@ export const prepareManufacturingStlUploadInputSchema = z.object({
     file_name: z.string().max(200).optional(),
 });
 
+export const listMaterialsInputSchema = z.object({}).strict();
+
+const MATERIAL_FIELD_DESCRIPTION =
+    "Insole print material. Omit for apex_core (Apex Core). " +
+    'Enabled values: apex_light (Apex Light; aliases ApexLight, "Apex Light", "ApexLight Foam"), ' +
+    'apex_core (Apex Core; aliases ApexCore, "Apex Core", ApexComfort, "Apex Comfort"), ' +
+    'apex_bounce (Apex Bounce; aliases ApexBounce, "Apex Bounce"), ' +
+    'apex_forge (Apex Forge; aliases ApexForge, "Apex Forge"). ' +
+    "Spaces, underscores, and hyphens are ignored. " +
+    "ApexLight Foam is Apex Light, not a separate product. Unknown names are rejected. Nothing is substituted. " +
+    "Call list_materials for the canonical ids, labels, aliases, and enabled flags.";
+
+const PRESET_FIELD_DESCRIPTION =
+    "Locked process profile apex-v2-insole-95a. Omit preset_id or pass that exact id. " +
+    "Any other preset_id is rejected and is not substituted. " +
+    "The same locked profile is used for every enabled insole material.";
+
 export const generateGcodeInputObjectSchema = z.object({
     design_id: z.string().uuid().optional(),
     side: sideSchema.optional(),
-    preset_id: z.string().min(1),
+    preset_id: z.string().min(1).optional().describe(PRESET_FIELD_DESCRIPTION),
     /** Required unless use_saved_design. The saved-design path does not accept an STL deliverable. */
     stl_storage_key: z.string().min(1).optional(),
     output_type: z.enum(["gcode", "stl"]).default("gcode"),
     belt_angle_deg: z.number().min(10).max(80).optional(),
     file_name: z.string().max(200).optional(),
-    material: z.string().max(80).optional(),
+    material: z.string().max(80).optional().describe(MATERIAL_FIELD_DESCRIPTION),
     /** Server builds the canonical Export mesh and returns per-foot belt G-code only. */
     use_saved_design: z.boolean().optional(),
     /** Optional bottom engrave label for this export (same sanitize as Print/Export textMarking). */
@@ -114,7 +131,7 @@ const shoeSystemSchema = z.preprocess(
 
 const widthSchema = z.preprocess(
     (value) => (typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, "_") : value),
-    z.enum(["narrow", "medium", "wide", "extra_narrow", "extra_wide"]),
+    z.enum(["narrow", "medium", "wide", "extra_narrow", "extra_wide", "xx_wide"]),
 );
 
 const archSchema = z.preprocess(
@@ -128,6 +145,8 @@ const savedDesignSliderSchema = z
         rearfoot_posting_deg: z.number().finite().optional(),
         medial_skive_mm: z.number().finite().optional(),
         lateral_skive_mm: z.number().finite().optional(),
+        arch_elongation_mm: z.number().finite().optional(),
+        /** Legacy. Accepted so old catalogs load. Not copied onto the design. */
         arch_ease_mm: z.number().finite().optional(),
         heel_cup_depth_mm: z.number().finite().optional(),
         heel_cup_height_mm: z.number().finite().optional(),
@@ -145,6 +164,19 @@ const wedgeSchema = z
         value: z.number().finite(),
         unit: z.enum(["mm", "deg"]),
         degree_mode: z.enum(["local", "station"]).optional(),
+    })
+    .strict();
+
+const flangeLevelSchema = z.preprocess(
+    (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+    z.enum(["mild", "standard", "high"]),
+);
+
+const flangeSideSchema = z
+    .object({
+        medial_mm: z.number().finite().optional(),
+        lateral_mm: z.number().finite().optional(),
+        level: flangeLevelSchema.optional(),
     })
     .strict();
 
@@ -216,6 +248,13 @@ export const savedDesignCatalogSchema = z
          * Omitted keeps the 2 mm default. Out of range is rejected.
          */
         thickness_mm: z.number().finite().min(1.5).max(8).optional(),
+        flange: z
+            .object({
+                left: flangeSideSchema.optional(),
+                right: flangeSideSchema.optional(),
+            })
+            .strict()
+            .optional(),
         rx_text: z.string().max(8000).optional(),
         notes: z.string().max(8000).optional(),
         rigidity: z.string().max(80).optional(),
@@ -248,6 +287,8 @@ const attachFileSchema = z
         /** CAD provenance only. Not copied into the VO file object. */
         storage_key: z.string().trim().min(1).max(500).optional(),
         filename: z.string().max(200).optional(),
+        patient_name: z.string().max(200).optional(),
+        material: z.string().max(80).optional(),
         content_base64: z.string().min(1).optional(),
         download_url: z.string().min(1).max(4000).optional(),
         expires_at: z.string().min(1).max(80).optional(),
@@ -260,6 +301,8 @@ export const prepareVoAttachmentInputSchema = z
         order_id: z.string().uuid(),
         /** CAD provenance only. Not sent; VO would check the design link. */
         design_id: z.string().uuid().optional(),
+        patient_name: z.string().max(200).optional(),
+        material: z.string().max(80).optional(),
         files: z.array(attachFileSchema).min(1).max(2),
     })
     .strict();
@@ -301,6 +344,20 @@ export const MCP_TOOL_DEFINITIONS = [
         inputSchema: prepareManufacturingStlUploadInputSchema,
     },
     {
+        name: "list_materials",
+        description:
+            "Read-only catalog of insole print materials for generate_gcode. No arguments and no writes. " +
+            "Returns locked_preset_id (apex-v2-insole-95a), default_material (apex_core when material is omitted), " +
+            "and materials[] with id, label, vertex_slice_material, enabled, locked_preset_id, aliases, " +
+            "and disabled_reason when disabled. " +
+            "generate_gcode material accepts vertex_slice_material or any alias. Spaces, underscores, and hyphens are ignored. " +
+            'Apex Light / apex_light aliases include "ApexLight Foam" (the VertexOrders label, not a new product). ' +
+            "Apex Core / apex_core aliases include ApexComfort. Apex Bounce / apex_bounce and Apex Forge / apex_forge are enabled. " +
+            "Unknown material names are rejected. Nothing is substituted. " +
+            "preset_id must be omitted or apex-v2-insole-95a. Any other preset_id is rejected and not substituted.",
+        inputSchema: listMaterialsInputSchema,
+    },
+    {
         name: "generate_gcode",
         description:
             "Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. " +
@@ -308,7 +365,11 @@ export const MCP_TOOL_DEFINITIONS = [
             "A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset. " +
             "No STL deliverable and no G-code bytes. Omitting side enqueues both feet. " +
             "Legacy mode still calls manufacturing.generateSolid → Python /manufacture with stl_storage_key. " +
-            "PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck.",
+            "PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck. " +
+            "material: omit for apex_core, or pass apex_light, apex_core, apex_bounce, apex_forge, or a list_materials alias " +
+            '("ApexLight Foam" is apex_light). Unknown materials are rejected and not substituted. ' +
+            "preset_id: omit or pass apex-v2-insole-95a. Any other preset_id is rejected and not substituted. " +
+            "Every enabled insole material keeps that locked profile.",
         inputSchema: generateGcodeInputObjectSchema,
     },
     {
@@ -355,16 +416,20 @@ export const MCP_TOOL_DEFINITIONS = [
             "Update one existing design's settingsJson in place with a loftable SAMPLE_Top parameter snapshot " +
             "for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when " +
             "present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, " +
-            "shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide), " +
+            "shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide|xx_wide), " +
             "arch (low|medium|standard|high → −3.5|0|0|+3 mm), flexible_foot (true → apex +4 mm on both feet), " +
             "elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), " +
             "sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), " +
             "sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), " +
             "sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), " +
             "sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, " +
-            "sliders.lateral_skive_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, " +
+            "sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, " +
             "sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, " +
             "sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), " +
+            "flange.left, flange.right, flange.left.medial_mm, flange.left.lateral_mm, flange.left.level, " +
+            "flange.right.medial_mm, flange.right.lateral_mm, flange.right.level " +
+            "(per-foot medial/lateral flange 0–8 mm; omit medial_mm and lateral_mm for 3 mm default, mild level 2 mm, " +
+            "standard/unspecified 3 mm, high 6 mm; out of range is 422, not clamped; omitted flange leaves flanges unchanged), " +
             "rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, " +
             "forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, " +
             "full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit, " +
@@ -374,6 +439,8 @@ export const MCP_TOOL_DEFINITIONS = [
             "When omitted, thickness stays 2 mm and the zonal shell is unchanged. " +
             "Out of range is 422 and is not clamped. " +
             "Ignored and never mapped: rx_text, notes, rigidity, extra_soft. " +
+            "sliders.arch_ease_mm is accepted and not applied (migrated to 0). " +
+            "sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. " +
             "hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. " +
             "Absent width is Medium and recorded as defaulted, not prescribed. " +
             "422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, " +
@@ -397,6 +464,8 @@ export const MCP_TOOL_DEFINITIONS = [
             "Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. " +
             "depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). " +
             "Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. " +
+            "flange.left / flange.right set medial_mm and lateral_mm (0–8) per foot; omit those mm for 3 mm default, " +
+            "or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. " +
             "elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. " +
             "Medium width is used only when width is absent and is recorded as defaulted, not prescribed. " +
             "Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
@@ -465,23 +534,35 @@ export function listMcpSavedDesignCatalogKeyPaths(): string[] {
     return paths;
 }
 
+function withDescription(field: z.ZodTypeAny, out: Record<string, unknown>): Record<string, unknown> {
+    const description = field.description ?? unwrapZod(field).description;
+    if (description) out.description = description;
+    return out;
+}
+
 function zodFieldToJson(field: z.ZodTypeAny): Record<string, unknown> {
     const inner = unwrapZod(field);
     if (inner instanceof z.ZodString) {
         const out: Record<string, unknown> = { type: "string" };
         if (inner._def.checks?.some((c) => c.kind === "uuid")) out.format = "uuid";
-        return out;
+        return withDescription(field, out);
     }
-    if (inner instanceof z.ZodNumber) return { type: "number" };
-    if (inner instanceof z.ZodBoolean) return { type: "boolean" };
-    if (inner instanceof z.ZodEnum) return { type: "string", enum: inner._def.values };
-    if (inner instanceof z.ZodLiteral) return { type: "string", enum: [inner.value] };
+    if (inner instanceof z.ZodNumber) return withDescription(field, { type: "number" });
+    if (inner instanceof z.ZodBoolean) return withDescription(field, { type: "boolean" });
+    if (inner instanceof z.ZodEnum)
+        return withDescription(field, { type: "string", enum: inner._def.values });
+    if (inner instanceof z.ZodLiteral) return withDescription(field, { type: "string", enum: [inner.value] });
     if (inner instanceof z.ZodUnion) {
-        return { anyOf: (inner._def.options as z.ZodTypeAny[]).map((option) => zodFieldToJson(option)) };
+        return withDescription(field, {
+            anyOf: (inner._def.options as z.ZodTypeAny[]).map((option) => zodFieldToJson(option)),
+        });
     }
     if (inner instanceof z.ZodArray) {
-        return { type: "array", items: zodFieldToJson(inner._def.type as z.ZodTypeAny) };
+        return withDescription(field, {
+            type: "array",
+            items: zodFieldToJson(inner._def.type as z.ZodTypeAny),
+        });
     }
-    if (inner instanceof z.ZodObject) return zodToJsonSchema(inner);
-    return {};
+    if (inner instanceof z.ZodObject) return withDescription(field, zodToJsonSchema(inner));
+    return withDescription(field, {});
 }

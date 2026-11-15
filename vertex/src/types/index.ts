@@ -2,6 +2,7 @@
 // These mirror the Prisma schema but are framework-agnostic for use in the
 // browser, stores and the 3D pipeline.
 
+import type { AfoDesignState } from "@/lib/geometry/afo/types";
 import type { RegionHardnessClass } from "../../shared/print-recipe/hardness-class-table";
 import type { DepthSpec, HardnessOverrides } from "../../shared/print-recipe/hardness-region";
 import type { HardnessName, PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
@@ -9,6 +10,7 @@ import type { HardnessName, PrintRecipeV1 } from "../../shared/print-recipe/prin
 export type { HardnessName, PrintRecipeV1 } from "../../shared/print-recipe/print-recipe";
 export type { DepthSpec, HardnessOverrides, HardnessRegion, RegionKind } from "../../shared/print-recipe/hardness-region";
 export type { RegionHardnessClass } from "../../shared/print-recipe/hardness-class-table";
+export type { AfoDesignState, ProductType } from "@/lib/geometry/afo/types";
 
 export type Role = "super_admin" | "admin" | "clinician";
 
@@ -178,10 +180,15 @@ export interface SideCorrections {
     archFillMm: number;
     archHeightMm: number;
     /**
-     * Medial arch contact relief (mm downward) after arch height — eases shell
-     * tightness so soft tissue can spread. Distinct from arch height.
+     * @deprecated Lowered the arch at the same apex as arch height.
+     * Loaded designs migrate this to 0. The height field does not apply it.
      */
     archEaseMm: number;
+    /**
+     * Lengthwise stretch of the medial arch dome (mm), symmetric about the apex.
+     * Peak height and apex position stay put. 0 is the unstretched dome. Range 0–5.
+     */
+    archElongationMm?: number;
     heelCupDepthMm: number;
     heelCupHeightMm: number;
     /**
@@ -402,6 +409,10 @@ export interface DesignPressureMaps {
 }
 
 export interface DesignState {
+    /** Insole (default) vs ankle-foot orthosis. AFO never loads SAMPLE_Top. */
+    productType?: "insole" | "afo";
+    /** AFO parameter block. Ignored when productType is insole / absent. */
+    afo?: AfoDesignState;
     pattern: ScanPattern;
     /** When pattern is driven by a user custom prefab. */
     customPrefabId?: string;
@@ -436,11 +447,11 @@ export interface DesignState {
     /** Foot length in mm (Mondopoint-style). Used when `sizeSystem` is `"mm"`. */
     footLengthMm?: number;
     /** Last width vs Medium. Forefoot Δ −10/−5/0/+5/+10 mm (width only); heel capped ±2 mm. */
-    shoeWidth?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
+    shoeWidth?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide" | "xx_wide";
     /** Per-foot width when L/R corrections are unlinked. Linked designs use `shoeWidth`. */
     shoeWidthBySide?: {
-        left?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
-        right?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
+        left?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide" | "xx_wide";
+        right?: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide" | "xx_wide";
     };
     corrections: Corrections;
     elements: PlacedElement[];
@@ -483,7 +494,7 @@ export interface DesignState {
     dogfoodManufacturing?: {
         template: "SAMPLE_Top";
         scansUsed: false;
-        shoeWidth: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide";
+        shoeWidth: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide" | "xx_wide";
         shoeWidthSource: "prescribed" | "defaulted";
         hardness: HardnessName | null;
         hardnessSource: "prescribed" | "unspecified";

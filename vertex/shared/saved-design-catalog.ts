@@ -18,6 +18,19 @@ export type ArchName = keyof typeof ARCH_HEIGHT_MM;
 /** Built-in apex shift when flexible_foot is explicitly true. Not derived from rigidity. */
 export const FLEXIBLE_FOOT_APEX_MM = 4;
 
+/** Medial/lateral flange heights (mm). Matches CorrectionsPanel and clinical-constraints 0–8. */
+export const FLANGE_MM_MIN = 0;
+export const FLANGE_MM_MAX = 8;
+
+/** Level shorthand when medial_mm / lateral_mm are omitted on a requested foot side. */
+export const FLANGE_LEVEL_MM = {
+    mild: 2,
+    standard: 3,
+    high: 6,
+} as const;
+
+export type FlangeLevel = keyof typeof FLANGE_LEVEL_MM;
+
 /** US women's retail label is men's + 1.5 (shoe-size.ts). Inverse maps a stored US_W size. */
 export const US_WOMEN_TO_MENS_OFFSET = 1.5;
 
@@ -40,7 +53,7 @@ export const SLIDER_FIELDS = {
     rearfoot_posting_deg: "rearfootPostingDeg",
     medial_skive_mm: "medialSkiveMm",
     lateral_skive_mm: "lateralSkiveMm",
-    arch_ease_mm: "archEaseMm",
+    arch_elongation_mm: "archElongationMm",
     heel_cup_depth_mm: "heelCupDepthMm",
     heel_cup_height_mm: "heelCupHeightMm",
     heel_cup_width_mm: "heelCupWidthMm",
@@ -64,7 +77,7 @@ const shoeSystemSchema = z.preprocess(
 
 const widthSchema = z.preprocess(
     (value) => (typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, "_") : value),
-    z.enum(["narrow", "medium", "wide", "extra_narrow", "extra_wide"]),
+    z.enum(["narrow", "medium", "wide", "extra_narrow", "extra_wide", "xx_wide"]),
 );
 
 const archSchema = z.preprocess(
@@ -77,7 +90,7 @@ const sliderShape = {
     rearfoot_posting_deg: z.number().finite().optional(),
     medial_skive_mm: z.number().finite().optional(),
     lateral_skive_mm: z.number().finite().optional(),
-    arch_ease_mm: z.number().finite().optional(),
+    arch_elongation_mm: z.number().finite().optional(),
     heel_cup_depth_mm: z.number().finite().optional(),
     heel_cup_height_mm: z.number().finite().optional(),
     heel_cup_width_mm: z.number().finite().optional(),
@@ -87,7 +100,13 @@ const sliderShape = {
     lateral_flange_mm: z.number().finite().optional(),
 } satisfies Record<SliderField, z.ZodOptional<z.ZodNumber>>;
 
-export const savedDesignSliderSchema = z.object(sliderShape).strict();
+export const savedDesignSliderSchema = z
+    .object({
+        ...sliderShape,
+        /** Legacy. Accepted so old catalogs load. Not copied onto the design. */
+        arch_ease_mm: z.number().finite().optional(),
+    })
+    .strict();
 
 const wedgeSchema = z
     .object({
@@ -131,6 +150,19 @@ const sinkSchema = z
     })
     .strict();
 
+const flangeLevelSchema = z.preprocess(
+    (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+    z.enum(["mild", "standard", "high"]),
+);
+
+const flangeSideSchema = z
+    .object({
+        medial_mm: z.number().finite().optional(),
+        lateral_mm: z.number().finite().optional(),
+        level: flangeLevelSchema.optional(),
+    })
+    .strict();
+
 export const savedDesignCatalogSchema = z
     .object({
         shoe_size: z
@@ -163,6 +195,13 @@ export const savedDesignCatalogSchema = z
          * Omitted keeps {@link SHELL_THICKNESS_MM_DEFAULT} and the zonal shell.
          */
         thickness_mm: z.number().finite().min(SHELL_THICKNESS_MM_MIN).max(SHELL_THICKNESS_MM_MAX).optional(),
+        flange: z
+            .object({
+                left: flangeSideSchema.optional(),
+                right: flangeSideSchema.optional(),
+            })
+            .strict()
+            .optional(),
         rx_text: z.string().max(8000).optional(),
         notes: z.string().max(8000).optional(),
         rigidity: z.string().max(80).optional(),

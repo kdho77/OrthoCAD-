@@ -26,11 +26,17 @@ function setInputValue(input: HTMLInputElement, value: string) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function setSelectValue(select: HTMLSelectElement, value: string) {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+    descriptor?.set?.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function fillValidCreateForm(rootNode: ParentNode, displayName = "Jane Doe") {
     const name = rootNode.querySelector('[aria-label="Display name or initials"]') as HTMLInputElement;
-    const size = rootNode.querySelector('[data-testid="shoe-size"]') as HTMLInputElement;
+    const size = rootNode.querySelector('[data-testid="shoe-size"]') as HTMLSelectElement;
     setInputValue(name, displayName);
-    setInputValue(size, "10");
+    setSelectValue(size, "10");
 }
 
 describe("NewClientDialog create client", () => {
@@ -66,7 +72,7 @@ describe("NewClientDialog create client", () => {
 
         const rootNode = queryDialog();
         const name = rootNode.querySelector('[aria-label="Display name or initials"]') as HTMLInputElement;
-        const size = rootNode.querySelector('[data-testid="shoe-size"]') as HTMLInputElement;
+        const size = rootNode.querySelector('[data-testid="shoe-size"]') as HTMLSelectElement;
         expect(name).not.toBeNull();
         expect(size).not.toBeNull();
 
@@ -75,7 +81,7 @@ describe("NewClientDialog create client", () => {
         });
 
         await act(async () => {
-            setInputValue(size, "");
+            setSelectValue(size, "");
         });
 
         const buttons = Array.from(rootNode.querySelectorAll("button")).filter((node) =>

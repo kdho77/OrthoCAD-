@@ -3,9 +3,17 @@
 
 import type { PrismaClient } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
-
 import { readStoredDesignSettings } from "../../../shared/design-settings.js";
+import {
+    buildExportFilename,
+    canonicalExportMaterialName,
+    exportSideSuffix,
+} from "../../../shared/export-filename.js";
 import { migratePrintRecipe, printRecipeV1Schema } from "../../../shared/print-recipe/print-recipe.js";
+import {
+    selectVertexSliceUpload,
+    vertexSliceRegional3mfEnabled,
+} from "../../../shared/vertexslice-regional-3mf.js";
 import type { CadOperatorPrincipal } from "../auth/cad-operator.js";
 import {
     assertCadOperatorDeliverableKey,
@@ -19,6 +27,7 @@ import {
     type CadProductionStatus,
     CENTRAL_FAB_STL_COST,
     cadOperatorManufacturingIdentity,
+    cadVertexSliceSliceTimeoutMs,
     executeCadOperatorProduction,
     expireStaleProduction,
     HYBRID_GCODE_COST,
@@ -28,6 +37,7 @@ import {
     toPublicProduction,
 } from "../lib/cad-operator-production.js";
 import { chargeExistingProduction, PrismaCadProductionStore } from "../lib/cad-operator-production-prisma.js";
+import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
 import { downloadManufacturingStl } from "../lib/manufacturing-stl-download.js";
 import {
     archiveManufacturingSourceStl,
@@ -41,11 +51,28 @@ import {
     materializeCadOperatorStl,
     prepareCadOperatorGenerate,
 } from "./manufacturing-cad.js";
+import { assertDesignExportAccess } from "./manufacturing-session.js";
+
+type SessionExportUser = { id: string; email: string; role: string };
+
+function cadOperatorUserExportFilename(
+    input: CadGenerateRequestInput,
+    plan: Awaited<ReturnType<typeof prepareCadOperatorGenerate>>,
+): string {
+    if (input.fileName?.trim()) return input.fileName.trim();
+    return buildExportFilename({
+        firstName: plan.clientFirstName,
+        lastName: plan.clientLastName,
+        material: canonicalExportMaterialName(plan.material),
+        side: exportSideSuffix(input.side),
+        ext: "gcode",
+    });
+}
 
 export interface CadGenerateRequestInput {
     designId: string;
     side: CadFootSide;
-    presetId: string;
+    presetId?: string;
     stlStorageKey: string;
     outputType: "gcode" | "stl";
     beltAngleDeg: number;
@@ -54,6 +81,7 @@ export interface CadGenerateRequestInput {
     useSavedDesignMesh?: boolean;
     patientName?: string;
     hardness?: string;
+    material?: string;
 }
 
 function requireStorage() {
@@ -100,7 +128,10 @@ export async function runCadOperatorGenerateRequest(args: {
         stlStorageKey: input.stlStorageKey,
         patientName: input.patientName,
         hardness: input.hardness,
+        presetId: input.presetId,
+        material: input.material,
     });
+    const userExportFileName = cadOperatorUserExportFilename(input, plan);
     const identity = cadOperatorManufacturingIdentity({
         designId: input.designId,
         side: input.side,
@@ -112,6 +143,7 @@ export async function runCadOperatorGenerateRequest(args: {
         printRecipe: plan.printRecipe,
         settingsJson: plan.settingsJson,
         stlStorageKey: plan.stlStorageKey,
+        regional3mf: vertexSliceRegional3mfEnabled(),
     });
     const store = new PrismaCadProductionStore(args.prisma);
     const now = args.now ?? (() => new Date());
@@ -137,13 +169,14 @@ export async function runCadOperatorGenerateRequest(args: {
                 throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
             }
         },
-        execute: (row) =>
-            executeCadOperatorProduction({
+        execute: (row) => {
+            let regional3mf: { bytes: Uint8Array; regionCount: number } | null = null;
+            return executeCadOperatorProduction({
                 row,
                 store,
                 now,
-                materialize: () =>
-                    materializeCadOperatorStl({
+                materialize: async () => {
+                    const materialized = await materializeCadOperatorStl({
                         plan,
                         credentialId: args.principal.credentialId,
                         side: input.side,
@@ -156,8 +189,14 @@ export async function runCadOperatorGenerateRequest(args: {
                                 MANUFACTURING_BUCKET,
                             );
                         },
-                    }),
-                slice: async (stlStorageKey) => {
+                    });
+                    regional3mf = materialized.regional3mf;
+                    return {
+                        stlStorageKey: materialized.stlStorageKey,
+                        meshFingerprint: materialized.meshFingerprint,
+                    };
+                },
+                slice: async (stlStorageKey, sliceCtx) => {
                     const supabase = requireStorage();
                     const stlUrl = await signedDownloadUrl(
                         supabase,
@@ -167,21 +206,30 @@ export async function runCadOperatorGenerateRequest(args: {
                     );
                     const stlBytes = await downloadManufacturingStl(stlUrl);
                     const infillDensityPct = infillPctForCadSlice(plan.presetId, plan.printRecipe);
+                    const sliceTimeoutMs = sliceCtx?.invocationStartedAt
+                        ? cadVertexSliceSliceTimeoutMs(sliceCtx.invocationStartedAt, now())
+                        : sliceCtx?.sliceTimeoutMs;
+                    const upload = selectVertexSliceUpload({
+                        stl: stlBytes,
+                        stlFilename: `${input.side}.stl`,
+                        regional3mf,
+                        regional3mfEnabled: vertexSliceRegional3mfEnabled(),
+                    });
                     const gcode = await sliceWithVertexSlice({
                         profileId: plan.presetId,
                         material: plan.material,
-                        model: stlBytes,
-                        filename: `${input.side}.stl`,
+                        model: upload.bytes,
+                        filename: upload.filename,
                         infillDensityPct,
+                        expectedRegionCount: upload.expectedRegionCount,
+                        sliceTimeoutMs,
+                        side: input.side,
                     });
                     const jobStamp = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
                     return { gcode, jobId: `vs_${jobStamp}` };
                 },
                 uploadGcode: async (gcode) => {
-                    const safeName = (input.fileName || `hybrid-${plan.presetId}.gcode`).replace(
-                        /[^a-zA-Z0-9_.-]/g,
-                        "_",
-                    );
+                    const safeName = userExportFileName.replace(/[^a-zA-Z0-9_.-]/g, "_");
                     const storageKey = buildCadOperatorGcodeKey(
                         args.principal.credentialId,
                         input.designId,
@@ -205,10 +253,7 @@ export async function runCadOperatorGenerateRequest(args: {
                             designId: input.designId,
                             exportFormat: "gcode",
                             side: input.side,
-                            fileName: (input.fileName || `hybrid-${plan.presetId}.gcode`).replace(
-                                /[^a-zA-Z0-9_.-]/g,
-                                "_",
-                            ),
+                            fileName: userExportFileName.replace(/[^a-zA-Z0-9_.-]/g, "_"),
                             presetId: plan.presetId,
                             beltAngleDeg: plan.beltAngleDeg,
                             layerHeightMm: input.layerHeightMm ?? null,
@@ -248,7 +293,8 @@ export async function runCadOperatorGenerateRequest(args: {
                 deleteTemp: async (stlStorageKey) => {
                     deleteManufacturingTempBestEffort(getSupabaseAdmin(), stlStorageKey);
                 },
-            }),
+            });
+        },
     });
     return {
         ok: true,
@@ -283,7 +329,7 @@ export async function runCadOperatorCentralFabStlRequest(args: {
     status: CadProductionStatus;
     side: CadFootSide;
 }> {
-    const { design } = await loadDogfoodDesign(args.prisma, args.principal, args.input.designId);
+    const { row, design } = await loadDogfoodDesign(args.prisma, args.principal, args.input.designId);
     if (design.kind === "afo") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "AFO designs are not a central-fab insole STL" });
     }
@@ -318,6 +364,8 @@ export async function runCadOperatorCentralFabStlRequest(args: {
         ownerId: design.ownerId,
         useSavedDesignMesh: true,
         settingsJson: design.settingsJson,
+        clientFirstName: row?.client.firstName ?? "",
+        clientLastName: row?.client.lastName ?? "",
     };
     const started = await beginCadOperatorProduction({
         store,
@@ -426,22 +474,27 @@ export async function runCadOperatorCentralFabStlRequest(args: {
 async function assertReadableDesign(args: {
     prisma: PrismaClient;
     principal: CadOperatorPrincipal | null;
-    userId: string | null;
+    user: SessionExportUser | null;
     designId: string;
 }): Promise<void> {
-    if (args.principal && !args.userId) {
+    if (args.principal && !args.user) {
         await loadDogfoodDesign(args.prisma, args.principal, args.designId);
         return;
     }
-    if (!args.userId) {
+    if (!args.user) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Authentication required" });
     }
-    const design = await args.prisma.design.findUnique({
-        where: { id: args.designId },
-        select: { ownerId: true, deletedAt: true },
-    });
-    if (!design || design.deletedAt || design.ownerId !== args.userId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Production not found or access denied" });
+    const denied = "Production not found or access denied";
+    let design;
+    try {
+        const { repo, actor } = await openClientFiles(args.user);
+        design = await assertDesignExportAccess(repo, actor, args.designId, denied);
+    } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        rethrowClientFile(error);
+    }
+    if (design.deletedAt) {
+        throw new TRPCError({ code: "FORBIDDEN", message: denied });
     }
 }
 
@@ -458,7 +511,7 @@ function hiddenFromOperator(principal: CadOperatorPrincipal | null, storageKey: 
 export async function readCadOperatorProduction(args: {
     prisma: PrismaClient;
     principal: CadOperatorPrincipal | null;
-    userId: string | null;
+    user: SessionExportUser | null;
     productionId: string;
     now?: Date;
 }): Promise<PublicProduction> {
@@ -470,7 +523,7 @@ export async function readCadOperatorProduction(args: {
     await assertReadableDesign({
         prisma: args.prisma,
         principal: args.principal,
-        userId: args.userId,
+        user: args.user,
         designId: row.designId,
     });
     if (hiddenFromOperator(args.principal, row.gcodeStorageKey)) {
@@ -483,7 +536,7 @@ export async function readCadOperatorProduction(args: {
 export async function listCadOperatorProductions(args: {
     prisma: PrismaClient;
     principal: CadOperatorPrincipal | null;
-    userId: string | null;
+    user: SessionExportUser | null;
     designId: string;
     side?: CadFootSide;
     presetId?: string;

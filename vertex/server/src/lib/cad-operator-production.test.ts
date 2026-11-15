@@ -1,3 +1,5 @@
+import { createServer, type Server } from "node:http";
+
 import { describe, expect, test } from "@rstest/core";
 
 import { HARDNESS_TO_INFILL_PCT } from "../../../shared/print-recipe/hardness-to-infill-pct.js";
@@ -6,8 +8,12 @@ import {
     assetLoadCauseForLog,
     beginCadOperatorProduction,
     CAD_PRODUCTION_LEASE_MS,
+    CAD_PRODUCTION_MAX_DURATION_SEC,
+    CAD_VERTEX_SLICE_MAX_TIMEOUT_SEC,
+    CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC,
     type CadProductionInsert,
     cadOperatorManufacturingIdentity,
+    cadVertexSliceSliceTimeoutMs,
     claimProduction,
     executeCadOperatorProduction,
     expireStaleProduction,
@@ -16,6 +22,7 @@ import {
     publicProductionError,
     toPublicProduction,
 } from "./cad-operator-production.js";
+import { sliceWithVertexSlice } from "./vertexslice-client.js";
 
 const recipe: PrintRecipeV1 = {
     version: 1,
@@ -24,6 +31,113 @@ const recipe: PrintRecipeV1 = {
     defaultHardness: "Hard",
     zones: [],
 };
+
+function triangleStl(verts: number[]): Uint8Array {
+    const buf = Buffer.alloc(84 + 50);
+    buf.writeUInt32LE(1, 80);
+    for (let i = 0; i < 9; i++) buf.writeFloatLE(verts[i] ?? 0, 84 + 12 + i * 4);
+    return new Uint8Array(buf);
+}
+
+async function expectHungSliceFails(mode: "never" | "slow"): Promise<void> {
+    const happy = (globalThis as { happyDOM?: { settings: { fetch: { disableSameOriginPolicy: boolean } } } })
+        .happyDOM;
+    const previousCors = happy?.settings.fetch.disableSameOriginPolicy;
+    if (happy) happy.settings.fetch.disableSameOriginPolicy = true;
+    let slowTimer: ReturnType<typeof setInterval> | undefined;
+    const server: Server = createServer((req, res) => {
+        const url = req.url ?? "";
+        if (url.startsWith("/v1/materials")) {
+            res.setHeader("content-type", "application/json");
+            res.end(JSON.stringify(["apex_core"]));
+            return;
+        }
+        if (!url.startsWith("/v1/slice")) {
+            res.statusCode = 404;
+            res.end();
+            return;
+        }
+        if (mode === "slow") {
+            req.pause();
+            slowTimer = setInterval(() => {
+                if (req.destroyed || req.readableEnded) return;
+                req.read(1);
+            }, 200);
+            req.on("close", () => {
+                if (slowTimer) clearInterval(slowTimer);
+            });
+            return;
+        }
+        req.resume();
+    });
+    await new Promise<void>((resolve) => {
+        server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    process.env.VERTEXSLICE_SLICER_URL = `http://127.0.0.1:${port}`;
+    process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+    const timeoutMs = 350;
+    try {
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(store, insert("left", `hang-${mode}`), new Date());
+        const invocationStart = new Date();
+        const sliceAt = new Date(
+            invocationStart.getTime() +
+                (CAD_PRODUCTION_MAX_DURATION_SEC - CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC) * 1000 -
+                timeoutMs,
+        );
+        let nowCalls = 0;
+        const startedAt = Date.now();
+        const done = executeCadOperatorProduction({
+            row: claimed.row,
+            store,
+            now: () => {
+                nowCalls += 1;
+                return nowCalls === 1 ? invocationStart : sliceAt;
+            },
+            materialize: async () => ({ stlStorageKey: "tmp/left.stl", meshFingerprint: null }),
+            slice: async (_stlStorageKey, sliceCtx) => {
+                await sliceWithVertexSlice({
+                    profileId: "apex-v2-insole-95a",
+                    material: "apex_core",
+                    model: triangleStl([0, 0, 0, 120, 0, 0, 0, 40, 8]),
+                    filename: "left.stl",
+                    infillDensityPct: 26,
+                    sliceTimeoutMs: sliceCtx?.sliceTimeoutMs,
+                    side: "left",
+                });
+                return { gcode: "G1\n", jobId: "job" };
+            },
+            uploadGcode: async () => ({ storageKey: "gcode/cad-operator/t/c/d/left.gcode" }),
+            charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+        });
+        const status = await Promise.race([
+            done.then(() => "done" as const),
+            new Promise<"hung">((resolve) => {
+                setTimeout(() => resolve("hung"), 2_500);
+            }),
+        ]);
+        expect(status).toBe("done");
+        expect(Date.now() - startedAt).toBeLessThan(timeoutMs + 1_500);
+        const row = await store.findById(claimed.row.id);
+        const expectedMs = cadVertexSliceSliceTimeoutMs(invocationStart, sliceAt);
+        const expectedSec = Math.max(1, Math.ceil(expectedMs / 1000));
+        expect(expectedMs).toBe(timeoutMs);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toBe(`VertexSlice timed out after ${expectedSec}s (left)`);
+        expect(publicProductionError(new Error(row?.error ?? ""))).toBe(row?.error);
+    } finally {
+        if (slowTimer) clearInterval(slowTimer);
+        server.closeAllConnections?.();
+        await new Promise<void>((resolve) => {
+            server.close(() => resolve());
+        });
+        delete process.env.VERTEXSLICE_SLICER_URL;
+        delete process.env.VERTEXSLICE_API_KEY;
+        if (happy) happy.settings.fetch.disableSameOriginPolicy = previousCors ?? false;
+    }
+}
 
 function insert(side: "left" | "right", fingerprint = "fp-1"): CadProductionInsert {
     return {
@@ -39,6 +153,109 @@ function insert(side: "left" | "right", fingerprint = "fp-1"): CadProductionInse
 }
 
 describe("CAD-operator production claim", () => {
+    test("cadVertexSliceSliceTimeoutMs respects invocation budget and 240s cap", () => {
+        const started = new Date("2026-11-09T00:00:00.000Z");
+        const atStart = cadVertexSliceSliceTimeoutMs(started, started);
+        expect(atStart).toBe(
+            Math.min(
+                CAD_VERTEX_SLICE_MAX_TIMEOUT_SEC,
+                CAD_PRODUCTION_MAX_DURATION_SEC - CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC,
+            ) * 1000,
+        );
+        const after99s = cadVertexSliceSliceTimeoutMs(started, new Date(started.getTime() + 99_000));
+        expect(after99s).toBe(
+            Math.min(240, CAD_PRODUCTION_MAX_DURATION_SEC - CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC - 99) * 1000,
+        );
+    });
+
+    test("a hung VertexSlice slice fails the production with a timeout error", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice")) {
+                return new Promise<Response>((_resolve, reject) => {
+                    const signal = init?.signal;
+                    if (!signal) {
+                        reject(new Error("expected AbortSignal on slice fetch"));
+                        return;
+                    }
+                    const onAbort = () => {
+                        reject(new DOMException("The operation was aborted.", "AbortError"));
+                    };
+                    if (signal.aborted) {
+                        onAbort();
+                        return;
+                    }
+                    signal.addEventListener("abort", onAbort, { once: true });
+                });
+            }
+            return originalFetch(input, init);
+        }) as typeof fetch;
+
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(store, insert("right"), new Date("2026-11-09T00:00:00.000Z"));
+        const invocationStart = new Date("2026-11-09T00:00:00.000Z");
+        const sliceAt = new Date(
+            invocationStart.getTime() +
+                (CAD_PRODUCTION_MAX_DURATION_SEC - CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC - 1) * 1000,
+        );
+        let sliceCtxSeen: { sliceTimeoutMs: number } | undefined;
+        let nowCalls = 0;
+        await executeCadOperatorProduction({
+            row: claimed.row,
+            store,
+            now: () => {
+                nowCalls += 1;
+                return nowCalls === 1 ? invocationStart : sliceAt;
+            },
+            materialize: async () => ({ stlStorageKey: "tmp/r.stl", meshFingerprint: null }),
+            slice: async (stlStorageKey, sliceCtx) => {
+                sliceCtxSeen = sliceCtx;
+                await sliceWithVertexSlice({
+                    profileId: "apex-v2-insole-95a",
+                    material: "apex_core",
+                    model: new Uint8Array([1, 2, 3]),
+                    filename: stlStorageKey,
+                    sliceTimeoutMs: sliceCtx?.sliceTimeoutMs,
+                    side: "right",
+                });
+                return { gcode: "G1\n", jobId: "job" };
+            },
+            uploadGcode: async () => ({ storageKey: "gcode/cad-operator/t/c/d/right.gcode" }),
+            charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+        });
+
+        globalThis.fetch = originalFetch;
+        delete process.env.VERTEXSLICE_SLICER_URL;
+        delete process.env.VERTEXSLICE_API_KEY;
+
+        const expectedMs = cadVertexSliceSliceTimeoutMs(invocationStart, sliceAt);
+        const expectedSec = Math.ceil(expectedMs / 1000);
+        expect(sliceCtxSeen?.sliceTimeoutMs).toBe(expectedMs);
+        expect(expectedMs).toBe(1000);
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toBe(`VertexSlice timed out after ${expectedSec}s (right)`);
+        expect(publicProductionError(new Error(row?.error ?? ""))).toBe(row?.error);
+    });
+
+    test("a real hung slice and a slow body read fail the production inside the budget", async () => {
+        const originalTimeout = AbortSignal.timeout;
+        // Production missed this deadline: Node's AbortSignal.timeout did not reject the fetch.
+        AbortSignal.timeout = (() => new AbortController().signal) as typeof AbortSignal.timeout;
+        try {
+            await expectHungSliceFails("never");
+            await expectHungSliceFails("slow");
+        } finally {
+            AbortSignal.timeout = originalTimeout;
+        }
+    });
+
     test("begin returns before slicing finishes", async () => {
         const store = new MemoryCadProductionStore();
         let release: () => void = () => {};
@@ -150,11 +367,14 @@ describe("CAD-operator production claim", () => {
         const store = new MemoryCadProductionStore();
         let charges = 0;
         let scheduled: Promise<void> | null = null;
-        const start = (slice: () => Promise<{ gcode: string; jobId: string }>) =>
+        const start = (
+            slice: () => Promise<{ gcode: string; jobId: string }>,
+            claimNow = new Date("2026-11-09T00:00:00.000Z"),
+        ) =>
             beginCadOperatorProduction({
                 store,
                 insert: insert("left"),
-                now: new Date("2026-11-09T00:00:00.000Z"),
+                now: claimNow,
                 schedule: (work) => {
                     scheduled = work;
                 },
@@ -179,16 +399,30 @@ describe("CAD-operator production claim", () => {
         await scheduled;
         const row = await store.findById(failed.productionId);
         expect(row?.status).toBe("failed");
-        expect(row?.error).toBe("Manufacturing failed");
+        expect(row?.error).toBe("Manufacturing failed (left): patient [redacted] loft exploded");
         expect(row?.error).not.toMatch(/Jane/);
         expect(charges).toBe(0);
 
-        const again = await start(async () => ({ gcode: "G1 X0\n", jobId: "job-2" }));
+        const staleKey = "gcode/cad-operator/stale/left.gcode";
+        await store.updateIf(failed.productionId, () => true, { gcodeStorageKey: staleKey });
+        const failCreatedAt = row?.createdAt;
+
+        const again = await start(
+            async () => ({ gcode: "G1 X0\n", jobId: "job-2" }),
+            new Date("2026-11-09T00:02:00.000Z"),
+        );
         expect(again.productionId).toBe(failed.productionId);
         expect(again.status).toBe("pending");
+        const claimed = await store.findById(again.productionId);
+        expect(claimed?.error).toBeNull();
+        expect(claimed?.gcodeStorageKey).toBeNull();
+        expect(claimed?.createdAt.getTime()).toBeGreaterThan(failCreatedAt?.getTime() ?? 0);
         await scheduled;
         expect(charges).toBe(1);
-        expect((await store.findById(again.productionId))?.status).toBe("succeeded");
+        const succeeded = await store.findById(again.productionId);
+        expect(succeeded?.status).toBe("succeeded");
+        expect(succeeded?.gcodeStorageKey).toBe("gcode/cad-operator/t/c/d/left.gcode");
+        expect(succeeded?.gcodeStorageKey).not.toBe(staleKey);
     });
 
     test("concurrent claims share one row and an expired lease can be retried", async () => {
@@ -288,10 +522,13 @@ describe("CAD-operator production claim", () => {
         const row = await store.findById(claimed.row.id);
         expect(row?.status).toBe("failed");
         expect(row?.error).toBe(
-            "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.",
+            "Canonical Export mesh is not available headless. Refusing to substitute a different mesh. (Error: Failed to parse URL from /fonts/Inter-Bold.ttf)",
         );
-        expect(logged.join("\n")).toContain("Failed to parse URL from /fonts/Inter-Bold.ttf");
-        expect(logged.join("\n")).not.toContain("Jane Doe");
+        expect(toPublicProduction(row ?? claimed.row).error).toBe(row?.error);
+        const loggedText = logged.join("\n");
+        expect(loggedText).toContain("Failed to parse URL from /fonts/Inter-Bold.ttf");
+        expect(loggedText).toContain('"stack"');
+        expect(loggedText).not.toContain("Jane Doe");
         expect(assetLoadCauseForLog(fontError)).toBe("Failed to parse URL from /fonts/Inter-Bold.ttf");
         const elementError = new Error(
             "Canonical Export mesh is not available headless (Element asset /elements/met_bar_1.right.glb is not a GLB). Refusing to substitute a different mesh.",
@@ -299,6 +536,87 @@ describe("CAD-operator production claim", () => {
         expect(assetLoadCauseForLog(elementError)).toBe(
             "Element asset /elements/met_bar_1.right.glb is not a GLB",
         );
+    });
+
+    test("get_production keeps the refusal and appends a sanitized inner cause", async () => {
+        const store = new MemoryCadProductionStore();
+        const now = new Date("2026-11-09T00:00:00.000Z");
+        const claimed = await claimProduction(store, insert("left", "inner-cause"), now);
+        const cause = new TypeError("Cannot read properties of undefined (reading 'archHeightMm')");
+        cause.stack =
+            "TypeError: Cannot read properties of undefined (reading 'archHeightMm')\n    at buildWedge (wedge.ts:10:1)";
+        const wrapped = new Error(
+            `Canonical Export mesh is not available headless (${cause.name}: ${cause.message}). Refusing to substitute a different mesh.`,
+            { cause },
+        );
+        const logged: string[] = [];
+        const original = console.error;
+        console.error = (...args: unknown[]) => {
+            logged.push(args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "));
+        };
+        try {
+            await executeCadOperatorProduction({
+                row: (await store.findById(claimed.row.id)) ?? claimed.row,
+                store,
+                now: () => new Date("2026-11-09T00:00:01.000Z"),
+                materialize: async () => {
+                    throw wrapped;
+                },
+                slice: async () => ({ gcode: "G1\n", jobId: "job" }),
+                uploadGcode: async () => ({ storageKey: "gcode/cad-operator/t/c/d/left.gcode" }),
+                charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+            });
+        } finally {
+            console.error = original;
+        }
+        const row = await store.findById(claimed.row.id);
+        const text = row?.error ?? "";
+        expect(text).toContain(
+            "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.",
+        );
+        expect(text).toContain("TypeError: Cannot read properties of undefined (reading 'archHeightMm')");
+        expect(toPublicProduction(row ?? claimed.row).error).toBe(text);
+        expect(logged.join("\n")).toContain("at buildWedge (wedge.ts:10:1)");
+        expect(
+            publicProductionError(
+                new Error(
+                    "Canonical Export mesh is not available headless (Jane Doe). Refusing to substitute a different mesh.",
+                ),
+            ),
+        ).toBe("Canonical Export mesh is not available headless. Refusing to substitute a different mesh.");
+        const named = publicProductionError(
+            new Error(
+                "Canonical Export mesh is not available headless (TypeError: loft failed for Jane Doe). Refusing to substitute a different mesh.",
+            ),
+        );
+        expect(named).toContain("TypeError: loft failed for [redacted]");
+        expect(named).not.toContain("Jane Doe");
+        const secret = publicProductionError(
+            new Error(
+                "Canonical Export mesh is not available headless (TypeError: bearer ocad_live_secret rejected). Refusing to substitute a different mesh.",
+            ),
+        );
+        expect(secret).toContain("TypeError:");
+        expect(secret).not.toContain("ocad_live_secret");
+        expect(secret).not.toContain("bearer");
+        const dumped = publicProductionError(
+            new Error(
+                'Canonical Export mesh is not available headless (Error: bad settingsJson {"firstName":"Jane","lastName":"Doe"}). Refusing to substitute a different mesh.',
+            ),
+        );
+        expect(dumped).toBe(
+            "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.",
+        );
+        expect(dumped).not.toContain("Jane");
+        const stl = publicProductionError(
+            new Error(
+                "Canonical Export mesh is not available headless (Error: solid foot facet normal 0 0 1). Refusing to substitute a different mesh.",
+            ),
+        );
+        expect(stl).toBe(
+            "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.",
+        );
+        expect(stl).not.toContain("facet normal");
     });
 
     test("settings identity changes with the foot and stays stable for the same inputs", () => {
@@ -322,6 +640,12 @@ describe("CAD-operator production claim", () => {
         const right = cadOperatorManufacturingIdentity({ ...base, side: "right" });
         expect(left.idempotencyKey).toBe(again.idempotencyKey);
         expect(left.idempotencyKey).not.toBe(right.idempotencyKey);
+        expect(cadOperatorManufacturingIdentity({ ...base, regional3mf: false }).idempotencyKey).toBe(
+            left.idempotencyKey,
+        );
+        expect(cadOperatorManufacturingIdentity({ ...base, regional3mf: true }).idempotencyKey).not.toBe(
+            left.idempotencyKey,
+        );
         expect(left.idempotencyKey).toContain(":left:");
         expect(left.idempotencyKey).toContain("apex-v2-insole-95a");
         const stl = cadOperatorManufacturingIdentity({ ...base, deliverable: "central_fab_stl" });
@@ -361,5 +685,50 @@ describe("CAD-operator production claim", () => {
         expect(row?.gcodeStorageKey).toBe("stl/cad-operator/tenant/cred/design/left-1-id.stl");
         if (!row) throw new Error("production row missing");
         expect(toPublicProduction(row).download?.tool).toBe("get_export_download");
+    });
+});
+
+describe("publicProductionError operational messages", () => {
+    test("preserves VertexSlice, mesh, and manufacturing errors without PHI", () => {
+        expect(publicProductionError(new Error("VertexSlice error (500): mesh not manifold"))).toBe(
+            "VertexSlice error (500): mesh not manifold",
+        );
+        expect(publicProductionError(new Error("VertexSlice returned empty G-code"))).toBe(
+            "VertexSlice returned empty G-code",
+        );
+        expect(
+            publicProductionError(
+                new Error("Could not reach VertexSlice (https://slicer.example): socket hang up"),
+            ),
+        ).toBe("Could not reach VertexSlice: socket hang up");
+        expect(publicProductionError(new Error("Material apex_core not available on slicer"))).toBe(
+            "Material apex_core not available on slicer",
+        );
+        expect(
+            publicProductionError(new Error("Hardness 3MF export failed: Jane Doe region boolean failed")),
+        ).toBe("Hardness 3MF export failed: [redacted] region boolean failed");
+        expect(publicProductionError(new Error("manifold-3d rejected mesh for right met pad volume"))).toBe(
+            "manifold-3d rejected mesh for right met pad volume",
+        );
+        expect(
+            publicProductionError(new Error("manifold-3d subtract failed for heel cup: bad topology")),
+        ).toBe("manifold-3d subtract failed for heel cup: bad topology");
+        expect(publicProductionError(new Error("3MF missing /components/3/3/model.model"))).toBe(
+            "3MF missing /components/3/3/model.model",
+        );
+        expect(publicProductionError(new Error("binary STL truncated after 84 bytes"))).toBe(
+            "binary STL truncated after 84 bytes",
+        );
+        expect(publicProductionError(new Error("connect ETIMEDOUT 203.0.113.1:443"), "right")).toBe(
+            "Manufacturing timed out (right)",
+        );
+        expect(publicProductionError(new Error("patient Jane Doe loft exploded"), "left")).toBe(
+            "Manufacturing failed (left): patient [redacted] loft exploded",
+        );
+        const email = publicProductionError(
+            new Error("VertexSlice error (502): rejected patient jane.doe@example.com"),
+        );
+        expect(email).toBe("VertexSlice error (502): rejected patient [redacted]");
+        expect(email.length).toBeLessThanOrEqual(200);
     });
 });

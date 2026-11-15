@@ -7,6 +7,7 @@ import {
     isOptionalScanWorkflow,
     landingStepForStartPath,
     parseDesignEntryParam,
+    shouldDeferTopMeshLoad,
 } from "./start-path";
 
 beforeEach(() => {
@@ -52,5 +53,14 @@ describe("insole start path routing", () => {
         expect(parseDesignEntryParam("ai")).toBe("ai");
         expect(parseDesignEntryParam("scan")).toBe("scan");
         expect(parseDesignEntryParam("bogus")).toBeNull();
+    });
+
+    test("start-from-3D scan defers top mesh only on Scan", () => {
+        expect(shouldDeferTopMeshLoad("scan", "scan")).toBe(true);
+        expect(shouldDeferTopMeshLoad("scan", "setup")).toBe(false);
+        expect(shouldDeferTopMeshLoad("template", "setup")).toBe(false);
+        expect(shouldDeferTopMeshLoad("ai", "setup")).toBe(false);
+        expect(shouldDeferTopMeshLoad(null, "scan")).toBe(false);
+        expect(shouldDeferTopMeshLoad(null, "corrections")).toBe(false);
     });
 });

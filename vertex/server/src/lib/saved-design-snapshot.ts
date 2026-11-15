@@ -4,10 +4,13 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 
 import { readStoredDesignSettings } from "../../../shared/design-settings.js";
+import type { HardnessName } from "../../../shared/print-recipe/print-recipe.js";
 import {
     parseSavedDesignCatalog,
     type SavedDesignCatalog,
+    type SavedDesignSlider,
     SavedDesignSnapshotError,
+    SLIDER_FIELDS,
     type StoredLinkShoe,
 } from "../../../shared/saved-design-catalog.js";
 import {
@@ -101,6 +104,116 @@ type SnapshotBuilder = (input: {
     catalog: SavedDesignCatalog;
 }) => SavedDesignSnapshotBuild;
 
+function sliderHasNumber(sliders: SavedDesignSlider | undefined): boolean {
+    if (!sliders) return false;
+    return Object.values(sliders).some((value) => typeof value === "number");
+}
+
+function catalogSetsSliderField(catalog: SavedDesignCatalog, side: "left" | "right", field: string): boolean {
+    const bySide = catalog.sliders_by_side?.[side];
+    if (bySide) {
+        for (const [catalogKey, correctionField] of Object.entries(SLIDER_FIELDS)) {
+            if (correctionField === field && bySide[catalogKey] !== undefined) return true;
+        }
+        return false;
+    }
+    if (!catalog.sliders) return false;
+    for (const [catalogKey, correctionField] of Object.entries(SLIDER_FIELDS)) {
+        if (correctionField === field && catalog.sliders[catalogKey] !== undefined) return true;
+    }
+    return false;
+}
+
+/**
+ * Omitted catalog keys must not zero clinical fields that were already stored.
+ * Only applies when the row already has version-1 settingsJson.
+ */
+function mergeStoredClinicalIntoSnapshot(
+    built: SavedDesignSnapshotBuild,
+    catalog: SavedDesignCatalog,
+    existing: Record<string, unknown> | null,
+): void {
+    if (!existing) return;
+
+    if (catalog.elements === undefined && Array.isArray(existing.elements)) {
+        built.design.elements = structuredClone(existing.elements) as typeof built.design.elements;
+    }
+
+    if (catalog.sinks === undefined && existing.sinks !== undefined) {
+        built.design.sinks = structuredClone(existing.sinks) as typeof built.design.sinks;
+    }
+
+    if (catalog.hardness === undefined) {
+        const existingRecipe = existing.printRecipe as { defaultHardness?: HardnessName } | undefined;
+        if (existingRecipe?.defaultHardness && built.design.printRecipe) {
+            built.design.printRecipe = {
+                ...built.design.printRecipe,
+                defaultHardness: existingRecipe.defaultHardness,
+            };
+        }
+        const existingDogfood = existing.dogfoodManufacturing as
+            | { hardness?: HardnessName | null; hardnessSource?: "prescribed" | "unspecified" }
+            | undefined;
+        if (existingDogfood && built.design.dogfoodManufacturing) {
+            built.design.dogfoodManufacturing = {
+                ...built.design.dogfoodManufacturing,
+                ...(existingDogfood.hardness !== undefined ? { hardness: existingDogfood.hardness } : {}),
+                ...(existingDogfood.hardnessSource !== undefined
+                    ? { hardnessSource: existingDogfood.hardnessSource }
+                    : {}),
+            };
+            built.hardness = built.design.dogfoodManufacturing.hardness ?? built.hardness;
+            built.hardnessSource = built.design.dogfoodManufacturing.hardnessSource ?? built.hardnessSource;
+        }
+    }
+
+    const existingCorrections = existing.corrections as
+        | {
+              linked?: boolean;
+              left?: Record<string, unknown>;
+              right?: Record<string, unknown>;
+          }
+        | undefined;
+    if (!existingCorrections?.left || !existingCorrections?.right) return;
+
+    const hasSliders =
+        sliderHasNumber(catalog.sliders) ||
+        Boolean(catalog.sliders_by_side?.left || catalog.sliders_by_side?.right);
+
+    for (const side of ["left", "right"] as const) {
+        const target = built.design.corrections[side];
+        const source = existingCorrections[side];
+        for (const [key, value] of Object.entries(source)) {
+            if (key === "rearfootWedge" || key === "forefootWedge" || key === "fullLengthWedge") continue;
+            if (catalogSetsSliderField(catalog, side, key)) continue;
+            if (key === "archHeightMm" && catalog.arch !== undefined) continue;
+            if (key === "apexMoveMm" && catalog.flexible_foot !== undefined) continue;
+            if (value === undefined) continue;
+            (target as unknown as Record<string, unknown>)[key] = structuredClone(value);
+        }
+        if (!catalog.rearfoot_wedge && source.rearfootWedge !== undefined) {
+            target.rearfootWedge = structuredClone(source.rearfootWedge) as typeof target.rearfootWedge;
+        }
+        if (!catalog.forefoot_wedge && source.forefootWedge !== undefined) {
+            target.forefootWedge = structuredClone(source.forefootWedge) as typeof target.forefootWedge;
+        }
+        if (!catalog.full_length_wedge && source.fullLengthWedge !== undefined) {
+            target.fullLengthWedge = structuredClone(source.fullLengthWedge) as typeof target.fullLengthWedge;
+        }
+    }
+
+    if (
+        !hasSliders &&
+        catalog.arch === undefined &&
+        catalog.flexible_foot !== true &&
+        !catalog.rearfoot_wedge &&
+        !catalog.forefoot_wedge &&
+        !catalog.full_length_wedge
+    ) {
+        built.design.corrections.linked = existingCorrections.linked ?? built.design.corrections.linked;
+    }
+}
+
 /**
  * Replace settingsJson on the given design. Does not create a design, touch
  * production status, or read rx text / notes from the integration link.
@@ -178,10 +291,12 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
 
     const catalog = parseSavedDesignCatalog(args.catalog);
     const buildSnapshot = args.buildSnapshot ?? buildSavedDesignSnapshot;
+    const existingSettings = readStoredDesignSettings(row?.settingsJson ?? null);
     const built = buildSnapshot({
         stored: storedShoe(row?.integrationLink ?? null),
         catalog,
     });
+    mergeStoredClinicalIntoSnapshot(built, catalog, existingSettings);
 
     let settingsJson: unknown;
     try {

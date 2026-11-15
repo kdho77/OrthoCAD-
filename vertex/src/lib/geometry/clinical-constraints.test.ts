@@ -87,3 +87,15 @@ describe("clinical limits — heel lift hard cap 12 mm", () => {
         expect(linked.left.heelLiftMm).toBeLessThanOrEqual(12);
     });
 });
+
+describe("clinical limits — arch elongation", () => {
+    test("0–5 mm, and a stored arch ease is cleared to 0", () => {
+        expect(CLINICAL_LIMITS.archElongationMm).toEqual({ min: 0, max: 5 });
+        const loaded = constrainSideCorrections({ ...neutral(), archEaseMm: 6, archElongationMm: 9 }, 4);
+        expect(loaded.constrained.archEaseMm).toBe(0);
+        expect(loaded.constrained.archElongationMm).toBe(5);
+        const ok = constrainSideCorrections({ ...neutral(), archElongationMm: 2.5 }, 4);
+        expect(ok.constrained.archElongationMm).toBe(2.5);
+        expect(ok.violations.some((v) => v.field === "archElongationMm")).toBe(false);
+    });
+});

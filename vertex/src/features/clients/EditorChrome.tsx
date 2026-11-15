@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { ArrowLeft } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { navigate } from "@/features/admin/admin-nav";
+import { defaultAfoDesignState } from "@/lib/geometry/afo/defaults";
 import { useAuthStore } from "@/stores/auth-store";
 import { isDirectoryUnresolved, useClientStore } from "@/stores/client-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
@@ -12,6 +13,7 @@ import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/desig
 import { formatClientName } from "../../../shared/client-files";
 import { hydrateDesignForEditor } from "./client-actions";
 import { clientFilePath } from "./routes";
+import { loadDesignWorkflowSession } from "./design-workflow-session";
 import { beginInsoleDesignSession, parseDesignEntryParam } from "./start-path";
 
 export function useDesignRoute(clientId: string, designId: string) {
@@ -32,6 +34,7 @@ export function useDesignRoute(clientId: string, designId: string) {
 
     useEffect(() => {
         if (resolving) return;
+        setReady(false);
         let cancelled = false;
         const open = async () => {
             const persist = useDesignStore.persist;
@@ -43,7 +46,20 @@ export function useDesignRoute(clientId: string, designId: string) {
             useClientStore.getState().setActiveClient(clientId);
             useClientStore.getState().setActiveDesign(designId);
             let state = current?.state ?? createDesignWithStockPlaceholder();
-            if (current && current.kind !== "afo") {
+            if (current?.kind === "afo") {
+                useDesignStore.setState({
+                    design: {
+                        ...state,
+                        productType: "afo",
+                        method: state.method ?? "printing_shell",
+                        afo: state.afo ?? defaultAfoDesignState(state.afo?.side ?? "left"),
+                    },
+                });
+                useClinicalWorkflowStore.getState().setProductType("afo");
+            } else if (current) {
+                if (useClinicalWorkflowStore.getState().productType !== "insole") {
+                    useClinicalWorkflowStore.getState().setProductType("insole");
+                }
                 state = await hydrateDesignForEditor(clientId, designId, state);
                 useDesignStore.getState().loadDesign(state);
             }
@@ -56,14 +72,23 @@ export function useDesignRoute(clientId: string, designId: string) {
                 const nextUrl = `${window.location.pathname}${rest ? `?${rest}` : ""}`;
                 window.history.replaceState(null, "", nextUrl);
             } else {
-                useClinicalWorkflowStore.setState({
-                    step: "scan",
-                    designStartPath: null,
-                    completedSteps: [],
-                    footSideExplicitlyChosen: false,
-                    scanGateStickyReason: null,
-                    nextBlockReason: null,
-                });
+                const saved = loadDesignWorkflowSession(designId);
+                if (saved) {
+                    useClinicalWorkflowStore.setState({
+                        ...saved,
+                        scanGateStickyReason: null,
+                        nextBlockReason: null,
+                    });
+                } else {
+                    useClinicalWorkflowStore.setState({
+                        step: "scan",
+                        designStartPath: null,
+                        completedSteps: [],
+                        footSideExplicitlyChosen: false,
+                        scanGateStickyReason: null,
+                        nextBlockReason: null,
+                    });
+                }
             }
             setReady(true);
         };
@@ -76,7 +101,15 @@ export function useDesignRoute(clientId: string, designId: string) {
     return { record, ready, resolving };
 }
 
-export function EditorChrome({ clientId, designId }: { clientId: string; designId: string }) {
+export function EditorChrome({
+    clientId,
+    designId,
+    onRegisterLeave,
+}: {
+    clientId: string;
+    designId: string;
+    onRegisterLeave?: (leave: (href: string) => void) => void;
+}) {
     const client = useClientStore((s) => s.clients.find((row) => row.id === clientId) ?? null);
     const record = useClientStore((s) => s.designs.find((design) => design.id === designId) ?? null);
     const [name, setName] = useState(record?.name ?? "");
@@ -91,7 +124,7 @@ export function EditorChrome({ clientId, designId }: { clientId: string; designI
     }, [record?.name]);
 
     useEffect(() => {
-        if (!record || record.kind === "afo") return;
+        if (!record) return;
         let baseline = JSON.stringify(useDesignStore.getState().design);
         let timer = 0;
         setSavedAt(new Date());
@@ -124,10 +157,14 @@ export function EditorChrome({ clientId, designId }: { clientId: string; designI
         };
     }, [record?.id, record?.kind]);
 
-    const leave = (href: string) => {
+    const leave = useCallback((href: string) => {
         if (dirtyRef.current) setPendingHref(href);
         else navigate(href);
-    };
+    }, []);
+
+    useEffect(() => {
+        onRegisterLeave?.(leave);
+    }, [leave, onRegisterLeave]);
 
     const clientLabel = client ? formatClientName(client) : "Client";
     const savedLabel = savedAt

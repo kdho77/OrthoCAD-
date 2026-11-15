@@ -31,6 +31,17 @@ describe("clinical step gates", () => {
         if (!gate.ok) expect(gate.reason).toMatch(/loading/i);
     });
 
+    test("scan-first workflow on Scan does not require base load before Next", () => {
+        useClinicalWorkflowStore.setState({
+            footSideExplicitlyChosen: true,
+            designStartPath: "scan",
+            step: "scan",
+        });
+        useDesignStore.setState({ stockBaseLoading: true });
+        const gate = evaluateNextGate("scan");
+        expect(gate.ok).toBe(true);
+    });
+
     test("scan Next blocked until explicit L/R foot choice", () => {
         expect(isFootSideExplicitlyKnown()).toBe(false);
         const gate = evaluateScanStepGate();

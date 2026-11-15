@@ -4,6 +4,11 @@
 // a printer or a mill, and does not create customer orders.
 
 import { type Actor, canAccessOrg } from "./client-files.js";
+import {
+    buildExportFilename,
+    canonicalExportMaterialName,
+    exportPatientPartsForProduction,
+} from "./export-filename.js";
 import { type MockPairingResult, mockMoonrakerPair } from "./mock-moonraker.js";
 import {
     assertSupportedProtocol,
@@ -54,6 +59,10 @@ export interface ProductionJob {
     clientId: string;
     /** Display name or initials already chosen for the client. Not a clinical note. */
     clientLabel: string;
+    /** Chart first name when captured at enqueue. Export filenames prefer this over clientLabel. */
+    clientFirstName?: string | null;
+    /** Chart last name when captured at enqueue. */
+    clientLastName?: string | null;
     ownerId: string;
     tenantId: string | null;
     process: JobProcess;
@@ -174,9 +183,16 @@ export interface StoredGcode {
     storedAt: string;
 }
 
+export interface ClientPatientParts {
+    firstName: string;
+    lastName: string;
+}
+
 export interface ProductionRepo {
     listJobs(): Promise<ProductionJob[]>;
     getJob(id: string): Promise<ProductionJob | null>;
+    /** Resolve chart first/last for export filenames when the job only stored initials. */
+    getClientPatientParts?(clientId: string): Promise<ClientPatientParts | null>;
     insertJob(job: ProductionJob): Promise<void>;
     patchJob(id: string, patch: Partial<ProductionJob>): Promise<ProductionJob>;
     listPrinters(): Promise<PrinterRecord[]>;
@@ -215,6 +231,8 @@ export interface EnqueueInput {
     designKind: "insole" | "afo";
     clientId: string;
     clientLabel: string;
+    clientFirstName?: string | null;
+    clientLastName?: string | null;
     process: JobProcess;
     dueAt?: string | null;
     orderNumber?: string | null;
@@ -275,6 +293,7 @@ export function createMemoryProductionRepo(db: {
     gcode: Record<string, StoredGcode>;
     endpoints?: Record<string, string>;
     events?: DispatchEvent[];
+    clientPatientParts?: Record<string, ClientPatientParts>;
 }): ProductionRepo {
     const endpoints = db.endpoints ?? {};
     const events = db.events ?? [];
@@ -369,6 +388,9 @@ export function createMemoryProductionRepo(db: {
         },
         async clearGcode(jobId) {
             delete db.gcode[jobId];
+        },
+        async getClientPatientParts(clientId) {
+            return db.clientPatientParts?.[clientId] ?? null;
         },
     };
 }
@@ -584,6 +606,8 @@ export async function enqueueJob(
         designKind: input.designKind,
         clientId: input.clientId,
         clientLabel,
+        clientFirstName: input.clientFirstName?.trim() || null,
+        clientLastName: input.clientLastName?.trim() || null,
         ownerId: actor.id,
         tenantId: actor.tenantId,
         process: input.process,
@@ -786,6 +810,26 @@ export async function rerunJob(
     );
 }
 
+async function resolveProductionExportPatient(
+    repo: ProductionRepo,
+    job: ProductionJob,
+): Promise<{ firstName: string; lastName: string }> {
+    let firstName = job.clientFirstName?.trim() ?? "";
+    let lastName = job.clientLastName?.trim() ?? "";
+    if (!firstName && !lastName && repo.getClientPatientParts) {
+        const chart = await repo.getClientPatientParts(job.clientId);
+        if (chart) {
+            firstName = chart.firstName;
+            lastName = chart.lastName;
+        }
+    }
+    return exportPatientPartsForProduction({
+        clientFirstName: firstName,
+        clientLastName: lastName,
+        clientLabel: job.clientLabel,
+    });
+}
+
 export async function downloadGcode(
     repo: ProductionRepo,
     actor: Actor,
@@ -794,7 +838,18 @@ export async function downloadGcode(
 ): Promise<{ filename: string; gcode: string; sha256: string }> {
     const job = await requireJob(repo, actor, jobId);
     const stored = await readRetainedGcode(repo, job, now);
-    return { filename: `LR-${job.id}.gcode`, gcode: stored.body, sha256: stored.sha256 };
+    const patient = await resolveProductionExportPatient(repo, job);
+    return {
+        filename: buildExportFilename({
+            firstName: patient.firstName,
+            lastName: patient.lastName,
+            material: canonicalExportMaterialName("ApexCore"),
+            side: "LR",
+            ext: "gcode",
+        }),
+        gcode: stored.body,
+        sha256: stored.sha256,
+    };
 }
 
 function dispatchInFlight(job: ProductionJob): boolean {

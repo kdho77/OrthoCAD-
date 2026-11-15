@@ -2,7 +2,20 @@
 // Session-user generateSolid. Same synchronous charge-then-upload result as before.
 // CAD-operator calls do not enter this function.
 
+import { gunzipSync } from "node:zlib";
 import { TRPCError } from "@trpc/server";
+import {
+    type Actor,
+    ClientFileError,
+    type ClientFileRepo,
+    type DesignRow,
+    getDesignFile,
+} from "../../../shared/client-files.js";
+import {
+    buildExportFilename,
+    canonicalExportMaterialName,
+    exportSideSuffix,
+} from "../../../shared/export-filename.js";
 import {
     gyroidInfillPctForHardness,
     isGyroidManufacturingPreset,
@@ -12,6 +25,10 @@ import {
     printRecipeToSnake,
     resolveGyroidManufacturingPrintRecipe,
 } from "../../../shared/print-recipe/print-recipe.js";
+import {
+    selectVertexSliceUpload,
+    vertexSliceRegional3mfEnabled,
+} from "../../../shared/vertexslice-regional-3mf.js";
 import { HYBRID_GCODE_COST } from "../lib/cad-operator-production.js";
 import type { ManufacturePayload, ManufactureResult } from "../lib/manufacturing-client.js";
 import { assertManufacturingTempKeyForUser } from "../lib/storage.js";
@@ -33,6 +50,12 @@ export interface SessionManufactureInput {
     fileName?: string;
     material?: string;
     useSavedDesignMesh?: boolean;
+    /**
+     * Second upload. Present only when the design has effective regions.
+     * The gate off refuses the export instead of slicing the STL.
+     */
+    regional3mfStorageKey?: string;
+    expectedRegionCount?: number;
 }
 
 export interface SessionChargeArgs {
@@ -59,8 +82,39 @@ export interface SessionChargeResult {
     jobId: string;
 }
 
+/**
+ * Same door as design.save: getDesignFile → canAccessOrg.
+ * Tenant match or super_admin may export a design they did not create.
+ * A missing design and a different-tenant read both stay FORBIDDEN.
+ * License and token charge stay on the exporting user; this function does not charge.
+ */
+export async function assertDesignExportAccess(
+    repo: ClientFileRepo,
+    actor: Actor,
+    designId: string,
+    deniedMessage = "Design not found or access denied",
+): Promise<DesignRow> {
+    try {
+        return await getDesignFile(repo, actor, designId);
+    } catch (error) {
+        if (error instanceof ClientFileError && (error.code === "NOT_FOUND" || error.code === "FORBIDDEN")) {
+            throw new TRPCError({ code: "FORBIDDEN", message: deniedMessage });
+        }
+        throw error;
+    }
+}
+
+/** Storage may hold client gzip; VertexSlice still sees the original STL bytes. */
+export function decodeManufacturingUploadBytes(bytes: Uint8Array): Uint8Array {
+    if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+        return gunzipSync(bytes);
+    }
+    return bytes;
+}
+
 export interface SessionManufacturingIo {
     assertActiveLicense(userId: string): Promise<void>;
+    /** Org access for designId, not designs.ownerId === userId. */
     verifyDesignOwner(designId: string, userId: string): Promise<void>;
     getTokenBalance(userId: string): Promise<number>;
     storageAvailable(): boolean;
@@ -169,6 +223,7 @@ export async function runSessionGenerateSolid(args: {
     }
 
     const tempStlKey = stlStorageKey;
+    let regionalTempKey: string | null = null;
 
     try {
         await io.assertActiveLicense(actorUserId);
@@ -213,13 +268,60 @@ export async function runSessionGenerateSolid(args: {
                 resolvedPrintRecipe.defaultHardness,
                 resolvedPrintRecipe.hardnessToInfillPct,
             );
-            const stlBytes = await io.downloadStl(stlUrl);
+            const stlBytes = decodeManufacturingUploadBytes(await io.downloadStl(stlUrl));
+            const regionalGate = vertexSliceRegional3mfEnabled();
+            const claimedCount = input.expectedRegionCount;
+            const claimedRegions = claimedCount !== undefined || Boolean(input.regional3mfStorageKey);
+            let regional3mf: { bytes: Uint8Array; regionCount: number } | null = null;
+            if (claimedRegions && !regionalGate) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message:
+                        "Regional hardness is turned off on this server. Refusing a single-density print.",
+                });
+            }
+            if (regionalGate && claimedRegions) {
+                if (claimedCount === undefined) {
+                    throw new TRPCError({
+                        code: "BAD_REQUEST",
+                        message:
+                            "Regional hardness was requested but the modifier count is missing. Refusing a single-density print.",
+                    });
+                }
+                if (!input.regional3mfStorageKey) {
+                    throw new TRPCError({
+                        code: "BAD_REQUEST",
+                        message: `Regional hardness is enabled but no modifier 3MF was uploaded (${claimedCount} regions). Refusing a single-density print.`,
+                    });
+                }
+                try {
+                    assertManufacturingTempKeyForUser(input.regional3mfStorageKey, actorUserId);
+                } catch {
+                    throw new TRPCError({
+                        code: "BAD_REQUEST",
+                        message: "Invalid regional 3MF storage key",
+                    });
+                }
+                regionalTempKey = input.regional3mfStorageKey;
+                const regionalUrl = await io.signedDownloadUrl(input.regional3mfStorageKey);
+                regional3mf = {
+                    bytes: decodeManufacturingUploadBytes(await io.downloadStl(regionalUrl)),
+                    regionCount: claimedCount,
+                };
+            }
+            const upload = selectVertexSliceUpload({
+                stl: stlBytes,
+                stlFilename: `${input.side ?? "model"}.stl`,
+                regional3mf,
+                regional3mfEnabled: regionalGate,
+            });
             const gcode = await io.sliceWithVertexSlice({
                 profileId: presetId,
                 material: material ?? "",
-                model: stlBytes,
-                filename: `${input.side ?? "model"}.stl`,
+                model: upload.bytes,
+                filename: upload.filename,
                 infillDensityPct,
+                expectedRegionCount: upload.expectedRegionCount,
             });
             outputBytes = Buffer.from(gcode, "utf-8");
             outputType = "gcode";
@@ -261,8 +363,16 @@ export async function runSessionGenerateSolid(args: {
             });
         }
 
-        const defaultName = isGcode ? `hybrid-${presetId}.gcode` : `hybrid-${presetId}.stl`;
-        const safeName = (input.fileName || defaultName).replace(/[^a-zA-Z0-9_.-]/g, "_");
+        const userExportFileName =
+            input.fileName?.trim() ||
+            buildExportFilename({
+                firstName: "",
+                lastName: "",
+                material: canonicalExportMaterialName(material),
+                side: exportSideSuffix(input.side ?? "left"),
+                ext: isGcode ? "gcode" : "stl",
+            });
+        const safeName = userExportFileName.replace(/[^a-zA-Z0-9_.-]/g, "_");
         const storagePrefix = isGcode ? "gcode" : "manufacturing-output";
         const storageKey = `${storagePrefix}/${input.designId || "adhoc"}/${Date.now()}-${safeName}`;
         const contentType = isGcode ? "text/plain" : "model/stl";
@@ -322,6 +432,7 @@ export async function runSessionGenerateSolid(args: {
             exportId: result.exportId,
             tempStlKey,
         });
+        if (regionalTempKey) await io.deleteTemp(regionalTempKey);
 
         console.log("[manufacturing] generateSolid success", {
             userId: actorUserId,
@@ -348,6 +459,7 @@ export async function runSessionGenerateSolid(args: {
         };
     } catch (error) {
         await io.deleteTemp(tempStlKey);
+        if (regionalTempKey) await io.deleteTemp(regionalTempKey);
         throw error;
     }
 }

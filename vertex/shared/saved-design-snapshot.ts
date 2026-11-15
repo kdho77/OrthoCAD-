@@ -17,6 +17,9 @@ import { canonicalMaterialHardness } from "./dogfood-manufacturing.js";
 import { type HardnessName, migratePrintRecipe } from "./print-recipe/print-recipe.js";
 import {
     ARCH_HEIGHT_MM,
+    FLANGE_LEVEL_MM,
+    FLANGE_MM_MAX,
+    FLANGE_MM_MIN,
     FLEXIBLE_FOOT_APEX_MM,
     IGNORED_CATALOG_KEYS,
     type IgnoredCatalogKey,
@@ -66,6 +69,7 @@ function defaultSideCorrections(): SideCorrections {
         archFillMm: 0,
         archHeightMm: 0,
         archEaseMm: 0,
+        archElongationMm: 0,
         heelCupDepthMm: 0,
         heelCupHeightMm: 0,
         heelCupWidthMm: 0,
@@ -591,6 +595,46 @@ function applySliders(side: SideCorrections, sliders: SavedDesignSlider, paths: 
     }
 }
 
+function defaultFlangeMmFromLevel(level: keyof typeof FLANGE_LEVEL_MM | undefined): number {
+    if (level === "mild") return FLANGE_LEVEL_MM.mild;
+    if (level === "high") return FLANGE_LEVEL_MM.high;
+    return FLANGE_LEVEL_MM.standard;
+}
+
+function assertFlangeMm(sideName: string, border: "medial" | "lateral", value: number): void {
+    if (!Number.isFinite(value) || value < FLANGE_MM_MIN || value > FLANGE_MM_MAX) {
+        throw new SavedDesignSnapshotError(
+            `flange ${sideName} ${border} ${value} mm is outside ${FLANGE_MM_MIN}–${FLANGE_MM_MAX} mm. Refusing to clamp it.`,
+        );
+    }
+}
+
+function applyFlange(design: DesignState, catalog: SavedDesignCatalog, paths: string[]): void {
+    const flange = catalog.flange;
+    if (!flange) return;
+    let touched = false;
+    for (const sideName of ["left", "right"] as const) {
+        const entry = flange[sideName];
+        if (entry === undefined) continue;
+        touched = true;
+        const fallback = defaultFlangeMmFromLevel(entry.level);
+        const medial = entry.medial_mm ?? fallback;
+        const lateral = entry.lateral_mm ?? fallback;
+        assertFlangeMm(sideName, "medial", medial);
+        assertFlangeMm(sideName, "lateral", lateral);
+        design.corrections[sideName].medialFlangeMm = medial;
+        design.corrections[sideName].lateralFlangeMm = lateral;
+        paths.push(`settings.corrections.${sideName}.medialFlangeMm`);
+        paths.push(`settings.corrections.${sideName}.lateralFlangeMm`);
+    }
+    if (touched) {
+        design.corrections.linked = false;
+        if (!paths.includes("settings.corrections.linked")) {
+            paths.push("settings.corrections.linked");
+        }
+    }
+}
+
 function sliderHasNumber(sliders: SavedDesignSlider | undefined): boolean {
     if (!sliders) return false;
     return Object.values(sliders).some((value) => typeof value === "number");
@@ -697,6 +741,8 @@ export function buildSavedDesignSnapshot(input: {
         applySliders(design.corrections.left, catalog.sliders, paths, "left");
         applySliders(design.corrections.right, catalog.sliders, paths, "right");
     }
+
+    applyFlange(design, catalog, paths);
 
     if (catalog.arch) {
         const mm = ARCH_HEIGHT_MM[catalog.arch];

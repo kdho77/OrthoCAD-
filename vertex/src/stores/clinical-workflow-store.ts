@@ -10,12 +10,40 @@ import { leaveOutlineEdit } from "@/stores/mesh-edit-store";
 import { invalidateProceduralPrintLoftForDesignStep } from "@/stores/preview-loft-status-store";
 import type { ProductionMethod } from "@/types";
 
-export type ClinicalStepId = "scan" | "setup" | "base" | "corrections" | "elements" | "print" | "export";
+export type ClinicalStepId =
+    | "scan"
+    | "setup"
+    | "base"
+    | "cast"
+    | "corrections"
+    | "elements"
+    | "design"
+    | "print"
+    | "export";
+
+export type ClinicalProductType = "insole" | "afo";
 
 /** Map retired step ids so persisted / older calls still resolve. */
-export function normalizeClinicalStep(step: string): ClinicalStepId {
-    if (step === "shape") return "base";
+export function normalizeClinicalStep(step: string, product: ClinicalProductType = "insole"): ClinicalStepId {
     if (step === "hardness") return "print";
+    if (product === "afo") {
+        if (step === "shape" || step === "setup" || step === "base") return "cast";
+        if (step === "elements") return "design";
+        if (
+            step === "scan" ||
+            step === "cast" ||
+            step === "corrections" ||
+            step === "design" ||
+            step === "print" ||
+            step === "export"
+        ) {
+            return step;
+        }
+        return "scan";
+    }
+    if (step === "shape") return "base";
+    if (step === "cast") return "setup";
+    if (step === "design") return "elements";
     if (
         step === "scan" ||
         step === "setup" ||
@@ -40,10 +68,25 @@ export const CLINICAL_STEPS: { id: ClinicalStepId; label: string; short: string 
     { id: "export", label: "Export", short: "Export" },
 ];
 
+export const AFO_STEPS: { id: ClinicalStepId; label: string; short: string }[] = [
+    { id: "scan", label: "Home / Scan", short: "Scan" },
+    { id: "cast", label: "Cast", short: "Cast" },
+    { id: "corrections", label: "Corrections", short: "Corrections" },
+    { id: "design", label: "Design", short: "Design" },
+    { id: "print", label: "Print", short: "Print" },
+    { id: "export", label: "Export", short: "Export" },
+];
+
+export function stepsForProduct(
+    product: ClinicalProductType,
+): { id: ClinicalStepId; label: string; short: string }[] {
+    return product === "afo" ? AFO_STEPS : CLINICAL_STEPS;
+}
+
 /** Print step is labeled Mill when production type is Milling — 3 Axis. */
 export function clinicalStepShort(id: ClinicalStepId, method?: ProductionMethod): string {
     if (id === "print" && method === "milling_3axis") return "Mill";
-    return CLINICAL_STEPS.find((s) => s.id === id)?.short ?? id;
+    return CLINICAL_STEPS.find((s) => s.id === id)?.short ?? AFO_STEPS.find((s) => s.id === id)?.short ?? id;
 }
 
 /** Parametric-correction section keys. Groups stay collapsed until the user opens one. */
@@ -71,6 +114,8 @@ export interface CorrectionPresetOrigin {
 export type InsoleDesignStartPath = "scan" | "template" | "ai";
 
 interface ClinicalWorkflowStore {
+    productType: ClinicalProductType;
+    setProductType: (product: ClinicalProductType) => void;
     step: ClinicalStepId;
     /** Set when opening a new design from the client file start flow (`?entry=`). */
     designStartPath: InsoleDesignStartPath | null;
@@ -100,20 +145,26 @@ interface ClinicalWorkflowStore {
     consumePendingCorrectionSections: () => CorrectionsSectionKey[];
 }
 
-function stepIndex(step: ClinicalStepId): number {
-    return CLINICAL_STEPS.findIndex((s) => s.id === step);
+function activeSteps(product: ClinicalProductType) {
+    return stepsForProduct(product);
 }
 
-function nextStep(current: ClinicalStepId): ClinicalStepId {
-    const idx = stepIndex(current);
-    if (idx < 0 || idx >= CLINICAL_STEPS.length - 1) return current;
-    return CLINICAL_STEPS[idx + 1].id;
+function stepIndex(step: ClinicalStepId, product: ClinicalProductType): number {
+    return activeSteps(product).findIndex((s) => s.id === step);
 }
 
-function prevStep(current: ClinicalStepId): ClinicalStepId {
-    const idx = stepIndex(current);
+function nextStep(current: ClinicalStepId, product: ClinicalProductType): ClinicalStepId {
+    const steps = activeSteps(product);
+    const idx = stepIndex(current, product);
+    if (idx < 0 || idx >= steps.length - 1) return current;
+    return steps[idx + 1]!.id;
+}
+
+function prevStep(current: ClinicalStepId, product: ClinicalProductType): ClinicalStepId {
+    const steps = activeSteps(product);
+    const idx = stepIndex(current, product);
     if (idx <= 0) return current;
-    return CLINICAL_STEPS[idx - 1].id;
+    return steps[idx - 1]!.id;
 }
 
 function sectionsForStep(_step: ClinicalStepId): CorrectionsSectionKey[] {
@@ -142,8 +193,8 @@ function blockedByOutlineEdit(prev: ClinicalStepId, next: ClinicalStepId): boole
     return !leaveOutlineEdit({ promptIfDirty: true });
 }
 
-function applyScanStickyReason(step: ClinicalStepId): string | null {
-    if (stepIndex(step) <= stepIndex("scan")) {
+function applyScanStickyReason(step: ClinicalStepId, product: ClinicalProductType): string | null {
+    if (stepIndex(step, product) <= stepIndex("scan", product)) {
         const gate = evaluateScanStepGate();
         return gate.ok ? null : gate.reason;
     }
@@ -152,6 +203,15 @@ function applyScanStickyReason(step: ClinicalStepId): string | null {
 }
 
 export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get) => ({
+    productType: "insole",
+    setProductType: (product) =>
+        set({
+            productType: product,
+            step: "scan",
+            completedSteps: [],
+            nextBlockReason: null,
+            scanGateStickyReason: null,
+        }),
     step: "scan",
     designStartPath: null,
     completedSteps: [],
@@ -200,10 +260,11 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         }),
     setStep: (step) => {
         const prev = get().step;
-        const next = normalizeClinicalStep(step);
+        const product = get().productType;
+        const next = normalizeClinicalStep(step, product);
         if (blockedByOutlineEdit(prev, next)) return;
         leaveProceduralLoftStep(prev, next);
-        const sticky = applyScanStickyReason(next);
+        const sticky = applyScanStickyReason(next, product);
         set({
             step: next,
             scanGateStickyReason: sticky,
@@ -220,26 +281,41 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         }));
     },
     goNext: () => {
-        const current = get().step;
-        const gate = evaluateNextGate(current);
-        // Print → Export is the handoff for "Continue to Export" and the
-        // footer Next on Print. Reopened designs clear footSideExplicitlyChosen,
-        // and the rail still allows standing on Print. Re-applying the scan
-        // gate here used to send the user to Scan instead of Export.
-        if (!gate.ok && current !== "print") {
-            if (blockedByOutlineEdit(current, "scan")) return;
-            set({
-                step: "scan",
-                nextBlockReason: gate.reason,
-                scanGateStickyReason: gate.reason,
-                pendingCorrectionSections: sectionsForStep("scan"),
-            });
-            return;
+        const product = get().productType;
+        const current = normalizeClinicalStep(get().step, product);
+        if (product === "afo") {
+            const gate = evaluateNextGate(current);
+            // Reviewed AFO Next: every step except Print is gated. Print → Export
+            // stays the handoff even when the shell gate would otherwise block.
+            if (!gate.ok && current !== "print") {
+                if (blockedByOutlineEdit(current, "scan")) return;
+                set({
+                    step: "scan",
+                    nextBlockReason: gate.reason,
+                    scanGateStickyReason: gate.reason,
+                    pendingCorrectionSections: sectionsForStep("scan"),
+                });
+                return;
+            }
+        } else if (current === "scan") {
+            // Insole Next (#317): only Scan is gated, and a block stays on Scan.
+            // Later steps, including Print → Export, advance instead of returning to Scan.
+            const gate = evaluateNextGate(current);
+            if (!gate.ok) {
+                if (blockedByOutlineEdit(current, current)) return;
+                set({
+                    step: current,
+                    nextBlockReason: gate.reason,
+                    scanGateStickyReason: gate.reason,
+                    pendingCorrectionSections: sectionsForStep(current),
+                });
+                return;
+            }
         }
-        const step = nextStep(current);
+        const step = nextStep(current, product);
         if (blockedByOutlineEdit(current, step)) return;
         leaveProceduralLoftStep(current, step);
-        const sticky = applyScanStickyReason(step);
+        const sticky = applyScanStickyReason(step, product);
         set((s) => ({
             step,
             nextBlockReason: sticky,
@@ -250,10 +326,11 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
     },
     goBack: () => {
         const current = get().step;
-        const step = prevStep(current);
+        const product = get().productType;
+        const step = prevStep(current, product);
         if (blockedByOutlineEdit(current, step)) return;
         leaveProceduralLoftStep(current, step);
-        const sticky = applyScanStickyReason(step);
+        const sticky = applyScanStickyReason(step, product);
         set({
             step,
             nextBlockReason: sticky,

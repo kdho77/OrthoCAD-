@@ -125,6 +125,27 @@ export const EDGE_FEATHER_EASE_START_R = 0.55;
  */
 export const HEEL_CUP_WIDTH_MAX_LATERAL_SCALE = 0.25;
 
+/** Unstretched medial-arch dome half-width, in units of foot length. */
+const ARCH_DOME_HALF_WIDTH = 0.36;
+
+/** Matches CLINICAL_LIMITS.archElongationMm.max. The dome never stretches farther. */
+const ARCH_ELONGATION_MAX_MM = 5;
+
+/**
+ * Half-width of the medial arch dome along the foot.
+ *
+ * The cosine bump is at half its peak halfway out from the apex, so the span
+ * above half peak is `halfWidth * lengthMm`. Adding `elongationMm / lengthMm`
+ * to the half-width lengthens that span by `elongationMm`, symmetric about
+ * the apex. The peak value stays 1 at `apexCenter`. A non-positive elongation
+ * returns the literal 0.36 so the surface matches the unstretched dome.
+ */
+function archDomeHalfWidth(elongationMm: number | undefined, lengthMm: number): number {
+    if (!(elongationMm > 0) || !(lengthMm > 0)) return ARCH_DOME_HALF_WIDTH;
+    const capped = elongationMm > ARCH_ELONGATION_MAX_MM ? ARCH_ELONGATION_MAX_MM : elongationMm;
+    return ARCH_DOME_HALF_WIDTH + capped / lengthMm;
+}
+
 /** Smooth bump centered at `c` with radius `r`. Returns 0..1. */
 export function bump(t: number, c: number, r: number): number {
     const d = Math.abs(t - c) / r;
@@ -405,9 +426,11 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     let shaped = 0;
 
     // --- Longitudinal arch dome ------------------------------------------------
-    // Wider, gentler bell so the arch eases into the forefoot and rearfoot.
+    // Wider, gentler bell so the arch blends into the forefoot and rearfoot.
+    // Elongation lengthens the bell along the foot only. Peak stays 1 at
+    // apexCenter. archAcross is not scaled.
     const apexCenter = 0.42 + c.apexMoveMm / lengthMm;
-    const arch = bump(u, apexCenter, 0.36);
+    const arch = bump(u, apexCenter, archDomeHalfWidth(c.archElongationMm, lengthMm));
     // Dome peaks just inboard of the medial edge and fades smoothly to centerline.
     const archAcross = medialBlend * (0.45 + 0.55 * smoothstep(0.05, 0.9, av));
     shaped += (c.archHeightMm + c.archFillMm) * arch * archAcross;
@@ -467,15 +490,6 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     }
     shaped *= featherScale;
 
-    // Arch ease — medial contact relief after arch raise; not edge-feathered (like posting).
-    let archEase = 0;
-    if (c.archEaseMm > 0) {
-        const easeAlong = bump(u, apexCenter, 0.32);
-        const rimGuard = 1 - smoothstep(0.86, 1.0, av);
-        const easeAcross = medialBlend * smoothstep(0.02, 0.88, m) * rimGuard;
-        archEase = -c.archEaseMm * easeAlong * easeAcross;
-    }
-
     // --- Zone posting (rearfoot / forefoot wedge, raise-only, low-edge pivot) ---
     const wedge = wedgeDeltaAt(u, vSigned, side, c, {
         lengthMm,
@@ -493,11 +507,11 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
 
     // Uniform (and legacy undefined) mode uses thicknessMm directly so the sum
     // stays bit-identical to main. Zonal mode samples t(u), which already
-    // enforces the minimum wall, and keeps arch ease, wedge, and sinks.
+    // enforces the minimum wall, and keeps wedge and sinks.
     const shellCtx = resolveShellThicknessContext(params);
     const thicknessTerm = shellCtx.mode === "zonal" ? shellThicknessMmAtU(u, shellCtx) : thicknessMm;
 
-    let h = softFloor(thicknessTerm + baseline + shaped + archEase + wedge + heelLift, 0.8);
+    let h = softFloor(thicknessTerm + baseline + shaped + wedge + heelLift, 0.8);
 
     // Full-length ruled posting. After lift + intrinsic shaping, before skive.
     // Omitted entirely when off so the height matches the regional-only field.

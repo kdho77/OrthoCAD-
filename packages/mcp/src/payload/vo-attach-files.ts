@@ -10,6 +10,11 @@
 
 import { createHash } from "node:crypto";
 
+import {
+    buildExportFilename,
+    canonicalExportMaterialName,
+    parsePatientNameForExport,
+} from "../../../../vertex/shared/export-filename.js";
 import { VO_ATTACH_TEXT_MAX, voAttachArgumentError } from "./vo-attach-contract.js";
 
 export const FORBIDDEN_ORDER_STATUSES = [
@@ -38,6 +43,10 @@ export interface VoAttachFileInput {
     /** CAD object key. Recorded in provenance and never placed on the VO file. */
     storage_key?: string;
     filename?: string;
+    /** Optional patient label for the canonical export filename. */
+    patient_name?: string;
+    /** Optional canonical OrthoCAD material (ApexCore, apex_core, …). */
+    material?: string;
     content_base64?: string;
     download_url?: string;
     expires_at?: string;
@@ -47,6 +56,8 @@ export interface VoAttachFilesInput {
     order_id: string;
     /** Kept on the CAD result only. Sending it makes VO check the design link. */
     design_id?: string;
+    patient_name?: string;
+    material?: string;
     files: VoAttachFileInput[];
     now?: number;
 }
@@ -167,22 +178,21 @@ function centralFabStlFilename(side: "left" | "right", requested: string | undef
     throw new Error("Central-fab STL filename must start with the foot and end with .stl");
 }
 
-function gcodeFilename(side: "left" | "right", requested: string | undefined): string {
-    const raw = requested?.trim() ?? "";
-    const base = raw.split(/[/\\]/).pop()?.trim() ?? "";
-    const lowered = base.toLowerCase();
-    if (
-        base &&
-        lowered.length <= 180 &&
-        !lowered.includes("..") &&
-        FILENAME_RE.test(base) &&
-        lowered.endsWith(".gcode") &&
-        !lowered.includes(".stl") &&
-        lowered.startsWith(side)
-    ) {
-        return lowered;
-    }
-    return `${side}.gcode`;
+function gcodeFilename(
+    side: "left" | "right",
+    file: VoAttachFileInput,
+    order: Pick<VoAttachFilesInput, "patient_name" | "material">,
+): string {
+    const patientName = file.patient_name?.trim() || order.patient_name?.trim() || "";
+    const patient = parsePatientNameForExport(patientName);
+    const material = canonicalExportMaterialName(file.material ?? order.material);
+    return buildExportFilename({
+        firstName: patient.firstName,
+        lastName: patient.lastName,
+        material,
+        side: side === "right" ? "R" : "L",
+        ext: "gcode",
+    });
 }
 
 export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPreparation {
@@ -205,7 +215,7 @@ export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPr
         }
         const filename = centralFab
             ? centralFabStlFilename(file.side, file.filename)
-            : gcodeFilename(file.side, file.filename);
+            : gcodeFilename(file.side, file, input);
         if (!centralFab && filename.toLowerCase().endsWith(".stl")) {
             throw new Error("STL files are not attached. G-code only.");
         }

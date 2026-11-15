@@ -2,10 +2,13 @@
 
 import { beforeEach, describe, expect, test } from "@rstest/core";
 import { VERTEX_STARTER_PRESETS } from "@/lib/clinical/correction-presets";
-import { ELEMENT_PROFILES } from "@/lib/geometry/elements";
+import { defaultElementPose, ELEMENT_PROFILES } from "@/lib/geometry/elements";
+import { meshYForAnatomicalSide, meshYSign } from "@/lib/geometry/handedness";
+import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import type { DesignState, ElementKind, PrescriptionParseResult } from "@/types";
 import { defaultShoeChart } from "../../shared/client-files";
 import { useClientStore } from "./client-store";
+import { useClinicalWorkflowStore } from "./clinical-workflow-store";
 import { useDesignStore } from "./design-store";
 
 function freshDesign(): DesignState {
@@ -29,6 +32,7 @@ function prescription(): PrescriptionParseResult {
 describe("elements require explicit library placement", () => {
     beforeEach(() => {
         localStorage.removeItem("vertex-design-session");
+        useClinicalWorkflowStore.setState({ elementPlacementFoot: "both" });
         useDesignStore.setState({
             design: freshDesign(),
             pendingSessionDesign: null,
@@ -126,6 +130,92 @@ describe("elements require explicit library placement", () => {
         expect(useDesignStore.getState().pendingSessionDesign).toBeNull();
         useDesignStore.getState().loadDesign(saved);
         expect(useDesignStore.getState().design.elements).toEqual(saved.elements);
+    });
+
+    test("loading a saved design puts an untouched legacy first-ray pad back under the first ray", () => {
+        const layout = insoleLayoutForUsMenSize(11.5);
+        const half = layout.widthMm / 2;
+        const design = freshDesign();
+        design.usMenSize = 11.5;
+        design.sizeSystem = "us";
+        design.elements = [
+            {
+                id: "legacy-left",
+                kind: "mortons_extension",
+                side: "left",
+                position: { x: 0.78 * layout.lengthMm - layout.lengthMm / 2, y: 0.5 * half },
+                rotationDeg: 0,
+                scale: { x: 1, y: 1 },
+                heightMm: 2,
+            },
+            {
+                id: "legacy-right",
+                kind: "reverse_mortons",
+                side: "right",
+                position: {
+                    x: 0.7 * layout.lengthMm - layout.lengthMm / 2,
+                    y: meshYForAnatomicalSide("right", "lateral", 0.1 * half),
+                },
+                rotationDeg: 0,
+                scale: { x: 1, y: 1 },
+                heightMm: 2.5,
+            },
+        ];
+        useDesignStore.getState().loadDesign(design);
+        const loaded = useDesignStore.getState().design.elements;
+        for (const el of loaded) {
+            const pose = defaultElementPose(el.kind, el.side, layout.lengthMm, layout.widthMm);
+            expect(el.position).toEqual(pose.position);
+            expect(Math.sign(el.position.y)).toBe(meshYSign(el.side, "medial"));
+        }
+        expect(loaded.find((el) => el.id === "legacy-left")?.heightMm).toBe(2);
+        expect(loaded.find((el) => el.id === "legacy-right")?.heightMm).toBe(2.5);
+        useDesignStore.getState().loadDesign(useDesignStore.getState().design);
+        expect(useDesignStore.getState().design.elements.map((el) => el.position)).toEqual(
+            loaded.map((el) => el.position),
+        );
+    });
+
+    test("removeElementsForSides removes only the requested foot sides", () => {
+        const state = useDesignStore.getState();
+        state.addElement("dancers_pad", "left");
+        state.addElement("met_pad", "right");
+        state.addElement("met_bar", "left");
+        useDesignStore.setState({ history: [], future: [] });
+
+        state.removeElementsForSides(["left"]);
+        expect(useDesignStore.getState().design.elements.map((e) => e.side)).toEqual(["right"]);
+
+        useDesignStore.setState({ history: [], future: [] });
+        state.addElement("toe_crest", "left");
+        useDesignStore.setState({ history: [], future: [] });
+        state.removeElementsForSides(["right"]);
+        expect(useDesignStore.getState().design.elements.every((e) => e.side === "left")).toBe(true);
+
+        useDesignStore.setState({ history: [], future: [] });
+        state.removeElementsForSides(["left", "right"]);
+        expect(useDesignStore.getState().design.elements).toEqual([]);
+    });
+
+    test("removeElementsForSides is a no-op with nothing to clear", () => {
+        useDesignStore.getState().addElement("dancers_pad", "left");
+        useDesignStore.setState({ history: [], future: [] });
+        useDesignStore.getState().removeElementsForSides(["right"]);
+        expect(useDesignStore.getState().design.elements).toHaveLength(1);
+        expect(useDesignStore.getState().history).toHaveLength(0);
+    });
+
+    test("removeElementsForSides restores all removed elements in one undo", () => {
+        const state = useDesignStore.getState();
+        state.addElement("dancers_pad", "left");
+        state.addElement("met_pad", "right");
+        const before = JSON.parse(JSON.stringify(useDesignStore.getState().design.elements));
+        useDesignStore.setState({ history: [], future: [] });
+        state.removeElementsForSides(["left", "right"]);
+        expect(useDesignStore.getState().design.elements).toEqual([]);
+        expect(useDesignStore.getState().history).toHaveLength(1);
+        state.undo();
+        expect(useDesignStore.getState().design.elements).toEqual(before);
     });
 
     test("linked sinks keep a requested depth above max on both feet", () => {

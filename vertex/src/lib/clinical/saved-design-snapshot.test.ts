@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@rstest/core";
 
-import { readStoredDesignSettings } from "../../../shared/design-settings";
+import { DESIGN_SETTINGS_SCHEMA_VERSION, readStoredDesignSettings } from "../../../shared/design-settings";
 import {
     parseSavedDesignCatalog,
     SavedDesignSnapshotError,
@@ -8,7 +8,9 @@ import {
 } from "../../../shared/saved-design-catalog";
 import { designStateFromSavedSettings } from "../../features/exports/saved-design-finalized-mesh";
 import { defaultElementPose, ELEMENT_PROFILES } from "../geometry/elements";
+import { meshYSign } from "../geometry/handedness";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_GLB_PATH } from "../geometry/procedural-wall/sample-top-id";
+import { insoleLayoutForUsMenSize } from "../geometry/shoe-size";
 import { SINK_DEFAULT_DEPTH_MM, SINK_PROFILES } from "../geometry/sink";
 import { buildSavedDesignSnapshot } from "./saved-design-snapshot";
 
@@ -135,6 +137,26 @@ describe("SAMPLE_Top saved-design snapshot", () => {
         expect(build({ sliders: { heel_lift_mm: 6 } }).paths).toContain(
             "settings.corrections.left.heelLiftMm",
         );
+    });
+
+    test("arch_ease_mm loads and is ignored; arch_elongation_mm is stored", () => {
+        const legacy = build({ sliders: { arch_ease_mm: 6 } });
+        expect(legacy.design.corrections.left.archEaseMm).toBe(0);
+        expect(legacy.design.corrections.right.archEaseMm).toBe(0);
+        expect(legacy.design.corrections.left.archElongationMm).toBe(0);
+        expect(legacy.paths.some((path) => path.includes("archEase"))).toBe(false);
+
+        const stretched = build({
+            sliders: { arch_ease_mm: 6, arch_elongation_mm: 4 },
+        });
+        expect(stretched.design.corrections.left.archEaseMm).toBe(0);
+        expect(stretched.design.corrections.right.archEaseMm).toBe(0);
+        expect(stretched.design.corrections.left.archElongationMm).toBe(4);
+        expect(stretched.design.corrections.right.archElongationMm).toBe(4);
+        expect(stretched.design.corrections.left.archHeightMm).toBe(0);
+        expect(stretched.design.corrections.left.apexMoveMm).toBe(0);
+        expect(stretched.paths).toContain("settings.corrections.left.archElongationMm");
+        expect(stretched.paths).toContain("settings.corrections.right.archElongationMm");
     });
 
     test("missing shoe size, EU, split sizes, and conflicts fail closed", () => {
@@ -294,6 +316,59 @@ describe("SAMPLE_Top saved-design snapshot", () => {
         ).toBe(3);
     });
 
+    test("flange per foot maps to medialFlangeMm and lateralFlangeMm with level shorthand", () => {
+        const omitted = build({});
+        expect(omitted.design.corrections.left.medialFlangeMm).toBe(0);
+        expect(omitted.design.corrections.left.lateralFlangeMm).toBe(0);
+
+        const requested = build({ flange: { left: {} } });
+        expect(requested.design.corrections.left.medialFlangeMm).toBe(3);
+        expect(requested.design.corrections.left.lateralFlangeMm).toBe(3);
+        expect(requested.design.corrections.right.medialFlangeMm).toBe(0);
+        expect(requested.design.corrections.linked).toBe(false);
+        expect(requested.paths).toContain("settings.corrections.left.medialFlangeMm");
+
+        const mild = build({ flange: { right: { level: "mild" } } });
+        expect(mild.design.corrections.right.medialFlangeMm).toBe(2);
+        expect(mild.design.corrections.right.lateralFlangeMm).toBe(2);
+
+        const high = build({ flange: { left: { level: "High" } } });
+        expect(high.design.corrections.left.medialFlangeMm).toBe(6);
+        expect(high.design.corrections.left.lateralFlangeMm).toBe(6);
+
+        const split = build({
+            flange: {
+                left: { medial_mm: 4, lateral_mm: 5 },
+                right: { medial_mm: 3 },
+            },
+        });
+        expect(split.design.corrections.left).toMatchObject({ medialFlangeMm: 4, lateralFlangeMm: 5 });
+        expect(split.design.corrections.right.medialFlangeMm).toBe(3);
+        expect(split.design.corrections.right.lateralFlangeMm).toBe(3);
+
+        const overridesLevel = build({ flange: { left: { level: "high", medial_mm: 3 } } });
+        expect(overridesLevel.design.corrections.left.medialFlangeMm).toBe(3);
+        expect(overridesLevel.design.corrections.left.lateralFlangeMm).toBe(6);
+
+        const viaSliders = build({
+            sliders: { medial_flange_mm: 1, lateral_flange_mm: 1 },
+            flange: { left: { medial_mm: 5, lateral_mm: 5 } },
+        });
+        expect(viaSliders.design.corrections.left.medialFlangeMm).toBe(5);
+        expect(viaSliders.design.corrections.left.lateralFlangeMm).toBe(5);
+        expect(viaSliders.design.corrections.right.medialFlangeMm).toBe(1);
+    });
+
+    test("flange mm outside 0–8 is 422 and not clamped", () => {
+        for (const medial_mm of [-0.1, 8.1, 12]) {
+            expect422(() => build({ flange: { left: { medial_mm } } }));
+        }
+        expect(expect422(() => build({ flange: { right: { lateral_mm: 9 } } })).message).toMatch(/8/);
+        expect(parseSavedDesignCatalog({ flange: { left: { level: "mild" } } }).flange?.left?.level).toBe(
+            "mild",
+        );
+    });
+
     test("Morton's and a reverse kinetic wedge on the same foot are refused", () => {
         expect(
             expect422(() =>
@@ -320,5 +395,42 @@ describe("SAMPLE_Top saved-design snapshot", () => {
             ],
         });
         expect(bothStored.design.sinks?.left?.map((sink) => sink.kind)).toEqual(["mpj1", "rkw"]);
+    });
+
+    test("a reopened M11.5 design keeps Morton's and Reverse Morton's on the first ray", () => {
+        const shoe = { ...storedNine, size: 11.5 };
+        const layout = insoleLayoutForUsMenSize(11.5);
+        for (const name of ["Morton's Ext.", "Rev. Morton's"] as const) {
+            const built = build(
+                {
+                    elements: [
+                        { name, side: "left" },
+                        { name, side: "right" },
+                    ],
+                },
+                shoe,
+            );
+            const envelope = { schemaVersion: DESIGN_SETTINGS_SCHEMA_VERSION, settings: built.design };
+            const reopened = designStateFromSavedSettings(envelope);
+            const again = designStateFromSavedSettings({
+                schemaVersion: DESIGN_SETTINGS_SCHEMA_VERSION,
+                settings: reopened,
+            });
+            expect(reopened.elements).toHaveLength(2);
+            for (const el of reopened.elements) {
+                const pose = defaultElementPose(
+                    el.kind as "mortons_extension" | "reverse_mortons",
+                    el.side,
+                    layout.lengthMm,
+                    layout.widthMm,
+                );
+                expect(el.position).toEqual(pose.position);
+                expect(el.heightMm).toBe(3);
+                expect(Math.sign(el.position.y)).toBe(meshYSign(el.side, "medial"));
+            }
+            expect(again.elements.map((el) => el.position)).toEqual(
+                reopened.elements.map((el) => el.position),
+            );
+        }
     });
 });

@@ -1,3 +1,8 @@
+import {
+    buildExportFilename,
+    canonicalExportMaterialName,
+    parsePatientNameForExport,
+} from "../../../../vertex/shared/export-filename.js";
 import type { IntegrationClient } from "../clients/integration-client.js";
 import { IntegrationHttpError } from "../clients/integration-client.js";
 import type { ManufacturingClient } from "../clients/manufacturing-client.js";
@@ -5,6 +10,11 @@ import type { OrthocadMcpConfig } from "../config.js";
 import { requireCadOperatorKey } from "../config.js";
 import { buildDesignExportedPayload } from "../payload/design-exported-payload.js";
 import { buildVoAttachFilesHandoff, DOGFOOD_HELD_ID_PREFIXES } from "../payload/vo-attach-files.js";
+import {
+    callerPrintMaterial,
+    callerPrintPreset,
+    canonicalInsolePrintMaterialCatalog,
+} from "./print-materials.js";
 import {
     buildDesignExportedPayloadInputSchema,
     createSavedDesignInputSchema,
@@ -15,6 +25,7 @@ import {
     getExportDownloadInputSchema,
     getProductionInputSchema,
     listDesignsByOrderInputSchema,
+    listMaterialsInputSchema,
     listProductionsByDesignInputSchema,
     persistSavedDesignSnapshotInputSchema,
     prepareManufacturingStlUploadInputSchema,
@@ -34,6 +45,24 @@ interface SavedDesignGcodeFile {
     download_url: string | null;
     storage_key: string | null;
     content_base64: string | null;
+    filename?: string;
+}
+
+function mcpGcodeExportFilename(
+    side: "left" | "right",
+    patientName: string | undefined,
+    material: string | undefined,
+    fileNameOverride?: string,
+): string {
+    if (fileNameOverride?.trim()) return fileNameOverride.trim();
+    const patient = parsePatientNameForExport(patientName);
+    return buildExportFilename({
+        firstName: patient.firstName,
+        lastName: patient.lastName,
+        material: canonicalExportMaterialName(material),
+        side: side === "right" ? "R" : "L",
+        ext: "gcode",
+    });
 }
 
 interface UserQuestion {
@@ -141,6 +170,7 @@ export function publicProductionFromResult(result: Record<string, unknown>): {
 function gcodeFileFromResult(
     side: "left" | "right",
     result: Record<string, unknown>,
+    filename?: string,
 ):
     | SavedDesignGcodeFile
     | {
@@ -180,6 +210,7 @@ function gcodeFileFromResult(
         download_url: download,
         storage_key: storageKey,
         content_base64: contentBase64,
+        ...(filename ? { filename } : {}),
     };
 }
 
@@ -256,8 +287,14 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                 fileName: input.file_name,
             });
         }
+        case "list_materials": {
+            listMaterialsInputSchema.parse(args ?? {});
+            return canonicalInsolePrintMaterialCatalog();
+        }
         case "generate_gcode": {
             const input = generateGcodeInputSchema.parse(args);
+            const material = callerPrintMaterial(input.material);
+            const presetId = callerPrintPreset(input.preset_id);
             const manufacturing =
                 deps.manufacturing ??
                 (await import("../clients/manufacturing-client.js")).createManufacturingClient({
@@ -273,12 +310,19 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                 const sides = input.side ? [input.side] : (["left", "right"] as const);
                 const files: Array<ReturnType<typeof gcodeFileFromResult>> = [];
                 for (const side of sides) {
+                    const exportFileName = mcpGcodeExportFilename(
+                        side,
+                        input.patient_name,
+                        material,
+                        input.file_name,
+                    );
                     try {
                         const result = await manufacturing.generateFromSavedDesign({
                             designId: input.design_id,
                             side,
-                            presetId: input.preset_id,
-                            fileName: input.file_name ? `${side}-${input.file_name}` : `${side}.gcode`,
+                            presetId,
+                            material,
+                            fileName: exportFileName,
                             patientName: input.patient_name,
                             hardness: input.hardness,
                         });
@@ -290,7 +334,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                             }
                             return result;
                         }
-                        files.push(gcodeFileFromResult(side, result));
+                        files.push(gcodeFileFromResult(side, result, exportFileName));
                     } catch (error) {
                         if (sides.length > 1) {
                             throw new Error(
@@ -310,15 +354,21 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
             if (!input.stl_storage_key) {
                 throw new Error("stl_storage_key is required unless use_saved_design");
             }
+            const legacyExportFileName = mcpGcodeExportFilename(
+                input.side ?? "left",
+                input.patient_name,
+                material,
+                input.file_name,
+            );
             const legacy = await manufacturing.generateGcode({
                 designId: input.design_id,
                 side: input.side,
-                presetId: input.preset_id,
+                presetId,
                 stlStorageKey: input.stl_storage_key,
                 outputType: input.output_type,
                 beltAngleDeg: input.belt_angle_deg,
-                fileName: input.file_name,
-                material: input.material,
+                fileName: legacyExportFileName,
+                material,
                 patientName: input.patient_name,
             });
             if (isUserQuestion(legacy)) return legacy;

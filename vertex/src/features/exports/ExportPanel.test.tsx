@@ -116,7 +116,7 @@ describe("ExportPanel clinical step", () => {
         ) as HTMLOptionElement;
         const forge = container.querySelector('[data-testid="apex-material-ApexForge"]') as HTMLOptionElement;
         expect(bounce.disabled).toBe(false);
-        expect(forge.disabled).toBe(true);
+        expect(forge.disabled).toBe(false);
         await act(async () => {
             material.value = "ApexLight";
             material.dispatchEvent(new Event("change", { bubbles: true }));
@@ -133,7 +133,7 @@ describe("ExportPanel clinical step", () => {
         expect(progress?.textContent).toBe(GCODE_EXPORT_STEPS.prepare);
         expect(download.disabled).toBe(true);
         expect(download.textContent).toContain(GCODE_EXPORT_STEPS.prepare);
-        expect(hybridSpy).toHaveBeenCalledTimes(1);
+        expect(hybridSpy).toHaveBeenCalledTimes(2);
         expect((hybridSpy.mock.calls[0]?.[4] as { apexMaterialId?: string }).apexMaterialId).toBe(
             "ApexLight",
         );
@@ -182,7 +182,7 @@ describe("ExportPanel clinical step", () => {
             release();
             await gate;
         });
-        expect(hybridSpy).toHaveBeenCalledTimes(1);
+        expect(hybridSpy).toHaveBeenCalledTimes(2);
         expect(container.textContent).toMatch(/Export cancelled/);
         expect(container.textContent).not.toMatch(/Exported hybrid-left/);
     });

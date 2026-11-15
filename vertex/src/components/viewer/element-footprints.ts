@@ -210,10 +210,11 @@ export function elementFootprintPose(
     widthMm = (lengthMm / INSOLE_LENGTH_MM) * INSOLE_WIDTH_MM,
     footOutline?: { x: number; y: number }[] | null,
 ): FootprintPose {
-    const outline = splitOverlayOutline(
-        element,
-        element.kind === "mortons_extension" ? { lengthMm, widthMm, outline: footOutline } : undefined,
-    );
+    const mortonsFrame =
+        element.kind === "mortons_extension" || element.kind === "reverse_mortons"
+            ? { lengthMm, widthMm, outline: footOutline }
+            : undefined;
+    const outline = splitOverlayOutline(element, mortonsFrame);
     const extents = outlineHalfExtents(outline);
     return {
         id: element.id,

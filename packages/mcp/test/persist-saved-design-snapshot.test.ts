@@ -32,6 +32,21 @@ describe("persist_saved_design_snapshot tool", () => {
         }
     });
 
+    test("catalog width accepts xx_wide and rejects unknown values", () => {
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({
+                design_id: designId,
+                catalog: { width: "xx_wide" },
+            }).success,
+        ).toBe(true);
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({
+                design_id: designId,
+                catalog: { width: "giant" },
+            }).success,
+        ).toBe(false);
+    });
+
     test("design_id is required and rx_text is not a clinical field", () => {
         expect(persistSavedDesignSnapshotInputSchema.safeParse({}).success).toBe(false);
         expect(
@@ -117,6 +132,12 @@ describe("persist_saved_design_snapshot tool", () => {
         expect(built.design.sinks?.left?.[0]).toMatchObject({ kind: "mpj1", depthMm: 1.5 });
         expect(built.design.sinks?.right?.[0]?.u).toBeUndefined();
         expect(built.design.corrections.left.forefootWedge).toBeUndefined();
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({
+                design_id: designId,
+                catalog: { sliders: { arch_ease_mm: 6, arch_elongation_mm: 4 } },
+            }).success,
+        ).toBe(true);
         expect(
             persistSavedDesignSnapshotInputSchema.safeParse({
                 design_id: designId,

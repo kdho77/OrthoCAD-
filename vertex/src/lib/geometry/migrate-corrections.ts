@@ -49,8 +49,11 @@ export function migrateSideCorrections(c: SideCorrections): SideCorrections {
         next.forefootPostingDeg = 0;
     }
 
-    if (next.archEaseMm == null || !Number.isFinite(next.archEaseMm)) {
-        next.archEaseMm = 0;
+    // Arch ease subtracted at the same apex as arch height. Ignore any stored
+    // value (including a missing key) and keep the field at 0 so old designs load.
+    next.archEaseMm = 0;
+    if (next.archElongationMm == null || !Number.isFinite(next.archElongationMm)) {
+        next.archElongationMm = 0;
     }
 
     if (next.forefootWidthMm == null || !Number.isFinite(next.forefootWidthMm)) {

@@ -136,7 +136,13 @@ export async function assertExactManifold(geo: BufferGeometry): Promise<void> {
         triVerts,
         tolerance: 0,
     });
-    const man = new mod.Manifold(mesh);
+    let man: ManifoldHandle;
+    try {
+        man = new mod.Manifold(mesh);
+    } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        throw new TextMarkingError("stl-gate", `manifold status ${detail}`);
+    }
     const status = man.status?.() ?? "NoError";
     man.delete();
     if (status !== "NoError") {

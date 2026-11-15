@@ -23,6 +23,7 @@ import {
     buildJointFromTheta,
     bulgeVsStraightFrac,
     chooseRimDiagonal,
+    clampLipTurnsToPlanarSpan,
     columnRowTurns,
     columnZMonotone,
     curveSTFromPolyline,
@@ -5299,17 +5300,30 @@ function applySplineWalls(xyz: PolyPoint[][], frames: ColumnFrame[]): void {
     const active = frames.map((_, i) => (Ls[i] ?? 0) >= SPLINE_SHORT_LS_MM);
     const lambdaRaw = frames.map(() => SPLINE_LAMBDA);
     const lambdaSm = periodicGaussian1d(lambdaRaw, arc, SPLINE_SMOOTH_SIGMA_MM, period);
-    const alphaRaw = frames.map((fr, i) => {
+    const lipStation = (i: number) => {
+        const fr = frames[i]!;
         const sz = stationSzFrame(fr.R, fr.B, fr.h);
-        return lipTurnTargetFromLambda(
-            tRInSz(frameTR(fr), fr.h),
-            sz.H,
-            sz.Ls,
-            frameR1(fr),
-            lambdaSm[i] ?? SPLINE_LAMBDA,
-        ).theta;
+        return {
+            tR: tRInSz(frameTR(fr), fr.h),
+            H: sz.H,
+            Ls: sz.Ls,
+            r1: frameR1(fr),
+            lambda: lambdaSm[i] ?? SPLINE_LAMBDA,
+        };
+    };
+    // A first-ray recess leaves the rim high and the top just inside it low, so
+    // the outward tangent points up. The λ target then reports θ = 0 ("already
+    // aimed") and the lip never turns down. Project that target onto a turn
+    // whose handle lands on [E.s, Ls] before the arc smooth.
+    const alphaTarget = frames.map((_, i) => {
+        const spec = lipStation(i);
+        return lipTurnTargetFromLambda(spec.tR, spec.H, spec.Ls, spec.r1, spec.lambda).theta;
     });
-    const alphaSm = periodicGaussian1d(alphaRaw, arc, SPLINE_SMOOTH_SIGMA_MM, period);
+    const alphaRaw = clampLipTurnsToPlanarSpan(alphaTarget, arc, period, lipStation, false);
+    const alphaSm0 = periodicGaussian1d(alphaRaw, arc, SPLINE_SMOOTH_SIGMA_MM, period);
+    // The smooth can pull a valid turn back until M sits outside the rim.
+    // Spread that correction, then clamp again so the blend stays on the span.
+    const alphaSm = clampLipTurnsToPlanarSpan(alphaSm0, arc, period, lipStation, true);
     const fullRound: XYZ[][] = [];
     const fullStraight: XYZ[][] = [];
     const parabolaE: XYZ[] = [];

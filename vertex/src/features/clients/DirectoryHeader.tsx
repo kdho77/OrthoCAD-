@@ -23,7 +23,11 @@ export function DirectoryHeader({ active }: { active: "Clients" | "Production" }
                     className="min-h-11 shrink-0"
                     aria-label="OrthoCAD home"
                 >
-                    <img src="/orthocad-logo.webp" alt="OrthoCAD" className="h-7 w-auto object-contain" />
+                    <img
+                        src="/brand/orthocad-logo-header.png"
+                        alt="OrthoCAD by Vertex Orthopedic Group"
+                        className="h-7 w-auto object-contain"
+                    />
                 </button>
                 <nav className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto sm:gap-1">
                     <button

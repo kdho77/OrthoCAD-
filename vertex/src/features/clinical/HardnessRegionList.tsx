@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { collectHardnessRegions } from "@/lib/hardness/collect";
+import { effectiveHardnessRegions } from "@/lib/hardness/collect";
 import { useDesignStore } from "@/stores/design-store";
 import { CLASS_PREVIEW_COLORS, classDensityPct } from "../../../shared/print-recipe/hardness-class-table";
 
 export function HardnessRegionList() {
     const design = useDesignStore((s) => s.design);
     const selectElement = useDesignStore((s) => s.selectElement);
-    const regions = collectHardnessRegions(design);
+    const regions = effectiveHardnessRegions(design);
 
     return (
         <div className="space-y-1.5">

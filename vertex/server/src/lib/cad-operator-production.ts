@@ -16,8 +16,26 @@ import {
 /** Pro serverless cap. waitUntil work is still inside this budget. */
 export const CAD_PRODUCTION_MAX_DURATION_SEC = 300;
 
+/** Reserve before the platform maxDuration so slice can fail and mark the production failed. */
+export const CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC = 20;
+
+/** Upper bound on a single POST /v1/slice fetch wait. */
+export const CAD_VERTEX_SLICE_MAX_TIMEOUT_SEC = 240;
+
 /** Longer than maxDuration so a live invocation is not stolen before the platform stops it. */
 export const CAD_PRODUCTION_LEASE_MS = (CAD_PRODUCTION_MAX_DURATION_SEC + 60) * 1000;
+
+/**
+ * Remaining invocation time for VertexSlice slice, capped at CAD_VERTEX_SLICE_MAX_TIMEOUT_SEC.
+ * Uses the generateSolid / executeCadOperatorProduction start timestamp.
+ */
+export function cadVertexSliceSliceTimeoutMs(invocationStartedAt: Date, now: Date): number {
+    const elapsedMs = Math.max(0, now.getTime() - invocationStartedAt.getTime());
+    const budgetMs =
+        (CAD_PRODUCTION_MAX_DURATION_SEC - CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC) * 1000 - elapsedMs;
+    const cappedMs = Math.min(budgetMs, CAD_VERTEX_SLICE_MAX_TIMEOUT_SEC * 1000);
+    return Math.max(1, cappedMs);
+}
 
 export const HYBRID_GCODE_COST = 3;
 
@@ -66,6 +84,7 @@ export interface CadProductionPatch {
     status?: CadProductionStatus;
     error?: string | null;
     gcodeStorageKey?: string | null;
+    createdAt?: Date;
     updatedAt?: Date;
     leaseExpiresAt?: Date | null;
     chargedAt?: Date | null;
@@ -156,12 +175,22 @@ export async function claimProduction(
     const current = existing ?? (await store.findByKey(input.idempotencyKey));
     if (!current) throw new Error("idempotency claim failed");
     if (decideClaim(current, now) === "reuse") return { row: current, run: false };
+    const failedRetry = current.status === "failed";
     const updated = await store.updateIf(current.id, (row) => decideClaim(row, now) === "rerun", {
         status: "pending",
         error: null,
         leaseExpiresAt: leaseDeadline(now),
         updatedAt: now,
-        gcodeStorageKey: current.chargedAt ? current.gcodeStorageKey : null,
+        ...(failedRetry
+            ? {
+                  createdAt: now,
+                  gcodeStorageKey: null,
+                  chargedAt: null,
+                  exportId: null,
+              }
+            : {
+                  gcodeStorageKey: current.chargedAt ? current.gcodeStorageKey : null,
+              }),
     });
     if (!updated) {
         const latest = await store.findById(current.id);
@@ -188,10 +217,124 @@ export async function expireStaleProduction(
     return updated ?? (await store.findById(id));
 }
 
-export function publicProductionError(error: unknown): string {
+const CANONICAL_EXPORT_REFUSAL =
+    "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.";
+const CANONICAL_EXPORT_PREFIX = "Canonical Export mesh is not available headless";
+
+/** Full server log, including cause stacks. The public row stores publicProductionError instead. */
+export function productionErrorStack(error: unknown): string {
+    const parts: string[] = [];
+    const seen = new Set<unknown>();
+    let current: unknown = error;
+    while (current instanceof Error && !seen.has(current)) {
+        seen.add(current);
+        parts.push(current.stack ?? `${current.name}: ${current.message}`);
+        current = current.cause;
+    }
+    return parts.length > 0 ? parts.join("\nCaused by: ") : String(error);
+}
+
+function errorClassName(error: Error): string {
+    const name = error.name?.trim();
+    return name || "Error";
+}
+
+const PUBLIC_PRODUCTION_ERROR_MAX = 200;
+
+function capPublicProductionMessage(text: string): string {
+    if (text.length <= PUBLIC_PRODUCTION_ERROR_MAX) return text;
+    return `${text.slice(0, PUBLIC_PRODUCTION_ERROR_MAX - 1)}…`;
+}
+
+/** Sanitized fragment for a production row. Strips PHI, secrets, URLs, and paths. */
+function sanitizePublicFragment(raw: string): string {
+    let text = raw.replace(/\s+/g, " ").trim();
+    if (!text) return "";
+    if (/settingsJson|firstName|lastName|patientName|"settings"/i.test(text)) return "";
+    text = text.length > 400 ? `${text.slice(0, 240)}…` : text;
+    text = text.replace(/https?:\/\/\S+/gi, "[redacted]");
+    text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted]");
+    text = text.replace(
+        /\b(?:bearer|token|secret|password|api[_-]?key)\b\s*[:=]?\s*\S+|\bocad_[A-Za-z0-9._-]+|\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]+\b/gi,
+        "[redacted]",
+    );
+    text = text.replace(/\b[A-Z][a-z]+(?:[ '][A-Z][a-z]+)+\b/g, "[redacted]");
+    text = text.replace(/\/(?:home|Users)\/[^/\s]+/g, "/[redacted]");
+    text = text.replace(/\s+/g, " ").trim();
+    return text;
+}
+
+function manufacturingFailedWithSide(side: CadFootSide | null | undefined, reason?: string | null): string {
+    const sideLabel = side?.trim();
+    const prefix = sideLabel ? `Manufacturing failed (${sideLabel})` : "Manufacturing failed";
+    const detail = reason ? sanitizePublicFragment(reason) : "";
+    if (!detail || detail === "[redacted]" || /^[\s[\]redacted…]+$/.test(detail)) return prefix;
+    return capPublicProductionMessage(`${prefix}: ${detail}`);
+}
+
+function isUnclassifiedTimeoutMessage(message: string): boolean {
+    if (message.startsWith("VertexSlice timed out after")) return false;
+    return /(?:\btimeout\b|timed out|ETIMEDOUT|ECONNABORTED|UND_ERR_(?:CONNECT|HEADERS|BODY)_TIMEOUT)/i.test(
+        message,
+    );
+}
+
+function reasonForUnknownFailure(error: unknown, message: string): string | null {
+    const inner = innerCauseForPublicError(error);
+    if (inner) {
+        const unlabeled = inner.replace(/^[A-Za-z0-9_]+:\s*/, "").trim();
+        if (unlabeled) return unlabeled;
+    }
+    const sanitized = sanitizePublicFragment(message);
+    return sanitized || null;
+}
+
+/** Class plus a short message. Drops names, settings payloads, file bodies, and secrets. */
+function sanitizedInnerCause(name: string, message: string): string | null {
+    const raw = message.replace(/\s+/g, " ").trim();
+    if (!raw) return null;
+    if (/settingsJson|firstName|lastName|patientName|"settings"/i.test(raw)) return null;
+    if (/^[A-Z][a-z]+(?:[ '][A-Z][a-z]+){0,3}$/.test(raw)) return null;
+    if (/facet normal|endsolid|^solid\s|(?:^|\s)(?:G0|G1|G90)\b/i.test(raw)) return null;
+    const text = sanitizePublicFragment(raw);
+    if (!text || text === "[redacted]" || /^[\s[\]redacted…]+$/.test(text)) return null;
+    return `${name}: ${text}`;
+}
+
+function deepestNonRefusal(error: unknown): Error | null {
+    const seen = new Set<unknown>();
+    let current: unknown = error;
+    let found: Error | null = null;
+    while (current instanceof Error && !seen.has(current)) {
+        seen.add(current);
+        if (!current.message.startsWith(CANONICAL_EXPORT_PREFIX)) found = current;
+        current = current.cause;
+    }
+    return found;
+}
+
+function innerCauseForPublicError(error: unknown): string | null {
+    const deepest = deepestNonRefusal(error);
+    if (deepest) {
+        const labeled = sanitizedInnerCause(errorClassName(deepest), deepest.message);
+        if (labeled) return labeled;
+    }
     const message = error instanceof Error ? error.message : "";
-    if (message.startsWith("Canonical Export mesh is not available headless")) {
-        return "Canonical Export mesh is not available headless. Refusing to substitute a different mesh.";
+    const wrapped = message.match(
+        /^Canonical Export mesh is not available headless(?: \(([\s\S]*)\))?(?:\. Refusing to substitute a different mesh\.)?$/,
+    );
+    const inner = wrapped?.[1]?.trim() ?? "";
+    if (!inner) return null;
+    const labeled = inner.match(/^([A-Z][A-Za-z0-9_]*): ([\s\S]+)$/);
+    if (labeled?.[1] && labeled[2]) return sanitizedInnerCause(labeled[1], labeled[2]);
+    return sanitizedInnerCause("Error", inner);
+}
+
+export function publicProductionError(error: unknown, side?: CadFootSide | null): string {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith(CANONICAL_EXPORT_PREFIX)) {
+        const detail = innerCauseForPublicError(error);
+        return detail ? `${CANONICAL_EXPORT_REFUSAL} (${detail})` : CANONICAL_EXPORT_REFUSAL;
     }
     const allowed = [
         "Insufficient export tokens",
@@ -207,12 +350,66 @@ export function publicProductionError(error: unknown): string {
         "Supabase admin client not configured",
         "Manufacturing charge failed",
     ];
+    if (
+        message.startsWith("VertexSlice timed out after") ||
+        message.startsWith("Manufacturing STL ") ||
+        message.startsWith("Regional hardness")
+    ) {
+        return message;
+    }
+    if (message.startsWith("Manufacturing mesh is not sliceable")) {
+        return message;
+    }
+    if (message === "VertexSlice returned empty G-code") {
+        return message;
+    }
+    const vertexSliceError = message.match(/^VertexSlice error \((\d+)\):\s*(.*)$/s);
+    if (vertexSliceError) {
+        const status = vertexSliceError[1];
+        const detail = sanitizePublicFragment(vertexSliceError[2] ?? "");
+        return capPublicProductionMessage(
+            detail ? `VertexSlice error (${status}): ${detail}` : `VertexSlice error (${status})`,
+        );
+    }
+    const reach = message.match(/^Could not reach VertexSlice \([^)]*\):\s*(.*)$/s);
+    if (reach) {
+        const detail = sanitizePublicFragment(reach[1] ?? "");
+        return capPublicProductionMessage(
+            detail ? `Could not reach VertexSlice: ${detail}` : "Could not reach VertexSlice",
+        );
+    }
+    if (message.startsWith("Material ") && message.includes("not available on slicer")) {
+        const colon = message.indexOf(":");
+        const base = colon >= 0 ? message.slice(0, colon).trim() : message;
+        const tail = colon >= 0 ? message.slice(colon + 1).trim() : "";
+        const detail = sanitizePublicFragment(tail);
+        return capPublicProductionMessage(detail ? `${base}: ${detail}` : base);
+    }
+    for (const prefix of [
+        "Hardness 3MF export failed",
+        "manifold-3d rejected",
+        "manifold-3d subtract failed",
+        "3MF missing",
+        "binary STL truncated",
+    ] as const) {
+        if (!message.startsWith(prefix)) continue;
+        const after = message.slice(prefix.length);
+        if (!after) return prefix;
+        if (after.startsWith(": ")) {
+            const detail = sanitizePublicFragment(after.slice(2));
+            return capPublicProductionMessage(detail ? `${prefix}: ${detail}` : prefix);
+        }
+        return capPublicProductionMessage(sanitizePublicFragment(message));
+    }
+    if (side && isUnclassifiedTimeoutMessage(message)) {
+        return `Manufacturing timed out (${side})`;
+    }
     for (const item of allowed) {
         if (message === item || message.startsWith(`${item}:`) || message.startsWith(`${item} `)) {
             return item;
         }
     }
-    return "Manufacturing failed";
+    return manufacturingFailedWithSide(side, reasonForUnknownFailure(error, message));
 }
 
 const ASSET_LOAD_CAUSE =
@@ -296,22 +493,28 @@ export function cadOperatorManufacturingIdentity(input: {
     stlStorageKey: string | null;
     /** Set only for the central-fab solid. Omitted keys keep the belt fingerprint. */
     deliverable?: "central_fab_stl";
+    /** Included only when true, so an off gate keeps today's fingerprint. */
+    regional3mf?: boolean;
 }): { fingerprint: string; idempotencyKey: string } {
-    const payload: Record<string, unknown> = {
-        version: 1,
-        designId: input.designId,
-        side: input.side,
-        presetId: input.presetId,
-        useSavedDesignMesh: input.useSavedDesignMesh,
-        material: input.material,
-        beltAngleDeg: input.beltAngleDeg,
-        layerHeightMm: input.layerHeightMm,
-        printRecipe: input.printRecipe,
-        settingsJson: input.settingsJson,
-        stlStorageKey: input.useSavedDesignMesh ? null : input.stlStorageKey,
-    };
-    if (input.deliverable) payload.deliverable = input.deliverable;
-    const fingerprint = createHash("sha256").update(stableStringify(payload)).digest("hex");
+    const fingerprint = createHash("sha256")
+        .update(
+            stableStringify({
+                version: 1,
+                designId: input.designId,
+                side: input.side,
+                presetId: input.presetId,
+                useSavedDesignMesh: input.useSavedDesignMesh,
+                material: input.material,
+                beltAngleDeg: input.beltAngleDeg,
+                layerHeightMm: input.layerHeightMm,
+                printRecipe: input.printRecipe,
+                settingsJson: input.settingsJson,
+                stlStorageKey: input.useSavedDesignMesh ? null : input.stlStorageKey,
+                ...(input.deliverable ? { deliverable: input.deliverable } : {}),
+                ...(input.regional3mf ? { regional3mf: true } : {}),
+            }),
+        )
+        .digest("hex");
     const idempotencyKey = `cadop:v1:${input.designId}:${input.side}:${input.presetId}:${fingerprint}`;
     return { fingerprint, idempotencyKey };
 }
@@ -342,12 +545,22 @@ export interface CadChargeResult {
     alreadyCharged: boolean;
 }
 
+export interface CadProductionSliceContext {
+    sliceTimeoutMs: number;
+    sliceTimeoutSec: number;
+    /** executeCadOperatorProduction start. Recompute the slice budget after STL download. */
+    invocationStartedAt: Date;
+}
+
 export interface ExecuteCadProductionArgs {
     row: CadProductionRow;
     store: CadProductionStore;
     now: () => Date;
     materialize: () => Promise<{ stlStorageKey: string; meshFingerprint: string | null }>;
-    slice: (stlStorageKey: string) => Promise<{ gcode: string; jobId: string }>;
+    slice: (
+        stlStorageKey: string,
+        ctx?: CadProductionSliceContext,
+    ) => Promise<{ gcode: string; jobId: string }>;
     uploadGcode: (gcode: string) => Promise<{ storageKey: string }>;
     charge: (args: {
         storageKey: string;
@@ -363,10 +576,16 @@ export interface ExecuteCadProductionArgs {
     deliverMaterializedStl?: boolean;
 }
 
-async function markFailed(store: CadProductionStore, id: string, error: unknown, now: Date): Promise<void> {
+async function markFailed(
+    store: CadProductionStore,
+    id: string,
+    error: unknown,
+    now: Date,
+    side?: CadFootSide | null,
+): Promise<void> {
     await store.updateIf(id, (row) => row.status === "pending" || row.status === "running", {
         status: "failed",
-        error: publicProductionError(error),
+        error: publicProductionError(error, side),
         updatedAt: now,
         leaseExpiresAt: null,
     });
@@ -374,20 +593,20 @@ async function markFailed(store: CadProductionStore, id: string, error: unknown,
 
 export async function executeCadOperatorProduction(args: ExecuteCadProductionArgs): Promise<void> {
     const started = args.now();
-    const running = await args.store.updateIf(
-        args.row.id,
-        (row) => row.status === "pending" || row.status === "running",
-        {
-            status: "running",
-            leaseExpiresAt: leaseDeadline(started),
-            updatedAt: started,
-            error: null,
-        },
-    );
-    if (!running) return;
-
     let stlStorageKey: string | null = null;
     try {
+        const running = await args.store.updateIf(
+            args.row.id,
+            (row) => row.status === "pending" || row.status === "running",
+            {
+                status: "running",
+                leaseExpiresAt: leaseDeadline(started),
+                updatedAt: started,
+                error: null,
+            },
+        );
+        if (!running) return;
+
         const current = await args.store.findById(args.row.id);
         if (current?.chargedAt && current.gcodeStorageKey) {
             await args.store.updateIf(args.row.id, (row) => row.status !== "succeeded", {
@@ -424,7 +643,14 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
             });
             return;
         }
-        const sliced = await args.slice(stlStorageKey);
+        const sliceNow = args.now();
+        const sliceTimeoutMs = cadVertexSliceSliceTimeoutMs(started, sliceNow);
+        const sliceTimeoutSec = Math.max(1, Math.ceil(sliceTimeoutMs / 1000));
+        const sliced = await args.slice(stlStorageKey, {
+            sliceTimeoutMs,
+            sliceTimeoutSec,
+            invocationStartedAt: started,
+        });
         if (!sliced.gcode) {
             throw new Error("Manufacturing service returned empty output");
         }
@@ -464,10 +690,11 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
                 // Temp STL expires by the existing TTL job.
             }
         }
-        await markFailed(args.store, args.row.id, error, args.now());
+        await markFailed(args.store, args.row.id, error, args.now(), args.row.side);
         console.error("[manufacturing] cad production failed", {
             productionId: args.row.id,
-            message: publicProductionError(error),
+            message: publicProductionError(error, args.row.side),
+            stack: productionErrorStack(error),
         });
         const assetCause = assetLoadCauseForLog(error);
         if (assetCause) console.error(assetCause);
@@ -491,7 +718,7 @@ export async function beginCadOperatorProduction(args: {
         try {
             await args.preflight();
         } catch (error) {
-            await markFailed(args.store, claimed.row.id, error, args.now);
+            await markFailed(args.store, claimed.row.id, error, args.now, args.insert.side);
             return { productionId: claimed.row.id, status: "failed", side: args.insert.side };
         }
     }

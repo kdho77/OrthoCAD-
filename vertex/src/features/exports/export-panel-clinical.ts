@@ -122,7 +122,7 @@ export async function exportClinicalPrinterGcode(input: {
     feet?: GcodeFootScope;
     design: DesignState;
     wallStyle?: Parameters<typeof resolveViewerWallStyle>[0];
-    /** Apex product. Defaults to Apex Core. Forge is refused. Bounce uses the approved Core deltas. */
+    /** Apex product. Defaults to Apex Core. Bounce and Forge use VertexSlice material profiles. */
     apexMaterialId?: ApexPrintMaterialId;
     /** Belt G-code adds the sacrificial leader before the slicer. Default on. */
     includeLeaderBlock?: boolean;
@@ -163,19 +163,27 @@ export async function exportClinicalPrinterGcode(input: {
         return { ok: false, reason: `This order has no ${input.feet ?? input.side} foot to export.` };
     }
     const many = feet.length > 1;
+    if (input.shouldAbort?.()) {
+        return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
+    }
+    const results = await Promise.all(
+        feet.map(async (foot) => {
+            const options = {
+                apexMaterialId,
+                includeLeaderBlock: input.includeLeaderBlock !== false,
+                deferDownload: true,
+                shouldAbort: input.shouldAbort,
+                onProgress: (step: string) =>
+                    input.onProgress?.(many ? `${SIDE_LABELS[foot]}: ${step}` : step),
+            };
+            return {
+                foot,
+                res: await generateHybridGcode(foot, preset, grindingStyle, overrides, options),
+            };
+        }),
+    );
     const built: { side: Side; filename: string; blob: Blob }[] = [];
-    for (const foot of feet) {
-        if (input.shouldAbort?.()) {
-            return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
-        }
-        const options = {
-            apexMaterialId,
-            includeLeaderBlock: input.includeLeaderBlock !== false,
-            deferDownload: true,
-            shouldAbort: input.shouldAbort,
-            onProgress: (step: string) => input.onProgress?.(many ? `${SIDE_LABELS[foot]}: ${step}` : step),
-        };
-        const res = await generateHybridGcode(foot, preset, grindingStyle, overrides, options);
+    for (const { foot, res } of results) {
         if (res.cancelled || input.shouldAbort?.()) {
             return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
         }

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
+import { shouldDeferTopMeshLoad } from "@/features/clients/start-path";
 import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
 import {
     baseModifierField,
@@ -24,11 +25,16 @@ import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
 import { elementGeometryKey } from "@/lib/geometry/element-geometry-key";
 import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import { type HeightFieldParams, heightAt } from "@/lib/geometry/height-field";
+import { perfMark } from "@/lib/geometry/perf/load-export-perf";
 import {
     hashLiveBottomPattern,
     resolveLiveBottomPattern,
 } from "@/lib/geometry/procedural-wall/live-bottom-pattern";
-import { publishPreviewManufacturingSolid } from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
+import {
+    manufacturingSolidFingerprint,
+    publishPreviewManufacturingSolid,
+    trackManufacturingLoftInflight,
+} from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
 import { manufacturingCacheContext } from "@/lib/geometry/procedural-wall/manufacturing-solid-context";
 import {
     applyForefootPlanShift,
@@ -84,6 +90,7 @@ import { useScanStore } from "@/stores/scan-store";
 import type { DesignState, Side, SideCorrections } from "@/types";
 
 const PREVIEW_LOFT_WATCHDOG_MS = PRINT_LOFT_TIMEOUT_MS;
+const PATTERN_REGEN_DEBOUNCE_MS = 250;
 
 /** Compose key ignores forefoot width so the slider can reuse one unshifted sheet. */
 function forefootViewerCacheKey(input: {
@@ -123,6 +130,8 @@ export interface BaseInsoleGeometryState {
     building: boolean;
     hasBase: boolean;
     elementReference: BufferGeometry | null;
+    /** Stock row still resolving on the server while an interim top mesh may be visible. */
+    stockBaseResolving: boolean;
 }
 
 /**
@@ -163,6 +172,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         return s.phaseBySide[active] === "ready";
     });
     const clinicalStep = useClinicalWorkflowStore((s) => s.step);
+    const designStartPath = useClinicalWorkflowStore((s) => s.designStartPath);
     const setLoftPhase = usePreviewLoftStatusStore((s) => s.setSidePhase);
     const setLoftError = usePreviewLoftStatusStore((s) => s.setError);
     const lastLoftKeyRef = useRef<string | null>(null);
@@ -183,6 +193,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const outRef = useRef<BufferGeometry | null>(null);
     const [geometry, setGeometry] = useState<BufferGeometry | null>(null);
     const [building, setBuilding] = useState(false);
+    const [stockBaseResolving, setStockBaseResolving] = useState(false);
+    const patternDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Load the raw base mesh whenever the referenced asset (or its mirrored variant) changes.
     // Include url so stock bases upgrade from the sync stub to the server row re-trigger load.
@@ -198,6 +210,15 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     // biome-ignore lint/correctness/useExhaustiveDependencies: loadKey captures asset + mirror variant
     useEffect(() => {
         let cancelled = false;
+        if (shouldDeferTopMeshLoad(designStartPath, clinicalStep)) {
+            setBuilding(false);
+            setBaseMeshLoading(side, false);
+            setLoftPhase(side, "idle", "Top mesh loads on Setup");
+            return () => {
+                cancelled = true;
+                setBaseMeshLoading(side, false);
+            };
+        }
         if (forefootBaseRef.current) {
             forefootBaseRef.current.geo.dispose();
             forefootBaseRef.current = null;
@@ -242,18 +263,42 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 stockBaseLoading,
                 stockBaseResolutionState,
             });
-            stockDebug("useBaseInsoleGeometry skipped load — stock base not yet resolved", {
+            stockDebug("useBaseInsoleGeometry interim top while stock base resolves", {
                 side,
                 assetId: ref.assetId,
                 hasUrl,
                 glbPath: ref.glbPath,
             });
-            if (!outRef.current) setGeometry(null);
+            setStockBaseResolving(true);
             setBuilding(stockBaseLoading || stockBaseResolutionState === "loading");
             setBaseMeshLoading(side, true);
-            setLoftPhase(side, "fetching", "Waiting for stock base…");
-            return;
+            setLoftPhase(side, "fetching", "Loading base…");
+            if (!nativeGeoRef.current && !procedural) {
+                perfMark("load:fetch", { side, interim: true });
+                void loadSampleTopGeometry()
+                    .then((geo) => {
+                        if (cancelled || nativeGeoRef.current) {
+                            geo.dispose();
+                            return;
+                        }
+                        nativeGeoRef.current = geo;
+                        baseGeoRef.current = geo.clone();
+                        perfMark("load:parse");
+                        perfMark("load:first-paint", { side, interim: true });
+                        setGeometry(geo.clone());
+                        setBuilding(false);
+                    })
+                    .catch(() => {
+                        if (!cancelled && !outRef.current) setGeometry(null);
+                    });
+            }
+            return () => {
+                cancelled = true;
+                setStockBaseResolving(false);
+                setBaseMeshLoading(side, false);
+            };
         }
+        setStockBaseResolving(false);
 
         // Reload in the background. Keep the last displayed geometry so a
         // remount cannot flash an empty viewport (blue patterns only).
@@ -268,7 +313,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         }
         setBuilding(true);
         setBaseMeshLoading(side, true);
-        setLoftPhase(side, "fetching", "Fetching SAMPLE_Top…");
+        setLoftPhase(side, "fetching", procedural ? "Fetching SAMPLE_Top…" : "Loading base…");
+        perfMark("load:fetch", { side, procedural });
         stockResolveLog("useBaseInsoleGeometry loading resolved stock base", {
             side,
             assetId: ref.assetId,
@@ -305,6 +351,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     nativeGeoRef.current.dispose();
                 }
                 nativeGeoRef.current = geo;
+                perfMark("load:parse", { side });
+                perfMark("load:first-paint", { side });
                 // Phase 2 — register raw L0 once per source asset (J1: mirrored-only safe).
                 if (geo && ref) {
                     try {
@@ -338,6 +386,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 }
                 // Signal size effect / modifier rebuild.
                 setBuilding(false);
+                perfMark("load:base-resolved", { side });
             })
             .catch((e) => {
                 if (cancelled) return;
@@ -357,7 +406,18 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             cancelled = true;
             setBaseMeshLoading(side, false);
         };
-    }, [loadKey, stockGate, setBaseMeshLoading, side, retryNonce, setLoftPhase, setLoftError, wallModel]);
+    }, [
+        loadKey,
+        stockGate,
+        setBaseMeshLoading,
+        side,
+        retryNonce,
+        setLoftPhase,
+        setLoftError,
+        wallModel,
+        designStartPath,
+        clinicalStep,
+    ]);
 
     // Scale native template to the selected shoe size; publish outline/bounds for the sized mesh.
     // biome-ignore lint/correctness/useExhaustiveDependencies: rebuild when native load finishes (building→false)
@@ -593,6 +653,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             };
             void (async () => {
                 if (needPattern) {
+                    if (patternDebounceRef.current) clearTimeout(patternDebounceRef.current);
+                    await new Promise<void>((resolve) => {
+                        patternDebounceRef.current = setTimeout(resolve, PATTERN_REGEN_DEBOUNCE_MS);
+                    });
+                    if (session.cancelled) return;
                     try {
                         await yieldToMain();
                         if (session.cancelled) return;
@@ -637,6 +702,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             heelOverrideMm: heelW,
                         });
                         useBottomPatternStore.getState().ensureGenerated(side, patternKey, sizedPattern);
+                        perfMark("load:pattern-done", { side });
                         if (showCorrectionsSheet && forefootBaseRef.current?.key === cacheKey) {
                             paintForefootDisplay(forefootBaseRef.current.geo);
                         }
@@ -809,7 +875,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     getActiveFootSide(),
                 );
                 const coarse = isCoarsePointerDevice();
-                const deferMirror = coarse && side !== activeSide && !activeReady;
+                const deferMirror =
+                    coarse &&
+                    side !== activeSide &&
+                    !activeReady &&
+                    clinicalStep !== "print" &&
+                    clinicalStep !== "export";
                 session.gen = ++loftGenRef.current;
                 if (deferMirror) {
                     setBaseMeshLoading(side, true);
@@ -835,6 +906,15 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         await yieldToPaint();
                         if (session.cancelled) return;
                         const started = performance.now();
+                        const cacheCtx = {
+                            ...manufacturingCacheContext({
+                                design,
+                                side,
+                                baseAssetId: base?.assetId ?? "",
+                                mirrored: isMirroredForLoad,
+                            }),
+                            printLoftEpoch,
+                        };
                         const solidOptions = printSolidOptions({
                             design,
                             side,
@@ -849,7 +929,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             trimline: printTrim,
                             bottomPattern: livePts,
                         });
-                        try {
+                        const fingerprint = manufacturingSolidFingerprint(solidOptions, cacheCtx);
+                        const loftWork = (async () => {
                             const preview = await reconstructProceduralPreviewInWorker(raw, solidOptions);
                             let placementReference: BufferGeometry;
                             try {
@@ -876,19 +957,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                 preview.geometry.dispose();
                                 return;
                             }
-                            publishPreviewManufacturingSolid(
-                                solidOptions,
-                                {
-                                    ...manufacturingCacheContext({
-                                        design,
-                                        side,
-                                        baseAssetId: base?.assetId ?? "",
-                                        mirrored: isMirroredForLoad,
-                                    }),
-                                    printLoftEpoch,
-                                },
-                                preview.geometry,
-                            );
+                            publishPreviewManufacturingSolid(solidOptions, cacheCtx, preview.geometry);
                             setElementReference(placementReference);
                             if (outRef.current && outRef.current !== workRef.current) {
                                 outRef.current.dispose();
@@ -898,6 +967,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             setGeometry(preview.geometry);
                             setLoftPhase(side, "ready", `Print solid ready (${side})`);
                             usePreviewLoftStatusStore.getState().markElapsed(performance.now() - started);
+                        })();
+                        trackManufacturingLoftInflight(fingerprint, side, loftWork);
+                        try {
+                            await loftWork;
                         } catch (e) {
                             if (session.cancelled) return;
                             const message = e instanceof Error ? e.message : String(e);
@@ -923,6 +996,10 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 session.cancelled = true;
                 session.handle?.cancel();
                 if (session.watchdog) window.clearTimeout(session.watchdog);
+                if (patternDebounceRef.current) {
+                    clearTimeout(patternDebounceRef.current);
+                    patternDebounceRef.current = null;
+                }
                 if (session.gen && loftGenRef.current === session.gen) setBaseMeshLoading(side, false);
             };
         }
@@ -1034,5 +1111,5 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         [],
     );
 
-    return { geometry, building, hasBase: Boolean(base), elementReference };
+    return { geometry, building, hasBase: Boolean(base), elementReference, stockBaseResolving };
 }

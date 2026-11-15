@@ -10,13 +10,16 @@ import {
     APEX_BOUNCE_NOZZLE_TEMP_C,
     APEX_BOUNCE_SPEED_FACTOR,
     APEX_CORE_NOZZLE_TEMP_C,
+    APEX_FORGE_NOZZLE_TEMP_C,
     APEX_V2_INSOLE_LOCKED_PROFILE_ID,
     apexPrintMaterialById,
     apexPrintMaterialForOrderMaterial,
     lockedProfileIdForApexMaterial,
     printerPresetForApexMaterial,
+    REGIONAL_INFILL_PRESETS,
     VERTEX_SLICE_APEX_BOUNCE_PACKET,
     vertexSliceMaterialForApexMaterial,
+    vertexSliceRegional3mfEnabled,
 } from "@/features/exports/apex-print-material";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
@@ -42,7 +45,20 @@ describe("Apex print material", () => {
         expect(lockedProfileIdForApexMaterial("ApexCore")).toBe("apex-v2-insole-95a");
     });
 
-    test("Apex Bounce uses the approved Core deltas and Forge stays disabled", () => {
+    test("ApexLight Foam is the Apex Light order label", () => {
+        expect(apexPrintMaterialForOrderMaterial("ApexLight Foam")).toBe("ApexLight");
+        expect(apexPrintMaterialForOrderMaterial("Apex Light Foam")).toBe("ApexLight");
+        expect(apexPrintMaterialForOrderMaterial("apex-light-foam")).toBe("ApexLight");
+        expect(apexPrintMaterialForOrderMaterial("Apex Light")).toBe("ApexLight");
+        expect(apexPrintMaterialForOrderMaterial("ApexLight")).toBe("ApexLight");
+        expect(apexPrintMaterialForOrderMaterial("apex_light")).toBe("ApexLight");
+        expect(vertexSliceMaterialForApexMaterial("ApexLight")).toBe("apex_light");
+        expect(apexPrintMaterialForOrderMaterial("Apex Forge")).toBe("ApexForge");
+        expect(apexPrintMaterialById("ApexForge").enabled).toBe(true);
+        expect(apexPrintMaterialForOrderMaterial("ApexVylon")).toBeNull();
+    });
+
+    test("Apex Bounce uses the approved Core deltas and Forge matches Core at 245°C", () => {
         expect(apexPrintMaterialById("ApexBounce").enabled).toBe(true);
         expect(lockedProfileIdForApexMaterial("ApexBounce")).toBe(APEX_V2_INSOLE_LOCKED_PROFILE_ID);
         expect(vertexSliceMaterialForApexMaterial("ApexBounce")).toBe("apex_bounce");
@@ -63,8 +79,33 @@ describe("Apex print material", () => {
         expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.runtimeProofRequired.join(" ")).toMatch(/220C/);
         expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.runtimeProofRequired.join(" ")).toMatch(/70C/);
         expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.runtimeProofRequired.join(" ")).toMatch(/0\.8/);
-        expect(apexPrintMaterialById("ApexForge").enabled).toBe(false);
-        expect(() => lockedProfileIdForApexMaterial("ApexForge")).toThrow(/approved/i);
+        expect(apexPrintMaterialById("ApexForge").enabled).toBe(true);
+        expect(lockedProfileIdForApexMaterial("ApexForge")).toBe(APEX_V2_INSOLE_LOCKED_PROFILE_ID);
+        expect(vertexSliceMaterialForApexMaterial("ApexForge")).toBe("apex_forge");
+        expect(APEX_FORGE_NOZZLE_TEMP_C).toBe(245);
+        expect(APEX_CORE_NOZZLE_TEMP_C).toBe(225);
+        expect(printerPresetForApexMaterial("ApexForge").id).toBe(APEX_V2_INSOLE_LOCKED_PROFILE_ID);
+    });
+
+    test("regional hardness uses the same four slice fields and stays gated off", () => {
+        expect(vertexSliceRegional3mfEnabled({})).toBe(false);
+        expect(vertexSliceRegional3mfEnabled({ VERTEXSLICE_REGIONAL_3MF: "1" })).toBe(true);
+        expect(vertexSliceRegional3mfEnabled({ VERTEXSLICE_REGIONAL_3MF: "true" })).toBe(true);
+        expect(vertexSliceRegional3mfEnabled({ VERTEXSLICE_REGIONAL_3MF: "off" })).toBe(false);
+        expect(REGIONAL_INFILL_PRESETS.map((preset) => [preset.hardnessClass, preset.densityPct])).toEqual([
+            ["Extra Soft", 14],
+            ["Soft", 20],
+            ["Medium", 26],
+            ["Hard", 32],
+            ["Extra Hard", 38],
+        ]);
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.sliceFormFieldsSentByOrthocad).toEqual([
+            "profile_id",
+            "material",
+            "infill_density",
+            "model",
+        ]);
+        expect(VERTEX_SLICE_APEX_BOUNCE_PACKET.regionalModelGateEnv).toBe("VERTEXSLICE_REGIONAL_3MF");
     });
 
     describe("ApexPrintMaterialPicker", () => {
@@ -76,7 +117,7 @@ describe("Apex print material", () => {
             container?.remove();
         });
 
-        test("shows Apex Light, Core, and Bounce as selectable and disables Forge", async () => {
+        test("shows Apex Light, Core, Bounce, and Forge as selectable", async () => {
             container = document.createElement("div");
             document.body.appendChild(container);
             const picks: string[] = [];
@@ -108,8 +149,7 @@ describe("Apex print material", () => {
             expect(light.disabled).toBe(false);
             expect(core.disabled).toBe(false);
             expect(bounce.disabled).toBe(false);
-            expect(forge.disabled).toBe(true);
-            expect(forge.title).toMatch(/approved/i);
+            expect(forge.disabled).toBe(false);
             expect(container.textContent).not.toMatch(/TPU 9[058]A/);
             expect(container.querySelector('[data-testid="gcode-material-shore"]')?.textContent).toBe(
                 "Apex Core · Shore 95A",
@@ -126,6 +166,12 @@ describe("Apex print material", () => {
                 select.dispatchEvent(new Event("change", { bubbles: true }));
             });
             expect(picks).toEqual(["ApexBounce", "ApexLight"]);
+
+            await act(async () => {
+                select.value = "ApexForge";
+                select.dispatchEvent(new Event("change", { bubbles: true }));
+            });
+            expect(picks).toEqual(["ApexBounce", "ApexLight", "ApexForge"]);
         });
     });
 });

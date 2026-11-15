@@ -6,6 +6,7 @@ import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
+import { perfMark } from "@/lib/geometry/perf/load-export-perf";
 import { scaleSourceShapeToFootprint } from "@/lib/geometry/shoe-size";
 import { hasActiveComposedTextMarking } from "@/lib/geometry/text-marking/compose";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
@@ -20,6 +21,7 @@ import { insetsForScanPattern, PATTERN_SOURCE_SYNTHETIC, syntheticBottomPattern 
 import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
 import {
+    awaitManufacturingLoftInflight,
     type ManufacturingSolidContext,
     manufacturingSolidFingerprint,
     noteManufacturingSolidBuilt,
@@ -203,9 +205,11 @@ export async function buildProceduralExportSolid(
     const side = cache?.side ?? options.side ?? (options.mirrored ? "left" : "right");
     const fingerprint = cache ? manufacturingSolidFingerprint(options, cache) : "";
     if (cache && fingerprint) {
+        await awaitManufacturingLoftInflight(fingerprint, side);
         const started = performance.now();
         const cached = peekManufacturingSolid(fingerprint, side);
         if (cached) {
+            perfMark("export:loft", { side, warm: true });
             const geometry = await applyExportText(cached, options);
             tagManufacturingSolid(geometry, fingerprint, true);
             noteManufacturingSolidReused(side, performance.now() - started);
@@ -213,6 +217,7 @@ export async function buildProceduralExportSolid(
         }
     }
 
+    perfMark("export:loft", { side, warm: false });
     noteManufacturingSolidBuilt(side);
     let raw = await loadSampleTopGeometry();
     if (options.mirrored) {

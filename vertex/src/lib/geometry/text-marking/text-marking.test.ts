@@ -54,7 +54,9 @@ describe("text marking controls", () => {
     test("UI/geometry bounds: cap, depth, u per surface", () => {
         const bottom = textControlBounds("bottom");
         expect(bottom.capMin).toBe(2.5);
-        expect(bottom.capDefault).toBe(6);
+        expect(bottom.capDefault).toBe(12);
+        expect(defaultTextMarking("bottom").capHeightMm).toBe(12);
+        expect(defaultTextMarking("bottom").bold).toBe(true);
         expect(bottom.capMax).toBe(12);
         expect(bottom.depthMin).toBe(0.3);
         expect(bottom.depthDefault).toBe(0.6);

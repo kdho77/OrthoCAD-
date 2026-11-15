@@ -2,6 +2,7 @@
 // Headless caller for the UI Export loft. The mesh is internal. G-code is the deliverable.
 
 import { buildPrinterFootManufacturingStl } from "@/features/exports/export-service";
+import { buildVertexSliceModel } from "@/features/exports/vertexslice-regional-model";
 import {
     type ElementAssetReader,
     injectElementAssetSource,
@@ -122,6 +123,31 @@ export async function buildFinalizedFootFromSavedSettings(input: {
         elementsBaseDir: input.elementsBaseDir,
         elementAssetReader: input.elementAssetReader,
     });
+}
+
+/**
+ * Modifier 3MF for one saved foot. The shell is the leader-blocked STL from
+ * {@link buildFinalizedFootFromSavedSettings}. Null when that foot has no regions.
+ * Does not install the design store; prisms come from the saved parameters.
+ */
+export async function buildRegional3mfFromSavedSettings(input: {
+    settingsJson: unknown;
+    side: Side;
+    manufacturingStl: ArrayBuffer;
+}): Promise<{ bytes: Uint8Array; regionCount: number } | null> {
+    const settings = readStoredDesignSettings(input.settingsJson);
+    if (settings?.method === "milling_3axis") {
+        throw new SavedDesignMeshError("Milled orders are not belt G-code");
+    }
+    const model = await buildVertexSliceModel({
+        design: designStateFromSavedSettings(input.settingsJson),
+        side: input.side,
+        manufacturingStl: input.manufacturingStl,
+        stlFilename: `${input.side}.stl`,
+        regional3mfEnabled: true,
+    });
+    if (model.contentType !== "model/3mf") return null;
+    return { bytes: model.bytes, regionCount: model.regionCount };
 }
 
 /** Both feet or neither. A failed second foot does not return the first. */

@@ -1,20 +1,26 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { CaseSummaryBar } from "@/components/clinical/CaseSummaryBar";
 import { ClinicalStepRail } from "@/components/clinical/ClinicalStepRail";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { AppVersionWatcher } from "@/components/layout/AppVersionWatcher";
 import { KernelLoadingBanner } from "@/components/layout/KernelLoadingBanner";
+import { NewVersionBanner } from "@/components/layout/NewVersionBanner";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { SessionRecoveryDialog } from "@/components/layout/SessionRecoveryDialog";
+import { StaleBuildExportDialog } from "@/components/layout/StaleBuildExportDialog";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { type NavItem, TopNav } from "@/components/layout/TopNav";
 import { PrescriptionUpload } from "@/components/prescription-upload/PrescriptionUpload";
 import { Viewer3D } from "@/components/viewer/Viewer3D";
 import { AdminApp } from "@/features/admin/AdminApp";
 import { navigate, useLocationPath } from "@/features/admin/admin-nav";
+import { ProductTypeBar } from "@/features/afo/ProductTypeBar";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { ClientFilePage } from "@/features/clients/ClientFilePage";
 import { ClientListPage } from "@/features/clients/ClientListPage";
-import { AfoPlaceholder, EditorChrome, useDesignRoute } from "@/features/clients/EditorChrome";
+import { CLIENT_LIST_PATH } from "@/features/clients/client-list-nav";
+import { EditorChrome, useDesignRoute } from "@/features/clients/EditorChrome";
+import { usePersistDesignWorkflow } from "@/features/clients/usePersistDesignWorkflow";
 import { InactivityGuard } from "@/features/clients/InactivityGuard";
 import { parseClinicalPath } from "@/features/clients/routes";
 import { exportDesign } from "@/features/exports/export-service";
@@ -62,6 +68,9 @@ export default function App() {
 
     return (
         <>
+            <AppVersionWatcher />
+            <NewVersionBanner />
+            <StaleBuildExportDialog />
             <InactivityGuard />
             <ClinicalRoutes pathname={pathname} />
         </>
@@ -86,7 +95,8 @@ function ClinicalRoutes({ pathname }: { pathname: string }) {
 }
 
 export function CadApp({ clientId, designId }: { clientId: string; designId: string }) {
-    const { record, resolving } = useDesignRoute(clientId, designId);
+    const { record, ready, resolving } = useDesignRoute(clientId, designId);
+    usePersistDesignWorkflow(designId, ready && record?.kind !== "afo");
     const [rxOpen, setRxOpen] = useState(false);
     const applyPrescription = useDesignStore((s) => s.applyPrescription);
     const method = useDesignStore((s) => s.design.method);
@@ -147,9 +157,11 @@ export function CadApp({ clientId, designId }: { clientId: string; designId: str
     });
 
     const go = (item: NavItem) => {
-        if (item === "Clients") navigate("/clients");
+        if (item === "Clients") navigate(CLIENT_LIST_PATH);
         else navigate("/production/queue");
     };
+
+    const leaveNavigateRef = useRef<(href: string) => void>((href) => navigate(href));
 
     return (
         <div className="flex h-full flex-col">
@@ -159,7 +171,16 @@ export function CadApp({ clientId, designId }: { clientId: string; designId: str
                 active="Clients"
                 onNavigate={go}
                 onOpenPrescription={() => setRxOpen(true)}
-                leading={<EditorChrome clientId={clientId} designId={designId} />}
+                onLogoNavigate={() => leaveNavigateRef.current(CLIENT_LIST_PATH)}
+                leading={
+                    <EditorChrome
+                        clientId={clientId}
+                        designId={designId}
+                        onRegisterLeave={(leave) => {
+                            leaveNavigateRef.current = leave;
+                        }}
+                    />
+                }
             />
             {resolving ? (
                 <div className="flex min-h-0 flex-1 flex-col">
@@ -167,20 +188,17 @@ export function CadApp({ clientId, designId }: { clientId: string; designId: str
                         Loading…
                     </div>
                 </div>
-            ) : afo || !record ? (
+            ) : !record ? (
                 <div className="flex min-h-0 flex-1 flex-col">
-                    {record ? (
-                        <AfoPlaceholder />
-                    ) : (
-                        <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-                            This design is not in the current session.
-                        </div>
-                    )}
+                    <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+                        This design is not in the current session.
+                    </div>
                 </div>
             ) : (
                 <ErrorBoundary>
                     <div className="flex min-h-0 flex-1">
                         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                            {afo ? <ProductTypeBar /> : null}
                             <ClinicalStepRail />
                             <CaseSummaryBar />
                             {viewport === "phone" ? (

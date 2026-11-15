@@ -68,7 +68,8 @@ export const CLINICAL_LIMITS = {
     skiveLocationPct: { min: 0, max: 100 },
     archHeightMm: { min: -10.0, max: 14.0 },
     archFillMm: { min: 0, max: 0 },
-    archEaseMm: { min: 0, max: 6.0 },
+    /** Lengthwise medial-arch stretch. Does not change peak height or apex. */
+    archElongationMm: { min: 0, max: 5 },
     heelCupHeightMm: { min: 0, max: 12.0 },
     /** Biomechanics lock 2026-09-20: usable 12–18 mm when enabled; 0 = off (see clamp below). */
     heelCupDepthMm: { min: 12, max: 18.0 },
@@ -166,7 +167,7 @@ export function constrainSideCorrections(corrections: SideCorrections, thickness
         ["lateralSkiveMm", CLINICAL_LIMITS.lateralSkiveMm],
         ["archHeightMm", CLINICAL_LIMITS.archHeightMm],
         ["archFillMm", CLINICAL_LIMITS.archFillMm],
-        ["archEaseMm", CLINICAL_LIMITS.archEaseMm],
+        ["archElongationMm", CLINICAL_LIMITS.archElongationMm],
         ["heelCupHeightMm", CLINICAL_LIMITS.heelCupHeightMm],
         ["heelCupWidthMm", CLINICAL_LIMITS.heelCupWidthMm],
         ["forefootWidthMm", CLINICAL_LIMITS.forefootWidthMm],

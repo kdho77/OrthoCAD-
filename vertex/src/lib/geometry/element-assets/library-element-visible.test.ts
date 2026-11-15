@@ -114,9 +114,11 @@ async function maxDeltaZInsideFootprint(
         const h = sampleGridBilinear(grid, a[i * 3]! - anchor.x, a[i * 3 + 1]! - anchor.y);
         if (flowField) {
             const { u, vSigned } = vertexFootprintAt(anchor.frame, a, i);
-            // Cluffy has zero additional edge feather: the authored GLB height
-            // is attenuated only by the existing insole rim blend.
-            const expected = h * rimBandFadeFactor(u, vSigned, flowField);
+            // Cluffy already feathers to 0 on the authored border. The solid
+            // keeps that height through the sheet edge so the pad stays flush
+            // with the preview. Other flow assets still take the print-rim quintic.
+            const fade = el.kind === "cluffy_wedge" ? 1 : rimBandFadeFactor(u, vSigned, flowField);
+            const expected = h * fade;
             expectedFlowMaxDz = Math.max(expectedFlowMaxDz, expected);
             maxFlowError = Math.max(maxFlowError, Math.abs(b[i * 3 + ta]! - a[i * 3 + ta]! - expected));
         }
@@ -234,10 +236,10 @@ describe("library element visible placement", () => {
                 if (spec.kind === "cluffy_wedge") {
                     expect(local.maxDz).toBeCloseTo(local.expectedFlowMaxDz, 4);
                     expect(local.maxFlowError).toBeLessThan(0.00001);
-                    // The approved medial hallux anchor lies in the print rim blend.
-                    // It must not be moved laterally or inflated to bypass that blend.
+                    // Anchor stays on the medial hallux. The solid keeps the
+                    // authored peak instead of letting the rim quintic eat it.
                     expect(placed.position.y * (side === "right" ? 1 : -1)).toBeGreaterThan(0);
-                    expect(local.maxDz).toBeLessThan(local.sampledMaxZ - 0.1);
+                    expect(local.maxDz).toBeGreaterThan(local.sampledMaxZ - 0.05);
                 } else {
                     expect(local.maxDz).toBeGreaterThan(spec.expectedMm - 0.2);
                     expect(local.maxDz).toBeLessThan(spec.expectedMm + 0.2);

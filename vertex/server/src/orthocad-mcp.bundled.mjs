@@ -1,4 +1,4 @@
-// orthocad-mcp-http-bundle b2d1cb129a46feb22ce44277287d2c75b3394e3775ef6e9cb1cb334133959143
+// orthocad-mcp-http-bundle 501e6201d33488b278c2b3c5a297aaa3f449b2750e755f35c99f48a044e2b733
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -9719,7 +9719,8 @@ function createManufacturingClient(options) {
         useSavedDesignMesh: true,
         fileName: input.fileName,
         patientName: input.patientName,
-        hardness: input.hardness
+        hardness: input.hardness,
+        material: input.material
       });
     },
     /** Call site: vertex/server/src/routers/manufacturing.ts getGcodeDownloadUrl */
@@ -20706,6 +20707,7 @@ var MCP_TOOL_REQUIRED_SCOPES = {
   list_designs_by_order: ["design:read"],
   get_design_params: ["design:read"],
   prepare_manufacturing_stl_upload: ["manufacturing:prepare"],
+  list_materials: ["manufacturing:generate"],
   generate_gcode: ["manufacturing:generate"],
   generate_central_fab_stl: ["manufacturing:generate"],
   get_production: ["manufacturing:download"],
@@ -24902,6 +24904,73 @@ var EMPTY_COMPLETION_RESULT = {
 // packages/mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
 
+// vertex/shared/export-filename.ts
+var EXPORT_PATIENT_FALLBACK = "Unknown_Patient";
+var DEFAULT_EXPORT_MATERIAL_ID = "ApexCore";
+var MATERIAL_ID_BY_COMPACT = /* @__PURE__ */ new Map([
+  ["apexlight", "ApexLight"],
+  ["apexlightfoam", "ApexLight"],
+  ["apexcore", "ApexCore"],
+  ["apexcomfort", "ApexCore"],
+  ["apexbounce", "ApexBounce"],
+  ["apexforge", "ApexForge"],
+  ["apex_light", "ApexLight"],
+  ["apex_core", "ApexCore"],
+  ["apex_bounce", "ApexBounce"],
+  ["apex_forge", "ApexForge"]
+]);
+function compactMaterialKey(value) {
+  return value.trim().toLowerCase().replace(/[\s_-]+/g, "");
+}
+function canonicalExportMaterialName(material) {
+  const raw = material?.trim() ?? "";
+  if (!raw) return DEFAULT_EXPORT_MATERIAL_ID;
+  const compact = compactMaterialKey(raw);
+  const mapped = MATERIAL_ID_BY_COMPACT.get(compact);
+  if (mapped) return mapped;
+  if (/^apex[a-z]+$/i.test(raw.replace(/[\s_-]+/g, ""))) {
+    const title = raw.replace(/[\s_-]+/g, "");
+    const match = title.match(/^apex(.+)$/i);
+    if (match?.[1]) {
+      const tail = match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase();
+      return `Apex${tail}`;
+    }
+  }
+  return sanitizeFilenamePart(raw);
+}
+var UNSAFE_FILENAME_PART = /[^\p{L}\p{N}.'’-]+/gu;
+function sanitizeFilenamePart(part) {
+  const trimmed = part?.trim() ?? "";
+  if (!trimmed) return "";
+  return trimmed.replace(UNSAFE_FILENAME_PART, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+}
+function exportPatientFilenameSegment(firstName, lastName) {
+  const first = sanitizeFilenamePart(firstName);
+  const last = sanitizeFilenamePart(lastName);
+  const parts = [first, last].filter(Boolean);
+  if (parts.length === 0) return EXPORT_PATIENT_FALLBACK;
+  return parts.join("_");
+}
+function parsePatientNameForExport(patientName) {
+  const trimmed = patientName?.trim() ?? "";
+  if (!trimmed) return { firstName: "", lastName: "" };
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return { firstName: "", lastName: "" };
+  if (tokens.length === 1) return { firstName: tokens[0] ?? "", lastName: "" };
+  return { firstName: tokens[0] ?? "", lastName: tokens.slice(1).join(" ") };
+}
+function normalizeExtension(ext) {
+  const trimmed = ext.trim();
+  if (!trimmed) return "";
+  return trimmed.startsWith(".") ? trimmed : `.${trimmed}`;
+}
+function buildExportFilename(input) {
+  const patient = exportPatientFilenameSegment(input.firstName, input.lastName);
+  const material = canonicalExportMaterialName(input.material);
+  const extension = normalizeExtension(input.ext);
+  return `${patient}_${material}_${input.side}${extension}`;
+}
+
 // packages/mcp/src/tools/handlers.ts
 init_integration_client();
 
@@ -25008,8 +25077,7 @@ function voAttachArgumentError(args, now = Date.now()) {
     const downloadUrl = readShortText(file.download_url, "download_url");
     if (downloadUrl && typeof downloadUrl !== "string") return downloadUrl.error;
     const contentBase64 = file.content_base64 === void 0 || file.content_base64 === null ? null : file.content_base64;
-    if (contentBase64 !== null && typeof contentBase64 !== "string")
-      return "content_base64 must be a string";
+    if (contentBase64 !== null && typeof contentBase64 !== "string") return "content_base64 must be a string";
     if (Boolean(downloadUrl) === Boolean(contentBase64)) {
       return "file must include download_url or content_base64, not both";
     }
@@ -25079,14 +25147,17 @@ function centralFabStlFilename(side, requested) {
   }
   throw new Error("Central-fab STL filename must start with the foot and end with .stl");
 }
-function gcodeFilename(side, requested) {
-  const raw = requested?.trim() ?? "";
-  const base = raw.split(/[/\\]/).pop()?.trim() ?? "";
-  const lowered = base.toLowerCase();
-  if (base && lowered.length <= 180 && !lowered.includes("..") && FILENAME_RE.test(base) && lowered.endsWith(".gcode") && !lowered.includes(".stl") && lowered.startsWith(side)) {
-    return lowered;
-  }
-  return `${side}.gcode`;
+function gcodeFilename(side, file, order) {
+  const patientName = file.patient_name?.trim() || order.patient_name?.trim() || "";
+  const patient = parsePatientNameForExport(patientName);
+  const material = canonicalExportMaterialName(file.material ?? order.material);
+  return buildExportFilename({
+    firstName: patient.firstName,
+    lastName: patient.lastName,
+    material,
+    side: side === "right" ? "R" : "L",
+    ext: "gcode"
+  });
 }
 function buildVoAttachFilesHandoff(input) {
   const orderId = input.order_id.trim();
@@ -25104,7 +25175,7 @@ function buildVoAttachFilesHandoff(input) {
     if (!centralFab && file.filename && /\.stl($|\?)/i.test(file.filename)) {
       throw new Error("STL files are not attached. G-code only.");
     }
-    const filename = centralFab ? centralFabStlFilename(file.side, file.filename) : gcodeFilename(file.side, file.filename);
+    const filename = centralFab ? centralFabStlFilename(file.side, file.filename) : gcodeFilename(file.side, file, input);
     if (!centralFab && filename.toLowerCase().endsWith(".stl")) {
       throw new Error("STL files are not attached. G-code only.");
     }
@@ -25180,6 +25251,81 @@ function buildVoAttachFilesHandoff(input) {
   };
 }
 
+// packages/mcp/src/tools/print-materials.ts
+var LOCKED_INSOLE_PRESET_ID = "apex-v2-insole-95a";
+var CANONICAL_INSOLE_PRINT_MATERIALS = {
+  locked_preset_id: LOCKED_INSOLE_PRESET_ID,
+  default_material: "apex_core",
+  materials: [
+    {
+      id: "ApexLight",
+      label: "Apex Light",
+      vertex_slice_material: "apex_light",
+      enabled: true,
+      locked_preset_id: LOCKED_INSOLE_PRESET_ID,
+      aliases: ["ApexLight", "Apex Light", "apex_light", "ApexLight Foam"]
+    },
+    {
+      id: "ApexCore",
+      label: "Apex Core",
+      vertex_slice_material: "apex_core",
+      enabled: true,
+      locked_preset_id: LOCKED_INSOLE_PRESET_ID,
+      aliases: ["ApexCore", "Apex Core", "apex_core", "ApexComfort", "Apex Comfort"]
+    },
+    {
+      id: "ApexBounce",
+      label: "Apex Bounce",
+      vertex_slice_material: "apex_bounce",
+      enabled: true,
+      locked_preset_id: LOCKED_INSOLE_PRESET_ID,
+      aliases: ["ApexBounce", "Apex Bounce", "apex_bounce"]
+    },
+    {
+      id: "ApexForge",
+      label: "Apex Forge",
+      vertex_slice_material: "apex_forge",
+      enabled: true,
+      locked_preset_id: LOCKED_INSOLE_PRESET_ID,
+      aliases: ["ApexForge", "Apex Forge", "apex_forge"]
+    }
+  ]
+};
+function canonicalInsolePrintMaterialCatalog() {
+  return CANONICAL_INSOLE_PRINT_MATERIALS;
+}
+function compactMaterialKey2(value) {
+  return value.trim().toLowerCase().replace(/[\s_-]+/g, "");
+}
+var SLICE_ID_BY_COMPACT_KEY = /* @__PURE__ */ new Map();
+for (const material of CANONICAL_INSOLE_PRINT_MATERIALS.materials) {
+  for (const key of [material.id, material.label, material.vertex_slice_material, ...material.aliases]) {
+    const compact = compactMaterialKey2(key);
+    if (compact) SLICE_ID_BY_COMPACT_KEY.set(compact, material.vertex_slice_material);
+  }
+}
+function callerPrintMaterial(material) {
+  const raw = material?.trim() ?? "";
+  if (!raw) return void 0;
+  const id = SLICE_ID_BY_COMPACT_KEY.get(compactMaterialKey2(raw));
+  if (!id) {
+    throw new Error(
+      `Unknown print material "${raw}". Use apex_core, apex_light, apex_bounce, or apex_forge. Nothing was substituted.`
+    );
+  }
+  return raw;
+}
+function callerPrintPreset(presetId) {
+  const raw = presetId?.trim() ?? "";
+  if (!raw) return void 0;
+  if (raw !== LOCKED_INSOLE_PRESET_ID) {
+    throw new Error(
+      `Printer G-code requires locked profile ${LOCKED_INSOLE_PRESET_ID}. preset_id "${raw}" was rejected and was not substituted.`
+    );
+  }
+  return raw;
+}
+
 // packages/mcp/src/tools/schemas.ts
 var integrationSourceSchema = external_exports.enum(["vo2", "orthocloud"]);
 var sideSchema = external_exports.enum(["left", "right"]);
@@ -25198,16 +25344,19 @@ var prepareManufacturingStlUploadInputSchema = external_exports.object({
   side: sideSchema,
   file_name: external_exports.string().max(200).optional()
 });
+var listMaterialsInputSchema = external_exports.object({}).strict();
+var MATERIAL_FIELD_DESCRIPTION = 'Insole print material. Omit for apex_core (Apex Core). Enabled values: apex_light (Apex Light; aliases ApexLight, "Apex Light", "ApexLight Foam"), apex_core (Apex Core; aliases ApexCore, "Apex Core", ApexComfort, "Apex Comfort"), apex_bounce (Apex Bounce; aliases ApexBounce, "Apex Bounce"), apex_forge (Apex Forge; aliases ApexForge, "Apex Forge"). Spaces, underscores, and hyphens are ignored. ApexLight Foam is Apex Light, not a separate product. Unknown names are rejected. Nothing is substituted. Call list_materials for the canonical ids, labels, aliases, and enabled flags.';
+var PRESET_FIELD_DESCRIPTION = "Locked process profile apex-v2-insole-95a. Omit preset_id or pass that exact id. Any other preset_id is rejected and is not substituted. The same locked profile is used for every enabled insole material.";
 var generateGcodeInputObjectSchema = external_exports.object({
   design_id: external_exports.string().uuid().optional(),
   side: sideSchema.optional(),
-  preset_id: external_exports.string().min(1),
+  preset_id: external_exports.string().min(1).optional().describe(PRESET_FIELD_DESCRIPTION),
   /** Required unless use_saved_design. The saved-design path does not accept an STL deliverable. */
   stl_storage_key: external_exports.string().min(1).optional(),
   output_type: external_exports.enum(["gcode", "stl"]).default("gcode"),
   belt_angle_deg: external_exports.number().min(10).max(80).optional(),
   file_name: external_exports.string().max(200).optional(),
-  material: external_exports.string().max(80).optional(),
+  material: external_exports.string().max(80).optional().describe(MATERIAL_FIELD_DESCRIPTION),
   /** Server builds the canonical Export mesh and returns per-foot belt G-code only. */
   use_saved_design: external_exports.boolean().optional(),
   /** Optional bottom engrave label for this export (same sanitize as Print/Export textMarking). */
@@ -25278,7 +25427,7 @@ var shoeSystemSchema = external_exports.preprocess(
 );
 var widthSchema = external_exports.preprocess(
   (value) => typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, "_") : value,
-  external_exports.enum(["narrow", "medium", "wide", "extra_narrow", "extra_wide"])
+  external_exports.enum(["narrow", "medium", "wide", "extra_narrow", "extra_wide", "xx_wide"])
 );
 var archSchema = external_exports.preprocess(
   (value) => typeof value === "string" ? value.trim().toLowerCase() : value,
@@ -25289,6 +25438,8 @@ var savedDesignSliderSchema = external_exports.object({
   rearfoot_posting_deg: external_exports.number().finite().optional(),
   medial_skive_mm: external_exports.number().finite().optional(),
   lateral_skive_mm: external_exports.number().finite().optional(),
+  arch_elongation_mm: external_exports.number().finite().optional(),
+  /** Legacy. Accepted so old catalogs load. Not copied onto the design. */
   arch_ease_mm: external_exports.number().finite().optional(),
   heel_cup_depth_mm: external_exports.number().finite().optional(),
   heel_cup_height_mm: external_exports.number().finite().optional(),
@@ -25303,6 +25454,15 @@ var wedgeSchema = external_exports.object({
   value: external_exports.number().finite(),
   unit: external_exports.enum(["mm", "deg"]),
   degree_mode: external_exports.enum(["local", "station"]).optional()
+}).strict();
+var flangeLevelSchema = external_exports.preprocess(
+  (value) => typeof value === "string" ? value.trim().toLowerCase() : value,
+  external_exports.enum(["mild", "standard", "high"])
+);
+var flangeSideSchema = external_exports.object({
+  medial_mm: external_exports.number().finite().optional(),
+  lateral_mm: external_exports.number().finite().optional(),
+  level: flangeLevelSchema.optional()
 }).strict();
 var savedDesignCatalogSchema = external_exports.object({
   shoe_size: external_exports.object({
@@ -25348,6 +25508,10 @@ var savedDesignCatalogSchema = external_exports.object({
    * Omitted keeps the 2 mm default. Out of range is rejected.
    */
   thickness_mm: external_exports.number().finite().min(1.5).max(8).optional(),
+  flange: external_exports.object({
+    left: flangeSideSchema.optional(),
+    right: flangeSideSchema.optional()
+  }).strict().optional(),
   rx_text: external_exports.string().max(8e3).optional(),
   notes: external_exports.string().max(8e3).optional(),
   rigidity: external_exports.string().max(80).optional(),
@@ -25374,6 +25538,8 @@ var attachFileSchema = external_exports.object({
   /** CAD provenance only. Not copied into the VO file object. */
   storage_key: external_exports.string().trim().min(1).max(500).optional(),
   filename: external_exports.string().max(200).optional(),
+  patient_name: external_exports.string().max(200).optional(),
+  material: external_exports.string().max(80).optional(),
   content_base64: external_exports.string().min(1).optional(),
   download_url: external_exports.string().min(1).max(4e3).optional(),
   expires_at: external_exports.string().min(1).max(80).optional()
@@ -25383,6 +25549,8 @@ var prepareVoAttachmentInputSchema = external_exports.object({
   order_id: external_exports.string().uuid(),
   /** CAD provenance only. Not sent; VO would check the design link. */
   design_id: external_exports.string().uuid().optional(),
+  patient_name: external_exports.string().max(200).optional(),
+  material: external_exports.string().max(80).optional(),
   files: external_exports.array(attachFileSchema).min(1).max(2)
 }).strict();
 var persistSavedDesignSnapshotInputSchema = external_exports.object({
@@ -25414,8 +25582,13 @@ var MCP_TOOL_DEFINITIONS = [
     inputSchema: prepareManufacturingStlUploadInputSchema
   },
   {
+    name: "list_materials",
+    description: 'Read-only catalog of insole print materials for generate_gcode. No arguments and no writes. Returns locked_preset_id (apex-v2-insole-95a), default_material (apex_core when material is omitted), and materials[] with id, label, vertex_slice_material, enabled, locked_preset_id, aliases, and disabled_reason when disabled. generate_gcode material accepts vertex_slice_material or any alias. Spaces, underscores, and hyphens are ignored. Apex Light / apex_light aliases include "ApexLight Foam" (the VertexOrders label, not a new product). Apex Core / apex_core aliases include ApexComfort. Apex Bounce / apex_bounce and Apex Forge / apex_forge are enabled. Unknown material names are rejected. Nothing is substituted. preset_id must be omitted or apex-v2-insole-95a. Any other preset_id is rejected and not substituted.',
+    inputSchema: listMaterialsInputSchema
+  },
+  {
     name: "generate_gcode",
-    description: "Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. The server lofts and slices after that response. Poll get_production. Download with get_export_download only after succeeded. A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset. No STL deliverable and no G-code bytes. Omitting side enqueues both feet. Legacy mode still calls manufacturing.generateSolid \u2192 Python /manufacture with stl_storage_key. PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck.",
+    description: 'Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. The server lofts and slices after that response. Poll get_production. Download with get_export_download only after succeeded. A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset. No STL deliverable and no G-code bytes. Omitting side enqueues both feet. Legacy mode still calls manufacturing.generateSolid \u2192 Python /manufacture with stl_storage_key. PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck. material: omit for apex_core, or pass apex_light, apex_core, apex_bounce, apex_forge, or a list_materials alias ("ApexLight Foam" is apex_light). Unknown materials are rejected and not substituted. preset_id: omit or pass apex-v2-insole-95a. Any other preset_id is rejected and not substituted. Every enabled insole material keeps that locked profile.',
     inputSchema: generateGcodeInputObjectSchema
   },
   {
@@ -25445,12 +25618,12 @@ var MCP_TOOL_DEFINITIONS = [
   },
   {
     name: "persist_saved_design_snapshot",
-    description: "Update one existing design's settingsJson in place with a loftable SAMPLE_Top parameter snapshot for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide), arch (low|medium|standard|high \u2192 \u22123.5|0|0|+3 mm), flexible_foot (true \u2192 apex +4 mm on both feet), elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, sliders.lateral_skive_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit, thickness_mm (shell thickness, design.thicknessMm, 1.5\u20138 mm inclusive). thickness_mm is the labelled shell/base clearance, not the zonal rear/mid/fore walls. When set, settings store that clearance and uniform shell mode so the loft uses the shell-thickness slider. When omitted, thickness stays 2 mm and the zonal shell is unchanged. Out of range is 422 and is not clamped. Ignored and never mapped: rx_text, notes, rigidity, extra_soft. hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. Absent width is Medium and recorded as defaulted, not prescribed. 422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
+    description: "Update one existing design's settingsJson in place with a loftable SAMPLE_Top parameter snapshot for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide|xx_wide), arch (low|medium|standard|high \u2192 \u22123.5|0|0|+3 mm), flexible_foot (true \u2192 apex +4 mm on both feet), elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), flange.left, flange.right, flange.left.medial_mm, flange.left.lateral_mm, flange.left.level, flange.right.medial_mm, flange.right.lateral_mm, flange.right.level (per-foot medial/lateral flange 0\u20138 mm; omit medial_mm and lateral_mm for 3 mm default, mild level 2 mm, standard/unspecified 3 mm, high 6 mm; out of range is 422, not clamped; omitted flange leaves flanges unchanged), rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit, thickness_mm (shell thickness, design.thicknessMm, 1.5\u20138 mm inclusive). thickness_mm is the labelled shell/base clearance, not the zonal rear/mid/fore walls. When set, settings store that clearance and uniform shell mode so the loft uses the shell-thickness slider. When omitted, thickness stays 2 mm and the zonal shell is unchanged. Out of range is 422 and is not clamped. Ignored and never mapped: rx_text, notes, rigidity, extra_soft. sliders.arch_ease_mm is accepted and not applied (migrated to 0). sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. Absent width is Medium and recorded as defaulted, not prescribed. 422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
     inputSchema: persistSavedDesignSnapshotInputSchema
   },
   {
     name: "create_saved_design",
-    description: "Refresh the dogfood SAMPLE_Top design already bound to an existing VertexOrders order. Source is vo2 and the tenant is the internal dogfood tenant. Does not take a clinic tenant id. client_id is optional and only confirms the client already stored on that order. patient_name, an external client id, and a name are not accepted as identity. given_name and family_name are chart labels for a new client after the server verifier and are not sent as order-owner proof. A different client_id, more than one link, or a client outside the dogfood tenant fails closed with no write and no tenant change. When the order-owner verifier is unconfigured or refuses, this does not create a client or a design and does not call integration client upsert. A server verifier may bind the verified person for this dogfood order. Caller fields are not that verifier. CAD-operator scopes cannot assert the order's person. A bound refresh uses the saved-design snapshot rules. No scan upload. Optional catalog.thickness_mm sets shell thickness in mm (1.5\u20138, default 2 when omitted). Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. Medium width is used only when width is absent and is recorded as defaulted, not prescribed. Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
+    description: "Refresh the dogfood SAMPLE_Top design already bound to an existing VertexOrders order. Source is vo2 and the tenant is the internal dogfood tenant. Does not take a clinic tenant id. client_id is optional and only confirms the client already stored on that order. patient_name, an external client id, and a name are not accepted as identity. given_name and family_name are chart labels for a new client after the server verifier and are not sent as order-owner proof. A different client_id, more than one link, or a client outside the dogfood tenant fails closed with no write and no tenant change. When the order-owner verifier is unconfigured or refuses, this does not create a client or a design and does not call integration client upsert. A server verifier may bind the verified person for this dogfood order. Caller fields are not that verifier. CAD-operator scopes cannot assert the order's person. A bound refresh uses the saved-design snapshot rules. No scan upload. Optional catalog.thickness_mm sets shell thickness in mm (1.5\u20138, default 2 when omitted). Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. flange.left / flange.right set medial_mm and lateral_mm (0\u20138) per foot; omit those mm for 3 mm default, or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. Medium width is used only when width is absent and is recorded as defaulted, not prescribed. Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
     inputSchema: createSavedDesignInputSchema
   },
   {
@@ -25461,6 +25634,17 @@ var MCP_TOOL_DEFINITIONS = [
 ];
 
 // packages/mcp/src/tools/handlers.ts
+function mcpGcodeExportFilename(side, patientName, material, fileNameOverride) {
+  if (fileNameOverride?.trim()) return fileNameOverride.trim();
+  const patient = parsePatientNameForExport(patientName);
+  return buildExportFilename({
+    firstName: patient.firstName,
+    lastName: patient.lastName,
+    material: canonicalExportMaterialName(material),
+    side: side === "right" ? "R" : "L",
+    ext: "gcode"
+  });
+}
 function isUserQuestion(value) {
   if (!value || typeof value !== "object") return false;
   const row = value;
@@ -25531,7 +25715,7 @@ function publicProductionFromResult(result) {
     download: status === "succeeded" && productionId ? { tool: "get_export_download", production_id: downloadId ?? productionId } : null
   };
 }
-function gcodeFileFromResult(side, result) {
+function gcodeFileFromResult(side, result, filename) {
   const status = typeof result.status === "string" && PRODUCTION_STATUSES.has(result.status) ? result.status : null;
   if (status) {
     const productionId2 = textField(result, "productionId", "production_id");
@@ -25547,7 +25731,8 @@ function gcodeFileFromResult(side, result) {
     production_id: productionId,
     download_url: download,
     storage_key: storageKey,
-    content_base64: contentBase64
+    content_base64: contentBase64,
+    ...filename ? { filename } : {}
   };
 }
 function integrationNotReady(error2) {
@@ -25606,8 +25791,14 @@ async function dispatchTool(name, args, deps) {
         fileName: input.file_name
       });
     }
+    case "list_materials": {
+      listMaterialsInputSchema.parse(args ?? {});
+      return canonicalInsolePrintMaterialCatalog();
+    }
     case "generate_gcode": {
       const input = generateGcodeInputSchema.parse(args);
+      const material = callerPrintMaterial(input.material);
+      const presetId = callerPrintPreset(input.preset_id);
       const manufacturing = deps.manufacturing ?? (await Promise.resolve().then(() => (init_manufacturing_client(), manufacturing_client_exports))).createManufacturingClient({
         trpcUrl: deps.config.trpcUrl,
         cadOperatorKey: requireCadOperatorKey(deps.config)
@@ -25621,12 +25812,19 @@ async function dispatchTool(name, args, deps) {
         const sides = input.side ? [input.side] : ["left", "right"];
         const files = [];
         for (const side of sides) {
+          const exportFileName = mcpGcodeExportFilename(
+            side,
+            input.patient_name,
+            material,
+            input.file_name
+          );
           try {
             const result = await manufacturing.generateFromSavedDesign({
               designId: input.design_id,
               side,
-              presetId: input.preset_id,
-              fileName: input.file_name ? `${side}-${input.file_name}` : `${side}.gcode`,
+              presetId,
+              material,
+              fileName: exportFileName,
               patientName: input.patient_name,
               hardness: input.hardness
             });
@@ -25638,7 +25836,7 @@ async function dispatchTool(name, args, deps) {
               }
               return result;
             }
-            files.push(gcodeFileFromResult(side, result));
+            files.push(gcodeFileFromResult(side, result, exportFileName));
           } catch (error2) {
             if (sides.length > 1) {
               throw new Error(
@@ -25656,15 +25854,21 @@ async function dispatchTool(name, args, deps) {
       if (!input.stl_storage_key) {
         throw new Error("stl_storage_key is required unless use_saved_design");
       }
+      const legacyExportFileName = mcpGcodeExportFilename(
+        input.side ?? "left",
+        input.patient_name,
+        material,
+        input.file_name
+      );
       const legacy = await manufacturing.generateGcode({
         designId: input.design_id,
         side: input.side,
-        presetId: input.preset_id,
+        presetId,
         stlStorageKey: input.stl_storage_key,
         outputType: input.output_type,
         beltAngleDeg: input.belt_angle_deg,
-        fileName: input.file_name,
-        material: input.material,
+        fileName: legacyExportFileName,
+        material,
         patientName: input.patient_name
       });
       if (isUserQuestion(legacy)) return legacy;

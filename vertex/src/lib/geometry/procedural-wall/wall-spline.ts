@@ -634,11 +634,151 @@ export function solveLipParabolaJoint(
     lipTurn?: number,
 ): LipParabolaJoint {
     if (lipTurn != null) {
-        return buildJointFromTheta(tR, H, Ls, r1, lipTurn, lambda);
+        return buildJointFromTheta(tR, H, Ls, r1, feasibleLipTurn(tR, H, Ls, r1, lipTurn, lambda), lambda);
     }
     const raw = lipTurnTargetFromLambda(tR, H, Ls, r1, lambda);
-    const joint = buildJointFromTheta(tR, H, Ls, r1, raw.theta, lambda);
-    return { ...joint, zeroLip: raw.zeroLip || joint.zeroLip, capped: raw.capped };
+    const theta = feasibleLipTurn(tR, H, Ls, r1, raw.theta, lambda);
+    const joint = buildJointFromTheta(tR, H, Ls, r1, theta, lambda);
+    // Same flags as the λ target when that target already landed on the span.
+    if (theta === raw.theta) {
+        return { ...joint, zeroLip: raw.zeroLip || joint.zeroLip, capped: raw.capped };
+    }
+    return joint;
+}
+
+/**
+ * Forward plantar hit of the lip tangent. Mirrors {@link buildJointFromTheta}
+ * without throwing: a hit behind the tangent (upward rim) is not a landing.
+ */
+function forwardPlanarHandle(
+    tR: Sz,
+    H: number,
+    r1: number,
+    theta: number,
+): { sE: number; Ms: number } | null {
+    const r = Math.max(r1, 1e-6);
+    const tRu = unitSz(tR);
+    const alpha = theta <= 1e-12 ? 0 : theta;
+    const R: Sz = { s: 0, z: H };
+    const tE = alpha <= 1e-12 ? tRu : unitSz(rotateSz(tRu, alpha));
+    const E = alpha <= 1e-12 ? { ...R } : lipArcEnd(R, tRu, r, alpha);
+    if (Math.abs(tE.z) < 1e-9) return null;
+    const t = -E.z / tE.z;
+    if (t < 1e-9) return null;
+    return { sE: E.s, Ms: E.s + t * tE.s };
+}
+
+/** θ whose handle M lies on the plantar segment [E.s, Ls]. Same bounds as [RND-M]. */
+export function lipTurnLandsOnPlanarSpan(
+    tR: Sz,
+    H: number,
+    Ls: number,
+    r1: number,
+    theta: number,
+    _lambda = SPLINE_LAMBDA,
+): boolean {
+    const hit = forwardPlanarHandle(tR, H, r1, theta);
+    if (!hit) return false;
+    return hit.Ms + 1e-9 >= hit.sE && hit.Ms - 1e-9 <= Ls;
+}
+
+/** CCW search limit. Past this, an upward rim tangent has already come back down. */
+const LIP_TURN_SEARCH_MAX = Math.PI * 1.5;
+
+/**
+ * Closest lip turn to `theta` that lands on [E.s, Ls].
+ * Null when no turn in [0, 3π/2] does — the caller keeps the real [RND-E]/[RND-M] throw.
+ */
+export function nearestPlanarLipTurn(
+    tR: Sz,
+    H: number,
+    Ls: number,
+    r1: number,
+    theta: number,
+    lambda = SPLINE_LAMBDA,
+): number | null {
+    if (lipTurnLandsOnPlanarSpan(tR, H, Ls, r1, theta, lambda)) return theta;
+    const step = (0.25 * Math.PI) / 180;
+    const n = Math.ceil(LIP_TURN_SEARCH_MAX / step);
+    let best: number | null = null;
+    let bestD = Infinity;
+    for (let i = 0; i <= n; i++) {
+        const a = Math.min(LIP_TURN_SEARCH_MAX, i * step);
+        if (!lipTurnLandsOnPlanarSpan(tR, H, Ls, r1, a, lambda)) continue;
+        const d = Math.abs(a - theta);
+        if (d < bestD) {
+            bestD = d;
+            best = a;
+        }
+    }
+    if (best == null) return null;
+    let feas = best;
+    let bad = theta;
+    for (let k = 0; k < 28; k++) {
+        const mid = 0.5 * (feas + bad);
+        if (lipTurnLandsOnPlanarSpan(tR, H, Ls, r1, mid, lambda)) feas = mid;
+        else bad = mid;
+    }
+    return feas;
+}
+
+/** Requested θ when it already lands; otherwise the nearest turn that does. */
+export function feasibleLipTurn(
+    tR: Sz,
+    H: number,
+    Ls: number,
+    r1: number,
+    theta: number,
+    lambda = SPLINE_LAMBDA,
+): number {
+    if (lipTurnLandsOnPlanarSpan(tR, H, Ls, r1, theta, lambda)) return theta;
+    return nearestPlanarLipTurn(tR, H, Ls, r1, theta, lambda) ?? theta;
+}
+
+export interface LipTurnStation {
+    tR: Sz;
+    H: number;
+    Ls: number;
+    r1: number;
+    lambda?: number;
+}
+
+/**
+ * Pull infeasible lip turns onto the plantar span.
+ * A feasible field is returned unchanged (same array). When `blend` is set,
+ * the correction is spread with the round-wall gaussian and clamped again so
+ * the smooth step cannot push M back outside [E.s, Ls].
+ */
+export function clampLipTurnsToPlanarSpan(
+    thetas: number[],
+    arc: number[],
+    period: number,
+    at: (i: number) => LipTurnStation,
+    blend: boolean,
+): number[] {
+    const project = (vals: number[]): number[] => {
+        let changed = false;
+        const next = vals.slice();
+        for (let i = 0; i < next.length; i++) {
+            const spec = at(i);
+            const hit = feasibleLipTurn(
+                spec.tR,
+                spec.H,
+                spec.Ls,
+                spec.r1,
+                next[i]!,
+                spec.lambda ?? SPLINE_LAMBDA,
+            );
+            if (hit !== next[i]) {
+                next[i] = hit;
+                changed = true;
+            }
+        }
+        return changed ? next : vals;
+    };
+    const projected = project(thetas);
+    if (!blend || projected === thetas) return projected;
+    return project(periodicGaussian1d(projected, arc, SPLINE_SMOOTH_SIGMA_MM, period));
 }
 
 export function sampleLipArc(R: Sz, tR: Sz, r1: number, alpha: number, n = 48): Sz[] {

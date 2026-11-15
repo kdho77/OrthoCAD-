@@ -3,9 +3,11 @@ import { z } from "zod";
 import { DogfoodUserQuestion } from "../../../shared/dogfood-manufacturing.js";
 import { printRecipeV1Schema } from "../../../shared/print-recipe/print-recipe.js";
 import { SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
+import { vertexSliceRegional3mfEnabled } from "../../../shared/vertexslice-regional-3mf.js";
 import { assertCadOperatorDeliverableKey, buildCadOperatorTempStlKey } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { getSupabaseAdmin } from "../context.js";
+import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
 import { runtimeDogfoodOrderOwnerVerifier } from "../lib/dogfood-order-owner-wire.js";
 import {
     createDogfoodSavedDesign,
@@ -42,7 +44,11 @@ import {
     runCadOperatorCentralFabStlRequest,
     runCadOperatorGenerateRequest,
 } from "./cad-operator-generate.js";
-import { runSessionGenerateSolid, type SessionManufacturingIo } from "./manufacturing-session.js";
+import {
+    assertDesignExportAccess,
+    runSessionGenerateSolid,
+    type SessionManufacturingIo,
+} from "./manufacturing-session.js";
 
 const MAX_INLINE_STL_BYTES = 8 * 1024 * 1024;
 
@@ -55,7 +61,7 @@ const grindingStyleSchema = z.object({
 const manufactureInputSchema = z.object({
     designId: z.string().uuid().optional(),
     side: z.enum(["left", "right"]).optional(),
-    presetId: z.string().min(1),
+    presetId: z.string().min(1).optional(),
     stlUrl: z.string().url().optional(),
     stlStorageKey: z.string().min(1),
     outputType: z.enum(["gcode", "stl"]),
@@ -79,6 +85,12 @@ const manufactureInputSchema = z.object({
         .max(80)
         .regex(/^[\w .+\-/%()]+$/)
         .optional(),
+    /**
+     * Modifier 3MF. With the gate off this is a hard failure, not an STL slice.
+     * With the gate on it is required whenever expectedRegionCount is sent.
+     */
+    regional3mfStorageKey: z.string().min(1).max(500).optional(),
+    expectedRegionCount: z.number().int().min(1).max(64).optional(),
 });
 
 const uploadStlInputSchema = z.object({
@@ -92,29 +104,23 @@ async function assertActiveLicenseForUser(userId: string): Promise<void> {
     await assertActiveLicense(supabase, userId);
 }
 
-function sessionManufacturingIo(): SessionManufacturingIo {
+function sessionManufacturingIo(user: { id: string; email: string; role: string }): SessionManufacturingIo {
     const supabase = getSupabaseAdmin();
     return {
         assertActiveLicense: assertActiveLicenseForUser,
         async verifyDesignOwner(designId, userId) {
-            const admin = requireSupabaseAdmin();
-            const { data: design, error: designError } = await admin
-                .from("designs")
-                .select("id")
-                .eq("id", designId)
-                .eq("ownerId", userId)
-                .maybeSingle();
-            if (designError) {
-                throw new TRPCError({
-                    code: "INTERNAL_SERVER_ERROR",
-                    message: `Failed to verify design ownership: ${designError.message}`,
-                });
-            }
-            if (!design) {
+            if (userId !== user.id) {
                 throw new TRPCError({
                     code: "FORBIDDEN",
                     message: "Design not found or access denied",
                 });
+            }
+            try {
+                const { repo, actor } = await openClientFiles(user);
+                await assertDesignExportAccess(repo, actor, designId);
+            } catch (error) {
+                if (error instanceof TRPCError) throw error;
+                rethrowClientFile(error);
             }
         },
         async getTokenBalance(userId) {
@@ -292,6 +298,14 @@ export const manufacturingRouter = router({
             return { ok: true as const, stlUrl, storageKey: key };
         }),
 
+    /**
+     * Off until VertexSlice applies modifier_part. The browser asks before it
+     * builds a 3MF so a slicer that only accepts STL still receives today's request.
+     */
+    regional3mfEnabled: sessionOrCadOperatorProcedure("manufacturing:generate").query(() => {
+        return { enabled: vertexSliceRegional3mfEnabled() };
+    }),
+
     generateSolid: rateLimitedSessionOrCadProcedure(
         RATE_LIMITS.export,
         "manufacturing:generateSolid",
@@ -327,6 +341,7 @@ export const manufacturingRouter = router({
                             useSavedDesignMesh: input.useSavedDesignMesh,
                             patientName: input.patientName,
                             hardness: input.hardness,
+                            material: input.material,
                         },
                     });
                 } catch (error) {
@@ -340,8 +355,11 @@ export const manufacturingRouter = router({
             return runSessionGenerateSolid({
                 userId: ctx.user.id,
                 ip: ctx.ip,
-                input,
-                io: sessionManufacturingIo(),
+                input: {
+                    ...input,
+                    presetId: input.presetId ?? "",
+                },
+                io: sessionManufacturingIo(ctx.user),
             });
         }),
 
@@ -378,7 +396,7 @@ export const manufacturingRouter = router({
             return readCadOperatorProduction({
                 prisma: ctx.prisma,
                 principal: ctx.user ? null : (ctx.cadOperator ?? null),
-                userId: ctx.user?.id ?? null,
+                user: ctx.user,
                 productionId: input.productionId,
             });
         }),
@@ -395,7 +413,7 @@ export const manufacturingRouter = router({
             return listCadOperatorProductions({
                 prisma: ctx.prisma,
                 principal: ctx.user ? null : (ctx.cadOperator ?? null),
-                userId: ctx.user?.id ?? null,
+                user: ctx.user,
                 designId: input.designId,
                 side: input.side,
                 presetId: input.presetId,
@@ -597,21 +615,17 @@ export const manufacturingRouter = router({
                 return { downloadUrl, productionId: production.id };
             }
 
-            const { data: design, error: designError } = await supabase
-                .from("designs")
-                .select("ownerId")
-                .eq("id", production.designId)
-                .maybeSingle();
-
-            if (designError) {
-                throw new TRPCError({
-                    code: "INTERNAL_SERVER_ERROR",
-                    message: `Failed to verify production ownership: ${designError.message}`,
-                });
-            }
-
-            if (!design || design.ownerId !== ctx.user.id) {
-                throw new TRPCError({ code: "FORBIDDEN", message: "Production not found or access denied" });
+            try {
+                const { repo, actor } = await openClientFiles(ctx.user);
+                await assertDesignExportAccess(
+                    repo,
+                    actor,
+                    production.designId,
+                    "Production not found or access denied",
+                );
+            } catch (error) {
+                if (error instanceof TRPCError) throw error;
+                rethrowClientFile(error);
             }
             if (!production.gcodeStorageKey) {
                 throw new TRPCError({
