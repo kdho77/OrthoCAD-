@@ -1,24 +1,15 @@
-// orthocad-mcp-http-bundle dbe68df06ed6518dc95036b0a7bc64a91f1e31521d13b601128b2cf31b2283c5
+// orthocad-mcp-http-bundle 501e6201d33488b278c2b3c5a297aaa3f449b2750e755f35c99f48a044e2b733
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __esm = (fn, res, err) => function __init() {
-  if (err) throw err[0];
-  try {
-    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-  } catch (e) {
-    throw err = [e], e;
-  }
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
 };
 var __commonJS = (cb, mod) => function __require() {
-  try {
-    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
-  } catch (e) {
-    throw mod = 0, e;
-  }
+  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
 var __export = (target, all) => {
   for (var name in all)
@@ -4016,7 +4007,7 @@ var require_fast_uri = __commonJS({
         throw new Error(MALFORMED_HOST_ERROR);
       }
       canonicalizeHost(resolved, options || {}, resolvedSchemeHandler, resolvedHostIsIP);
-      const encodedASCIIHost = resolvedHost && resolvedHost.indexOf("%") !== -1 && !new RegExp("\\P{ASCII}", "u").test(resolvedHost);
+      const encodedASCIIHost = resolvedHost && resolvedHost.indexOf("%") !== -1 && !/\P{ASCII}/u.test(resolvedHost);
       if (resolved.error && !encodedASCIIHost) {
         throw new Error(resolved.error);
       }
@@ -7624,9 +7615,11 @@ function behaviorSubject(initialValue) {
   obs.get = () => value;
   return obs;
 }
+var distinctUnsetMarker;
 var init_observable_DMA7fHJ6 = __esm({
   "packages/mcp/node_modules/@trpc/server/dist/observable-DMA7fHJ6.mjs"() {
     init_observable_CdPmrXKY();
+    distinctUnsetMarker = Symbol();
   }
 });
 
@@ -7848,7 +7841,7 @@ function _objectSpread22(e) {
   }
   return e;
 }
-var noop, freezeIfAvailable, createRecursiveProxy, createFlatProxy;
+var noop, freezeIfAvailable, createRecursiveProxy, createFlatProxy, formattedShapeSymbol;
 var init_getErrorShape_B5jPKHJ3 = __esm({
   "packages/mcp/node_modules/@trpc/server/dist/getErrorShape-B5jPKHJ3.mjs"() {
     init_codes_nbrm_zWY();
@@ -7864,6 +7857,7 @@ var init_getErrorShape_B5jPKHJ3 = __esm({
         return callback(name);
       } });
     };
+    formattedShapeSymbol = Symbol("trpc_formattedErrorShape");
   }
 });
 
@@ -7956,7 +7950,7 @@ function AsyncGenerator(e) {
     });
   }, "function" != typeof e["return"] && (this["return"] = void 0);
 }
-var TransformResultError;
+var TransformResultError, trackedSymbol;
 var init_asyncGeneratorDelegate_JWx0LJUD = __esm({
   "packages/mcp/node_modules/@trpc/server/dist/asyncGeneratorDelegate-JWx0LJUD.mjs"() {
     init_codes_nbrm_zWY();
@@ -7975,6 +7969,7 @@ var init_asyncGeneratorDelegate_JWx0LJUD = __esm({
     }, AsyncGenerator.prototype["return"] = function(e) {
       return this._invoke("return", e);
     };
+    trackedSymbol = Symbol();
   }
 });
 
@@ -8740,7 +8735,7 @@ var init_dist = __esm({
         });
       }
     };
-    untypedClientSymbol = /* @__PURE__ */ Symbol.for("trpc_untypedClient");
+    untypedClientSymbol = Symbol.for("trpc_untypedClient");
     clientCallTypeMap = {
       query: "query",
       mutate: "mutation",
@@ -9702,6 +9697,14 @@ function createManufacturingClient(options) {
       });
     },
     /**
+     * Loft the saved design as a central-fab milling solid and store the STL.
+     * Returns `{ productionId, status, side, outputType: "stl" }`. No bytes.
+     * Call site: vertex/server/src/routers/manufacturing.ts generateCentralFabStl.
+     */
+    generateCentralFabStl(input) {
+      return trpc.manufacturing.generateCentralFabStl.mutate(input);
+    },
+    /**
      * Server lofts the saved design with the Export path and slices belt G-code.
      * The placeholder storage key is rejected unless the server replaces it.
      */
@@ -9890,6 +9893,7 @@ function $constructor(name, initializer3, params) {
   Object.defineProperty(_, "name", { value: name });
   return _;
 }
+var $brand = Symbol("zod_brand");
 var $ZodAsyncError = class extends Error {
   constructor() {
     super(`Encountered Promise during synchronous parse. Use .parseAsync() instead.`);
@@ -12393,6 +12397,8 @@ function en_default() {
 }
 
 // packages/mcp/node_modules/zod/v4/core/registries.js
+var $output = Symbol("ZodOutput");
+var $input = Symbol("ZodInput");
 var $ZodRegistry = class {
   constructor() {
     this._map = /* @__PURE__ */ new Map();
@@ -13317,7 +13323,6 @@ var JSONSchemaGenerator = class {
             _json.readOnly = true;
             break;
           }
-          // passthrough types
           case "promise": {
             this.process(def.innerType, params);
             result.ref = def.innerType;
@@ -13610,7 +13615,6 @@ function isTransforming(_schema, _ctx) {
     case "set": {
       return isTransforming(def.valueType, ctx);
     }
-    // inner types
     case "promise":
     case "optional":
     case "nonoptional":
@@ -13746,10 +13750,10 @@ var ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
   };
   inst.clone = (def2, params) => clone(inst, def2, params);
   inst.brand = () => inst;
-  inst.register = ((reg, meta) => {
+  inst.register = (reg, meta) => {
     reg.add(inst, meta);
     return inst;
-  });
+  };
   inst.parse = (data, params) => parse2(inst, data, params, { callee: inst.parse });
   inst.safeParse = (data, params) => safeParse2(inst, data, params);
   inst.parseAsync = async (data, params) => parseAsync2(inst, data, params, { callee: inst.parseAsync });
@@ -15721,13 +15725,11 @@ function assertCompleteRequestPrompt(request) {
   if (request.params.ref.type !== "ref/prompt") {
     throw new TypeError(`Expected CompleteRequestPrompt, but got ${request.params.ref.type}`);
   }
-  void request;
 }
 function assertCompleteRequestResourceTemplate(request) {
   if (request.params.ref.type !== "ref/resource") {
     throw new TypeError(`Expected CompleteRequestResourceTemplate, but got ${request.params.ref.type}`);
   }
-  void request;
 }
 var CompleteResultSchema = ResultSchema.extend({
   completion: looseObject({
@@ -20445,7 +20447,7 @@ ZodNaN.create = (params) => {
     ...processCreateParams(params)
   });
 };
-var BRAND = /* @__PURE__ */ Symbol("zod_brand");
+var BRAND = Symbol("zod_brand");
 var ZodBranded = class extends ZodType2 {
   _parse(input) {
     const { ctx } = this._processInputParams(input);
@@ -20647,14 +20649,14 @@ var ostring = () => stringType().optional();
 var onumber = () => numberType().optional();
 var oboolean = () => booleanType().optional();
 var coerce = {
-  string: ((arg) => ZodString2.create({ ...arg, coerce: true })),
-  number: ((arg) => ZodNumber2.create({ ...arg, coerce: true })),
-  boolean: ((arg) => ZodBoolean2.create({
+  string: (arg) => ZodString2.create({ ...arg, coerce: true }),
+  number: (arg) => ZodNumber2.create({ ...arg, coerce: true }),
+  boolean: (arg) => ZodBoolean2.create({
     ...arg,
     coerce: true
-  })),
-  bigint: ((arg) => ZodBigInt.create({ ...arg, coerce: true })),
-  date: ((arg) => ZodDate.create({ ...arg, coerce: true }))
+  }),
+  bigint: (arg) => ZodBigInt.create({ ...arg, coerce: true }),
+  date: (arg) => ZodDate.create({ ...arg, coerce: true })
 };
 var NEVER2 = INVALID;
 
@@ -20707,6 +20709,7 @@ var MCP_TOOL_REQUIRED_SCOPES = {
   prepare_manufacturing_stl_upload: ["manufacturing:prepare"],
   list_materials: ["manufacturing:generate"],
   generate_gcode: ["manufacturing:generate"],
+  generate_central_fab_stl: ["manufacturing:generate"],
   get_production: ["manufacturing:download"],
   list_productions_by_design: ["manufacturing:download"],
   get_export_download: ["manufacturing:download"],
@@ -20793,10 +20796,10 @@ var ZodMiniType = /* @__PURE__ */ $constructor("ZodMiniType", (inst, def) => {
   };
   inst.clone = (_def, params) => clone(inst, _def, params);
   inst.brand = () => inst;
-  inst.register = ((reg, meta) => {
+  inst.register = (reg, meta) => {
     reg.add(inst, meta);
     return inst;
-  });
+  };
 });
 var ZodMiniObject = /* @__PURE__ */ $constructor("ZodMiniObject", (inst, def) => {
   $ZodObject.init(inst, def);
@@ -20981,7 +20984,7 @@ function isTerminal(status) {
 }
 
 // packages/mcp/node_modules/zod-to-json-schema/dist/esm/Options.js
-var ignoreOverride = /* @__PURE__ */ Symbol("Let zodToJsonSchema decide on which parser to use");
+var ignoreOverride = Symbol("Let zodToJsonSchema decide on which parser to use");
 var defaultOptions = {
   name: void 0,
   $refStrategy: "root",
@@ -23971,7 +23974,7 @@ var Server = class extends Protocol {
 };
 
 // packages/mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/server/completable.js
-var COMPLETABLE_SYMBOL = /* @__PURE__ */ Symbol.for("mcp.completable");
+var COMPLETABLE_SYMBOL = Symbol.for("mcp.completable");
 function isCompletable(schema) {
   return !!schema && typeof schema === "object" && COMPLETABLE_SYMBOL in schema;
 }
@@ -25101,12 +25104,9 @@ function voAttachArgumentError(args, now = Date.now()) {
 }
 
 // packages/mcp/src/payload/vo-attach-files.ts
-var DOGFOOD_HELD_ID_PREFIXES = [
-  "886ffef7",
-  "11e0ec9b",
-  "c4092f6e"
-];
+var DOGFOOD_HELD_ID_PREFIXES = ["886ffef7", "11e0ec9b", "c4092f6e"];
 var MAX_ATTACH_BYTES = 100 * 1024 * 1024;
+var FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]*$/;
 function assertNotHeld(value) {
   const id = value.trim().toLowerCase();
   for (const prefix of DOGFOOD_HELD_ID_PREFIXES) {
@@ -25124,6 +25124,23 @@ function decodeBase64(value) {
   if (bytes.byteLength === 0) throw new Error("file is empty");
   if (bytes.byteLength > MAX_ATTACH_BYTES) throw new Error("Export file is over the 100 MB limit");
   return bytes;
+}
+function isCentralFabStlStorageKey(key) {
+  if (!key) return false;
+  const trimmed = key.trim();
+  if (!trimmed.startsWith("stl/cad-operator/") || !trimmed.endsWith(".stl")) return false;
+  if (trimmed.includes("..") || trimmed.includes("\\") || trimmed.includes("//")) return false;
+  return true;
+}
+function centralFabStlFilename(side, requested) {
+  const raw = requested?.trim() ?? "";
+  if (!raw) return `${side}.stl`;
+  const base = raw.split(/[/\\]/).pop()?.trim() ?? "";
+  const lowered = base.toLowerCase();
+  if (lowered.length <= 180 && !lowered.includes("..") && FILENAME_RE.test(base) && lowered.endsWith(".stl") && lowered.startsWith(side)) {
+    return lowered;
+  }
+  throw new Error("Central-fab STL filename must start with the foot and end with .stl");
 }
 function gcodeFilename(side, file, order) {
   const patientName = file.patient_name?.trim() || order.patient_name?.trim() || "";
@@ -25149,11 +25166,12 @@ function buildVoAttachFilesHandoff(input) {
   for (const file of [...input.files].sort((a, b) => a.side.localeCompare(b.side))) {
     if (seen.has(file.side)) throw new Error(`duplicate ${file.side} file`);
     seen.add(file.side);
-    if (file.filename && /\.stl($|\?)/i.test(file.filename)) {
+    const centralFab = isCentralFabStlStorageKey(file.storage_key);
+    if (!centralFab && file.filename && /\.stl($|\?)/i.test(file.filename)) {
       throw new Error("STL files are not attached. G-code only.");
     }
-    const filename = gcodeFilename(file.side, file, input);
-    if (filename.toLowerCase().endsWith(".stl")) {
+    const filename = centralFab ? centralFabStlFilename(file.side, file.filename) : gcodeFilename(file.side, file, input);
+    if (!centralFab && filename.toLowerCase().endsWith(".stl")) {
       throw new Error("STL files are not attached. G-code only.");
     }
     const download = file.download_url?.trim() || "";
@@ -25166,7 +25184,7 @@ function buildVoAttachFilesHandoff(input) {
         file.storage_key ? "storage_key is not attachable bytes. file must include download_url or content_base64, not both" : "file must include download_url or content_base64, not both"
       );
     }
-    if (download && /\.stl($|\?)/i.test(download)) {
+    if (!centralFab && download && /\.stl($|\?)/i.test(download)) {
       throw new Error("STL files are not attached. G-code only.");
     }
     if (download && !download.toLowerCase().startsWith("https://")) {
@@ -25191,9 +25209,9 @@ function buildVoAttachFilesHandoff(input) {
     }
     const wire = {
       side: file.side,
-      format: "gcode",
+      format: centralFab ? "stl" : "gcode",
       filename,
-      content_type: "text/plain"
+      content_type: centralFab ? "model/stl" : "text/plain"
     };
     if (encoded) wire.content_base64 = encoded.replace(/\s/g, "");
     if (download) {
@@ -25369,6 +25387,10 @@ var generateGcodeInputSchema = generateGcodeInputObjectSchema.superRefine((value
 var getExportDownloadInputSchema = external_exports.object({
   production_id: external_exports.string().uuid()
 });
+var generateCentralFabStlInputSchema = external_exports.object({
+  design_id: external_exports.string().uuid(),
+  side: sideSchema.optional()
+}).strict();
 var getProductionInputSchema = external_exports.object({
   production_id: external_exports.string().uuid()
 });
@@ -25476,6 +25498,11 @@ var savedDesignCatalogSchema = external_exports.object({
     value: external_exports.number().finite(),
     unit: external_exports.enum(["mm", "deg"])
   }).strict().optional(),
+  /**
+   * Shell thickness in mm. Same range as the human Corrections slider (1.5–8).
+   * Omitted keeps the 2 mm default. Out of range is rejected.
+   */
+  thickness_mm: external_exports.number().finite().min(1.5).max(8).optional(),
   flange: external_exports.object({
     left: flangeSideSchema.optional(),
     right: flangeSideSchema.optional()
@@ -25560,6 +25587,11 @@ var MCP_TOOL_DEFINITIONS = [
     inputSchema: generateGcodeInputObjectSchema
   },
   {
+    name: "generate_central_fab_stl",
+    description: "Central-fab milling STL from a saved design. Returns a production_id and status per foot. The server lofts the manufacturing solid (no belt leader, no slice) after that response. Poll get_production. Download with get_export_download only after succeeded. Omitting side enqueues both feet. No G-code bytes and no STL bytes in this response. Does not write an order status. Belt G-code is unchanged. Auth: CAD-operator key, manufacturing:generate.",
+    inputSchema: generateCentralFabStlInputSchema
+  },
+  {
     name: "get_production",
     description: "CAD-operator production status by production_id. Returns id, design, side, preset, status, timestamps, G-code storage key, a non-PHI error, and a get_export_download hint when succeeded. No G-code bytes and no PHI.",
     inputSchema: getProductionInputSchema
@@ -25581,17 +25613,17 @@ var MCP_TOOL_DEFINITIONS = [
   },
   {
     name: "persist_saved_design_snapshot",
-    description: "Update one existing design's settingsJson in place with a loftable SAMPLE_Top parameter snapshot for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide|xx_wide), arch (low|medium|standard|high \u2192 \u22123.5|0|0|+3 mm), flexible_foot (true \u2192 apex +4 mm on both feet), elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), flange.left, flange.right, flange.left.medial_mm, flange.left.lateral_mm, flange.left.level, flange.right.medial_mm, flange.right.lateral_mm, flange.right.level (per-foot medial/lateral flange 0\u20138 mm; omit medial_mm and lateral_mm for 3 mm default, mild level 2 mm, standard/unspecified 3 mm, high 6 mm; out of range is 422, not clamped; omitted flange leaves flanges unchanged), rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit. Ignored and never mapped: rx_text, notes, rigidity, extra_soft. sliders.arch_ease_mm is accepted and not applied (migrated to 0). sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. Absent width is Medium and recorded as defaulted, not prescribed. 422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
+    description: "Update one existing design's settingsJson in place with a loftable SAMPLE_Top parameter snapshot for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide|xx_wide), arch (low|medium|standard|high \u2192 \u22123.5|0|0|+3 mm), flexible_foot (true \u2192 apex +4 mm on both feet), elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), flange.left, flange.right, flange.left.medial_mm, flange.left.lateral_mm, flange.left.level, flange.right.medial_mm, flange.right.lateral_mm, flange.right.level (per-foot medial/lateral flange 0\u20138 mm; omit medial_mm and lateral_mm for 3 mm default, mild level 2 mm, standard/unspecified 3 mm, high 6 mm; out of range is 422, not clamped; omitted flange leaves flanges unchanged), rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit, thickness_mm (shell thickness, design.thicknessMm, 1.5\u20138 mm inclusive). thickness_mm is the labelled shell/base clearance, not the zonal rear/mid/fore walls. When set, settings store that clearance and uniform shell mode so the loft uses the shell-thickness slider. When omitted, thickness stays 2 mm and the zonal shell is unchanged. Out of range is 422 and is not clamped. Ignored and never mapped: rx_text, notes, rigidity, extra_soft. sliders.arch_ease_mm is accepted and not applied (migrated to 0). sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. Absent width is Medium and recorded as defaulted, not prescribed. 422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
     inputSchema: persistSavedDesignSnapshotInputSchema
   },
   {
     name: "create_saved_design",
-    description: "Refresh the dogfood SAMPLE_Top design already bound to an existing VertexOrders order. Source is vo2 and the tenant is the internal dogfood tenant. Does not take a clinic tenant id. client_id is optional and only confirms the client already stored on that order. patient_name, an external client id, and a name are not accepted as identity. given_name and family_name are chart labels for a new client after the server verifier and are not sent as order-owner proof. A different client_id, more than one link, or a client outside the dogfood tenant fails closed with no write and no tenant change. When the order-owner verifier is unconfigured or refuses, this does not create a client or a design and does not call integration client upsert. A server verifier may bind the verified person for this dogfood order. Caller fields are not that verifier. CAD-operator scopes cannot assert the order's person. A bound refresh uses the saved-design snapshot rules. No scan upload and no STL. Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. flange.left / flange.right set medial_mm and lateral_mm (0\u20138) per foot; omit those mm for 3 mm default, or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. Medium width is used only when width is absent and is recorded as defaulted, not prescribed. Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
+    description: "Refresh the dogfood SAMPLE_Top design already bound to an existing VertexOrders order. Source is vo2 and the tenant is the internal dogfood tenant. Does not take a clinic tenant id. client_id is optional and only confirms the client already stored on that order. patient_name, an external client id, and a name are not accepted as identity. given_name and family_name are chart labels for a new client after the server verifier and are not sent as order-owner proof. A different client_id, more than one link, or a client outside the dogfood tenant fails closed with no write and no tenant change. When the order-owner verifier is unconfigured or refuses, this does not create a client or a design and does not call integration client upsert. A server verifier may bind the verified person for this dogfood order. Caller fields are not that verifier. CAD-operator scopes cannot assert the order's person. A bound refresh uses the saved-design snapshot rules. No scan upload. Optional catalog.thickness_mm sets shell thickness in mm (1.5\u20138, default 2 when omitted). Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. flange.left / flange.right set medial_mm and lateral_mm (0\u20138) per foot; omit those mm for 3 mm default, or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. Medium width is used only when width is absent and is recorded as defaulted, not prescribed. Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
     inputSchema: createSavedDesignInputSchema
   },
   {
     name: "prepare_vo_attachment",
-    description: "Build the live VertexOrders attach_files arguments for an existing order UUID. Forward only vo_attach_files (orderId, external_order_id, source vo2, files). Each file is separate left or right G-code with exactly one of content_base64 or an https download_url of at most 200 characters. A storage key is CAD provenance, not a VO field. design_id and tenant_id are omitted so VO does not run clinic or link checks. Does not call VertexOrders and does not write an order status. VO's public tool has no idempotency argument, so a repeat call is not server-side deduplication. STL is refused.",
+    description: "Build the live VertexOrders attach_files arguments for an existing order UUID. Forward only vo_attach_files (orderId, external_order_id, source vo2, files). Each file is separate left or right G-code with exactly one of content_base64 or an https download_url of at most 200 characters. A storage key is CAD provenance, not a VO field. design_id and tenant_id are omitted so VO does not run clinic or link checks. Does not call VertexOrders and does not write an order status. VO's public tool has no idempotency argument, so a repeat call is not server-side deduplication. G-code stays the default. STL is accepted only when storage_key is a central-fab STL key (stl/cad-operator/\u2026). The retrieved attach_files schema allows format and model/stl. A filename or URL ending in .stl without that key is refused.",
     inputSchema: prepareVoAttachmentInputSchema
   }
 ];
@@ -25850,6 +25882,42 @@ async function dispatchTool(name, args, deps) {
         };
       }
       return legacy;
+    }
+    case "generate_central_fab_stl": {
+      const input = generateCentralFabStlInputSchema.parse(args);
+      const manufacturing = deps.manufacturing ?? (await Promise.resolve().then(() => (init_manufacturing_client(), manufacturing_client_exports))).createManufacturingClient({
+        trpcUrl: deps.config.trpcUrl,
+        cadOperatorKey: requireCadOperatorKey(deps.config)
+      });
+      assertToolNotHeld(input.design_id);
+      const sides = input.side ? [input.side] : ["left", "right"];
+      const files = [];
+      for (const side of sides) {
+        try {
+          const result = await manufacturing.generateCentralFabStl({
+            designId: input.design_id,
+            side
+          });
+          const status = typeof result.status === "string" && PRODUCTION_STATUSES.has(result.status) ? result.status : null;
+          if (!status) throw new Error("Central-fab STL did not return a production status");
+          files.push({
+            side,
+            production_id: textField(result, "productionId", "production_id"),
+            status
+          });
+        } catch (error2) {
+          if (sides.length > 1) {
+            throw new Error(
+              `Central-fab pair failed on the ${side} foot. No partial pair is returned. ${error2 instanceof Error ? error2.message : String(error2)}`
+            );
+          }
+          throw error2;
+        }
+      }
+      if (files.length !== sides.length) {
+        throw new Error("Central-fab pair did not produce both feet");
+      }
+      return { ok: true, format: "stl", files };
     }
     case "get_production": {
       const input = getProductionInputSchema.parse(args);

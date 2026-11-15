@@ -81,6 +81,8 @@ async function bundledTextFont(): Promise<ArrayBuffer> {
 export async function buildHeadlessFinalizedFoot(input: {
     settingsJson: unknown;
     side: "left" | "right";
+    /** Belt G-code keeps the leader. The central-fab solid passes false. */
+    includeLeader?: boolean;
 }): Promise<HeadlessFinalizedFoot> {
     try {
         const mod = await loadMeshModule();
@@ -90,7 +92,7 @@ export async function buildHeadlessFinalizedFoot(input: {
             settingsJson: input.settingsJson,
             side: input.side,
             sampleTopBytes: sampleTop,
-            includeLeader: true,
+            includeLeader: input.includeLeader !== false,
             fontBytes,
             elementsBaseDir: fileURLToPath(ELEMENTS_DIR_URL),
         });

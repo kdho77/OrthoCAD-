@@ -108,13 +108,14 @@ node vertex/scripts/bundle-orthocad-mcp-http.mjs
 | `get_design_params` | Documented tRPC wrap → `design.get` |
 | `prepare_manufacturing_stl_upload` | tRPC `manufacturing.prepareManufacturingStlUpload` |
 | `generate_gcode` | tRPC `manufacturing.generateSolid` → returns `{production_id, status}` per foot, then lofts and slices asynchronously |
+| `generate_central_fab_stl` | tRPC `manufacturing.generateCentralFabStl` → milling solid STL, enqueue then poll. No belt slice and no order status |
 | `get_production` | tRPC `manufacturing.getProduction` |
 | `list_productions_by_design` | tRPC `manufacturing.listProductionsByDesign` |
 | `get_export_download` | tRPC `manufacturing.getGcodeDownloadUrl` |
 | `build_design_exported_payload` | VO handoff object (below) — **no VO order status writes** |
 | `persist_saved_design_snapshot` | tRPC `manufacturing.persistSavedDesignSnapshot` — writes `settingsJson` on an existing design |
 | `create_saved_design` | tRPC `manufacturing.createSavedDesign` — refresh the dogfood SAMPLE_Top already bound to a vo2 order. Optional `client_id` only confirms that binding. No clinic tenant, no client create, no integration upsert |
-| `prepare_vo_attachment` | Live `attach_files` arguments (`orderId`, `external_order_id`, `source: vo2`, L/R G-code bytes or a short https URL). Storage key stays CAD provenance. Does not call VO |
+| `prepare_vo_attachment` | Live `attach_files` arguments (`orderId`, `external_order_id`, `source: vo2`, L/R G-code, or central-fab STL when `storage_key` is `stl/cad-operator/…`). Storage key stays CAD provenance. Does not call VO |
 
 Saved-design belt flow: `generate_gcode` with `use_saved_design: true` and `design_id`. The call returns one `{production_id, status}` per foot before loft and slice finish. Poll `get_production`. When `status` is `succeeded`, call `get_export_download` with that id. No STL file and no G-code bytes are returned. Omitting `side` enqueues both feet. The legacy STL upload path (`prepare_manufacturing_stl_upload` → `stl_storage_key`) uses the same production id when the server accepts it.
 
@@ -159,7 +160,7 @@ OrthoCAD never writes VO order status.
 
 1. `npm run build` in `packages/mcp` succeeds.
 2. MCP server starts: `ORTHOCAD_MCP_API_KEY=ocad_… ORTHOCAD_API_BASE=… node dist/cli.js` (stdio; no key in logs).
-3. Tool list includes twelve tools (`get_design` … `prepare_vo_attachment`, plus `get_production` and `list_productions_by_design`).
+3. Tool list includes thirteen tools (`get_design` … `prepare_vo_attachment`, plus `get_production`, `list_productions_by_design`, and `generate_central_fab_stl`).
 4. `build_design_exported_payload` with sample files returns exact VO shape above (no `status` / order fields).
 5. `generate_gcode` documentation references main `/manufacture` path (VertexSlice/Apex/leader via #263 on main).
 
@@ -183,4 +184,4 @@ Residuals:
 
 - Reference design `cc357f83-3391-4c93-90b0-e18b6bce1a1d` was not compared. No production credential is available. Mesh parity tests use a sanitized SAMPLE_Top design against `buildPrinterFootManufacturingStl`.
 - Headless loft needs the same Node loader as the Export modules (`@/` alias, SAMPLE_Top bytes, DOMParser for the GLB). If that load fails, generateSolid errors and does not substitute a mesh.
-- No headless CAD from a scan. No VO order upload. No STL deliverable.
+- No headless CAD from a scan. No VO order upload. Belt `generate_gcode` still has no STL deliverable. Central-fab STL is `generate_central_fab_stl` only.

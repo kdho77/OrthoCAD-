@@ -39,6 +39,9 @@ export function cadVertexSliceSliceTimeoutMs(invocationStartedAt: Date, now: Dat
 
 export const HYBRID_GCODE_COST = 3;
 
+/** Same token cost as export.authorize format "stl" (vertex/server/src/routers/export.ts). */
+export const CENTRAL_FAB_STL_COST = 1;
+
 export const CAD_PRODUCTION_STATUSES = ["pending", "running", "succeeded", "failed"] as const;
 
 export type CadProductionStatus = (typeof CAD_PRODUCTION_STATUSES)[number];
@@ -340,7 +343,9 @@ export function publicProductionError(error: unknown, side?: CadFootSide | null)
         "Production lease expired",
         "CAD-operator manufacturing returns G-code only",
         "Invalid manufacturing STL storage key",
+        "Invalid central-fab STL storage key",
         "Milled orders are not belt G-code",
+        "Central-fab STL uses the milling solid",
         "Storage not available",
         "Supabase admin client not configured",
         "Manufacturing charge failed",
@@ -486,6 +491,8 @@ export function cadOperatorManufacturingIdentity(input: {
     printRecipe: unknown;
     settingsJson: unknown;
     stlStorageKey: string | null;
+    /** Set only for the central-fab solid. Omitted keys keep the belt fingerprint. */
+    deliverable?: "central_fab_stl";
     /** Included only when true, so an off gate keeps today's fingerprint. */
     regional3mf?: boolean;
 }): { fingerprint: string; idempotencyKey: string } {
@@ -503,6 +510,7 @@ export function cadOperatorManufacturingIdentity(input: {
                 printRecipe: input.printRecipe,
                 settingsJson: input.settingsJson,
                 stlStorageKey: input.useSavedDesignMesh ? null : input.stlStorageKey,
+                ...(input.deliverable ? { deliverable: input.deliverable } : {}),
                 ...(input.regional3mf ? { regional3mf: true } : {}),
             }),
         )
@@ -561,6 +569,11 @@ export interface ExecuteCadProductionArgs {
     }) => Promise<CadChargeResult>;
     archiveTemp?: (args: { stlStorageKey: string; exportId: string }) => Promise<void>;
     deleteTemp?: (stlStorageKey: string) => Promise<void>;
+    /**
+     * The materialized STL is the deliverable. Slice and G-code upload are not called.
+     * Belt productions leave this unset.
+     */
+    deliverMaterializedStl?: boolean;
 }
 
 async function markFailed(
@@ -608,6 +621,28 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
 
         const materialized = await args.materialize();
         stlStorageKey = materialized.stlStorageKey;
+        if (args.deliverMaterializedStl) {
+            if (!stlStorageKey) throw new Error("Manufacturing service returned empty output");
+            const charged = await args.charge({
+                storageKey: stlStorageKey,
+                jobId: `stl_${args.row.id}`,
+                meshFingerprint: materialized.meshFingerprint,
+            });
+            await args.store.updateIf(args.row.id, () => true, {
+                chargedAt: args.now(),
+                exportId: charged.exportId,
+                gcodeStorageKey: stlStorageKey,
+                updatedAt: args.now(),
+            });
+            await args.store.updateIf(args.row.id, (row) => row.status !== "succeeded", {
+                status: "succeeded",
+                gcodeStorageKey: stlStorageKey,
+                error: null,
+                updatedAt: args.now(),
+                leaseExpiresAt: null,
+            });
+            return;
+        }
         const sliceNow = args.now();
         const sliceTimeoutMs = cadVertexSliceSliceTimeoutMs(started, sliceNow);
         const sliceTimeoutSec = Math.max(1, Math.ceil(sliceTimeoutMs / 1000));

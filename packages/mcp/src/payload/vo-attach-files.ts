@@ -31,6 +31,8 @@ export const DOGFOOD_HELD_ID_PREFIXES = ["886ffef7", "11e0ec9b", "c4092f6e"] as 
 /** Retrieved reference: "Export file is over the 100 MB limit". */
 const MAX_ATTACH_BYTES = 100 * 1024 * 1024;
 
+const FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]*$/;
+
 export interface VoAttachFileInput {
     side: "left" | "right";
     /** CAD object key. Recorded in provenance and never placed on the VO file. */
@@ -61,9 +63,9 @@ export interface VoAttachFilesArguments {
     source: "vo2";
     files: Array<{
         side: "left" | "right";
-        format: "gcode";
+        format: "gcode" | "stl";
         filename: string;
-        content_type: "text/plain";
+        content_type: "text/plain" | "model/stl";
         content_base64?: string;
         download_url?: string;
         expires_at?: string;
@@ -141,6 +143,36 @@ function decodeBase64(value: string): Buffer {
     return bytes;
 }
 
+/**
+ * Durable central-fab STL object key. Must match
+ * `buildCadOperatorCentralFabStlKey` in vertex/server/src/auth/cad-operator.ts.
+ * Temp manufacturing uploads and belt G-code keys are not this path.
+ */
+export function isCentralFabStlStorageKey(key: string | undefined): boolean {
+    if (!key) return false;
+    const trimmed = key.trim();
+    if (!trimmed.startsWith("stl/cad-operator/") || !trimmed.endsWith(".stl")) return false;
+    if (trimmed.includes("..") || trimmed.includes("\\") || trimmed.includes("//")) return false;
+    return true;
+}
+
+function centralFabStlFilename(side: "left" | "right", requested: string | undefined): string {
+    const raw = requested?.trim() ?? "";
+    if (!raw) return `${side}.stl`;
+    const base = raw.split(/[/\\]/).pop()?.trim() ?? "";
+    const lowered = base.toLowerCase();
+    if (
+        lowered.length <= 180 &&
+        !lowered.includes("..") &&
+        FILENAME_RE.test(base) &&
+        lowered.endsWith(".stl") &&
+        lowered.startsWith(side)
+    ) {
+        return lowered;
+    }
+    throw new Error("Central-fab STL filename must start with the foot and end with .stl");
+}
+
 function gcodeFilename(
     side: "left" | "right",
     file: VoAttachFileInput,
@@ -172,11 +204,14 @@ export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPr
     for (const file of [...input.files].sort((a, b) => a.side.localeCompare(b.side))) {
         if (seen.has(file.side)) throw new Error(`duplicate ${file.side} file`);
         seen.add(file.side);
-        if (file.filename && /\.stl($|\?)/i.test(file.filename)) {
+        const centralFab = isCentralFabStlStorageKey(file.storage_key);
+        if (!centralFab && file.filename && /\.stl($|\?)/i.test(file.filename)) {
             throw new Error("STL files are not attached. G-code only.");
         }
-        const filename = gcodeFilename(file.side, file, input);
-        if (filename.toLowerCase().endsWith(".stl")) {
+        const filename = centralFab
+            ? centralFabStlFilename(file.side, file.filename)
+            : gcodeFilename(file.side, file, input);
+        if (!centralFab && filename.toLowerCase().endsWith(".stl")) {
             throw new Error("STL files are not attached. G-code only.");
         }
         const download = file.download_url?.trim() || "";
@@ -191,7 +226,7 @@ export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPr
                     : "file must include download_url or content_base64, not both",
             );
         }
-        if (download && /\.stl($|\?)/i.test(download)) {
+        if (!centralFab && download && /\.stl($|\?)/i.test(download)) {
             throw new Error("STL files are not attached. G-code only.");
         }
         if (download && !download.toLowerCase().startsWith("https://")) {
@@ -217,9 +252,9 @@ export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPr
         }
         const wire: VoAttachFilesArguments["files"][number] = {
             side: file.side,
-            format: "gcode",
+            format: centralFab ? "stl" : "gcode",
             filename,
-            content_type: "text/plain",
+            content_type: centralFab ? "model/stl" : "text/plain",
         };
         if (encoded) wire.content_base64 = encoded.replace(/\s/g, "");
         if (download) {

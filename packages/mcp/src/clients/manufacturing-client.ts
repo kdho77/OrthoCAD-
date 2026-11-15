@@ -38,6 +38,9 @@ export type OrthocadMcpTrpcProxy = {
         persistSavedDesignSnapshot: {
             mutate: (input: { designId: string; catalog?: unknown }) => Promise<Record<string, unknown>>;
         };
+        generateCentralFabStl: {
+            mutate: (input: { designId: string; side: "left" | "right" }) => Promise<Record<string, unknown>>;
+        };
         createSavedDesign: {
             mutate: (input: {
                 externalOrderId: string;
@@ -103,6 +106,15 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
                 beltAngleDeg: 45,
                 ...input,
             });
+        },
+
+        /**
+         * Loft the saved design as a central-fab milling solid and store the STL.
+         * Returns `{ productionId, status, side, outputType: "stl" }`. No bytes.
+         * Call site: vertex/server/src/routers/manufacturing.ts generateCentralFabStl.
+         */
+        generateCentralFabStl(input: { designId: string; side: "left" | "right" }) {
+            return trpc.manufacturing.generateCentralFabStl.mutate(input);
         },
 
         /**

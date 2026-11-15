@@ -4,7 +4,7 @@ import { DogfoodUserQuestion } from "../../../shared/dogfood-manufacturing.js";
 import { printRecipeV1Schema } from "../../../shared/print-recipe/print-recipe.js";
 import { SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
 import { vertexSliceRegional3mfEnabled } from "../../../shared/vertexslice-regional-3mf.js";
-import { assertCadOperatorGcodeKey, buildCadOperatorTempStlKey } from "../auth/cad-operator.js";
+import { assertCadOperatorDeliverableKey, buildCadOperatorTempStlKey } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { getSupabaseAdmin } from "../context.js";
 import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
@@ -41,6 +41,7 @@ import {
 import {
     listCadOperatorProductions,
     readCadOperatorProduction,
+    runCadOperatorCentralFabStlRequest,
     runCadOperatorGenerateRequest,
 } from "./cad-operator-generate.js";
 import {
@@ -362,6 +363,33 @@ export const manufacturingRouter = router({
             });
         }),
 
+    /**
+     * Central-fab milling solid from a saved design. Enqueue only.
+     * Does not slice, and does not write an order status.
+     */
+    generateCentralFabStl: rateLimitedSessionOrCadProcedure(
+        RATE_LIMITS.export,
+        "manufacturing:generateCentralFabStl",
+        "manufacturing:generate",
+    )
+        .input(
+            z.object({
+                designId: z.string().uuid(),
+                side: z.enum(["left", "right"]),
+            }),
+        )
+        .mutation(async ({ ctx, input }) => {
+            if (!ctx.cadOperator) {
+                throw new TRPCError({ code: "FORBIDDEN", message: "CAD-operator credential required" });
+            }
+            return runCadOperatorCentralFabStlRequest({
+                prisma: ctx.prisma,
+                principal: ctx.cadOperator,
+                ip: ctx.ip,
+                input,
+            });
+        }),
+
     getProduction: sessionOrCadOperatorProcedure("manufacturing:download")
         .input(z.object({ productionId: z.string().uuid() }))
         .query(async ({ ctx, input }) => {
@@ -522,7 +550,7 @@ export const manufacturingRouter = router({
                     });
                 }
                 try {
-                    assertCadOperatorGcodeKey(production.gcodeStorageKey, ctx.cadOperator.credentialId);
+                    assertCadOperatorDeliverableKey(production.gcodeStorageKey, ctx.cadOperator.credentialId);
                 } catch {
                     throw new TRPCError({
                         code: "FORBIDDEN",
