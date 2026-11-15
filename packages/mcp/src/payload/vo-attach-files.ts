@@ -26,12 +26,7 @@ export const FORBIDDEN_ORDER_STATUSES = [
 ] as const;
 
 /** Held orders are refused by prefix. Keep aligned with vertex/shared/dogfood-holds.ts. */
-export const DOGFOOD_HELD_ID_PREFIXES = [
-    "ae30903d-d205-426b-a384-152810510248",
-    "886ffef7",
-    "11e0ec9b",
-    "c4092f6e",
-] as const;
+export const DOGFOOD_HELD_ID_PREFIXES = ["886ffef7", "11e0ec9b", "c4092f6e"] as const;
 
 /** Retrieved reference: "Export file is over the 100 MB limit". */
 const MAX_ATTACH_BYTES = 100 * 1024 * 1024;
