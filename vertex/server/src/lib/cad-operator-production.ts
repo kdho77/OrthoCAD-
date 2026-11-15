@@ -81,6 +81,7 @@ export interface CadProductionPatch {
     status?: CadProductionStatus;
     error?: string | null;
     gcodeStorageKey?: string | null;
+    createdAt?: Date;
     updatedAt?: Date;
     leaseExpiresAt?: Date | null;
     chargedAt?: Date | null;
@@ -171,12 +172,22 @@ export async function claimProduction(
     const current = existing ?? (await store.findByKey(input.idempotencyKey));
     if (!current) throw new Error("idempotency claim failed");
     if (decideClaim(current, now) === "reuse") return { row: current, run: false };
+    const failedRetry = current.status === "failed";
     const updated = await store.updateIf(current.id, (row) => decideClaim(row, now) === "rerun", {
         status: "pending",
         error: null,
         leaseExpiresAt: leaseDeadline(now),
         updatedAt: now,
-        gcodeStorageKey: current.chargedAt ? current.gcodeStorageKey : null,
+        ...(failedRetry
+            ? {
+                  createdAt: now,
+                  gcodeStorageKey: null,
+                  chargedAt: null,
+                  exportId: null,
+              }
+            : {
+                  gcodeStorageKey: current.chargedAt ? current.gcodeStorageKey : null,
+              }),
     });
     if (!updated) {
         const latest = await store.findById(current.id);
@@ -225,14 +236,20 @@ function errorClassName(error: Error): string {
     return name || "Error";
 }
 
-/** Class plus a short message. Drops names, settings payloads, file bodies, and secrets. */
-function sanitizedInnerCause(name: string, message: string): string | null {
-    const raw = message.replace(/\s+/g, " ").trim();
-    if (!raw) return null;
-    if (/settingsJson|firstName|lastName|patientName|"settings"/i.test(raw)) return null;
-    if (/^[A-Z][a-z]+(?:[ '][A-Z][a-z]+){0,3}$/.test(raw)) return null;
-    if (/facet normal|endsolid|^solid\s|(?:^|\s)(?:G0|G1|G90)\b/i.test(raw)) return null;
-    let text = raw.length > 400 ? `${raw.slice(0, 240)}…` : raw;
+const PUBLIC_PRODUCTION_ERROR_MAX = 200;
+
+function capPublicProductionMessage(text: string): string {
+    if (text.length <= PUBLIC_PRODUCTION_ERROR_MAX) return text;
+    return `${text.slice(0, PUBLIC_PRODUCTION_ERROR_MAX - 1)}…`;
+}
+
+/** Sanitized fragment for a production row. Strips PHI, secrets, URLs, and paths. */
+function sanitizePublicFragment(raw: string): string {
+    let text = raw.replace(/\s+/g, " ").trim();
+    if (!text) return "";
+    if (/settingsJson|firstName|lastName|patientName|"settings"/i.test(text)) return "";
+    text = text.length > 400 ? `${text.slice(0, 240)}…` : text;
+    text = text.replace(/https?:\/\/\S+/gi, "[redacted]");
     text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted]");
     text = text.replace(
         /\b(?:bearer|token|secret|password|api[_-]?key)\b\s*[:=]?\s*\S+|\bocad_[A-Za-z0-9._-]+|\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]+\b/gi,
@@ -241,6 +258,42 @@ function sanitizedInnerCause(name: string, message: string): string | null {
     text = text.replace(/\b[A-Z][a-z]+(?:[ '][A-Z][a-z]+)+\b/g, "[redacted]");
     text = text.replace(/\/(?:home|Users)\/[^/\s]+/g, "/[redacted]");
     text = text.replace(/\s+/g, " ").trim();
+    return text;
+}
+
+function manufacturingFailedWithSide(side: CadFootSide | null | undefined, reason?: string | null): string {
+    const sideLabel = side?.trim();
+    const prefix = sideLabel ? `Manufacturing failed (${sideLabel})` : "Manufacturing failed";
+    const detail = reason ? sanitizePublicFragment(reason) : "";
+    if (!detail || detail === "[redacted]" || /^[\s[\]redacted…]+$/.test(detail)) return prefix;
+    return capPublicProductionMessage(`${prefix}: ${detail}`);
+}
+
+function isUnclassifiedTimeoutMessage(message: string): boolean {
+    if (message.startsWith("VertexSlice timed out after")) return false;
+    return /(?:\btimeout\b|timed out|ETIMEDOUT|ECONNABORTED|UND_ERR_(?:CONNECT|HEADERS|BODY)_TIMEOUT)/i.test(
+        message,
+    );
+}
+
+function reasonForUnknownFailure(error: unknown, message: string): string | null {
+    const inner = innerCauseForPublicError(error);
+    if (inner) {
+        const unlabeled = inner.replace(/^[A-Za-z0-9_]+:\s*/, "").trim();
+        if (unlabeled) return unlabeled;
+    }
+    const sanitized = sanitizePublicFragment(message);
+    return sanitized || null;
+}
+
+/** Class plus a short message. Drops names, settings payloads, file bodies, and secrets. */
+function sanitizedInnerCause(name: string, message: string): string | null {
+    const raw = message.replace(/\s+/g, " ").trim();
+    if (!raw) return null;
+    if (/settingsJson|firstName|lastName|patientName|"settings"/i.test(raw)) return null;
+    if (/^[A-Z][a-z]+(?:[ '][A-Z][a-z]+){0,3}$/.test(raw)) return null;
+    if (/facet normal|endsolid|^solid\s|(?:^|\s)(?:G0|G1|G90)\b/i.test(raw)) return null;
+    const text = sanitizePublicFragment(raw);
     if (!text || text === "[redacted]" || /^[\s[\]redacted…]+$/.test(text)) return null;
     return `${name}: ${text}`;
 }
@@ -274,8 +327,8 @@ function innerCauseForPublicError(error: unknown): string | null {
     return sanitizedInnerCause("Error", inner);
 }
 
-export function publicProductionError(error: unknown): string {
-    const message = error instanceof Error ? error.message : "";
+export function publicProductionError(error: unknown, side?: CadFootSide | null): string {
+    const message = error instanceof Error ? error.message : String(error);
     if (message.startsWith(CANONICAL_EXPORT_PREFIX)) {
         const detail = innerCauseForPublicError(error);
         return detail ? `${CANONICAL_EXPORT_REFUSAL} (${detail})` : CANONICAL_EXPORT_REFUSAL;
@@ -302,12 +355,56 @@ export function publicProductionError(error: unknown): string {
     if (message.startsWith("Manufacturing mesh is not sliceable")) {
         return message;
     }
+    if (message === "VertexSlice returned empty G-code") {
+        return message;
+    }
+    const vertexSliceError = message.match(/^VertexSlice error \((\d+)\):\s*(.*)$/s);
+    if (vertexSliceError) {
+        const status = vertexSliceError[1];
+        const detail = sanitizePublicFragment(vertexSliceError[2] ?? "");
+        return capPublicProductionMessage(
+            detail ? `VertexSlice error (${status}): ${detail}` : `VertexSlice error (${status})`,
+        );
+    }
+    const reach = message.match(/^Could not reach VertexSlice \([^)]*\):\s*(.*)$/s);
+    if (reach) {
+        const detail = sanitizePublicFragment(reach[1] ?? "");
+        return capPublicProductionMessage(
+            detail ? `Could not reach VertexSlice: ${detail}` : "Could not reach VertexSlice",
+        );
+    }
+    if (message.startsWith("Material ") && message.includes("not available on slicer")) {
+        const colon = message.indexOf(":");
+        const base = colon >= 0 ? message.slice(0, colon).trim() : message;
+        const tail = colon >= 0 ? message.slice(colon + 1).trim() : "";
+        const detail = sanitizePublicFragment(tail);
+        return capPublicProductionMessage(detail ? `${base}: ${detail}` : base);
+    }
+    for (const prefix of [
+        "Hardness 3MF export failed",
+        "manifold-3d rejected",
+        "manifold-3d subtract failed",
+        "3MF missing",
+        "binary STL truncated",
+    ] as const) {
+        if (!message.startsWith(prefix)) continue;
+        const after = message.slice(prefix.length);
+        if (!after) return prefix;
+        if (after.startsWith(": ")) {
+            const detail = sanitizePublicFragment(after.slice(2));
+            return capPublicProductionMessage(detail ? `${prefix}: ${detail}` : prefix);
+        }
+        return capPublicProductionMessage(sanitizePublicFragment(message));
+    }
+    if (side && isUnclassifiedTimeoutMessage(message)) {
+        return `Manufacturing timed out (${side})`;
+    }
     for (const item of allowed) {
         if (message === item || message.startsWith(`${item}:`) || message.startsWith(`${item} `)) {
             return item;
         }
     }
-    return "Manufacturing failed";
+    return manufacturingFailedWithSide(side, reasonForUnknownFailure(error, message));
 }
 
 const ASSET_LOAD_CAUSE =
@@ -466,10 +563,16 @@ export interface ExecuteCadProductionArgs {
     deleteTemp?: (stlStorageKey: string) => Promise<void>;
 }
 
-async function markFailed(store: CadProductionStore, id: string, error: unknown, now: Date): Promise<void> {
+async function markFailed(
+    store: CadProductionStore,
+    id: string,
+    error: unknown,
+    now: Date,
+    side?: CadFootSide | null,
+): Promise<void> {
     await store.updateIf(id, (row) => row.status === "pending" || row.status === "running", {
         status: "failed",
-        error: publicProductionError(error),
+        error: publicProductionError(error, side),
         updatedAt: now,
         leaseExpiresAt: null,
     });
@@ -552,10 +655,10 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
                 // Temp STL expires by the existing TTL job.
             }
         }
-        await markFailed(args.store, args.row.id, error, args.now());
+        await markFailed(args.store, args.row.id, error, args.now(), args.row.side);
         console.error("[manufacturing] cad production failed", {
             productionId: args.row.id,
-            message: publicProductionError(error),
+            message: publicProductionError(error, args.row.side),
             stack: productionErrorStack(error),
         });
         const assetCause = assetLoadCauseForLog(error);
@@ -580,7 +683,7 @@ export async function beginCadOperatorProduction(args: {
         try {
             await args.preflight();
         } catch (error) {
-            await markFailed(args.store, claimed.row.id, error, args.now);
+            await markFailed(args.store, claimed.row.id, error, args.now, args.insert.side);
             return { productionId: claimed.row.id, status: "failed", side: args.insert.side };
         }
     }

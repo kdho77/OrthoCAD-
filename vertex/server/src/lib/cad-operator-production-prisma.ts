@@ -145,6 +145,7 @@ export class PrismaCadProductionStore implements CadProductionStore {
                     status: patch.status,
                     error: patch.error,
                     gcodeStorageKey: patch.gcodeStorageKey,
+                    createdAt: patch.createdAt,
                     updatedAt: patch.updatedAt,
                     leaseExpiresAt: patch.leaseExpiresAt,
                     chargedAt: patch.chargedAt,
