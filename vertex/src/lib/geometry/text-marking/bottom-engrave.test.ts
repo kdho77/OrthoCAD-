@@ -15,6 +15,9 @@ import { assertExactManifold } from "./boolean";
 import { defaultTextMarking } from "./constants";
 import { TextMarkingError } from "./errors";
 
+/** G-code slice simplify threshold (#325); bottom text mesh must stay below this. */
+const SLICE_MESH_SIMPLIFY_ABOVE = 132_000;
+
 const ZERO: SideCorrections = {
     forefootPostingDeg: 0,
     rearfootPostingDeg: 0,
@@ -99,32 +102,62 @@ function openEdgeCount(geo: BufferGeometry): number {
     return open;
 }
 
+function triangleCount(geo: BufferGeometry): number {
+    const index = geo.getIndex();
+    const pos = geo.getAttribute("position");
+    if (index) return index.count / 3;
+    return pos.count / 3;
+}
+
+function defaultBottomPatientMarking() {
+    const marking = defaultTextMarking("bottom");
+    expect(marking.capHeightMm).toBe(12);
+    expect(marking.bold).toBe(true);
+    return {
+        ...marking,
+        text: "",
+        addPatientName: true,
+        anchor: "arch" as const,
+    };
+}
+
 describe("bottom patient-name engrave on SAMPLE_Top", () => {
-    test("TIMOTHY HARTER and GARY PURKEY stay closed at 6 mm bold", async () => {
+    test("12 mm bold default: TIMOTHY HARTER, GARY PURKEY, and 2-line name+extra", async () => {
         for (const side of ["left", "right"] as const) {
             const host = await loftFoot(side);
             const hostVol = Math.abs(signedVolume(host));
-            for (const name of ["TIMOTHY HARTER", "GARY PURKEY"]) {
-                const marking = {
-                    ...defaultTextMarking("bottom"),
-                    text: "",
-                    addPatientName: true,
-                    bold: true,
-                    capHeightMm: 6,
-                    depthMm: 0.6,
-                    anchor: "arch" as const,
-                };
-                const out = await applyTextMarkingToPrintSolid(host, marking, { side }, name);
+            const cases: Array<{
+                patient: string;
+                marking?: ReturnType<typeof defaultBottomPatientMarking>;
+            }> = [
+                { patient: "TIMOTHY HARTER" },
+                { patient: "GARY PURKEY" },
+                {
+                    patient: "TIMOTHY HARTER",
+                    marking: {
+                        ...defaultBottomPatientMarking(),
+                        text: "RX 42",
+                    },
+                },
+            ];
+            for (const { patient, marking = defaultBottomPatientMarking() } of cases) {
+                expect(marking.capHeightMm).toBe(12);
+                const out = await applyTextMarkingToPrintSolid(host, marking, { side }, patient);
                 await assertExactManifold(out);
                 expect(openEdgeCount(out)).toBe(0);
                 expect(hostVol - Math.abs(signedVolume(out))).toBeGreaterThan(0);
+                expect(triangleCount(out)).toBeLessThanOrEqual(SLICE_MESH_SIMPLIFY_ABOVE);
                 const outlines = (out.userData as { bottomOutlineWorld?: unknown[] }).bottomOutlineWorld;
                 expect(outlines?.length ?? 0).toBeGreaterThan(0);
+                const appliedCap = (out.userData as { textMarking?: { capHeightMm?: number } }).textMarking
+                    ?.capHeightMm;
+                expect(appliedCap ?? 0).toBeGreaterThanOrEqual(2.5);
+                expect(appliedCap ?? 99).toBeLessThanOrEqual(12);
                 out.dispose();
             }
             host.dispose();
         }
-    }, 180_000);
+    }, 360_000);
 });
 
 describe("assertExactManifold", () => {

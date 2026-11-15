@@ -594,9 +594,11 @@ export function placeBottomText(
             y: (p.y - local.y) * s,
         }));
         const rotated = transformGroups(pivoted, (p) => rotateAbout(p, { x: 0, y: 0 }, marking.rotationDeg));
-        // Mirror so the recess reads correctly when the insole is flipped (pancake about X).
-        const mirrored = transformGroups(rotated, (p) => ({ x: p.x, y: -p.y }));
-        return transformGroups(mirrored, (p) => ({ x: p.x + cx, y: p.y + cy }));
+        // opentype getPath is canvas-down. flattenPath negates Y again, so the cap
+        // points +Y and the advance points +X. From below, screen-up is −Y and
+        // screen-right is +X: negate Y, leave X. (−x, y) mirrors the string.
+        const upright = transformGroups(rotated, (p) => ({ x: p.x, y: -p.y }));
+        return transformGroups(upright, (p) => ({ x: p.x + cx, y: p.y + cy }));
     };
 
     let placed = applyAt(flat, 1);

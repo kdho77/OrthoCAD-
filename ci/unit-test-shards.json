@@ -15,6 +15,7 @@
                 "tests/heel-skive-kirby.test.ts",
                 "tests/procedural-wall-s1-parity.test.ts",
                 "tests/sink-preview-gate.test.ts",
+                "tests/bottomtext-handedness.test.ts",
                 "tests/text-marking-right-foot.test.ts",
                 "tests/track5b-shape-finish-gates.test.ts",
                 "vertex/print-bridge/baked-config.test.ts",

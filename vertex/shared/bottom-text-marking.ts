@@ -40,7 +40,7 @@ export const TEXT_MIN_LETTER_SPACING_MM = 0.6;
 export const TEXT_DEPTH_STEP_MM = 0.1;
 export const TEXT_ROTATION_MAX_DEG = 90;
 
-export const BOTTOM_CAP = { min: 2.5, default: 6, max: 12 } as const;
+export const BOTTOM_CAP = { min: 2.5, default: 12, max: 12 } as const;
 export const BOTTOM_ENGRAVE = { min: 0.3, default: 0.6, max: 1.2 } as const;
 export const BOTTOM_EMBOSS_HEIGHT = { min: 0.3, default: 0.4, max: 1.2 } as const;
 export const BOTTOM_U = { min: 0.12, default: 0.32, max: 0.78 } as const;

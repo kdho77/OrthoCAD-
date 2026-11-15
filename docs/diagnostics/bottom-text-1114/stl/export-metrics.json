@@ -1,0 +1,32 @@
+{
+    "patient": "TIMOTHY HARTER",
+    "m9LengthMm": 275,
+    "left": {
+        "filename": "Timothy_Harter_ApexCore_L.stl",
+        "triangles": 108802,
+        "openEdges": 0,
+        "bboxMm": {
+            "x": 273.11007618904114,
+            "y": 92.71271133422852,
+            "z": 25.811349868774414
+        },
+        "legibility": {
+            "toneRange": 230,
+            "inkPixels": 640055
+        }
+    },
+    "right": {
+        "filename": "Timothy_Harter_ApexCore_R.stl",
+        "triangles": 108508,
+        "openEdges": 0,
+        "bboxMm": {
+            "x": 273.10448211431503,
+            "y": 92.70631790161133,
+            "z": 25.811349868774414
+        },
+        "legibility": {
+            "toneRange": 230,
+            "inkPixels": 640040
+        }
+    }
+}
