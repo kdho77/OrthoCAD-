@@ -131,7 +131,9 @@ async function trimlineGapMm(
 }
 
 describe("element height at the trimline", () => {
-    test("flow library elements match the design preview on both feet within 0.2 mm", async () => {
+    test("Cluffy wedge matches the design preview at the trimline on both feet within 0.2 mm", async () => {
+        // Kendon (Nov 15 2026): the element is the Cluffy wedge. Met bar is the
+        // other pad measured beside it; toe crest and cuboid share that fade.
         const kinds: ElementKind[] = ["cluffy_wedge", "met_bar", "toe_crest", "cuboid_pad"];
         for (const side of ["right", "left"] as const) {
             const raw = await loadSampleTop(side);
@@ -203,12 +205,12 @@ describe("element height at the trimline", () => {
         }
     }, 120_000);
 
-    test("lofted met bar keeps the trimline height and stays watertight", async () => {
+    test("lofted Cluffy wedge keeps the trimline height and stays watertight", async () => {
         const side: Side = "right";
         const raw = await loadSampleTop(side);
         const frame = getBaseFootprintFrame(raw, side);
-        const pose = defaultElementPose("met_bar", side, frame.lenSize, frame.widSize);
-        const placed: PlacedElement = { id: "met-bar", kind: "met_bar", side, ...pose };
+        const pose = defaultElementPose("cluffy_wedge", side, frame.lenSize, frame.widSize);
+        const placed: PlacedElement = { id: "cluffy", kind: "cluffy_wedge", side, ...pose };
         const field = fieldFor(raw, side, [placed], zero());
         ensureTopEdgeAvProfile(field, raw);
         const composed = await composePrintSolidTop(raw, { sourceField: field });
