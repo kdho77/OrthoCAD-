@@ -316,6 +316,59 @@ describe("SAMPLE_Top saved-design snapshot", () => {
         ).toBe(3);
     });
 
+    test("flange per foot maps to medialFlangeMm and lateralFlangeMm with level shorthand", () => {
+        const omitted = build({});
+        expect(omitted.design.corrections.left.medialFlangeMm).toBe(0);
+        expect(omitted.design.corrections.left.lateralFlangeMm).toBe(0);
+
+        const requested = build({ flange: { left: {} } });
+        expect(requested.design.corrections.left.medialFlangeMm).toBe(3);
+        expect(requested.design.corrections.left.lateralFlangeMm).toBe(3);
+        expect(requested.design.corrections.right.medialFlangeMm).toBe(0);
+        expect(requested.design.corrections.linked).toBe(false);
+        expect(requested.paths).toContain("settings.corrections.left.medialFlangeMm");
+
+        const mild = build({ flange: { right: { level: "mild" } } });
+        expect(mild.design.corrections.right.medialFlangeMm).toBe(2);
+        expect(mild.design.corrections.right.lateralFlangeMm).toBe(2);
+
+        const high = build({ flange: { left: { level: "High" } } });
+        expect(high.design.corrections.left.medialFlangeMm).toBe(6);
+        expect(high.design.corrections.left.lateralFlangeMm).toBe(6);
+
+        const split = build({
+            flange: {
+                left: { medial_mm: 4, lateral_mm: 5 },
+                right: { medial_mm: 3 },
+            },
+        });
+        expect(split.design.corrections.left).toMatchObject({ medialFlangeMm: 4, lateralFlangeMm: 5 });
+        expect(split.design.corrections.right.medialFlangeMm).toBe(3);
+        expect(split.design.corrections.right.lateralFlangeMm).toBe(3);
+
+        const overridesLevel = build({ flange: { left: { level: "high", medial_mm: 3 } } });
+        expect(overridesLevel.design.corrections.left.medialFlangeMm).toBe(3);
+        expect(overridesLevel.design.corrections.left.lateralFlangeMm).toBe(6);
+
+        const viaSliders = build({
+            sliders: { medial_flange_mm: 1, lateral_flange_mm: 1 },
+            flange: { left: { medial_mm: 5, lateral_mm: 5 } },
+        });
+        expect(viaSliders.design.corrections.left.medialFlangeMm).toBe(5);
+        expect(viaSliders.design.corrections.left.lateralFlangeMm).toBe(5);
+        expect(viaSliders.design.corrections.right.medialFlangeMm).toBe(1);
+    });
+
+    test("flange mm outside 0–8 is 422 and not clamped", () => {
+        for (const medial_mm of [-0.1, 8.1, 12]) {
+            expect422(() => build({ flange: { left: { medial_mm } } }));
+        }
+        expect(expect422(() => build({ flange: { right: { lateral_mm: 9 } } })).message).toMatch(/8/);
+        expect(parseSavedDesignCatalog({ flange: { left: { level: "mild" } } }).flange?.left?.level).toBe(
+            "mild",
+        );
+    });
+
     test("Morton's and a reverse kinetic wedge on the same foot are refused", () => {
         expect(
             expect422(() =>
