@@ -2,11 +2,13 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { BufferAttribute, BufferGeometry } from "three";
+import { parseSavedDesignCatalog, SavedDesignSnapshotError } from "../../../shared/saved-design-catalog";
 import { insoleLayoutForUsMenSize } from "./shoe-size";
 import {
     applyShoeWidthToGeometry,
     applyShoeWidthToPoints,
     formatShoeWidthSummary,
+    normalizeShoeWidth,
     SHOE_WIDTH_BALL_DELTA_MM,
     SHOE_WIDTH_HEEL_CAP_MM,
     SHOE_WIDTH_LABELS,
@@ -27,6 +29,7 @@ describe("shoe width rule", () => {
                 ["medium", 0],
                 ["wide", 5],
                 ["extra_wide", 10],
+                ["xx_wide", 15],
             ] as const) {
                 const scale = shoeWidthBallScale(ball, id);
                 expect(Math.abs((scale - 1) * ball - delta)).toBeLessThanOrEqual(0.5);
@@ -57,16 +60,18 @@ describe("shoe width rule", () => {
             medium: 0,
             wide: 5,
             extra_wide: 10,
+            xx_wide: 15,
         });
         expect(SHOE_WIDTH_LABELS.extra_narrow).toBe("2X Narrow");
-        expect(SHOE_WIDTH_LABELS.extra_wide).toBe("2X Wide");
+        expect(SHOE_WIDTH_LABELS.extra_wide).toBe("Extra Wide");
+        expect(SHOE_WIDTH_LABELS.xx_wide).toBe("2X Wide");
         const pts = [
             { x: 0, y: 0 },
             { x: 130, y: 40 },
             { x: 260, y: -20 },
         ];
         const opts = { ballWidthMm: 95, heelWidthMm: 59, minX: 0, lengthMm: 260 };
-        for (const id of ["extra_narrow", "narrow", "medium", "wide", "extra_wide"] as const) {
+        for (const id of ["extra_narrow", "narrow", "medium", "wide", "extra_wide", "xx_wide"] as const) {
             const out = applyShoeWidthToPoints(pts, id, opts);
             expect(out.map((p) => p.x)).toEqual(pts.map((p) => p.x));
         }
@@ -140,5 +145,17 @@ describe("shoe width rule", () => {
         expect(shoeWidthAffineY(130, 40, yMid, "wide", opts)).toBeCloseTo(scaled[1]!.y, 6);
         out.dispose();
         geo.dispose();
+    });
+
+    test("xx_wide planform at the ball widens 15 mm vs medium", () => {
+        const ball = 95;
+        const heel = ball * 0.62;
+        const mediumBallScale = shoeWidthBallScale(ball, "medium");
+        const xxBallScale = shoeWidthBallScale(ball, "xx_wide");
+        expect((xxBallScale - mediumBallScale) * ball).toBeCloseTo(15, 0.5);
+        expect(shoeWidthScaleAtU(0.7, ball, heel, "xx_wide")).toBeCloseTo(xxBallScale, 5);
+        expect(normalizeShoeWidth("xx_wide")).toBe("xx_wide");
+        expect(parseSavedDesignCatalog({ width: "xx_wide" }).width).toBe("xx_wide");
+        expect(() => parseSavedDesignCatalog({ width: "giant" })).toThrow(SavedDesignSnapshotError);
     });
 });

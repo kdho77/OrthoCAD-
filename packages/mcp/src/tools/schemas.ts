@@ -123,7 +123,7 @@ const shoeSystemSchema = z.preprocess(
 
 const widthSchema = z.preprocess(
     (value) => (typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, "_") : value),
-    z.enum(["narrow", "medium", "wide", "extra_narrow", "extra_wide"]),
+    z.enum(["narrow", "medium", "wide", "extra_narrow", "extra_wide", "xx_wide"]),
 );
 
 const archSchema = z.preprocess(
@@ -372,7 +372,7 @@ export const MCP_TOOL_DEFINITIONS = [
             "Update one existing design's settingsJson in place with a loftable SAMPLE_Top parameter snapshot " +
             "for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when " +
             "present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, " +
-            "shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide), " +
+            "shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide|xx_wide), " +
             "arch (low|medium|standard|high → −3.5|0|0|+3 mm), flexible_foot (true → apex +4 mm on both feet), " +
             "elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), " +
             "sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), " +
