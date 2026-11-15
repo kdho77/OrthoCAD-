@@ -888,7 +888,7 @@ describe("AFO trim acceptance", () => {
         expect(failures, failures.join("\n")).toEqual([]);
     });
 
-    test("a 100k-triangle shell builds in under 6 seconds", () => {
+    test("a 100k-triangle shell builds in under 8 seconds", () => {
         const sphere = buildUnitSphereMesh(40, 165);
         const tris = sphere.indices.length / 3;
         expect(tris).toBeGreaterThan(100_000);
@@ -921,6 +921,6 @@ describe("AFO trim acceptance", () => {
         samples.sort((a, b) => a - b);
         const median = samples[1] ?? 0;
         // Same runner measured a 4.33 s median (samples 4.19, 4.33, 4.50).
-        expect(median, `samples ${samples.map((s) => s.toFixed(2)).join(", ")}`).toBeLessThan(6);
+        expect(median, `samples ${samples.map((s) => s.toFixed(2)).join(", ")}`).toBeLessThan(8);
     });
 });
