@@ -128,7 +128,11 @@ describe("element footprint planforms", () => {
             const pose = required(sinkFootprintPose(placedSink, side, layout.lengthMm, layout.widthMm));
             expect(pose.halfLengthMm).toBeCloseTo(frame.halfLengthMm, 5);
             expect(pose.halfWidthMm).toBeCloseTo(frame.halfWidthMm, 5);
-            expect(Math.abs(pose.halfLengthMm - pose.halfWidthMm)).toBeLessThan(1e-6);
+            // MPJ2 is a 24 x 18 plateau at Men's 9, so the halves differ by 3 mm.
+            expect(pose.halfLengthMm - pose.halfWidthMm).toBeCloseTo(
+                (SINK_PROFILES.mpj2.lengthMm - SINK_PROFILES.mpj2.widthMm) / 2,
+                5,
+            );
             const center = footprintLocalToAnatomical(pose, 0, 0);
             expect(center.x).toBeCloseTo(frame.cx, 4);
             expect(center.yLateral).toBeCloseTo(frame.cy, 4);
