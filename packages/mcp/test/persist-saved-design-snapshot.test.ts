@@ -92,6 +92,58 @@ describe("persist_saved_design_snapshot tool", () => {
         expect(JSON.stringify(forwarded)).not.toMatch(/6mm|flexible foot|Extra Soft/);
     });
 
+    test("manufacturing_method is forwarded only when sent and is not inferred", () => {
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({
+                design_id: designId,
+                manufacturing_method: "milling_3axis",
+            }).success,
+        ).toBe(true);
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({
+                design_id: designId,
+                manufacturing_method: "printing_solid",
+            }).success,
+        ).toBe(true);
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({
+                design_id: designId,
+                manufacturing_method: "belt",
+            }).success,
+        ).toBe(false);
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({
+                design_id: designId,
+                catalog: { hardness: "Hard", thickness_mm: 4 },
+            }).success,
+        ).toBe(true);
+    });
+
+    test("forwards manufacturing_method to the snapshot update", async () => {
+        let forwarded: { designId?: string; manufacturingMethod?: string; catalog?: unknown } | undefined;
+        const manufacturing = {
+            persistSavedDesignSnapshot: async (input: {
+                designId: string;
+                manufacturingMethod?: string;
+                catalog?: unknown;
+            }) => {
+                forwarded = input;
+                return { ok: true, design_id: input.designId };
+            },
+        } as unknown as ManufacturingClient;
+        const result = await handleOrthocadTool(
+            "persist_saved_design_snapshot",
+            { design_id: designId, manufacturing_method: "milling_3axis", catalog: { thickness_mm: 4 } },
+            { config, manufacturing },
+        );
+        expect(result.isError).toBeUndefined();
+        expect(forwarded).toEqual({
+            designId,
+            manufacturingMethod: "milling_3axis",
+            catalog: { thickness_mm: 4 },
+        });
+    });
+
     test("a missing shoe size comes back as a question for the user", async () => {
         const manufacturing = {
             persistSavedDesignSnapshot: async () => {

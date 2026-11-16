@@ -23,7 +23,11 @@ import {
     unconfiguredOrderPersonVerifier,
     type VerifiedOrderPerson,
 } from "./dogfood-order-person-verifier.js";
-import type { PersistSavedDesignSnapshotResult } from "./saved-design-snapshot.js";
+import {
+    applySavedDesignManufacturingMethod,
+    type PersistSavedDesignSnapshotResult,
+    type SavedDesignManufacturingMethod,
+} from "./saved-design-snapshot.js";
 
 export const DOGFOOD_ORDER_IDENTITY_CODES = [
     "order_person_unbound",
@@ -109,6 +113,8 @@ export interface EstablishVerifiedOrderInput {
      */
     linkShoeWidth: string;
     chartWidth: IntegrationLinkWidth;
+    /** Design column. Omitted stays printing_solid, the historical create. */
+    method?: SavedDesignManufacturingMethod;
 }
 
 export type EstablishVerifiedOrderResult =
@@ -291,6 +297,8 @@ export async function createDogfoodSavedDesign(args: {
     catalog?: unknown;
     /** Chart labels for a new client row. Not sent to the order-owner verifier. */
     chart?: { givenName?: string | null; familyName?: string | null } | null;
+    /** Omitted keeps a print order. Milling is never inferred. */
+    manufacturingMethod?: SavedDesignManufacturingMethod;
     store: DogfoodSavedDesignStore;
     verifier?: OrderPersonVerifier;
     now?: () => Date;
@@ -368,6 +376,7 @@ async function bindVerifiedPerson(
     args: {
         catalog?: unknown;
         chart?: { givenName?: string | null; familyName?: string | null } | null;
+        manufacturingMethod?: SavedDesignManufacturingMethod;
         store: DogfoodSavedDesignStore;
         buildSnapshot?: typeof buildSavedDesignSnapshot;
         persist: (designId: string) => Promise<PersistSavedDesignSnapshotResult>;
@@ -410,6 +419,9 @@ async function bindVerifiedPerson(
     const familyName = existingPerson?.familyName ?? person.familyName ?? chartLabel(args.chart?.familyName);
     if (!existingPerson && (!givenName || !familyName)) throw identityError("verifier_incomplete");
     const built = await snapshotForNewDesign(args.catalog, args.buildSnapshot);
+    if (args.manufacturingMethod) {
+        applySavedDesignManufacturingMethod(built.design, args.manufacturingMethod);
+    }
     const settingsJson = envelopeFor(built);
     if (!orderPersonStillFresh(person, now)) throw identityError("verifier_stale");
     const linkShoeWidth = integrationLinkShoeWidth(built.shoeWidth, built.shoeWidthSource);
@@ -421,6 +433,7 @@ async function bindVerifiedPerson(
         verifiedAt: person.verifiedAt,
         now,
         settingsJson,
+        method: args.manufacturingMethod,
         linkShoe: built.linkShoe,
         linkShoeWidth,
         chartWidth: linkShoeWidth,
@@ -660,7 +673,7 @@ export function prismaDogfoodSavedDesignStore(prisma: PrismaClient): DogfoodSave
                             kind: "insole",
                             name: `Insole ${input.externalOrderId}`.slice(0, 120),
                             pattern: "full_contact",
-                            method: "printing_solid",
+                            method: input.method ?? "printing_solid",
                             thicknessMm: shellThicknessMmFromEnvelope(input.settingsJson),
                             settingsJson: input.settingsJson as Prisma.InputJsonValue,
                         },

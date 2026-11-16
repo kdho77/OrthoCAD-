@@ -9865,7 +9865,8 @@ function createManufacturingClient(options) {
     persistSavedDesignSnapshot(input2) {
       return trpc.manufacturing.persistSavedDesignSnapshot.mutate({
         designId: input2.designId,
-        catalog: input2.catalog
+        catalog: input2.catalog,
+        ...input2.manufacturingMethod ? { manufacturingMethod: input2.manufacturingMethod } : {}
       });
     },
     /**
@@ -9874,7 +9875,14 @@ function createManufacturingClient(options) {
      * The server pins source vo2 and the dogfood tenant.
      */
     createSavedDesign(input2) {
-      return trpc.manufacturing.createSavedDesign.mutate(input2);
+      return trpc.manufacturing.createSavedDesign.mutate({
+        externalOrderId: input2.externalOrderId,
+        clientId: input2.clientId,
+        givenName: input2.givenName,
+        familyName: input2.familyName,
+        catalog: input2.catalog,
+        ...input2.manufacturingMethod ? { manufacturingMethod: input2.manufacturingMethod } : {}
+      });
     }
   };
 }
@@ -40717,8 +40725,10 @@ var savedDesignCatalogSchema = external_exports.object({
   extra_soft: external_exports.union([external_exports.string().max(80), external_exports.boolean()]).optional(),
   hardness: external_exports.string().max(80).optional()
 }).strict();
+var manufacturingMethodSchema = external_exports.enum(["printing_solid", "milling_3axis"]);
 var createSavedDesignInputSchema = external_exports.object({
   external_order_id: external_exports.string().trim().min(1).max(200),
+  manufacturing_method: manufacturingMethodSchema.optional(),
   /**
    * Optional confirmation of the client already stored on this order.
    * It is not proof of the order's person and cannot create a client.
@@ -40754,6 +40764,7 @@ var prepareVoAttachmentInputSchema = external_exports.object({
 }).strict();
 var persistSavedDesignSnapshotInputSchema = external_exports.object({
   design_id: external_exports.string().uuid(),
+  manufacturing_method: manufacturingMethodSchema.optional(),
   catalog: savedDesignCatalogSchema.optional(),
   /** Accepted and dropped. Clinical values are not read from free text. */
   rx_text: external_exports.string().max(8e3).optional(),
@@ -40822,12 +40833,12 @@ var MCP_TOOL_DEFINITIONS = [
   },
   {
     name: "persist_saved_design_snapshot",
-    description: "Update one existing design's settingsJson in place with a loftable SAMPLE_Top parameter snapshot for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide|xx_wide), arch (low|medium|standard|high \u2192 \u22123.5|0|0|+3 mm), flexible_foot (true \u2192 apex +4 mm on both feet), elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), flange.left, flange.right, flange.left.medial_mm, flange.left.lateral_mm, flange.left.level, flange.right.medial_mm, flange.right.lateral_mm, flange.right.level (per-foot medial/lateral flange 0\u20138 mm; omit medial_mm and lateral_mm for 3 mm default, mild level 2 mm, standard/unspecified 3 mm, high 6 mm; out of range is 422, not clamped; omitted flange leaves flanges unchanged), rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit, thickness_mm (shell thickness, design.thicknessMm, 1.5\u20138 mm inclusive). thickness_mm is the labelled shell/base clearance, not the zonal rear/mid/fore walls. When set, settings store that clearance and uniform shell mode so the loft uses the shell-thickness slider. When omitted, thickness stays 2 mm and the zonal shell is unchanged. Out of range is 422 and is not clamped. Ignored and never mapped: rx_text, notes, rigidity, extra_soft. sliders.arch_ease_mm is accepted and not applied (migrated to 0). sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. Absent width is Medium and recorded as defaulted, not prescribed. 422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
+    description: "Update one existing design's settingsJson in place with a loftable SAMPLE_Top parameter snapshot for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide|xx_wide), arch (low|medium|standard|high \u2192 \u22123.5|0|0|+3 mm), flexible_foot (true \u2192 apex +4 mm on both feet), elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), flange.left, flange.right, flange.left.medial_mm, flange.left.lateral_mm, flange.left.level, flange.right.medial_mm, flange.right.lateral_mm, flange.right.level (per-foot medial/lateral flange 0\u20138 mm; omit medial_mm and lateral_mm for 3 mm default, mild level 2 mm, standard/unspecified 3 mm, high 6 mm; out of range is 422, not clamped; omitted flange leaves flanges unchanged), rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit, manufacturing_method (printing_solid or milling_3axis). Omit it to leave the order a print (the method column is not written). milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. It is not inferred from material, hardness, or thickness. thickness_mm (shell thickness, design.thicknessMm, 1.5\u20138 mm inclusive). thickness_mm is the labelled shell/base clearance, not the zonal rear/mid/fore walls. When set, settings store that clearance and uniform shell mode so the loft uses the shell-thickness slider. When omitted, thickness stays 2 mm and the zonal shell is unchanged. Out of range is 422 and is not clamped. Ignored and never mapped: rx_text, notes, rigidity, extra_soft. sliders.arch_ease_mm is accepted and not applied (migrated to 0). sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. Absent width is Medium and recorded as defaulted, not prescribed. 422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
     inputSchema: persistSavedDesignSnapshotInputSchema
   },
   {
     name: "create_saved_design",
-    description: "Refresh the dogfood SAMPLE_Top design already bound to an existing VertexOrders order. Source is vo2 and the tenant is the internal dogfood tenant. Does not take a clinic tenant id. client_id is optional and only confirms the client already stored on that order. patient_name, an external client id, and a name are not accepted as identity. given_name and family_name are chart labels for a new client after the server verifier and are not sent as order-owner proof. A different client_id, more than one link, or a client outside the dogfood tenant fails closed with no write and no tenant change. When the order-owner verifier is unconfigured or refuses, this does not create a client or a design and does not call integration client upsert. A server verifier may bind the verified person for this dogfood order. Caller fields are not that verifier. CAD-operator scopes cannot assert the order's person. A bound refresh uses the saved-design snapshot rules. No scan upload. Optional catalog.thickness_mm sets shell thickness in mm (1.5\u20138, default 2 when omitted). Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. flange.left / flange.right set medial_mm and lateral_mm (0\u20138) per foot; omit those mm for 3 mm default, or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. Medium width is used only when width is absent and is recorded as defaulted, not prescribed. Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
+    description: "Refresh the dogfood SAMPLE_Top design already bound to an existing VertexOrders order. Source is vo2 and the tenant is the internal dogfood tenant. Does not take a clinic tenant id. client_id is optional and only confirms the client already stored on that order. patient_name, an external client id, and a name are not accepted as identity. given_name and family_name are chart labels for a new client after the server verifier and are not sent as order-owner proof. A different client_id, more than one link, or a client outside the dogfood tenant fails closed with no write and no tenant change. When the order-owner verifier is unconfigured or refuses, this does not create a client or a design and does not call integration client upsert. A server verifier may bind the verified person for this dogfood order. Caller fields are not that verifier. CAD-operator scopes cannot assert the order's person. A bound refresh uses the saved-design snapshot rules. No scan upload. Optional manufacturing_method is printing_solid or milling_3axis. Omit it and the new order stays a print. milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. It is not inferred from material, hardness, or thickness. Optional catalog.thickness_mm sets shell thickness in mm (1.5\u20138, default 2 when omitted). Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. flange.left / flange.right set medial_mm and lateral_mm (0\u20138) per foot; omit those mm for 3 mm default, or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. Medium width is used only when width is absent and is recorded as defaulted, not prescribed. Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
     inputSchema: createSavedDesignInputSchema
   },
   {
@@ -41202,7 +41213,8 @@ async function dispatchTool(name, args, deps) {
       try {
         return await manufacturing.persistSavedDesignSnapshot({
           designId: input2.design_id,
-          catalog: input2.catalog
+          catalog: input2.catalog,
+          ...input2.manufacturing_method ? { manufacturingMethod: input2.manufacturing_method } : {}
         });
       } catch (error62) {
         const question = questionFromMessage(error62 instanceof Error ? error62.message : String(error62));
@@ -41224,7 +41236,8 @@ async function dispatchTool(name, args, deps) {
           clientId: input2.client_id,
           givenName: input2.given_name,
           familyName: input2.family_name,
-          catalog: input2.catalog
+          catalog: input2.catalog,
+          ...input2.manufacturing_method ? { manufacturingMethod: input2.manufacturing_method } : {}
         });
       } catch (error62) {
         const question = questionFromMessage(error62 instanceof Error ? error62.message : String(error62));

@@ -531,6 +531,9 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                 return await manufacturing.persistSavedDesignSnapshot({
                     designId: input.design_id,
                     catalog: input.catalog,
+                    ...(input.manufacturing_method
+                        ? { manufacturingMethod: input.manufacturing_method }
+                        : {}),
                 });
             } catch (error) {
                 const question = questionFromMessage(error instanceof Error ? error.message : String(error));
@@ -555,6 +558,9 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                     givenName: input.given_name,
                     familyName: input.family_name,
                     catalog: input.catalog,
+                    ...(input.manufacturing_method
+                        ? { manufacturingMethod: input.manufacturing_method }
+                        : {}),
                 });
             } catch (error) {
                 const question = questionFromMessage(error instanceof Error ? error.message : String(error));
