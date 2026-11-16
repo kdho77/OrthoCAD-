@@ -4,9 +4,8 @@ import { useInsoleGeometry } from "@/hooks/useInsoleGeometry";
 import { applyDesignElementColors } from "@/lib/geometry/element-visualization";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
-import { getDesignTrimline } from "@/lib/geometry/trimline";
 import { useDesignStore } from "@/stores/design-store";
-import { useMeshEditStore } from "@/stores/mesh-edit-store";
+import { resolveActiveTrimline, useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, Side } from "@/types";
 import { ElementSurfaceMeshes } from "./ElementSurfaceMeshes";
 
@@ -30,14 +29,10 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
     const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const applyEdits = target?.type === "insole" && target.side === side;
 
-    const trimline = useMemo(() => {
-        // Phase 3A production editing: wire the live draft (including during active drag)
-        // into the parametric preview so the user sees the footprint deform in real time.
-        // The TrimlineEditTools already rate-limits draft commits via rAF + interacting=true
-        // keeps the geometry engine on "preview" quality, so live updates are safe and responsive.
-        if (trimlineEdit?.side === side) return trimlineEdit.draft;
-        return getDesignTrimline(design, side);
-    }, [design, trimlineEdit, side]);
+    const trimline = useMemo(
+        () => resolveActiveTrimline(side, design, trimlineEdit),
+        [side, design, trimlineEdit],
+    );
 
     const { geometry, building } = useInsoleGeometry({
         side,

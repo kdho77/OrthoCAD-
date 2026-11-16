@@ -2,7 +2,9 @@ import type * as THREE from "three";
 import { create } from "zustand";
 import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
+import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-id";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import { buildTrimPresetCurve } from "@/lib/geometry/trim-presets";
 import {
     cloneTrimline,
     getDesignTrimline,
@@ -85,22 +87,70 @@ export interface MeshEditStore {
     getActiveDraftBottomPattern: (side: Side) => TrimlineCurve | null;
 }
 
+/** Mesh silhouette in the same frame the base is rendered in. */
+function meshOutlineForSide(side: Side): TrimlineCurve | null {
+    const design = useDesignStore.getState().design;
+    const base = getDesignBase(design, side);
+    if (!base) return null;
+    const outlines = useBaseOutlineStore.getState();
+    const mirrorTag = base.mirrored ? "m" : "p";
+    const wallModel = useDesignStore.getState().viewer.wallModel ?? "procedural";
+    if (wallModel === "procedural") {
+        const procedural = outlines.getOutline(`${SAMPLE_TOP_ASSET_ID}:${side}:${mirrorTag}`);
+        if (procedural) return cloneTrimline(procedural);
+    }
+    const key = getBaseCacheKey(base) ?? base.assetId;
+    const legacy = key ? outlines.getOutline(key) : null;
+    return legacy ? cloneTrimline(legacy) : null;
+}
+
 function committedOrDefault(side: Side): TrimlineCurve {
     const design = useDesignStore.getState().design;
     const committed = getDesignTrimline(design, side);
     if (committed) return committed;
     // On a loaded base, start from an outline that follows the real mesh boundary
     // (published once the base GLB loads) instead of the parametric default.
-    const base = getDesignBase(design, side);
-    if (base) {
-        const key = getBaseCacheKey(base) ?? base.assetId;
-        const outline = useBaseOutlineStore.getState().getOutline(key);
-        if (outline) return cloneTrimline(outline);
-    }
+    const outline = meshOutlineForSide(side);
+    if (outline) return outline;
     return sampleDefaultOutline(
         insoleLayoutFromDesign(design).lengthMm,
         insoleLayoutFromDesign(design).widthMm,
     );
+}
+
+/** Landmark trim of this foot's own outline. Does not reuse the other foot's Y. */
+export function curveForTrimPreset(side: Side, preset: Exclude<TrimPresetId, "custom">): TrimlineCurve {
+    const design = useDesignStore.getState().design;
+    const layout = insoleLayoutFromDesign(design);
+    return buildTrimPresetCurve(preset, {
+        lengthMm: layout.lengthMm,
+        widthMm: layout.widthMm,
+        baseCurve: committedOrDefault(side),
+    });
+}
+
+/**
+ * Trimline that should clip the mesh and the export right now.
+ * A linked Sulcus / Met-head / Full preview is rebuilt per foot so the right
+ * foot is not a copy of the left foot's polyline.
+ */
+export function resolveActiveTrimline(
+    side: Side,
+    design = useDesignStore.getState().design,
+    session = useMeshEditStore.getState().trimlineEdit,
+): TrimlineCurve | null {
+    if (session?.side === side) return cloneTrimline(session.draft);
+    const committed = getDesignTrimline(design, side);
+    const preset = session?.presetOnCommit;
+    if (
+        session &&
+        session.side !== side &&
+        design.corrections.linked &&
+        (preset === "full" || preset === "sulcus" || preset === "met_head")
+    ) {
+        return curveForTrimPreset(side, preset);
+    }
+    return committed;
 }
 
 export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
@@ -199,14 +249,21 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
         const presetId = session.presetOnCommit ?? "custom";
         store.setSideTrimline(session.side, session.draft);
         store.setTrimPresetId(session.side, presetId);
+        const effective = { [session.side]: session.draft } as Partial<Record<Side, TrimlineCurve>>;
         if (store.design.corrections.linked) {
             const other: Side = session.side === "left" ? "right" : "left";
-            store.setSideTrimline(other, session.draft);
+            // Named presets are rebuilt on the other foot's own outline. Copying the
+            // active polyline would put the left foot's Y on the right foot.
+            const otherCurve =
+                presetId === "full" || presetId === "sulcus" || presetId === "met_head"
+                    ? curveForTrimPreset(other, presetId)
+                    : session.draft;
+            store.setSideTrimline(other, otherCurve);
             store.setTrimPresetId(other, presetId);
+            effective[other] = otherCurve;
         }
         // Phase 3A: after committing a new footprint, surface any now-orphaned elements or correction regions.
         const design = useDesignStore.getState().design;
-        const effective = { [session.side]: session.draft } as Partial<Record<Side, TrimlineCurve>>;
         useIssuesStore.getState().recompute(design, effective);
         set({ trimlineEdit: null, editMode: "transform" });
     },
