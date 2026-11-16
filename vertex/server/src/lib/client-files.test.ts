@@ -40,6 +40,7 @@ import {
     softDeleteDesignFile,
     updateClientFile,
     updateDesignMeta,
+    VERTEX_DOGFOOD_TENANT_ID,
 } from "../../../shared/client-files.js";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
@@ -339,7 +340,7 @@ describe("client file API", () => {
         expect(client.shoeWidth).toBe("wide");
     });
 
-    test("create defaults ordered by to the tenant account name", async () => {
+    test("create defaults ordered by to the tenant account name for clinic tenants", async () => {
         const repo = createMemoryClientFileRepo(emptyDb());
         const me = { ...actor("clinician", ORG), tenantName: "Apex Clinic" };
         const { client } = await createClientFile(repo, me, {
@@ -350,6 +351,53 @@ describe("client file API", () => {
             ...defaultShoeChart(),
         });
         expect(client.orderedBy).toBe("Apex Clinic");
+    });
+
+    test("create leaves ordered by null for the Vertex dogfood tenant when omitted", async () => {
+        const repo = createMemoryClientFileRepo(emptyDb());
+        const me = {
+            ...actor("clinician", VERTEX_DOGFOOD_TENANT_ID),
+            tenantName: "Vertex Orthopedic (dogfood)",
+        };
+        const { client } = await createClientFile(repo, me, {
+            displayName: "Buyer",
+            firstName: "",
+            lastName: "",
+            reference: "B-1",
+            ...defaultShoeChart(),
+        });
+        expect(client.orderedBy).toBeNull();
+    });
+
+    test("create saves an explicit ordered by value", async () => {
+        const repo = createMemoryClientFileRepo(emptyDb());
+        const me = {
+            ...actor("clinician", VERTEX_DOGFOOD_TENANT_ID),
+            tenantName: "Vertex Orthopedic (dogfood)",
+        };
+        const { client } = await createClientFile(repo, me, {
+            displayName: "Buyer",
+            firstName: "",
+            lastName: "",
+            reference: "B-1",
+            orderedBy: "Upperline Madison",
+            ...defaultShoeChart(),
+        });
+        expect(client.orderedBy).toBe("Upperline Madison");
+    });
+
+    test("update can change ordered by on a client file", async () => {
+        const repo = createMemoryClientFileRepo(emptyDb());
+        const me = { ...actor("clinician", ORG), tenantName: "Apex Clinic" };
+        const { client } = await createClientFile(repo, me, {
+            displayName: "Buyer",
+            firstName: "",
+            lastName: "",
+            reference: "B-1",
+            ...defaultShoeChart(),
+        });
+        const updated = await updateClientFile(repo, me, client.id, { orderedBy: "Upperline Madison" });
+        expect(updated.orderedBy).toBe("Upperline Madison");
     });
 
     test("list search and sort include ordered by", () => {

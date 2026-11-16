@@ -43,6 +43,8 @@ interface NewClientDialogProps {
     open: boolean;
     mode: "create" | "edit";
     initial?: ClientInput;
+    /** Prefill for Ordered by on create; empty for Vertex dogfood staff. */
+    defaultOrderedBy?: string | null;
     clients: ClientRecord[];
     exceptId?: string;
     storePhi?: boolean;
@@ -57,6 +59,7 @@ const empty: ClientInput = {
     lastName: "",
     dateOfBirth: "",
     reference: "",
+    orderedBy: "",
     mrn: "",
     email: "",
     phone: "",
@@ -64,10 +67,25 @@ const empty: ClientInput = {
     ...defaultShoeChart(),
 };
 
+function dialogFormState(
+    mode: "create" | "edit",
+    initial: ClientInput | undefined,
+    defaultOrderedBy: string | null,
+): ClientInput {
+    if (initial) {
+        return { ...empty, ...initial, displayName: initial.displayName || formatClientName(initial) };
+    }
+    return {
+        ...empty,
+        orderedBy: mode === "create" && defaultOrderedBy?.trim() ? defaultOrderedBy.trim() : "",
+    };
+}
+
 export function NewClientDialog({
     open,
     mode,
     initial,
+    defaultOrderedBy = null,
     clients,
     exceptId,
     storePhi = false,
@@ -75,14 +93,14 @@ export function NewClientDialog({
     onSubmit,
     onOpenExisting,
 }: NewClientDialogProps) {
-    const [form, setForm] = useState<ClientInput>(initial ?? empty);
+    const [form, setForm] = useState<ClientInput>(() => dialogFormState(mode, initial, defaultOrderedBy));
     const [identityError, setIdentityError] = useState("");
     const [chartError, setChartError] = useState("");
     const [submitError, setSubmitError] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
     const nameRef = useRef<HTMLInputElement>(null);
     const referenceRef = useRef<HTMLInputElement>(null);
-    const formKey = `${open}:${initial?.displayName ?? ""}:${initial?.firstName ?? ""}:${initial?.lastName ?? ""}:${exceptId ?? ""}`;
+    const formKey = `${open}:${initial?.displayName ?? ""}:${initial?.firstName ?? ""}:${initial?.lastName ?? ""}:${exceptId ?? ""}:${defaultOrderedBy ?? ""}`;
     const [seenKey, setSeenKey] = useState(formKey);
     if (seenKey !== formKey) {
         setSeenKey(formKey);
@@ -90,11 +108,7 @@ export function NewClientDialog({
         setChartError("");
         setSubmitError("");
         setIsSubmitting(false);
-        setForm(
-            initial
-                ? { ...empty, ...initial, displayName: initial.displayName || formatClientName(initial) }
-                : empty,
-        );
+        setForm(dialogFormState(mode, initial, defaultOrderedBy));
     }
 
     const duplicates = useMemo(
@@ -187,6 +201,14 @@ export function NewClientDialog({
                         aria-label="Client reference"
                         value={form.reference ?? ""}
                         onChange={(e) => setForm({ ...form, reference: e.target.value })}
+                    />
+                    <Input
+                        className={fieldClass}
+                        placeholder="Ordered by (optional)"
+                        aria-label="Ordered by"
+                        maxLength={120}
+                        value={form.orderedBy ?? ""}
+                        onChange={(e) => setForm({ ...form, orderedBy: e.target.value })}
                     />
                     {mode === "create" ? (
                         <CreateClientShoeFields

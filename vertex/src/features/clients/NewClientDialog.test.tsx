@@ -164,6 +164,91 @@ describe("NewClientDialog create client", () => {
         expect(buttons.every((node) => !(node as HTMLButtonElement).disabled)).toBe(true);
     });
 
+    test("submits ordered by from the new client form", async () => {
+        const onSubmit = rs.fn();
+        await act(async () => {
+            root = createRoot(container);
+            root.render(
+                createElement(NewClientDialog, {
+                    open: true,
+                    mode: "create",
+                    clients: [],
+                    onClose: () => {},
+                    onSubmit,
+                    onOpenExisting: () => {},
+                }),
+            );
+        });
+
+        const rootNode = queryDialog();
+        await act(async () => {
+            fillValidCreateForm(rootNode);
+            const orderedBy = rootNode.querySelector('[aria-label="Ordered by"]') as HTMLInputElement;
+            setInputValue(orderedBy, "Upperline Madison");
+        });
+
+        const saveButton = Array.from(rootNode.querySelectorAll("button")).find((node) =>
+            (node.textContent ?? "").trim().startsWith("Save"),
+        ) as HTMLButtonElement;
+        await act(async () => {
+            saveButton.click();
+        });
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        expect(onSubmit).toHaveBeenCalledWith(
+            expect.objectContaining({ orderedBy: "Upperline Madison" }),
+            "file",
+        );
+    });
+
+    test("prefills ordered by for clinic tenants on create", async () => {
+        await act(async () => {
+            root = createRoot(container);
+            root.render(
+                createElement(NewClientDialog, {
+                    open: true,
+                    mode: "create",
+                    defaultOrderedBy: "Apex Clinic",
+                    clients: [],
+                    onClose: () => {},
+                    onSubmit: () => {},
+                    onOpenExisting: () => {},
+                }),
+            );
+        });
+
+        const orderedBy = queryDialog().querySelector('[aria-label="Ordered by"]') as HTMLInputElement;
+        expect(orderedBy.value).toBe("Apex Clinic");
+    });
+
+    test("shows ordered by when editing an existing client", async () => {
+        await act(async () => {
+            root = createRoot(container);
+            root.render(
+                createElement(NewClientDialog, {
+                    open: true,
+                    mode: "edit",
+                    initial: {
+                        displayName: "Jane",
+                        firstName: "Jane",
+                        lastName: "Doe",
+                        reference: "REF-1",
+                        orderedBy: "Upperline Madison",
+                    },
+                    clients: [],
+                    onClose: () => {},
+                    onSubmit: () => {},
+                    onOpenExisting: () => {},
+                }),
+            );
+        });
+
+        const orderedBy = queryDialog().querySelector('[aria-label="Ordered by"]') as HTMLInputElement;
+        expect(orderedBy.value).toBe("Upperline Madison");
+    });
+
     test("calls onSubmit with design intent and leaves closing to the parent on success", async () => {
         let open = true;
         const onClose = rs.fn(() => {

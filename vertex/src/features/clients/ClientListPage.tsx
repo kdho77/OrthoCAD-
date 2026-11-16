@@ -58,6 +58,7 @@ export function ClientListPage() {
     const [dialog, setDialog] = useState<"create" | ClientRecord | null>(null);
     const [pickerFor, setPickerFor] = useState<string | null>(null);
     const [storePhi, setStorePhi] = useState(storePhiEnabled);
+    const [defaultOrderedBy, setDefaultOrderedBy] = useState<string | null>(null);
 
     useEffect(() => {
         setText(query.q);
@@ -67,7 +68,10 @@ export function ClientListPage() {
         if (!isApiConfigured()) return;
         trpc.client.policy
             .query()
-            .then((policy) => setStorePhi(policy.storePhi))
+            .then((policy) => {
+                setStorePhi(policy.storePhi);
+                setDefaultOrderedBy(policy.defaultOrderedBy ?? null);
+            })
             .catch(() => undefined);
     }, []);
 
@@ -282,6 +286,7 @@ export function ClientListPage() {
                 open={dialog !== null}
                 mode={dialog && dialog !== "create" ? "edit" : "create"}
                 initial={dialog && dialog !== "create" ? dialog : undefined}
+                defaultOrderedBy={defaultOrderedBy}
                 clients={clients}
                 exceptId={dialog && dialog !== "create" ? dialog.id : undefined}
                 storePhi={storePhi}

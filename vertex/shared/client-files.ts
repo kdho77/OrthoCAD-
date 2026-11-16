@@ -129,10 +129,24 @@ export function formatClientShoeSummary(chart: ShoeChart): string {
     return `US men's ${chart.shoeSizeUs} · ${width}`;
 }
 
-function resolveOrderedByOnCreate(input: ClientInput, actor: { tenantName?: string | null }): string | null {
+/** Internal Vertex staff/dogfood tenant; never used as an implicit Ordered by label. */
+export const VERTEX_DOGFOOD_TENANT_ID = "54b6a960-aa40-4988-b116-adf5ed6c72f8";
+
+export function defaultOrderedByForCreate(actor: {
+    tenantId: string | null;
+    tenantName?: string | null;
+}): string | null {
+    if (!actor.tenantId || actor.tenantId === VERTEX_DOGFOOD_TENANT_ID) return null;
+    return blankToNull(actor.tenantName);
+}
+
+function resolveOrderedByOnCreate(
+    input: ClientInput,
+    actor: { tenantId: string | null; tenantName?: string | null },
+): string | null {
     const explicit = blankToNull(input.orderedBy);
     if (explicit !== null) return explicit;
-    return blankToNull(actor.tenantName);
+    return defaultOrderedByForCreate(actor);
 }
 
 export interface Actor {

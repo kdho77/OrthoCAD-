@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
     archiveClientFile,
     createClientFile,
+    defaultOrderedByForCreate,
     hardDeleteClientFile,
     listClientFiles,
     previewDuplicates,
@@ -9,7 +10,7 @@ import {
     restoreClientFile,
     updateClientFile,
 } from "../../../shared/client-files.js";
-import { openClientFiles, rethrowClientFile, storePhiEnabled } from "../lib/client-file-access.js";
+import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
 import { protectedProcedure, router } from "../trpc.js";
 
 const clientInput = z.object({
@@ -39,7 +40,14 @@ async function scope(ctx: { user: { id: string; email: string; role: string } })
 }
 
 export const clientRouter = router({
-    policy: protectedProcedure.query(() => ({ storePhi: storePhiEnabled() })),
+    policy: protectedProcedure.query(async ({ ctx }) => {
+        try {
+            const { actor, storePhi } = await scope(ctx);
+            return { storePhi, defaultOrderedBy: defaultOrderedByForCreate(actor) };
+        } catch (error) {
+            rethrowClientFile(error);
+        }
+    }),
 
     list: protectedProcedure.query(async ({ ctx }) => {
         try {
