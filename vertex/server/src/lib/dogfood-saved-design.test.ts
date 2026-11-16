@@ -9,6 +9,7 @@ import {
     REQUIRED_CASES,
 } from "../../../../scripts/ci/isolated-postgres-acceptance.mjs";
 import { CHART_SHOE_WIDTHS } from "../../../shared/client-files.js";
+import { readStoredDesignSettings } from "../../../shared/design-settings.js";
 import { parseSavedDesignCatalog } from "../../../shared/saved-design-catalog.js";
 import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot.js";
 import { normalizeShoeWidth } from "../../../src/lib/geometry/shoe-width.js";
@@ -514,6 +515,61 @@ describe("integration link width", () => {
             expect(db.inputs[0]?.linkShoeWidth).toBe(width);
             expect(db.inputs[0]?.chartWidth).toBe(width);
         }
+    });
+
+    test("a new milled order stores milling on the snapshot and the design column", async () => {
+        const db = recordingStore();
+        const result = await createDogfoodSavedDesign({
+            principal,
+            externalOrderId: ORDER,
+            catalog: { shoe_size: { system: "US_M", size: 10 }, thickness_mm: 4, hardness: "Hard" },
+            manufacturingMethod: "milling_3axis",
+            store: db.store,
+            verifier: acceptingVerifier(),
+            now: () => WIDTH_NOW,
+            buildSnapshot: buildSavedDesignSnapshot,
+            persist: async () => {
+                throw new Error("persist is the refresh path");
+            },
+        });
+        const settings = readStoredDesignSettings(result.settingsJson);
+        expect(settings?.method).toBe("milling_3axis");
+        const paired = settings?.paired as {
+            leftMethod: string;
+            rightMethod: string;
+            leftThicknessMm: number;
+        };
+        expect(paired.leftMethod).toBe("milling_3axis");
+        expect(paired.rightMethod).toBe("milling_3axis");
+        expect(settings?.thicknessMm).toBe(4);
+        expect(paired.leftThicknessMm).toBe(4);
+        expect(db.inputs[0]?.method).toBe("milling_3axis");
+        const created: Array<{ method?: string; thicknessMm?: number }> = [];
+        const tx = {
+            integrationDesign: { findMany: async () => [], create: async () => undefined },
+            integrationClient: { findMany: async () => [], create: async () => undefined },
+            user: { findFirst: async () => ({ id: OWNER }) },
+            client: { create: async () => undefined },
+            design: {
+                create: async (args: { data: { method?: string; thicknessMm?: number } }) => {
+                    created.push(args.data);
+                },
+            },
+        };
+        const prisma = {
+            $transaction: async (fn: (transaction: typeof tx) => Promise<unknown>) => fn(tx),
+        } as unknown as PrismaClient;
+        const store = prismaDogfoodSavedDesignStore(prisma);
+        const input = establishInput("medium", "medium");
+        await store.establishVerifiedOrder?.({
+            ...input,
+            settingsJson: result.settingsJson,
+            method: "milling_3axis",
+        });
+        await store.establishVerifiedOrder?.(input);
+        expect(created[0]?.method).toBe("milling_3axis");
+        expect(created[0]?.thicknessMm).toBe(4);
+        expect(created[1]?.method).toBe("printing_solid");
     });
 
     test("unknown widths are rejected before establishment", () => {

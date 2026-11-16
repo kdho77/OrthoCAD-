@@ -270,9 +270,13 @@ export const savedDesignCatalogSchema = z
     })
     .strict();
 
+/** Order method. Omitted stays a print order. Milling is never inferred. */
+export const manufacturingMethodSchema = z.enum(["printing_solid", "milling_3axis"]);
+
 export const createSavedDesignInputSchema = z
     .object({
         external_order_id: z.string().trim().min(1).max(200),
+        manufacturing_method: manufacturingMethodSchema.optional(),
         /**
          * Optional confirmation of the client already stored on this order.
          * It is not proof of the order's person and cannot create a client.
@@ -317,6 +321,7 @@ export const prepareVoAttachmentInputSchema = z
 export const persistSavedDesignSnapshotInputSchema = z
     .object({
         design_id: z.string().uuid(),
+        manufacturing_method: manufacturingMethodSchema.optional(),
         catalog: savedDesignCatalogSchema.optional(),
         /** Accepted and dropped. Clinical values are not read from free text. */
         rx_text: z.string().max(8000).optional(),
@@ -451,6 +456,9 @@ export const MCP_TOOL_DEFINITIONS = [
             "rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, " +
             "forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, " +
             "full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit, " +
+            "manufacturing_method (printing_solid or milling_3axis). Omit it to leave the order a print " +
+            "(the method column is not written). milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. " +
+            "It is not inferred from material, hardness, or thickness. " +
             "thickness_mm (shell thickness, design.thicknessMm, 1.5–8 mm inclusive). " +
             "thickness_mm is the labelled shell/base clearance, not the zonal rear/mid/fore walls. " +
             "When set, settings store that clearance and uniform shell mode so the loft uses the shell-thickness slider. " +
@@ -478,6 +486,9 @@ export const MCP_TOOL_DEFINITIONS = [
             "A server verifier may bind the verified person for this dogfood order. Caller fields are not that verifier. " +
             "CAD-operator scopes cannot assert the order's person. " +
             "A bound refresh uses the saved-design snapshot rules. No scan upload. " +
+            "Optional manufacturing_method is printing_solid or milling_3axis. Omit it and the new order stays a print. " +
+            "milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. " +
+            "It is not inferred from material, hardness, or thickness. " +
             "Optional catalog.thickness_mm sets shell thickness in mm (1.5–8, default 2 when omitted). " +
             "Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. " +
             "depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). " +

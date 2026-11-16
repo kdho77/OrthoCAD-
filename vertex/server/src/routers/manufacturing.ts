@@ -456,6 +456,7 @@ export const manufacturingRouter = router({
             z.object({
                 designId: z.string().uuid(),
                 catalog: z.unknown().optional(),
+                manufacturingMethod: z.enum(["printing_solid", "milling_3axis"]).optional(),
             }),
         )
         .mutation(async ({ ctx, input }) => {
@@ -468,6 +469,7 @@ export const manufacturingRouter = router({
                     principal: ctx.cadOperator,
                     designId: input.designId,
                     catalog: input.catalog,
+                    manufacturingMethod: input.manufacturingMethod,
                 });
             } catch (error) {
                 if (error instanceof SavedDesignSnapshotError) {
@@ -494,6 +496,7 @@ export const manufacturingRouter = router({
                 givenName: z.string().trim().min(1).max(100).optional(),
                 familyName: z.string().trim().min(1).max(100).optional(),
                 catalog: z.unknown().optional(),
+                manufacturingMethod: z.enum(["printing_solid", "milling_3axis"]).optional(),
             }),
         )
         .mutation(async ({ ctx, input }) => {
@@ -506,6 +509,7 @@ export const manufacturingRouter = router({
                     externalOrderId: input.externalOrderId,
                     clientId: input.clientId,
                     catalog: input.catalog,
+                    manufacturingMethod: input.manufacturingMethod,
                     chart: { givenName: input.givenName, familyName: input.familyName },
                     verifier: runtimeDogfoodOrderOwnerVerifier(process.env),
                     store: prismaDogfoodSavedDesignStore(ctx.prisma),
@@ -515,6 +519,7 @@ export const manufacturingRouter = router({
                             principal: ctx.cadOperator!,
                             designId,
                             catalog: input.catalog,
+                            manufacturingMethod: input.manufacturingMethod,
                         }),
                 });
             } catch (error) {

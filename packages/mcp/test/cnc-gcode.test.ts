@@ -48,6 +48,7 @@ describe("generate_cnc_gcode", () => {
             files: [{ production_id: productionId, status: "pending", sides: ["left", "right"] }],
         });
         expect(enqueued.content[0]?.text).not.toMatch(/should-not-leak|G1 /);
+        expect(toolJson(enqueued).files).toHaveLength(1);
     });
 
     test("a print design error is returned and no file is invented", async () => {

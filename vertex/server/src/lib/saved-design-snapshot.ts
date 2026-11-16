@@ -17,6 +17,26 @@ import {
     buildSavedDesignSnapshot,
     type SavedDesignSnapshotBuild,
 } from "../../../shared/saved-design-snapshot.js";
+
+/** Explicit order method. Omitted means the caller did not choose one. */
+export const SAVED_DESIGN_MANUFACTURING_METHODS = ["printing_solid", "milling_3axis"] as const;
+export type SavedDesignManufacturingMethod = (typeof SAVED_DESIGN_MANUFACTURING_METHODS)[number];
+
+/**
+ * Same fields the editor stores when the order is Mill: design.method and both
+ * paired feet. Does not look at material, hardness, or thickness.
+ */
+export function applySavedDesignManufacturingMethod(
+    design: SavedDesignSnapshotBuild["design"],
+    method: SavedDesignManufacturingMethod,
+): void {
+    design.method = method;
+    if (design.paired) {
+        design.paired.leftMethod = method;
+        design.paired.rightMethod = method;
+    }
+}
+
 import {
     SAMPLE_TOP_ASSET_ID,
     SAMPLE_TOP_GLB_PATH,
@@ -223,6 +243,11 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
     principal: CadOperatorPrincipal;
     designId: string;
     catalog: unknown;
+    /**
+     * When set, writes this method onto the snapshot and the design column.
+     * Omitted leaves the column alone and keeps the snapshot's print method.
+     */
+    manufacturingMethod?: SavedDesignManufacturingMethod;
     /** Test seam. Production uses {@link buildSavedDesignSnapshot} from shared. */
     buildSnapshot?: SnapshotBuilder;
 }): Promise<PersistSavedDesignSnapshotResult> {
@@ -287,7 +312,8 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
         throw new SavedDesignSnapshotError("AFO designs are not a SAMPLE_Top insole snapshot.");
     }
     // Milled rows may store the SAMPLE_Top snapshot (default mesh + thickness).
-    // The design method column is not updated. Belt G-code still refuses milling_3axis.
+    // The method column changes only when manufacturingMethod is sent.
+    // Belt G-code still refuses milling_3axis.
 
     const catalog = parseSavedDesignCatalog(args.catalog);
     const buildSnapshot = args.buildSnapshot ?? buildSavedDesignSnapshot;
@@ -297,6 +323,9 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
         catalog,
     });
     mergeStoredClinicalIntoSnapshot(built, catalog, existingSettings);
+    if (args.manufacturingMethod) {
+        applySavedDesignManufacturingMethod(built.design, args.manufacturingMethod);
+    }
 
     let settingsJson: unknown;
     try {
@@ -311,11 +340,18 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
         throw new SavedDesignSnapshotError("snapshot lost the shoe size. Refusing to write.");
     }
 
-    const updateData: { settingsJson: Prisma.InputJsonValue; thicknessMm?: number } = {
+    const updateData: {
+        settingsJson: Prisma.InputJsonValue;
+        thicknessMm?: number;
+        method?: SavedDesignManufacturingMethod;
+    } = {
         settingsJson: settingsJson as Prisma.InputJsonValue,
     };
     if (catalog.thickness_mm !== undefined) {
         updateData.thicknessMm = built.design.thicknessMm;
+    }
+    if (args.manufacturingMethod) {
+        updateData.method = args.manufacturingMethod;
     }
     await args.prisma.design.update({
         where: { id: design.id },

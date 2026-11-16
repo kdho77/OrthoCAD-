@@ -182,10 +182,15 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
          * Call site: vertex/server/src/routers/manufacturing.ts persistSavedDesignSnapshot.
          * rx_text is not forwarded.
          */
-        persistSavedDesignSnapshot(input: { designId: string; catalog?: unknown }) {
+        persistSavedDesignSnapshot(input: {
+            designId: string;
+            catalog?: unknown;
+            manufacturingMethod?: "printing_solid" | "milling_3axis";
+        }) {
             return trpc.manufacturing.persistSavedDesignSnapshot.mutate({
                 designId: input.designId,
                 catalog: input.catalog,
+                ...(input.manufacturingMethod ? { manufacturingMethod: input.manufacturingMethod } : {}),
             });
         },
 
@@ -200,8 +205,16 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
             givenName?: string;
             familyName?: string;
             catalog?: unknown;
+            manufacturingMethod?: "printing_solid" | "milling_3axis";
         }) {
-            return trpc.manufacturing.createSavedDesign.mutate(input);
+            return trpc.manufacturing.createSavedDesign.mutate({
+                externalOrderId: input.externalOrderId,
+                clientId: input.clientId,
+                givenName: input.givenName,
+                familyName: input.familyName,
+                catalog: input.catalog,
+                ...(input.manufacturingMethod ? { manufacturingMethod: input.manufacturingMethod } : {}),
+            });
         },
     };
 }

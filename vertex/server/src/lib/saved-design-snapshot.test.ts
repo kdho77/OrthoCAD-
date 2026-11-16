@@ -4,6 +4,10 @@ import { describe, expect, test } from "@rstest/core";
 import { readStoredDesignSettings } from "../../../shared/design-settings.js";
 import { parseSavedDesignCatalog, SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
 import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot.js";
+import { designStateFromDocument } from "../../../src/features/clients/design-document.js";
+import { assertMilledCncOrder, PRINT_ORDER_CNC_REFUSAL } from "../../../src/lib/cnc/mill-job.js";
+import { millExportSides } from "../../../src/lib/cnc/order-sides.js";
+import { thicknessMmForDesignSide } from "../../../src/lib/geometry/shape-finish-modifiers.js";
 import { type CadOperatorPrincipal, DOGFOOD_TENANT_ID } from "../auth/cad-operator.js";
 import { settingsEnvelopeForSave } from "./design-schema.js";
 import { persistSavedDesignSnapshotOnDesign } from "./saved-design-snapshot.js";
@@ -464,5 +468,109 @@ describe("persist saved design snapshot", () => {
             (settings?.paired as { leftThicknessMm: number; rightThicknessMm: number }).leftThicknessMm,
         ).toBe(4);
         expect((settings?.paired as { rightThicknessMm: number }).rightThicknessMm).toBe(4);
+    });
+
+    test("milling_3axis is explicit, keeps clinical settings, and is one CNC pair", async () => {
+        const catalog = {
+            shoe_size: { system: "US_M" as const, size: 9 },
+            arch: "high" as const,
+            flexible_foot: true,
+            thickness_mm: 4,
+            elements: [{ name: "Met Pad", side: "left" as const }],
+        };
+        const existing = settingsEnvelopeForSave(
+            buildSavedDesignSnapshot({ stored: null, catalog: parseSavedDesignCatalog(catalog) }).design,
+        );
+        const before = readStoredDesignSettings(existing);
+        const { prisma, updates } = fakePrisma(
+            row({ settingsJson: existing, method: "printing_solid", thicknessMm: 2 }),
+        );
+        const milled = await persistSavedDesignSnapshotOnDesign({
+            prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog,
+            manufacturingMethod: "milling_3axis",
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        expect(updates[0]?.data.method).toBe("milling_3axis");
+        expect(updates[0]?.data.thicknessMm).toBe(4);
+        const settings = readStoredDesignSettings(milled.settingsJson);
+        expect(settings?.method).toBe("milling_3axis");
+        const paired = settings?.paired as {
+            leftMethod: string;
+            rightMethod: string;
+            leftThicknessMm: number;
+            rightThicknessMm: number;
+        };
+        expect(paired.leftMethod).toBe("milling_3axis");
+        expect(paired.rightMethod).toBe("milling_3axis");
+        expect((settings?.corrections as { left: { archHeightMm: number } }).left.archHeightMm).toBe(
+            (before?.corrections as { left: { archHeightMm: number } }).left.archHeightMm,
+        );
+        expect(settings?.elements).toEqual(before?.elements);
+        const design = designStateFromDocument({
+            id: DESIGN_ID,
+            pattern: "full_contact",
+            method: "printing_solid",
+            thicknessMm: 2,
+            linked: true,
+            unit: "mm",
+            createdAt: "2026-11-15T00:00:00.000Z",
+            updatedAt: "2026-11-15T00:00:00.000Z",
+            corrections: [],
+            elements: [],
+            settingsJson: milled.settingsJson,
+        });
+        expect(design.method).toBe("milling_3axis");
+        expect(design.thicknessMm).toBe(4);
+        expect(thicknessMmForDesignSide(design, "left")).toBe(4);
+        expect(thicknessMmForDesignSide(design, "right")).toBe(4);
+        expect(() => assertMilledCncOrder(design)).not.toThrow();
+        expect(millExportSides(design)).toEqual(["left", "right"]);
+    });
+
+    test("a print design stays printing_solid and CNC still refuses it", async () => {
+        const catalog = { shoe_size: { system: "US_M" as const, size: 9 }, thickness_mm: 4 };
+        const omitted = await persistSavedDesignSnapshotOnDesign({
+            prisma: fakePrisma().prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog,
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        const { prisma, updates } = fakePrisma();
+        const explicit = await persistSavedDesignSnapshotOnDesign({
+            prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog,
+            manufacturingMethod: "printing_solid",
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        const omittedSettings = readStoredDesignSettings(omitted.settingsJson);
+        const explicitSettings = readStoredDesignSettings(explicit.settingsJson);
+        expect(omittedSettings?.method).toBe("printing_solid");
+        expect(explicitSettings?.method).toBe("printing_solid");
+        expect((omittedSettings?.paired as { leftMethod: string }).leftMethod).toBe("printing_solid");
+        expect((explicitSettings?.paired as { rightMethod: string }).rightMethod).toBe("printing_solid");
+        expect(explicitSettings?.thicknessMm).toBe(omittedSettings?.thicknessMm);
+        expect(explicitSettings?.shellThicknessMode).toBe(omittedSettings?.shellThicknessMode);
+        expect(updates[0]?.data.method).toBe("printing_solid");
+        const design = designStateFromDocument({
+            id: DESIGN_ID,
+            pattern: "full_contact",
+            method: "printing_solid",
+            thicknessMm: 2,
+            linked: true,
+            unit: "mm",
+            createdAt: "2026-11-15T00:00:00.000Z",
+            updatedAt: "2026-11-15T00:00:00.000Z",
+            corrections: [],
+            elements: [],
+            settingsJson: omitted.settingsJson,
+        });
+        expect(() => assertMilledCncOrder(design)).toThrow(PRINT_ORDER_CNC_REFUSAL);
+        expect(design.method).toBe("printing_solid");
     });
 });
