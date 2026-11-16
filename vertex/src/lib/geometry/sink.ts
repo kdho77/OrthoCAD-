@@ -73,18 +73,27 @@ export const RKW_MEDIAL_FADE_MM = 12;
  */
 export const RKW_END_FEATHER_MM = 32;
 /**
- * Full-depth plateaus stay at least this far apart. The smoothstep taper
- * outside a plateau may overlap; the deeper sink wins, and the depths are
- * never added.
+ * Grazing full-depth plateaus (a positive gap under this) are eased apart.
+ * A negative gap is already one floor. Those plateaus stay at spec size and
+ * the cut keeps the deeper depth, never the sum. The taper outside a plateau
+ * may overlap either way.
  */
 export const PLATEAU_GAP_MM = 0.5;
 /**
- * Who gives up plateau diameter when two plateaus are closer than
- * {@link PLATEAU_GAP_MM}. MPJ4, then MPJ5, before MPJ3 and MPJ2. MPJ1 keeps
- * its spec diameter. Taper width is not changed.
+ * Who gives up plateau diameter when a graze is under {@link PLATEAU_GAP_MM}.
+ * MPJ4, then MPJ5, before MPJ3 and MPJ2. MPJ1 keeps its spec diameter.
+ * Overlapping floors are not in this yield. Taper width is not changed.
  */
 const PLATEAU_YIELD_ORDER: readonly SinkKind[] = ["mpj4", "mpj5", "mpj3", "mpj2"];
 const PLATEAU_HALF_MIN_MM = 0.5;
+/**
+ * The 25 mm forefoot mound is wider than an MPJ cut. Ease that extra mound
+ * off over this distance inside the outline so a met-head blend cannot lift
+ * the crest without a matching cut. The oval's own taper is not scaled, so
+ * the plateau stays at depth + 0.5 mm. The reverse kinetic wedge and the
+ * styloid do not use this scale.
+ */
+const MPJ_RIM_THICKNESS_MM = 4;
 /** Added on top of the deepest forefoot sink. Floor under that sink = current + this. */
 export const FOREFOOT_THICKNESS_CLEARANCE_MM = 0.5;
 /** Local blend length of a forefoot sink's thickness addition. */
@@ -494,7 +503,10 @@ export interface SinkOvalFrame {
     /** Unit across, +lateral. */
     nx: number;
     ny: number;
-    /** Scaled half-length (distal / proximal outer boundary is this from the anatomical centre). */
+    /**
+     * Scaled half-length of the full-depth plateau, measured from the anatomical
+     * centre. {@link SinkOvalFrame.blendMm} continues outside this edge.
+     */
     halfLengthMm: number;
     halfWidthMm: number;
     blendMm: number;
@@ -608,7 +620,11 @@ function plateauRadiusToward(frame: SinkOvalFrame, x: number, y: number): number
 
 const plateauScaleCache = new WeakMap<SinkSurfaceContext, Map<string, number>>();
 
-/** Extra diameter scale (≤ 1) so MPJ plateaus in this context keep a 0.5 mm gap. */
+/**
+ * Extra diameter scale (≤ 1) so a grazing MPJ plateau opens out to
+ * {@link PLATEAU_GAP_MM}. Overlapping floors are a merged trough and stay
+ * at the spec plateau.
+ */
 function plateauDiameterScales(ctx: SinkSurfaceContext): Map<string, number> {
     const hit = plateauScaleCache.get(ctx);
     if (hit) return hit;
@@ -631,7 +647,11 @@ function plateauDiameterScales(ctx: SinkSurfaceContext): Map<string, number> {
         let deficit = 0;
         for (const other of frames) {
             if (other.sinkId === mine.sinkId) continue;
-            deficit = Math.max(deficit, PLATEAU_GAP_MM - plateauGapMm(mine, other));
+            const gap = plateauGapMm(mine, other);
+            // Overlap is one flat floor at the deeper depth. Shrinking it
+            // would drop the spec plateau onto the blend.
+            if (gap < 0) continue;
+            deficit = Math.max(deficit, PLATEAU_GAP_MM - gap);
         }
         if (deficit <= 1e-6) continue;
         const scale = scales.get(sink.id) ?? 1;
@@ -985,6 +1005,7 @@ function frameSink(sink: PlacedSink, ctx: SinkSurfaceContext, diameterScale = 1)
     const uv = resolveUV(sink, ctx.sinkMarkers);
     const edges = planEdges(ctx);
     const scale = sinkPlanScale(edges.lengthMm);
+    // lengthMm/widthMm are the flat floor. The blend is added outside the ellipse.
     let halfLengthMm = (profile.lengthMm / 2) * scale * diameterScale;
     let halfWidthMm = (profile.widthMm / 2) * scale * diameterScale;
     let blendMm = profile.blendMm;
@@ -1284,9 +1305,11 @@ export function sinkThicknessMm(x: number, yLateral: number, ctx: SinkSurfaceCon
         const paired = widened || p.frame.kind === "styloid";
         if (!paired) continue;
         const clearance = p.frame.depthMm + FOREFOOT_THICKNESS_CLEARANCE_MM;
+        const rimScale = p.frame.kind.startsWith("mpj") ? mpjRimThicknessScale(x, yLateral, ctx) : 1;
         const existing = widened
             ? eggWeight(p.frame, x, yLateral, BLEND_LEN_MM) *
               wallFade(p.frame, at.v, at.span, true).factor *
+              rimScale *
               clearance
             : 0;
         // Footprint plus the oval's own taper. Max with the forefoot fade so
@@ -1320,6 +1343,23 @@ function rkwOverhangMm(frame: SinkOvalFrame, ctx: SinkSurfaceContext): number {
     const edges = planEdges(ctx);
     const u = Math.max(0, Math.min(1, (frame.cx - edges.originX) / Math.max(edges.lengthMm, 1e-6)));
     return edges.medialAt(u) - (frame.cy - frame.bMed);
+}
+
+/** 0 on the outline, 1 once {@link MPJ_RIM_THICKNESS_MM} inside. MPJ mounds only. */
+function mpjRimThicknessScale(x: number, yLateral: number, ctx: SinkSurfaceContext): number {
+    const inside = insideOutlineMm(x, yLateral, ctx);
+    if (inside >= MPJ_RIM_THICKNESS_MM) return 1;
+    if (inside <= 0) return 0;
+    return smootherstep01(inside / MPJ_RIM_THICKNESS_MM);
+}
+
+/** Distance inside the medial and lateral outline. Negative is past the edge. */
+function insideOutlineMm(x: number, yLateral: number, ctx: SinkSurfaceContext): number {
+    const edges = planEdges(ctx);
+    const u = Math.max(0, Math.min(1, (x - edges.originX) / Math.max(edges.lengthMm, 1e-6)));
+    const medial = edges.medialAt(u);
+    const lateral = edges.lateralAt(u);
+    return Math.min(yLateral - medial, lateral - yLateral);
 }
 
 function rkwMedialRamp(x: number, yLateral: number, ctx: SinkSurfaceContext): number {
