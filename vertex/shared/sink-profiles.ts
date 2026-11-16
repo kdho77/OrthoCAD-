@@ -20,9 +20,16 @@ export interface SinkProfile {
     u: number;
     /** Medial → lateral, fraction of the outline. */
     v: number;
-    /** Oval length along the local outline tangent, mm at Men's 9. */
+    /**
+     * Full-depth plateau length, mm at Men's 9, along the insole long axis
+     * before {@link SinkProfile.rotationDeg}. The blend is added outside this
+     * flat floor. It is not the outer edge of the taper.
+     */
     lengthMm: number;
-    /** Oval width across that tangent, mm at Men's 9. */
+    /**
+     * Full-depth plateau width, mm at Men's 9, across the insole long axis
+     * before rotation. The blend is added outside this flat floor.
+     */
     widthMm: number;
     blendMm: number;
     defaultDepthMm: number;
@@ -32,8 +39,10 @@ export interface SinkProfile {
     /** Deepest point shift toward lateral, mm. Not scaled. Zero keeps a true oval. */
     deepestLateralMm: number;
     /**
-     * Long-axis angle on a right foot, degrees from distal toward lateral.
-     * Left feet use the opposite sign. Zero is a foot-axis oval (a circle when the axes match).
+     * Long-axis angle against the insole long axis, degrees, on a right foot.
+     * Positive tips the distal end toward lateral. Left feet use the opposite
+     * sign. This is not an offset from the local outline tangent: zero keeps
+     * the plateau's long axis on the heel-to-toe axis.
      */
     rotationDeg: number;
     /** Keep the cut off the lateral wall. */
@@ -61,14 +70,14 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         label: "1st MPJ",
         u: 0.665,
         v: 0.145,
-        lengthMm: 22,
-        widthMm: 22,
+        lengthMm: 30,
+        widthMm: 26,
         blendMm: 7,
         defaultDepthMm: SINK_DEFAULT_DEPTH_MM,
         maxDepthMm: 4,
         deepestProximalMm: 3,
         deepestLateralMm: 0,
-        rotationDeg: 0,
+        rotationDeg: 2.5,
         lateralWallFade: false,
         medialWallFade: true,
         forefoot: true,
@@ -79,14 +88,14 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         label: "2nd MPJ",
         u: 0.685,
         v: 0.365,
-        lengthMm: 16,
-        widthMm: 16,
+        lengthMm: 24,
+        widthMm: 18,
         blendMm: 5,
         defaultDepthMm: SINK_DEFAULT_DEPTH_MM,
         maxDepthMm: 3,
         deepestProximalMm: 0,
         deepestLateralMm: 0,
-        rotationDeg: 0,
+        rotationDeg: 5,
         lateralWallFade: false,
         medialWallFade: false,
         forefoot: true,
@@ -97,14 +106,14 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         label: "3rd MPJ",
         u: 0.68,
         v: 0.55,
-        lengthMm: 15,
-        widthMm: 15,
+        lengthMm: 22,
+        widthMm: 17,
         blendMm: 5,
         defaultDepthMm: SINK_DEFAULT_DEPTH_MM,
         maxDepthMm: 3,
         deepestProximalMm: 0,
         deepestLateralMm: 0,
-        rotationDeg: 0,
+        rotationDeg: 10,
         lateralWallFade: false,
         medialWallFade: false,
         forefoot: true,
@@ -115,14 +124,14 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         label: "4th MPJ",
         u: 0.665,
         v: 0.715,
-        lengthMm: 13,
-        widthMm: 13,
+        lengthMm: 21,
+        widthMm: 16,
         blendMm: 5,
         defaultDepthMm: SINK_DEFAULT_DEPTH_MM,
         maxDepthMm: 3,
         deepestProximalMm: 0,
         deepestLateralMm: 0,
-        rotationDeg: 0,
+        rotationDeg: 15,
         lateralWallFade: false,
         medialWallFade: false,
         forefoot: true,
@@ -133,14 +142,14 @@ export const SINK_PROFILES: Record<SinkKind, SinkProfile> = {
         label: "5th MPJ",
         u: 0.64,
         v: 0.88,
-        lengthMm: 13,
-        widthMm: 13,
+        lengthMm: 20,
+        widthMm: 17,
         blendMm: 5,
         defaultDepthMm: SINK_DEFAULT_DEPTH_MM,
         maxDepthMm: 4,
         deepestProximalMm: 0,
         deepestLateralMm: 0,
-        rotationDeg: 0,
+        rotationDeg: 20,
         lateralWallFade: true,
         medialWallFade: false,
         forefoot: true,

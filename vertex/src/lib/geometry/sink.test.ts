@@ -156,44 +156,47 @@ describe("sink scalar field", () => {
         expect(SINK_PROFILES.mpj1).toMatchObject({
             u: 0.665,
             v: 0.145,
-            lengthMm: 22,
-            widthMm: 22,
+            lengthMm: 30,
+            widthMm: 26,
             blendMm: 7,
             maxDepthMm: 4,
-            rotationDeg: 0,
+            rotationDeg: 2.5,
             deepestProximalMm: 3,
             deepestLateralMm: 0,
         });
         expect(SINK_PROFILES.mpj2).toMatchObject({
             u: 0.685,
             v: 0.365,
-            lengthMm: 16,
-            widthMm: 16,
+            lengthMm: 24,
+            widthMm: 18,
             blendMm: 5,
             maxDepthMm: 3,
+            rotationDeg: 5,
         });
         expect(SINK_PROFILES.mpj3).toMatchObject({
             u: 0.68,
             v: 0.55,
-            lengthMm: 15,
-            widthMm: 15,
+            lengthMm: 22,
+            widthMm: 17,
             blendMm: 5,
+            rotationDeg: 10,
         });
         expect(SINK_PROFILES.mpj4).toMatchObject({
             u: 0.665,
             v: 0.715,
-            lengthMm: 13,
-            widthMm: 13,
+            lengthMm: 21,
+            widthMm: 16,
             blendMm: 5,
+            rotationDeg: 15,
         });
         expect(SINK_PROFILES.mpj5).toMatchObject({
             u: 0.64,
             v: 0.88,
-            lengthMm: 13,
-            widthMm: 13,
+            lengthMm: 20,
+            widthMm: 17,
             blendMm: 5,
             maxDepthMm: 4,
-            rotationDeg: 0,
+            rotationDeg: 20,
             lateralWallFade: true,
         });
         expect(SINK_PROFILES.rkw).toMatchObject({
@@ -319,7 +322,13 @@ describe("sink scalar field", () => {
         expect(sinkPlanScale(l1)).toBeCloseTo(l1 / SINK_REFERENCE_LENGTH_MM, 6);
         expect(sinkPlanScale(l1)).toBeGreaterThanOrEqual(0.65);
         expect(sinkPlanScale(l1)).toBeLessThan(0.8);
-        expect(m1.blendMm).toBe(m9.blendMm);
+        expect(m9.blendMm).toBe(SINK_PROFILES.mpj2.blendMm);
+        expect(m16.blendMm).toBe(m9.blendMm);
+        // Men's 1 is below the adult plan scale. The existing sulcus gate trims
+        // this larger plateau's blend by 0.1 mm and does not shrink the axes.
+        expect(m1.fallbackStep).toBe(1);
+        expect(m1.blendMm).toBeCloseTo(4.9, 5);
+        expect(m1.blendMm).toBeGreaterThanOrEqual(Math.max(3, 1.1 * m1.depthMm) - 1e-6);
         expect(m16.depthMm).toBe(m9.depthMm);
         expect(m1.aProx).toBeGreaterThan(0.5);
         expect(m1.bLat).toBeGreaterThan(0.5);
@@ -394,25 +403,57 @@ describe("sink scalar field", () => {
         expect(cut.mm).toBeLessThan(4);
     });
 
-    test("met-head diameters scale at 247 mm and 297 mm", () => {
-        const diameters = [
-            ["mpj1", 22],
-            ["mpj2", 16],
-            ["mpj3", 15],
-            ["mpj4", 13],
-            ["mpj5", 13],
+    test("merged MPJ trough keeps max depth and a seam of at most 0.5 mm", () => {
+        const kinds = ["mpj1", "mpj2", "mpj3", "mpj4", "mpj5"] as const;
+        for (const side of SIDES) {
+            const sinks = kinds.map((kind) => placed(kind, SINK_DEFAULT_DEPTH_MM));
+            const ctx = surface(9, side, sinks);
+            const second = sinkFrame(sinks[1]!, ctx)!;
+            const fourth = sinkFrame(sinks[3]!, ctx)!;
+            const dx = fourth.cx - second.cx;
+            const dy = fourth.cy - second.cy;
+            const span = Math.hypot(dx, dy);
+            expect(span, side).toBeGreaterThan(10);
+            const n = Math.max(2, Math.ceil(span / 0.25));
+            const depths: number[] = [];
+            for (let i = 0; i <= n; i++) {
+                const t = i / n;
+                depths.push(sinkCutMm(second.cx + dx * t, second.cy + dy * t, ctx).mm);
+            }
+            let adjacent = 0;
+            for (let i = 1; i < depths.length; i++) {
+                adjacent = Math.max(adjacent, Math.abs(depths[i]! - depths[i - 1]!));
+            }
+            const trough = Math.max(...depths);
+            const ridge = Math.min(...depths);
+            expect(adjacent, `${side} adjacent step`).toBeLessThanOrEqual(0.5);
+            expect(trough - ridge, `${side} ridge to trough`).toBeLessThanOrEqual(0.5);
+            expect(trough, side).toBeLessThanOrEqual(SINK_DEFAULT_DEPTH_MM + 1e-6);
+            expect(trough, side).toBeGreaterThan(SINK_DEFAULT_DEPTH_MM - 0.05);
+        }
+    });
+
+    test("met-head plateaus scale at 247 mm and 297 mm", () => {
+        const plateaus = [
+            ["mpj1", 30, 26],
+            ["mpj2", 24, 18],
+            ["mpj3", 22, 17],
+            ["mpj4", 21, 16],
+            ["mpj5", 20, 17],
         ] as const;
         for (const lengthMm of [247, 297]) {
             const s = lengthMm / SINK_REFERENCE_LENGTH_MM;
             expect(s).toBeGreaterThan(0.8);
             expect(s).toBeLessThan(1.3);
-            for (const [kind, diameter] of diameters) {
+            for (const [kind, length, width] of plateaus) {
                 const sink = placed(kind, 2);
                 const ctx = { side: "right" as const, lengthMm, widthMm: 95, sinks: [sink] };
                 const frame = sinkFrame(sink, ctx)!;
-                expect(frame.halfLengthMm * 2).toBeCloseTo(diameter * s, 4);
-                expect(frame.halfWidthMm * 2).toBeCloseTo(diameter * s, 4);
+                expect(frame.halfLengthMm * 2).toBeCloseTo(length * s, 4);
+                expect(frame.halfWidthMm * 2).toBeCloseTo(width * s, 4);
                 expect(frame.blendMm).toBe(SINK_PROFILES[kind].blendMm);
+                const axis = Math.atan2(frame.ty, frame.tx) * (180 / Math.PI);
+                expect(axis).toBeCloseTo(SINK_PROFILES[kind].rotationDeg, 5);
             }
         }
     });
@@ -452,7 +493,7 @@ describe("sink scalar field", () => {
         }
     });
 
-    test("plateau gap is at least 0.5 mm at 247 mm and 297 mm", () => {
+    test("grazing plateaus stay 0.5 mm apart and overlapping floors merge", () => {
         const kinds = ["mpj1", "mpj2", "mpj3", "mpj4", "mpj5"] as const;
         for (const lengthMm of [247, 297]) {
             const widthMm = 95;
@@ -464,8 +505,36 @@ describe("sink scalar field", () => {
                 const frames = sinks.map((sink) => sinkFrame(sink, ctx)!);
                 for (let i = 0; i < frames.length; i++) {
                     for (let j = i + 1; j < frames.length; j++) {
-                        expect(plateauGapMm(frames[i]!, frames[j]!)).toBeGreaterThanOrEqual(
-                            PLATEAU_GAP_MM - 1e-4,
+                        const gap = plateauGapMm(frames[i]!, frames[j]!);
+                        if (gap >= -1e-4) {
+                            expect(
+                                gap,
+                                `${lengthMm} ${side} ${frames[i]!.kind}-${frames[j]!.kind}`,
+                            ).toBeGreaterThanOrEqual(PLATEAU_GAP_MM - 1e-4);
+                            continue;
+                        }
+                        const a = frames[i]!;
+                        const b = frames[j]!;
+                        const dx = b.dx - a.dx;
+                        const dy = b.dy - a.dy;
+                        const span = Math.hypot(dx, dy);
+                        const n = Math.max(2, Math.ceil(span / 0.25));
+                        let lo = Infinity;
+                        let hi = 0;
+                        let step = 0;
+                        let prev = 0;
+                        for (let k = 0; k <= n; k++) {
+                            const t = k / n;
+                            const depth = sinkCutMm(a.dx + dx * t, a.dy + dy * t, ctx).mm;
+                            lo = Math.min(lo, depth);
+                            hi = Math.max(hi, depth);
+                            if (k > 0) step = Math.max(step, Math.abs(depth - prev));
+                            prev = depth;
+                        }
+                        expect(step, `${lengthMm} ${side} seam step`).toBeLessThanOrEqual(0.5);
+                        expect(hi - lo, `${lengthMm} ${side} ridge`).toBeLessThanOrEqual(0.5);
+                        expect(hi, `${lengthMm} ${side} depth`).toBeLessThanOrEqual(
+                            SINK_DEFAULT_DEPTH_MM + 1e-6,
                         );
                     }
                 }
@@ -475,6 +544,20 @@ describe("sink scalar field", () => {
                 for (const frame of frames) {
                     expect(frame.blendMm).toBe(SINK_PROFILES[frame.kind].blendMm);
                     expect(frame.depthMm).toBe(SINK_DEFAULT_DEPTH_MM);
+                    // 297 mm overlaps, so the row keeps the spec plateau. 247 mm
+                    // only grazes, and that graze may give up a fraction of a millimetre.
+                    if (lengthMm === 297) {
+                        expect(frame.halfLengthMm * 2, `${frame.kind} length`).toBeCloseTo(
+                            SINK_PROFILES[frame.kind].lengthMm * s,
+                            4,
+                        );
+                        expect(frame.halfWidthMm * 2, `${frame.kind} width`).toBeCloseTo(
+                            SINK_PROFILES[frame.kind].widthMm * s,
+                            4,
+                        );
+                    } else {
+                        expect(frame.halfWidthMm).toBeGreaterThan(4);
+                    }
                 }
             }
         }
