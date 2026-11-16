@@ -68,6 +68,7 @@ export const MCP_TOOL_REQUIRED_SCOPES = {
     list_materials: ["manufacturing:generate"],
     generate_gcode: ["manufacturing:generate"],
     generate_central_fab_stl: ["manufacturing:generate"],
+    generate_cnc_gcode: ["manufacturing:generate"],
     get_production: ["manufacturing:download"],
     list_productions_by_design: ["manufacturing:download"],
     get_export_download: ["manufacturing:download"],

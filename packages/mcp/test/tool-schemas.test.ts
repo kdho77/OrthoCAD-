@@ -17,6 +17,7 @@ describe("OrthoCAD MCP tool schemas", () => {
             "list_materials",
             "generate_gcode",
             "generate_central_fab_stl",
+            "generate_cnc_gcode",
             "get_production",
             "list_productions_by_design",
             "get_export_download",
@@ -73,6 +74,7 @@ describe("OrthoCAD MCP tool schemas", () => {
                 stl_storage_key: "manufacturing/tmp/example.stl",
             },
             generate_central_fab_stl: { design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+            generate_cnc_gcode: { design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
             get_production: { production_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
             list_productions_by_design: {
                 design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
