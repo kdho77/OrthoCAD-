@@ -326,6 +326,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                             fileName: exportFileName,
                             patientName: input.patient_name,
                             hardness: input.hardness,
+                            forceNewSlice: input.force_new_slice === true,
                         });
                         if (isUserQuestion(result)) {
                             if (files.length > 0) {

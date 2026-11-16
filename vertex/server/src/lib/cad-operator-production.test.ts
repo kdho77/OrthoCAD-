@@ -363,6 +363,98 @@ describe("CAD-operator production claim", () => {
         expect(charges).toBe(2);
     });
 
+    test("default reuses an in-flight production for the same idempotency key", async () => {
+        const store = new MemoryCadProductionStore();
+        const now = new Date("2026-11-09T00:00:00.000Z");
+        const first = await claimProduction(store, insert("left"), now);
+        await store.updateIf(first.row.id, () => true, {
+            status: "running",
+            leaseExpiresAt: new Date(now.getTime() + CAD_PRODUCTION_LEASE_MS),
+            updatedAt: now,
+        });
+        const second = await claimProduction(store, insert("left"), now);
+        expect(second).toEqual({ row: expect.objectContaining({ id: first.row.id }), run: false });
+    });
+
+    test("force_new_slice enqueues a new production when one already succeeded", async () => {
+        const store = new MemoryCadProductionStore();
+        const now = new Date("2026-11-09T00:00:03.000Z");
+        const first = await claimProduction(store, insert("left", "fp-force-new"), now);
+        await store.updateIf(first.row.id, () => true, {
+            status: "succeeded",
+            gcodeStorageKey: "gcode/left.gcode",
+            updatedAt: now,
+            leaseExpiresAt: null,
+        });
+        const second = await claimProduction(store, insert("left", "fp-force-new"), now, {
+            forceNewSlice: true,
+        });
+        expect(second.row.id).not.toBe(first.row.id);
+        expect(second.run).toBe(true);
+    });
+
+    test("force_new_slice reuses an in-flight fresh slice instead of duplicating", async () => {
+        const store = new MemoryCadProductionStore();
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let scheduled: Promise<void> | null = null;
+        const seed = insert("left", "fp-force-inflight");
+        await beginCadOperatorProduction({
+            store,
+            insert: seed,
+            now: new Date("2026-11-09T00:00:00.000Z"),
+            schedule: (work) => {
+                scheduled = work;
+            },
+            execute: (row) =>
+                executeCadOperatorProduction({
+                    row,
+                    store,
+                    now: () => new Date("2026-11-09T00:00:01.000Z"),
+                    materialize: async () => ({
+                        stlStorageKey: "tmp/left.stl",
+                        meshFingerprint: "mesh",
+                    }),
+                    slice: async () => ({ gcode: "G1\n", jobId: "job-seed" }),
+                    uploadGcode: async () => ({ storageKey: "gcode/seed.gcode" }),
+                    charge: async () => ({ exportId: "exp-seed", balance: 1, alreadyCharged: false }),
+                }),
+        });
+        await scheduled;
+
+        const inFlight = await beginCadOperatorProduction({
+            store,
+            insert: seed,
+            now: new Date("2026-11-09T00:00:02.000Z"),
+            forceNewSlice: true,
+            schedule: (work) => {
+                scheduled = work;
+            },
+            execute: async () => {
+                await gate;
+            },
+        });
+        expect(inFlight.status).toBe("pending");
+
+        let duplicate = false;
+        const again = await beginCadOperatorProduction({
+            store,
+            insert: seed,
+            now: new Date("2026-11-09T00:00:02.500Z"),
+            forceNewSlice: true,
+            schedule: () => {},
+            execute: async () => {
+                duplicate = true;
+            },
+        });
+        expect(again.productionId).toBe(inFlight.productionId);
+        expect(duplicate).toBe(false);
+        release();
+        await scheduled;
+    });
+
     test("a failed slice is not charged and a later call runs that row again", async () => {
         const store = new MemoryCadProductionStore();
         let charges = 0;

@@ -49,6 +49,7 @@ describe("OrthoCAD MCP tool schemas", () => {
         expect(properties).toHaveProperty("preset_id");
         expect(properties).toHaveProperty("material");
         expect(properties).toHaveProperty("stl_storage_key");
+        expect(properties).toHaveProperty("force_new_slice");
         expect(jsonSchema.required ?? []).not.toContain("preset_id");
         const material = properties.material as { description?: string };
         const preset = properties.preset_id as { description?: string };

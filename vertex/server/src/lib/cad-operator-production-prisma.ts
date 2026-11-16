@@ -11,7 +11,7 @@ import type {
     CadProductionStatus,
     CadProductionStore,
 } from "./cad-operator-production.js";
-import { UniqueIdempotencyError } from "./cad-operator-production.js";
+import { isLeaseExpired, UniqueIdempotencyError } from "./cad-operator-production.js";
 
 type ProductionRecord = {
     id: string;
@@ -125,6 +125,30 @@ export class PrismaCadProductionStore implements CadProductionStore {
     async findByKey(idempotencyKey: string): Promise<CadProductionRow | null> {
         const row = await this.prisma.production.findUnique({ where: { idempotencyKey } });
         return row ? mapRow(row as ProductionRecord) : null;
+    }
+
+    async findInFlightByFingerprint(
+        designId: string,
+        side: CadFootSide,
+        presetId: string,
+        settingsFingerprint: string,
+        now: Date,
+    ): Promise<CadProductionRow | null> {
+        const rows = await this.prisma.production.findMany({
+            where: {
+                designId,
+                side,
+                presetId,
+                settingsFingerprint,
+                status: { in: ["pending", "running"] },
+            },
+            orderBy: { createdAt: "desc" },
+        });
+        for (const row of rows) {
+            const mapped = mapRow(row as ProductionRecord);
+            if (!isLeaseExpired(mapped, now)) return mapped;
+        }
+        return null;
     }
 
     async updateIf(

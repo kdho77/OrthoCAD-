@@ -141,6 +141,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
             patientName?: string;
             hardness?: string;
             material?: string;
+            forceNewSlice?: boolean;
         }) {
             return trpc.manufacturing.generateSolid.mutate({
                 designId: input.designId,
@@ -154,6 +155,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
                 patientName: input.patientName,
                 hardness: input.hardness,
                 material: input.material,
+                forceNewSlice: input.forceNewSlice,
             });
         },
 
