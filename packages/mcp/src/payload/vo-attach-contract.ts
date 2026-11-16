@@ -92,14 +92,18 @@ export function voAttachArgumentError(args: unknown, now = Date.now()): string |
         const sideRaw = readShortText(file.side, "side");
         if (sideRaw && typeof sideRaw !== "string") return sideRaw.error;
         const side = (sideRaw ?? "").toLowerCase();
-        if (side && side !== "left" && side !== "right" && side !== "combined" && side !== "both") {
-            return "file side must be left, right, combined, or both";
+        if (side === "combined" || side === "both") {
+            return "file side must be left, right, or omitted";
+        }
+        if (side && side !== "left" && side !== "right") {
+            return "file side must be left, right, or omitted";
         }
         const downloadUrl = readShortText(file.download_url, "download_url");
         if (downloadUrl && typeof downloadUrl !== "string") return downloadUrl.error;
         const contentBase64 =
             file.content_base64 === undefined || file.content_base64 === null ? null : file.content_base64;
-        if (contentBase64 !== null && typeof contentBase64 !== "string") return "content_base64 must be a string";
+        if (contentBase64 !== null && typeof contentBase64 !== "string")
+            return "content_base64 must be a string";
         if (Boolean(downloadUrl) === Boolean(contentBase64)) {
             return "file must include download_url or content_base64, not both";
         }

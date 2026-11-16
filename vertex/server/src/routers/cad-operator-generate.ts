@@ -7,6 +7,7 @@ import { readStoredDesignSettings } from "../../../shared/design-settings.js";
 import {
     buildExportFilename,
     canonicalExportMaterialName,
+    cncPairGcodeFilename,
     exportSideSuffix,
 } from "../../../shared/export-filename.js";
 import { migratePrintRecipe, printRecipeV1Schema } from "../../../shared/print-recipe/print-recipe.js";
@@ -489,7 +490,7 @@ export async function runCadOperatorCncGcodeRequest(args: {
     prisma: PrismaClient;
     principal: CadOperatorPrincipal;
     ip: string | null;
-    input: { designId: string };
+    input: { designId: string; material?: string };
     schedule?: (work: Promise<void>) => void;
     now?: () => Date;
 }): Promise<{
@@ -535,12 +536,19 @@ export async function runCadOperatorCncGcodeRequest(args: {
     }
     const anchor = sides[0] ?? "left";
     const printRecipe = centralFabRecipe(design.settingsJson);
+    const fileName = cncPairGcodeFilename({
+        firstName: row.client.firstName ?? "",
+        lastName: row.client.lastName ?? "",
+        material: args.input.material,
+        sides,
+    });
+    const exportMaterial = canonicalExportMaterialName(args.input.material);
     const identity = cadOperatorManufacturingIdentity({
         designId: args.input.designId,
         side: anchor,
         presetId: CNC_GCODE_PRESET_ID,
         useSavedDesignMesh: true,
-        material: "cnc",
+        material: exportMaterial,
         beltAngleDeg: 0,
         layerHeightMm: null,
         printRecipe,
@@ -550,13 +558,6 @@ export async function runCadOperatorCncGcodeRequest(args: {
         millSides: sides,
     });
     const storedSide: CadFootSide | null = sides.length === 1 ? (sides[0] ?? null) : null;
-    const fileName = buildExportFilename({
-        firstName: row.client.firstName ?? "",
-        lastName: row.client.lastName ?? "",
-        material: canonicalExportMaterialName("ApexCore"),
-        side: exportSideSuffix(sides),
-        ext: CNC_FILE_EXTENSION,
-    });
     const store = new PrismaCadProductionStore(args.prisma);
     const now = args.now ?? (() => new Date());
     const started = await beginCadOperatorProduction({
@@ -571,7 +572,7 @@ export async function runCadOperatorCncGcodeRequest(args: {
             settingsFingerprint: identity.fingerprint,
             beltAngleDeg: 0,
             layerHeightMm: null,
-            material: "cnc",
+            material: exportMaterial,
         },
         preflight: async () => {
             const admin = requireSupabaseAdmin();
@@ -599,7 +600,7 @@ export async function runCadOperatorCncGcodeRequest(args: {
                     const storageKey = buildCadOperatorGcodeKey(
                         args.principal.credentialId,
                         args.input.designId,
-                        `pair-${Date.now()}-${safeName}`,
+                        safeName,
                     );
                     await uploadAsset(
                         requireStorage(),

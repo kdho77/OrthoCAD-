@@ -34,7 +34,8 @@ const MAX_ATTACH_BYTES = 100 * 1024 * 1024;
 const FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]*$/;
 
 export interface VoAttachFileInput {
-    side: "left" | "right";
+    /** Left or right. Omit, or pass combined/both, for one pair CNC file. Those are not sent to VO. */
+    side?: "left" | "right" | "combined" | "both" | null;
     /** CAD object key. Recorded in provenance and never placed on the VO file. */
     storage_key?: string;
     filename?: string;
@@ -62,7 +63,7 @@ export interface VoAttachFilesArguments {
     external_order_id: string;
     source: "vo2";
     files: Array<{
-        side: "left" | "right";
+        side?: "left" | "right";
         format: "gcode" | "stl";
         filename: string;
         content_type: "text/plain" | "model/stl";
@@ -80,7 +81,7 @@ export interface VoAttachPreparation {
         vo_duplicate_suppression: "unsupported";
         cad_replay_sha256: string;
         files: Array<{
-            side: "left" | "right";
+            side: "left" | "right" | null;
             storage_key: string | null;
             sha256: string;
             byte_length: number | null;
@@ -173,8 +174,14 @@ function centralFabStlFilename(side: "left" | "right", requested: string | undef
     throw new Error("Central-fab STL filename must start with the foot and end with .stl");
 }
 
+function attachFoot(side: VoAttachFileInput["side"]): "left" | "right" | null {
+    const key = typeof side === "string" ? side.trim().toLowerCase() : "";
+    if (key === "left" || key === "right") return key;
+    return null;
+}
+
 function gcodeFilename(
-    side: "left" | "right",
+    side: "left" | "right" | null,
     file: VoAttachFileInput,
     order: Pick<VoAttachFilesInput, "patient_name" | "material">,
 ): string {
@@ -185,7 +192,7 @@ function gcodeFilename(
         firstName: patient.firstName,
         lastName: patient.lastName,
         material,
-        side: side === "right" ? "R" : "L",
+        side: side === "right" ? "R" : side === "left" ? "L" : "LR",
         ext: "gcode",
     });
 }
@@ -201,16 +208,26 @@ export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPr
     const files: VoAttachFilesArguments["files"] = [];
     const provenanceFiles: VoAttachPreparation["cad_provenance"]["files"] = [];
 
-    for (const file of [...input.files].sort((a, b) => a.side.localeCompare(b.side))) {
-        if (seen.has(file.side)) throw new Error(`duplicate ${file.side} file`);
-        seen.add(file.side);
+    const ordered = [...input.files].sort((a, b) => {
+        const left = attachFoot(a.side) ?? "";
+        const right = attachFoot(b.side) ?? "";
+        return left.localeCompare(right);
+    });
+    for (const file of ordered) {
+        const foot = attachFoot(file.side);
+        const sideKey = foot ?? "pair";
+        if (seen.has(sideKey)) throw new Error(`duplicate ${sideKey} file`);
+        seen.add(sideKey);
         const centralFab = isCentralFabStlStorageKey(file.storage_key);
+        if (centralFab && !foot) {
+            throw new Error("Central-fab STL needs a left or right side");
+        }
         if (!centralFab && file.filename && /\.stl($|\?)/i.test(file.filename)) {
             throw new Error("STL files are not attached. G-code only.");
         }
         const filename = centralFab
-            ? centralFabStlFilename(file.side, file.filename)
-            : gcodeFilename(file.side, file, input);
+            ? centralFabStlFilename(foot ?? "left", file.filename)
+            : gcodeFilename(foot, file, input);
         if (!centralFab && filename.toLowerCase().endsWith(".stl")) {
             throw new Error("STL files are not attached. G-code only.");
         }
@@ -251,7 +268,7 @@ export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPr
             digestSource = bytes.toString("base64");
         }
         const wire: VoAttachFilesArguments["files"][number] = {
-            side: file.side,
+            ...(foot ? { side: foot } : {}),
             format: centralFab ? "stl" : "gcode",
             filename,
             content_type: centralFab ? "model/stl" : "text/plain",
@@ -263,7 +280,7 @@ export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPr
         }
         files.push(wire);
         provenanceFiles.push({
-            side: file.side,
+            side: foot,
             storage_key: file.storage_key?.trim() || null,
             sha256: createHash("sha256").update(digestSource).digest("hex"),
             byte_length: byteLength,

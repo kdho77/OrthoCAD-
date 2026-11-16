@@ -99,6 +99,11 @@ export const generateCentralFabStlInputSchema = z
 export const generateCncGcodeInputSchema = z
     .object({
         design_id: z.string().uuid(),
+        /**
+         * Order or design material for the filename. EVA Milled and EVA 45 Shore A
+         * are EVA. Omitted stays the Apex Core filename. Not inferred from method.
+         */
+        material: z.string().trim().min(1).max(80).optional(),
     })
     .strict();
 
@@ -294,7 +299,8 @@ export const createSavedDesignInputSchema = z
 
 const attachFileSchema = z
     .object({
-        side: sideSchema,
+        /** Pair CNC files omit side. combined and both are accepted and not forwarded. */
+        side: z.enum(["left", "right", "combined", "both"]).optional(),
         /** CAD provenance only. Not copied into the VO file object. */
         storage_key: z.string().trim().min(1).max(500).optional(),
         filename: z.string().max(200).optional(),
@@ -403,6 +409,8 @@ export const MCP_TOOL_DEFINITIONS = [
             "Returns one production_id and status. The server builds the toolpath after that response. " +
             "Poll get_production. Download with get_export_download only after succeeded. " +
             "No G-code bytes in this response. Print and belt designs are refused. " +
+            "Optional material is the order material used in the filename (EVA Milled and EVA 45 Shore A are EVA). " +
+            "The pair name is First_Last_Material_LR.gcode. " +
             "A pair file is one production (side is empty). Auth: CAD-operator key, manufacturing:generate.",
         inputSchema: generateCncGcodeInputSchema,
     },
@@ -505,7 +513,9 @@ export const MCP_TOOL_DEFINITIONS = [
         description:
             "Build the live VertexOrders attach_files arguments for an existing order UUID. " +
             "Forward only vo_attach_files (orderId, external_order_id, source vo2, files). " +
-            "Each file is separate left or right G-code with exactly one of content_base64 or an https download_url of at most 200 characters. " +
+            "Each file is left or right G-code, or one pair CNC file with side omitted. " +
+            "combined and both are not sent. " +
+            "Exactly one of content_base64 or an https download_url of at most 200 characters. " +
             "A storage key is CAD provenance, not a VO field. design_id and tenant_id are omitted so VO does not run clinic or link checks. " +
             "Does not call VertexOrders and does not write an order status. " +
             "VO's public tool has no idempotency argument, so a repeat call is not server-side deduplication. " +

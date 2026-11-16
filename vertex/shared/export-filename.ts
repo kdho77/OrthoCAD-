@@ -27,6 +27,9 @@ const MATERIAL_ID_BY_COMPACT = new Map<string, string>([
     ["apex_core", "ApexCore"],
     ["apex_bounce", "ApexBounce"],
     ["apex_forge", "ApexForge"],
+    ["eva", "EVA"],
+    ["evamilled", "EVA"],
+    ["eva45shorea", "EVA"],
 ]);
 
 function compactMaterialKey(value: string): string {
@@ -142,4 +145,24 @@ export function buildExportFilename(input: BuildExportFilenameInput): string {
     const material = canonicalExportMaterialName(input.material);
     const extension = normalizeExtension(input.ext);
     return `${patient}_${material}_${input.side}${extension}`;
+}
+
+/**
+ * Pair CNC download name. Side `LR` is the canonical pair form from
+ * {@link exportSideSuffix}. The storage object uses this name with no
+ * `pair-<timestamp>-` prefix.
+ */
+export function cncPairGcodeFilename(input: {
+    firstName?: string | null;
+    lastName?: string | null;
+    material?: string | null;
+    sides: ReadonlyArray<"left" | "right">;
+}): string {
+    return buildExportFilename({
+        firstName: input.firstName,
+        lastName: input.lastName,
+        material: input.material ?? "",
+        side: exportSideSuffix(input.sides),
+        ext: ".gcode",
+    });
 }

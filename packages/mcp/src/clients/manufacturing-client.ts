@@ -125,7 +125,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
          * Returns `{ productionId, status, sides, fileExtension }`. No G-code bytes.
          * Call site: vertex/server/src/routers/manufacturing.ts generateCncGcode.
          */
-        generateCncGcode(input: { designId: string }) {
+        generateCncGcode(input: { designId: string; material?: string }) {
             return trpc.manufacturing.generateCncGcode.mutate(input);
         },
 

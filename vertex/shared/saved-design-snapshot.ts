@@ -329,9 +329,16 @@ export interface SavedDesignSnapshotBuild {
     };
 }
 
-const LINK_WIDTHS = new Set(["narrow", "medium", "wide"]);
-
 type DesignWidth = NonNullable<DesignState["shoeWidth"]>;
+
+const LINK_WIDTHS = new Set<DesignWidth>([
+    "extra_narrow",
+    "narrow",
+    "medium",
+    "wide",
+    "extra_wide",
+    "xx_wide",
+]);
 
 function close(a: number, b: number): boolean {
     return Math.abs(a - b) <= 1e-6;
@@ -491,10 +498,10 @@ function resolveElementKind(name: string): ElementKind {
     return kind;
 }
 
-function canonicalLinkWidth(width: string | null): "narrow" | "medium" | "wide" | null {
+function canonicalLinkWidth(width: string | null): DesignWidth | null {
     if (width == null || width.trim() === "") return null;
     const key = width.trim().toLowerCase().replace(/\s+/g, "_");
-    if (LINK_WIDTHS.has(key)) return key as "narrow" | "medium" | "wide";
+    if (LINK_WIDTHS.has(key as DesignWidth)) return key as DesignWidth;
     throw new SavedDesignSnapshotError(`stored shoe width "${width}" cannot be mapped. Refusing to guess.`);
 }
 

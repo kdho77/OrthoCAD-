@@ -268,6 +268,25 @@ describe("status and hold guards", () => {
             now,
         });
         expect(prepared.vo_attach_files.files[0]?.filename).toBe("Unknown_Patient_ApexCore_L.gcode");
+        const pair = buildVoAttachFilesHandoff({
+            order_id: orderId,
+            patient_name: "Anginette Arrington",
+            material: "EVA 45 Shore A",
+            files: [{ side: "combined", content_base64: leftGcode }],
+            now,
+        });
+        expect(pair.vo_attach_files.files[0]?.filename).toBe("Anginette_Arrington_EVA_LR.gcode");
+        expect(pair.vo_attach_files.files[0]).not.toHaveProperty("side");
+        expect(JSON.stringify(pair.vo_attach_files)).not.toMatch(/combined|both/);
+        expect(voAttachArgumentError(pair.vo_attach_files, now)).toBeNull();
+        expect(
+            voAttachArgumentError({
+                orderId,
+                external_order_id: orderId,
+                source: "vo2",
+                files: [{ side: "both", content_base64: leftGcode }],
+            }),
+        ).toMatch(/omitted/);
         expect(prepared.order_status_written).toBe(false);
         expect(prepared.vo_attach_files).not.toHaveProperty("design_id");
         expect(prepared.vo_attach_files).not.toHaveProperty("tenant_id");

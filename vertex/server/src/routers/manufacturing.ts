@@ -400,7 +400,12 @@ export const manufacturingRouter = router({
         "manufacturing:generateCncGcode",
         "manufacturing:generate",
     )
-        .input(z.object({ designId: z.string().uuid() }))
+        .input(
+            z.object({
+                designId: z.string().uuid(),
+                material: z.string().trim().min(1).max(80).optional(),
+            }),
+        )
         .mutation(async ({ ctx, input }) => {
             if (!ctx.cadOperator) {
                 throw new TRPCError({ code: "FORBIDDEN", message: "CAD-operator credential required" });

@@ -172,7 +172,12 @@ function mergeStoredClinicalIntoSnapshot(
             };
         }
         const existingDogfood = existing.dogfoodManufacturing as
-            | { hardness?: HardnessName | null; hardnessSource?: "prescribed" | "unspecified" }
+            | {
+                  hardness?: HardnessName | null;
+                  hardnessSource?: "prescribed" | "unspecified";
+                  shoeWidth?: SavedDesignSnapshotBuild["shoeWidth"];
+                  shoeWidthSource?: "prescribed" | "defaulted";
+              }
             | undefined;
         if (existingDogfood && built.design.dogfoodManufacturing) {
             built.design.dogfoodManufacturing = {
@@ -184,6 +189,30 @@ function mergeStoredClinicalIntoSnapshot(
             };
             built.hardness = built.design.dogfoodManufacturing.hardness ?? built.hardness;
             built.hardnessSource = built.design.dogfoodManufacturing.hardnessSource ?? built.hardnessSource;
+        }
+    }
+
+    if (catalog.width === undefined && built.design.dogfoodManufacturing) {
+        const existingWidth = existing.dogfoodManufacturing as
+            | {
+                  shoeWidth?: SavedDesignSnapshotBuild["shoeWidth"];
+                  shoeWidthSource?: "prescribed" | "defaulted";
+              }
+            | undefined;
+        if (
+            existingWidth?.shoeWidthSource === "prescribed" ||
+            existingWidth?.shoeWidthSource === "defaulted"
+        ) {
+            built.design.dogfoodManufacturing = {
+                ...built.design.dogfoodManufacturing,
+                shoeWidthSource: existingWidth.shoeWidthSource,
+                ...(existingWidth.shoeWidth ? { shoeWidth: existingWidth.shoeWidth } : {}),
+            };
+            if (existingWidth.shoeWidth) {
+                built.design.shoeWidth = existingWidth.shoeWidth;
+                built.shoeWidth = existingWidth.shoeWidth;
+            }
+            built.shoeWidthSource = existingWidth.shoeWidthSource;
         }
     }
 

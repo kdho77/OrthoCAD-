@@ -51,6 +51,31 @@ describe("generate_cnc_gcode", () => {
         expect(toolJson(enqueued).files).toHaveLength(1);
     });
 
+    test("forwards the order material and does not invent a pair prefix", async () => {
+        let forwarded: { designId?: string; material?: string } | undefined;
+        const manufacturing = {
+            generateCncGcode: async (input: { designId: string; material?: string }) => {
+                forwarded = input;
+                return {
+                    ok: true,
+                    outputType: "gcode",
+                    productionId,
+                    status: "pending",
+                    side: null,
+                    sides: ["left", "right"],
+                    fileExtension: ".gcode",
+                };
+            },
+        } as unknown as ManufacturingClient;
+        const enqueued = await handleOrthocadTool(
+            "generate_cnc_gcode",
+            { design_id: designId, material: "EVA Milled" },
+            { config, manufacturing },
+        );
+        expect(enqueued.isError).toBeUndefined();
+        expect(forwarded).toEqual({ designId, material: "EVA Milled" });
+    });
+
     test("a print design error is returned and no file is invented", async () => {
         const manufacturing = {
             generateCncGcode: async () => {
