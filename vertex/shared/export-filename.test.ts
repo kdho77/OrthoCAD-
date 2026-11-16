@@ -5,6 +5,7 @@ import { describe, expect, test } from "@rstest/core";
 import {
     buildExportFilename,
     canonicalExportMaterialName,
+    cncPairGcodeFilename,
     exportPatientFilenameSegment,
     exportPatientPartsForProduction,
     exportSideSuffix,
@@ -89,6 +90,27 @@ describe("canonicalExportMaterialName", () => {
         expect(canonicalExportMaterialName("Apex Light")).toBe("ApexLight");
         expect(canonicalExportMaterialName("ApexComfort")).toBe("ApexCore");
         expect(canonicalExportMaterialName(undefined)).toBe("ApexCore");
+        expect(canonicalExportMaterialName("EVA Milled")).toBe("EVA");
+        expect(canonicalExportMaterialName("EVA 45 Shore A")).toBe("EVA");
+    });
+
+    test("an EVA pair filename is First_Last_EVA_LR.gcode", () => {
+        expect(
+            cncPairGcodeFilename({
+                firstName: "Anginette",
+                lastName: "Arrington",
+                material: "EVA Milled",
+                sides: ["left", "right"],
+            }),
+        ).toBe("Anginette_Arrington_EVA_LR.gcode");
+        expect(
+            cncPairGcodeFilename({
+                firstName: "Anginette",
+                lastName: "Arrington",
+                material: "EVA 45 Shore A",
+                sides: ["left", "right"],
+            }),
+        ).toBe("Anginette_Arrington_EVA_LR.gcode");
     });
 });
 

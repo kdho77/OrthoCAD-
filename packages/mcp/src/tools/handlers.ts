@@ -444,7 +444,10 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                     cadOperatorKey: requireCadOperatorKey(deps.config),
                 });
             assertToolNotHeld(input.design_id);
-            const result = await manufacturing.generateCncGcode({ designId: input.design_id });
+            const result = await manufacturing.generateCncGcode({
+                designId: input.design_id,
+                ...(input.material ? { material: input.material } : {}),
+            });
             const status =
                 typeof result.status === "string" && PRODUCTION_STATUSES.has(result.status)
                     ? result.status

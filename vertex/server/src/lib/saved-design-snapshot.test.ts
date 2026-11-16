@@ -115,6 +115,65 @@ describe("persist saved design snapshot", () => {
         expect(result.scans_used).toBe(false);
     });
 
+    test("stored xx_wide maps and an omitted width does not change shoeWidthSource", async () => {
+        const xxWide = await persistSavedDesignSnapshotOnDesign({
+            prisma: fakePrisma(
+                row({
+                    integrationLink: { ...row().integrationLink, shoeWidth: "xx_wide" },
+                }),
+            ).prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: { thickness_mm: 4 },
+            manufacturingMethod: "milling_3axis",
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        expect(xxWide.shoe_width).toBe("xx_wide");
+        expect(xxWide.shoe_width_source).toBe("prescribed");
+        const settings = readStoredDesignSettings(xxWide.settingsJson);
+        expect(settings?.shoeWidth).toBe("xx_wide");
+
+        const defaulted = settingsEnvelopeForSave(
+            buildSavedDesignSnapshot({
+                stored: { system: "US_M", size: 9, left: null, right: null, width: null },
+                catalog: {},
+            }).design,
+        );
+        const kept = await persistSavedDesignSnapshotOnDesign({
+            prisma: fakePrisma(row({ settingsJson: defaulted })).prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: { thickness_mm: 4 },
+            manufacturingMethod: "milling_3axis",
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        expect(kept.shoe_width).toBe("medium");
+        expect(kept.shoe_width_source).toBe("defaulted");
+        expect(
+            (
+                readStoredDesignSettings(kept.settingsJson)?.dogfoodManufacturing as {
+                    shoeWidthSource?: string;
+                }
+            ).shoeWidthSource,
+        ).toBe("defaulted");
+
+        const { prisma, updates } = fakePrisma(
+            row({
+                integrationLink: { ...row().integrationLink, shoeWidth: "unknown_width" },
+            }),
+        );
+        await expect(
+            persistSavedDesignSnapshotOnDesign({
+                prisma,
+                principal,
+                designId: DESIGN_ID,
+                catalog: { thickness_mm: 4 },
+                buildSnapshot: buildSavedDesignSnapshot,
+            }),
+        ).rejects.toMatchObject({ status: 422, message: expect.stringMatching(/cannot be mapped/) });
+        expect(updates).toEqual([]);
+    });
+
     test("a blank stored width is medium and recorded as defaulted", async () => {
         const { prisma, updates } = fakePrisma(
             row({

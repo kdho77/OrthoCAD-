@@ -40126,7 +40126,10 @@ var MATERIAL_ID_BY_COMPACT = /* @__PURE__ */ new Map([
   ["apex_light", "ApexLight"],
   ["apex_core", "ApexCore"],
   ["apex_bounce", "ApexBounce"],
-  ["apex_forge", "ApexForge"]
+  ["apex_forge", "ApexForge"],
+  ["eva", "EVA"],
+  ["evamilled", "EVA"],
+  ["eva45shorea", "EVA"]
 ]);
 function compactMaterialKey(value) {
   return value.trim().toLowerCase().replace(/[\s_-]+/g, "");
@@ -40280,8 +40283,11 @@ function voAttachArgumentError(args, now = Date.now()) {
     const sideRaw = readShortText(file2.side, "side");
     if (sideRaw && typeof sideRaw !== "string") return sideRaw.error;
     const side = (sideRaw ?? "").toLowerCase();
-    if (side && side !== "left" && side !== "right" && side !== "combined" && side !== "both") {
-      return "file side must be left, right, combined, or both";
+    if (side === "combined" || side === "both") {
+      return "file side must be left, right, or omitted";
+    }
+    if (side && side !== "left" && side !== "right") {
+      return "file side must be left, right, or omitted";
     }
     const downloadUrl = readShortText(file2.download_url, "download_url");
     if (downloadUrl && typeof downloadUrl !== "string") return downloadUrl.error;
@@ -40351,6 +40357,11 @@ function centralFabStlFilename(side, requested) {
   }
   throw new Error("Central-fab STL filename must start with the foot and end with .stl");
 }
+function attachFoot(side) {
+  const key = typeof side === "string" ? side.trim().toLowerCase() : "";
+  if (key === "left" || key === "right") return key;
+  return null;
+}
 function gcodeFilename(side, file2, order) {
   const patientName = file2.patient_name?.trim() || order.patient_name?.trim() || "";
   const patient = parsePatientNameForExport(patientName);
@@ -40359,7 +40370,7 @@ function gcodeFilename(side, file2, order) {
     firstName: patient.firstName,
     lastName: patient.lastName,
     material,
-    side: side === "right" ? "R" : "L",
+    side: side === "right" ? "R" : side === "left" ? "L" : "LR",
     ext: "gcode"
   });
 }
@@ -40372,14 +40383,24 @@ function buildVoAttachFilesHandoff(input2) {
   const seen = /* @__PURE__ */ new Set();
   const files = [];
   const provenanceFiles = [];
-  for (const file2 of [...input2.files].sort((a, b) => a.side.localeCompare(b.side))) {
-    if (seen.has(file2.side)) throw new Error(`duplicate ${file2.side} file`);
-    seen.add(file2.side);
+  const ordered = [...input2.files].sort((a, b) => {
+    const left = attachFoot(a.side) ?? "";
+    const right = attachFoot(b.side) ?? "";
+    return left.localeCompare(right);
+  });
+  for (const file2 of ordered) {
+    const foot = attachFoot(file2.side);
+    const sideKey = foot ?? "pair";
+    if (seen.has(sideKey)) throw new Error(`duplicate ${sideKey} file`);
+    seen.add(sideKey);
     const centralFab = isCentralFabStlStorageKey(file2.storage_key);
+    if (centralFab && !foot) {
+      throw new Error("Central-fab STL needs a left or right side");
+    }
     if (!centralFab && file2.filename && /\.stl($|\?)/i.test(file2.filename)) {
       throw new Error("STL files are not attached. G-code only.");
     }
-    const filename = centralFab ? centralFabStlFilename(file2.side, file2.filename) : gcodeFilename(file2.side, file2, input2);
+    const filename = centralFab ? centralFabStlFilename(foot ?? "left", file2.filename) : gcodeFilename(foot, file2, input2);
     if (!centralFab && filename.toLowerCase().endsWith(".stl")) {
       throw new Error("STL files are not attached. G-code only.");
     }
@@ -40417,7 +40438,7 @@ function buildVoAttachFilesHandoff(input2) {
       digestSource = bytes.toString("base64");
     }
     const wire = {
-      side: file2.side,
+      ...foot ? { side: foot } : {},
       format: centralFab ? "stl" : "gcode",
       filename,
       content_type: centralFab ? "model/stl" : "text/plain"
@@ -40429,7 +40450,7 @@ function buildVoAttachFilesHandoff(input2) {
     }
     files.push(wire);
     provenanceFiles.push({
-      side: file2.side,
+      side: foot,
       storage_key: file2.storage_key?.trim() || null,
       sha256: createHash2("sha256").update(digestSource).digest("hex"),
       byte_length: byteLength
@@ -40601,7 +40622,12 @@ var generateCentralFabStlInputSchema = external_exports.object({
   side: sideSchema.optional()
 }).strict();
 var generateCncGcodeInputSchema = external_exports.object({
-  design_id: external_exports.string().uuid()
+  design_id: external_exports.string().uuid(),
+  /**
+   * Order or design material for the filename. EVA Milled and EVA 45 Shore A
+   * are EVA. Omitted stays the Apex Core filename. Not inferred from method.
+   */
+  material: external_exports.string().trim().min(1).max(80).optional()
 }).strict();
 var getProductionInputSchema = external_exports.object({
   production_id: external_exports.string().uuid()
@@ -40743,7 +40769,8 @@ var createSavedDesignInputSchema = external_exports.object({
   family_name: external_exports.string().trim().min(1).max(100).optional()
 }).strict();
 var attachFileSchema = external_exports.object({
-  side: sideSchema,
+  /** Pair CNC files omit side. combined and both are accepted and not forwarded. */
+  side: external_exports.enum(["left", "right", "combined", "both"]).optional(),
   /** CAD provenance only. Not copied into the VO file object. */
   storage_key: external_exports.string().trim().min(1).max(500).optional(),
   filename: external_exports.string().max(200).optional(),
@@ -40808,7 +40835,7 @@ var MCP_TOOL_DEFINITIONS = [
   },
   {
     name: "generate_cnc_gcode",
-    description: "Pair CNC milling G-code from a saved milled design. One file for the order (L+R when both feet are on the order, one foot when the order is single-sided), the same bytes as the web Mill export with the default Idaho machine profile and the .gcode extension. Returns one production_id and status. The server builds the toolpath after that response. Poll get_production. Download with get_export_download only after succeeded. No G-code bytes in this response. Print and belt designs are refused. A pair file is one production (side is empty). Auth: CAD-operator key, manufacturing:generate.",
+    description: "Pair CNC milling G-code from a saved milled design. One file for the order (L+R when both feet are on the order, one foot when the order is single-sided), the same bytes as the web Mill export with the default Idaho machine profile and the .gcode extension. Returns one production_id and status. The server builds the toolpath after that response. Poll get_production. Download with get_export_download only after succeeded. No G-code bytes in this response. Print and belt designs are refused. Optional material is the order material used in the filename (EVA Milled and EVA 45 Shore A are EVA). The pair name is First_Last_Material_LR.gcode. A pair file is one production (side is empty). Auth: CAD-operator key, manufacturing:generate.",
     inputSchema: generateCncGcodeInputSchema
   },
   {
@@ -40843,7 +40870,7 @@ var MCP_TOOL_DEFINITIONS = [
   },
   {
     name: "prepare_vo_attachment",
-    description: "Build the live VertexOrders attach_files arguments for an existing order UUID. Forward only vo_attach_files (orderId, external_order_id, source vo2, files). Each file is separate left or right G-code with exactly one of content_base64 or an https download_url of at most 200 characters. A storage key is CAD provenance, not a VO field. design_id and tenant_id are omitted so VO does not run clinic or link checks. Does not call VertexOrders and does not write an order status. VO's public tool has no idempotency argument, so a repeat call is not server-side deduplication. G-code stays the default. STL is accepted only when storage_key is a central-fab STL key (stl/cad-operator/\u2026). The retrieved attach_files schema allows format and model/stl. A filename or URL ending in .stl without that key is refused.",
+    description: "Build the live VertexOrders attach_files arguments for an existing order UUID. Forward only vo_attach_files (orderId, external_order_id, source vo2, files). Each file is left or right G-code, or one pair CNC file with side omitted. combined and both are not sent. Exactly one of content_base64 or an https download_url of at most 200 characters. A storage key is CAD provenance, not a VO field. design_id and tenant_id are omitted so VO does not run clinic or link checks. Does not call VertexOrders and does not write an order status. VO's public tool has no idempotency argument, so a repeat call is not server-side deduplication. G-code stays the default. STL is accepted only when storage_key is a central-fab STL key (stl/cad-operator/\u2026). The retrieved attach_files schema allows format and model/stl. A filename or URL ending in .stl without that key is refused.",
     inputSchema: prepareVoAttachmentInputSchema
   }
 ];
@@ -41146,7 +41173,10 @@ async function dispatchTool(name, args, deps) {
         cadOperatorKey: requireCadOperatorKey(deps.config)
       });
       assertToolNotHeld(input2.design_id);
-      const result = await manufacturing.generateCncGcode({ designId: input2.design_id });
+      const result = await manufacturing.generateCncGcode({
+        designId: input2.design_id,
+        ...input2.material ? { material: input2.material } : {}
+      });
       const status = typeof result.status === "string" && PRODUCTION_STATUSES.has(result.status) ? result.status : null;
       if (!status) throw new Error("CNC G-code did not return a production status");
       const sideList = result.sides;
