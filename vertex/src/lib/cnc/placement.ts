@@ -126,6 +126,10 @@ export function evaluatePlacedPart(placed: PlacedPart, profile: MillingProfile):
     if (env.length < 3) return { ok: false, reason: "Tool envelope is empty" };
     const bb = bboxOf(env);
     const clearance = ENVELOPE_CLEARANCE_MM;
+    // Pocket edges that lie on the table read as a table miss if the table is
+    // checked first. Report the pocket, with the envelope that actually overflowed.
+    const pocketReason = pocketOverflowReason(bb, pocket, clearance, placed.pocketIndex);
+    if (pocketReason) return { ok: false, reason: pocketReason };
     if (
         bb.minX < clearance - 1e-4 ||
         bb.maxX > table.width - clearance + 1e-4 ||
@@ -137,17 +141,6 @@ export function evaluatePlacedPart(placed: PlacedPart, profile: MillingProfile):
             reason: `Tool envelope leaves the milling table (needs ${clearance.toFixed(0)} mm clearance)`,
         };
     }
-    if (
-        bb.minX < pocket.x + clearance - 1e-4 ||
-        bb.maxX > pocket.x + pocket.width - clearance + 1e-4 ||
-        bb.minY < pocket.y + clearance - 1e-4 ||
-        bb.maxY > pocket.y + pocket.length - clearance + 1e-4
-    ) {
-        return {
-            ok: false,
-            reason: `Tool envelope does not fit pocket ${placed.pocketIndex + 1} (needs ${clearance.toFixed(0)} mm clearance)`,
-        };
-    }
     if (placed.zMax > profile.materialHeightMm + 1e-6) {
         return {
             ok: false,
@@ -155,6 +148,147 @@ export function evaluatePlacedPart(placed: PlacedPart, profile: MillingProfile):
         };
     }
     return { ok: true };
+}
+
+/**
+ * Pocket-fit sentence. The span is the axis that is short of the usable opening
+ * (pocket size minus the 1 mm clearance on both sides).
+ */
+function pocketOverflowReason(
+    bb: { minX: number; maxX: number; minY: number; maxY: number },
+    pocket: { x: number; y: number; width: number; length: number },
+    clearance: number,
+    pocketIndex: number,
+): string | null {
+    const xClear = Math.min(bb.minX - pocket.x, pocket.x + pocket.width - bb.maxX);
+    const yClear = Math.min(bb.minY - pocket.y, pocket.y + pocket.length - bb.maxY);
+    if (xClear >= clearance - 1e-4 && yClear >= clearance - 1e-4) return null;
+    const alongY = yClear <= xClear;
+    const span = alongY ? bb.maxY - bb.minY : bb.maxX - bb.minX;
+    const usable = (alongY ? pocket.length : pocket.width) - 2 * clearance;
+    return (
+        `Tool envelope does not fit pocket ${pocketIndex + 1} ` +
+        `(envelope ${span.toFixed(3)} mm, usable ${usable.toFixed(3)} mm)`
+    );
+}
+
+const ROTATION_SEARCH_STEP_DEG = 0.5;
+const ROTATION_SEARCH_MAX_DEG = 8;
+
+function userLockedPlacement(override: PartPlacement | undefined): boolean {
+    if (!override) return false;
+    return override.tx !== undefined || override.ty !== undefined || override.rotationDeg !== undefined;
+}
+
+function rotationIs180(rotationDeg: number): boolean {
+    return Math.abs((((rotationDeg % 360) + 360) % 360) - 180) < 1e-6;
+}
+
+/**
+ * Outline auto-position, then replace each centered axis with the tool-envelope
+ * bbox. Left/right and front/back stay on the outline margin.
+ */
+function poseCentredOnEnvelope(
+    profile: MillingProfile,
+    outline: Point[],
+    pocket: { x: number; y: number; width: number; length: number },
+    cx: number,
+    cy: number,
+    rotationDeg: number,
+): { tx: number; ty: number } {
+    const rotBb = rotatedLocalBbox(outline, cx, cy, rotationDeg);
+    const margin = placementMarginMm(profile, outline, rotationDeg);
+    const auto = autoTranslate(profile, pocket, rotBb, margin);
+    if (profile.alignX !== "center" && profile.alignY !== "center") return auto;
+    const footprint = toolFootprintLocal(outline, profile);
+    if (footprint.length < 3) return auto;
+    const envBb = rotatedLocalBbox(footprint, cx, cy, rotationDeg);
+    const env = autoTranslate(profile, pocket, envBb, ENVELOPE_CLEARANCE_MM);
+    return {
+        tx: profile.alignX === "center" ? env.tx : auto.tx,
+        ty: profile.alignY === "center" ? env.ty : auto.ty,
+    };
+}
+
+/** Smallest gap from the envelope to the pocket on axes that are centered. */
+function centeredClearanceMm(placed: PlacedPart, profile: MillingProfile): number {
+    const pocket = profile.pockets[placed.pocketIndex];
+    if (!pocket) return Number.NEGATIVE_INFINITY;
+    const bb = bboxOf(worldFootprint(placed, profile));
+    const gaps: number[] = [];
+    if (profile.alignX === "center") {
+        gaps.push(bb.minX - pocket.x, pocket.x + pocket.width - bb.maxX);
+    }
+    if (profile.alignY === "center") {
+        gaps.push(bb.minY - pocket.y, pocket.y + pocket.length - bb.maxY);
+    }
+    if (gaps.length === 0) return Number.NEGATIVE_INFINITY;
+    return Math.min(...gaps);
+}
+
+/**
+ * Runs only after the outline-centered pose failed, and only when this side has
+ * no tx/ty/rotation override and at least one axis is centered.
+ * Step 1 recenters that axis on the envelope. Step 2 tries ±0.5° up to ±8°
+ * and keeps the passing angle with the most clearance on the centered axis.
+ */
+function recoverCenteredPlacement(
+    profile: MillingProfile,
+    placed: PlacedPart,
+    pocket: { x: number; y: number; width: number; length: number },
+    override: PartPlacement | undefined,
+): { tx: number; ty: number; rotationDeg: number } | null {
+    if (userLockedPlacement(override)) return null;
+    if (profile.alignX !== "center" && profile.alignY !== "center") return null;
+
+    const step1 = poseCentredOnEnvelope(
+        profile,
+        placed.outline,
+        pocket,
+        placed.cx,
+        placed.cy,
+        placed.rotationDeg,
+    );
+    const recentered: PlacedPart = { ...placed, tx: step1.tx, ty: step1.ty };
+    if (evaluatePlacedPart(recentered, profile).ok) {
+        return { tx: step1.tx, ty: step1.ty, rotationDeg: placed.rotationDeg };
+    }
+
+    const base = placed.rotationDeg;
+    const steps = Math.round(ROTATION_SEARCH_MAX_DEG / ROTATION_SEARCH_STEP_DEG);
+    let best: { tx: number; ty: number; rotationDeg: number; clearance: number; abs: number } | null = null;
+    for (let i = 1; i <= steps; i++) {
+        const mag = i * ROTATION_SEARCH_STEP_DEG;
+        for (const sign of [1, -1]) {
+            const rotationDeg = base + sign * mag;
+            const pose = poseCentredOnEnvelope(
+                profile,
+                placed.outline,
+                pocket,
+                placed.cx,
+                placed.cy,
+                rotationDeg,
+            );
+            const candidate: PlacedPart = {
+                ...placed,
+                ...pose,
+                rotationDeg,
+                rot180: rotationIs180(rotationDeg),
+            };
+            if (!evaluatePlacedPart(candidate, profile).ok) continue;
+            const clearance = centeredClearanceMm(candidate, profile);
+            const abs = Math.abs(sign * mag);
+            if (
+                !best ||
+                clearance > best.clearance + 1e-6 ||
+                (Math.abs(clearance - best.clearance) <= 1e-6 && abs < best.abs - 1e-9)
+            ) {
+                best = { tx: pose.tx, ty: pose.ty, rotationDeg, clearance, abs };
+            }
+        }
+    }
+    if (!best) return null;
+    return { tx: best.tx, ty: best.ty, rotationDeg: best.rotationDeg };
 }
 
 /** Per-side fit, including no overlap between the L and R tool envelopes. */
@@ -239,11 +373,18 @@ export function placeWorkpieces(
         if (options?.validate !== false) {
             const fit = evaluatePlacedPart(placed, profile);
             if (!fit.ok) {
-                throw new CncExportError(
-                    "no_fit",
-                    fit.reason ??
-                        `Tool envelope does not fit pocket ${i + 1} (${partW.toFixed(1)}×${partH.toFixed(1)} mm, pocket ${pocket.width}×${pocket.length} mm, margin ${margin.toFixed(1)} mm)`,
-                );
+                const recovered = recoverCenteredPlacement(profile, placed, pocket, override);
+                if (!recovered) {
+                    throw new CncExportError(
+                        "no_fit",
+                        fit.reason ??
+                            `Tool envelope does not fit pocket ${i + 1} (${partW.toFixed(1)}×${partH.toFixed(1)} mm, pocket ${pocket.width}×${pocket.length} mm, margin ${margin.toFixed(1)} mm)`,
+                    );
+                }
+                placed.tx = recovered.tx;
+                placed.ty = recovered.ty;
+                placed.rotationDeg = recovered.rotationDeg;
+                placed.rot180 = rotationIs180(recovered.rotationDeg);
             }
         }
         out.push(placed);
