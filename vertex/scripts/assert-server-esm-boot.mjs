@@ -13,6 +13,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { bundleCanonicalExportLoft, canonicalExportLoftOutfile } from "./bundle-canonical-export-loft.mjs";
+import { bundleCncMillJob, cncMillJobOutfile } from "./bundle-cnc-mill-job.mjs";
 
 const vertexRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(vertexRoot, ".esm-boot");
@@ -41,8 +42,9 @@ for (const root of srcRoots) {
 }
 tsEntries.push(...extraTsEntries);
 
-// Same artifact `vercel-build` emits before @vercel/node traces the function.
+// Same artifacts `vercel-build` emits before @vercel/node traces the function.
 await bundleCanonicalExportLoft();
+await bundleCncMillJob();
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
@@ -135,3 +137,39 @@ if (typeof globalThis.DOMParser !== "function") {
     process.exit(1);
 }
 console.log("server-esm-boot: ok canonical export loft");
+
+const cncRunnerPath = join(outDir, "server/src/lib/cnc-mill-runner.js");
+cpSync(cncMillJobOutfile, join(outDir, "server/src/lib/cnc-mill-job.js"));
+const cncRunnerSource = readFileSync(cncRunnerPath, "utf8");
+if (
+    cncRunnerSource.includes("mill-job.ts") ||
+    !cncRunnerSource.includes("happy-dom") ||
+    !cncRunnerSource.includes("./cnc-mill-job.js")
+) {
+    console.error("server-esm-boot: cnc-mill-runner.js does not load happy-dom and the CNC bundle");
+    process.exit(1);
+}
+const cncRunner = await import(pathToFileURL(cncRunnerPath).href);
+let cncRefusal = "";
+try {
+    await cncRunner.prepareHeadlessMillDesign({
+        id: "00000000-0000-4000-8000-000000000001",
+        pattern: "full_contact",
+        method: "printing_solid",
+        thicknessMm: 2,
+        linked: true,
+        unit: "mm",
+        createdAt: "2026-11-15T00:00:00.000Z",
+        updatedAt: "2026-11-15T00:00:00.000Z",
+        settingsJson: { schemaVersion: 1, settings: { method: "printing_solid" } },
+    });
+    console.error("server-esm-boot: CNC job accepted a print design");
+    process.exit(1);
+} catch (err) {
+    cncRefusal = err instanceof Error ? err.message : String(err);
+}
+if (resolutionFailure.test(cncRefusal) || !cncRefusal.includes("Print orders are not CNC G-code")) {
+    console.error("server-esm-boot: CNC mill job did not load", cncRefusal);
+    process.exit(1);
+}
+console.log("server-esm-boot: ok cnc mill job");

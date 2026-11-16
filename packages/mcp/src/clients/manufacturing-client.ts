@@ -41,6 +41,9 @@ export type OrthocadMcpTrpcProxy = {
         generateCentralFabStl: {
             mutate: (input: { designId: string; side: "left" | "right" }) => Promise<Record<string, unknown>>;
         };
+        generateCncGcode: {
+            mutate: (input: { designId: string }) => Promise<Record<string, unknown>>;
+        };
         createSavedDesign: {
             mutate: (input: {
                 externalOrderId: string;
@@ -115,6 +118,15 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
          */
         generateCentralFabStl(input: { designId: string; side: "left" | "right" }) {
             return trpc.manufacturing.generateCentralFabStl.mutate(input);
+        },
+
+        /**
+         * Mill one pair CNC file from a saved design.
+         * Returns `{ productionId, status, sides, fileExtension }`. No G-code bytes.
+         * Call site: vertex/server/src/routers/manufacturing.ts generateCncGcode.
+         */
+        generateCncGcode(input: { designId: string }) {
+            return trpc.manufacturing.generateCncGcode.mutate(input);
         },
 
         /**

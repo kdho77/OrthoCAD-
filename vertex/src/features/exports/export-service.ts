@@ -21,8 +21,8 @@ import {
     regionalSliceDecision,
 } from "@/features/exports/vertexslice-regional-model";
 import { canExport, TOKEN_COST } from "@/features/licensing/license";
-import { workpiecesFromDesign } from "@/lib/cnc/compose";
-import { generateCncJob } from "@/lib/cnc/export";
+import { buildMillCncGcode } from "@/lib/cnc/mill-job";
+import { cncSidesForOrder, isMilledOrder } from "@/lib/cnc/order-sides";
 import type { MillingProfile } from "@/lib/cnc/types";
 import {
     buildExportGlb,
@@ -116,16 +116,7 @@ export type GrindingStyleInput = GrindingStyle;
 /** Print STL, 3MF, GLB, and print G-code are refused for a milling order. */
 export const MILLED_ORDER_PRINT_REASON = "Milled orders export an L+R CNC file only";
 
-export function isMilledOrder(design: DesignState): boolean {
-    return design.method === "milling_3axis";
-}
-
-/** A milled order always mills every foot on the order. The active-foot toggle does not apply. */
-export function cncSidesForOrder(design: DesignState, requested: Side[]): Side[] {
-    if (!isMilledOrder(design)) return requested;
-    const sides = orderDownloadSides(design);
-    return sides.length > 0 ? sides : requested;
-}
+export { cncSidesForOrder, isMilledOrder };
 
 function refuseMilledPrint(design: DesignState): ExportOutcome | null {
     if (!isMilledOrder(design)) return null;
@@ -391,30 +382,28 @@ export async function exportGlb(side: Side): Promise<ExportOutcome> {
 export async function exportCncGcode(sides: Side[], profile: MillingProfile): Promise<ExportOutcome> {
     if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
     const { design } = useDesignStore.getState();
-    const millSides = cncSidesForOrder(design, sides);
     const before = JSON.stringify(design);
-    const cncExt = (profile.fileExtension || ".gcode").replace(/^\./, "");
-    const filename = userExportFilename({
-        sides: millSides.length > 1 ? millSides : (millSides[0] ?? "left"),
-        ext: cncExt,
-        material: DEFAULT_APEX_PRINT_MATERIAL_ID,
-    });
     try {
-        const parts = await workpiecesFromDesign(design, millSides, profile);
-        if (parts.length === 0) {
-            return { ok: false, reason: "No insole geometry to mill" };
-        }
-        const placements = useMillingProfileStore.getState().placements;
-        const job = generateCncJob(profile, parts, { placements });
+        const job = await buildMillCncGcode({
+            design,
+            profile,
+            placements: useMillingProfileStore.getState().placements,
+            requestedSides: sides,
+        });
         const after = JSON.stringify(useDesignStore.getState().design);
         if (after !== before) {
             return { ok: false, reason: "CNC export mutated design state" };
         }
+        const filename = userExportFilename({
+            sides: job.sides.length > 1 ? job.sides : (job.sides[0] ?? "left"),
+            ext: job.fileExtension.replace(/^\./, ""),
+            material: DEFAULT_APEX_PRINT_MATERIAL_ID,
+        });
         const blob = new Blob([job.gcode], { type: "text/plain" });
         downloadBlob(blob, filename);
-        const auth = await authorize("gcode", millSides[0] ?? "left", filename);
+        const auth = await authorize("gcode", job.sides[0] ?? "left", filename);
         if (!auth.ok) return { ok: false, reason: auth.reason };
-        recordExport(`CNC G-code ${millSides.join("+")} · ${profile.name}`);
+        recordExport(`CNC G-code ${job.sides.join("+")} · ${profile.name}`);
         return {
             ok: true,
             filename,

@@ -95,6 +95,13 @@ export const generateCentralFabStlInputSchema = z
     })
     .strict();
 
+/** One CNC file for a saved milled design. Default Idaho profile, `.gcode`. */
+export const generateCncGcodeInputSchema = z
+    .object({
+        design_id: z.string().uuid(),
+    })
+    .strict();
+
 export const getProductionInputSchema = z.object({
     production_id: z.string().uuid(),
 });
@@ -382,6 +389,17 @@ export const MCP_TOOL_DEFINITIONS = [
             "Does not write an order status. Belt G-code is unchanged. " +
             "Auth: CAD-operator key, manufacturing:generate.",
         inputSchema: generateCentralFabStlInputSchema,
+    },
+    {
+        name: "generate_cnc_gcode",
+        description:
+            "Pair CNC milling G-code from a saved milled design. One file for the order (L+R when both feet are on the order, one foot when the order is single-sided), " +
+            "the same bytes as the web Mill export with the default Idaho machine profile and the .gcode extension. " +
+            "Returns one production_id and status. The server builds the toolpath after that response. " +
+            "Poll get_production. Download with get_export_download only after succeeded. " +
+            "No G-code bytes in this response. Print and belt designs are refused. " +
+            "A pair file is one production (side is empty). Auth: CAD-operator key, manufacturing:generate.",
+        inputSchema: generateCncGcodeInputSchema,
     },
     {
         name: "get_production",

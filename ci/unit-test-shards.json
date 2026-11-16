@@ -217,6 +217,7 @@
                 "vertex/print-bridge/apply-update.test.ts",
                 "vertex/print-bridge/lan-discovery.test.ts",
                 "vertex/server/src/context.test.ts",
+                "vertex/server/src/lib/cnc-mill-gcode.test.ts",
                 "vertex/server/src/lib/dogfood-order-auto-bind.test.ts",
                 "vertex/server/src/lib/finalized-mesh-runner.test.ts",
                 "vertex/server/src/lib/production-jobs.dispatch.test.ts",
@@ -267,6 +268,7 @@
         {
             "index": 5,
             "files": [
+                "packages/mcp/test/cnc-gcode.test.ts",
                 "packages/mcp/test/persist-saved-design-snapshot.test.ts",
                 "tests/apex-move-standard-flexible.test.ts",
                 "tests/cnc/belt-phase-b-pitch.test.ts",

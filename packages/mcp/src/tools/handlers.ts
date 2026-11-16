@@ -19,6 +19,7 @@ import {
     buildDesignExportedPayloadInputSchema,
     createSavedDesignInputSchema,
     generateCentralFabStlInputSchema,
+    generateCncGcodeInputSchema,
     generateGcodeInputSchema,
     getDesignInputSchema,
     getDesignParamsInputSchema,
@@ -433,6 +434,41 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                 throw new Error("Central-fab pair did not produce both feet");
             }
             return { ok: true, format: "stl", files };
+        }
+        case "generate_cnc_gcode": {
+            const input = generateCncGcodeInputSchema.parse(args);
+            const manufacturing =
+                deps.manufacturing ??
+                (await import("../clients/manufacturing-client.js")).createManufacturingClient({
+                    trpcUrl: deps.config.trpcUrl,
+                    cadOperatorKey: requireCadOperatorKey(deps.config),
+                });
+            assertToolNotHeld(input.design_id);
+            const result = await manufacturing.generateCncGcode({ designId: input.design_id });
+            const status =
+                typeof result.status === "string" && PRODUCTION_STATUSES.has(result.status)
+                    ? result.status
+                    : null;
+            if (!status) throw new Error("CNC G-code did not return a production status");
+            const sideList = result.sides;
+            const sides = Array.isArray(sideList)
+                ? sideList.filter((side): side is "left" | "right" => side === "left" || side === "right")
+                : [];
+            const fileExtension = result.fileExtension === ".gcode" ? ".gcode" : null;
+            if (!fileExtension) throw new Error("CNC G-code did not return the .gcode extension");
+            return {
+                ok: true,
+                format: "gcode",
+                file_extension: fileExtension,
+                sides,
+                files: [
+                    {
+                        production_id: textField(result, "productionId", "production_id"),
+                        status,
+                        sides,
+                    },
+                ],
+            };
         }
         case "get_production": {
             const input = getProductionInputSchema.parse(args);
