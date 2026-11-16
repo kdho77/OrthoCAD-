@@ -7,6 +7,7 @@ import { sideOffsetX } from "@/lib/geometry/layout";
 import { shiftClosedLoopForefoot } from "@/lib/geometry/procedural-wall/modifiers";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
+import { endPatternOnTrim } from "@/lib/geometry/trim-presets";
 import {
     deformTrimlineSection,
     pickTrimlineAnchorIndex,
@@ -18,7 +19,7 @@ import {
 } from "@/lib/geometry/trimline";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
-import { useMeshEditStore } from "@/stores/mesh-edit-store";
+import { resolveActiveTrimline, useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
@@ -48,10 +49,14 @@ export function BottomPatternEditTools() {
 function BottomPatternSideRow({ side }: { side: Side }) {
     const editMode = useMeshEditStore((s) => s.editMode);
     const session = useMeshEditStore((s) => s.bottomPatternEdit);
+    const trimSession = useMeshEditStore((s) => s.trimlineEdit);
+    const design = useDesignStore((s) => s.design);
     const beginEdit = useMeshEditStore((s) => s.beginBottomPatternEdit);
     const stored = useBottomPatternStore((s) => s.patterns[side] ?? null);
     const isEditing = editMode === "edit-bottom-pattern" && session?.side === side;
-    const curve = isEditing && session ? session.draft : stored;
+    const raw = isEditing && session ? session.draft : stored;
+    const trim = resolveActiveTrimline(side, design, trimSession);
+    const curve = raw ? endPatternOnTrim(raw, trim) : null;
     if (!curve || curve.points.length < 4) return null;
 
     return (

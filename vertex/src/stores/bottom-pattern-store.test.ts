@@ -2,6 +2,8 @@
 
 import { describe, expect, test } from "@rstest/core";
 import * as THREE from "three";
+import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-id";
+import { useBaseOutlineStore } from "./base-outline-store";
 import { useBottomPatternStore } from "./bottom-pattern-store";
 import { useDesignStore } from "./design-store";
 import { useMeshEditStore } from "./mesh-edit-store";
@@ -34,6 +36,16 @@ describe("bottom pattern store", () => {
         useMeshEditStore.getState().beginBottomPatternEdit("left");
         expect(useMeshEditStore.getState().editMode).toBe("edit-bottom-pattern");
         expect(useMeshEditStore.getState().trimlineEdit).toBeNull();
+        useBaseOutlineStore.getState().setOutline(`${SAMPLE_TOP_ASSET_ID}:left:p`, {
+            points: [
+                new THREE.Vector3(0, -20, 0),
+                new THREE.Vector3(80, -28, 0),
+                new THREE.Vector3(160, -12, 0),
+                new THREE.Vector3(160, 24, 0),
+                new THREE.Vector3(80, 32, 0),
+                new THREE.Vector3(0, 18, 0),
+            ],
+        });
         useMeshEditStore.getState().beginTrimlineEdit("left");
         expect(useMeshEditStore.getState().editMode).toBe("edit-trimline");
         expect(useMeshEditStore.getState().bottomPatternEdit).toBeNull();

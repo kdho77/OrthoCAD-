@@ -33,6 +33,7 @@ rs.mock("@/stores/mesh-edit-store", () => ({
             getActiveDraftTrimline: mockDraftTrim,
         }),
     },
+    resolveActiveTrimline: () => mockDraftTrim(),
 }));
 rs.mock("@/stores/bottom-pattern-store", () => ({
     useBottomPatternStore: { getState: () => ({ getPattern: mockStoredPattern }) },

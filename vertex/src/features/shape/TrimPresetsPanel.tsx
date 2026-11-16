@@ -1,17 +1,16 @@
 import { PanelHeading } from "@/components/clinical/PanelHeading";
 import { useActiveFootSide } from "@/lib/clinical/active-foot-side";
-import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
-import { buildTrimPresetCurve, TRIM_PRESET_LABELS } from "@/lib/geometry/trim-presets";
+import { TRIM_PRESET_LABELS } from "@/lib/geometry/trim-presets";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
-import { leaveOutlineEdit, useMeshEditStore } from "@/stores/mesh-edit-store";
+import { curveForTrimPreset, leaveOutlineEdit, useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { TrimPresetId } from "@/types";
 
 const PRESETS: Exclude<TrimPresetId, "custom">[] = ["full", "sulcus", "met_head"];
 
 const TRIM_INFO =
     "Distal AP cut at clinical landmark (±3 mm). Preview in the viewer, then Done or Cancel. " +
-    "When L+R are linked, confirming applies the same outline to both feet.";
+    "When L+R are linked, confirming cuts both feet at that landmark.";
 
 export function TrimPresetsPanel() {
     const design = useDesignStore((s) => s.design);
@@ -19,21 +18,15 @@ export function TrimPresetsPanel() {
     const linked = design.corrections.linked;
 
     const beginTrimlineEditWithDraft = useMeshEditStore((s) => s.beginTrimlineEditWithDraft);
-    const getTrimlineForSide = useMeshEditStore((s) => s.getTrimlineForSide);
 
-    const layout = insoleLayoutFromDesign(design);
     const activePreset = design.trimPreset?.[activeFoot];
 
     const previewPreset = (preset: Exclude<TrimPresetId, "custom">) => {
         const mode = useMeshEditStore.getState().editMode;
         if (mode === "edit-bottom-pattern" && !leaveOutlineEdit({ promptIfDirty: true })) return;
-        const base = getTrimlineForSide(activeFoot);
-        const draft = buildTrimPresetCurve(preset, {
-            lengthMm: layout.lengthMm,
-            widthMm: layout.widthMm,
-            baseCurve: base,
-        });
-        beginTrimlineEditWithDraft(activeFoot, draft, preset);
+        const curve = curveForTrimPreset(activeFoot, preset);
+        if (!curve || curve.points.length < 4) return;
+        beginTrimlineEditWithDraft(activeFoot, curve, preset);
     };
 
     return (

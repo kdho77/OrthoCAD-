@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { endPatternOnTrim } from "@/lib/geometry/trim-presets";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import { curveToPolyPoints } from "@/stores/bottom-pattern-store";
 import type { PolyPoint } from "./curves";
@@ -13,10 +14,13 @@ import { hashPatternPoints } from "./preview-loft-ui";
 export function resolveLiveBottomPattern(input: {
     draft?: TrimlineCurve | null;
     stored?: TrimlineCurve | null;
+    /** Top trim. The pattern's distal end is pulled onto this curve. Null leaves it unchanged. */
+    trim?: TrimlineCurve | null;
 }): PolyPoint[] | null {
     const live = input.draft ?? input.stored;
     if (!live?.points?.length) return null;
-    return curveToPolyPoints(live);
+    const ended = input.trim ? endPatternOnTrim(live, input.trim) : live;
+    return curveToPolyPoints(ended);
 }
 
 /** True when the live pattern no longer matches the hash baked into the last solid. */

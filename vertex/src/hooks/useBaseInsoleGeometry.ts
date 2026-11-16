@@ -75,7 +75,7 @@ import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-wi
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { textMarkingHash } from "@/lib/geometry/text-marking/hash";
-import { clipGeometryToOutline, extractMeshOutline, getDesignTrimline } from "@/lib/geometry/trimline";
+import { clipGeometryToOutline, extractMeshOutline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured } from "@/lib/trpc";
 import { useBaseBoundsStore } from "@/stores/base-bounds-store";
@@ -83,7 +83,7 @@ import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
-import { useMeshEditStore } from "@/stores/mesh-edit-store";
+import { resolveActiveTrimline, useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { useScanStore } from "@/stores/scan-store";
@@ -161,6 +161,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const bottomPattern = useBottomPatternStore((s) => s.patterns[side]);
     const generatedPatternKey = useBottomPatternStore((s) => s.generatedKey[side]);
     const bottomPatternEdit = useMeshEditStore((s) => s.bottomPatternEdit);
+    const trimlineEdit = useMeshEditStore((s) => s.trimlineEdit);
     const retryNonce = usePreviewLoftStatusStore((s) => s.retryNonce);
     const printLoftEpoch = usePreviewLoftStatusStore((s) => s.printLoftEpoch);
     const loftCancelled = usePreviewLoftStatusStore((s) => s.cancelled);
@@ -563,8 +564,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             // Pattern stays anatomical. The overlay adds the export shift while the slider moves.
             const patternKey = `${autoPatternKey(isMirroredForLoad, design.pattern)}:hw${heelW.toFixed(2)}:w${widthId}`;
             const zeroField = fieldWithoutForefoot(field, foreW);
-            const liveTrim =
-                useMeshEditStore.getState().getActiveDraftTrimline(side) ?? getDesignTrimline(design, side);
+            const liveTrim = resolveActiveTrimline(side);
             const cacheKey = forefootViewerCacheKey({
                 side,
                 mirrored: isMirroredForLoad,
@@ -661,9 +661,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     try {
                         await yieldToMain();
                         if (session.cancelled) return;
-                        const draftTrimForPattern = useMeshEditStore.getState().getActiveDraftTrimline(side);
-                        const committedTrimForPattern = getDesignTrimline(design, side);
-                        const patternTrim = draftTrimForPattern ?? committedTrimForPattern;
+                        const patternTrim = resolveActiveTrimline(side);
                         let patternTop = raw;
                         try {
                             patternTop = await composeViewerPrintSolidTop({
@@ -718,6 +716,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 const livePts = resolveLiveBottomPattern({
                     draft,
                     stored: useBottomPatternStore.getState().getPattern(side),
+                    trim: resolveActiveTrimline(side),
                 });
                 if (!shouldLoftProceduralViewer(clinicalStep, wallModel)) {
                     setElementReference(null);
@@ -728,9 +727,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     }
                     await yieldToMain();
                     if (session.cancelled) return;
-                    const draftTrim = useMeshEditStore.getState().getActiveDraftTrimline(side);
-                    const committedTrim = getDesignTrimline(design, side);
-                    const printTrim = draftTrim ?? committedTrim;
+                    const printTrim = resolveActiveTrimline(side);
                     let modified = raw;
                     try {
                         modified = await composeViewerPrintSolidTop({
@@ -833,9 +830,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     else setLoftPhase(side, "ready", "Pattern edited — solid is stale");
                     return;
                 }
-                const draftTrim = useMeshEditStore.getState().getActiveDraftTrimline(side);
-                const committedTrim = getDesignTrimline(design, side);
-                const printTrim = draftTrim ?? committedTrim;
+                const printTrim = resolveActiveTrimline(side);
                 const loftKey = proceduralLoftReuseKey({
                     side,
                     wallStyle,
@@ -1040,9 +1035,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         // is active for this side. This wires the deforming perimeter into the
         // rendered base mesh during drag (production editing requirement).
         // Defer full clip during slider/gizmo scrub (idle + trimline still clip).
-        const draft = useMeshEditStore.getState().getActiveDraftTrimline(side);
-        const committed = getDesignTrimline(design, side);
-        const activeForClip = draft ?? committed;
+        const activeForClip = resolveActiveTrimline(side);
         let display: BufferGeometry = modified;
         if (activeForClip && !fastPreview) {
             display = clipGeometryToOutline(modified, activeForClip);
@@ -1086,6 +1079,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         bottomPattern,
         generatedPatternKey,
         bottomPatternEdit,
+        trimlineEdit,
         retryNonce,
         printLoftEpoch,
         loftCancelled,

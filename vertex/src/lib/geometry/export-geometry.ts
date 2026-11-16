@@ -36,7 +36,7 @@ import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline
 import { useAfoStore } from "@/stores/afo-store";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
-import { useMeshEditStore } from "@/stores/mesh-edit-store";
+import { resolveActiveTrimline, useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, ProductionMethod, Side } from "@/types";
 
 /** Export routing: manufacturing and preview STL both use mesh-close. */
@@ -85,10 +85,11 @@ function proceduralExportRequest(design: DesignState, side: Side) {
             side,
             field,
             viewer: viewer ?? {},
-            trimline: edits.getActiveDraftTrimline(side) ?? getDesignTrimline(design, side),
+            trimline: resolveActiveTrimline(side),
             bottomPattern: resolveLiveBottomPattern({
                 draft: edits.getActiveDraftBottomPattern(side),
                 stored: useBottomPatternStore.getState().getPattern(side),
+                trim: resolveActiveTrimline(side),
             }),
         }),
         mirrored,
