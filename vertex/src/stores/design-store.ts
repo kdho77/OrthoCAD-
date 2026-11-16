@@ -40,6 +40,7 @@ import {
     convertSizingToSystem,
     DEFAULT_SHOE_SIZE_SYSTEM,
     DEFAULT_US_MEN_SIZE,
+    insoleLayoutForDesignSide,
     insoleLayoutForFootLengthMm,
     insoleLayoutForUkSize,
     insoleLayoutForUsMenSize,
@@ -49,6 +50,7 @@ import {
     normalizeUkSize,
     normalizeUsMenSize,
     type ShoeSizeSystem,
+    usMenSizeForSide,
     usMenToUk,
 } from "@/lib/geometry/shoe-size";
 import { normalizeShoeWidth, type ShoeWidthId } from "@/lib/geometry/shoe-width";
@@ -161,6 +163,42 @@ function scaleDesignToLayout(
         trimlines = {
             left: scalePts(trimlines.left),
             right: scalePts(trimlines.right),
+        };
+    }
+
+    return {
+        ...design,
+        ...sizingPatch,
+        elements,
+        trimlines,
+    };
+}
+
+/** Scale one foot's elements and trimline when only that side's footprint size changes. */
+function scaleDesignSideToLayout(
+    design: DesignState,
+    side: Side,
+    next: ReturnType<typeof insoleLayoutForDesignSide>,
+    sizingPatch: Partial<DesignState>,
+): DesignState {
+    const prev = insoleLayoutForDesignSide(design, side);
+    const sx = next.lengthMm / prev.lengthMm;
+    const sy = next.widthMm / prev.widthMm;
+    const scaleNeeded = Math.abs(sx - 1) > 1e-9 || Math.abs(sy - 1) > 1e-9;
+
+    const elements = scaleNeeded
+        ? design.elements.map((el) =>
+              el.side === side ? { ...el, position: { x: el.position.x * sx, y: el.position.y * sy } } : el,
+          )
+        : design.elements;
+
+    let trimlines = design.trimlines;
+    if (scaleNeeded && trimlines) {
+        const scalePts = (pts: { x: number; y: number; z: number }[] | undefined) =>
+            pts?.map((p) => ({ ...p, x: p.x * sx, y: p.y * sy }));
+        trimlines = {
+            left: side === "left" ? scalePts(trimlines.left) : trimlines.left,
+            right: side === "right" ? scalePts(trimlines.right) : trimlines.right,
         };
     }
 
@@ -520,7 +558,11 @@ export interface DesignStore {
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
     /** Change US shoe size and auto-scale footprint, trimlines, and element placement. */
-    setUsShoeSize: (menSize: number) => void;
+    setUsShoeSize: (menSize: number, side?: Side) => void;
+    /** Lock (one size) or unlock (per-foot US men's sizes). Re-lock uses the left foot size. */
+    setShoeSizesLinked: (linked: boolean) => void;
+    /** When the patient file has split sizes, open setup unlocked with chart L/R values. */
+    hydrateSetupShoeFromClientChart: (chart: import("../../shared/client-files").ShoeChart) => void;
     /** Switch size system (US / UK / mm), converting the current footprint length. */
     setShoeSizeSystem: (system: ShoeSizeSystem) => void;
     /** Change UK shoe size and auto-scale. */
@@ -768,17 +810,87 @@ export const useDesignStore = create<DesignStore>()(
                     };
                 }),
 
-            setUsShoeSize: (menSize) =>
+            setUsShoeSize: (menSize, side) =>
                 set((s) => {
                     const nextSize = normalizeUsMenSize(menSize);
+                    const linked = s.design.shoeSizesLinked !== false;
+                    if (!linked && side) {
+                        const next = insoleLayoutForUsMenSize(nextSize);
+                        const bySide = {
+                            left: usMenSizeForSide(s.design, "left"),
+                            right: usMenSizeForSide(s.design, "right"),
+                            [side]: nextSize,
+                        };
+                        return {
+                            design: scaleDesignSideToLayout(s.design, side, next, {
+                                sizeSystem: "us",
+                                usMenSize: s.design.usMenSize,
+                                usMenSizeBySide: bySide,
+                                shoeSizesLinked: false,
+                                ukSize: usMenToUk(bySide.left),
+                                footLengthMm: next.footLengthMm,
+                            }),
+                        };
+                    }
                     const next = insoleLayoutForUsMenSize(nextSize);
                     return {
                         design: scaleDesignToLayout(s.design, next, {
                             sizeSystem: "us",
                             usMenSize: nextSize,
+                            shoeSizesLinked: true,
+                            usMenSizeBySide: { left: nextSize, right: nextSize },
                             ukSize: usMenToUk(nextSize),
                             footLengthMm: next.footLengthMm,
                         }),
+                    };
+                }),
+
+            setShoeSizesLinked: (linked) =>
+                set((s) => {
+                    if (linked) {
+                        const leftSize = normalizeUsMenSize(
+                            s.design.usMenSizeBySide?.left ?? s.design.usMenSize ?? DEFAULT_US_MEN_SIZE,
+                        );
+                        const next = insoleLayoutForUsMenSize(leftSize);
+                        return {
+                            design: scaleDesignToLayout(s.design, next, {
+                                sizeSystem: "us",
+                                usMenSize: leftSize,
+                                shoeSizesLinked: true,
+                                usMenSizeBySide: { left: leftSize, right: leftSize },
+                                ukSize: usMenToUk(leftSize),
+                                footLengthMm: next.footLengthMm,
+                            }),
+                        };
+                    }
+                    const base = normalizeUsMenSize(s.design.usMenSize ?? DEFAULT_US_MEN_SIZE);
+                    const left = normalizeUsMenSize(s.design.usMenSizeBySide?.left ?? base);
+                    const right = normalizeUsMenSize(s.design.usMenSizeBySide?.right ?? base);
+                    return {
+                        design: {
+                            ...s.design,
+                            shoeSizesLinked: false,
+                            usMenSizeBySide: { left, right },
+                        },
+                    };
+                }),
+
+            hydrateSetupShoeFromClientChart: (chart) =>
+                set((s) => {
+                    if (!chart.shoeSizesSplit) return s;
+                    if (s.design.shoeSizesLinked === false) return s;
+                    const left = normalizeUsMenSize(chart.shoeSizeLeftUs);
+                    const right = normalizeUsMenSize(chart.shoeSizeRightUs);
+                    return {
+                        design: {
+                            ...s.design,
+                            sizeSystem: "us",
+                            usMenSize: normalizeUsMenSize(chart.shoeSizeUs),
+                            shoeSizesLinked: false,
+                            usMenSizeBySide: { left, right },
+                            ukSize: usMenToUk(left),
+                            footLengthMm: insoleLayoutForUsMenSize(left).footLengthMm,
+                        },
                     };
                 }),
 

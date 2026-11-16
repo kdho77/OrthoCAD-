@@ -442,6 +442,9 @@ export interface DesignState {
      * Absent ⇒ Men's 9 (260 × 95 mm reference template).
      */
     usMenSize?: number;
+    /** When false, left and right use `usMenSizeBySide` (setup shoe-size unlock). */
+    shoeSizesLinked?: boolean;
+    usMenSizeBySide?: { left?: number; right?: number };
     /** UK adult shoe size (half steps). Used when `sizeSystem` is `"uk"`. */
     ukSize?: number;
     /** Foot length in mm (Mondopoint-style). Used when `sizeSystem` is `"mm"`. */
