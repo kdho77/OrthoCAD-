@@ -58,6 +58,12 @@ export const generateGcodeInputObjectSchema = z.object({
      * returns a question for the user and does not slice.
      */
     hardness: z.string().max(40).optional(),
+    /**
+     * Saved-design only. When true, do not reuse a succeeded production for the same design, foot,
+     * and preset; enqueue a fresh slice (for example after a slicer fix or design change).
+     * In-flight productions are still reused so concurrent calls do not duplicate work.
+     */
+    force_new_slice: z.boolean().optional(),
 });
 
 export const generateGcodeInputSchema = generateGcodeInputObjectSchema.superRefine((value, ctx) => {
@@ -375,6 +381,8 @@ export const MCP_TOOL_DEFINITIONS = [
             "Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. " +
             "The server lofts and slices after that response. Poll get_production. Download with get_export_download only after succeeded. " +
             "A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset. " +
+            "Set force_new_slice to true (saved-design only) after a slicer fix or design change to enqueue a fresh slice " +
+            "without reusing a succeeded production; in-flight work is still reused. " +
             "No STL deliverable and no G-code bytes. Omitting side enqueues both feet. " +
             "Legacy mode still calls manufacturing.generateSolid → Python /manufacture with stl_storage_key. " +
             "PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck. " +

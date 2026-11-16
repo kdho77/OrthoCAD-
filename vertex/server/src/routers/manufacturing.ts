@@ -92,6 +92,8 @@ const manufactureInputSchema = z.object({
      */
     regional3mfStorageKey: z.string().min(1).max(500).optional(),
     expectedRegionCount: z.number().int().min(1).max(64).optional(),
+    /** Dogfood saved-design belt G-code: start a new slice even when a succeeded production exists. */
+    forceNewSlice: z.boolean().optional(),
 });
 
 const uploadStlInputSchema = z.object({
@@ -343,6 +345,7 @@ export const manufacturingRouter = router({
                             patientName: input.patientName,
                             hardness: input.hardness,
                             material: input.material,
+                            forceNewSlice: input.forceNewSlice,
                         },
                     });
                 } catch (error) {

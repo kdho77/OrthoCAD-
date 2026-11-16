@@ -103,6 +103,13 @@ export interface CadProductionStore {
     insert(row: CadProductionRow): Promise<CadProductionRow>;
     findById(id: string): Promise<CadProductionRow | null>;
     findByKey(idempotencyKey: string): Promise<CadProductionRow | null>;
+    findInFlightByFingerprint(
+        designId: string,
+        side: CadFootSide,
+        presetId: string,
+        settingsFingerprint: string,
+        now: Date,
+    ): Promise<CadProductionRow | null>;
     updateIf(
         id: string,
         predicate: (row: CadProductionRow) => boolean,
@@ -133,6 +140,14 @@ export function decideClaim(existing: CadProductionRow | null, now: Date): "inse
     if (existing.status === "failed") return "rerun";
     if (isLeaseExpired(existing, now)) return "rerun";
     return "reuse";
+}
+
+export function freshSliceIdempotencyKey(canonicalKey: string): string {
+    return `${canonicalKey}:fresh:${randomUUID()}`;
+}
+
+function isInFlight(row: CadProductionRow, now: Date): boolean {
+    return (row.status === "pending" || row.status === "running") && !isLeaseExpired(row, now);
 }
 
 function leaseDeadline(now: Date): Date {
@@ -166,17 +181,40 @@ export async function claimProduction(
     store: CadProductionStore,
     input: CadProductionInsert,
     now: Date,
+    options?: { forceNewSlice?: boolean },
 ): Promise<{ row: CadProductionRow; run: boolean }> {
-    const existing = await store.findByKey(input.idempotencyKey);
+    const forceNewSlice = options?.forceNewSlice === true;
+    let claimInput = input;
+    if (forceNewSlice) {
+        const canonical = await store.findByKey(input.idempotencyKey);
+        if (canonical && isInFlight(canonical, now)) {
+            return { row: canonical, run: false };
+        }
+        const inFlight = await store.findInFlightByFingerprint(
+            input.designId,
+            input.side,
+            input.presetId,
+            input.settingsFingerprint,
+            now,
+        );
+        if (inFlight) {
+            return { row: inFlight, run: false };
+        }
+        if (canonical?.status === "succeeded") {
+            claimInput = { ...input, idempotencyKey: freshSliceIdempotencyKey(input.idempotencyKey) };
+        }
+    }
+
+    const existing = await store.findByKey(claimInput.idempotencyKey);
     if (decideClaim(existing, now) === "insert") {
         try {
-            const row = await store.insert(newPending(input, now));
+            const row = await store.insert(newPending(claimInput, now));
             return { row, run: true };
         } catch (error) {
             if (!(error instanceof UniqueIdempotencyError)) throw error;
         }
     }
-    const current = existing ?? (await store.findByKey(input.idempotencyKey));
+    const current = existing ?? (await store.findByKey(claimInput.idempotencyKey));
     if (!current) throw new Error("idempotency claim failed");
     if (decideClaim(current, now) === "reuse") return { row: current, run: false };
     const failedRetry = current.status === "failed";
@@ -718,8 +756,11 @@ export async function beginCadOperatorProduction(args: {
     schedule: (work: Promise<void>) => void;
     preflight?: () => Promise<void>;
     execute: (row: CadProductionRow) => Promise<void>;
+    forceNewSlice?: boolean;
 }): Promise<{ productionId: string; status: CadProductionStatus; side: CadFootSide | null }> {
-    const claimed = await claimProduction(args.store, args.insert, args.now);
+    const claimed = await claimProduction(args.store, args.insert, args.now, {
+        forceNewSlice: args.forceNewSlice,
+    });
     if (!claimed.run) {
         const visible = (await expireStaleProduction(args.store, claimed.row.id, args.now)) ?? claimed.row;
         return { productionId: visible.id, status: visible.status, side: args.insert.side };
@@ -795,6 +836,23 @@ export class MemoryCadProductionStore implements CadProductionStore {
         return this.lock(() => {
             for (const existing of this.rows.values()) {
                 if (existing.idempotencyKey === idempotencyKey) return cloneRow(existing);
+            }
+            return null;
+        });
+    }
+
+    findInFlightByFingerprint(
+        designId: string,
+        side: CadFootSide,
+        presetId: string,
+        settingsFingerprint: string,
+        now: Date,
+    ): Promise<CadProductionRow | null> {
+        return this.lock(() => {
+            for (const row of this.rows.values()) {
+                if (row.designId !== designId || row.side !== side || row.presetId !== presetId) continue;
+                if (row.settingsFingerprint !== settingsFingerprint) continue;
+                if (isInFlight(row, now)) return cloneRow(row);
             }
             return null;
         });

@@ -85,6 +85,7 @@ export interface CadGenerateRequestInput {
     patientName?: string;
     hardness?: string;
     material?: string;
+    forceNewSlice?: boolean;
 }
 
 function requireStorage() {
@@ -154,6 +155,7 @@ export async function runCadOperatorGenerateRequest(args: {
         store,
         now: now(),
         schedule: args.schedule ?? scheduleCadProduction,
+        forceNewSlice: input.forceNewSlice === true && input.useSavedDesignMesh === true,
         insert: {
             designId: input.designId,
             side: input.side,

@@ -158,6 +158,29 @@ describe("saved-design belt G-code tool", () => {
         expect(result.content[0]?.text).not.toMatch(/prod-left|left\.gcode/);
     });
 
+    test("saved-design generate_gcode forwards force_new_slice to the server", async () => {
+        let forceNewSlice: boolean | undefined;
+        const manufacturing = {
+            generateFromSavedDesign: async (input: { forceNewSlice?: boolean }) => {
+                forceNewSlice = input.forceNewSlice;
+                return { ok: true, productionId: "prod-left", status: "pending" };
+            },
+        } as unknown as ManufacturingClient;
+        const designId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const result = await handleOrthocadTool(
+            "generate_gcode",
+            {
+                use_saved_design: true,
+                design_id: designId,
+                side: "left",
+                force_new_slice: true,
+            },
+            { config, manufacturing },
+        );
+        expect(result.isError).toBeUndefined();
+        expect(forceNewSlice).toBe(true);
+    });
+
     test("saved-design generate_gcode forwards apex_light and the ApexLight Foam alias", async () => {
         const seen: Array<{ material?: string; presetId?: string }> = [];
         const manufacturing = {
