@@ -363,19 +363,17 @@ describe("dogfood order auto-bind", () => {
         expect(source).not.toContain("externalClientId");
     });
 
-    test("an unsupported width does not open a write", async () => {
+    test("xx_wide on the catalog binds like medium and wide", async () => {
         const db = memory();
-        await expect(
-            autoBindDogfoodOrder({
-                externalOrderId: ORDER,
-                store: db.store,
-                verifier: accepting(PERSON, { givenName: "Ada", familyName: "Lovelace" }),
-                now: () => NOW,
-                catalog: { shoe_size: { system: "US_M", size: 10 }, width: "extra_wide" },
-            }),
-        ).rejects.toMatchObject({ code: "integration_width_unsupported" });
-        expect(db.people).toHaveLength(0);
-        expect(db.orders).toHaveLength(0);
+        const result = await autoBindDogfoodOrder({
+            externalOrderId: ORDER,
+            store: db.store,
+            verifier: accepting(PERSON, { givenName: "Ada", familyName: "Lovelace" }),
+            now: () => NOW,
+            catalog: { shoe_size: { system: "US_M", size: 10 }, width: "xx_wide" },
+        });
+        expect(result.createdClient).toBe(true);
+        expect(db.orders[0]?.shoeWidth).toBe("xx_wide");
     });
 });
 

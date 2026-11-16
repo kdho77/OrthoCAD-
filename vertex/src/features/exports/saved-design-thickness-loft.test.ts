@@ -3,11 +3,15 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "@rstest/core";
-import { buildFinalizedFootFromSavedDesign } from "@/features/exports/saved-design-finalized-mesh";
+import {
+    buildFinalizedFootFromSavedDesign,
+    designStateFromSavedSettings,
+} from "@/features/exports/saved-design-finalized-mesh";
 import { binaryStlBounds } from "@/lib/geometry/leader-block";
 import { resetManufacturingSolidCache } from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
 import { resetSampleTopGeometryCache } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
+import { settingsEnvelopeForSave } from "../../../server/src/lib/design-schema";
 import { parseSavedDesignCatalog } from "../../../shared/saved-design-catalog";
 import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot";
 
@@ -27,6 +31,17 @@ afterEach(() => {
 });
 
 describe("saved-design shell thickness loft", () => {
+    test("generate_gcode headless path uses settings.thicknessMm from the envelope", () => {
+        const stored = { system: "US_M" as const, size: 9, left: null, right: null, width: null };
+        const thick = buildSavedDesignSnapshot({
+            stored,
+            catalog: parseSavedDesignCatalog({ thickness_mm: 4 }),
+        });
+        const envelope = settingsEnvelopeForSave(thick.design);
+        expect(designStateFromSavedSettings(envelope).thicknessMm).toBe(4);
+        expect(designStateFromSavedSettings(envelope).paired?.leftThicknessMm).toBe(4);
+    });
+
     test("4 mm shell clearance lifts the solid above the 2 mm default", async () => {
         const stored = { system: "US_M" as const, size: 9, left: null, right: null, width: null };
         const thin = buildSavedDesignSnapshot({ stored, catalog: parseSavedDesignCatalog({}) });

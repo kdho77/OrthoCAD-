@@ -311,9 +311,15 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
         throw new SavedDesignSnapshotError("snapshot lost the shoe size. Refusing to write.");
     }
 
+    const updateData: { settingsJson: Prisma.InputJsonValue; thicknessMm?: number } = {
+        settingsJson: settingsJson as Prisma.InputJsonValue,
+    };
+    if (catalog.thickness_mm !== undefined) {
+        updateData.thicknessMm = built.design.thicknessMm;
+    }
     await args.prisma.design.update({
         where: { id: design.id },
-        data: { settingsJson: settingsJson as Prisma.InputJsonValue },
+        data: updateData,
     });
 
     return {

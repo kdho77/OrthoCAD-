@@ -5,7 +5,9 @@
 
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { readStoredDesignSettings } from "../../../shared/design-settings.js";
 import { assertDogfoodNotHeld } from "../../../shared/dogfood-holds.js";
+import { SHELL_THICKNESS_MM_DEFAULT } from "../../../shared/saved-design-catalog.js";
 import {
     buildSavedDesignSnapshot,
     type SavedDesignSnapshotBuild,
@@ -106,7 +108,7 @@ export interface EstablishVerifiedOrderInput {
      * keeps defaulted provenance and is not rewritten here.
      */
     linkShoeWidth: string;
-    chartWidth: "narrow" | "medium" | "wide";
+    chartWidth: IntegrationLinkWidth;
 }
 
 export type EstablishVerifiedOrderResult =
@@ -210,37 +212,59 @@ export function requireDogfoodExternalOrderId(value: string): string {
     return requireOrderId(value);
 }
 
-const INTEGRATION_LINK_WIDTHS = ["narrow", "medium", "wide"] as const;
+/** Same enum as the MCP saved-design catalog width key. */
+const INTEGRATION_LINK_WIDTHS = [
+    "narrow",
+    "medium",
+    "wide",
+    "extra_narrow",
+    "extra_wide",
+    "xx_wide",
+] as const;
 type IntegrationLinkWidth = (typeof INTEGRATION_LINK_WIDTHS)[number];
 
 /**
- * Thrown before the establishment transaction. extra_narrow and extra_wide
- * stay legal on the human chart and CAD design. They are not integration-link widths.
+ * Thrown before the establishment transaction when the width is outside the
+ * MCP catalog enum. Human chart widths are unchanged on non-integration paths.
  */
 export class IntegrationShoeWidthError extends Error {
     readonly code = "integration_width_unsupported" as const;
 
     constructor() {
         super(
-            "integration_width_unsupported: integration design links accept narrow, medium, or wide. No client or design was written.",
+            "integration_width_unsupported: integration design links accept narrow, medium, wide, extra_narrow, extra_wide, or xx_wide. No client or design was written.",
         );
         this.name = "IntegrationShoeWidthError";
     }
 }
 
+function normalizeIntegrationLinkWidth(width: string): IntegrationLinkWidth | null {
+    const normalized = width.trim().toLowerCase().replace(/\s+/g, "_");
+    return (INTEGRATION_LINK_WIDTHS as readonly string[]).includes(normalized)
+        ? (normalized as IntegrationLinkWidth)
+        : null;
+}
+
 /**
- * Integration establishment only. Omitted width becomes medium. Explicit
- * narrow, medium, and wide pass through. Any other width is refused before
- * a transaction starts. Human chart and CAD acceptance are unchanged.
+ * Integration establishment only. Omitted width becomes medium. Explicit catalog
+ * widths pass through. Any other width is refused before a transaction starts.
  */
 export function integrationLinkShoeWidth(
     width: string,
     source: "prescribed" | "defaulted" = "prescribed",
 ): IntegrationLinkWidth {
     if (source === "defaulted") return "medium";
-    if (width === "narrow" || width === "medium" || width === "wide") return width;
     if (width.trim() === "") return "medium";
+    const normalized = normalizeIntegrationLinkWidth(width);
+    if (normalized) return normalized;
     throw new IntegrationShoeWidthError();
+}
+
+function shellThicknessMmFromEnvelope(settingsJson: unknown): number {
+    const thicknessMm = readStoredDesignSettings(settingsJson)?.thicknessMm;
+    return typeof thicknessMm === "number" && Number.isFinite(thicknessMm)
+        ? thicknessMm
+        : SHELL_THICKNESS_MM_DEFAULT;
 }
 
 function envelopeFor(built: SavedDesignSnapshotBuild): unknown {
@@ -637,6 +661,7 @@ export function prismaDogfoodSavedDesignStore(prisma: PrismaClient): DogfoodSave
                             name: `Insole ${input.externalOrderId}`.slice(0, 120),
                             pattern: "full_contact",
                             method: "printing_solid",
+                            thicknessMm: shellThicknessMmFromEnvelope(input.settingsJson),
                             settingsJson: input.settingsJson as Prisma.InputJsonValue,
                         },
                     });

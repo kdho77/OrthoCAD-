@@ -801,6 +801,7 @@ export function buildSavedDesignSnapshot(input: {
             design.paired.rightThicknessMm = mm;
         }
         paths.push(
+            "settings.thicknessMm",
             "settings.shellThicknessMode",
             "settings.paired.leftThicknessMm",
             "settings.paired.rightThicknessMm",

@@ -90,7 +90,7 @@ describe("persist saved design snapshot", () => {
         });
         expect(updates).toHaveLength(1);
         expect(updates[0]?.where).toEqual({ id: DESIGN_ID });
-        expect(Object.keys(updates[0]?.data ?? {})).toEqual(["settingsJson"]);
+        expect(Object.keys(updates[0]?.data ?? {}).sort()).toEqual(["settingsJson"]);
         expect(result.design_id).toBe(DESIGN_ID);
         expect(result.unmapped_fields).toEqual(["rx_text", "notes", "rigidity"]);
         const settings = readStoredDesignSettings(result.settingsJson);
@@ -453,7 +453,8 @@ describe("persist saved design snapshot", () => {
             buildSnapshot: buildSavedDesignSnapshot,
         });
         expect(updates).toHaveLength(1);
-        expect(Object.keys(updates[0]?.data ?? {})).toEqual(["settingsJson"]);
+        expect(Object.keys(updates[0]?.data ?? {}).sort()).toEqual(["settingsJson", "thicknessMm"]);
+        expect(updates[0]?.data).toMatchObject({ thicknessMm: 4 });
         expect(updates[0]?.data).not.toHaveProperty("method");
         expect(updates[0]?.data).not.toHaveProperty("status");
         const settings = readStoredDesignSettings(result.settingsJson);
