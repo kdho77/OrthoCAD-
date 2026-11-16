@@ -42,6 +42,7 @@ import {
     listCadOperatorProductions,
     readCadOperatorProduction,
     runCadOperatorCentralFabStlRequest,
+    runCadOperatorCncGcodeRequest,
     runCadOperatorGenerateRequest,
 } from "./cad-operator-generate.js";
 import {
@@ -383,6 +384,28 @@ export const manufacturingRouter = router({
                 throw new TRPCError({ code: "FORBIDDEN", message: "CAD-operator credential required" });
             }
             return runCadOperatorCentralFabStlRequest({
+                prisma: ctx.prisma,
+                principal: ctx.cadOperator,
+                ip: ctx.ip,
+                input,
+            });
+        }),
+
+    /**
+     * One pair CNC file for a milled saved design. Does not slice a belt program.
+     * Download the file with getGcodeDownloadUrl after the production succeeds.
+     */
+    generateCncGcode: rateLimitedSessionOrCadProcedure(
+        RATE_LIMITS.export,
+        "manufacturing:generateCncGcode",
+        "manufacturing:generate",
+    )
+        .input(z.object({ designId: z.string().uuid() }))
+        .mutation(async ({ ctx, input }) => {
+            if (!ctx.cadOperator) {
+                throw new TRPCError({ code: "FORBIDDEN", message: "CAD-operator credential required" });
+            }
+            return runCadOperatorCncGcodeRequest({
                 prisma: ctx.prisma,
                 principal: ctx.cadOperator,
                 ip: ctx.ip,

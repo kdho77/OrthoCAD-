@@ -19,6 +19,7 @@ import {
     assertCadOperatorDeliverableKey,
     buildCadOperatorGcodeKey,
     CENTRAL_FAB_STL_PRESET_ID,
+    CNC_GCODE_PRESET_ID,
 } from "../auth/cad-operator.js";
 import { getSupabaseAdmin } from "../context.js";
 import {
@@ -26,6 +27,7 @@ import {
     type CadFootSide,
     type CadProductionStatus,
     CENTRAL_FAB_STL_COST,
+    CNC_GCODE_COST,
     cadOperatorManufacturingIdentity,
     cadVertexSliceSliceTimeoutMs,
     executeCadOperatorProduction,
@@ -38,6 +40,7 @@ import {
 } from "../lib/cad-operator-production.js";
 import { chargeExistingProduction, PrismaCadProductionStore } from "../lib/cad-operator-production-prisma.js";
 import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
+import { buildHeadlessMillCncGcode, prepareHeadlessMillDesign } from "../lib/cnc-mill-runner.js";
 import { downloadManufacturingStl } from "../lib/manufacturing-stl-download.js";
 import {
     archiveManufacturingSourceStl,
@@ -301,7 +304,7 @@ export async function runCadOperatorGenerateRequest(args: {
         outputType: "gcode",
         productionId: started.productionId,
         status: started.status,
-        side: started.side,
+        side: started.side ?? input.side,
     };
 }
 
@@ -467,7 +470,191 @@ export async function runCadOperatorCentralFabStlRequest(args: {
         outputType: "stl",
         productionId: started.productionId,
         status: started.status,
-        side: started.side,
+        side: started.side ?? args.input.side,
+    };
+}
+
+const CNC_FILE_EXTENSION = ".gcode";
+
+function cncIdempotencyKey(designId: string, sides: CadFootSide[], fingerprint: string): string {
+    const sideKey = sides.length === 1 ? sides[0] : "pair";
+    return `cadop:v1:${designId}:${sideKey}:${CNC_GCODE_PRESET_ID}:${fingerprint}`;
+}
+
+/**
+ * One CNC file for the feet on a milled order. Print orders are refused.
+ * The bytes are the browser Mill export (default Idaho profile, `.gcode`).
+ */
+export async function runCadOperatorCncGcodeRequest(args: {
+    prisma: PrismaClient;
+    principal: CadOperatorPrincipal;
+    ip: string | null;
+    input: { designId: string };
+    schedule?: (work: Promise<void>) => void;
+    now?: () => Date;
+}): Promise<{
+    ok: true;
+    outputType: "gcode";
+    productionId: string;
+    status: CadProductionStatus;
+    side: CadFootSide | null;
+    sides: CadFootSide[];
+    fileExtension: string;
+}> {
+    const { row, design } = await loadDogfoodDesign(args.prisma, args.principal, args.input.designId);
+    if (!row) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Design not found" });
+    }
+    if (!readStoredDesignSettings(design.settingsJson)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Design has no saved parameter snapshot" });
+    }
+    const updatedAt =
+        design.updatedAt instanceof Date ? design.updatedAt.toISOString() : String(design.updatedAt);
+    let prepared: Awaited<ReturnType<typeof prepareHeadlessMillDesign>>;
+    try {
+        prepared = await prepareHeadlessMillDesign({
+            id: design.id,
+            pattern: design.pattern,
+            method: design.method,
+            thicknessMm: design.thicknessMm,
+            linked: design.linked,
+            unit: design.unit,
+            createdAt: updatedAt,
+            updatedAt,
+            settingsJson: design.settingsJson,
+        });
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const refused =
+            message === "Print orders are not CNC G-code" || message === "No insole geometry to mill";
+        throw new TRPCError({ code: refused ? "BAD_REQUEST" : "INTERNAL_SERVER_ERROR", message });
+    }
+    const sides = prepared.sides;
+    if (sides.length === 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "No insole geometry to mill" });
+    }
+    const anchor = sides[0] ?? "left";
+    const printRecipe = centralFabRecipe(design.settingsJson);
+    const identity = cadOperatorManufacturingIdentity({
+        designId: args.input.designId,
+        side: anchor,
+        presetId: CNC_GCODE_PRESET_ID,
+        useSavedDesignMesh: true,
+        material: "cnc",
+        beltAngleDeg: 0,
+        layerHeightMm: null,
+        printRecipe,
+        settingsJson: design.settingsJson,
+        stlStorageKey: null,
+        deliverable: "cnc_gcode",
+        millSides: sides,
+    });
+    const storedSide: CadFootSide | null = sides.length === 1 ? (sides[0] ?? null) : null;
+    const fileName = buildExportFilename({
+        firstName: row.client.firstName ?? "",
+        lastName: row.client.lastName ?? "",
+        material: canonicalExportMaterialName("ApexCore"),
+        side: exportSideSuffix(sides),
+        ext: CNC_FILE_EXTENSION,
+    });
+    const store = new PrismaCadProductionStore(args.prisma);
+    const now = args.now ?? (() => new Date());
+    const started = await beginCadOperatorProduction({
+        store,
+        now: now(),
+        schedule: args.schedule ?? scheduleCadProduction,
+        insert: {
+            designId: args.input.designId,
+            side: storedSide,
+            presetId: CNC_GCODE_PRESET_ID,
+            idempotencyKey: cncIdempotencyKey(args.input.designId, sides, identity.fingerprint),
+            settingsFingerprint: identity.fingerprint,
+            beltAngleDeg: 0,
+            layerHeightMm: null,
+            material: "cnc",
+        },
+        preflight: async () => {
+            const admin = requireSupabaseAdmin();
+            await assertActiveLicense(admin, design.ownerId);
+            const balance = await getUserTokenBalance(admin, design.ownerId);
+            if (balance < CNC_GCODE_COST) {
+                throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient export tokens" });
+            }
+        },
+        execute: (production) =>
+            executeCadOperatorProduction({
+                row: production,
+                store,
+                now,
+                materialize: async () => ({ stlStorageKey: "memory", meshFingerprint: null }),
+                slice: async () => {
+                    const milled = await buildHeadlessMillCncGcode(prepared.design);
+                    if (milled.fileExtension !== CNC_FILE_EXTENSION) {
+                        throw new Error("CNC profile extension is not .gcode");
+                    }
+                    return { gcode: milled.gcode, jobId: `cnc_${production.id}` };
+                },
+                uploadGcode: async (gcode) => {
+                    const safeName = fileName.replace(/[^a-zA-Z0-9_.-]/g, "_");
+                    const storageKey = buildCadOperatorGcodeKey(
+                        args.principal.credentialId,
+                        args.input.designId,
+                        `pair-${Date.now()}-${safeName}`,
+                    );
+                    await uploadAsset(
+                        requireStorage(),
+                        storageKey,
+                        Buffer.from(gcode, "utf8"),
+                        "text/plain",
+                        MANUFACTURING_BUCKET,
+                    );
+                    return { storageKey };
+                },
+                charge: async ({ storageKey, jobId, meshFingerprint }) => {
+                    try {
+                        return await chargeExistingProduction(args.prisma, {
+                            userId: design.ownerId,
+                            cost: CNC_GCODE_COST,
+                            productionId: production.id,
+                            designId: args.input.designId,
+                            exportFormat: "gcode",
+                            side: storedSide,
+                            fileName: fileName.replace(/[^a-zA-Z0-9_.-]/g, "_"),
+                            presetId: CNC_GCODE_PRESET_ID,
+                            beltAngleDeg: 0,
+                            layerHeightMm: null,
+                            isGcode: true,
+                            storageKey,
+                            jobId,
+                            ip: args.ip,
+                            metadata: {
+                                kind: "cnc_gcode",
+                                outputType: "gcode",
+                                presetId: CNC_GCODE_PRESET_ID,
+                                fileExtension: CNC_FILE_EXTENSION,
+                                sides,
+                                settingsFingerprint: identity.fingerprint,
+                                cadOperatorCredentialId: args.principal.credentialId,
+                                side: storedSide,
+                                source: "cad_operator_async",
+                                manufacturingFingerprint: meshFingerprint,
+                            },
+                        });
+                    } catch (error) {
+                        mapChargeFailure(error);
+                    }
+                },
+                deleteTemp: async () => {},
+            }),
+    });
+    return {
+        ok: true,
+        outputType: "gcode",
+        productionId: started.productionId,
+        status: started.status,
+        side: storedSide,
+        sides,
+        fileExtension: CNC_FILE_EXTENSION,
     };
 }
 

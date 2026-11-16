@@ -38,6 +38,12 @@ export const CAD_OPERATOR_BELT_ANGLE_DEG = 45;
 /** Production row preset for the central-fab solid. Not a slicer profile. */
 export const CENTRAL_FAB_STL_PRESET_ID = "central-fab-stl";
 
+/**
+ * Production row preset for pair CNC G-code. This is IDAHO_PROFILE.id
+ * (vertex/src/lib/cnc/profile.ts), the Mill export default. Not a slicer profile.
+ */
+export const CNC_GCODE_PRESET_ID = "vertex-lab-idaho-one-side";
+
 export interface CadOperatorCredentialRow {
     id: string;
     revokedAt: string | null;

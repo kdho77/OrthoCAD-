@@ -42,6 +42,9 @@ export const HYBRID_GCODE_COST = 3;
 /** Same token cost as export.authorize format "stl" (vertex/server/src/routers/export.ts). */
 export const CENTRAL_FAB_STL_COST = 1;
 
+/** Same token cost as export.authorize format "gcode" (vertex/server/src/routers/export.ts). */
+export const CNC_GCODE_COST = 2;
+
 export const CAD_PRODUCTION_STATUSES = ["pending", "running", "succeeded", "failed"] as const;
 
 export type CadProductionStatus = (typeof CAD_PRODUCTION_STATUSES)[number];
@@ -71,7 +74,8 @@ export interface CadProductionRow {
 
 export interface CadProductionInsert {
     designId: string;
-    side: CadFootSide;
+    /** Null is one pair file (both feet). A single-foot order stores that foot. */
+    side: CadFootSide | null;
     presetId: string;
     idempotencyKey: string;
     settingsFingerprint: string;
@@ -345,6 +349,9 @@ export function publicProductionError(error: unknown, side?: CadFootSide | null)
         "Invalid manufacturing STL storage key",
         "Invalid central-fab STL storage key",
         "Milled orders are not belt G-code",
+        "Print orders are not CNC G-code",
+        "No insole geometry to mill",
+        "Design has no saved parameter snapshot",
         "Central-fab STL uses the milling solid",
         "Storage not available",
         "Supabase admin client not configured",
@@ -491,8 +498,10 @@ export function cadOperatorManufacturingIdentity(input: {
     printRecipe: unknown;
     settingsJson: unknown;
     stlStorageKey: string | null;
-    /** Set only for the central-fab solid. Omitted keys keep the belt fingerprint. */
-    deliverable?: "central_fab_stl";
+    /** Omitted keys keep the belt fingerprint. */
+    deliverable?: "central_fab_stl" | "cnc_gcode";
+    /** Feet inside one CNC file. Omitted for belt and central-fab. */
+    millSides?: readonly CadFootSide[];
     /** Included only when true, so an off gate keeps today's fingerprint. */
     regional3mf?: boolean;
 }): { fingerprint: string; idempotencyKey: string } {
@@ -511,6 +520,7 @@ export function cadOperatorManufacturingIdentity(input: {
                 settingsJson: input.settingsJson,
                 stlStorageKey: input.useSavedDesignMesh ? null : input.stlStorageKey,
                 ...(input.deliverable ? { deliverable: input.deliverable } : {}),
+                ...(input.millSides ? { millSides: input.millSides } : {}),
                 ...(input.regional3mf ? { regional3mf: true } : {}),
             }),
         )
@@ -708,7 +718,7 @@ export async function beginCadOperatorProduction(args: {
     schedule: (work: Promise<void>) => void;
     preflight?: () => Promise<void>;
     execute: (row: CadProductionRow) => Promise<void>;
-}): Promise<{ productionId: string; status: CadProductionStatus; side: CadFootSide }> {
+}): Promise<{ productionId: string; status: CadProductionStatus; side: CadFootSide | null }> {
     const claimed = await claimProduction(args.store, args.insert, args.now);
     if (!claimed.run) {
         const visible = (await expireStaleProduction(args.store, claimed.row.id, args.now)) ?? claimed.row;
