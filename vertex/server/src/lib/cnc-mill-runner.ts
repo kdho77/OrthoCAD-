@@ -78,11 +78,16 @@ export function installBundledSampleTopFetch(bytes: Uint8Array): void {
 }
 
 async function ensureBrowserParser(): Promise<void> {
-    const target = globalThis as unknown as { DOMParser?: unknown; self?: unknown };
-    if (typeof target.DOMParser === "function") return;
+    const target = globalThis as unknown as {
+        DOMParser?: unknown;
+        ProgressEvent?: unknown;
+        self?: unknown;
+    };
+    if (typeof target.DOMParser === "function" && typeof target.ProgressEvent === "function") return;
     const { Window } = await import("happy-dom");
     const window = new Window();
-    target.DOMParser = window.DOMParser;
+    if (typeof target.DOMParser !== "function") target.DOMParser = window.DOMParser;
+    if (typeof target.ProgressEvent !== "function") target.ProgressEvent = window.ProgressEvent;
     if (!target.self) target.self = globalThis;
 }
 
