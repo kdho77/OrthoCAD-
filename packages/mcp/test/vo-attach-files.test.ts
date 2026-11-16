@@ -120,6 +120,25 @@ describe("shipping attach_files contract", () => {
         expect(payload.vo_attach_files).not.toHaveProperty("status");
     });
 
+    test("sample-top base_asset_id swaps VO side and filename labels", () => {
+        const attached = buildVoAttachFilesHandoff({
+            order_id: orderId,
+            patient_name: "Jane Doe",
+            material: "apex_core",
+            base_asset_id: "sample-top",
+            files: [
+                { side: "left", content_base64: leftGcode, storage_key: "gcode/left.gcode" },
+                { side: "right", content_base64: rightGcode, storage_key: "gcode/right.gcode" },
+            ],
+            now,
+        });
+        expect(attached.vo_attach_files.files.map((file) => file.side)).toEqual(["right", "left"]);
+        expect(attached.vo_attach_files.files.map((file) => file.filename)).toEqual([
+            "Jane_Doe_ApexCore_R.gcode",
+            "Jane_Doe_ApexCore_L.gcode",
+        ]);
+    });
+
     test("the same bytes replay locally and are not a VO dedupe key", () => {
         const input = {
             order_id: orderId,

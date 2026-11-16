@@ -64,6 +64,8 @@ export const generateGcodeInputObjectSchema = z.object({
      * In-flight productions are still reused so concurrent calls do not duplicate work.
      */
     force_new_slice: z.boolean().optional(),
+    /** When `sample-top`, G-code export filenames use physical L/R (not internal laterality). */
+    base_asset_id: z.string().trim().min(1).max(80).optional(),
 });
 
 export const generateGcodeInputSchema = generateGcodeInputObjectSchema.superRefine((value, ctx) => {
@@ -324,6 +326,8 @@ export const prepareVoAttachmentInputSchema = z
         order_id: z.string().uuid(),
         /** CAD provenance only. Not sent; VO would check the design link. */
         design_id: z.string().uuid().optional(),
+        /** When `sample-top`, attach filenames and VO `side` use physical L/R. */
+        base_asset_id: z.string().trim().min(1).max(80).optional(),
         patient_name: z.string().max(200).optional(),
         material: z.string().max(80).optional(),
         files: z.array(attachFileSchema).min(1).max(2),

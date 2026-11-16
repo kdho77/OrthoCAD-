@@ -1,6 +1,8 @@
 import {
     buildExportFilename,
     canonicalExportMaterialName,
+    type ExportFilenameBase,
+    exportSideSuffix,
     parsePatientNameForExport,
 } from "../../../../vertex/shared/export-filename.js";
 import type { IntegrationClient } from "../clients/integration-client.js";
@@ -54,6 +56,7 @@ function mcpGcodeExportFilename(
     patientName: string | undefined,
     material: string | undefined,
     fileNameOverride?: string,
+    base?: ExportFilenameBase | null,
 ): string {
     if (fileNameOverride?.trim()) return fileNameOverride.trim();
     const patient = parsePatientNameForExport(patientName);
@@ -61,7 +64,7 @@ function mcpGcodeExportFilename(
         firstName: patient.firstName,
         lastName: patient.lastName,
         material: canonicalExportMaterialName(material),
-        side: side === "right" ? "R" : "L",
+        side: exportSideSuffix(side, base),
         ext: "gcode",
     });
 }
@@ -309,6 +312,9 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                     throw new Error("Saved-design manufacturing returns G-code only");
                 }
                 const sides = input.side ? [input.side] : (["left", "right"] as const);
+                const exportBase: ExportFilenameBase | null = input.base_asset_id?.trim()
+                    ? { assetId: input.base_asset_id.trim() }
+                    : null;
                 const files: Array<ReturnType<typeof gcodeFileFromResult>> = [];
                 for (const side of sides) {
                     const exportFileName = mcpGcodeExportFilename(
@@ -316,6 +322,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                         input.patient_name,
                         material,
                         input.file_name,
+                        exportBase,
                     );
                     try {
                         const result = await manufacturing.generateFromSavedDesign({
@@ -356,11 +363,15 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
             if (!input.stl_storage_key) {
                 throw new Error("stl_storage_key is required unless use_saved_design");
             }
+            const legacyExportBase: ExportFilenameBase | null = input.base_asset_id?.trim()
+                ? { assetId: input.base_asset_id.trim() }
+                : null;
             const legacyExportFileName = mcpGcodeExportFilename(
                 input.side ?? "left",
                 input.patient_name,
                 material,
                 input.file_name,
+                legacyExportBase,
             );
             const legacy = await manufacturing.generateGcode({
                 designId: input.design_id,
