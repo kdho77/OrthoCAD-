@@ -3,6 +3,13 @@
 import { describe, expect, test } from "@rstest/core";
 import { ShaderLib } from "three";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
+import {
+    AFO_SCAN_BOTTOM_MARGIN_FRAC,
+    AFO_SCAN_TOP_OVERLAY_FRAC,
+    afoScanFramingNdcY,
+} from "@/lib/geometry/afo/landmark-frame";
+import { buildSyntheticLegMesh } from "@/lib/geometry/afo/synthetic-leg";
+import type { CameraView } from "@/stores/design-store";
 import { afoViewportPlacementLayer } from "./afo-scan-markers";
 import {
     AFO_CAST_SURFACE,
@@ -243,5 +250,35 @@ describe("afo scan ui", () => {
         expect(cameraViewForAfoMarker("fibular_head", "left")).toBe("right");
         expect(cameraViewForAfoMarker("navicular", "right")).toBe("right");
         expect(cameraViewForAfoMarker("fibular_head", "right")).toBe("left");
+    });
+
+    test("Stage-2 bottom-anchor framing clears the top overlay on every scan preset", () => {
+        const mesh = buildSyntheticLegMesh(14);
+        const views: CameraView[] = ["front", "back", "left", "right", "bottom", "top"];
+        const bottomNdc = -1 + 2 * AFO_SCAN_BOTTOM_MARGIN_FRAC;
+        const topNdc = 1 - 2 * AFO_SCAN_TOP_OVERLAY_FRAC;
+        for (const view of views) {
+            const { minY, maxY } = afoScanFramingNdcY(mesh, view, 16 / 9, 40);
+            expect(minY, view).toBeGreaterThanOrEqual(bottomNdc - 0.03);
+            expect(minY, view).toBeLessThanOrEqual(bottomNdc + 0.03);
+            expect(maxY, view).toBeLessThanOrEqual(topNdc + 0.04);
+        }
+        const landmarkViews = new Set(
+            [
+                "posterior_calcaneus",
+                "m1_mpj",
+                "m5_mpj",
+                "navicular",
+                "fifth_met_base",
+                "medial_malleolus",
+                "lateral_malleolus",
+                "fibular_head",
+            ].map((id) => cameraViewForAfoMarker(id, "left")),
+        );
+        for (const view of landmarkViews) {
+            const { minY, maxY } = afoScanFramingNdcY(mesh, view, 16 / 9, 40);
+            expect(minY, view).toBeGreaterThanOrEqual(bottomNdc - 0.03);
+            expect(maxY, view).toBeLessThanOrEqual(topNdc + 0.04);
+        }
     });
 });

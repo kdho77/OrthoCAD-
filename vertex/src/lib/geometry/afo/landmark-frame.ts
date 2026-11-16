@@ -1,7 +1,9 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { Matrix4 } from "three";
+import { Matrix4, PerspectiveCamera, Vector3 } from "three";
 import { medialSign } from "@/lib/geometry/handedness";
+import { VIEW_CAMERA_POS, viewCameraUp } from "@/lib/geometry/viewport-side-layout";
+import type { CameraView } from "@/stores/design-store";
 import type { Side } from "@/types";
 import { meshCentroid } from "./mesh-ops";
 import { applyMatrix } from "./orient";
@@ -480,4 +482,132 @@ export function deriveAfoMeasurements(
         shankTiltDeg,
         warnings,
     };
+}
+
+/** Fraction of viewport height reserved at the top for the guided card and tools. */
+export const AFO_SCAN_TOP_OVERLAY_FRAC = 0.22;
+/** Cast bottom sits this fraction above the physical bottom edge (see bottom anchor tests). */
+export const AFO_SCAN_BOTTOM_MARGIN_FRAC = 0.065;
+
+export interface AfoScanViewFraming {
+    target: Vector3;
+    cameraOffset: Vector3;
+}
+
+/** Same Rx(−90°) as AfoMeshes / AfoScanMarkers (mesh mm → viewer world mm). */
+export function afoMeshPointToViewerWorld(p: AfoVec3): Vector3 {
+    return new Vector3(p.x, p.z, -p.y);
+}
+
+export function afoOrientedMeshWorldBounds(mesh: AfoTriMesh): { min: Vector3; max: Vector3 } {
+    const min = new Vector3(Infinity, Infinity, Infinity);
+    const max = new Vector3(-Infinity, -Infinity, -Infinity);
+    const n = (mesh.positions.length / 3) | 0;
+    for (let i = 0; i < n; i++) {
+        const w = afoMeshPointToViewerWorld({
+            x: mesh.positions[i * 3] ?? 0,
+            y: mesh.positions[i * 3 + 1] ?? 0,
+            z: mesh.positions[i * 3 + 2] ?? 0,
+        });
+        min.min(w);
+        max.max(w);
+    }
+    if (n === 0) {
+        min.set(0, 0, 0);
+        max.set(0, 0, 0);
+    }
+    return { min, max };
+}
+
+function afoBoxCorners(min: Vector3, max: Vector3): Vector3[] {
+    return [
+        new Vector3(min.x, min.y, min.z),
+        new Vector3(max.x, min.y, min.z),
+        new Vector3(min.x, max.y, min.z),
+        new Vector3(max.x, max.y, min.z),
+        new Vector3(min.x, min.y, max.z),
+        new Vector3(max.x, min.y, max.z),
+        new Vector3(min.x, max.y, max.z),
+        new Vector3(max.x, max.y, max.z),
+    ];
+}
+
+function ndcYRangeForFraming(
+    view: CameraView,
+    target: Vector3,
+    cameraOffset: Vector3,
+    corners: Vector3[],
+    aspect: number,
+    fovDeg: number,
+): { minY: number; maxY: number } {
+    const cam = new PerspectiveCamera(fovDeg, aspect, 1, 8000);
+    cam.position.copy(target).add(cameraOffset);
+    cam.up.set(...viewCameraUp(view));
+    cam.lookAt(target);
+    cam.updateMatrixWorld(true);
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const c of corners) {
+        const ndc = c.clone().project(cam);
+        minY = Math.min(minY, ndc.y);
+        maxY = Math.max(maxY, ndc.y);
+    }
+    return { minY, maxY };
+}
+
+/**
+ * Bottom-anchor framing for Stage-2 scan auto-rotate. Keeps the same preset offset
+ * direction as {@link VIEW_CAMERA_POS} but raises the orbit target so the cast sits
+ * low in the viewport and clear of the top overlay band.
+ */
+export function afoScanBottomAnchoredFraming(
+    mesh: AfoTriMesh,
+    view: CameraView,
+    aspect = 1,
+    fovDeg = 40,
+): AfoScanViewFraming {
+    const { min, max } = afoOrientedMeshWorldBounds(mesh);
+    const center = min.clone().add(max).multiplyScalar(0.5);
+    const corners = afoBoxCorners(min, max);
+    const baseOffset = new Vector3(...VIEW_CAMERA_POS[view]);
+    const up = new Vector3(...viewCameraUp(view)).normalize();
+    const bottomNdc = -1 + 2 * AFO_SCAN_BOTTOM_MARGIN_FRAC;
+    const topNdc = 1 - 2 * AFO_SCAN_TOP_OVERLAY_FRAC;
+    const maxLift = max.distanceTo(min) * 1.5;
+    let scale = 1;
+    for (let attempt = 0; attempt < 16; attempt++) {
+        const cameraOffset = baseOffset.clone().multiplyScalar(scale);
+        let lo = 0;
+        let hi = maxLift;
+        let lift = 0;
+        for (let i = 0; i < 28; i++) {
+            const mid = (lo + hi) * 0.5;
+            const target = center.clone().add(up.clone().multiplyScalar(mid));
+            const { minY } = ndcYRangeForFraming(view, target, cameraOffset, corners, aspect, fovDeg);
+            if (minY > bottomNdc) lo = mid;
+            else hi = mid;
+            lift = mid;
+        }
+        const target = center.clone().add(up.clone().multiplyScalar(lift));
+        const { maxY } = ndcYRangeForFraming(view, target, cameraOffset, corners, aspect, fovDeg);
+        if (maxY <= topNdc + 0.02) {
+            return { target, cameraOffset };
+        }
+        scale *= 1.1;
+    }
+    const cameraOffset = baseOffset.clone().multiplyScalar(scale);
+    const target = center.clone().add(up.clone().multiplyScalar(0));
+    return { target, cameraOffset };
+}
+
+export function afoScanFramingNdcY(
+    mesh: AfoTriMesh,
+    view: CameraView,
+    aspect: number,
+    fovDeg: number,
+): { minY: number; maxY: number } {
+    const frame = afoScanBottomAnchoredFraming(mesh, view, aspect, fovDeg);
+    const { min, max } = afoOrientedMeshWorldBounds(mesh);
+    const corners = afoBoxCorners(min, max);
+    return ndcYRangeForFraming(view, frame.target, frame.cameraOffset, corners, aspect, fovDeg);
 }
