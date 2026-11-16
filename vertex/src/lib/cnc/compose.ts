@@ -4,6 +4,7 @@ import type { BufferGeometry } from "three";
 import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
+import { thicknessMmForDesignSide } from "@/lib/geometry/shape-finish-modifiers";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import type { DesignState, Side } from "@/types";
@@ -80,16 +81,9 @@ export async function workpiecesFromDesign(
         // Scale before compose so elements and the outline share that frame.
         const raw = scaleGeometryToInsoleSize(loaded, layout.lengthMm, layout.widthMm);
         if (raw !== loaded) loaded.dispose();
-        const thickness = cncDesign.paired
-            ? side === "left"
-                ? cncDesign.paired.leftThicknessMm
-                : cncDesign.paired.rightThicknessMm
-            : cncDesign.thicknessMm;
-        const field = baseModifierFieldAuthoritative(
-            cncDesign,
-            side,
-            thickness ?? BASE_REFERENCE_THICKNESS_MM,
-        );
+        // Same resolver the editor uses. Paired feet read paired.*ThicknessMm; otherwise thicknessMm.
+        const thickness = thicknessMmForDesignSide(cncDesign, side) ?? BASE_REFERENCE_THICKNESS_MM;
+        const field = baseModifierFieldAuthoritative(cncDesign, side, thickness);
         const widthId = shoeWidthForSide(cncDesign, side);
         const heelW = field.corrections?.heelCupWidthMm ?? 0;
         const composed = await composePrintSolidTop(raw, {
