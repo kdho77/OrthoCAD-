@@ -48,7 +48,7 @@ export const REQUIRED_CASES = [
     "the migration shoe-width checks are present on both link tables",
     "an omitted width stores medium and keeps defaulted snapshot provenance",
     "prescribed narrow, medium, and wide are stored as prescribed",
-    "extra and invalid widths are rejected before a transaction and write nothing",
+    "catalog extra widths establish and invalid widths are rejected with no write",
     "the human client table still accepts extra_wide",
     "a last-insert shoe-width check rolls back all four rows",
     "the establishment transaction rolls back when the last insert violates the check",

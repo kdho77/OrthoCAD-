@@ -21,7 +21,8 @@ import {
     prismaDogfoodSavedDesignStore,
 } from "./dogfood-saved-design.js";
 
-const MIGRATION = "vertex/prisma/migrations/20261104120000_integration_launch_connector/migration.sql";
+const WIDTH_CHECK_MIGRATION =
+    "vertex/prisma/migrations/20261116120000_integration_link_shoe_widths/migration.sql";
 const OWNER_ID = "abababab-abab-4aba-8aba-abababababab";
 
 const principal: CadOperatorPrincipal = {
@@ -137,7 +138,7 @@ async function establish(args: {
 }
 
 async function installChecks(): Promise<void> {
-    const sql = readFileSync(MIGRATION, "utf8");
+    const sql = readFileSync(WIDTH_CHECK_MIGRATION, "utf8");
     const specs = [
         ["integration_clients", "integration_clients_shoeWidth_check"],
         ["integration_designs", "integration_designs_shoeWidth_check"],
@@ -222,8 +223,9 @@ describe("isolated postgres identity transaction", () => {
             expect(row.def).toContain("narrow");
             expect(row.def).toContain("medium");
             expect(row.def).toContain("wide");
-            expect(row.def).not.toContain("extra_wide");
-            expect(row.def).not.toContain("extra_narrow");
+            expect(row.def).toContain("extra_narrow");
+            expect(row.def).toContain("extra_wide");
+            expect(row.def).toContain("xx_wide");
         }
     });
 
@@ -270,7 +272,18 @@ describe("isolated postgres identity transaction", () => {
         }
     });
 
-    test("extra and invalid widths are rejected before a transaction and write nothing", async () => {
+    test("catalog extra widths establish and invalid widths are rejected with no write", async () => {
+        for (const width of ["extra_narrow", "extra_wide", "xx_wide"] as const) {
+            const orderId = syntheticId();
+            const personId = `synthetic-${syntheticId()}`;
+            const result = await establish({ orderId, personId, width });
+            expect(result.shoe_width).toBe(width);
+            expect(result.shoe_width_source).toBe("prescribed");
+            const link = await prisma.integrationDesign.findFirstOrThrow({
+                where: { externalOrderId: orderId },
+            });
+            expect(link.shoeWidth).toBe(width);
+        }
         const before = await counts();
         const original = prisma.$transaction.bind(prisma);
         let began = 0;
@@ -279,13 +292,6 @@ describe("isolated postgres identity transaction", () => {
             return original(...args);
         }) as typeof prisma.$transaction;
         try {
-            for (const width of ["extra_narrow", "extra_wide"]) {
-                const orderId = syntheticId();
-                await expect(
-                    establish({ orderId, personId: `synthetic-${syntheticId()}`, width }),
-                ).rejects.toBeInstanceOf(IntegrationShoeWidthError);
-                expect(await prisma.integrationDesign.count({ where: { externalOrderId: orderId } })).toBe(0);
-            }
             await expect(
                 establish({ orderId: syntheticId(), personId: `synthetic-${syntheticId()}`, width: "giant" }),
             ).rejects.toThrow();
@@ -379,7 +385,7 @@ describe("isolated postgres identity transaction", () => {
                         sides: "pair",
                         shoeSizeSystem: "US_M",
                         shoeSize: 10,
-                        shoeWidth: "extra_wide",
+                        shoeWidth: "giant",
                     },
                 });
             }),
@@ -411,7 +417,7 @@ describe("isolated postgres identity transaction", () => {
             CREATE OR REPLACE FUNCTION orthocad_test_force_link_width() RETURNS trigger AS $$
             BEGIN
                 IF EXISTS (SELECT 1 FROM orthocad_test_fault WHERE id = 1 AND fail_last) THEN
-                    NEW."shoeWidth" := 'extra_wide';
+                    NEW."shoeWidth" := 'giant';
                 END IF;
                 RETURN NEW;
             END;

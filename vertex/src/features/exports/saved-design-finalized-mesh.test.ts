@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "@rstest/core";
+import { type DesignDocument, designStateFromDocument } from "@/features/clients/design-document";
 import { buildPrinterFootManufacturingStl } from "@/features/exports/export-service";
 import { printerFootStlFacts } from "@/features/exports/printer-foot-isolation";
 import {
@@ -18,7 +19,7 @@ import { resetSampleTopGeometryCache } from "@/lib/geometry/procedural-wall/samp
 import { binaryStlToGeometry } from "@/lib/geometry/stl";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
-import { designSettingsEnvelope } from "../../../shared/design-settings";
+import { designSettingsEnvelope, readStoredDesignSettings } from "../../../shared/design-settings";
 
 const originalFetch = globalThis.fetch;
 
@@ -46,6 +47,34 @@ afterEach(() => {
 });
 
 describe("saved-design mesh matches canonical Export", () => {
+    test("belt and central-fab loft read thicknessMm from settingsJson, not the design column", () => {
+        const design = createDesignWithStockPlaceholder({
+            ...createDesignWithStockPlaceholder(),
+            thicknessMm: 4,
+            shellThicknessMode: "uniform",
+            paired: {
+                ...createDesignWithStockPlaceholder().paired!,
+                leftThicknessMm: 4,
+                rightThicknessMm: 4,
+            },
+        });
+        const envelope = designSettingsEnvelope(design as unknown as Record<string, unknown>);
+        expect(readStoredDesignSettings(envelope)?.thicknessMm).toBe(4);
+        expect(designStateFromSavedSettings(envelope).thicknessMm).toBe(4);
+        const columnDoc: DesignDocument = {
+            id: "doc-thickness",
+            pattern: design.pattern,
+            method: design.method,
+            thicknessMm: 2,
+            linked: true,
+            unit: "mm",
+            createdAt: "2026-11-06T00:00:00.000Z",
+            updatedAt: "2026-11-06T00:00:00.000Z",
+            settingsJson: envelope,
+        };
+        expect(designStateFromDocument(columnDoc).thicknessMm).toBe(4);
+    });
+
     test("left and right solids match Export bytes, are watertight before the leader, and differ by foot", async () => {
         const design = createDesignWithStockPlaceholder();
         const sampleTop = installDesign(design);

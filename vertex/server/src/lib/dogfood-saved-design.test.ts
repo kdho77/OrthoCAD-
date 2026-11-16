@@ -449,7 +449,7 @@ function recordingStore() {
 
 function establishInput(
     linkShoeWidth: string,
-    chartWidth: "narrow" | "medium" | "wide",
+    chartWidth: EstablishVerifiedOrderInput["chartWidth"],
 ): EstablishVerifiedOrderInput {
     return {
         externalOrderId: ORDER,
@@ -495,7 +495,7 @@ describe("integration link width", () => {
     });
 
     test("prescribed narrow, medium, and wide pass through unchanged", async () => {
-        for (const width of ["narrow", "medium", "wide"] as const) {
+        for (const width of ["narrow", "medium", "wide", "extra_narrow", "extra_wide", "xx_wide"] as const) {
             const db = recordingStore();
             const result = await createDogfoodSavedDesign({
                 principal,
@@ -516,31 +516,15 @@ describe("integration link width", () => {
         }
     });
 
-    test("extra widths are rejected before establishment", async () => {
-        for (const width of ["extra_narrow", "extra_wide"] as const) {
-            const db = recordingStore();
-            await expect(
-                createDogfoodSavedDesign({
-                    principal,
-                    externalOrderId: ORDER,
-                    catalog: { shoe_size: { system: "US_M", size: 10 }, width, hardness: "Hard" },
-                    store: db.store,
-                    verifier: acceptingVerifier(),
-                    now: () => WIDTH_NOW,
-                    buildSnapshot: buildSavedDesignSnapshot,
-                    persist: async () => {
-                        throw new Error("persist is the refresh path");
-                    },
-                }),
-            ).rejects.toBeInstanceOf(IntegrationShoeWidthError);
-            expect(db.inputs).toEqual([]);
-        }
+    test("unknown widths are rejected before establishment", () => {
+        expect(() => integrationLinkShoeWidth("giant", "prescribed")).toThrow(IntegrationShoeWidthError);
     });
 
-    test("absent link width normalizes to medium and extra widths do not open a transaction", async () => {
+    test("absent link width normalizes to medium and catalog extra widths establish", async () => {
         expect(integrationLinkShoeWidth("", "defaulted")).toBe("medium");
         expect(integrationLinkShoeWidth("wide", "prescribed")).toBe("wide");
-        expect(() => integrationLinkShoeWidth("extra_wide", "prescribed")).toThrow(IntegrationShoeWidthError);
+        expect(integrationLinkShoeWidth("extra_wide", "prescribed")).toBe("extra_wide");
+        expect(integrationLinkShoeWidth("xx_wide", "prescribed")).toBe("xx_wide");
         const seen: string[] = [];
         const tx = {
             integrationDesign: {
@@ -574,12 +558,14 @@ describe("integration link width", () => {
         const created = await store.establishVerifiedOrder?.(establishInput("", "medium"));
         expect(created).toMatchObject({ outcome: "created" });
         expect(seen).toEqual(["client:medium", "client-link:medium", "design:medium"]);
-        for (const width of ["extra_narrow", "extra_wide", "giant"]) {
-            await expect(
-                store.establishVerifiedOrder?.(establishInput(width, "medium")),
-            ).rejects.toBeInstanceOf(IntegrationShoeWidthError);
+        for (const width of ["extra_narrow", "extra_wide", "xx_wide"] as const) {
+            const outcome = await store.establishVerifiedOrder?.(establishInput(width, width));
+            expect(outcome).toMatchObject({ outcome: "created" });
         }
-        expect(began).toBe(1);
+        await expect(
+            store.establishVerifiedOrder?.(establishInput("giant", "medium")),
+        ).rejects.toBeInstanceOf(IntegrationShoeWidthError);
+        expect(began).toBe(4);
     });
 
     test("human create, edit, save, export, and order paths do not use integration width rejection", () => {
