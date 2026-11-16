@@ -104,28 +104,60 @@ function meshOutlineForSide(side: Side): TrimlineCurve | null {
     return legacy ? cloneTrimline(legacy) : null;
 }
 
-function committedOrDefault(side: Side): TrimlineCurve {
+/** Loaded base GLB boundary, or null while that mesh outline is not published yet. */
+export function loadedBaseOutline(side: Side): TrimlineCurve | null {
+    return meshOutlineForSide(side);
+}
+
+/**
+ * Default outline for a foot.
+ * A base design uses the loaded GLB boundary only. While that boundary is still
+ * loading the result is null — never the parametric insole. Parametric designs
+ * (no base) keep the parametric outline.
+ */
+export function defaultOutlineForSide(side: Side): TrimlineCurve | null {
+    const mesh = meshOutlineForSide(side);
+    if (mesh && mesh.points.length >= 4) return mesh;
+    const design = useDesignStore.getState().design;
+    if (getDesignBase(design, side)) return null;
+    const layout = insoleLayoutFromDesign(design);
+    return sampleDefaultOutline(layout.lengthMm, layout.widthMm);
+}
+
+/**
+ * Committed trim, otherwise the GLB boundary. Base designs do not fall back to
+ * the parametric outline.
+ */
+function committedOrMesh(side: Side): TrimlineCurve | null {
     const design = useDesignStore.getState().design;
     const committed = getDesignTrimline(design, side);
     if (committed) return committed;
-    // On a loaded base, start from an outline that follows the real mesh boundary
-    // (published once the base GLB loads) instead of the parametric default.
-    const outline = meshOutlineForSide(side);
-    if (outline) return outline;
-    return sampleDefaultOutline(
-        insoleLayoutFromDesign(design).lengthMm,
-        insoleLayoutFromDesign(design).widthMm,
-    );
+    return defaultOutlineForSide(side);
+}
+
+/** Presets cut the loaded GLB, not a previously saved trim and not the parametric shape. */
+function presetSourceOutline(side: Side): TrimlineCurve | null {
+    const mesh = meshOutlineForSide(side);
+    if (mesh && mesh.points.length >= 4) return mesh;
+    const design = useDesignStore.getState().design;
+    if (getDesignBase(design, side)) return null;
+    return committedOrMesh(side);
 }
 
 /** Landmark trim of this foot's own outline. Does not reuse the other foot's Y. */
-export function curveForTrimPreset(side: Side, preset: Exclude<TrimPresetId, "custom">): TrimlineCurve {
+export function curveForTrimPreset(
+    side: Side,
+    preset: Exclude<TrimPresetId, "custom">,
+): TrimlineCurve | null {
+    const base = presetSourceOutline(side);
+    if (!base) return null;
     const design = useDesignStore.getState().design;
     const layout = insoleLayoutFromDesign(design);
     return buildTrimPresetCurve(preset, {
         lengthMm: layout.lengthMm,
         widthMm: layout.widthMm,
-        baseCurve: committedOrDefault(side),
+        baseCurve: base,
+        footSide: side,
     });
 }
 
@@ -216,13 +248,16 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
         }),
 
     beginTrimlineEdit: (side) => {
-        const base = committedOrDefault(side);
+        const base = committedOrMesh(side);
+        if (!base || base.points.length < 4) return;
         get().beginTrimlineEditWithDraft(side, base);
     },
 
     beginTrimlineEditWithDraft: (side, draft, presetOnCommit) => {
+        if (!draft || draft.points.length < 4) return;
         useDesignStore.getState().checkpoint("trimline-edit-begin");
-        const snapshot = cloneTrimline(committedOrDefault(side));
+        const snapshotSource = committedOrMesh(side) ?? draft;
+        const snapshot = cloneTrimline(snapshotSource);
         set({
             editMode: "edit-trimline",
             target: { type: "insole", side },
@@ -258,9 +293,11 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
                 presetId === "full" || presetId === "sulcus" || presetId === "met_head"
                     ? curveForTrimPreset(other, presetId)
                     : session.draft;
-            store.setSideTrimline(other, otherCurve);
-            store.setTrimPresetId(other, presetId);
-            effective[other] = otherCurve;
+            if (otherCurve && otherCurve.points.length >= 4) {
+                store.setSideTrimline(other, otherCurve);
+                store.setTrimPresetId(other, presetId);
+                effective[other] = otherCurve;
+            }
         }
         // Phase 3A: after committing a new footprint, surface any now-orphaned elements or correction regions.
         const design = useDesignStore.getState().design;
@@ -301,7 +338,7 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
             return { trimlineEdit: { ...s.trimlineEdit, isDragging } };
         }),
 
-    getTrimlineForSide: (side) => committedOrDefault(side),
+    getTrimlineForSide: (side) => committedOrMesh(side) ?? { points: [] },
 
     getCommittedTrimline: (side) => getDesignTrimline(useDesignStore.getState().design, side),
 
@@ -313,7 +350,8 @@ export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
 
     beginBottomPatternEdit: (side) => {
         const stored = useBottomPatternStore.getState().getPattern(side);
-        const base = stored ?? committedOrDefault(side);
+        const base = stored ?? committedOrMesh(side);
+        if (!base || base.points.length < 4) return;
         useDesignStore.getState().checkpoint("bottom-pattern-edit-begin");
         set({
             editMode: "edit-bottom-pattern",

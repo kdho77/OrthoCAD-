@@ -24,7 +24,9 @@ export function TrimPresetsPanel() {
     const previewPreset = (preset: Exclude<TrimPresetId, "custom">) => {
         const mode = useMeshEditStore.getState().editMode;
         if (mode === "edit-bottom-pattern" && !leaveOutlineEdit({ promptIfDirty: true })) return;
-        beginTrimlineEditWithDraft(activeFoot, curveForTrimPreset(activeFoot, preset), preset);
+        const curve = curveForTrimPreset(activeFoot, preset);
+        if (!curve || curve.points.length < 4) return;
+        beginTrimlineEditWithDraft(activeFoot, curve, preset);
     };
 
     return (

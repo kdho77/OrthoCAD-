@@ -14,7 +14,6 @@ import {
     getDesignTrimline,
     pickTrimlineAnchorIndex,
     projectToFootprintPlane,
-    sampleDefaultOutline,
     TRIMLINE_PICK_RADIUS_EDIT,
     TRIMLINE_PICK_RADIUS_IDLE,
     type TrimlineCurve,
@@ -22,7 +21,11 @@ import {
 } from "@/lib/geometry/trimline";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useDesignStore } from "@/stores/design-store";
-import { useMeshEditStore } from "@/stores/mesh-edit-store";
+import {
+    resolveActiveTrimline,
+    defaultOutlineForSide as storeDefaultOutline,
+    useMeshEditStore,
+} from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
@@ -95,19 +98,56 @@ function TrimlineSideRow({
     const baseOutline = proceduralOutline ?? legacyOutline;
 
     const isEditing = editMode === "edit-trimline" && trimlineEdit?.side === side;
-    const committed = getDesignTrimline(design, side);
+    const active =
+        isEditing && trimlineEdit ? trimlineEdit.draft : resolveActiveTrimline(side, design, trimlineEdit);
 
-    // While a base GLB is still loading, do not fall back to the parametric
-    // default outline — that generic wireframe is the "strange shape" flash on open.
-    // Stay empty until the mesh-derived outline (or a committed trimline) exists.
-    if (baseForSide && !committed && !baseOutline && !isEditing) {
-        return null;
+    // Base designs draw the loaded GLB boundary only. A missing boundary (still
+    // loading, or the other foot before its mesh outline is published) draws
+    // nothing — never the parametric insole.
+    if (baseForSide) {
+        const boundary = baseOutline && baseOutline.points.length >= 4 ? baseOutline : null;
+        const trim = active && active.points.length >= 4 ? active : null;
+        if (!boundary && !trim) return null;
+        const trimIsBoundary = Boolean(trim && boundary && sameOutline(trim, boundary));
+        return (
+            <>
+                {boundary && !trimIsBoundary ? (
+                    <TrimlineSideOverlay
+                        side={side}
+                        curve={boundary}
+                        isEditing={false}
+                        isDragging={false}
+                        passive
+                        onOutlineClick={() => {}}
+                    />
+                ) : null}
+                {trim ? (
+                    <TrimlineSideOverlay
+                        side={side}
+                        curve={trim}
+                        isEditing={isEditing}
+                        isDragging={isEditing && (trimlineEdit?.isDragging ?? false)}
+                        onOutlineClick={() => {
+                            if (editMode !== "edit-trimline") beginTrimlineEdit(side);
+                        }}
+                    />
+                ) : boundary ? (
+                    <TrimlineSideOverlay
+                        side={side}
+                        curve={boundary}
+                        isEditing={false}
+                        isDragging={false}
+                        onOutlineClick={() => {
+                            if (editMode !== "edit-trimline") beginTrimlineEdit(side);
+                        }}
+                    />
+                ) : null}
+            </>
+        );
     }
 
-    const curve =
-        isEditing && trimlineEdit
-            ? trimlineEdit.draft
-            : (committed ?? baseOutline ?? getTrimlineForSide(side));
+    const curve = active && active.points.length >= 4 ? active : getTrimlineForSide(side);
+    if (!curve || curve.points.length < 4) return null;
 
     return (
         <TrimlineSideOverlay
@@ -122,18 +162,34 @@ function TrimlineSideRow({
     );
 }
 
+function sameOutline(a: TrimlineCurve, b: TrimlineCurve): boolean {
+    if (a.points.length !== b.points.length) return false;
+    for (let i = 0; i < a.points.length; i++) {
+        const p = a.points[i];
+        const q = b.points[i];
+        if (!p || !q) return false;
+        if (Math.abs(p.x - q.x) > 0.05 || Math.abs(p.y - q.y) > 0.05 || Math.abs(p.z - q.z) > 0.05) {
+            return false;
+        }
+    }
+    return true;
+}
+
 function TrimlineSideOverlay({
     side,
     curve,
     isEditing,
     isDragging,
     onOutlineClick,
+    passive = false,
 }: {
     side: Side;
     curve: TrimlineCurve;
     isEditing: boolean;
     isDragging: boolean;
     onOutlineClick: () => void;
+    /** GLB boundary ghost (the removed toe). Not pickable, not the parametric shape. */
+    passive?: boolean;
 }) {
     const design = useDesignStore((s) => s.design);
     const layout = insoleLayoutFromDesign(design);
@@ -170,8 +226,8 @@ function TrimlineSideOverlay({
         return shifted.map((p) => new THREE.Vector3(p.x, p.y, (p.z ?? 0) + 1.5));
     }, [curve.points, forefootMm]);
 
-    const outlineColor = isEditing ? (isDragging ? "#ef4444" : "#f97316") : "#64748b";
-    const tubeRadius = isEditing ? 0.55 : 0.35;
+    const outlineColor = passive ? "#94a3b8" : isEditing ? (isDragging ? "#ef4444" : "#f97316") : "#64748b";
+    const tubeRadius = passive ? 0.28 : isEditing ? 0.55 : 0.35;
 
     /** Resolve world matrix for footprint projection. */
     const getWorldMatrix = useCallback((): THREE.Matrix4 => {
@@ -355,14 +411,15 @@ function TrimlineSideOverlay({
 
     return (
         <group ref={groupRef} position={[-centerX, offsetY, 0]}>
-            {/* Pick tube — generous radius, always hittable above the insole mesh */}
-            <mesh renderOrder={100} geometry={pickTubeGeo} onPointerDown={onPickPointerDown}>
-                <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
-            </mesh>
+            {passive ? null : (
+                <mesh renderOrder={100} geometry={pickTubeGeo} onPointerDown={onPickPointerDown}>
+                    <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
+                </mesh>
+            )}
 
             <TrimlineVisual points={displayPoints} color={outlineColor} tubeRadius={tubeRadius} />
 
-            {isEditing
+            {isEditing && !passive
                 ? curve.points.map((p, i) => (
                       <mesh
                           // biome-ignore lint/suspicious/noArrayIndexKey: control points are a fixed-order ring; index is their stable identity
@@ -433,7 +490,7 @@ export function getCommittedTrimlinesFromDesign(): Partial<Record<Side, Trimline
     return out;
 }
 
-export function defaultOutlineForSide(_side: Side): TrimlineCurve {
-    const layout = insoleLayoutFromDesign(useDesignStore.getState().design);
-    return sampleDefaultOutline(layout.lengthMm, layout.widthMm);
+/** GLB boundary for a base design, or null while that mesh is still loading. */
+export function defaultOutlineForSide(side: Side): TrimlineCurve | null {
+    return storeDefaultOutline(side);
 }

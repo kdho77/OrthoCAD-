@@ -2,9 +2,24 @@
 
 import { afterEach, describe, expect, test } from "@rstest/core";
 import * as THREE from "three";
+import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-id";
+import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
+
+function publishLeftOutline() {
+    useBaseOutlineStore.getState().setOutline(`${SAMPLE_TOP_ASSET_ID}:left:p`, {
+        points: [
+            new THREE.Vector3(0, -20, 0),
+            new THREE.Vector3(90, -30, 0),
+            new THREE.Vector3(180, -8, 0),
+            new THREE.Vector3(180, 22, 0),
+            new THREE.Vector3(90, 34, 0),
+            new THREE.Vector3(0, 16, 0),
+        ],
+    });
+}
 
 describe("outline edit leaves on step changes", () => {
     const confirm = window.confirm;
@@ -26,6 +41,7 @@ describe("outline edit leaves on step changes", () => {
             return false;
         };
         useClinicalWorkflowStore.setState({ step: "base" });
+        publishLeftOutline();
         useMeshEditStore.getState().beginTrimlineEdit("left");
         useClinicalWorkflowStore.getState().setStep("corrections");
         expect(prompts).toEqual([]);
@@ -36,6 +52,7 @@ describe("outline edit leaves on step changes", () => {
 
     test("an unsaved draft blocks the step change until discard is confirmed", () => {
         useClinicalWorkflowStore.setState({ step: "base" });
+        publishLeftOutline();
         useMeshEditStore.getState().beginTrimlineEdit("left");
         useMeshEditStore
             .getState()

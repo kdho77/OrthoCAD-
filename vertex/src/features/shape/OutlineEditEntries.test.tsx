@@ -7,6 +7,8 @@ import { createRoot, type Root } from "react-dom/client";
 import * as THREE from "three";
 import { OutlineEditEntries } from "@/features/shape/OutlineEditEntries";
 import { TrimPresetsPanel } from "@/features/shape/TrimPresetsPanel";
+import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-id";
+import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 
@@ -34,6 +36,16 @@ describe("Base-step outline entries", () => {
         confirm = window.confirm;
         useMeshEditStore.getState().resetEdits();
         useDesignStore.getState().setViewer({ wallModel: "procedural" });
+        useBaseOutlineStore.getState().setOutline(`${SAMPLE_TOP_ASSET_ID}:left:p`, {
+            points: [
+                new THREE.Vector3(0, -20, 0),
+                new THREE.Vector3(90, -30, 0),
+                new THREE.Vector3(180, -8, 0),
+                new THREE.Vector3(180, 22, 0),
+                new THREE.Vector3(90, 34, 0),
+                new THREE.Vector3(0, 16, 0),
+            ],
+        });
         container = document.createElement("div");
         document.body.appendChild(container);
         root = createRoot(container);

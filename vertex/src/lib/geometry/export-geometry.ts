@@ -89,6 +89,7 @@ function proceduralExportRequest(design: DesignState, side: Side) {
             bottomPattern: resolveLiveBottomPattern({
                 draft: edits.getActiveDraftBottomPattern(side),
                 stored: useBottomPatternStore.getState().getPattern(side),
+                trim: resolveActiveTrimline(side),
             }),
         }),
         mirrored,

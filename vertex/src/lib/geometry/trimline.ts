@@ -19,7 +19,11 @@ export function cloneTrimline(curve: TrimlineCurve): TrimlineCurve {
     return { points: curve.points.map((p) => p.clone()) };
 }
 
-/** Sample the parametric insole outline as a closed polyline suitable for editing. */
+/**
+ * Parametric insole outline. Base (SAMPLE_Top) designs must not use this as a
+ * visible trim or a loading fallback — that boundary is the loaded GLB, or
+ * nothing while the mesh is still loading.
+ */
 export function sampleDefaultOutline(lengthMm: number, widthMm: number, segmentsPerEdge = 20): TrimlineCurve {
     const nx = segmentsPerEdge;
     const ny = segmentsPerEdge;

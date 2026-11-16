@@ -2,8 +2,9 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { BufferAttribute, BufferGeometry, type Vector3 } from "three";
+import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-id";
 import { binaryStlToGeometry, geometryToBinarySTL } from "@/lib/geometry/stl";
-import { buildTrimPresetCurve, TRIM_PRESET_LANDMARK_U } from "@/lib/geometry/trim-presets";
+import { buildTrimPresetCurve, endPatternOnTrim, TRIM_PRESET_LANDMARK_U } from "@/lib/geometry/trim-presets";
 import {
     clipGeometryToOutline,
     extractMeshOutline,
@@ -12,13 +13,17 @@ import {
 } from "@/lib/geometry/trimline";
 import { cncToolpath } from "@/lib/kiri/cnc";
 import { GcodeBuilder } from "@/lib/kiri/gcode";
+import { useBaseOutlineStore } from "@/stores/base-outline-store";
+import { useDesignStore } from "@/stores/design-store";
+import { curveForTrimPreset, defaultOutlineForSide, useMeshEditStore } from "@/stores/mesh-edit-store";
 
 describe("trim presets", () => {
     test("sulcus shortens distal AP vs full", () => {
         const lengthMm = 260;
         const widthMm = 95;
-        const full = buildTrimPresetCurve("full", { lengthMm, widthMm });
-        const sulcus = buildTrimPresetCurve("sulcus", { lengthMm, widthMm });
+        const base = sampleDefaultOutline(lengthMm, widthMm);
+        const full = buildTrimPresetCurve("full", { lengthMm, widthMm, baseCurve: base });
+        const sulcus = buildTrimPresetCurve("sulcus", { lengthMm, widthMm, baseCurve: base });
         const maxFull = Math.max(...full.points.map((p) => p.x));
         const maxSulcus = Math.max(...sulcus.points.map((p) => p.x));
         expect(maxSulcus).toBeLessThan(maxFull - 5);
@@ -27,8 +32,9 @@ describe("trim presets", () => {
     test("met-head is shorter than sulcus", () => {
         const lengthMm = 260;
         const widthMm = 95;
-        const sulcus = buildTrimPresetCurve("sulcus", { lengthMm, widthMm });
-        const met = buildTrimPresetCurve("met_head", { lengthMm, widthMm });
+        const base = sampleDefaultOutline(lengthMm, widthMm);
+        const sulcus = buildTrimPresetCurve("sulcus", { lengthMm, widthMm, baseCurve: base });
+        const met = buildTrimPresetCurve("met_head", { lengthMm, widthMm, baseCurve: base });
         const maxSulcus = Math.max(...sulcus.points.map((p) => p.x));
         const maxMet = Math.max(...met.points.map((p) => p.x));
         expect(maxMet).toBeLessThan(maxSulcus);
@@ -255,6 +261,7 @@ describe("sulcus and met-head 3/4 trim", () => {
                     lengthMm: 180,
                     widthMm: 70,
                     baseCurve: outline!,
+                    footSide: side,
                 });
                 const meshFrame = lengthOf(outline!.points);
                 const cutFrame = lengthOf(curve.points);
@@ -268,6 +275,28 @@ describe("sulcus and met-head 3/4 trim", () => {
                     (p) => Math.abs(coord(p, cutFrame.axis) - cutFrame.toe) < 0.05,
                 );
                 expect(atApex.length, `${preset} ${side} round`).toBe(1);
+                const medialSign = side === "left" ? -1 : 1;
+                const widthOf = (p: Vector3) => (cutFrame.axis === "x" ? p.y : p.x);
+                const cutPts = curve.points.filter((p) => coord(p, cutFrame.axis) > cutFrame.toe - 28);
+                const apex = cutPts.reduce((best, p) =>
+                    coord(p, cutFrame.axis) > coord(best, cutFrame.axis) ? p : best,
+                );
+                const lateralPt = cutPts.reduce((best, p) =>
+                    Math.abs(widthOf(p) - widthOf(apex)) > Math.abs(widthOf(best) - widthOf(apex)) ? p : best,
+                );
+                expect(
+                    coord(apex, cutFrame.axis) - coord(lateralPt, cutFrame.axis),
+                    `${preset} ${side} medial longer`,
+                ).toBeGreaterThan(8);
+                expect(widthOf(apex) * medialSign, `${preset} ${side} apex side`).toBeGreaterThan(
+                    widthOf(lateralPt) * medialSign,
+                );
+                const midW = (widthOf(apex) + widthOf(lateralPt)) / 2;
+                const midPt = cutPts.reduce((best, p) =>
+                    Math.abs(widthOf(p) - midW) < Math.abs(widthOf(best) - midW) ? p : best,
+                );
+                const chord = (coord(apex, cutFrame.axis) + coord(lateralPt, cutFrame.axis)) / 2;
+                expect(coord(midPt, cutFrame.axis), `${preset} ${side} convex`).toBeGreaterThan(chord + 1);
 
                 const heelPoint =
                     meshFrame.axis === "x"
@@ -309,6 +338,7 @@ describe("sulcus and met-head 3/4 trim", () => {
                     lengthMm: 260,
                     widthMm: 92,
                     baseCurve: outline!,
+                    footSide: side,
                 });
                 const clipped = clipGeometryToOutline(mesh, curve, 0.4);
                 const after = meshBounds(clipped);
@@ -346,6 +376,7 @@ describe("sulcus and met-head 3/4 trim", () => {
             lengthMm: 260,
             widthMm: 90,
             baseCurve: outline!,
+            footSide: "left",
         });
         const source = lengthOf(outline!.points);
         const frame = lengthOf(curve.points);
@@ -366,5 +397,134 @@ describe("sulcus and met-head 3/4 trim", () => {
         expect(cutMaxY).toBeLessThan(landmark + 12);
         clipped.dispose();
         mesh.dispose();
+    });
+});
+
+function distToPolyline(p: Vector3, poly: Vector3[]): number {
+    let best = Infinity;
+    for (let i = 0; i < poly.length; i++) {
+        const a = poly[i]!;
+        const b = poly[(i + 1) % poly.length]!;
+        const abx = b.x - a.x;
+        const aby = b.y - a.y;
+        const lenSq = abx * abx + aby * aby;
+        const t =
+            lenSq < 1e-9 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / lenSq));
+        best = Math.min(best, Math.hypot(p.x - (a.x + abx * t), p.y - (a.y + aby * t)));
+    }
+    return best;
+}
+
+describe("bottom pattern ends on the top cut", () => {
+    test("sulcus and met-head share one oblique cut, and the arch stays", () => {
+        for (const side of ["left", "right"] as const) {
+            for (const preset of ["sulcus", "met_head"] as const) {
+                const mesh = makeFoot({ side, lengthMm: 260, widthMm: 92, heel: side === "left" ? -20 : 8 });
+                const outline = extractMeshOutline(mesh, 48);
+                expect(outline).toBeTruthy();
+                const top = buildTrimPresetCurve(preset, {
+                    lengthMm: 260,
+                    widthMm: 92,
+                    baseCurve: outline!,
+                    footSide: side,
+                });
+                const frame = lengthOf(outline!.points);
+                const medial = side === "left" ? -1 : 1;
+                const pattern: TrimlineCurve = {
+                    points: outline!.points.map((p) => {
+                        const u = (coord(p, frame.axis) - frame.heel) / frame.span;
+                        const next = p.clone();
+                        const width = frame.axis === "x" ? next.y : next.x;
+                        const onLateral = width * medial < 0;
+                        if (onLateral && u > 0.3 && u < 0.5) {
+                            if (frame.axis === "x") next.y -= Math.sign(next.y || 1) * 5;
+                            else next.x -= Math.sign(next.x || 1) * 5;
+                        }
+                        return next;
+                    }),
+                };
+                const arch = pattern.points.filter((p) => {
+                    const u = (coord(p, frame.axis) - frame.heel) / frame.span;
+                    const width = frame.axis === "x" ? p.y : p.x;
+                    return width * medial < 0 && u > 0.34 && u < 0.46;
+                });
+                expect(arch.length, `${preset} ${side} arch`).toBeGreaterThan(0);
+                const ended = endPatternOnTrim(pattern, top);
+                expect(selfIntersects(ended.points), `${preset} ${side} pattern`).toBe(false);
+                for (const p of arch) {
+                    const still = ended.points.some(
+                        (q) => Math.abs(q.x - p.x) < 1e-6 && Math.abs(q.y - p.y) < 1e-6,
+                    );
+                    expect(still, `${preset} ${side} arch kept`).toBe(true);
+                }
+                const topToe = lengthOf(top.points).toe;
+                const patternToe = lengthOf(ended.points).toe;
+                expect(Math.abs(patternToe - topToe), `${preset} ${side} same cut`).toBeLessThan(1.5);
+                const distal = ended.points.filter((p) => coord(p, frame.axis) > topToe - 12);
+                expect(distal.length, `${preset} ${side} distal`).toBeGreaterThan(3);
+                for (const p of distal) {
+                    expect(distToPolyline(p, top.points), `${preset} ${side} on trim`).toBeLessThan(1.25);
+                }
+                const full = buildTrimPresetCurve("full", {
+                    lengthMm: 260,
+                    widthMm: 92,
+                    baseCurve: outline!,
+                    footSide: side,
+                });
+                const untouched = endPatternOnTrim(pattern, full);
+                expect(untouched.points.length).toBe(pattern.points.length);
+                for (let i = 0; i < pattern.points.length; i++) {
+                    expect(untouched.points[i]!.x).toBe(pattern.points[i]!.x);
+                    expect(untouched.points[i]!.y).toBe(pattern.points[i]!.y);
+                }
+                mesh.dispose();
+            }
+        }
+    });
+});
+
+describe("base designs do not use the parametric outline", () => {
+    test("a base foot stays empty until the GLB boundary is published", () => {
+        const design = useDesignStore.getState().design;
+        const viewer = useDesignStore.getState().viewer;
+        const outlines = useBaseOutlineStore.getState().outlines;
+        try {
+            useMeshEditStore.getState().resetEdits();
+            useDesignStore.setState({
+                design: {
+                    ...design,
+                    paired: undefined,
+                    base: { assetId: SAMPLE_TOP_ASSET_ID, name: "SAMPLE_Top", source: "stock" },
+                },
+                viewer: { ...viewer, wallModel: "procedural" },
+            });
+            useBaseOutlineStore.setState({ outlines: {} });
+            const parametric = sampleDefaultOutline(260, 95);
+            expect(defaultOutlineForSide("right")).toBeNull();
+            expect(curveForTrimPreset("right", "met_head")).toBeNull();
+            expect(useMeshEditStore.getState().getTrimlineForSide("right").points).toHaveLength(0);
+            expect(buildTrimPresetCurve("sulcus", { lengthMm: 260, widthMm: 95 }).points).toHaveLength(0);
+
+            const mesh = makeFoot({ side: "right", heel: -30, lengthMm: 250, widthMm: 88 });
+            const outline = extractMeshOutline(mesh, 40);
+            expect(outline).toBeTruthy();
+            useBaseOutlineStore.getState().setOutline(`${SAMPLE_TOP_ASSET_ID}:right:p`, outline!);
+            const shown = defaultOutlineForSide("right");
+            expect(shown?.points.length).toBe(outline!.points.length);
+            expect(shown?.points[0]!.x).toBe(outline!.points[0]!.x);
+            const cut = curveForTrimPreset("right", "met_head");
+            expect(cut && cut.points.length).toBeGreaterThan(8);
+            const sharesParametric = cut!.points.some((p) =>
+                parametric.points.some((q) => Math.hypot(p.x - q.x, p.y - q.y) < 0.5),
+            );
+            expect(sharesParametric).toBe(false);
+            const cutHeel = lengthOf(cut!.points).heel;
+            expect(Math.abs(cutHeel - lengthOf(outline!.points).heel)).toBeLessThan(1);
+            mesh.dispose();
+        } finally {
+            useDesignStore.setState({ design, viewer });
+            useBaseOutlineStore.setState({ outlines });
+            useMeshEditStore.getState().resetEdits();
+        }
     });
 });

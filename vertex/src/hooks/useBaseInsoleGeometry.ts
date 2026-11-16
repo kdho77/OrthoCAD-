@@ -716,6 +716,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 const livePts = resolveLiveBottomPattern({
                     draft,
                     stored: useBottomPatternStore.getState().getPattern(side),
+                    trim: resolveActiveTrimline(side),
                 });
                 if (!shouldLoftProceduralViewer(clinicalStep, wallModel)) {
                     setElementReference(null);

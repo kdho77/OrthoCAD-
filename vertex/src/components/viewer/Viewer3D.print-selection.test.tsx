@@ -5,6 +5,8 @@ import * as React from "react";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import * as THREE from "three";
+import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-id";
+import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -70,6 +72,16 @@ beforeEach(() => {
         baseMeshLoadingBySide: { left: false, right: false },
     });
     useMeshEditStore.setState({ ...useMeshEditStore.getInitialState() });
+    useBaseOutlineStore.getState().setOutline(`${SAMPLE_TOP_ASSET_ID}:left:p`, {
+        points: [
+            new THREE.Vector3(0, -20, 0),
+            new THREE.Vector3(90, -30, 0),
+            new THREE.Vector3(180, -8, 0),
+            new THREE.Vector3(180, 22, 0),
+            new THREE.Vector3(90, 34, 0),
+            new THREE.Vector3(0, 16, 0),
+        ],
+    });
     usePreviewLoftStatusStore.setState({ phaseBySide: { left: "ready", right: "ready" }, error: null });
     useClinicalWorkflowStore.setState({ step: "print" });
     container = document.createElement("div");
