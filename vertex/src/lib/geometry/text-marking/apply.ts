@@ -94,7 +94,9 @@ export async function applyTextMarkingToPrintSolid(
     let placeMeta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm" | "wallUMin" | "wallUMax">;
     if (checked.surface === "bottom") {
         placedFlat = shrinkThenFlatten(font, checked, minCap, (flat) => {
-            placeBottomText(host, hostCtx, { ...checked, capHeightMm: flat.capHeightMm }, flat, ctx.side);
+            placeBottomText(host, hostCtx, { ...checked, capHeightMm: flat.capHeightMm }, flat, ctx.side, {
+                beltPrint: ctx.beltPrint,
+            });
         });
         const placed = placeBottomText(
             host,
@@ -102,6 +104,7 @@ export async function applyTextMarkingToPrintSolid(
             { ...checked, capHeightMm: placedFlat.capHeightMm },
             placedFlat,
             ctx.side,
+            { beltPrint: ctx.beltPrint },
         );
         placedFlat = placed.flat;
         map = placed.map;

@@ -199,6 +199,14 @@ describe("export-geometry routing", () => {
         mockStoredPattern.mockReturnValue({ points: [] });
         mockDraftTrim.mockReturnValue(trimline);
         const { buildExportStl } = await import("@/lib/geometry/export-geometry");
+        await buildExportStl("left", { beltPrint: true });
+        expect(mockProceduralBuild).toHaveBeenCalledWith(
+            expect.objectContaining({
+                beltPrint: true,
+                side: "left",
+            }),
+        );
+        mockProceduralBuild.mockClear();
         await buildExportStl("left");
         expect(mockProceduralBuild).toHaveBeenCalledWith(
             expect.objectContaining({

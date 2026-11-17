@@ -34,6 +34,8 @@ export interface FlattenedText {
 
 export interface TextApplyContext {
     side: Side;
+    /** Belt manufacturing STL. Compensates VertexSlice's det −1 forward. */
+    beltPrint?: boolean;
 }
 
 export interface TextHostRepair {

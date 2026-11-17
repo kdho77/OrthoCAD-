@@ -520,6 +520,7 @@ export async function buildPrinterFootManufacturingStl(
 ): Promise<{ stl: ArrayBuffer; solidTriangles: number; uploadTriangles: number }> {
     const solid = await buildExportStl(side, {
         exportMode: exportModeFromMethod(useDesignStore.getState().design.method),
+        beltPrint: true,
     });
     const solidTriangles = binaryStlTriangleCount(solid);
     const withLeader = manufacturingStlForExportKind(solid, includeLeader ? "gcode" : "stl");
