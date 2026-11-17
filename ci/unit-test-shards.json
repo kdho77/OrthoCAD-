@@ -242,6 +242,7 @@
                 "vertex/src/lib/app-version.test.ts",
                 "vertex/src/lib/clinical/medial-sign.test.ts",
                 "vertex/src/lib/clinical/saved-design-snapshot.test.ts",
+                "vertex/src/lib/cnc/placement.test.ts",
                 "vertex/src/lib/geometry/afo/afo-heel-toe-axis.test.ts",
                 "vertex/src/lib/geometry/afo/afo-signed-corrections.test.ts",
                 "vertex/src/lib/geometry/afo/marker-side-world.test.ts",
