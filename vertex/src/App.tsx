@@ -14,15 +14,14 @@ import { PrescriptionUpload } from "@/components/prescription-upload/Prescriptio
 import { Viewer3D } from "@/components/viewer/Viewer3D";
 import { AdminApp } from "@/features/admin/AdminApp";
 import { navigate, useLocationPath } from "@/features/admin/admin-nav";
-import { ProductTypeBar } from "@/features/afo/ProductTypeBar";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { ClientFilePage } from "@/features/clients/ClientFilePage";
 import { ClientListPage } from "@/features/clients/ClientListPage";
 import { CLIENT_LIST_PATH } from "@/features/clients/client-list-nav";
 import { EditorChrome, useDesignRoute } from "@/features/clients/EditorChrome";
-import { usePersistDesignWorkflow } from "@/features/clients/usePersistDesignWorkflow";
 import { InactivityGuard } from "@/features/clients/InactivityGuard";
 import { parseClinicalPath } from "@/features/clients/routes";
+import { usePersistDesignWorkflow } from "@/features/clients/usePersistDesignWorkflow";
 import { exportDesign } from "@/features/exports/export-service";
 import { MillTableView } from "@/features/mill/MillTableView";
 import { ProductionPage } from "@/features/production/ProductionPage";
@@ -198,8 +197,7 @@ export function CadApp({ clientId, designId }: { clientId: string; designId: str
                 <ErrorBoundary>
                     <div className="flex min-h-0 flex-1">
                         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                            {afo ? <ProductTypeBar /> : null}
-                            <ClinicalStepRail />
+                            <ClinicalStepRail showProductSwitcher={afo} />
                             <CaseSummaryBar />
                             {viewport === "phone" ? (
                                 <div className="border-b border-border bg-panel px-4 py-3 text-center text-[12px] text-muted-foreground">

@@ -7,7 +7,7 @@ import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 
 /** Start-of-case Insole vs AFO switcher. Shared viewer stays mounted. */
-export function ProductTypeBar() {
+export function ProductTypeSwitcher() {
     const product = useClinicalWorkflowStore((s) => s.productType);
     const setWorkflowProduct = useClinicalWorkflowStore((s) => s.setProductType);
     const designProduct = useDesignStore((s) => s.design.productType ?? "insole");
@@ -23,7 +23,7 @@ export function ProductTypeBar() {
     };
 
     return (
-        <div className="flex items-center gap-2 border-b border-border bg-panel px-3 py-1.5">
+        <div className="flex shrink-0 items-center gap-2" data-testid="product-type-switcher">
             <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Product
             </span>
