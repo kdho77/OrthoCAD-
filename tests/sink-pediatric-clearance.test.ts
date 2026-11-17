@@ -99,12 +99,12 @@ function stampLabel(
  * Re-recorded for the met-head plateaus (30×26, 24×18, 22×17, 21×16, 20×17).
  */
 const US9_SINK_SHA256: Record<string, string> = {
-    "left-straight": "c8133aabfdd434450a7b5fc52558d9969317f6ec5f5e7c9c57865f33268d8fb2",
-    "left-round": "a8a47c44053c28da9c42511245cd7ec9099afc60ef76a384550d4e8b3a0fee20",
-    "left-hybrid": "427787e8d224108da7b1afaa611bb63671e06bbeac960df63405ab77b662cec5",
-    "right-straight": "d5512d62a267c72640c5e261f9c71bed7e3abd6fc036d612ec5ede3f82828acf",
-    "right-round": "792e487ca52bdd947c70ef2e660987af7db05931c5dbedd5f301b2b001c685ea",
-    "right-hybrid": "2527effb37d16d0ab04898e5d01aa82f79502cb81da05cab49a07820ae401837",
+    "left-straight": "d98d4c5bfd4a85edf3f2105c9ba1799f172eae4114b0afa961125b2f6fadfab5",
+    "left-round": "c959933d0bb5b7b9c5a82885f105d80d7799c608cd9fc1a1ff8da04b75386066",
+    "left-hybrid": "3e983ac82830ed83d14153e5150734522d30167dfa82b7390be7c5f6e836b417",
+    "right-straight": "1d34f8e9c8ae806ac277c6e37b9be0619197bfc0b4e7e1e9afe61b906defd662",
+    "right-round": "b94c15450ce6f158779b59de013bda7c4aed253c846cf52bca19560e7d18762b",
+    "right-hybrid": "535865a063e7214a4f7eafcc7e0935135b592e621da0a39d3631f9edf2a96494",
 };
 
 function nonRkwSinks(): PlacedSink[] {
