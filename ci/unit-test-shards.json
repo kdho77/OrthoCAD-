@@ -225,6 +225,7 @@
                 "vertex/server/src/routers/integrations/__tests__/cad-operator-design-read.test.ts",
                 "vertex/shared/admin/admin-domain.test.ts",
                 "vertex/shared/print-bridge-update.test.ts",
+                "vertex/src/components/clinical/ClinicalStepRail.test.tsx",
                 "vertex/src/components/layout/SessionRecoveryDialog.test.tsx",
                 "vertex/src/components/viewer/AfoScanLandmarkLighting.test.ts",
                 "vertex/src/components/viewer/element-markers-no-coin.test.ts",
