@@ -30,9 +30,11 @@ import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modif
 import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import { afoShellIsCurrent } from "@/lib/geometry/afo/shell-fingerprint";
+import { afoViewportFramingMesh } from "@/lib/geometry/measure/afo-target";
 import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
-import { cn } from "@/lib/utils";
 import { useAfoStore } from "@/stores/afo-store";
+import { cn } from "@/lib/utils";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/design-store";
 import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -42,7 +44,7 @@ import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
 import { AfoMarkerPlacement } from "./AfoMarkerPlacement";
 import { AfoMeshes } from "./AfoMeshes";
-import { recenterAfoScanCamera, useAfoScanCameraFrame } from "./AfoScanCameraFrame";
+import { applyAfoBottomAnchoredViewPreset, recenterAfoScanCamera, useAfoScanCameraFrame } from "./AfoScanCameraFrame";
 import { AfoScanHoverDot } from "./AfoScanHoverDot";
 import { AfoScanLandmarkLighting } from "./AfoScanLandmarkLighting";
 import { AfoScanLandmarkPlacement } from "./AfoScanLandmarkPlacement";
@@ -238,7 +240,19 @@ export function Viewer3D() {
     );
 
     const setView = (name: CameraView) => {
-        applyCameraViewPreset(controls.current, name);
+        if (isAfo) {
+            const session = useAfoStore.getState();
+            const shell = afoShellIsCurrent() ? session.shellMesh : null;
+            const mesh = afoViewportFramingMesh({
+                shell,
+                corrected: session.correctedMesh,
+                cast: session.castMesh,
+                source: session.sourceMesh,
+            });
+            applyAfoBottomAnchoredViewPreset(controls.current, name, mesh);
+        } else {
+            applyCameraViewPreset(controls.current, name);
+        }
         setViewer({ view: name });
     };
 

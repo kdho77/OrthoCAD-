@@ -6,6 +6,7 @@ import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
 import {
     AFO_SCAN_BOTTOM_MARGIN_FRAC,
     AFO_SCAN_TOP_OVERLAY_FRAC,
+    afoScanFramingNdcExtents,
     afoScanFramingNdcY,
 } from "@/lib/geometry/afo/landmark-frame";
 import { buildSyntheticLegMesh } from "@/lib/geometry/afo/synthetic-leg";
@@ -250,6 +251,23 @@ describe("afo scan ui", () => {
         expect(cameraViewForAfoMarker("fibular_head", "left")).toBe("right");
         expect(cameraViewForAfoMarker("navicular", "right")).toBe("right");
         expect(cameraViewForAfoMarker("fibular_head", "right")).toBe("left");
+    });
+
+    test("AFO anatomical view presets fit the model in frustum with bottom anchor", () => {
+        const mesh = buildSyntheticLegMesh(14);
+        const views: CameraView[] = ["front", "back", "left", "right", "bottom", "top"];
+        const bottomNdc = -1 + 2 * AFO_SCAN_BOTTOM_MARGIN_FRAC;
+        const topNdc = 1 - 2 * AFO_SCAN_TOP_OVERLAY_FRAC;
+        for (const view of views) {
+            const { minX, maxX, minY, maxY, minZ, maxZ } = afoScanFramingNdcExtents(mesh, view, 16 / 9, 40);
+            expect(minX, view).toBeGreaterThanOrEqual(-1 - 0.02);
+            expect(maxX, view).toBeLessThanOrEqual(1 + 0.02);
+            expect(minY, view).toBeGreaterThanOrEqual(bottomNdc - 0.03);
+            expect(minY, view).toBeLessThanOrEqual(bottomNdc + 0.03);
+            expect(maxY, view).toBeLessThanOrEqual(topNdc + 0.04);
+            expect(minZ, view).toBeGreaterThan(-1);
+            expect(maxZ, view).toBeLessThanOrEqual(1 + 0.02);
+        }
     });
 
     test("Stage-2 bottom-anchor framing clears the top overlay on every scan preset", () => {

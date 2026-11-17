@@ -92,6 +92,25 @@ export function recenterAfoScanCamera(controls: OrbitControlsImpl | null): void 
     tweenAfoScanCameraView(controls, view, mesh, () => useDesignStore.getState().setViewer({ view }));
 }
 
+export function applyAfoBottomAnchoredViewPreset(
+    controls: OrbitControlsImpl | null | undefined,
+    view: CameraView,
+    mesh: ReturnType<typeof useAfoStore.getState>["sourceMesh"],
+): boolean {
+    if (!controls?.object || !controls.target) return false;
+    const camera = controls.object;
+    if (!(camera instanceof THREE.PerspectiveCamera)) {
+        return applyCameraViewPreset(controls, view);
+    }
+    clearCameraViewOffset(camera);
+    const dest = afoScanFramingTarget(view, mesh, camera);
+    controls.object.position.copy(dest.position);
+    controls.target.copy(dest.target);
+    controls.object.up.set(...viewCameraUp(view));
+    controls.update();
+    return true;
+}
+
 function afoScanFramingTarget(
     view: CameraView,
     mesh: ReturnType<typeof useAfoStore.getState>["sourceMesh"],

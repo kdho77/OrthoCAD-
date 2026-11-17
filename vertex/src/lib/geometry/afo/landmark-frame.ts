@@ -532,6 +532,37 @@ function afoBoxCorners(min: Vector3, max: Vector3): Vector3[] {
     ];
 }
 
+function ndcExtentsForFraming(
+    view: CameraView,
+    target: Vector3,
+    cameraOffset: Vector3,
+    corners: Vector3[],
+    aspect: number,
+    fovDeg: number,
+): { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number } {
+    const cam = new PerspectiveCamera(fovDeg, aspect, 1, 8000);
+    cam.position.copy(target).add(cameraOffset);
+    cam.up.set(...viewCameraUp(view));
+    cam.lookAt(target);
+    cam.updateMatrixWorld(true);
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const c of corners) {
+        const ndc = c.clone().project(cam);
+        minX = Math.min(minX, ndc.x);
+        maxX = Math.max(maxX, ndc.x);
+        minY = Math.min(minY, ndc.y);
+        maxY = Math.max(maxY, ndc.y);
+        minZ = Math.min(minZ, ndc.z);
+        maxZ = Math.max(maxZ, ndc.z);
+    }
+    return { minX, maxX, minY, maxY, minZ, maxZ };
+}
+
 function ndcYRangeForFraming(
     view: CameraView,
     target: Vector3,
@@ -540,18 +571,7 @@ function ndcYRangeForFraming(
     aspect: number,
     fovDeg: number,
 ): { minY: number; maxY: number } {
-    const cam = new PerspectiveCamera(fovDeg, aspect, 1, 8000);
-    cam.position.copy(target).add(cameraOffset);
-    cam.up.set(...viewCameraUp(view));
-    cam.lookAt(target);
-    cam.updateMatrixWorld(true);
-    let minY = Infinity;
-    let maxY = -Infinity;
-    for (const c of corners) {
-        const ndc = c.clone().project(cam);
-        minY = Math.min(minY, ndc.y);
-        maxY = Math.max(maxY, ndc.y);
-    }
+    const { minY, maxY } = ndcExtentsForFraming(view, target, cameraOffset, corners, aspect, fovDeg);
     return { minY, maxY };
 }
 
@@ -606,8 +626,19 @@ export function afoScanFramingNdcY(
     aspect: number,
     fovDeg: number,
 ): { minY: number; maxY: number } {
+    const { minY, maxY } = afoScanFramingNdcExtents(mesh, view, aspect, fovDeg);
+    return { minY, maxY };
+}
+
+/** Oriented AABB corners projected under {@link afoScanBottomAnchoredFraming}. */
+export function afoScanFramingNdcExtents(
+    mesh: AfoTriMesh,
+    view: CameraView,
+    aspect: number,
+    fovDeg: number,
+): { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number } {
     const frame = afoScanBottomAnchoredFraming(mesh, view, aspect, fovDeg);
     const { min, max } = afoOrientedMeshWorldBounds(mesh);
     const corners = afoBoxCorners(min, max);
-    return ndcYRangeForFraming(view, frame.target, frame.cameraOffset, corners, aspect, fovDeg);
+    return ndcExtentsForFraming(view, frame.target, frame.cameraOffset, corners, aspect, fovDeg);
 }
