@@ -258,6 +258,7 @@
                 "vertex/src/lib/geometry/procedural-wall/station-gates.test.ts",
                 "vertex/src/lib/geometry/scan-manual-offset.test.ts",
                 "vertex/src/lib/geometry/shoe-size.test.ts",
+                "vertex/src/lib/geometry/text-marking/bottom-plantar-view.test.ts",
                 "vertex/src/lib/geometry/text-marking/font.test.ts",
                 "vertex/src/lib/geometry/trimline.test.ts",
                 "vertex/src/lib/library/loaders.test.ts",
