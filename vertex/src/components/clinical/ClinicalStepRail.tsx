@@ -6,6 +6,7 @@ import { clientFilePath } from "@/features/clients/routes";
 import { isOptionalScanWorkflow } from "@/features/clients/start-path";
 import { useSaveDesign } from "@/features/designs/SaveControl";
 import {
+    AFO_PRINT_TRIM_REASON,
     evaluateNextGate,
     evaluateStepComplete,
     selectAfoLandmarkRevision,
@@ -34,12 +35,15 @@ export function ClinicalStepRail() {
     void footSideExplicitlyChosen;
     const setStep = useClinicalWorkflowStore((s) => s.setStep);
     const method = useDesignStore((s) => s.design.method);
+    const trimConfirmed = useDesignStore((s) => s.design.afo?.trimConfirmed === true);
     const scanGateRevision = useScanStore(selectScanGateRevision);
     const afoLandmarkRevision = useDesignStore(selectAfoLandmarkRevision);
     const stockGate = useDesignStore((s) => `${s.stockBaseLoading ? 1 : 0}:${s.stockBaseError ?? ""}`);
 
     const stepState = (id: ClinicalStepId) => {
         if (step === id) return "current";
+        if (productType === "afo" && !trimConfirmed && (id === "print" || id === "export"))
+            return "attention";
         if (evaluateStepComplete(id, completedSteps)) return "completed";
         if (stepIndexOf(id, steps) < stepIndexOf(step, steps)) return "visited";
         if (
@@ -53,7 +57,6 @@ export function ClinicalStepRail() {
     };
 
     void scanGateStickyReason;
-    void nextBlockReason;
 
     const optionalScanRail = isOptionalScanWorkflow(designStartPath);
 
@@ -72,6 +75,7 @@ export function ClinicalStepRail() {
                         <button
                             key={s.id}
                             type="button"
+                            data-testid={`clinical-step-${s.id}`}
                             onClick={() => setStep(s.id)}
                             className={cn(
                                 "flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors",
@@ -110,6 +114,11 @@ export function ClinicalStepRail() {
                     );
                 })}
             </nav>
+            {nextBlockReason === AFO_PRINT_TRIM_REASON ? (
+                <p role="status" data-testid="afo-trim-gate" className="mt-2 text-[11px] text-amber-200">
+                    {nextBlockReason}
+                </p>
+            ) : null}
         </div>
     );
 }
@@ -122,7 +131,6 @@ export function ClinicalStepFooter() {
     const step = useClinicalWorkflowStore((s) => s.step);
     const nextBlockReason = useClinicalWorkflowStore((s) => s.nextBlockReason);
     const footSideExplicitlyChosen = useClinicalWorkflowStore((s) => s.footSideExplicitlyChosen);
-    void nextBlockReason;
     void footSideExplicitlyChosen;
     const goNext = useClinicalWorkflowStore((s) => s.goNext);
     const goBack = useClinicalWorkflowStore((s) => s.goBack);
@@ -146,6 +154,15 @@ export function ClinicalStepFooter() {
             data-afo-landmarks={afoLandmarkRevision}
             data-stock-gate={stockGate}
         >
+            {nextBlockReason === AFO_PRINT_TRIM_REASON ? (
+                <p
+                    role="status"
+                    data-testid="afo-trim-gate-footer"
+                    className="mb-2 text-[11px] text-amber-200"
+                >
+                    {nextBlockReason}
+                </p>
+            ) : null}
             <div className="flex gap-2">
                 <button
                     type="button"

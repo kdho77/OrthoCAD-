@@ -494,6 +494,7 @@ export function applyAfoTrimCleanup(): { ok: boolean; reasons: string[] } {
                 vertexIndex: nearestVertex(mesh, point).index,
             })),
             trimCurve: result.curve,
+            trimConfirmed: false,
             shellReady: false,
         },
         "afo-trim-cleanup",

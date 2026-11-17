@@ -231,11 +231,13 @@ describe("AFO trim cleanup", () => {
         expect(applied.ok).toBe(true);
         expect(useDesignStore.getState().history).toHaveLength(1);
         expect(getAfoState().shellReady).toBe(false);
+        expect(getAfoState().trimConfirmed).toBe(false);
         expect(afoShellIsCurrent()).toBe(false);
         expect(getAfoState().trimPoints.some((point) => dist(point.point, anchor) <= 1e-4)).toBe(true);
         useDesignStore.getState().undo();
         expect(getAfoState().trimPoints.map((point) => point.point)).toEqual(before);
         expect(getAfoState().shellReady).toBe(true);
+        expect(getAfoState().trimConfirmed).toBe(true);
         expect(afoShellIsCurrent()).toBe(true);
     });
 

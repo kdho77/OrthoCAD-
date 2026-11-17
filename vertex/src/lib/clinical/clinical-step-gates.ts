@@ -96,6 +96,25 @@ export function evaluateStepComplete(
     return false;
 }
 
+/** Copy when Print or Export is refused because the trim loop is not confirmed. */
+export const AFO_PRINT_TRIM_REASON = "Confirm a closed geodesic trim loop before Print.";
+
+/** Print and everything after it. An unconfirmed trim must not land here. */
+export function afoPrintRequiresConfirmedTrim(step: ClinicalStepId): boolean {
+    return step === "print" || step === "export";
+}
+
+/**
+ * AFO Print and Export stay closed until the trim loop is confirmed.
+ * Insole steps are not affected.
+ */
+export function afoTrimConfirmedForPrint(): StepGateResult {
+    if (useClinicalWorkflowStore.getState().productType !== "afo") return { ok: true };
+    const afo = useDesignStore.getState().design.afo;
+    if (!afo?.trimConfirmed) return { ok: false, reason: AFO_PRINT_TRIM_REASON };
+    return { ok: true };
+}
+
 /** Gate for leaving the current step via Next. */
 export function evaluateNextGate(fromStep: ClinicalStepId): StepGateResult {
     if (fromStep === "scan") return evaluateScanStepGate();
@@ -115,10 +134,8 @@ export function evaluateNextGate(fromStep: ClinicalStepId): StepGateResult {
         }
     }
     if (product === "afo" && fromStep === "design") {
-        const afo = useDesignStore.getState().design.afo;
-        if (!afo?.trimConfirmed) {
-            return { ok: false, reason: "Confirm a closed geodesic trim loop before Print." };
-        }
+        const trim = afoTrimConfirmedForPrint();
+        if (!trim.ok) return trim;
     }
     if (product === "afo" && fromStep === "print") {
         if (!afoShellIsCurrent()) {
