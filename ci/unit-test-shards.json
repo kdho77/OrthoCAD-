@@ -228,6 +228,7 @@
                 "vertex/src/components/layout/SessionRecoveryDialog.test.tsx",
                 "vertex/src/components/viewer/AfoScanLandmarkLighting.test.ts",
                 "vertex/src/components/viewer/element-markers-no-coin.test.ts",
+                "vertex/src/features/afo/AfoPrintPanel.generate.test.tsx",
                 "vertex/src/features/afo/afo-scan-ui.test.ts",
                 "vertex/src/features/clients/DesignNotesField.test.tsx",
                 "vertex/src/features/clients/design-route.deeplink.test.tsx",
@@ -327,6 +328,7 @@
                 "vertex/src/lib/geometry/viewport-side-layout.test.ts",
                 "vertex/src/lib/pressure-map/pressure-map.test.ts",
                 "vertex/src/stores/client-store.directory.test.ts",
+                "vertex/src/stores/clinical-workflow-afo-trim-gate.test.ts",
                 "vertex/src/stores/design-store.stock-loading.test.ts"
             ]
         },
