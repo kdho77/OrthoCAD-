@@ -48,6 +48,11 @@ export function exportModeFromMethod(method: ProductionMethod): ExportMode {
 
 export interface BuildExportStlOptions {
     exportMode?: ExportMode;
+    /**
+     * Belt upload. Bottom text keeps cap +Y so VertexSlice's det −1 forward
+     * prints the name upright from the plantar face. Plain STL leaves this off.
+     */
+    beltPrint?: boolean;
 }
 
 /**
@@ -66,7 +71,7 @@ function cutExportSinks(geometry: BufferGeometry, field: HeightFieldParams): Buf
 }
 
 /** Same inputs buildExportStl lofts. Fingerprint and the solid must share this object. */
-function proceduralExportRequest(design: DesignState, side: Side) {
+function proceduralExportRequest(design: DesignState, side: Side, beltPrint = false) {
     const base = getDesignBase(design, side);
     if (!base) return null;
     const viewer = useDesignStore.getState().viewer;
@@ -93,6 +98,7 @@ function proceduralExportRequest(design: DesignState, side: Side) {
             }),
         }),
         mirrored,
+        ...(beltPrint ? { beltPrint: true } : {}),
     };
     return {
         solidOptions,
@@ -118,8 +124,9 @@ async function buildModifiedBaseGeometry(
     design: DesignState,
     side: Side,
     smoothingIterations = 2,
+    beltPrint = false,
 ): Promise<BufferGeometry | null> {
-    const request = proceduralExportRequest(design, side);
+    const request = proceduralExportRequest(design, side, beltPrint);
     if (request) {
         const preview = await buildProceduralExportSolid(request.solidOptions, request.cache);
         return preview.geometry;
@@ -224,7 +231,7 @@ function solidCameFromManufacturingCache(geometry: BufferGeometry | undefined): 
 }
 
 /** Close, watertight-check, and scale one foot. A bad cache entry is dropped and lofted once. */
-async function closeAndValidateExportGeometry(side: Side): Promise<BufferGeometry> {
+async function closeAndValidateExportGeometry(side: Side, beltPrint = false): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
     if (design.productType === "afo") {
         const shell = useAfoStore.getState().shellMesh;
@@ -236,7 +243,7 @@ async function closeAndValidateExportGeometry(side: Side): Promise<BufferGeometr
         return geometry;
     }
     assertShapeFinishExportAllowed(design, side);
-    const geometry = await buildModifiedBaseGeometry(design, side, 0);
+    const geometry = await buildModifiedBaseGeometry(design, side, 0, beltPrint);
     if (!geometry) {
         throw new Error(
             "[EXPORT] No GLB base geometry available. Load a stock base before exporting. Parametric export is not supported.",
@@ -281,13 +288,13 @@ async function closeAndValidateExportGeometry(side: Side): Promise<BufferGeometr
 }
 
 /** Build and validate the actual manufacturing mesh. Caller owns the geometry. */
-async function buildClosedExportGeometry(side: Side): Promise<BufferGeometry> {
+async function buildClosedExportGeometry(side: Side, beltPrint = false): Promise<BufferGeometry> {
     try {
-        return await closeAndValidateExportGeometry(side);
+        return await closeAndValidateExportGeometry(side, beltPrint);
     } catch (error) {
         // A fresh loft that fails validation stays failed. printLoftEpoch is not bumped.
         if (!(error as { fromManufacturingCache?: boolean } | null)?.fromManufacturingCache) throw error;
-        return closeAndValidateExportGeometry(side);
+        return closeAndValidateExportGeometry(side, beltPrint);
     }
 }
 
@@ -325,8 +332,8 @@ export async function buildOrderPairGeometry(): Promise<BufferGeometry> {
 }
 
 /** Export STL bytes for one foot. Pair downloads use {@link buildOrderPairGeometry}. */
-export async function buildExportStl(side: Side, _options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
-    const solid = await buildClosedExportGeometry(side);
+export async function buildExportStl(side: Side, options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
+    const solid = await buildClosedExportGeometry(side, options.beltPrint === true);
     try {
         perfMark("export:stl", { side });
         return geometryToBinarySTL(solid);

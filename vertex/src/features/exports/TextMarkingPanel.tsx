@@ -230,7 +230,7 @@ export function TextFitList() {
             cap = report.usableMm;
         }
         cap = Math.min(bounds.capMax, Math.max(bounds.capMin, Math.round(cap * 10) / 10));
-        setTextMarking({ capHeightMm: cap });
+        setTextMarking({ capHeightMm: cap, capHeightUserSet: true });
     };
 
     const fixes = [...new Set(report.warnings.flatMap((w) => w.fixes))];
@@ -502,8 +502,8 @@ export function TextMarkingPanel() {
                 step={0.1}
                 unit="mm"
                 defaultValue={bounds.capDefault}
-                onChange={(v) => setTextMarking({ capHeightMm: v })}
-                onReset={() => setTextMarking({ capHeightMm: bounds.capDefault })}
+                onChange={(v) => setTextMarking({ capHeightMm: v, capHeightUserSet: true })}
+                onReset={() => setTextMarking({ capHeightMm: bounds.capDefault, capHeightUserSet: false })}
             />
             <SliderField
                 label={offsetLabel}

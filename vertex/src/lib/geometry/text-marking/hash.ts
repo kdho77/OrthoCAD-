@@ -31,6 +31,8 @@ export function textMarkingHash(marking: TextMarking | null | undefined): string
             marking.surface === "bottom" && marking.addPatientName === true ? "addPatientName" : "",
             (marking.nudgeAlongMm ?? 0).toFixed(2),
             (marking.nudgeAcrossMm ?? 0).toFixed(2),
+            // Only an explicit slider choice. Omitting it keeps pre-flag hashes stable.
+            ...(marking.capHeightUserSet ? ["capUser"] : []),
         ].join("|"),
     );
 }

@@ -19,7 +19,7 @@ import { loadTextFont } from "./font";
 import { assertTextPrintGates } from "./gates";
 import { bandWallHeightMm, extractHostTextContext, placeBottomText, placeWallText } from "./place";
 import type { TextApplyContext, TextApplyMeta, TextMarking } from "./types";
-import { assertTextMarkingInRange } from "./validate";
+import { assertTextMarkingInRange, normalizeTextMarking } from "./validate";
 
 function shrinkThenFlatten(
     font: Awaited<ReturnType<typeof loadTextFont>>,
@@ -65,7 +65,15 @@ export async function applyTextMarkingToPrintSolid(
     let forSide = markingForSide(marking, ctx.side);
     if (forSide.surface === "bottom") {
         const composed = composeMarkingTextForSide(marking, ctx.side, patientDisplayName);
-        forSide = { ...forSide, text: composed, differentOnLR: false, textLeft: "", textRight: "" };
+        // Legacy saved rows keep capHeightMm 6. Resolve that to 12 mm bold here so
+        // UI export and the headless loft match, including when the row is not re-saved.
+        forSide = normalizeTextMarking({
+            ...forSide,
+            text: composed,
+            differentOnLR: false,
+            textLeft: "",
+            textRight: "",
+        });
     }
     if (!hasActiveTextMarking(forSide)) return host;
     const hostCtx = extractHostTextContext(host);
@@ -86,7 +94,9 @@ export async function applyTextMarkingToPrintSolid(
     let placeMeta: Pick<TextApplyMeta, "centroids" | "mappedWidthMm" | "wallUMin" | "wallUMax">;
     if (checked.surface === "bottom") {
         placedFlat = shrinkThenFlatten(font, checked, minCap, (flat) => {
-            placeBottomText(host, hostCtx, { ...checked, capHeightMm: flat.capHeightMm }, flat, ctx.side);
+            placeBottomText(host, hostCtx, { ...checked, capHeightMm: flat.capHeightMm }, flat, ctx.side, {
+                beltPrint: ctx.beltPrint,
+            });
         });
         const placed = placeBottomText(
             host,
@@ -94,6 +104,7 @@ export async function applyTextMarkingToPrintSolid(
             { ...checked, capHeightMm: placedFlat.capHeightMm },
             placedFlat,
             ctx.side,
+            { beltPrint: ctx.beltPrint },
         );
         placedFlat = placed.flat;
         map = placed.map;

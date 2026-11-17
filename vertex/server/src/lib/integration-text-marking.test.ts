@@ -22,6 +22,59 @@ describe("integration patient bottom textMarking", () => {
         expect(marking.surface).toBe("bottom");
         expect(marking.mode).toBe("engrave");
         expect(marking.feet).toBe("both");
+        expect(marking.capHeightMm).toBe(12);
+        expect(marking.bold).toBe(true);
+    });
+
+    test("legacy implicit 6 mm resolves to 12 mm bold; an explicit cap is kept", () => {
+        const legacySettings = {
+            schemaVersion: 1,
+            settings: {
+                textMarking: {
+                    ...integrationBottomTextMarkingDefaults(),
+                    capHeightMm: 6,
+                    bold: false,
+                },
+            },
+        };
+        const legacy = resolveProductionTextMarking({
+            settingsJson: legacySettings,
+            clientDisplayName: "Jane Doe",
+        });
+        expect(legacy.textMarking.capHeightMm).toBe(12);
+        expect(legacy.textMarking.bold).toBe(true);
+        expect(legacy.textMarking.capHeightUserSet).toBe(false);
+
+        const chosen = resolveProductionTextMarking({
+            settingsJson: {
+                schemaVersion: 1,
+                settings: {
+                    textMarking: {
+                        ...integrationBottomTextMarkingDefaults(),
+                        capHeightMm: 8,
+                        capHeightUserSet: true,
+                        bold: false,
+                    },
+                },
+            },
+        });
+        expect(chosen.textMarking.capHeightMm).toBe(8);
+        expect(chosen.textMarking.bold).toBe(true);
+
+        const chosenSix = resolveProductionTextMarking({
+            settingsJson: {
+                schemaVersion: 1,
+                settings: {
+                    textMarking: {
+                        ...integrationBottomTextMarkingDefaults(),
+                        capHeightMm: 6,
+                        capHeightUserSet: true,
+                    },
+                },
+            },
+        });
+        expect(chosenSix.textMarking.capHeightMm).toBe(6);
+        expect(chosenSix.textMarking.bold).toBe(true);
     });
 
     test("loft envelope composes name and extra on separate lines", () => {

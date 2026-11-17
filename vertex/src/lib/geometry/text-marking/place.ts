@@ -575,6 +575,7 @@ export function placeBottomText(
     marking: TextMarking,
     flat: FlattenedText,
     side: Side,
+    opts?: { beltPrint?: boolean },
 ): {
     flat: FlattenedText;
     map: MapTextPoint;
@@ -583,8 +584,15 @@ export function placeBottomText(
 } {
     const u = Math.max(TEXT_U.bottom.min, Math.min(TEXT_U.bottom.max, marking.placementU));
     const cx = xAtU(ctx, u) + (marking.nudgeAlongMm ?? 0);
-    // Left-foot placement is already mirrored with the host mesh; do not glyph-mirror again.
+    // Do not glyph-mirror from `side`. The host is already in the footprint frame
+    // (SAMPLE_Top internal left is the unmirrored mesh; internal right is the Y mirror).
+    // A side-keyed X flip would invert one foot.
     void side;
+    // Design mesh, looked at from below (+Z, screen-right +X, screen-up −Y): negate Y.
+    // Belt upload: VertexSlice Rz(270) then BeltTransform forward (det −1) makes
+    // that same camera's screen-up equal +mesh Y. Leave Y so the printed plantar
+    // face reads upright. X stays put either way; (−x, y) would mirror the string.
+    const ySign = opts?.beltPrint ? 1 : -1;
     const cy = centrelineYAtX(ctx.outline, cx, ctx.midY) + (marking.nudgeAcrossMm ?? 0);
     const local = { x: flat.advanceMm / 2, y: flat.capHeightMm / 2 };
     const applyAt = (src: FlattenedText, scale: number): FlattenedText => {
@@ -595,9 +603,8 @@ export function placeBottomText(
         }));
         const rotated = transformGroups(pivoted, (p) => rotateAbout(p, { x: 0, y: 0 }, marking.rotationDeg));
         // opentype getPath is canvas-down. flattenPath negates Y again, so the cap
-        // points +Y and the advance points +X. From below, screen-up is −Y and
-        // screen-right is +X: negate Y, leave X. (−x, y) mirrors the string.
-        const upright = transformGroups(rotated, (p) => ({ x: p.x, y: -p.y }));
+        // points +Y and the advance points +X.
+        const upright = transformGroups(rotated, (p) => ({ x: p.x, y: ySign * p.y }));
         return transformGroups(upright, (p) => ({ x: p.x + cx, y: p.y + cy }));
     };
 

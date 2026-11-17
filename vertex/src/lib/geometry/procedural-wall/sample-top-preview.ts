@@ -186,6 +186,7 @@ async function applyExportText(
             options.textMarking,
             {
                 side: options.side ?? (options.mirrored ? "left" : "right"),
+                beltPrint: options.beltPrint,
             },
             options.patientDisplayName,
         );
@@ -314,6 +315,12 @@ export interface ProceduralPreviewOptions {
     patientDisplayName?: string | null;
     /** Foot side for left/right placement (wall text is never glyph-mirrored). */
     side?: Side;
+    /**
+     * Belt manufacturing STL only. Keeps the bottom-name cap at +Y so
+     * VertexSlice's det −1 forward prints the name upright from below.
+     * Omitted on the viewer and on a plain STL download.
+     */
+    beltPrint?: boolean;
     /**
      * Scale the top sheet to this shoe footprint before compose. Export and CNC
      * set it. The viewer leaves it unset so the on-screen SAMPLE_Top stays native.

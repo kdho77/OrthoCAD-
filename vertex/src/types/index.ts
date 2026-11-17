@@ -72,6 +72,11 @@ export interface TextMarking {
     nudgeAlongMm: number;
     /** Bottom: off the centreline. Sides: off mid-height. */
     nudgeAcrossMm: number;
+    /**
+     * True when the letter-height control set `capHeightMm`.
+     * Absent means a stored 6 mm is the pre-#353 implicit default (resolved to 12).
+     */
+    capHeightUserSet?: boolean;
 }
 
 /** Track 5b — print / shell shape & finish modifiers (per foot). */

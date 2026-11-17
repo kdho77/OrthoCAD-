@@ -117,6 +117,37 @@ describe("text marking controls", () => {
         expect(n.placementU).toBe(0.78);
         expect(n.bold).toBe(true);
     });
+
+    test("legacy implicit 6 mm bottom cap resolves to 12 mm bold", () => {
+        const legacy = normalizeTextMarking({
+            ...defaultTextMarking("bottom"),
+            text: "JABBOUR",
+            capHeightMm: 6,
+            bold: false,
+        });
+        expect(legacy.capHeightMm).toBe(12);
+        expect(legacy.bold).toBe(true);
+        expect(legacy.capHeightUserSet).toBe(false);
+
+        const chosenSix = normalizeTextMarking({
+            ...defaultTextMarking("bottom"),
+            text: "JABBOUR",
+            capHeightMm: 6,
+            capHeightUserSet: true,
+            bold: false,
+        });
+        expect(chosenSix.capHeightMm).toBe(6);
+        expect(chosenSix.bold).toBe(true);
+        expect(chosenSix.capHeightUserSet).toBe(true);
+
+        const chosen = normalizeTextMarking({
+            ...defaultTextMarking("bottom"),
+            text: "JABBOUR",
+            capHeightMm: 8,
+        });
+        expect(chosen.capHeightMm).toBe(8);
+        expect(chosen.bold).toBe(true);
+    });
 });
 
 describe("text print-path constants", () => {
