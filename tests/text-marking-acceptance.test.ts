@@ -19,6 +19,7 @@ function marking(surface: TextSurface, extras: Partial<TextMarking> = {}): TextM
         ...defaultTextMarking(surface),
         text: SAMPLE,
         capHeightMm: 6,
+        capHeightUserSet: true,
         ...extras,
     };
 }

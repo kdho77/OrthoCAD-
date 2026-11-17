@@ -19,7 +19,7 @@ import { loadTextFont } from "./font";
 import { assertTextPrintGates } from "./gates";
 import { bandWallHeightMm, extractHostTextContext, placeBottomText, placeWallText } from "./place";
 import type { TextApplyContext, TextApplyMeta, TextMarking } from "./types";
-import { assertTextMarkingInRange } from "./validate";
+import { assertTextMarkingInRange, normalizeTextMarking } from "./validate";
 
 function shrinkThenFlatten(
     font: Awaited<ReturnType<typeof loadTextFont>>,
@@ -65,7 +65,15 @@ export async function applyTextMarkingToPrintSolid(
     let forSide = markingForSide(marking, ctx.side);
     if (forSide.surface === "bottom") {
         const composed = composeMarkingTextForSide(marking, ctx.side, patientDisplayName);
-        forSide = { ...forSide, text: composed, differentOnLR: false, textLeft: "", textRight: "" };
+        // Legacy saved rows keep capHeightMm 6. Resolve that to 12 mm bold here so
+        // UI export and the headless loft match, including when the row is not re-saved.
+        forSide = normalizeTextMarking({
+            ...forSide,
+            text: composed,
+            differentOnLR: false,
+            textLeft: "",
+            textRight: "",
+        });
     }
     if (!hasActiveTextMarking(forSide)) return host;
     const hostCtx = extractHostTextContext(host);

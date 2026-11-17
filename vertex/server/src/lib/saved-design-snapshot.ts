@@ -2,7 +2,7 @@
 // Writes a fail-closed SAMPLE_Top settingsJson onto one existing dogfood design.
 
 import type { Prisma, PrismaClient } from "@prisma/client";
-
+import { normalizeBottomTextMarking, type TextMarking } from "../../../shared/bottom-text-marking.js";
 import { readStoredDesignSettings } from "../../../shared/design-settings.js";
 import type { HardnessName } from "../../../shared/print-recipe/print-recipe.js";
 import {
@@ -154,6 +154,11 @@ function mergeStoredClinicalIntoSnapshot(
     existing: Record<string, unknown> | null,
 ): void {
     if (!existing) return;
+
+    // A prior letter-height choice survives. The pre-#353 implicit 6 mm does not.
+    if (existing.textMarking && typeof existing.textMarking === "object") {
+        built.design.textMarking = normalizeBottomTextMarking(existing.textMarking as Partial<TextMarking>);
+    }
 
     if (catalog.elements === undefined && Array.isArray(existing.elements)) {
         built.design.elements = structuredClone(existing.elements) as typeof built.design.elements;

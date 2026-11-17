@@ -550,6 +550,7 @@ describe("forefoot width — SAMPLE_Top M9 procedural export", () => {
             mode: "engrave" as const,
             placementU: 0.62,
             capHeightMm: 6,
+            capHeightUserSet: true,
             nudgeAlongMm: 0,
             nudgeAcrossMm: 0,
         };

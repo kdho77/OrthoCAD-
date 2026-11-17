@@ -71,7 +71,16 @@ describe("SAMPLE_Top saved-design snapshot", () => {
         expect(built.design.base?.assetId).toBe(SAMPLE_TOP_ASSET_ID);
         expect(built.design.base?.glbPath).toBe(SAMPLE_TOP_GLB_PATH);
         expect(built.design.paired?.rightBase?.mirrored).toBe(true);
+        expect(built.design.textMarking).toMatchObject({
+            capHeightMm: 12,
+            bold: true,
+            addPatientName: true,
+            surface: "bottom",
+            mode: "engrave",
+        });
         const lofted = designStateFromSavedSettings(envelope);
+        expect(lofted.textMarking?.capHeightMm).toBe(12);
+        expect(lofted.textMarking?.bold).toBe(true);
         expect(lofted.usMenSize).toBe(9);
         expect(lofted.elements).toEqual([]);
         expect(lofted.base?.glbPath).toBe(SAMPLE_TOP_GLB_PATH);

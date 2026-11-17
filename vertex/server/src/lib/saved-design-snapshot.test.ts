@@ -113,6 +113,60 @@ describe("persist saved design snapshot", () => {
         expect(result.shoe_width_source).toBe("prescribed");
         expect(result.hardness_source).toBe("unspecified");
         expect(result.scans_used).toBe(false);
+        const marking = settings?.textMarking as { capHeightMm?: number; bold?: boolean } | undefined;
+        expect(marking?.capHeightMm).toBe(12);
+        expect(marking?.bold).toBe(true);
+    });
+
+    test("a stored legacy 6 mm cap resolves to 12 mm bold and an explicit cap is kept", async () => {
+        const template = buildSavedDesignSnapshot({
+            stored: { system: "US_M", size: 9, left: null, right: null, width: null },
+            catalog: parseSavedDesignCatalog({}),
+        }).design;
+        const legacyRow = settingsEnvelopeForSave({
+            ...template,
+            textMarking: { ...template.textMarking, capHeightMm: 6, bold: false },
+        });
+        const legacy = await persistSavedDesignSnapshotOnDesign({
+            prisma: fakePrisma(row({ settingsJson: legacyRow })).prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: {},
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        const legacyMarking = readStoredDesignSettings(legacy.settingsJson)?.textMarking as {
+            capHeightMm?: number;
+            bold?: boolean;
+            capHeightUserSet?: boolean;
+        };
+        expect(legacyMarking.capHeightMm).toBe(12);
+        expect(legacyMarking.bold).toBe(true);
+        expect(legacyMarking.capHeightUserSet).toBe(false);
+
+        const explicitRow = settingsEnvelopeForSave({
+            ...template,
+            textMarking: {
+                ...template.textMarking,
+                capHeightMm: 8,
+                capHeightUserSet: true,
+                bold: false,
+            },
+        });
+        const explicit = await persistSavedDesignSnapshotOnDesign({
+            prisma: fakePrisma(row({ settingsJson: explicitRow })).prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: {},
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        const explicitMarking = readStoredDesignSettings(explicit.settingsJson)?.textMarking as {
+            capHeightMm?: number;
+            bold?: boolean;
+            capHeightUserSet?: boolean;
+        };
+        expect(explicitMarking.capHeightMm).toBe(8);
+        expect(explicitMarking.bold).toBe(true);
+        expect(explicitMarking.capHeightUserSet).toBe(true);
     });
 
     test("stored xx_wide maps and an omitted width does not change shoeWidthSource", async () => {

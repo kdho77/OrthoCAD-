@@ -13,6 +13,7 @@ import type {
     SideCorrections,
     SinkKind,
 } from "../src/types/index.js";
+import { defaultBottomTextMarking } from "./bottom-text-marking.js";
 import { canonicalMaterialHardness } from "./dogfood-manufacturing.js";
 import { type HardnessName, migratePrintRecipe } from "./print-recipe/print-recipe.js";
 import {
@@ -666,6 +667,7 @@ export function buildSavedDesignSnapshot(input: {
     const usMenSize = usMenSizeFromShoe(shoe);
     const layout = insoleLayoutForUsMenSize(usMenSize);
     const design = replaceBuiltinDefaultWithSampleTop(bareSampleTopDesign());
+    design.textMarking = defaultBottomTextMarking();
     if (
         design.base?.assetId !== SAMPLE_TOP_ASSET_ID ||
         design.base.glbPath !== SAMPLE_TOP_GLB_PATH ||
@@ -693,6 +695,7 @@ export function buildSavedDesignSnapshot(input: {
         "settings.printRecipe",
         "settings.corrections",
         "settings.elements",
+        "settings.textMarking",
     ];
 
     design.sizeSystem = "us";

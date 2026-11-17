@@ -31,6 +31,11 @@ export interface TextMarking {
     textRight: string;
     nudgeAlongMm: number;
     nudgeAcrossMm: number;
+    /**
+     * True when the letter-height slider (or a fit action) set `capHeightMm`.
+     * Absent on rows written by the pre-#353 default. See {@link bottomCapHeightIsUserSet}.
+     */
+    capHeightUserSet?: boolean;
 }
 
 export const TEXT_MAX_CHARS = 24;
@@ -41,6 +46,12 @@ export const TEXT_DEPTH_STEP_MM = 0.1;
 export const TEXT_ROTATION_MAX_DEG = 90;
 
 export const BOTTOM_CAP = { min: 2.5, default: 12, max: 12 } as const;
+/**
+ * `BOTTOM_CAP.default` before #353 (c3f79c2c). `defaultBottomTextMarking()` wrote
+ * this with no separate "user chose it" bit. A stored 6 mm without
+ * `capHeightUserSet` is that implicit default, not a slider choice.
+ */
+export const LEGACY_IMPLICIT_BOTTOM_CAP_MM = 6;
 export const BOTTOM_ENGRAVE = { min: 0.3, default: 0.6, max: 1.2 } as const;
 export const BOTTOM_EMBOSS_HEIGHT = { min: 0.3, default: 0.4, max: 1.2 } as const;
 export const BOTTOM_U = { min: 0.12, default: 0.32, max: 0.78 } as const;
@@ -65,7 +76,21 @@ function snapTextStep(value: number, min: number, max: number, step: number): nu
     return Number(clamped.toFixed(4));
 }
 
-/** Print/Export bottom default: name checkbox on, extra line empty, engrave. */
+/**
+ * Letter height the user picked on the slider or a fit action.
+ * A stored 6 mm without this flag is {@link LEGACY_IMPLICIT_BOTTOM_CAP_MM}.
+ * Any other stored cap (2.5–12, including 6 mm with the flag) is kept.
+ * Bottom bold has no off switch, so a stored `bold: false` is not a choice.
+ */
+export function bottomCapHeightIsUserSet(input: Partial<TextMarking> | null | undefined): boolean {
+    return input?.capHeightUserSet === true;
+}
+
+function isLegacyImplicitBottomCap(input: Partial<TextMarking> | null | undefined, capMm: number): boolean {
+    return Math.abs(capMm - LEGACY_IMPLICIT_BOTTOM_CAP_MM) < 0.05 && !bottomCapHeightIsUserSet(input);
+}
+
+/** Print/Export bottom default: name checkbox on, extra line empty, engrave, 12 mm bold. */
 export function defaultBottomTextMarking(): TextMarking {
     return {
         text: "",
@@ -107,7 +132,15 @@ export function normalizeBottomTextMarking(input: Partial<TextMarking> | null | 
     next.nudgeAcrossMm = input?.nudgeAcrossMm ?? 0;
     if (typeof next.text === "string") next.text = next.text.toUpperCase();
     next.mode = "engrave";
-    next.capHeightMm = snapTextStep(next.capHeightMm, BOTTOM_CAP.min, BOTTOM_CAP.max, 0.1);
+    const rawCap = next.capHeightMm;
+    const userSetCap = bottomCapHeightIsUserSet(input);
+    next.capHeightMm = snapTextStep(
+        isLegacyImplicitBottomCap(input, rawCap) ? BOTTOM_CAP.default : rawCap,
+        BOTTOM_CAP.min,
+        BOTTOM_CAP.max,
+        0.1,
+    );
+    next.capHeightUserSet = userSetCap;
     next.depthMm = snapTextStep(next.depthMm, BOTTOM_ENGRAVE.min, BOTTOM_ENGRAVE.max, TEXT_DEPTH_STEP_MM);
     next.heightMm = snapTextStep(
         next.heightMm,

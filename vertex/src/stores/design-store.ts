@@ -1381,6 +1381,14 @@ export const useDesignStore = create<DesignStore>()(
                     safeDesign = createDesignWithStockPlaceholder(safeDesign);
                 }
                 safeDesign = replaceBuiltinDefaultWithSampleTop(sanitizeDesignStockBases(safeDesign));
+                // Pre-#353 rows stored the implicit 6 mm cap. Opening them resolves to 12 mm bold
+                // unless the letter-height slider set capHeightUserSet.
+                if (safeDesign.textMarking?.surface === "bottom") {
+                    safeDesign = {
+                        ...safeDesign,
+                        textMarking: normalizeTextMarking(safeDesign.textMarking),
+                    };
+                }
                 const eff = buildEffectiveTrimlines(safeDesign);
                 useIssuesStore.getState().recompute(safeDesign, eff);
                 const needsResolution = designNeedsDefaultStockResolution(safeDesign);
