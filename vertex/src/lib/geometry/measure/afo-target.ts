@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import type { AfoTriMesh } from "@/lib/geometry/afo/types";
+
 /**
  * Mesh the AFO measurement tools read.
  * Shell wins. Before a shell exists, the cast or corrected positive is used.
@@ -11,6 +13,24 @@ export function afoMeasureTarget<T>(meshes: {
     cast: T | null | undefined;
 }): T | null {
     return meshes.shell ?? meshes.corrected ?? meshes.cast ?? null;
+}
+
+/** Mesh to fit when applying an anatomical view preset in the AFO viewer. */
+export function afoViewportFramingMesh(meshes: {
+    shell: AfoTriMesh | null | undefined;
+    corrected: AfoTriMesh | null | undefined;
+    cast: AfoTriMesh | null | undefined;
+    source: AfoTriMesh | null | undefined;
+}): AfoTriMesh | null {
+    return (
+        afoMeasureTarget({
+            shell: meshes.shell,
+            corrected: meshes.corrected,
+            cast: meshes.cast,
+        }) ??
+        meshes.source ??
+        null
+    );
 }
 
 /** Registry id of the mesh measurements pick and reproject. Never the raw scan. */
