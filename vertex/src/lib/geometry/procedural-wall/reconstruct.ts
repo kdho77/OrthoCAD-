@@ -17,7 +17,7 @@ import {
 } from "@/lib/geometry/height-field";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
-import { applyAnalyticSinkToLoftedSolid, sinksActive } from "@/lib/geometry/sink";
+import { applyAnalyticSinkToLoftedSolid, effectiveInsoleThicknessMm, sinksActive } from "@/lib/geometry/sink";
 import type { SideCorrections } from "@/types";
 import {
     columnHeading,
@@ -1147,6 +1147,31 @@ export function reconstructProceduralWalls(
             : [];
     let medialYSign = medialYSignFromTopRim(peekRim, model.bounds);
     options.medialYSign = medialYSign;
+    const reliefEarly = options.sourceField?.sinks ?? options.sinks;
+    if (sinksActive(reliefEarly)) {
+        const setThickness = options.thicknessMm ?? options.stockThicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
+        const lengthMm = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
+        const widthMm = Math.max(1e-3, model.bounds.maxY - model.bounds.minY);
+        const side = options.sourceField?.side ?? options.side ?? (medialYSign < 0 ? "right" : "left");
+        const effective = effectiveInsoleThicknessMm(setThickness, {
+            side,
+            lengthMm,
+            widthMm,
+            sinks: reliefEarly,
+            sinkStyloidThicken: options.sinkStyloidThicken ?? options.sourceField?.sinkStyloidThicken,
+            medialYSign,
+            trimline: options.sourceField?.trimline ?? options.trimline ?? null,
+        });
+        if (Math.abs(effective - (options.thicknessMm ?? setThickness)) > 1e-9) {
+            options = {
+                ...options,
+                thicknessMm: effective,
+                sourceField: options.sourceField
+                    ? { ...options.sourceField, thicknessMm: effective }
+                    : options.sourceField,
+            };
+        }
+    }
     const defaults = defaultsFromModel(model, preset);
     defaults.medialYSign = medialYSign;
     const patternPts = options.bottomPattern?.length

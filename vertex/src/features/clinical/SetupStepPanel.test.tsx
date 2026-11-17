@@ -90,4 +90,14 @@ describe("SetupStepPanel insole thickness", () => {
         } as Parameters<typeof designStateFromDocument>[0]);
         expect(reopened.thicknessMm).toBe(4.2);
     });
+
+    test("a 2 mm sink shows the raised thickness and leaves the slider value", async () => {
+        useDesignStore.getState().setMethod("printing_solid");
+        useDesignStore.getState().addSink("mpj1", "left");
+        await act(async () => root.render(createElement(SetupStepPanel)));
+        const hint = container.querySelector('[data-testid="setup-insole-thickness-hint"]');
+        expect(hint?.textContent).toBe("raised to 2.5 mm for sinks");
+        expect(thicknessNumberInput(container).value).toBe("2");
+        expect(useDesignStore.getState().design.thicknessMm).toBe(2);
+    });
 });

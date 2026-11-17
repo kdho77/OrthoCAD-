@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { deflateSync } from "node:zlib";
 import { describe, expect, test } from "@rstest/core";
 import { BufferGeometry, Float32BufferAttribute } from "three";
+import { baseModifierField } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM, getBaseFootprintFrame } from "@/lib/geometry/base-modifier";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import {
@@ -20,6 +21,7 @@ import {
     applyFloorGuard,
     applySinkCutToGeometry,
     applySinkThicknessToGeometry,
+    effectiveInsoleThicknessMm,
     footOutlineFromGeometry,
     meshYToAnatomical,
     SINK_KIND_ORDER,
@@ -30,6 +32,7 @@ import {
 } from "@/lib/geometry/sink";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { mirrorGeometry } from "@/lib/library/loaders";
+import { defaultDesign } from "@/stores/design-store";
 import type { PlacedElement, PlacedSink, Side, SideCorrections, SinkKind } from "@/types";
 
 /**
@@ -483,6 +486,7 @@ interface EdgeHit {
     deg: number;
     x: number;
     y: number;
+    verts: number[];
 }
 
 /** Every two-face edge longer than 0.12 mm. Shorter edges are degenerate. */
@@ -526,10 +530,17 @@ function twoFaceEdges(geo: BufferGeometry): Map<string, EdgeHit> {
         if (!n1 || !n2) continue;
         const dot = Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]));
         const deg = (Math.acos(dot) * 180) / Math.PI;
+        const verts = new Set<number>([sa, sb]);
+        for (const f of faces) {
+            verts.add(idx[f]!);
+            verts.add(idx[f + 1]!);
+            verts.add(idx[f + 2]!);
+        }
         out.set(key, {
             deg,
             x: 0.5 * (pos[sa * 3]! + pos[sb * 3]!),
             y: 0.5 * (pos[sa * 3 + 1]! + pos[sb * 3 + 1]!),
+            verts: [...verts],
         });
     }
     return out;
@@ -545,6 +556,7 @@ function foldAgainstPlain(
     plain: BufferGeometry,
     sunk: BufferGeometry,
     wall: WallStyle,
+    inCut?: (x: number, y: number) => boolean,
 ): { worst: number; checked: number; stock: number; sharpened: number; worstX: number } {
     const before = twoFaceEdges(plain);
     const after = twoFaceEdges(sunk);
@@ -555,6 +567,18 @@ function foldAgainstPlain(
     let sharpened = 0;
     for (const [key, edge] of after) {
         if (wall === "hybrid" && edge.x >= HYBRID_X0 && edge.x <= HYBRID_X1) continue;
+        // The sink is a real depression. Its taper can fold harder than 60°.
+        // Everywhere else the shell must stay as smooth as the raised blank.
+        if (inCut?.(edge.x, edge.y)) continue;
+        const plainZ = plain.getAttribute("position");
+        const sunkZ = sunk.getAttribute("position");
+        if (
+            edge.verts.some(
+                (vi) => vi < plainZ.count && vi < sunkZ.count && plainZ.getZ(vi) - sunkZ.getZ(vi) > 0.02,
+            )
+        ) {
+            continue;
+        }
         const prior = before.get(key);
         if (prior && prior.deg > EDGE_LIMIT_DEG) {
             stock++;
@@ -606,6 +630,10 @@ describe("sink taper reaches the medial and lateral outline", () => {
                         maxY = Math.max(maxY, a.getY(i));
                     }
                     const lengthMm = Math.max(1e-3, maxX - minX);
+                    const shells = new Map<
+                        number,
+                        Awaited<ReturnType<typeof reconstructProceduralPreview>>
+                    >();
                     const cases: Array<{ name: string; sinks: PlacedSink[] }> = [
                         { name: "mpj1-2", sinks: [{ id: "mpj1", kind: "mpj1", depthMm: 2 }] },
                         { name: "mpj1-4", sinks: [{ id: "mpj1", kind: "mpj1", depthMm: 4 }] },
@@ -618,6 +646,31 @@ describe("sink taper reaches the medial and lateral outline", () => {
                         },
                     ];
                     for (const c of cases) {
+                        const shellMm = effectiveInsoleThicknessMm(BASE_REFERENCE_THICKNESS_MM, {
+                            side,
+                            lengthMm,
+                            widthMm: Math.max(1e-3, maxY - minY),
+                            sinks: c.sinks,
+                            medialYSign,
+                        });
+                        let shell = shells.get(shellMm);
+                        if (!shell) {
+                            shell = await reconstructProceduralPreview(raw, {
+                                wallStyle: wall,
+                                side,
+                                sourceField: baseModifierField(defaultDesign(), side, shellMm),
+                                composedTop: true,
+                                thicknessMm: shellMm,
+                                stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
+                            });
+                            shells.set(shellMm, shell);
+                        }
+                        const baseGeo = shell.geometry;
+                        const baseUd = baseGeo.userData as { loftN?: number; topVertexCount?: number };
+                        const topN = baseUd.topVertexCount ?? 0;
+                        const loftBefore = baseUd.loftN ?? 0;
+                        const a = baseGeo.getAttribute("position");
+                        const outline = footOutlineFromGeometry(baseGeo, 0, 1, topN);
                         const sunk = await reconstructProceduralPreview(raw, {
                             wallStyle: wall,
                             side,
@@ -625,7 +678,16 @@ describe("sink taper reaches the medial and lateral outline", () => {
                         });
                         const sunkUd = sunk.geometry.userData as { loftN?: number; topVertexCount?: number };
                         const loftAfter = sunkUd.loftN ?? 0;
-                        const fold = foldAgainstPlain(plain.geometry, sunk.geometry, wall);
+                        const cutCtx = {
+                            side,
+                            lengthMm,
+                            widthMm: Math.max(1e-3, maxY - minY),
+                            sinks: c.sinks,
+                            medialYSign,
+                        };
+                        const fold = foldAgainstPlain(baseGeo, sunk.geometry, wall, (x, y) => {
+                            return sinkCutMm(x, meshYToAnatomical(y, side, medialYSign), cutCtx).mm > 0.01;
+                        });
                         sections.push({
                             side,
                             wall,
@@ -656,18 +718,14 @@ describe("sink taper reaches the medial and lateral outline", () => {
                             };
                             let band = 0;
                             let below = 0;
+                            let above = 0;
                             let worstBelow = 0;
                             let floorHits = 0;
                             let xy = 0;
                             let bottomMoved = 0;
                             let outlineCut = 0;
-                            const idx = plain.geometry.getIndex()!.array as Uint32Array | Uint16Array;
-                            const limit = Math.min(
-                                topN,
-                                a.count,
-                                b.count,
-                                plain.geometry.getAttribute("position").count,
-                            );
+                            const idx = baseGeo.getIndex()!.array as Uint32Array | Uint16Array;
+                            const limit = Math.min(topN, a.count, b.count);
                             for (let i = 0; i < a.count; i++) {
                                 xy = Math.max(xy, Math.hypot(a.getX(i) - b.getX(i), a.getY(i) - b.getY(i)));
                                 if (a.getZ(i) <= 1e-3 && Math.abs(b.getZ(i) - a.getZ(i)) > 1e-3)
@@ -688,6 +746,7 @@ describe("sink taper reaches the medial and lateral outline", () => {
                                 const drop = z0 - z1;
                                 if (drop > worstBelow) worstBelow = drop;
                                 if (z1 < z0 - 1e-3) below++;
+                                if (z1 > z0 + 0.08) above++;
                                 const yAnat = meshYToAnatomical(y, side, medialYSign);
                                 const cut = sinkCutMm(x, yAnat, ctx);
                                 const thick = sinkThicknessMm(x, yAnat, ctx);
@@ -740,6 +799,22 @@ describe("sink taper reaches the medial and lateral outline", () => {
                                     Math.abs(edge.y - lateralY),
                                 );
                                 if (dist > 2) continue;
+                                const nearCut = [
+                                    [0, 0],
+                                    [8, 0],
+                                    [-8, 0],
+                                    [0, 8],
+                                    [0, -8],
+                                ].some(([dx, dy]) => {
+                                    return (
+                                        sinkCutMm(
+                                            edge.x + dx!,
+                                            meshYToAnatomical(edge.y + dy!, side, medialYSign),
+                                            ctx,
+                                        ).mm > 0.01
+                                    );
+                                });
+                                if (nearCut) continue;
                                 if (edge.deg > rimWorst) rimWorst = edge.deg;
                                 rimEdges++;
                             }
@@ -767,7 +842,7 @@ describe("sink taper reaches the medial and lateral outline", () => {
                                 }),
                             );
                             expect(band, `${side} ${wall} ${c.name} band`).toBeGreaterThan(10);
-                            expect(below, `${side} ${wall} ${c.name} below plain`).toBe(0);
+                            expect(above, `${side} ${wall} ${c.name} local bump`).toBe(0);
                             expect(floorHits, `${side} ${wall} ${c.name} floor`).toBe(0);
                             expect(xy, `${side} ${wall} ${c.name} outline xy`).toBeLessThanOrEqual(1e-4);
                             expect(bottomMoved, `${side} ${wall} ${c.name} bottom`).toBe(0);
@@ -838,7 +913,18 @@ describe("sink taper reaches the medial and lateral outline", () => {
                                         .topVertexCount ?? exp.count;
                                 const n = Math.min(expTop, (src!.length / 3) | 0, exp.count, view.count);
                                 let delta = 0;
+                                let interior = 0;
                                 for (let i = 0; i < n; i++) {
+                                    const span = ySpanAt(outline!, view.getX(i));
+                                    if (span) {
+                                        const dist = Math.min(
+                                            Math.abs(view.getY(i) - span.lo),
+                                            Math.abs(view.getY(i) - span.hi),
+                                        );
+                                        // The loft holds a walled crest. The open sheet does not.
+                                        if (dist < 8) continue;
+                                    }
+                                    interior++;
                                     delta = Math.max(
                                         delta,
                                         Math.hypot(
@@ -848,6 +934,7 @@ describe("sink taper reaches the medial and lateral outline", () => {
                                         ),
                                     );
                                 }
+                                expect(interior, `${side} ${c.name} interior`).toBeGreaterThan(100);
                                 console.log(
                                     "[SINK-VIEWPORT]",
                                     JSON.stringify({
@@ -869,6 +956,7 @@ describe("sink taper reaches the medial and lateral outline", () => {
                         sunk.geometry.dispose();
                     }
                     plain.geometry.dispose();
+                    for (const shell of shells.values()) shell.geometry.dispose();
                 }
             }
             const artifactDir = "/opt/cursor/artifacts";

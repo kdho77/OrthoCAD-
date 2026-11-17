@@ -13,7 +13,7 @@ import {
     shellThicknessContextFromDesign,
     shellThicknessMmAtU,
 } from "@/lib/geometry/shell-thickness-zonal";
-import { sinksActive, sinkThicknessAt } from "@/lib/geometry/sink";
+import { effectiveInsoleThicknessMm } from "@/lib/geometry/sink";
 import { effectiveOutlineHalfWidth, type TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type {
@@ -505,11 +505,14 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // the flat z = 0 bottom stays stable on solid prints.
     const heelLift = heelLiftDeltaAt(u, c.heelLiftMm, heelLiftTaperFromCorrections(c));
 
-    // Uniform (and legacy undefined) mode uses thicknessMm directly so the sum
-    // stays bit-identical to main. Zonal mode samples t(u), which already
-    // enforces the minimum wall, and keeps wedge and sinks.
+    // Uniform mode uses the slider thickness. Zonal mode samples t(u) and the
+    // Setup slider adds its delta beside that sample (see solidTopLiftMm).
+    // A sink raises the same term by max(0, deepest + 0.5 − slider) everywhere.
+    // No active sink leaves the term bit-identical.
     const shellCtx = resolveShellThicknessContext(params);
-    const thicknessTerm = shellCtx.mode === "zonal" ? shellThicknessMmAtU(u, shellCtx) : thicknessMm;
+    const shellRaise = effectiveInsoleThicknessMm(thicknessMm, params) - thicknessMm;
+    const thicknessTerm =
+        (shellCtx.mode === "zonal" ? shellThicknessMmAtU(u, shellCtx) : thicknessMm) + shellRaise;
 
     let h = softFloor(thicknessTerm + baseline + shaped + wedge + heelLift, 0.8);
 
@@ -522,13 +525,6 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
             params,
             (uu) => effectiveOutlineHalfWidth(uu, lengthMm, widthMm, params.trimline) * (widthMm / 2),
         );
-    }
-
-    // Forefoot / styloid thickness T. After posting, before skive. The cut S is
-    // not applied here — it is the last subtraction on the composed top.
-    // Absent sinks skip the call so this sum stays bit-identical.
-    if (sinksActive(params.sinks)) {
-        h += sinkThicknessAt(u, vSigned, params);
     }
 
     // Phase 4: operator graph contribution (additive, regional, STA-aware, etc.).

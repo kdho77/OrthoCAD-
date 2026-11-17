@@ -14,7 +14,7 @@ import {
     heelCupDepthBowlDelta,
     heelCupWidthScaleFactor,
 } from "@/lib/geometry/height-field";
-import { sinksActive, sinkThicknessAt, styloidWallReliefAt } from "@/lib/geometry/sink";
+import { effectiveInsoleThicknessMm, sinksActive, styloidWallReliefAt } from "@/lib/geometry/sink";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import { wedgeDeltaAt } from "@/lib/geometry/wedge";
 import type { PlacedSink, Side, SideCorrections } from "@/types";
@@ -552,7 +552,22 @@ export function applyCurveModifiers(
     const minX = model.bounds.minX;
     const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
     const widCenter = (model.bounds.minY + model.bounds.maxY) * 0.5;
-    const dThick = (input.thicknessMm ?? 0) - (input.stockThicknessMm ?? input.thicknessMm ?? 0);
+    const widthMm = Math.max(1e-3, model.bounds.maxY - model.bounds.minY);
+    const setThick = input.thicknessMm ?? input.stockThicknessMm ?? 0;
+    const stockThick = input.stockThicknessMm ?? input.thicknessMm ?? 0;
+    const thickSide = input.side ?? ((input.medialYSign ?? 1) < 0 ? "right" : "left");
+    const effectiveThick = sinksActive(input.sinks)
+        ? effectiveInsoleThicknessMm(setThick, {
+              side: thickSide,
+              lengthMm: length,
+              widthMm,
+              sinks: input.sinks,
+              sinkStyloidThicken: input.sinkStyloidThicken,
+              trimline: input.trimline,
+              medialYSign: input.medialYSign,
+          })
+        : setThick;
+    const dThick = effectiveThick - stockThick;
 
     const n = Math.min(trim.length, outline.length);
     for (let i = 0; i < n; i++) {
@@ -602,20 +617,6 @@ export function applyCurveModifiers(
         const u = Math.max(0, Math.min(1, (o.x - minX) / length));
         if (c && (c.rearfootWedge || c.forefootWedge || fullLengthWedgeActive(c))) {
             t.z += postingZDelta(o.x, o.y, model.bounds, postingInput);
-        }
-        if (sinksActive(input.sinks)) {
-            const length = Math.max(1e-3, model.bounds.maxX - model.bounds.minX);
-            const widthMm = Math.max(1e-3, model.bounds.maxY - model.bounds.minY);
-            const side = input.side ?? ((input.medialYSign ?? 1) < 0 ? "right" : "left");
-            const vSigned = footprintVSignedFromMeshY(o.y, model.bounds, side, input.medialYSign ?? 1);
-            t.z += sinkThicknessAt(u, vSigned, {
-                side,
-                lengthMm: length,
-                widthMm,
-                sinks: input.sinks,
-                sinkStyloidThicken: input.sinkStyloidThicken,
-                trimline: input.trimline,
-            });
         }
         if (dThick) t.z += dThick;
     }
