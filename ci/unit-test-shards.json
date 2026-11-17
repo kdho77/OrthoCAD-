@@ -231,6 +231,7 @@
                 "vertex/src/features/afo/afo-scan-ui.test.ts",
                 "vertex/src/features/clients/DesignNotesField.test.tsx",
                 "vertex/src/features/clients/design-route.deeplink.test.tsx",
+                "vertex/src/features/clinical/setup-shoe-size.test.ts",
                 "vertex/src/features/corrections/skive-derived-display.test.ts",
                 "vertex/src/features/exports/afo-gcode-route.test.ts",
                 "vertex/src/features/exports/manufacturing-stl-upload.test.ts",
