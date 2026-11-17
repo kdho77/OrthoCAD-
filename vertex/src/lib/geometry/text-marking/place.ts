@@ -583,7 +583,10 @@ export function placeBottomText(
 } {
     const u = Math.max(TEXT_U.bottom.min, Math.min(TEXT_U.bottom.max, marking.placementU));
     const cx = xAtU(ctx, u) + (marking.nudgeAlongMm ?? 0);
-    // Left-foot placement is already mirrored with the host mesh; do not glyph-mirror again.
+    // Do not glyph-mirror from `side`. The host is already in the footprint frame
+    // (SAMPLE_Top internal left is the unmirrored mesh; internal right is the Y mirror).
+    // A side-keyed X flip would invert one foot. Plantar view looks up (+Z):
+    // screen-right is +X and screen-up is −Y, so only Y is negated below.
     void side;
     const cy = centrelineYAtX(ctx.outline, cx, ctx.midY) + (marking.nudgeAcrossMm ?? 0);
     const local = { x: flat.advanceMm / 2, y: flat.capHeightMm / 2 };
