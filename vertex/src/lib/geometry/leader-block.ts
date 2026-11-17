@@ -3,23 +3,37 @@
 /**
  * Sacrificial belt-printer leader, applied to the manufacturing STL before VertexSlice.
  *
- * Founder-locked (Kendon photo 2026-11-06; replaces #263 v2):
- * - bridge 10 wide × 1.5 thick, 1 mm neck past the toe tip, embedded 1 mm
+ * Founder-locked (Kendon 2026-11-17; replaces the 1 mm breakaway neck):
+ * - bridge 15 wide × 3 thick, 1 mm scissor span past the toe tip, embedded 2 mm
  * - trapezoid block 20 deep × 10 high, width 20 → 30, on Z = 0
- * - block sits at the insole front (the 1 mm neck) so the toe cannot fold under
- * - bridge overlaps the block by 1 mm; the block itself does not move
- * - curved toe: embed is measured at the bridge side edges (yc ± 5), not at xmax
+ * - block sits at the insole front (the 1 mm span) so the toe cannot fold under
+ * - bridge overlaps the block by 2 mm; the block itself does not move
+ * - curved toe: embed is measured at the bridge side edges (yc ± 7.5), not at xmax
+ * - over the toe the bridge top is the local insole top, capped at 3 mm, so the
+ *   joint fills the shell and does not stand up as a pad; the scissor span then
+ *   rises to the full 3 mm section before the block
  * - toe = the thinner max-X end in the OrthoCAD frame; abort if that end is not thinner
  *
  * Triangles are appended. The embed intersects the insole, so the mesh is not a boolean union.
  */
 
-export const LEADER_BRIDGE_WIDTH_MM = 10;
-export const LEADER_BRIDGE_THICKNESS_MM = 1.5;
+export const LEADER_BRIDGE_WIDTH_MM = 15;
+export const LEADER_BRIDGE_THICKNESS_MM = 3;
 export const LEADER_BRIDGE_LENGTH_MM = 1;
-export const LEADER_BRIDGE_EMBED_MM = 1;
+export const LEADER_BRIDGE_EMBED_MM = 2;
 /** Bridge continues this far past the block's near face so the joint is not face-touch only. */
-export const LEADER_BRIDGE_BLOCK_OVERLAP_MM = 1;
+export const LEADER_BRIDGE_BLOCK_OVERLAP_MM = 2;
+/**
+ * Distance past the toe tip where the clipped lip has risen to the full 3 mm section.
+ * Stays inside the 1 mm scissor span, so the lap is flush on the toe and the neck
+ * is 15 × 3 before it meets the block.
+ */
+export const LEADER_BRIDGE_RISE_MM = 0.25;
+/**
+ * Height-field bridge (6 X × 3 Y stations → 68 triangles) plus the 12-triangle block.
+ * `splitLeader` peels this suffix; keep the two counts the same.
+ */
+export const LEADER_SUFFIX_TRIANGLE_COUNT = 80;
 export const LEADER_BLOCK_DEPTH_MM = 20;
 export const LEADER_BLOCK_HEIGHT_MM = 10;
 export const LEADER_BLOCK_WIDTH_INNER_MM = 20;
@@ -158,17 +172,15 @@ function leaderTrianglesForMesh(tris: Tri[]): Tri[] {
     const yCenter = (toe.minY + toe.maxY) / 2;
     const xEdge = curvedToeOutlineX(tris, yCenter, bounds.maxX);
     const bridgeX0 = xEdge - LEADER_BRIDGE_EMBED_MM;
-    // 1 mm neck from the toe tip to the block. Overlap extends the bridge only.
-    const blockX0 = bounds.maxX + LEADER_BRIDGE_LENGTH_MM;
+    // 1 mm scissor span from the toe tip to the block. Overlap extends the bridge only.
+    const toeTip = bounds.maxX;
+    const blockX0 = toeTip + LEADER_BRIDGE_LENGTH_MM;
     const bridgeX1 = blockX0 + LEADER_BRIDGE_BLOCK_OVERLAP_MM;
-    const bridge = boxTriangles(
-        bridgeX0,
-        yCenter - LEADER_BRIDGE_WIDTH_MM / 2,
-        0,
-        bridgeX1,
-        yCenter + LEADER_BRIDGE_WIDTH_MM / 2,
-        LEADER_BRIDGE_THICKNESS_MM,
-    );
+    const half = LEADER_BRIDGE_WIDTH_MM / 2;
+    const ys = [yCenter - half, yCenter, yCenter + half];
+    const xs = bridgeXStations(bridgeX0, xEdge, toeTip, bridgeX1);
+    const zTop = xs.map((x) => bridgeTopRow(tris, x, ys, toeTip));
+    const bridge = heightFieldSlab(xs, ys, zTop);
     const block = trapezoidTriangles(
         blockX0,
         blockX0 + LEADER_BLOCK_DEPTH_MM,
@@ -177,13 +189,167 @@ function leaderTrianglesForMesh(tris: Tri[]): Tri[] {
         LEADER_BLOCK_WIDTH_OUTER_MM,
         LEADER_BLOCK_HEIGHT_MM,
     );
-    return bridge.concat(block);
+    const leader = bridge.concat(block);
+    if (leader.length !== LEADER_SUFFIX_TRIANGLE_COUNT) {
+        throw new Error(
+            `leader suffix is ${leader.length} triangles, expected ${LEADER_SUFFIX_TRIANGLE_COUNT}`,
+        );
+    }
+    return leader;
 }
 
 /**
- * Toe-side bottom outline at the bridge edges y = yc ± 5.
+ * Six strictly increasing X stations: deep embed, outline or mid-span, near tip,
+ * toe tip, end of the short rise, and the overlap end. On a curved toe the second
+ * station is the side-edge outline so the lip meets that surface instead of
+ * bridging over it. The rise sits inside the scissor span.
+ */
+function bridgeXStations(bridgeX0: number, xEdge: number, toeTip: number, bridgeX1: number): number[] {
+    const riseX = toeTip + LEADER_BRIDGE_RISE_MM;
+    const curved = xEdge > bridgeX0 + 0.15 && toeTip - xEdge > 0.15;
+    let mid: number;
+    let nearTip: number;
+    if (curved) {
+        mid = xEdge;
+        const back = Math.min((toeTip - xEdge) * 0.5, 0.6);
+        nearTip = toeTip - back;
+        if (nearTip <= mid + 0.15) nearTip = (mid + toeTip) / 2;
+    } else {
+        const span = toeTip - bridgeX0;
+        const back = Math.min(span * 0.5, 0.6);
+        nearTip = toeTip - back;
+        mid = (bridgeX0 + nearTip) / 2;
+    }
+    const xs = [bridgeX0, mid, nearTip, toeTip, riseX, bridgeX1];
+    for (let i = 1; i < xs.length; i++) {
+        const prev = xs[i - 1];
+        const next = xs[i];
+        if (prev === undefined || next === undefined || next <= prev + 1e-4) {
+            throw new Error("leader bridge stations collapsed");
+        }
+    }
+    return xs;
+}
+
+/**
+ * Over the toe, the bridge top is the local insole top capped at 3 mm (full local
+ * thickness when the shell is thinner than the neck, buried when it is thicker).
+ * A sample that misses the shell takes the lowest hit on that station so the
+ * span cannot tent above the footprint. Past the tip the section is the full 3 mm.
+ */
+function bridgeTopRow(tris: Tri[], x: number, ys: number[], toeTip: number): number[] {
+    if (x > toeTip + 1e-4) return ys.map(() => LEADER_BRIDGE_THICKNESS_MM);
+    const sampleAt = (sx: number) => ys.map((y) => topZAt(tris, sx, y));
+    let raw = sampleAt(x);
+    const usable = (z: number | null) => z != null && z >= 1e-3;
+    if (!raw.some(usable)) raw = sampleAt(Math.max(0, x - 0.05));
+    const hits: number[] = [];
+    for (const z of raw) {
+        if (z == null || z < 1e-3) continue;
+        hits.push(Math.min(LEADER_BRIDGE_THICKNESS_MM, z));
+    }
+    if (hits.length === 0) return ys.map(() => LEADER_BRIDGE_THICKNESS_MM);
+    let floor = hits[0] ?? LEADER_BRIDGE_THICKNESS_MM;
+    for (const hit of hits) floor = Math.min(floor, hit);
+    return raw.map((z) => {
+        if (z == null || z < 1e-3) return floor;
+        return Math.min(LEADER_BRIDGE_THICKNESS_MM, z);
+    });
+}
+
+/** Highest insole intersection of a vertical line. That is the top surface. */
+function topZAt(tris: Tri[], x: number, y: number): number | null {
+    let top: number | null = null;
+    for (const t of tris) {
+        const z = triangleZAtXY(t, x, y);
+        if (z == null) continue;
+        if (top === null || z > top) top = z;
+    }
+    return top;
+}
+
+function triangleZAtXY(t: Tri, x: number, y: number): number | null {
+    const v0x = t.bx - t.ax;
+    const v0y = t.by - t.ay;
+    const v1x = t.cx - t.ax;
+    const v1y = t.cy - t.ay;
+    const v2x = x - t.ax;
+    const v2y = y - t.ay;
+    const dot00 = v0x * v0x + v0y * v0y;
+    const dot01 = v0x * v1x + v0y * v1y;
+    const dot02 = v0x * v2x + v0y * v2y;
+    const dot11 = v1x * v1x + v1y * v1y;
+    const dot12 = v1x * v2x + v1y * v2y;
+    const denom = dot00 * dot11 - dot01 * dot01;
+    if (Math.abs(denom) < 1e-12) return null;
+    const inv = 1 / denom;
+    const u = (dot11 * dot02 - dot01 * dot12) * inv;
+    const v = (dot00 * dot12 - dot01 * dot02) * inv;
+    if (u < -1e-5 || v < -1e-5 || u + v > 1 + 1e-5) return null;
+    const w = 1 - u - v;
+    return w * t.az + u * t.bz + v * t.cz;
+}
+
+/**
+ * Closed slab. Bottom is on Z = 0. Top follows `zTop` (X major, then Y).
+ *  nx = xs-1, ny = ys-1 → 4*(nx*ny + nx + ny) triangles.
+ */
+function heightFieldSlab(xs: number[], ys: number[], zTop: number[][]): Tri[] {
+    const nx = xs.length - 1;
+    const ny = ys.length - 1;
+    const out: Tri[] = [];
+    const at = (i: number, j: number, top: boolean): [number, number, number] => {
+        const x = xs[i];
+        const y = ys[j];
+        const row = zTop[i];
+        const z = top ? row?.[j] : 0;
+        if (x === undefined || y === undefined || z === undefined) {
+            throw new Error("leader slab vertex is incomplete");
+        }
+        return [x, y, z];
+    };
+    const push = (a: [number, number, number], b: [number, number, number], c: [number, number, number]) => {
+        out.push(tri(a, b, c));
+    };
+    for (let i = 0; i < nx; i++) {
+        for (let j = 0; j < ny; j++) {
+            const sw = at(i, j, false);
+            const se = at(i + 1, j, false);
+            const ne = at(i + 1, j + 1, false);
+            const nw = at(i, j + 1, false);
+            push(sw, ne, se);
+            push(sw, nw, ne);
+            const swt = at(i, j, true);
+            const set = at(i + 1, j, true);
+            const net = at(i + 1, j + 1, true);
+            const nwt = at(i, j + 1, true);
+            push(swt, set, net);
+            push(swt, net, nwt);
+        }
+    }
+    for (let i = 0; i < nx; i++) {
+        const y0 = 0;
+        const y1 = ny;
+        push(at(i, y0, false), at(i + 1, y0, false), at(i + 1, y0, true));
+        push(at(i, y0, false), at(i + 1, y0, true), at(i, y0, true));
+        push(at(i + 1, y1, false), at(i, y1, false), at(i, y1, true));
+        push(at(i + 1, y1, false), at(i, y1, true), at(i + 1, y1, true));
+    }
+    for (let j = 0; j < ny; j++) {
+        const x0 = 0;
+        const x1 = nx;
+        push(at(x0, j + 1, false), at(x0, j, false), at(x0, j, true));
+        push(at(x0, j + 1, false), at(x0, j, true), at(x0, j + 1, true));
+        push(at(x1, j, false), at(x1, j + 1, false), at(x1, j + 1, true));
+        push(at(x1, j, false), at(x1, j + 1, true), at(x1, j, true));
+    }
+    return out;
+}
+
+/**
+ * Toe-side bottom outline at the bridge edges y = yc ± half the bridge width.
  * Each station uses the maximum X (the front of the foot). x_edge is the minimum of those
- * two, so a curved toe embeds the full 10 mm width by at least 1 mm.
+ * two, so a curved toe embeds the full bridge width by at least LEADER_BRIDGE_EMBED_MM.
  */
 function curvedToeOutlineX(tris: Tri[], yCenter: number, maxX: number): number {
     const half = LEADER_BRIDGE_WIDTH_MM / 2;
@@ -255,34 +421,6 @@ function boundsOf(tris: Tri[]): { minX: number; maxX: number } {
         maxX = Math.max(maxX, t.ax, t.bx, t.cx);
     }
     return { minX, maxX };
-}
-
-function boxTriangles(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): Tri[] {
-    const v = [
-        [x0, y0, z0],
-        [x1, y0, z0],
-        [x1, y1, z0],
-        [x0, y1, z0],
-        [x0, y0, z1],
-        [x1, y0, z1],
-        [x1, y1, z1],
-        [x0, y1, z1],
-    ];
-    const faces = [
-        [0, 2, 1],
-        [0, 3, 2],
-        [4, 5, 6],
-        [4, 6, 7],
-        [0, 1, 5],
-        [0, 5, 4],
-        [1, 2, 6],
-        [1, 6, 5],
-        [2, 3, 7],
-        [2, 7, 6],
-        [3, 0, 4],
-        [3, 4, 7],
-    ];
-    return faces.map(([a, b, c]) => tri(corner(v, a), corner(v, b), corner(v, c)));
 }
 
 function trapezoidTriangles(

@@ -132,46 +132,49 @@ function subdividedBox(n: number): Uint8Array {
     return writeStl(raw, "OrthoCAD single-foot left");
 }
 
-/** Closed 24-triangle leader past the toe. Each face is a 4-triangle fan so shared edges match. */
+/**
+ * Closed 80-triangle leader past the toe. Same suffix length as the height-field
+ * bridge plus block (LEADER_SUFFIX_TRIANGLE_COUNT), so splitLeader still peels it.
+ * nx=6, ny=2, nz=1 → 4*(12+6+2) = 80.
+ */
 function leaderBlock(x0: number): number[][] {
-    const y0 = -5;
-    const y1 = 5;
-    const z1 = 10;
-    const x1 = x0 + 20;
-    const v = [
-        [x0, y0, 0],
-        [x1, y0, 0],
-        [x1, y1, 0],
-        [x0, y1, 0],
-        [x0, y0, z1],
-        [x1, y0, z1],
-        [x1, y1, z1],
-        [x0, y1, z1],
-    ];
-    const faces = [
-        [0, 3, 2, 1],
-        [4, 5, 6, 7],
-        [0, 1, 5, 4],
-        [1, 2, 6, 5],
-        [2, 3, 7, 6],
-        [3, 0, 4, 7],
-    ];
+    const origin = [x0, -5, 0];
+    const size = [20, 10, 10];
+    const div = [6, 2, 1];
     const tris: number[][] = [];
-    for (const loop of faces) {
-        const center = [0, 0, 0];
-        for (const i of loop) {
-            const p = v[i]!;
-            center[0] += p[0]!;
-            center[1] += p[1]!;
-            center[2] += p[2]!;
-        }
-        center[0] /= loop.length;
-        center[1] /= loop.length;
-        center[2] /= loop.length;
-        for (let i = 0; i < loop.length; i++) {
-            const a = v[loop[i]!]!;
-            const b = v[loop[(i + 1) % loop.length]!]!;
-            tris.push([center[0]!, center[1]!, center[2]!, a[0]!, a[1]!, a[2]!, b[0]!, b[1]!, b[2]!]);
+    const other = (fixed: number): [number, number] => (fixed === 0 ? [1, 2] : fixed === 1 ? [0, 2] : [0, 1]);
+    for (let axis = 0; axis < 3; axis++) {
+        for (const side of [0, 1]) {
+            const [u, v] = other(axis);
+            const nu = div[u]!;
+            const nv = div[v]!;
+            const du = size[u]! / nu;
+            const dv = size[v]! / nv;
+            const fixed = origin[axis]! + side * size[axis]!;
+            for (let i = 0; i < nu; i++) {
+                for (let j = 0; j < nv; j++) {
+                    const corner = (ii: number, iv: number): number[] => {
+                        const q = [0, 0, 0];
+                        q[axis] = fixed;
+                        q[u] = origin[u]! + ii * du;
+                        q[v] = origin[v]! + iv * dv;
+                        return q;
+                    };
+                    const a = corner(i, j);
+                    const b = corner(i + 1, j);
+                    const c = corner(i + 1, j + 1);
+                    const d = corner(i, j + 1);
+                    const pack = (p: number[], q: number[], r: number[]) =>
+                        tris.push([p[0]!, p[1]!, p[2]!, q[0]!, q[1]!, q[2]!, r[0]!, r[1]!, r[2]!]);
+                    if (side === 0) {
+                        pack(a, c, b);
+                        pack(a, d, c);
+                    } else {
+                        pack(a, b, c);
+                        pack(a, c, d);
+                    }
+                }
+            }
         }
     }
     return tris;
@@ -210,9 +213,9 @@ describe("pre-slice manufacturing mesh", () => {
         const bodyTris = (body.byteLength - 84) / 50;
         expect(bodyTris).toBeGreaterThan(SLICE_MESH_SIMPLIFY_ABOVE);
         const leader = leaderBlock(100);
-        expect(leader).toHaveLength(24);
+        expect(leader).toHaveLength(80);
         const merged = writeStl([...readTris(body), ...leader], "OrthoCAD single-foot left");
-        expect(sliceMeshStats(merged).triangles).toBe(bodyTris + 24);
+        expect(sliceMeshStats(merged).triangles).toBe(bodyTris + 80);
         expect(sliceMeshStats(merged).manifold?.isWatertight).toBe(true);
         expect(sliceMeshStats(merged).manifold?.shells).toBe(2);
         const prepared = prepareManufacturingMeshForSlice(merged);
@@ -226,7 +229,7 @@ describe("pre-slice manufacturing mesh", () => {
         expect(stats.bbox?.maxZ).toBeGreaterThan(12);
         const header = new TextDecoder().decode(prepared.subarray(0, 40));
         expect(header.startsWith("OrthoCAD single-foot left")).toBe(true);
-        expect(tailTriangles(prepared, 24)).toEqual(tailTriangles(merged, 24));
+        expect(tailTriangles(prepared, 80)).toEqual(tailTriangles(merged, 80));
     });
 
     test("a mesh at the simplify cap is the same bytes", () => {
