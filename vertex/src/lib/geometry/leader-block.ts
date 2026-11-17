@@ -487,20 +487,23 @@ function heightFieldSlab(xs: number[], ys: number[], zTop: number[][]): Tri[] {
     const push = (a: [number, number, number], b: [number, number, number], c: [number, number, number]) => {
         out.push(tri(a, b, c));
     };
+    // Top faces before the bottom. The first facet of this shell must not point
+    // straight down: the slicer flips a whole shell when that facet does, and the
+    // flipped bridge cancels the toe where they overlap.
     for (let i = 0; i < nx; i++) {
         for (let j = 0; j < ny; j++) {
-            const sw = at(i, j, false);
-            const se = at(i + 1, j, false);
-            const ne = at(i + 1, j + 1, false);
-            const nw = at(i, j + 1, false);
-            push(sw, ne, se);
-            push(sw, nw, ne);
             const swt = at(i, j, true);
             const set = at(i + 1, j, true);
             const net = at(i + 1, j + 1, true);
             const nwt = at(i, j + 1, true);
             push(swt, set, net);
             push(swt, net, nwt);
+            const sw = at(i, j, false);
+            const se = at(i + 1, j, false);
+            const ne = at(i + 1, j + 1, false);
+            const nw = at(i, j + 1, false);
+            push(sw, ne, se);
+            push(sw, nw, ne);
         }
     }
     for (let i = 0; i < nx; i++) {
@@ -621,11 +624,13 @@ function trapezoidTriangles(
         [x1, y1b, height],
         [x0, y0b, height],
     ];
+    // [4, 5, 6] is the top. It has to be the first facet so the slicer does not
+    // flip this shell inside out. Winding of each face is unchanged.
     const faces = [
-        [0, 2, 1],
-        [0, 3, 2],
         [4, 5, 6],
         [4, 6, 7],
+        [0, 2, 1],
+        [0, 3, 2],
         [0, 1, 5],
         [0, 5, 4],
         [1, 2, 6],

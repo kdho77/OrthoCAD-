@@ -85,6 +85,34 @@ function leaderVolume(stl: ArrayBuffer, start: number, end: number): number {
     return v / 6;
 }
 
+/** Unit normal z of one STL triangle. Straight down is -1. */
+function facetNormalZ(stl: ArrayBuffer, triangle: number): number {
+    const view = new DataView(stl);
+    const base = 84 + triangle * 50 + 12;
+    const p: number[] = [];
+    for (let k = 0; k < 9; k++) p.push(view.getFloat32(base + k * 4, true));
+    const ax = p[0] ?? 0;
+    const ay = p[1] ?? 0;
+    const az = p[2] ?? 0;
+    const bx = p[3] ?? 0;
+    const by = p[4] ?? 0;
+    const bz = p[5] ?? 0;
+    const cx = p[6] ?? 0;
+    const cy = p[7] ?? 0;
+    const cz = p[8] ?? 0;
+    const ux = bx - ax;
+    const uy = by - ay;
+    const uz = bz - az;
+    const vx = cx - ax;
+    const vy = cy - ay;
+    const vz = cz - az;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    return nz / len;
+}
+
 function suffixVertices(stl: ArrayBuffer, bodyTriangles: number): Array<[number, number, number]> {
     const view = new DataView(stl);
     const count = view.getUint32(80, true);
@@ -384,6 +412,23 @@ describe("sacrificial leader block", () => {
         expect(
             leaderVolume(withLeader, bodyTris + bridgeTris, bodyTris + LEADER_SUFFIX_TRIANGLE_COUNT),
         ).toBeGreaterThan(0);
+    });
+
+    test("each leader shell starts with a facet that is not straight down", () => {
+        const raw = toeAtMaxX();
+        const withLeader = applySacrificialLeaderBlock(raw);
+        const bodyTris = binaryStlTriangleCount(raw);
+        const bridgeTris = LEADER_SUFFIX_TRIANGLE_COUNT - 12;
+        const bridgeFirst = bodyTris;
+        const blockFirst = bodyTris + bridgeTris;
+        // A straight-down first facet is what makes the slicer flip the shell.
+        expect(facetNormalZ(withLeader, bridgeFirst)).toBeGreaterThan(-0.9);
+        expect(facetNormalZ(withLeader, blockFirst)).toBeGreaterThan(-0.9);
+        expect(leaderVolume(withLeader, bodyTris, blockFirst)).toBeGreaterThan(0);
+        expect(leaderVolume(withLeader, blockFirst, bodyTris + LEADER_SUFFIX_TRIANGLE_COUNT)).toBeGreaterThan(
+            0,
+        );
+        expect(binaryStlTriangleCount(withLeader) - bodyTris).toBe(LEADER_SUFFIX_TRIANGLE_COUNT);
     });
 
     test("curved beak that never reaches 3 mm across the bridge width caps the embed at 12 mm", () => {
