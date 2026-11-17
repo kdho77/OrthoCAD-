@@ -5,7 +5,7 @@
  *
  * Founder-locked (Kendon photo 2026-11-06; replaces #263 v2):
  * - bridge 10 wide × 1.5 thick, 1 mm neck past the toe tip, embedded 1 mm
- * - trapezoid block 20 deep × 10 high, width 20 → 40, on Z = 0
+ * - trapezoid block 20 deep × 10 high, width 20 → 30, on Z = 0
  * - block sits at the insole front (the 1 mm neck) so the toe cannot fold under
  * - bridge overlaps the block by 1 mm; the block itself does not move
  * - curved toe: embed is measured at the bridge side edges (yc ± 5), not at xmax
@@ -23,7 +23,7 @@ export const LEADER_BRIDGE_BLOCK_OVERLAP_MM = 1;
 export const LEADER_BLOCK_DEPTH_MM = 20;
 export const LEADER_BLOCK_HEIGHT_MM = 10;
 export const LEADER_BLOCK_WIDTH_INNER_MM = 20;
-export const LEADER_BLOCK_WIDTH_OUTER_MM = 40;
+export const LEADER_BLOCK_WIDTH_OUTER_MM = 30;
 const BOTTOM_OUTLINE_Z_MM = 1;
 const BOTTOM_OUTLINE_Y_TOL_MM = 0.5;
 
