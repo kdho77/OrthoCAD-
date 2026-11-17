@@ -493,10 +493,17 @@ function writeBinaryStl(header: Uint8Array, indexed: Indexed, leaderXyz: Float64
     return out;
 }
 
-/** Last 24 triangles are the leader when they sit past the tall part of the foot. */
+/**
+ * Trailing leader triangles, peeled before flat-face simplification.
+ *
+ * The manufacturing leader is 80 triangles: a 68-triangle height-field bridge
+ * (6 X × 3 Y, so the embed top can follow the insole) plus the 12-triangle block.
+ * Keep this equal to LEADER_SUFFIX_TRIANGLE_COUNT in leader-block.ts. A suffix
+ * that is too tall, or that does not sit past the arch, stays with the body.
+ */
 function splitLeader(xyz: Float64Array): { body: Float64Array; leader: Float64Array | null } {
     const n = xyz.length / 9;
-    const leaderN = 24;
+    const leaderN = 80;
     if (n <= leaderN) return { body: xyz, leader: null };
     let tallMaxX = -Infinity;
     for (let t = 0; t < n - leaderN; t++) {
@@ -535,7 +542,8 @@ export function prepareManufacturingMeshForSlice(model: Uint8Array): Uint8Array 
 
     const { body, leader } = splitLeader(parsed.xyz);
     const welded = weld(body, 1e-4);
-    const simplified = simplifyFlatFaces(welded, SLICE_MESH_TARGET_TRIANGLES - (leader ? 24 : 0));
+    const leaderTris = leader ? leader.length / 9 : 0;
+    const simplified = simplifyFlatFaces(welded, SLICE_MESH_TARGET_TRIANGLES - leaderTris);
     const written = writeBinaryStl(model, simplified, leader);
     const after = sliceMeshStats(written);
     if (!after.manifold?.isWatertight) {
