@@ -87,21 +87,19 @@ export const PLATEAU_GAP_MM = 0.5;
 const PLATEAU_YIELD_ORDER: readonly SinkKind[] = ["mpj4", "mpj5", "mpj3", "mpj2"];
 const PLATEAU_HALF_MIN_MM = 0.5;
 /**
- * The 25 mm forefoot mound is wider than an MPJ cut. Ease that extra mound
- * off over this distance inside the outline so a met-head blend cannot lift
- * the crest without a matching cut. The oval's own taper is not scaled, so
- * the plateau stays at depth + 0.5 mm. The reverse kinetic wedge and the
- * styloid do not use this scale.
+ * Material left under the deepest sink. The whole insole is at least
+ * depth + this, then the sink is cut from that top. There is no local mound.
  */
-const MPJ_RIM_THICKNESS_MM = 4;
-/** Added on top of the deepest forefoot sink. Floor under that sink = current + this. */
 export const FOREFOOT_THICKNESS_CLEARANCE_MM = 0.5;
-/** Local blend length of a forefoot sink's thickness addition. */
+/** Kept for the overlap-shoulder test. Thickness no longer blends over this length. */
 export const BLEND_LEN_MM = 25;
 /** Wall notch fades this far below the styloid floor. */
 export const STYLOID_WALL_FADE_BELOW_FLOOR_MM = 4;
-/** Minimum remaining top thickness after T − S. */
-export const FLOOR_MIN_MM = 2.0;
+/**
+ * Minimum material under a sink after the cut. Same clearance the shell
+ * keeps above the deepest sink, so a 2 mm sink in a 2.5 mm shell is allowed.
+ */
+export const FLOOR_MIN_MM = FOREFOOT_THICKNESS_CLEARANCE_MM;
 /** Lateral wall keeps at least this much thickness at a styloid relief. */
 export const LATERAL_WALL_MIN_MM = 2.0;
 /**
@@ -116,17 +114,10 @@ export const STYLOID_RIM_CLEAR_MM = 4;
 export const STYLOID_RIM_HARD_MM = 3;
 /** Override floor. A per-case override may sit closer than the hard-stop, but not under this. */
 export const STYLOID_RIM_OVERRIDE_FLOOR_MM = 2;
-/**
- * Forefoot thickness fade on the 5th MPJ's lateral side. Sink cuts do not use
- * this inset: the oval's own taper runs out to the lateral outline.
- */
+/** Retired with the local forefoot mound. Cuts never used this band. */
 export const MPJ5_V_FADE_START = 0.88;
 export const MPJ5_V_FADE_END = 0.95;
-/**
- * Forefoot thickness fade on the 1st MPJ's medial side. The centre sits at
- * v 0.145, so the band must stay below that or the added thickness would
- * lose height at its middle. Sink cuts do not use this band.
- */
+/** Retired with the local forefoot mound. Cuts never used this band. */
 export const MPJ1_V_FADE_START = 0.04;
 export const MPJ1_V_FADE_END = 0;
 /** Where a wall column exists, the crest stays at least this far above z = 0. */
@@ -1209,116 +1200,62 @@ function prepare(ctx: SinkSurfaceContext): PreparedSink[] {
 }
 
 export interface ForefootThicknessPlan {
-    /** Deepest forefoot sink + 0.5 mm. Each sink thickens only around itself. */
+    /** Deepest active sink + 0.5 mm. The whole insole uses max(set thickness, A). */
     A: number;
-    /** Heel-origin x (mm) where the most proximal local blend reaches full addition. */
+    /** No proximal blend. The shell is this thick everywhere, so both stations are 0. */
     xFull: number;
-    /** Heel-origin x (mm) where that blend starts. T = 0 for x well below x0. */
     x0: number;
 }
 
+/** Deepest sink that will cut. Rim-blocked sinks and an MPJ1 hidden by RKW are out. */
+export function deepestActiveSinkDepthMm(ctx: SinkSurfaceContext): number {
+    let deepest = 0;
+    for (const p of prepare(ctx)) {
+        if (p.frame.depthMm > deepest) deepest = p.frame.depthMm;
+    }
+    return deepest;
+}
+
+/**
+ * Insole thickness the mesh should build. The Setup slider value is `setThicknessMm`
+ * and is not overwritten. A sink raises the whole shell to depth + 0.5 mm when
+ * that is thicker than the slider. No active sink leaves the slider unchanged.
+ */
+export function effectiveInsoleThicknessMm(setThicknessMm: number, ctx: SinkSurfaceContext): number {
+    const set = Number.isFinite(setThicknessMm) ? setThicknessMm : 0;
+    const deepest = deepestActiveSinkDepthMm(ctx);
+    if (!(deepest > 0)) return set;
+    return Math.max(set, deepest + FOREFOOT_THICKNESS_CLEARANCE_MM);
+}
+
+/** Hint under the Setup slider. Null when the slider already covers the sinks. */
+export function sinkRaisedThicknessHint(setThicknessMm: number, effectiveMm: number): string | null {
+    if (!(effectiveMm > setThicknessMm + 1e-6)) return null;
+    const rounded = Math.round(effectiveMm * 10) / 10;
+    const label = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+    return `raised to ${label} mm for sinks`;
+}
+
 export function forefootThicknessPlan(ctx: SinkSurfaceContext): ForefootThicknessPlan | null {
-    const prepared = prepare(ctx).filter((p) => p.frame.forefoot);
+    const prepared = prepare(ctx);
     if (!prepared.length) return null;
     let A = 0;
-    let tip = Number.POSITIVE_INFINITY;
     for (const p of prepared) {
         A = Math.max(A, p.frame.depthMm + FOREFOOT_THICKNESS_CLEARANCE_MM);
-        tip = Math.min(tip, p.frame.cx - p.frame.halfLengthMm - BLEND_LEN_MM);
     }
-    return { A, xFull: tip + BLEND_LEN_MM, x0: tip };
+    return { A, xFull: 0, x0: 0 };
 }
 
 /**
- * Local thickness at a height-field sample. Each forefoot sink adds its own
- * depth + 0.5 mm inside the oval and blends that to 0 over 25 mm. Overlap is
- * the max, not the sum. 0 when no sinks.
+ * Local per-sink build-up is retired. Clearance is {@link effectiveInsoleThicknessMm},
+ * applied as the Setup insole-thickness lift. The styloid thicken flag no longer
+ * adds a pad. The arguments stay so existing callers keep the same signature.
  */
-/** Local thickness at an anatomical millimetre. Overlap is the max, not the sum. */
-function specVAt(x: number, yLateral: number, ctx: SinkSurfaceContext): { v: number; span: number } {
-    const edges = planEdges(ctx);
-    const u = Math.max(0, Math.min(1, (x - edges.originX) / Math.max(edges.lengthMm, 1e-6)));
-    const medial = edges.medialAt(u);
-    const span = Math.max(0, edges.lateralAt(u) - medial);
-    return { v: span > 1e-6 ? (yLateral - medial) / span : 0.5, span };
-}
-
-function smoothstepDeriv01(t: number): number {
-    if (t <= 0 || t >= 1) return 0;
-    return 6 * t * (1 - t);
-}
-
-/**
- * Forefoot thickness fade near a medial or lateral wall. Sink cuts do not
- * call this: each cut is the oval's own C2 taper and may run past the outline.
- * 1 in the interior.
- */
-function wallFade(
-    frame: SinkOvalFrame,
-    v: number,
-    spanMm: number,
-    forThickness = false,
-): { factor: number; dfdy: number } {
-    let factor = 1;
-    let dfdy = 0;
-    const dvdy = spanMm > 1e-6 ? 1 / spanMm : 0;
-    const mul = (piece: number, dfdv: number) => {
-        dfdy = dfdy * piece + factor * dfdv * dvdy;
-        factor *= piece;
-    };
-    if (!forThickness) return { factor, dfdy };
-    if (frame.lateralWallFade) {
-        const denom = MPJ5_V_FADE_END - MPJ5_V_FADE_START;
-        const t = (v - MPJ5_V_FADE_START) / denom;
-        mul(1 - smoothstep01(t), -smoothstepDeriv01(t) / denom);
-    }
-    if (frame.medialWallFade) {
-        let startV =
-            frame.medialFadeMm > 0 && spanMm > 1e-6
-                ? Math.min(0.49, frame.medialFadeMm / spanMm)
-                : MPJ1_V_FADE_START;
-        // The added forefoot thickness still eases off over about 12 mm. The
-        // cut does not: its own taper is combined with this fade below so the
-        // two always come back to the plain surface together.
-        let endV = 0;
-        if (spanMm > 1e-6) {
-            if (!(frame.medialFadeMm > 0)) {
-                const wide = 12 / spanMm;
-                const cap = Math.max(startV, frame.v * 0.8);
-                startV = Math.min(Math.max(startV, wide), cap);
-            }
-            endV = Math.min(4 / spanMm, startV * 0.5);
-        }
-        const spanV = Math.max(startV - endV, 1e-6);
-        const t = (startV - v) / spanV;
-        mul(1 - smoothstep01(t), smoothstepDeriv01(t) / spanV);
-    }
-    return { factor, dfdy };
-}
-
 export function sinkThicknessMm(x: number, yLateral: number, ctx: SinkSurfaceContext): number {
-    if (!sinksActive(ctx.sinks)) return 0;
-    const at = specVAt(x, yLateral, ctx);
-    let t = 0;
-    for (const p of prepare(ctx)) {
-        const widened = p.frame.forefoot || (ctx.sinkStyloidThicken && p.frame.kind === "styloid");
-        const paired = widened || p.frame.kind === "styloid";
-        if (!paired) continue;
-        const clearance = p.frame.depthMm + FOREFOOT_THICKNESS_CLEARANCE_MM;
-        const rimScale = p.frame.kind.startsWith("mpj") ? mpjRimThicknessScale(x, yLateral, ctx) : 1;
-        const existing = widened
-            ? eggWeight(p.frame, x, yLateral, BLEND_LEN_MM) *
-              wallFade(p.frame, at.v, at.span, true).factor *
-              rimScale *
-              clearance
-            : 0;
-        // Footprint plus the oval's own taper. Max with the forefoot fade so
-        // thickness stays at least the cut everywhere, including on the outline.
-        const taper = eggWeight(p.frame, x, yLateral, p.frame.blendMm) * clearance;
-        const local = existing > taper ? existing : taper;
-        if (local > t) t = local;
-    }
-    return t;
+    void x;
+    void yLateral;
+    void ctx;
+    return 0;
 }
 
 export function sinkThicknessAt(u: number, vSigned: number, ctx: SinkSurfaceContext): number {
@@ -1343,23 +1280,6 @@ function rkwOverhangMm(frame: SinkOvalFrame, ctx: SinkSurfaceContext): number {
     const edges = planEdges(ctx);
     const u = Math.max(0, Math.min(1, (frame.cx - edges.originX) / Math.max(edges.lengthMm, 1e-6)));
     return edges.medialAt(u) - (frame.cy - frame.bMed);
-}
-
-/** 0 on the outline, 1 once {@link MPJ_RIM_THICKNESS_MM} inside. MPJ mounds only. */
-function mpjRimThicknessScale(x: number, yLateral: number, ctx: SinkSurfaceContext): number {
-    const inside = insideOutlineMm(x, yLateral, ctx);
-    if (inside >= MPJ_RIM_THICKNESS_MM) return 1;
-    if (inside <= 0) return 0;
-    return smootherstep01(inside / MPJ_RIM_THICKNESS_MM);
-}
-
-/** Distance inside the medial and lateral outline. Negative is past the edge. */
-function insideOutlineMm(x: number, yLateral: number, ctx: SinkSurfaceContext): number {
-    const edges = planEdges(ctx);
-    const u = Math.max(0, Math.min(1, (x - edges.originX) / Math.max(edges.lengthMm, 1e-6)));
-    const medial = edges.medialAt(u);
-    const lateral = edges.lateralAt(u);
-    return Math.min(yLateral - medial, lateral - yLateral);
 }
 
 function rkwMedialRamp(x: number, yLateral: number, ctx: SinkSurfaceContext): number {
@@ -1428,22 +1348,16 @@ export function sinkCutMm(
 }
 
 /**
- * True where two cuts, or two forefoot thickness mounds, both still rise.
- * A hard max of those shoulders creases a short loft edge. The slope relax
- * lowers only that overlap, and it leaves each plateau at depth + 0.5 mm.
+ * True where two cuts both still have depth. A hard max of those shoulders
+ * creases a short edge, so the slope relax lowers only that overlap and
+ * leaves each plateau at the cut. The retired thickness mound is not a ridge.
  */
 function taperOverlap(x: number, yLateral: number, ctx: SinkSurfaceContext): boolean {
     let cuts = 0;
-    let mounds = 0;
     for (const p of prepare(ctx)) {
         const cutW = eggWeight(p.frame, x, yLateral, p.frame.blendMm);
         if (p.frame.depthMm * cutW > 0.4) cuts++;
-        if (!p.frame.forefoot) continue;
-        const mound =
-            eggWeight(p.frame, x, yLateral, BLEND_LEN_MM) *
-            (p.frame.depthMm + FOREFOOT_THICKNESS_CLEARANCE_MM);
-        if (mound > 0.4) mounds++;
-        if (cuts >= 2 || mounds >= 2) return true;
+        if (cuts >= 2) return true;
     }
     return false;
 }
@@ -1654,7 +1568,10 @@ export function applySinkCutToGeometry(
     return { warnings: merged };
 }
 
-/** Add T to top vertices. No-op (no writes) when sinks are absent. */
+/**
+ * Local per-sink thickness is retired. The shell is already at
+ * {@link effectiveInsoleThicknessMm} before the cut. No vertex writes.
+ */
 export function applySinkThicknessToGeometry(
     geometry: BufferGeometry,
     _reference: BufferGeometry,
@@ -2157,6 +2074,7 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
     const rimStation = new Map<number, number>();
     for (let s = 0; s < input.nS; s++) rimStation.set(input.vertAt(0, s), s);
     const plainZ = new Float64Array(topCount);
+    const cutZ = new Float64Array(topCount);
     for (let i = 0; i < topCount; i++) plainZ[i] = input.positions[i * 3 + 2]!;
     for (let i = 0; i < topCount; i++) {
         const x = input.positions[i * 3]!;
@@ -2174,9 +2092,11 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
         const station = rimStation.get(i);
         if (station !== undefined) {
             input.positions[i * 3 + 2] = rimH[station]! + rimT[station]! - rimR[station]!;
+            cutZ[i] = input.positions[i * 3 + 2]!;
             continue;
         }
         if (t !== 0 || guarded.cutMm !== 0) input.positions[i * 3 + 2] = Math.max(0, z - guarded.cutMm);
+        cutZ[i] = input.positions[i * 3 + 2]!;
     }
     raiseInboardOfGuardedRim(input, rimStation, rimCut, rimR);
     relaxOverlapShoulder(
@@ -2193,8 +2113,17 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
             return taperOverlap(pt.x, pt.y, ctx);
         },
     );
+    // Same rule as the open sheet. An uncut vertex stays on the plain. A real
+    // cut keeps the relaxed shoulder. The guarded crest is a real cut and stays.
     for (let i = 0; i < topCount; i++) {
-        if (input.positions[i * 3 + 2]! < plainZ[i]!) input.positions[i * 3 + 2] = plainZ[i]!;
+        const plain = plainZ[i]!;
+        if (cutZ[i]! < plain - 1e-6) continue;
+        if (input.positions[i * 3 + 2]! < plain) input.positions[i * 3 + 2] = plain;
+    }
+    // The cut sits below the uniform top. Keep that depression. Do not let a
+    // shoulder relax or a rim ramp rise above the surrounding top.
+    for (let i = 0; i < topCount; i++) {
+        if (input.positions[i * 3 + 2]! > plainZ[i]!) input.positions[i * 3 + 2] = plainZ[i]!;
     }
     const styloid = input.sinks!.find((s) => s.kind === "styloid");
     const depth = styloid ? clampSinkDepth("styloid", styloid.depthMm).depthMm : 0;

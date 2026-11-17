@@ -8,6 +8,7 @@ import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
 import { perfMark } from "@/lib/geometry/perf/load-export-perf";
 import { scaleSourceShapeToFootprint } from "@/lib/geometry/shoe-size";
+import { effectiveInsoleThicknessMm } from "@/lib/geometry/sink";
 import { hasActiveComposedTextMarking } from "@/lib/geometry/text-marking/compose";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
 import {
@@ -30,7 +31,12 @@ import {
     rememberManufacturingSolid,
 } from "./manufacturing-solid-cache";
 import { FOREFOOT_SHIFT_U_HOLD, forefootFeatureBoxes, offsetPlanLoopForefootWidthMm } from "./modifiers";
-import { composePrintSolidTop, fieldWithoutSinks, type PrintSolidShoeWidth } from "./print-solid-compose";
+import {
+    composePrintSolidTop,
+    fieldWithoutSinks,
+    type PrintSolidShoeWidth,
+    withDefaultPrintShell,
+} from "./print-solid-compose";
 import { hasCurveOrTopModifiers, reconstructProceduralWalls } from "./reconstruct";
 import { SAMPLE_TOP_ASSET_ID, SAMPLE_TOP_NAME, SAMPLE_TOP_PUBLIC_PATH } from "./sample-top-id";
 import { shiftPatternByRimFollow } from "./station-gates";
@@ -434,8 +440,23 @@ export async function reconstructProceduralPreview(
                           : {}),
                   }
                 : options.sourceField;
-        // The loft pairs the unsunk sheet. T and S are applied to the wall after.
-        const sourceField = fieldWithoutSinks(widthFree);
+        // Resolve the shell mode at the slider thickness first. Raising the
+        // number before that would skip the zonal shell and retessellate the
+        // wall. The lift is the same solid-top raise the slider uses, then
+        // the cut is applied after the loft.
+        const sinkList = options.sinks?.length ? options.sinks : widthFree.sinks;
+        const setThickness = options.thicknessMm ?? widthFree.thicknessMm;
+        const shelled = withDefaultPrintShell({ ...widthFree, thicknessMm: setThickness });
+        const effectiveThickness = effectiveInsoleThicknessMm(setThickness, {
+            ...shelled,
+            sinks: sinkList,
+            sinkStyloidThicken: options.sinkStyloidThicken ?? shelled.sinkStyloidThicken,
+        });
+        const thickened =
+            effectiveThickness === shelled.thicknessMm
+                ? shelled
+                : { ...shelled, thicknessMm: effectiveThickness };
+        const sourceField = fieldWithoutSinks(thickened);
         source = await composePrintSolidTop(working, {
             sourceField,
             shoeWidth: options.shoeWidth,

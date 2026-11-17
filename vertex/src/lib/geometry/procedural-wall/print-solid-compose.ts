@@ -18,7 +18,12 @@ import {
     DEFAULT_SHELL_THICKNESS_RF_MM,
 } from "@/lib/geometry/shell-thickness-zonal";
 import { applyShoeWidthToGeometry, type ShoeWidthId, shoeWidthAffineActive } from "@/lib/geometry/shoe-width";
-import { applySinkCutToGeometry, applySinkThicknessToGeometry, sinksActive } from "@/lib/geometry/sink";
+import {
+    applySinkCutToGeometry,
+    applySinkThicknessToGeometry,
+    effectiveInsoleThicknessMm,
+    sinksActive,
+} from "@/lib/geometry/sink";
 import { clipGeometryToOutline, type TrimlineCurve } from "@/lib/geometry/trimline";
 
 /**
@@ -88,7 +93,11 @@ function composePrintSolidTopCore(
     raw: BufferGeometry,
     input: ComposePrintSolidInput,
 ): { geometry: BufferGeometry; referenceBase: BufferGeometry; ownedWidth: boolean } {
-    const sourceField = withDefaultPrintShell(input.sourceField);
+    const shelled = withDefaultPrintShell(input.sourceField);
+    // Same lift the Setup slider uses. Sinks are stripped before the modifier
+    // so the raise is uniform, then the cut is applied to that top.
+    const shellMm = effectiveInsoleThicknessMm(shelled.thicknessMm, shelled);
+    const sourceField = shellMm === shelled.thicknessMm ? shelled : { ...shelled, thicknessMm: shellMm };
     let current = raw;
     let owned = false;
     const sw = input.shoeWidth;

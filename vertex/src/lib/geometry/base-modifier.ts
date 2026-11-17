@@ -39,6 +39,7 @@ import {
 } from "@/lib/geometry/shape-finish-modifiers";
 import { neutralShellThicknessContext } from "@/lib/geometry/shell-thickness-zonal";
 import {
+    effectiveInsoleThicknessMm,
     meshYToAnatomical,
     sinkContextForMesh,
     sinksActive,
@@ -2711,7 +2712,21 @@ export function applyBaseModifiers(
     // neutral-field zero for correction deltas. The physical lift is sourced from
     // derived nativeMinClearance so labelled thicknessMm == delivered clearance.
     // Epsilon 1e-9 matches thicknessLiftActive; ≪ slider step (0.1 mm).
+    // A sink uses that same lift: the shell becomes max(slider, deepest + 0.5).
+    // The slider value on the design is not written. No sink leaves this field alone.
     const THICKNESS_DATUM_EPS_MM = 1e-9;
+    const sinkShellMm = effectiveInsoleThicknessMm(field.thicknessMm, {
+        side: field.side,
+        lengthMm: field.lengthMm,
+        widthMm: field.widthMm,
+        trimline: field.trimline,
+        sinks: field.sinks,
+        sinkStyloidThicken: field.sinkStyloidThicken,
+        sinkMarkers: field.sinkMarkers,
+    });
+    if (sinkShellMm !== field.thicknessMm) {
+        field = { ...field, thicknessMm: sinkShellMm };
+    }
     let thicknessMmForDelta = field.thicknessMm;
     let thicknessDatumClamped = false;
     let thicknessDatumNativeMm: number | null = null;

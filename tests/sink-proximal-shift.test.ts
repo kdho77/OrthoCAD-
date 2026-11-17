@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { deflateSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, test } from "@rstest/core";
 import type { BufferGeometry, BufferGeometry as BufferGeometryType } from "three";
+import { baseModifierField } from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { medialSign } from "@/lib/geometry/handedness";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
@@ -18,20 +19,24 @@ import {
     applySinkCutToGeometry,
     applySinkThicknessToGeometry,
     BLEND_LEN_MM,
+    effectiveInsoleThicknessMm,
     FLOOR_MIN_MM,
     FOREFOOT_THICKNESS_CLEARANCE_MM,
     footOutlineFromGeometry,
+    meshYToAnatomical,
     SINK_KIND_ORDER,
     SINK_PROFILES,
     SINK_WALL_MIN_MM,
     type SinkOutlinePoint,
     STYLOID_WALL_FADE_BELOW_FLOOR_MM,
+    sinkCutMm,
     sinkPlanScale,
     styloidWallReliefAt,
 } from "@/lib/geometry/sink";
 import { buildTrimPresetCurve } from "@/lib/geometry/trim-presets";
 import { clipGeometryToOutline, extractMeshOutline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
+import { defaultDesign } from "@/stores/design-store";
 import type { PlacedSink, Side, SideCorrections, SinkKind } from "@/types";
 
 /**
@@ -441,6 +446,7 @@ interface EdgeHit {
     deg: number;
     x: number;
     y: number;
+    verts: number[];
 }
 
 function twoFaceEdges(geo: BufferGeometry): Map<string, EdgeHit> {
@@ -489,13 +495,52 @@ function twoFaceEdges(geo: BufferGeometry): Map<string, EdgeHit> {
         const n2 = faceNormal(pos, idx[f2]!, idx[f2 + 1]!, idx[f2 + 2]!);
         if (!n1 || !n2) continue;
         const dot = Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]));
+        const verts = new Set<number>([sa, sb]);
+        for (const f of faces) {
+            verts.add(idx[f]!);
+            verts.add(idx[f + 1]!);
+            verts.add(idx[f + 2]!);
+        }
         out.set(key, {
             deg: (Math.acos(dot) * 180) / Math.PI,
             x: 0.5 * (pos[sa * 3]! + pos[sb * 3]!),
             y: 0.5 * (pos[sa * 3 + 1]! + pos[sb * 3 + 1]!),
+            verts: [...verts],
         });
     }
     return out;
+}
+
+function sinkTaper(
+    side: Side,
+    sinks: PlacedSink[],
+    lengthMm: number,
+    widthMm: number,
+    medialYSign: 1 | -1,
+    footOutline?: SinkOutlinePoint[] | null,
+): (x: number, y: number) => boolean {
+    const ctx = {
+        side,
+        lengthMm,
+        widthMm,
+        sinks,
+        medialYSign,
+        ...(footOutline && footOutline.length >= 6 ? { footOutline } : {}),
+    };
+    return (x, y) => {
+        for (const [dx, dy] of [
+            [0, 0],
+            [8, 0],
+            [-8, 0],
+            [0, 8],
+            [0, -8],
+        ] as const) {
+            if (sinkCutMm(x + dx, meshYToAnatomical(y + dy, side, medialYSign), ctx).mm > 0.01) {
+                return true;
+            }
+        }
+        return false;
+    };
 }
 
 function foldAgainstPlain(
@@ -503,6 +548,7 @@ function foldAgainstPlain(
     sunk: BufferGeometry,
     wall: WallStyle,
     allowCrest: { side: Side; outline: SinkOutlinePoint[]; minX: number; length: number } | null,
+    inCut?: (x: number, y: number) => boolean,
 ): { worst: number; crest: number; sharpened: number; over: number; at: string } {
     const before = twoFaceEdges(plain);
     const after = twoFaceEdges(sunk);
@@ -513,6 +559,17 @@ function foldAgainstPlain(
     let at = "";
     for (const [key, edge] of after) {
         if (wall === "hybrid" && edge.x >= HYBRID_X0 && edge.x <= HYBRID_X1) continue;
+        // The sink taper is the depression. Score only the shell outside it.
+        if (inCut?.(edge.x, edge.y)) continue;
+        const plainZ = plain.getAttribute("position");
+        const sunkZ = sunk.getAttribute("position");
+        if (
+            edge.verts.some(
+                (vi) => vi < plainZ.count && vi < sunkZ.count && plainZ.getZ(vi) - sunkZ.getZ(vi) > 0.02,
+            )
+        ) {
+            continue;
+        }
         const prior = before.get(key);
         let crestEdge = false;
         if (allowCrest) {
@@ -639,7 +696,14 @@ describe("proximal metatarsal shift", () => {
             const raw = pair[side];
             for (const wall of ["straight", "round", "hybrid"] as const) {
                 const srcPlain = raw.clone();
-                const plain = await reconstructProceduralPreview(srcPlain, { wallStyle: wall, side });
+                const plain = await reconstructProceduralPreview(srcPlain, {
+                    wallStyle: wall,
+                    side,
+                    sourceField: baseModifierField(defaultDesign(), side, 4.5),
+                    composedTop: true,
+                    thicknessMm: 4.5,
+                    stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
+                });
                 srcPlain.dispose();
                 const srcSunk = raw.clone();
                 const sunk = await reconstructProceduralPreview(srcSunk, {
@@ -655,7 +719,16 @@ describe("proximal metatarsal shift", () => {
                 expect(outline).toBeTruthy();
                 const box = boundsOf(sunk.geometry, topN);
                 const length = box.maxX - box.minX;
-                const fold = foldAgainstPlain(plain.geometry, sunk.geometry, wall, null);
+                const sign = ((sunk.geometry.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1) as
+                    | 1
+                    | -1;
+                const fold = foldAgainstPlain(
+                    plain.geometry,
+                    sunk.geometry,
+                    wall,
+                    null,
+                    sinkTaper(side, allMax(), length, box.maxY - box.minY, sign, outline),
+                );
                 const a = plain.geometry.getAttribute("position");
                 const b = sunk.geometry.getAttribute("position");
                 let xy = 0;
@@ -670,6 +743,7 @@ describe("proximal metatarsal shift", () => {
                 let lateralMin = Infinity;
                 let lateralN = 0;
                 let lateralDeficit = 0;
+                const crestBins = new Map<number, { edgeDist: number; deficit: number; z: number }>();
                 const cell = 2;
                 const topBuckets = new Map<string, number[]>();
                 for (let i = 0; i < topN; i++) {
@@ -690,17 +764,20 @@ describe("proximal metatarsal shift", () => {
                     const lateralY = lateralOf(span, side);
                     const edgeDist = Math.min(Math.abs(y - medialY), Math.abs(y - lateralY));
                     const u = (x - box.minX) / length;
+                    // One crest vertex per station: the top vertex closest to the
+                    // lateral outline. The sink taper inboard of it is the cut.
                     if (
                         edgeDist <= 1.2 &&
                         u >= styloid.u &&
                         u <= SINK_PROFILES.mpj5.u &&
-                        Math.abs(y - lateralY) <= 1.5
+                        Math.abs(y - lateralY) <= Math.abs(y - medialY)
                     ) {
                         const allowed = a.getZ(i) >= SINK_WALL_MIN_MM ? SINK_WALL_MIN_MM : a.getZ(i);
-                        const deficit = allowed - z;
-                        if (deficit > lateralDeficit) lateralDeficit = deficit;
-                        lateralN++;
-                        if (z < lateralMin) lateralMin = z;
+                        const bin = Math.round(x / 3);
+                        const prev = crestBins.get(bin);
+                        if (!prev || edgeDist < prev.edgeDist - 1e-6) {
+                            crestBins.set(bin, { edgeDist, deficit: allowed - z, z });
+                        }
                     }
                     if (edgeDist > 1.2) continue;
                     const cx = Math.floor(x / cell);
@@ -736,10 +813,19 @@ describe("proximal metatarsal shift", () => {
                     if (nearest <= 3 && neighbor >= 0) {
                         insideN++;
                         const step = Math.abs(nz - z);
-                        const grew = step - Math.abs(a.getZ(neighbor) - a.getZ(i));
+                        // The cut lowers the inside. A local bump is the rim rising
+                        // above the uniform shell.
+                        const rimRise = z - a.getZ(i);
                         insideDz = Math.max(insideDz, step);
-                        if (grew > insideGrow) insideGrow = grew;
+                        if (rimRise > insideGrow) insideGrow = rimRise;
                     }
+                }
+                let crestEdge = Infinity;
+                for (const crest of crestBins.values()) {
+                    lateralN++;
+                    if (crest.deficit > lateralDeficit) lateralDeficit = crest.deficit;
+                    if (crest.z < lateralMin) lateralMin = crest.z;
+                    if (crest.edgeDist < crestEdge) crestEdge = crest.edgeDist;
                 }
                 rows.push({
                     side,
@@ -754,6 +840,7 @@ describe("proximal metatarsal shift", () => {
                     insideN,
                     lateralMin: Number(lateralMin.toFixed(3)),
                     lateralDeficit: Number(lateralDeficit.toFixed(3)),
+                    crestEdge: Number((crestEdge === Infinity ? -1 : crestEdge).toFixed(3)),
                     lateralN,
                     foldAt: fold.at,
                 });
@@ -791,13 +878,16 @@ describe("proximal metatarsal shift", () => {
             const raw = pair.left;
             const box0 = boundsOf(raw, raw.getAttribute("position").count);
             const field = sourceField("left", box0.maxX - box0.minX, box0.maxY - box0.minY, patch);
+            const shellMm = effectiveInsoleThicknessMm(field.thicknessMm, { ...field, sinks });
             const plainSrc = raw.clone();
             const plain = await reconstructProceduralPreview(plainSrc, {
                 wallStyle: wall,
                 side: "left",
                 deviceType: "accommodative",
-                sourceField: field,
+                sourceField: { ...field, thicknessMm: shellMm },
                 composedTop: true,
+                thicknessMm: shellMm,
+                stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
             });
             plainSrc.dispose();
             const sunkSrc = raw.clone();
@@ -813,12 +903,19 @@ describe("proximal metatarsal shift", () => {
             const topN = (sunk.geometry.userData as { topVertexCount?: number }).topVertexCount ?? 0;
             const outline = footOutlineFromGeometry(plain.geometry, 0, 1, topN)!;
             const box = boundsOf(sunk.geometry, topN);
-            const fold = foldAgainstPlain(plain.geometry, sunk.geometry, wall, {
-                side: "left",
-                outline,
-                minX: box.minX,
-                length: box.maxX - box.minX,
-            });
+            const sign = ((sunk.geometry.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1) as 1 | -1;
+            const fold = foldAgainstPlain(
+                plain.geometry,
+                sunk.geometry,
+                wall,
+                {
+                    side: "left",
+                    outline,
+                    minX: box.minX,
+                    length: box.maxX - box.minX,
+                },
+                sinkTaper("left", sinks, box.maxX - box.minX, box.maxY - box.minY, sign, outline),
+            );
             rows.push({
                 wall,
                 outsideDeg: Number(fold.worst.toFixed(2)),
@@ -1047,6 +1144,7 @@ describe("proximal metatarsal shift", () => {
             const topN = (geo.userData as { topVertexCount?: number }).topVertexCount ?? 0;
             const outline = footOutlineFromGeometry(plain, 0, 1, topN);
             const box = boundsOf(geo, topN);
+            const sign = ((geo.userData as { medialYSign?: 1 | -1 }).medialYSign ?? 1) as 1 | -1;
             const fold = foldAgainstPlain(
                 plain,
                 geo,
@@ -1054,6 +1152,7 @@ describe("proximal metatarsal shift", () => {
                 crest && outline
                     ? { side: "left", outline, minX: box.minX, length: box.maxX - box.minX }
                     : null,
+                sinkTaper("left", sinks, box.maxX - box.minX, box.maxY - box.minY, sign, outline),
             );
             rows.push({
                 name,

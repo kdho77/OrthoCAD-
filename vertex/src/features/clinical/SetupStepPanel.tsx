@@ -4,11 +4,34 @@ import { PanelHeading } from "@/components/clinical/PanelHeading";
 import { LeftSidebar } from "@/components/layout/LeftSidebar";
 import { SliderField } from "@/components/ui/slider-field";
 import { SetupAiGenerateButton } from "@/features/clinical/SetupAiGenerateButton";
+import { sinksForSide } from "@/lib/geometry/migrate-corrections";
+import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
+import { effectiveInsoleThicknessMm, sinkRaisedThicknessHint } from "@/lib/geometry/sink";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
 import { usePerformanceStore } from "@/stores/performance-store";
+import type { DesignState } from "@/types";
 import { formatClientShoeSummary, shoeChartFromInput } from "../../../shared/client-files";
+
+function raisedForSinks(design: DesignState, setThicknessMm: number): string | null {
+    const layout = insoleLayoutForUsMenSize(design.usMenSize ?? 9);
+    let effective = setThicknessMm;
+    for (const side of ["left", "right"] as const) {
+        const sinks = sinksForSide(design, side);
+        if (!sinks) continue;
+        effective = Math.max(
+            effective,
+            effectiveInsoleThicknessMm(setThicknessMm, {
+                side,
+                lengthMm: layout.lengthMm,
+                widthMm: layout.widthMm,
+                sinks,
+            }),
+        );
+    }
+    return sinkRaisedThicknessHint(setThicknessMm, effective);
+}
 
 const previewThickness = rafThrottle((mm: number) => {
     usePerformanceStore.getState().setThicknessPreview(mm);
@@ -20,6 +43,8 @@ function SetupInsoleThicknessField() {
     const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
     const setThicknessPreview = usePerformanceStore((s) => s.setThicknessPreview);
     const displayThickness = thicknessPreview ?? thicknessMm;
+    const design = useDesignStore((s) => s.design);
+    const hint = raisedForSinks(design, displayThickness);
 
     return (
         <div data-testid="setup-insole-thickness">
@@ -36,6 +61,11 @@ function SetupInsoleThicknessField() {
                     setThicknessPreview(null);
                 }}
             />
+            {hint ? (
+                <p data-testid="setup-insole-thickness-hint" className="text-[11px] text-muted-foreground">
+                    {hint}
+                </p>
+            ) : null}
         </div>
     );
 }

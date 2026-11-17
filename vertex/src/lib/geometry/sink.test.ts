@@ -12,6 +12,7 @@ import {
     applyFloorGuard,
     applyStyloidWallRelief,
     BLEND_LEN_MM,
+    effectiveInsoleThicknessMm,
     ellipseOffsetDistance,
     FLOOR_MIN_MM,
     FOREFOOT_THICKNESS_CLEARANCE_MM,
@@ -34,6 +35,7 @@ import {
     sinkDepthWarnings,
     sinkFrame,
     sinkPlanScale,
+    sinkRaisedThicknessHint,
     sinkRimWarnings,
     sinksActive,
     sinkThicknessAt,
@@ -223,7 +225,7 @@ describe("sink scalar field", () => {
         expect(SINK_DEFAULT_DEPTH_MM).toBe(2);
         expect(FOREFOOT_THICKNESS_CLEARANCE_MM).toBe(0.5);
         expect(BLEND_LEN_MM).toBe(25);
-        expect(FLOOR_MIN_MM).toBe(2);
+        expect(FLOOR_MIN_MM).toBe(0.5);
         expect(LATERAL_WALL_MIN_MM).toBe(2);
         expect(STYLOID_RIM_CLEAR_MM).toBe(4);
         expect(STYLOID_RIM_HARD_MM).toBe(3);
@@ -269,28 +271,32 @@ describe("sink scalar field", () => {
                                 expect(frame.rimMarginMm).toBeGreaterThanOrEqual(STYLOID_RIM_CLEAR_MM - 1e-6);
                             }
                             const cut = sinkCutMm(frame.dx, frame.dy, ctx);
-                            const added = sinkThicknessAt(
-                                frame.dx / ctx.lengthMm,
-                                vSignedFromSpecV(frame.v, side),
-                                ctx,
-                            );
+                            const added = sinkThicknessMm(frame.dx, frame.dy, ctx);
+                            expect(added).toBe(0);
                             if (frame.rimBlocked) {
                                 expect(cut.mm).toBe(0);
-                                expect(added).toBeLessThan(1e-6);
+                                expect(effectiveInsoleThicknessMm(2, ctx)).toBe(2);
                             } else if (kind === "rkw") {
                                 // The medial ramp holds the border at half depth, so a small
                                 // oval's centre can sit inside that 5 mm band.
                                 expect(cut.mm).toBeGreaterThan(depth * 0.5);
                                 expect(cut.mm).toBeLessThanOrEqual(depth + 1e-6);
-                                expect(added).toBeGreaterThan(cut.mm);
+                                expect(effectiveInsoleThicknessMm(2, ctx)).toBeCloseTo(
+                                    depth + FOREFOOT_THICKNESS_CLEARANCE_MM,
+                                    5,
+                                );
                             } else {
                                 expect(Math.abs(cut.mm - depth)).toBeLessThan(0.05);
-                                // The footprint taper carries depth + 0.5 even when the wide
-                                // styloid pad is off, so the cut cannot fall through the plain top.
-                                expect(
-                                    Math.abs(added - cut.mm - FOREFOOT_THICKNESS_CLEARANCE_MM),
-                                ).toBeLessThan(0.05);
+                                expect(effectiveInsoleThicknessMm(2, ctx)).toBeCloseTo(
+                                    depth + FOREFOOT_THICKNESS_CLEARANCE_MM,
+                                    5,
+                                );
+                                expect(effectiveInsoleThicknessMm(2, ctx) - cut.mm).toBeGreaterThan(
+                                    FOREFOOT_THICKNESS_CLEARANCE_MM - 0.05,
+                                );
                             }
+                            // The styloid thicken flag does not add a local pad.
+                            expect(sinkThicknessAt(0.5, 0, ctx)).toBe(0);
                             if (sinkPlanScale(ctx.lengthMm) >= 0.8) {
                                 expect(frame.blendMm).toBe(profile.blendMm);
                                 expect(frame.fallbackStep).toBe(0);
@@ -334,41 +340,58 @@ describe("sink scalar field", () => {
         expect(m1.bLat).toBeGreaterThan(0.5);
     });
 
-    test("forefoot thickness is local depth + 0.5, blended over 25 mm, and the floor stays at least 2 mm", () => {
-        const sinks = SINK_KIND_ORDER.filter((kind) => kind !== "rkw").map((kind) =>
-            placed(kind, kind === "mpj1" ? 4 : 2),
-        );
-        const ctx = surface(9, "left", sinks, false);
-        const plan = forefootThicknessPlan(ctx)!;
-        expect(plan.A).toBeCloseTo(4 + FOREFOOT_THICKNESS_CLEARANCE_MM, 6);
-        const deep = { ...placed("mpj1", 4, "deep"), u: 0.8, v: 0.4 };
-        const shallow = { ...placed("mpj2", 2, "shallow"), u: 0.55, v: 0.4 };
-        const split = surface(9, "left", [deep, shallow], false);
-        const deepFrame = sinkFrame(deep, split)!;
-        const shallowFrame = sinkFrame(shallow, split)!;
-        const tDeep = sinkThicknessAt(deepFrame.u, vSignedFromSpecV(deepFrame.v, "left"), split);
-        const tShallow = sinkThicknessAt(shallowFrame.u, vSignedFromSpecV(shallowFrame.v, "left"), split);
-        expect(tDeep).toBeCloseTo(4.5, 2);
-        expect(tShallow).toBeCloseTo(2.5, 2);
-        const shell = 2;
-        expect(shell + tDeep - 4).toBeGreaterThanOrEqual(FLOOR_MIN_MM - 1e-6);
-        expect(shell + tShallow - 2).toBeGreaterThanOrEqual(FLOOR_MIN_MM - 1e-6);
-        const alone = surface(9, "left", [deep], false);
-        const aloneFrame = sinkFrame(deep, alone)!;
-        const uOut = (aloneFrame.cx - aloneFrame.halfLengthMm - BLEND_LEN_MM - 2) / alone.lengthMm;
-        expect(sinkThicknessAt(uOut, vSignedFromSpecV(aloneFrame.v, "left"), alone)).toBeLessThan(1e-4);
-        expect(sinkThicknessAt(0.13, 0, ctx)).toBeLessThan(1e-6);
-        const sample = (s: number) =>
-            sinkThicknessAt(
-                (aloneFrame.cx + aloneFrame.tx * s) / alone.lengthMm,
-                vSignedFromSpecV(aloneFrame.v, "left"),
-                alone,
-            );
-        const edge = aloneFrame.halfLengthMm + BLEND_LEN_MM;
-        const h = 0.05;
-        const slope = (s: number) => (sample(s + h) - sample(s - h)) / (2 * h);
-        expect(Math.abs(slope(aloneFrame.halfLengthMm))).toBeLessThan(0.02);
-        expect(Math.abs(slope(edge))).toBeLessThan(0.02);
+    test("insole thickness is uniform: 2 mm sink → 2.5, 3 mm → 3.5, slider above that stays", () => {
+        const two = surface(9, "left", [placed("mpj1", 2)]);
+        const three = surface(9, "left", [placed("mpj1", 3)]);
+        expect(effectiveInsoleThicknessMm(2, two)).toBeCloseTo(2.5, 6);
+        expect(effectiveInsoleThicknessMm(2, three)).toBeCloseTo(3.5, 6);
+        expect(effectiveInsoleThicknessMm(4, two)).toBe(4);
+        expect(effectiveInsoleThicknessMm(2.5, two)).toBeCloseTo(2.5, 6);
+        expect(effectiveInsoleThicknessMm(2, { ...two, sinks: [] })).toBe(2);
+        expect(sinkRaisedThicknessHint(2, 2.5)).toBe("raised to 2.5 mm for sinks");
+        expect(sinkRaisedThicknessHint(4, 4)).toBeNull();
+        const frame = sinkFrame(placed("mpj1", 2), two)!;
+        expect(sinkThicknessMm(frame.dx, frame.dy, two)).toBe(0);
+        expect(sinkThicknessMm(frame.dx + frame.tx * 25, frame.dy + frame.ty * 25, two)).toBe(0);
+        expect(sinkCutMm(frame.dx, frame.dy, two).mm).toBeCloseTo(2, 2);
+        expect(effectiveInsoleThicknessMm(2, two) - 2).toBeCloseTo(FOREFOOT_THICKNESS_CLEARANCE_MM, 6);
+        // RKW and the styloid raise the same way. The thicken flag adds no local pad.
+        expect(effectiveInsoleThicknessMm(2, surface(9, "right", [placed("rkw", 3)]))).toBeCloseTo(3.5, 6);
+        const styOff = surface(9, "left", [placed("styloid", 3)], false);
+        const styOn = surface(9, "left", [placed("styloid", 3)], true);
+        expect(effectiveInsoleThicknessMm(2, styOn)).toBe(effectiveInsoleThicknessMm(2, styOff));
+        expect(sinkThicknessMm(100, 10, styOn)).toBe(0);
+        // Deepest sink wins. RKW suppresses MPJ1, so a 4 mm MPJ1 does not raise past the wedge.
+        const both = surface(9, "left", [placed("mpj2", 2, "a"), placed("mpj1", 3, "b")]);
+        expect(effectiveInsoleThicknessMm(2, both)).toBeCloseTo(3.5, 6);
+        const hidden = surface(9, "left", [placed("rkw", 2, "w"), placed("mpj1", 4, "m")]);
+        expect(effectiveInsoleThicknessMm(2, hidden)).toBeCloseTo(2.5, 6);
+        const plan = forefootThicknessPlan(both)!;
+        expect(plan.A).toBeCloseTo(3.5, 6);
+        expect(plan.x0).toBe(0);
+        expect(plan.xFull).toBe(0);
+    });
+
+    test("the raised shell is the same height at the heel and beside the sink", () => {
+        const sink = placed("mpj1", 2);
+        const ctx = surface(9, "right", [sink]);
+        const set = 2;
+        const withSink = { ...field(ctx, [sink]), thicknessMm: set };
+        const bare = { ...field(ctx, undefined), thicknessMm: set };
+        const lift = effectiveInsoleThicknessMm(set, ctx) - set;
+        expect(lift).toBeCloseTo(0.5, 6);
+        for (const [u, v] of [
+            [0.12, 0],
+            [0.4, 0.25],
+            [0.72, -0.4],
+        ] as const) {
+            expect(heightAt(u, v, withSink) - heightAt(u, v, bare)).toBeCloseTo(lift, 5);
+        }
+        const above = { ...withSink, thicknessMm: 4 };
+        const aboveBare = { ...bare, thicknessMm: 4 };
+        expect(heightAt(0.2, 0.1, above)).toBeCloseTo(heightAt(0.2, 0.1, aboveBare), 5);
+        const empty = { ...field(ctx, []), thicknessMm: set };
+        expect(heightAt(0.5, 0, empty)).toBe(heightAt(0.5, 0, bare));
     });
 
     test("profile is C2 across the oval boundary and the blend end", () => {
@@ -681,11 +704,11 @@ describe("sink scalar field", () => {
         expect(sinkCutMm(frame.dx, frame.dy, ctx).mm).toBeCloseTo(3, 2);
     });
 
-    test("floor guard holds 2 mm and the wall guard holds 2 mm", () => {
-        const floor = applyFloorGuard(2.4, 1.2, "mpj1");
-        expect(floor.cutMm).toBeCloseTo(0.4, 6);
+    test("floor guard holds 0.5 mm and the wall guard holds 2 mm", () => {
+        const floor = applyFloorGuard(2.4, 2.2, "mpj1");
+        expect(floor.cutMm).toBeCloseTo(1.9, 6);
         expect(floor.warning?.code).toBe("floor");
-        const ok = applyFloorGuard(6, 2, "mpj1");
+        const ok = applyFloorGuard(2.5, 2, "mpj1");
         expect(ok.cutMm).toBe(2);
         expect(ok.warning).toBeUndefined();
         const wall = guardedRimLowering(4, 2, 0);
@@ -720,6 +743,7 @@ describe("sink scalar field", () => {
             side: "right",
             sinks: [{ id: "sty", kind: "styloid", depthMm: 3, u: rimX / length, v }],
         });
+        expect(positions[2]).toBeLessThanOrEqual(8 + 1e-6);
         expect(positions[2]).toBeGreaterThanOrEqual(5 + LATERAL_WALL_MIN_MM - 1e-3);
         expect(positions[0]).toBeCloseTo(rimX, 6);
         expect(positions[1]).toBeCloseTo(rimY, 6);
@@ -733,9 +757,9 @@ describe("sink scalar field", () => {
         const half = effectiveOutlineHalfWidth(frame.u, ctx.lengthMm, ctx.widthMm, null) * (ctx.widthMm / 2);
         const lateralY = half;
         const cut = sinkCutMm(frame.cx, lateralY, ctx).mm;
-        const thick = sinkThicknessMm(frame.cx, lateralY, ctx);
         expect(cut, "5th MPJ taper reaches the lateral outline").toBeGreaterThan(0);
-        expect(cut).toBeLessThanOrEqual(thick + 1e-6);
+        expect(sinkThicknessMm(frame.cx, lateralY, ctx)).toBe(0);
+        expect(effectiveInsoleThicknessMm(2, ctx) - 4).toBeCloseTo(FOREFOOT_THICKNESS_CLEARANCE_MM, 5);
         const sty = placed("styloid", 2);
         const styCtx = surface(9, "left", [sty]);
         const styFrame = sinkFrame(sty, styCtx)!;
@@ -752,15 +776,12 @@ describe("sink scalar field", () => {
         const yAt = (v: number) => -half + v * span;
         for (const v of [0, 0.02, 0.04]) {
             const cut = sinkCutMm(frame.cx, yAt(v), ctx).mm;
-            const thick = sinkThicknessMm(frame.cx, yAt(v), ctx);
             expect(cut, `cut > 0 at the medial taper v=${v}`).toBeGreaterThan(0);
-            expect(cut, `cut <= added thickness at v=${v}`).toBeLessThanOrEqual(thick + 1e-6);
-            expect(thick - cut, `floor is plain + clearance at v=${v}`).toBeGreaterThanOrEqual(0);
+            expect(sinkThicknessMm(frame.cx, yAt(v), ctx), `no local mound at v=${v}`).toBe(0);
         }
         const deepCut = sinkCutMm(frame.dx, frame.dy, ctx).mm;
-        const deepThick = sinkThicknessMm(frame.dx, frame.dy, ctx);
         expect(deepCut).toBeGreaterThan(3.9);
-        expect(deepThick - deepCut).toBeGreaterThanOrEqual(0.5 - 1e-6);
+        expect(effectiveInsoleThicknessMm(2, ctx) - deepCut).toBeGreaterThanOrEqual(0.5 - 1e-3);
     });
 
     test("reverse kinetic wedge and 1st MPJ both taper through the medial outline", () => {
@@ -769,9 +790,9 @@ describe("sink scalar field", () => {
         const frame = sinkFrame(wedge, ctx)!;
         const half = effectiveOutlineHalfWidth(frame.u, ctx.lengthMm, ctx.widthMm, null) * (ctx.widthMm / 2);
         const wedgeCut = sinkCutMm(frame.cx, -half + 1, ctx).mm;
-        const wedgeThick = sinkThicknessMm(frame.cx, -half + 1, ctx);
         expect(wedgeCut).toBeGreaterThan(0);
-        expect(wedgeCut).toBeLessThanOrEqual(wedgeThick + 1e-6);
+        expect(sinkThicknessMm(frame.cx, -half + 1, ctx)).toBe(0);
+        expect(effectiveInsoleThicknessMm(2, ctx)).toBeCloseTo(4.5, 5);
         const first = placed("mpj1", 4);
         const mpjCtx = surface(9, "left", [first]);
         const mpj = sinkFrame(first, mpjCtx)!;
@@ -779,7 +800,7 @@ describe("sink scalar field", () => {
             effectiveOutlineHalfWidth(mpj.u, mpjCtx.lengthMm, mpjCtx.widthMm, null) * (mpjCtx.widthMm / 2);
         const mpjCut = sinkCutMm(mpj.cx, -mpjHalf + 1, mpjCtx).mm;
         expect(mpjCut).toBeGreaterThan(0);
-        expect(mpjCut).toBeLessThanOrEqual(sinkThicknessMm(mpj.cx, -mpjHalf + 1, mpjCtx) + 1e-6);
+        expect(sinkThicknessMm(mpj.cx, -mpjHalf + 1, mpjCtx)).toBe(0);
     });
 
     test("heightAt adds T and leaves the wedge term unchanged", () => {
@@ -1000,7 +1021,8 @@ describe("sink scalar field", () => {
                 expect(frame.cx / layout.lengthMm).toBeCloseTo(SINK_PROFILES.rkw.u, 3);
                 const floor = sinkCutMm(frame.dx, frame.dy, ctx).mm;
                 expect(floor).toBeCloseTo(depth, 2);
-                expect(sinkThicknessMm(frame.dx, frame.dy, ctx) - floor).toBeGreaterThanOrEqual(0.5 - 1e-3);
+                expect(sinkThicknessMm(frame.dx, frame.dy, ctx)).toBe(0);
+                expect(effectiveInsoleThicknessMm(2, ctx) - floor).toBeGreaterThanOrEqual(0.5 - 1e-3);
                 const inside = sinkCutMm(
                     frame.dx + frame.tx * (frame.aDist - 1),
                     frame.dy + frame.ty * (frame.aDist - 1),
