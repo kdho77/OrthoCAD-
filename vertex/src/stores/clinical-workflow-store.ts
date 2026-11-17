@@ -2,10 +2,13 @@
 
 import { create } from "zustand";
 import {
+    afoPrintRequiresConfirmedTrim,
+    afoTrimConfirmedForPrint,
     evaluateNextGate,
     evaluateScanStepGate,
     scanGateBlocksLaterSteps,
 } from "@/lib/clinical/clinical-step-gates";
+import { useDesignStore } from "@/stores/design-store";
 import { leaveOutlineEdit } from "@/stores/mesh-edit-store";
 import { invalidateProceduralPrintLoftForDesignStep } from "@/stores/preview-loft-status-store";
 import type { ProductionMethod } from "@/types";
@@ -193,6 +196,26 @@ function blockedByOutlineEdit(prev: ClinicalStepId, next: ClinicalStepId): boole
     return !leaveOutlineEdit({ promptIfDirty: true });
 }
 
+function refuseUnconfirmedAfoPrint(
+    product: ClinicalProductType,
+    target: ClinicalStepId,
+    current: ClinicalStepId,
+    set: (partial: Partial<ClinicalWorkflowStore>) => void,
+): boolean {
+    if (product !== "afo" || !afoPrintRequiresConfirmedTrim(target)) return false;
+    const gate = afoTrimConfirmedForPrint();
+    if (gate.ok) return false;
+    const stay = afoPrintRequiresConfirmedTrim(current) ? "design" : current;
+    if (stay !== current && blockedByOutlineEdit(current, stay)) return true;
+    if (stay !== current) leaveProceduralLoftStep(current, stay);
+    set({
+        step: stay,
+        nextBlockReason: gate.reason,
+        pendingCorrectionSections: sectionsForStep(stay),
+    });
+    return true;
+}
+
 function applyScanStickyReason(step: ClinicalStepId, product: ClinicalProductType): string | null {
     if (stepIndex(step, product) <= stepIndex("scan", product)) {
         const gate = evaluateScanStepGate();
@@ -263,6 +286,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         const product = get().productType;
         const next = normalizeClinicalStep(step, product);
         if (blockedByOutlineEdit(prev, next)) return;
+        if (refuseUnconfirmedAfoPrint(product, next, prev, set)) return;
         leaveProceduralLoftStep(prev, next);
         const sticky = applyScanStickyReason(next, product);
         set({
@@ -284,6 +308,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         const product = get().productType;
         const current = normalizeClinicalStep(get().step, product);
         if (product === "afo") {
+            if (refuseUnconfirmedAfoPrint(product, nextStep(current, product), current, set)) return;
             const gate = evaluateNextGate(current);
             // Reviewed AFO Next: every step except Print is gated. Print → Export
             // stays the handoff even when the shell gate would otherwise block.
@@ -328,6 +353,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         const current = get().step;
         const product = get().productType;
         const step = prevStep(current, product);
+        if (refuseUnconfirmedAfoPrint(product, step, current, set)) return;
         if (blockedByOutlineEdit(current, step)) return;
         leaveProceduralLoftStep(current, step);
         const sticky = applyScanStickyReason(step, product);
@@ -344,3 +370,25 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
         return pending;
     },
 }));
+
+/** setState and trim edits bypass setStep. Pull Print and Export back to Design. */
+function pullAfoPrintBackToDesign(): void {
+    const { productType, step } = useClinicalWorkflowStore.getState();
+    if (productType !== "afo" || !afoPrintRequiresConfirmedTrim(step)) return;
+    const gate = afoTrimConfirmedForPrint();
+    if (gate.ok) return;
+    leaveProceduralLoftStep(step, "design");
+    useClinicalWorkflowStore.setState({
+        step: "design",
+        nextBlockReason: gate.reason,
+        pendingCorrectionSections: [],
+    });
+}
+
+useClinicalWorkflowStore.subscribe(() => {
+    pullAfoPrintBackToDesign();
+});
+
+useDesignStore.subscribe(() => {
+    pullAfoPrintBackToDesign();
+});
