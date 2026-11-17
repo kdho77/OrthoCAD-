@@ -4,6 +4,11 @@
 export const EXPORT_PATIENT_FALLBACK = "Unknown_Patient";
 export const DEFAULT_EXPORT_MATERIAL_ID = "ApexCore";
 
+/** Matches bundled `Templates/SAMPLE_Top.glb` ({@link SAMPLE_TOP_ASSET_ID} in sample-top-id). */
+export const SAMPLE_TOP_TEMPLATE_ASSET_ID = "sample-top";
+
+export type ExportFilenameBase = Pick<{ assetId?: string | null }, "assetId">;
+
 export type ExportFilenameSide = "L" | "R" | "LR";
 
 export interface BuildExportFilenameInput {
@@ -121,17 +126,43 @@ export function parsePatientNameForExport(patientName?: string | null): {
     return { firstName: tokens[0] ?? "", lastName: tokens.slice(1).join(" ") };
 }
 
-export function exportSideSuffix(side: "left" | "right" | null | undefined): ExportFilenameSide;
-export function exportSideSuffix(sides: ReadonlyArray<"left" | "right">): ExportFilenameSide;
+/**
+ * Map design internal laterality to clinic physical L/R for filenames and VO attach.
+ * SAMPLE_Top is physically right while stock primary side stays internal left.
+ */
+export function physicalSideLabel(
+    internalSide: "left" | "right",
+    base?: ExportFilenameBase | null,
+): "left" | "right" {
+    const assetId = base?.assetId?.trim();
+    if (assetId === SAMPLE_TOP_TEMPLATE_ASSET_ID) {
+        return internalSide === "left" ? "right" : "left";
+    }
+    return internalSide;
+}
+
+export function exportSideSuffix(
+    side: "left" | "right" | null | undefined,
+    base?: ExportFilenameBase | null,
+): ExportFilenameSide;
+export function exportSideSuffix(
+    sides: ReadonlyArray<"left" | "right">,
+    base?: ExportFilenameBase | null,
+): ExportFilenameSide;
 export function exportSideSuffix(
     side: "left" | "right" | ReadonlyArray<"left" | "right"> | null | undefined,
+    base?: ExportFilenameBase | null,
 ): ExportFilenameSide {
     if (Array.isArray(side)) {
         const uniq = [...new Set(side)];
         if (uniq.length > 1) return "LR";
-        return uniq[0] === "right" ? "R" : "L";
+        const only = uniq[0] ?? "left";
+        return physicalSideLabel(only, base) === "right" ? "R" : "L";
     }
-    return side === "right" ? "R" : "L";
+    if (side === "left" || side === "right") {
+        return physicalSideLabel(side, base) === "right" ? "R" : "L";
+    }
+    return "L";
 }
 
 function normalizeExtension(ext: string): string {

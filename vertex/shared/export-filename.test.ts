@@ -11,6 +11,8 @@ import {
     exportSideSuffix,
     looksLikeInitialsLabel,
     parsePatientNameForExport,
+    physicalSideLabel,
+    SAMPLE_TOP_TEMPLATE_ASSET_ID,
     sanitizeFilenamePart,
 } from "./export-filename.js";
 
@@ -135,6 +137,24 @@ describe("exportPatientFilenameSegment and exportSideSuffix", () => {
         expect(exportPatientFilenameSegment("", "")).toBe("Unknown_Patient");
         expect(exportSideSuffix(["left", "right"])).toBe("LR");
         expect(exportSideSuffix("right")).toBe("R");
+    });
+});
+
+describe("physicalSideLabel and SAMPLE_Top export filenames", () => {
+    const sampleTop = { assetId: SAMPLE_TOP_TEMPLATE_ASSET_ID };
+
+    test("sample-top swaps internal left/right; other bases pass through", () => {
+        expect(physicalSideLabel("left", sampleTop)).toBe("right");
+        expect(physicalSideLabel("right", sampleTop)).toBe("left");
+        expect(physicalSideLabel("left", { assetId: "stock-default" })).toBe("left");
+        expect(physicalSideLabel("right", null)).toBe("right");
+    });
+
+    test("exportSideSuffix maps swapped physical sides to R and L", () => {
+        expect(exportSideSuffix("left", sampleTop)).toBe("R");
+        expect(exportSideSuffix("right", sampleTop)).toBe("L");
+        expect(exportSideSuffix(["left", "right"], sampleTop)).toBe("LR");
+        expect(exportSideSuffix("left", { assetId: "patient-scan" })).toBe("L");
     });
 });
 

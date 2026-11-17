@@ -13,7 +13,10 @@ import { createHash } from "node:crypto";
 import {
     buildExportFilename,
     canonicalExportMaterialName,
+    type ExportFilenameBase,
+    exportSideSuffix,
     parsePatientNameForExport,
+    physicalSideLabel,
 } from "../../../../vertex/shared/export-filename.js";
 import { VO_ATTACH_TEXT_MAX, voAttachArgumentError } from "./vo-attach-contract.js";
 
@@ -52,6 +55,8 @@ export interface VoAttachFilesInput {
     order_id: string;
     /** Kept on the CAD result only. Sending it makes VO check the design link. */
     design_id?: string;
+    /** When `sample-top`, internal left/right labels swap to physical L/R on filenames and VO side. */
+    base_asset_id?: string;
     patient_name?: string;
     material?: string;
     files: VoAttachFileInput[];
@@ -184,15 +189,17 @@ function gcodeFilename(
     side: "left" | "right" | null,
     file: VoAttachFileInput,
     order: Pick<VoAttachFilesInput, "patient_name" | "material">,
+    base?: ExportFilenameBase | null,
 ): string {
     const patientName = file.patient_name?.trim() || order.patient_name?.trim() || "";
     const patient = parsePatientNameForExport(patientName);
     const material = canonicalExportMaterialName(file.material ?? order.material);
+    const suffix = side === null ? ("LR" as const) : exportSideSuffix(side, base);
     return buildExportFilename({
         firstName: patient.firstName,
         lastName: patient.lastName,
         material,
-        side: side === "right" ? "R" : side === "left" ? "L" : "LR",
+        side: suffix,
         ext: "gcode",
     });
 }
@@ -207,6 +214,9 @@ export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPr
     const seen = new Set<string>();
     const files: VoAttachFilesArguments["files"] = [];
     const provenanceFiles: VoAttachPreparation["cad_provenance"]["files"] = [];
+    const base: ExportFilenameBase | null = input.base_asset_id?.trim()
+        ? { assetId: input.base_asset_id.trim() }
+        : null;
 
     const ordered = [...input.files].sort((a, b) => {
         const left = attachFoot(a.side) ?? "";
@@ -227,7 +237,7 @@ export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPr
         }
         const filename = centralFab
             ? centralFabStlFilename(foot ?? "left", file.filename)
-            : gcodeFilename(foot, file, input);
+            : gcodeFilename(foot, file, input, base);
         if (!centralFab && filename.toLowerCase().endsWith(".stl")) {
             throw new Error("STL files are not attached. G-code only.");
         }
@@ -267,8 +277,9 @@ export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPr
             byteLength = bytes.byteLength;
             digestSource = bytes.toString("base64");
         }
+        const voSide = foot ? physicalSideLabel(foot, base) : null;
         const wire: VoAttachFilesArguments["files"][number] = {
-            ...(foot ? { side: foot } : {}),
+            ...(voSide ? { side: voSide } : {}),
             format: centralFab ? "stl" : "gcode",
             filename,
             content_type: centralFab ? "model/stl" : "text/plain",
