@@ -120,6 +120,7 @@ export function AfoPrintPanel() {
     const [override, setOverride] = useState<AfoShellFix | null>(null);
     const [attempt, setAttempt] = useState(0);
     const [generating, setGenerating] = useState(false);
+    const [plateMode, setPlateMode] = useState(false);
     const generatingRef = useRef(false);
     const fix = liveFix == null ? null : (override ?? liveFix);
 
@@ -166,7 +167,7 @@ export function AfoPrintPanel() {
                     flareMm: params.flareMm,
                     trimPolygon: polygon ?? undefined,
                     heelSeed: live.scanWorkflow.derived?.heelCupCenter ?? flatPlate.heel,
-                    flatPlate,
+                    ...(plateMode ? { flatPlate } : { contactCut: flatPlate }),
                     onProgress: (pct, stage) => setProgress({ pct, stage }),
                 },
             );
@@ -261,6 +262,16 @@ export function AfoPrintPanel() {
             >
                 Clean up
             </button>
+            <label className="flex items-center gap-2 text-[11px] text-muted-foreground" htmlFor="afo-plate-mode">
+                <input
+                    id="afo-plate-mode"
+                    data-testid="afo-plate-mode"
+                    type="checkbox"
+                    checked={plateMode}
+                    onChange={(e) => setPlateMode(e.target.checked)}
+                />
+                Plate mode (built-down sole, off by default)
+            </label>
             <button
                 type="button"
                 data-testid="afo-generate-shell"

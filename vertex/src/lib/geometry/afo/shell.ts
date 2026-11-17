@@ -19,6 +19,7 @@ import {
     reseatFlatPlate,
     reseatInnerForefoot,
     seatBottomPlaneAtZ0,
+    applyOuterContactCut,
     smoothPlateCut,
 } from "./shell-flatten";
 import {
@@ -93,6 +94,9 @@ export function buildAfoShell(
         smoothPlateCut(shell, plate);
         rememberFlatPlate(shell, plate);
         assertFlatPlateAccepted(shell, plate, options.edgeMm);
+    } else if (options.contactCut) {
+        // Outer skin only. The inner forefoot is not flattened and is not moved.
+        applyOuterContactCut(shell, options.contactCut, options.edgeMm);
     }
     options.onProgress?.(1, "done");
     return shell;

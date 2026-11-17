@@ -445,6 +445,539 @@ export function smoothPlateCut(
     return;
 }
 
+/** Shoulder height outside the contact pattern. */
+export const AFO_CONTACT_SHOULDER_MM = 0.3;
+/** Hard cap on how far an outer vertex may move. d + r stays at or under 1.5 mm. */
+export const AFO_CONTACT_CUT_CAP_MM = 1.2;
+
+export type ContactCutFallback = "none" | "neck-slid" | "neck-narrow" | "flagged";
+
+export interface ContactCutFrame {
+    origin: AfoVec3;
+    /** Heel → toe, unit, in the landmark plane. */
+    forward: AfoVec3;
+    /** Medial → lateral, unit, in the landmark plane. */
+    lateral: AfoVec3;
+    /** Up, away from the belt. */
+    normal: AfoVec3;
+    /** Contact height above the landmark origin: h0 + a*s + b*t. */
+    h0: number;
+    a: number;
+    b: number;
+    /** s coordinate of the posterior plantar outline. u = (s - s0) / length. */
+    s0: number;
+    lengthMm: number;
+}
+
+export interface ContactCutReport {
+    fallback: ContactCutFallback;
+    /** Depth of the patterned cut, before the 0.3 mm shoulder. */
+    dMm: number;
+    rMm: number;
+    /** Tilt of the contact plane off the heel–M1–M5 plane. */
+    tiltDeg: number;
+    frame: ContactCutFrame;
+    /** Contact pattern in the (s, t) plane, closed, lateral-positive. */
+    polygon: Array<{ s: number; t: number }>;
+    neckWidthRatio: number;
+    lateralInsetMm: number;
+    /** Forefoot band length along the belt. */
+    startLengthMm: number;
+    bbox: { l: number; w: number; h: number };
+}
+
+const contactReports = new WeakMap<AfoTriMesh, ContactCutReport>();
+
+export function contactCutReportOf(shell: AfoTriMesh): ContactCutReport | undefined {
+    return contactReports.get(shell);
+}
+
+/**
+ * Patterned shallow contact on the outer skin.
+ * Heel pad, lateral midfoot neck, and forefoot band are cut onto one plane.
+ * Inner vertices are not written. Plate mode does not call this.
+ */
+export function applyOuterContactCut(shell: AfoTriMesh, spec: AfoFlatPlateSpec, edgeMm: number): ContactCutReport {
+    const report = cutOuterContact(shell, spec, edgeMm);
+    contactReports.set(shell, report);
+    return report;
+}
+
+function cutOuterContact(shell: AfoTriMesh, spec: AfoFlatPlateSpec, edgeMm: number): ContactCutReport {
+    const planes = contactPlanesFromLandmarks(spec);
+    const n = shell.outerVertex0 ?? 0;
+    const total = (shell.positions.length / 3) | 0;
+    const forward = planes.forward;
+    const lateral = planes.along;
+    const normal = planes.normal;
+    const origin = planes.origin;
+    const st = (p: AfoVec3) => {
+        const rel = sub(p, origin);
+        return { s: dot(rel, forward), t: dot(rel, lateral), h: dot(rel, normal) };
+    };
+    const place = (i: number, newH: number) => {
+        const p = at(shell.positions, i);
+        const cur = st(p);
+        const delta = newH - cur.h;
+        if (!(Math.abs(delta) > 1e-8)) return;
+        const capped = Math.max(-AFO_CONTACT_CUT_CAP_MM, Math.min(AFO_CONTACT_CUT_CAP_MM + AFO_CONTACT_SHOULDER_MM, delta));
+        // Moving up (positive) approaches the inner skin. Stop at the edge thickness.
+        let use = capped;
+        if (use > 0 && i >= n && i < n * 2) {
+            const inner = at(shell.positions, i - n);
+            let lo = 0;
+            let hiMove = use;
+            for (let k = 0; k < 12; k++) {
+                const mid = (lo + hiMove) / 2;
+                const gap = len(sub(add(p, scale(normal, mid)), inner));
+                if (gap < edgeMm) hiMove = mid;
+                else lo = mid;
+            }
+            use = lo;
+        }
+        if (!(Math.abs(use) > 1e-8)) return;
+        const q = add(p, scale(normal, use));
+        shell.positions[i * 3] = q.x;
+        shell.positions[i * 3 + 1] = q.y;
+        shell.positions[i * 3 + 2] = q.z;
+    };
+
+    const sole: number[] = [];
+    for (let i = n; i < Math.min(total, n * 2); i++) {
+        const outer = at(shell.positions, i);
+        const inner = at(shell.positions, i - n);
+        const off = sub(outer, inner);
+        const ol = len(off);
+        if (ol < 3.2) continue;
+        if (dot(off, normal) > -0.45 * ol) continue;
+        sole.push(i);
+    }
+    const heights = sole.map((i) => st(at(shell.positions, i)).h).sort((a, b) => a - b);
+    const band = heights[Math.min(heights.length - 1, Math.floor(heights.length * 0.35))] ?? 0;
+    const outline = sole.filter((i) => {
+        const h = st(at(shell.positions, i)).h;
+        return h >= band - 0.6 && h <= band + 1.3;
+    });
+    const empty: ContactCutReport = {
+        fallback: "flagged",
+        dMm: 0,
+        rMm: AFO_CONTACT_SHOULDER_MM,
+        tiltDeg: 0,
+        frame: { origin, forward, lateral, normal, h0: 0, a: 0, b: 0, s0: 0, lengthMm: 1 },
+        polygon: [],
+        neckWidthRatio: 0,
+        lateralInsetMm: 0,
+        startLengthMm: 0,
+        bbox: bboxOf(shell),
+    };
+    if (outline.length < 12) return empty;
+
+    let s0 = Infinity;
+    let s1 = -Infinity;
+    for (const i of outline) {
+        const p = st(at(shell.positions, i));
+        s0 = Math.min(s0, p.s);
+        s1 = Math.max(s1, p.s);
+    }
+    const length = Math.max(1, s1 - s0);
+    const bins = 36;
+    const tLo = new Array<number>(bins).fill(0);
+    const tHi = new Array<number>(bins).fill(0);
+    const footLo = new Array<number>(bins).fill(0);
+    const footHi = new Array<number>(bins).fill(0);
+    const uOf = (s: number) => (s - s0) / length;
+    const cols: Array<Array<{ t: number; h: number }>> = Array.from({ length: bins }, () => []);
+    for (const i of sole) {
+        const p = st(at(shell.positions, i));
+        const u = uOf(p.s);
+        if (u < -0.02 || u > 1.02) continue;
+        const k = Math.min(bins - 1, Math.max(0, Math.floor(u * bins)));
+        cols[k]!.push({ t: p.t, h: p.h });
+    }
+    for (let k = 0; k < bins; k++) {
+        const col = cols[k]!.filter((p) => p.h <= band + 1 && p.h >= band - 0.4).sort((a, b) => a.t - b.t);
+        const runs: Array<{ med: number; lat: number }> = [];
+        for (const p of col) {
+            const prev = runs[runs.length - 1];
+            if (!prev || p.t - prev.lat > 8) runs.push({ med: p.t, lat: p.t });
+            else prev.lat = p.t;
+        }
+        const wide = runs.filter((r) => r.lat - r.med >= 10);
+        const pool = wide.length > 0 ? wide : runs;
+        // The arch is medial. Keep the lateral low run when the column splits.
+        if (col.length > 0) {
+            footLo[k] = col[0]!.t;
+            footHi[k] = col[col.length - 1]!.t;
+        }
+        const pick = pool.sort((a, b) => b.lat - a.lat)[0];
+        if (!pick) continue;
+        tLo[k] = pick.med;
+        tHi[k] = pick.lat;
+    }
+    for (let k = 0; k < bins; k++) {
+        if (tHi[k]! - tLo[k]! >= 10) continue;
+        const prev = k > 0 ? k - 1 : Math.min(bins - 1, k + 1);
+        tLo[k] = tLo[prev] ?? 0;
+        tHi[k] = tHi[prev] ?? 0;
+    }
+    for (let pass = 0; pass < 3; pass++) {
+        const lo = tLo.slice();
+        const hi = tHi.slice();
+        for (let k = 0; k < bins; k++) {
+            const a = Math.max(0, k - 1);
+            const b = Math.min(bins - 1, k + 1);
+            tLo[k] = (lo[a]! + lo[k]! + lo[b]!) / 3;
+            tHi[k] = (hi[a]! + hi[k]! + hi[b]!) / 3;
+        }
+    }
+    const widthAt = (u: number) => {
+        const x = Math.min(bins - 1.001, Math.max(0, u * bins));
+        const k = Math.floor(x);
+        const f = x - k;
+        const k2 = Math.min(bins - 1, k + 1);
+        const feasMed = (tLo[k] ?? 0) * (1 - f) + (tLo[k2] ?? 0) * f;
+        const feasLat = (tHi[k] ?? 0) * (1 - f) + (tHi[k2] ?? 0) * f;
+        const med = (footLo[k] ?? feasMed) * (1 - f) + (footLo[k2] ?? feasMed) * f;
+        const lat = (footHi[k] ?? feasLat) * (1 - f) + (footHi[k2] ?? feasLat) * f;
+        return { med, lat, w: Math.max(16, lat - med), feasMed, feasLat };
+    };
+
+    const samplesOf = (poly: Array<{ s: number; t: number }>) => {
+        const out: Array<{ s: number; t: number; h: number }> = [];
+        for (const i of sole) {
+            const p = st(at(shell.positions, i));
+            if (pointInPoly(p.s, p.t, poly)) out.push(p);
+        }
+        return out;
+    };
+    const fit = (poly: Array<{ s: number; t: number }>) => {
+        const samples = samplesOf(poly).filter((p) => p.h <= band + 1.05 && p.h >= band - 0.4);
+        const slope = Math.tan((3 * Math.PI) / 180);
+        let best = { a: 0, b: 0, minR: 0, maxR: 0, d: Infinity };
+        if (samples.length < 8) return best;
+        for (let ia = -4; ia <= 4; ia++) {
+            for (let ib = -4; ib <= 4; ib++) {
+                const a = (ia / 4) * slope;
+                const b = (ib / 4) * slope;
+                if (Math.hypot(a, b) > slope + 1e-9) continue;
+                let minR = Infinity;
+                let maxR = -Infinity;
+                for (const p of samples) {
+                    const r = p.h - a * p.s - b * p.t;
+                    minR = Math.min(minR, r);
+                    maxR = Math.max(maxR, r);
+                }
+                const d = maxR - minR;
+                if (d < best.d) best = { a, b, minR, maxR, d };
+            }
+        }
+        return best;
+    };
+
+    const variants: Array<{ inset: number; frac: number; fallback: ContactCutFallback }> = [
+        { inset: 3, frac: 0.25, fallback: "none" },
+        { inset: 2, frac: 0.25, fallback: "neck-slid" },
+        { inset: 2, frac: 0.2, fallback: "neck-narrow" },
+    ];
+    let chosen = variants[0]!;
+    let poly = patternPolygon(widthAt, length, chosen.inset, chosen.frac, s0);
+    let fitted = fit(poly);
+    for (const variant of variants) {
+        const next = patternPolygon(widthAt, length, variant.inset, variant.frac, s0);
+        const trial = fit(next);
+        chosen = variant;
+        poly = next;
+        fitted = trial;
+        if (trial.d <= AFO_CONTACT_CUT_CAP_MM) break;
+    }
+    const fallback: ContactCutFallback = fitted.d <= AFO_CONTACT_CUT_CAP_MM ? chosen.fallback : "flagged";
+    // Seat the plane on the highest sole we can still reach within the cut cap,
+    // so the whole kept pattern lands on it. Skin above that is clipped out below.
+    let minR = Infinity;
+    const seated: Array<{ s: number; t: number; r: number }> = [];
+    for (const i of sole) {
+        const p = st(at(shell.positions, i));
+        if (!pointInPoly(p.s, p.t, poly)) continue;
+        const r = p.h - fitted.a * p.s - fitted.b * p.t;
+        minR = Math.min(minR, r);
+        seated.push({ s: p.s, t: p.t, r });
+    }
+    seated.sort((a, b) => a.r - b.r);
+    // A couple of low outliers must not drop the whole plane.
+    minR = seated[Math.min(seated.length - 1, Math.floor(seated.length * 0.02))]?.r ?? fitted.minR;
+    const near = seated.filter((p) => p.r <= minR + AFO_CONTACT_CUT_CAP_MM);
+    let hi = minR + 0.5;
+    for (const p of near) hi = Math.max(hi, p.r);
+    let dMm = Math.max(0.5, hi - minR);
+    if (dMm > AFO_CONTACT_CUT_CAP_MM) {
+        dMm = AFO_CONTACT_CUT_CAP_MM;
+        hi = minR + dMm;
+    }
+    const contactAt = (s: number, t: number) => hi + fitted.a * s + fitted.b * t;
+    const r = AFO_CONTACT_SHOULDER_MM;
+    const trimmed = trimToReachableSole(poly, seated, s0, length, hi);
+    if (trimmed.length >= 8) poly = trimmed;
+
+    for (let i = n; i < total; i++) {
+        const p = st(at(shell.positions, i));
+        if (p.h > contactAt(p.s, p.t) + 12) continue;
+        const sd = signedDist(p.s, p.t, poly);
+        let target = p.h;
+        if (sd >= 0) {
+            const flat = contactAt(p.s, p.t);
+            if (p.h < flat) target = flat;
+        } else if (sd >= -1.2) {
+            const flat = contactAt(p.s, p.t);
+            const shoulder = flat + r * smootherstep(-sd / 1.2);
+            if (p.h < shoulder) target = shoulder;
+        } else if (p.h < contactAt(p.s, p.t) + r) {
+            target = contactAt(p.s, p.t) + r;
+        }
+        if (target > p.h) place(i, target);
+    }
+    // Boundary splits open the rim, where an outer triangle shares an edge with
+    // the wall. Moving vertices keeps the shell watertight.
+    const neckU = 0.485;
+    const neckW = widthAt(neckU);
+    const neckCut = crossSection(poly, s0 + neckU * length);
+    const neckWidth = neckCut ? neckCut.lat - neckCut.med : 0;
+    const foreS = poly.filter((p) => (p.s - s0) / length >= 0.62).map((p) => p.s);
+    const startLengthMm =
+        foreS.length >= 2 ? Math.max(...foreS) - Math.min(...foreS) : Math.max(0, (1 - 2 / length - 0.62) * length);
+    const frame: ContactCutFrame = {
+        origin,
+        forward,
+        lateral,
+        normal,
+        h0: hi,
+        a: fitted.a,
+        b: fitted.b,
+        s0,
+        lengthMm: length,
+    };
+    return {
+        fallback,
+        dMm,
+        rMm: r,
+        tiltDeg: (Math.atan(Math.hypot(fitted.a, fitted.b)) * 180) / Math.PI,
+        frame,
+        polygon: poly,
+        neckWidthRatio: neckW.w > 0 ? neckWidth / neckW.w : 0,
+        lateralInsetMm: neckCut ? neckW.lat - neckCut.lat : 0,
+        startLengthMm,
+        bbox: bboxOf(shell),
+    };
+}
+
+/** Keep the designed lateral edge and pull the medial edge off skin the cut cannot reach. */
+function trimToReachableSole(
+    poly: Array<{ s: number; t: number }>,
+    seated: Array<{ s: number; t: number; r: number }>,
+    s0: number,
+    length: number,
+    hi: number,
+): Array<{ s: number; t: number }> {
+    const edges: Array<{ u: number; med: number; lat: number }> = [];
+    const steps = 36;
+    for (let k = 0; k < steps; k++) {
+        const u = (k + 0.5) / steps;
+        const s = s0 + u * length;
+        const section = crossSection(poly, s);
+        if (!section) continue;
+        const band = seated.filter(
+            (p) => Math.abs((p.s - s0) / length - u) <= 0.045 && p.t >= section.med - 2 && p.t <= section.lat + 2,
+        );
+        const low = band.filter((p) => p.r <= hi + 0.05);
+        if (low.length === 0) continue;
+        let med = section.med;
+        const lowMed = Math.min(...low.map((p) => p.t));
+        // Only move medial when the designed medial skin is actually too high.
+        const medialHigh = band.some((p) => p.t < lowMed - 1 && p.r > hi + 0.05);
+        if (medialHigh) med = Math.max(section.med, lowMed - 1.5);
+        const lat = section.lat;
+        if (lat - med < 8) continue;
+        edges.push({ u, med, lat });
+    }
+    if (edges.length < 8) return [];
+    const next: Array<{ s: number; t: number }> = [];
+    const push = (u: number, t: number) => next.push({ s: s0 + u * length, t });
+    for (let k = edges.length - 1; k >= 0; k--) push(edges[k]!.u, edges[k]!.med);
+    const back = edges[0]!;
+    for (let i = 1; i < 4; i++) push(back.u, back.med + ((back.lat - back.med) * i) / 4);
+    for (const e of edges) push(e.u, e.lat);
+    const front = edges[edges.length - 1]!;
+    for (let i = 1; i < 6; i++) push(front.u, front.lat + ((front.med - front.lat) * i) / 6);
+    return filletPoly(next, 10);
+}
+
+
+function crossSection(
+    poly: Array<{ s: number; t: number }>,
+    s: number,
+): { med: number; lat: number } | null {
+    const ts: number[] = [];
+    for (let i = 0; i < poly.length; i++) {
+        const a = poly[i]!;
+        const b = poly[(i + 1) % poly.length]!;
+        if ((a.s <= s && b.s > s) || (b.s <= s && a.s > s)) {
+            const f = (s - a.s) / (b.s - a.s || 1e-9);
+            ts.push(a.t + (b.t - a.t) * f);
+        }
+    }
+    if (ts.length < 2) return null;
+    ts.sort((a, b) => a - b);
+    return { med: ts[0]!, lat: ts[ts.length - 1]! };
+}
+
+function patternPolygon(
+    widthAt: (u: number) => { med: number; lat: number; w: number; feasMed: number; feasLat: number },
+    length: number,
+    neckInset: number,
+    neckFrac: number,
+    s0: number,
+): Array<{ s: number; t: number }> {
+    const uPost = Math.min(0.2, 3 / length);
+    const uFront = Math.max(0.7, 1 - 2 / length);
+    const edges: Array<{ u: number; med: number; lat: number }> = [];
+    const steps = 64;
+    for (let k = 0; k <= steps; k++) {
+        const u = uPost + ((uFront - uPost) * k) / steps;
+        const w = widthAt(u);
+        const mid = (w.med + w.lat) / 2;
+        const half = w.w / 2;
+        const heel = { c: mid, h: Math.max(10, half - 4) };
+        const neckWidth = Math.max(12, neckFrac * w.w);
+        const latEdge = w.lat - neckInset;
+        const neck = { c: latEdge - neckWidth / 2, h: neckWidth / 2 };
+        const fore = { c: mid, h: Math.max(10, half - 2) };
+        let shape = fore;
+        if (u < 0.3) {
+            const t = smootherstep((u - uPost) / Math.max(1e-3, 0.3 - uPost));
+            shape = { c: heel.c, h: 10 + (heel.h - 10) * t };
+        } else if (u < 0.45) {
+            const t = smootherstep((u - 0.3) / 0.15);
+            shape = { c: heel.c + (neck.c - heel.c) * t, h: heel.h + (neck.h - heel.h) * t };
+        } else if (u <= 0.52) shape = neck;
+        else if (u < 0.62) {
+            const t = smootherstep((u - 0.52) / 0.1);
+            shape = { c: neck.c + (fore.c - neck.c) * t, h: neck.h + (fore.h - neck.h) * t };
+        }
+        // Heel and forefoot span the foot. The neck is already lateral-biased.
+        // High skin (the arch) is clipped later, where the cut cannot reach it.
+        let med = Math.max(w.med, shape.c - shape.h);
+        let lat = Math.min(w.lat, shape.c + shape.h);
+        if (lat - med < 8) {
+            med = w.med;
+            lat = w.lat;
+        }
+        edges.push({ u, med, lat });
+    }
+    const poly: Array<{ s: number; t: number }> = [];
+    const push = (u: number, t: number) => poly.push({ s: s0 + u * length, t });
+    for (let k = edges.length - 1; k >= 0; k--) push(edges[k]!.u, edges[k]!.med);
+    // Posterior edge, 3 mm inset. Corner fillets (below) keep the plan radius >= 10 mm.
+    const back = edges[0]!;
+    for (let a = 1; a < 6; a++) {
+        const t = back.med + ((back.lat - back.med) * a) / 6;
+        push(back.u, t);
+    }
+    for (const e of edges) push(e.u, e.lat);
+    // Front edge, straight across, which is a leading edge of infinite radius.
+    const front = edges[edges.length - 1]!;
+    for (let a = 1; a < 8; a++) {
+        const t = front.lat + ((front.med - front.lat) * a) / 8;
+        push(front.u, t);
+    }
+    return filletPoly(poly, 10);
+}
+
+/** C2 smoothstep. Flat first and second derivative at both ends. */
+function smootherstep(t: number): number {
+    const x = Math.min(1, Math.max(0, t));
+    return x * x * x * (x * (x * 6 - 15) + 10);
+}
+
+function pointInPoly(s: number, t: number, poly: Array<{ s: number; t: number }>): boolean {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const a = poly[i]!;
+        const b = poly[j]!;
+        if (a.t > t !== b.t > t && s < ((b.s - a.s) * (t - a.t)) / (b.t - a.t || 1e-12) + a.s) inside = !inside;
+    }
+    return inside;
+}
+
+function signedDist(s: number, t: number, poly: Array<{ s: number; t: number }>): number {
+    let best = Infinity;
+    for (let i = 0; i < poly.length; i++) {
+        const a = poly[i]!;
+        const b = poly[(i + 1) % poly.length]!;
+        const abS = b.s - a.s;
+        const abT = b.t - a.t;
+        const ab2 = abS * abS + abT * abT || 1;
+        const u = Math.min(1, Math.max(0, ((s - a.s) * abS + (t - a.t) * abT) / ab2));
+        const ds = a.s + abS * u - s;
+        const dt = a.t + abT * u - t;
+        best = Math.min(best, Math.hypot(ds, dt));
+    }
+    return (pointInPoly(s, t, poly) ? 1 : -1) * best;
+}
+
+function filletPoly(poly: Array<{ s: number; t: number }>, radius: number): Array<{ s: number; t: number }> {
+    const out: Array<{ s: number; t: number }> = [];
+    const m = poly.length;
+    for (let i = 0; i < m; i++) {
+        const prev = poly[(i - 1 + m) % m]!;
+        const cur = poly[i]!;
+        const next = poly[(i + 1) % m]!;
+        const as = cur.s - prev.s;
+        const at = cur.t - prev.t;
+        const bs = next.s - cur.s;
+        const bt = next.t - cur.t;
+        const al = Math.hypot(as, at);
+        const bl = Math.hypot(bs, bt);
+        const cross = as * bt - at * bs;
+        const dotE = as * bs + at * bt;
+        const turn = Math.atan2(cross, dotE);
+        if (al < radius * 1.2 || bl < radius * 1.2 || Math.abs(turn) < 0.25) {
+            out.push(cur);
+            continue;
+        }
+        const trim = Math.min(al * 0.45, bl * 0.45, radius / Math.tan(Math.min(1.2, Math.abs(turn) / 2)));
+        const p1 = { s: cur.s - (as / al) * trim, t: cur.t - (at / al) * trim };
+        const p2 = { s: cur.s + (bs / bl) * trim, t: cur.t + (bt / bl) * trim };
+        out.push(p1);
+        for (let k = 1; k < 4; k++) {
+            const t = k / 4;
+            out.push({ s: p1.s + (p2.s - p1.s) * t, t: p1.t + (p2.t - p1.t) * t });
+        }
+        out.push(p2);
+    }
+    return out.length >= 8 ? out : poly;
+}
+
+function bboxOf(shell: AfoTriMesh): { l: number; w: number; h: number } {
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    let z0 = Infinity;
+    let z1 = -Infinity;
+    const n = (shell.positions.length / 3) | 0;
+    for (let i = 0; i < n; i++) {
+        const x = shell.positions[i * 3] ?? 0;
+        const y = shell.positions[i * 3 + 1] ?? 0;
+        const z = shell.positions[i * 3 + 2] ?? 0;
+        x0 = Math.min(x0, x);
+        x1 = Math.max(x1, x);
+        y0 = Math.min(y0, y);
+        y1 = Math.max(y1, y);
+        z0 = Math.min(z0, z);
+        z1 = Math.max(z1, z);
+    }
+    return { l: x1 - x0, w: y1 - y0, h: z1 - z0 };
+}
+
 export interface FlatPlateValidation {
     openEdges: number;
     nonManifoldEdges: number;

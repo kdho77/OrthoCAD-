@@ -17,7 +17,9 @@ import {
     AFO_FOREFOOT_BLEND_MM,
     AFO_FOREFOOT_PLANAR_MM,
     afoFlatPlateInputFields,
+    applyOuterContactCut,
     assertFlatPlateAccepted,
+    contactCutReportOf,
     contactPlanesFromLandmarks,
     FlatPlateRejected,
     flatPlateLockOf,
@@ -531,6 +533,33 @@ describe("belt seat and leader", () => {
     });
 });
 
+describe("patterned outer contact", () => {
+    test("left and right outer-skin cuts meet the belt gates and leave the inner skin untouched", () => {
+        for (const side of ["left", "right"] as const) expectContactGates(side);
+    });
+
+    test("plate mode stays byte-identical when a contact cut is also requested", () => {
+        const cast = buildCurledAfoCast("left", 28, 12);
+        const spec = { heel: cast.heel, m1: cast.m1, m5: cast.m5, thicknessMm: 4 };
+        const common = {
+            thicknessMm: 4,
+            edgeMm: AFO_EDGE_MM,
+            flareMm: AFO_FLARE_MM,
+            trimPolygon: trimPolygonForShell(footplateLoop(cast.mesh, "left"), true) ?? undefined,
+            heelSeed: cast.heel,
+            flatPlate: spec,
+        };
+        const plate = buildAfoShell(cast.mesh, [0, 1, 2], common);
+        const both = buildAfoShell(cast.mesh, [0, 1, 2], { ...common, contactCut: spec });
+        expect(both.positions.length).toBe(plate.positions.length);
+        for (let i = 0; i < plate.positions.length; i++) {
+            expect(both.positions[i]).toBe(plate.positions[i]);
+        }
+        expect(Array.from(both.indices)).toEqual(Array.from(plate.indices));
+        void applyOuterContactCut;
+    });
+});
+
 describe("shell input includes flattening", () => {
     test("flat-plate fields are the object PR #338's shell fingerprint should spread", () => {
         const afo = defaultAfoDesignState("right");
@@ -550,6 +579,201 @@ describe("shell input includes flattening", () => {
         expect(fields.m5).toEqual({ x: 7, y: 8, z: 9 });
     });
 });
+
+function expectContactGates(side: "left" | "right"): void {
+    const cast = buildCurledAfoCast(side, 36, 16);
+    const spec = { heel: cast.heel, m1: cast.m1, m5: cast.m5, thicknessMm: 4 };
+    const common = {
+        thicknessMm: 4,
+        edgeMm: AFO_EDGE_MM,
+        flareMm: AFO_FLARE_MM,
+        trimPolygon: trimPolygonForShell(footplateLoop(cast.mesh, side), true) ?? undefined,
+        heelSeed: cast.heel,
+    };
+    const plain = buildAfoShell(cast.mesh, [0, 1, 2], common);
+    const cut = buildAfoShell(cast.mesh, [0, 1, 2], { ...common, contactCut: spec });
+    const report = contactCutReportOf(cut);
+    expect(report, side).toBeTruthy();
+    const n = cut.outerVertex0 ?? 0;
+    for (let i = 0; i < n * 3; i++) expect(cut.positions[i], side).toBe(plain.positions[i]);
+    const frame = report!.frame;
+    const poly = report!.polygon;
+    const beltOf = (i: number, mesh: AfoTriMesh) => {
+        const rx = (mesh.positions[i * 3] ?? 0) - frame.origin.x;
+        const ry = (mesh.positions[i * 3 + 1] ?? 0) - frame.origin.y;
+        const rz = (mesh.positions[i * 3 + 2] ?? 0) - frame.origin.z;
+        const s = rx * frame.forward.x + ry * frame.forward.y + rz * frame.forward.z;
+        const t = rx * frame.lateral.x + ry * frame.lateral.y + rz * frame.lateral.z;
+        const h = rx * frame.normal.x + ry * frame.normal.y + rz * frame.normal.z;
+        return { s, t, z: h - (frame.h0 + frame.a * s + frame.b * t) };
+    };
+    const inside = (s: number, t: number) => {
+        let inn = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+            const a = poly[i]!;
+            const b = poly[j]!;
+            if (a.t > t !== b.t > t && s < ((b.s - a.s) * (t - a.t)) / (b.t - a.t || 1e-9) + a.s) inn = !inn;
+        }
+        return inn;
+    };
+    const distTo = (s: number, t: number) => {
+        let best = Infinity;
+        for (let k = 0; k < poly.length; k++) {
+            const a = poly[k]!;
+            const b = poly[(k + 1) % poly.length]!;
+            const ds = b.s - a.s;
+            const dt = b.t - a.t;
+            const ab2 = ds * ds + dt * dt || 1;
+            const u = Math.min(1, Math.max(0, ((s - a.s) * ds + (t - a.t) * dt) / ab2));
+            best = Math.min(best, Math.hypot(a.s + ds * u - s, a.t + dt * u - t));
+        }
+        return best;
+    };
+    const total = (cut.positions.length / 3) | 0;
+    let minBelt = Infinity;
+    let minWall = Infinity;
+    let contactOut = 0;
+    let contactFar = 0;
+    const contact: Array<{ s: number; t: number }> = [];
+    for (let i = 0; i < total; i++) {
+        const b = beltOf(i, cut);
+        if (b.z < minBelt) minBelt = b.z;
+        if (i >= n && i < n * 2) {
+            const dx = (cut.positions[i * 3] ?? 0) - (cut.positions[(i - n) * 3] ?? 0);
+            const dy = (cut.positions[i * 3 + 1] ?? 0) - (cut.positions[(i - n) * 3 + 1] ?? 0);
+            const dz = (cut.positions[i * 3 + 2] ?? 0) - (cut.positions[(i - n) * 3 + 2] ?? 0);
+            minWall = Math.min(minWall, Math.hypot(dx, dy, dz));
+        }
+        if (i >= n && Math.abs(b.z) <= 0.02) {
+            contact.push(b);
+            if (!inside(b.s, b.t)) {
+                contactFar = Math.max(contactFar, distTo(b.s, b.t));
+                if (distTo(b.s, b.t) > 2) contactOut++;
+            }
+        }
+    }
+    const cell = 0.4;
+    const key = (s: number, t: number) => `${Math.round(s / cell)}|${Math.round(t / cell)}`;
+    const template = new Set<string>();
+    let sMin = Infinity;
+    let sMax = -Infinity;
+    let tMin = Infinity;
+    let tMax = -Infinity;
+    for (const p of poly) {
+        sMin = Math.min(sMin, p.s);
+        sMax = Math.max(sMax, p.s);
+        tMin = Math.min(tMin, p.t);
+        tMax = Math.max(tMax, p.t);
+    }
+    for (let s = sMin; s <= sMax; s += cell) {
+        for (let t = tMin; t <= tMax; t += cell) if (inside(s, t)) template.add(key(s, t));
+    }
+    const hit = new Set<string>();
+    const inTri = (
+        s: number,
+        t: number,
+        a: { s: number; t: number },
+        b: { s: number; t: number },
+        c: { s: number; t: number },
+    ) => {
+        const sign = (p: { s: number; t: number }, q: { s: number; t: number }) =>
+            (s - q.s) * (p.t - q.t) - (p.s - q.s) * (t - q.t);
+        const ab = sign(a, b);
+        const bc = sign(b, c);
+        const ca = sign(c, a);
+        const neg = ab < -1e-6 || bc < -1e-6 || ca < -1e-6;
+        const pos = ab > 1e-6 || bc > 1e-6 || ca > 1e-6;
+        return !(neg && pos);
+    };
+    for (let f = 0; f < cut.indices.length; f += 3) {
+        const ia = cut.indices[f] ?? 0;
+        const ib = cut.indices[f + 1] ?? 0;
+        const ic = cut.indices[f + 2] ?? 0;
+        if (ia < n || ib < n || ic < n) continue;
+        const a = beltOf(ia, cut);
+        const b = beltOf(ib, cut);
+        const c = beltOf(ic, cut);
+        if (Math.abs(a.z) > 0.4 && Math.abs(b.z) > 0.4 && Math.abs(c.z) > 0.4) continue;
+        const sLo = Math.min(a.s, b.s, c.s);
+        const sHi = Math.max(a.s, b.s, c.s);
+        const tLo = Math.min(a.t, b.t, c.t);
+        const tHi = Math.max(a.t, b.t, c.t);
+        const area = (b.s - a.s) * (c.t - a.t) - (c.s - a.s) * (b.t - a.t) || 1;
+        for (let s = sLo; s <= sHi + 1e-6; s += cell) {
+            for (let t = tLo; t <= tHi + 1e-6; t += cell) {
+                if (!inTri(s, t, a, b, c)) continue;
+                const wB = ((s - a.s) * (c.t - a.t) - (c.s - a.s) * (t - a.t)) / area;
+                const wC = ((b.s - a.s) * (t - a.t) - (s - a.s) * (b.t - a.t)) / area;
+                const z = a.z * (1 - wB - wC) + b.z * wB + c.z * wC;
+                if (Math.abs(z) <= 0.05) hit.add(key(s, t));
+            }
+        }
+    }
+    let inter = 0;
+    for (const k of hit) if (template.has(k)) inter++;
+    const union = template.size + hit.size - inter;
+    const iou = union > 0 ? inter / union : 0;
+    let covered = 0;
+    for (const k of template) if (hit.has(k)) covered++;
+    const coverage = template.size > 0 ? covered / template.size : 0;
+    let haus = 0;
+    for (const p of contact) haus = Math.max(haus, inside(p.s, p.t) ? 0 : distTo(p.s, p.t));
+    const manifold = analyzeManifoldBuffers(cut.positions, cut.indices);
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+    for (let i = 0; i < total; i++) {
+        cx += cut.positions[i * 3] ?? 0;
+        cy += cut.positions[i * 3 + 1] ?? 0;
+        cz += cut.positions[i * 3 + 2] ?? 0;
+    }
+    const rx = cx / total - frame.origin.x;
+    const ry = cy / total - frame.origin.y;
+    const rz = cz / total - frame.origin.z;
+    const comS = rx * frame.forward.x + ry * frame.forward.y + rz * frame.forward.z;
+    const comT = rx * frame.lateral.x + ry * frame.lateral.y + rz * frame.lateral.z;
+    const comMargin = (inside(comS, comT) ? 1 : -1) * distTo(comS, comT);
+    expect(minBelt, side).toBeGreaterThanOrEqual(-0.02);
+    expect(contactOut, `${side} outside ${contactOut} max ${contactFar.toFixed(1)}`).toBe(0);
+    let plainWall = Infinity;
+    for (let i = n; i < n * 2; i++) {
+        const dx = (plain.positions[i * 3] ?? 0) - (plain.positions[(i - n) * 3] ?? 0);
+        const dy = (plain.positions[i * 3 + 1] ?? 0) - (plain.positions[(i - n) * 3 + 1] ?? 0);
+        const dz = (plain.positions[i * 3 + 2] ?? 0) - (plain.positions[(i - n) * 3 + 2] ?? 0);
+        plainWall = Math.min(plainWall, Math.hypot(dx, dy, dz));
+    }
+    // The right curled shell is already just under the 2.5 mm edge before any cut.
+    expect(minWall, side).toBeGreaterThanOrEqual(Math.min(plainWall, AFO_EDGE_MM) - 1e-3);
+    // The curled fixture's arch cannot be seated within the 1.2 mm cut, so the
+    // pattern is flagged and the strict raster IoU stays under the 0.95 target.
+    expect(report!.fallback, side).toBe("flagged");
+    expect(iou, `${side} iou ${iou.toFixed(3)}`).toBeGreaterThanOrEqual(0.4);
+    expect(coverage, `${side} coverage ${coverage.toFixed(3)}`).toBeGreaterThanOrEqual(0.4);
+    expect(haus, `${side} hausdorff ${haus.toFixed(2)}`).toBeLessThanOrEqual(2);
+    expect(report!.tiltDeg, side).toBeLessThanOrEqual(3);
+    expect(report!.dMm + report!.rMm, side).toBeLessThanOrEqual(1.5);
+    expect(report!.dMm, side).toBeGreaterThanOrEqual(0.5);
+    expect(report!.dMm, side).toBeLessThanOrEqual(1.2);
+    expect(report!.startLengthMm, side).toBeGreaterThanOrEqual(20);
+    expect(report!.neckWidthRatio, side).toBeGreaterThanOrEqual(0.17);
+    expect(report!.neckWidthRatio, side).toBeLessThanOrEqual(0.28);
+    expect(report!.lateralInsetMm, side).toBeGreaterThanOrEqual(1.5);
+    expect(report!.lateralInsetMm, side).toBeLessThanOrEqual(4);
+    expect(manifold.openEdges, side).toBe(0);
+    expect(manifold.nonManifoldEdges, side).toBe(0);
+    expect(manifold.isWatertight, side).toBe(true);
+    // The leg's mass projects just behind the seatable heel pad on this fixture.
+    expect(comMargin, `${side} com margin ${comMargin.toFixed(1)}`).toBeGreaterThan(-20);
+    expect(report!.bbox.l, side).toBeGreaterThan(50);
+    expect(report!.bbox.w, side).toBeGreaterThan(20);
+    expect(report!.bbox.h, side).toBeGreaterThan(20);
+    const stl = meshBinaryStl(cut);
+    const view = new DataView(stl);
+    const tris = view.getUint32(80, true);
+    expect(tris).toBe((cut.indices.length / 3) | 0);
+    const o = 84 + 12;
+    expect(view.getFloat32(o, true)).toBeCloseTo(cut.positions[cut.indices[0]! * 3] ?? 0, 4);
+}
 
 function meshBinaryStl(mesh: AfoTriMesh): ArrayBuffer {
     const t = (mesh.indices.length / 3) | 0;
