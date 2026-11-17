@@ -2,6 +2,7 @@
 
 import { AlertCircle, Check, CircleDot } from "lucide-react";
 import { navigate } from "@/features/admin/admin-nav";
+import { ProductTypeSwitcher } from "@/features/afo/ProductTypeBar";
 import { clientFilePath } from "@/features/clients/routes";
 import { isOptionalScanWorkflow } from "@/features/clients/start-path";
 import { useSaveDesign } from "@/features/designs/SaveControl";
@@ -22,7 +23,7 @@ import {
 import { useDesignStore } from "@/stores/design-store";
 import { useScanStore } from "@/stores/scan-store";
 
-export function ClinicalStepRail() {
+export function ClinicalStepRail({ showProductSwitcher = false }: { showProductSwitcher?: boolean }) {
     const productType = useClinicalWorkflowStore((s) => s.productType);
     const steps = stepsForProduct(productType);
     const step = useClinicalWorkflowStore((s) => s.step);
@@ -59,57 +60,67 @@ export function ClinicalStepRail() {
 
     return (
         <div
-            className="border-b border-border bg-panel px-3 py-2"
+            className="border-b border-border bg-panel px-3 py-1.5"
             data-scan-gate={scanGateRevision}
             data-afo-landmarks={afoLandmarkRevision}
             data-stock-gate={stockGate}
+            data-testid="design-workflow-header"
         >
-            <nav aria-label="Clinical workflow" className="flex flex-wrap items-center gap-1">
-                {steps.map((s, i) => {
-                    const state = stepState(s.id);
-                    const scanOptional = s.id === "scan" && optionalScanRail;
-                    return (
-                        <button
-                            key={s.id}
-                            type="button"
-                            onClick={() => setStep(s.id)}
-                            className={cn(
-                                "flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors",
-                                scanOptional &&
-                                    state !== "current" &&
-                                    "border border-dashed border-border/80 bg-muted/30 text-muted-foreground/90",
-                                state === "current" && "bg-primary text-primary-foreground",
-                                state === "completed" &&
-                                    !scanOptional &&
-                                    "border border-emerald-500/40 bg-emerald-500/10 text-emerald-200",
-                                state === "visited" &&
-                                    "border border-border bg-background text-muted-foreground hover:text-foreground",
-                                state === "attention" &&
-                                    "border border-amber-500/50 bg-amber-500/10 text-amber-100",
-                                state === "upcoming" &&
-                                    !scanOptional &&
-                                    "bg-muted text-muted-foreground hover:text-foreground",
-                            )}
-                        >
-                            {state === "completed" ? (
-                                <Check className="h-3 w-3 shrink-0" aria-hidden />
-                            ) : state === "current" ? (
-                                <CircleDot className="h-3 w-3 shrink-0" aria-hidden />
-                            ) : state === "attention" ? (
-                                <AlertCircle className="h-3 w-3 shrink-0" aria-hidden />
-                            ) : (
-                                <span className="text-[10px] opacity-80">{i + 1}.</span>
-                            )}
-                            {clinicalStepShort(s.id, method)}
-                            {scanOptional ? (
-                                <span className="rounded bg-muted px-1 py-0.5 text-[9px] font-normal uppercase tracking-wide text-muted-foreground">
-                                    Optional
-                                </span>
-                            ) : null}
-                        </button>
-                    );
-                })}
-            </nav>
+            <div
+                className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5"
+                data-testid="design-workflow-header-row"
+            >
+                {showProductSwitcher ? <ProductTypeSwitcher /> : null}
+                <nav
+                    aria-label="Clinical workflow"
+                    className="flex min-w-0 flex-1 flex-wrap items-center gap-1 overflow-x-auto"
+                >
+                    {steps.map((s, i) => {
+                        const state = stepState(s.id);
+                        const scanOptional = s.id === "scan" && optionalScanRail;
+                        return (
+                            <button
+                                key={s.id}
+                                type="button"
+                                onClick={() => setStep(s.id)}
+                                className={cn(
+                                    "flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors",
+                                    scanOptional &&
+                                        state !== "current" &&
+                                        "border border-dashed border-border/80 bg-muted/30 text-muted-foreground/90",
+                                    state === "current" && "bg-primary text-primary-foreground",
+                                    state === "completed" &&
+                                        !scanOptional &&
+                                        "border border-emerald-500/40 bg-emerald-500/10 text-emerald-200",
+                                    state === "visited" &&
+                                        "border border-border bg-background text-muted-foreground hover:text-foreground",
+                                    state === "attention" &&
+                                        "border border-amber-500/50 bg-amber-500/10 text-amber-100",
+                                    state === "upcoming" &&
+                                        !scanOptional &&
+                                        "bg-muted text-muted-foreground hover:text-foreground",
+                                )}
+                            >
+                                {state === "completed" ? (
+                                    <Check className="h-3 w-3 shrink-0" aria-hidden />
+                                ) : state === "current" ? (
+                                    <CircleDot className="h-3 w-3 shrink-0" aria-hidden />
+                                ) : state === "attention" ? (
+                                    <AlertCircle className="h-3 w-3 shrink-0" aria-hidden />
+                                ) : (
+                                    <span className="text-[10px] opacity-80">{i + 1}.</span>
+                                )}
+                                {clinicalStepShort(s.id, method)}
+                                {scanOptional ? (
+                                    <span className="rounded bg-muted px-1 py-0.5 text-[9px] font-normal uppercase tracking-wide text-muted-foreground">
+                                        Optional
+                                    </span>
+                                ) : null}
+                            </button>
+                        );
+                    })}
+                </nav>
+            </div>
         </div>
     );
 }
