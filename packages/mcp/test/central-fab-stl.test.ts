@@ -39,7 +39,7 @@ describe("central-fab thickness and STL", () => {
         expect(omitted.design.thicknessMm).toBe(2);
         expect(omitted.design.shellThicknessMode).toBe("zonal");
         expect(thick.design.thicknessMm).toBe(4);
-        expect(thick.design.shellThicknessMode).toBe("uniform");
+        expect(thick.design.shellThicknessMode).toBe("zonal");
         expect(thick.design.paired?.leftThicknessMm).toBe(4);
         expect(thick.design.paired?.rightThicknessMm).toBe(4);
         expect(omitted.design.elements).toEqual(thick.design.elements);

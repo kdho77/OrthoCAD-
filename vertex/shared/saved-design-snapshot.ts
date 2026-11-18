@@ -802,20 +802,25 @@ export function buildSavedDesignSnapshot(input: {
 
     if (catalog.thickness_mm !== undefined) {
         const mm = catalog.thickness_mm;
-        // Uniform mode is the shell-thickness slider path (thickness-raise).
-        // Zonal walls ignore thicknessMm. Omitted thickness leaves zonal + 2 mm.
+        // Solid / milling: match the Setup slider — store thicknessMm and keep zonal
+        // so solidTopLiftMm applies on SAMPLE_Top. Shell printing uses uniform scalar
+        // thickness in correctionDeltaAt (zonal wall sliders stay authoritative).
         design.thicknessMm = mm;
-        design.shellThicknessMode = "uniform";
+        if (design.method === "printing_shell") {
+            design.shellThicknessMode = "uniform";
+        }
         if (design.paired) {
             design.paired.leftThicknessMm = mm;
             design.paired.rightThicknessMm = mm;
         }
         paths.push(
             "settings.thicknessMm",
-            "settings.shellThicknessMode",
             "settings.paired.leftThicknessMm",
             "settings.paired.rightThicknessMm",
         );
+        if (design.method === "printing_shell") {
+            paths.push("settings.shellThicknessMode");
+        }
     }
 
     const counts = new Map<string, number>();
