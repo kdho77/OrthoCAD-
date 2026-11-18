@@ -31,7 +31,7 @@ describe("CNC workpiece shell thickness", () => {
 
         expect(thicknessMmForDesignSide(thick, "left")).toBe(4);
         expect(thicknessMmForDesignSide(thin, "left")).toBe(2);
-        expect(thick.shellThicknessMode).toBe("uniform");
+        expect(thick.shellThicknessMode).toBe("zonal");
         expect(thin.shellThicknessMode).toBe("zonal");
 
         const profile = cloneProfile(IDAHO_PROFILE);
