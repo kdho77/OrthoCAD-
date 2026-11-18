@@ -96,7 +96,7 @@ describe("SetupStepPanel insole thickness", () => {
         useDesignStore.getState().addSink("mpj1", "left");
         await act(async () => root.render(createElement(SetupStepPanel)));
         const hint = container.querySelector('[data-testid="setup-insole-thickness-hint"]');
-        expect(hint?.textContent).toBe("raised to 2.5 mm for sinks");
+        expect(hint?.textContent).toBe("raised to 3 mm for sinks");
         expect(thicknessNumberInput(container).value).toBe("2");
         expect(useDesignStore.getState().design.thicknessMm).toBe(2);
     });

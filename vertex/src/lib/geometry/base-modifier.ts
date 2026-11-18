@@ -2712,7 +2712,7 @@ export function applyBaseModifiers(
     // neutral-field zero for correction deltas. The physical lift is sourced from
     // derived nativeMinClearance so labelled thicknessMm == delivered clearance.
     // Epsilon 1e-9 matches thicknessLiftActive; ≪ slider step (0.1 mm).
-    // A sink uses that same lift: the shell becomes max(slider, deepest + 0.5).
+    // A sink uses that same lift: the shell becomes max(slider, deepest + 1.0).
     // The slider value on the design is not written. No sink leaves this field alone.
     const THICKNESS_DATUM_EPS_MM = 1e-9;
     const sinkShellMm = effectiveInsoleThicknessMm(field.thicknessMm, {
