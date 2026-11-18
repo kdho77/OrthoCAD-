@@ -51,7 +51,7 @@ describe("saved-design mesh matches canonical Export", () => {
         const design = createDesignWithStockPlaceholder({
             ...createDesignWithStockPlaceholder(),
             thicknessMm: 4,
-            shellThicknessMode: "uniform",
+            shellThicknessMode: "zonal",
             paired: {
                 ...createDesignWithStockPlaceholder().paired!,
                 leftThicknessMm: 4,
