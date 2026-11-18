@@ -2,21 +2,37 @@
 // See LICENSE file in the project root for full license information.
 
 import {
-    DEFAULT_INFILL_DENSITY_PCT,
     DEFAULT_PRINT_DIRECTION,
-    defaultWallLoopsForMaterial,
-    REINFORCED_WALL_LOOPS,
     type VertexSliceMaterialId,
     type VertexSlicePrintDirection,
 } from "../../../shared/vertexslice/contract";
 import type { SlicerPublicError } from "../../../shared/vertexslice/errors";
 import type { GcodeStats } from "../../../shared/vertexslice/gcode-stats";
+import { classDensityPct, type NAMED_HARDNESS_CLASSES } from "../../lib/hardness";
 import { type FootSideTag, makeInsoleDemoMesh, type ParsedSlicerMesh } from "./slicer-mesh";
 import type { SlicerPaymentStatus } from "./slicer-pay";
 
+/** Whole-insole hardness. Same five levels as the OrthoCAD element selector. */
+export type SlicerHardness = (typeof NAMED_HARDNESS_CLASSES)[number];
+
+/** OrthoCAD's print-recipe default when a design has no hardness yet. */
+export const DEFAULT_SLICER_HARDNESS: SlicerHardness = "Medium";
+
+/**
+ * apex-v2-insole-95a wall_loops. The old Walls control sent 1 (Standard),
+ * 2 (ApexLight standard), or 4 (Reinforced). Customers no longer choose;
+ * every slice sends this production count. The profile id is unchanged.
+ */
+export const PRODUCTION_WALL_LOOPS = 2;
+
+/** Hardness infill, or the advanced override when the customer set one. */
+export function slicerInfillPercent(hardness: SlicerHardness, overridePct: number | null): number {
+    if (overridePct != null) return overridePct;
+    return classDensityPct(hardness);
+}
+
 export type SlicerUiStatus = "empty" | "uploading" | "validating" | "slicing" | "error" | "done" | "outdated";
 
-export type WallPreset = "standard" | "reinforced" | "custom";
 export type SliceStep = "Preparing" | "Slicing" | "Packaging";
 
 export interface SlicerFileSlot {
@@ -53,9 +69,13 @@ export interface SlicerState {
     printDirection: VertexSlicePrintDirection;
     /** Off leaves the uploaded bytes unchanged. On fuses the CAD sacrificial leader. */
     includeLeader: boolean;
-    wallPreset: WallPreset;
+    /** Always the production profile count. Not a customer setting. */
     wallLoops: number;
-    infillDensity: number;
+    hardness: SlicerHardness;
+    /** Set only when Advanced infill replaces the hardness level. */
+    infillOverridePct: number | null;
+    /** Shown when a second file or a pair drop is refused. */
+    uploadNotice: string | null;
     advancedOpen: boolean;
     missingHighlight: "file" | "material" | "direction" | null;
     sliceStep: SliceStep;
@@ -75,9 +95,10 @@ export function initialSlicerState(): SlicerState {
         material: null,
         printDirection: DEFAULT_PRINT_DIRECTION,
         includeLeader: false,
-        wallPreset: "standard",
-        wallLoops: defaultWallLoopsForMaterial(null),
-        infillDensity: DEFAULT_INFILL_DENSITY_PCT,
+        wallLoops: PRODUCTION_WALL_LOOPS,
+        hardness: DEFAULT_SLICER_HARDNESS,
+        infillOverridePct: null,
+        uploadNotice: null,
         advancedOpen: false,
         missingHighlight: null,
         sliceStep: "Preparing",
@@ -97,7 +118,8 @@ export function settingsFingerprint(s: SlicerState): string {
         s.printDirection,
         s.includeLeader ? "leader" : "no-leader",
         s.wallLoops,
-        s.infillDensity,
+        s.hardness,
+        s.infillOverridePct ?? "hardness",
         ...s.files.map((f) => f.id),
     ].join("|");
 }
@@ -116,10 +138,9 @@ export type SlicerAction =
     | { type: "set-material"; material: VertexSliceMaterialId }
     | { type: "set-direction"; printDirection: VertexSlicePrintDirection }
     | { type: "set-leader"; includeLeader: boolean }
-    | { type: "set-wall-preset"; preset: WallPreset }
-    | { type: "set-wall-loops"; wallLoops: number }
-    | { type: "set-infill"; infillDensity: number }
-    | { type: "reset-defaults" }
+    | { type: "set-hardness"; hardness: SlicerHardness }
+    | { type: "set-infill-override"; infillOverridePct: number | null }
+    | { type: "upload-notice"; message: string | null }
     | { type: "toggle-advanced" }
     | { type: "start-slicing" }
     | { type: "slice-step"; step: SliceStep }
@@ -151,9 +172,9 @@ export function slicerReducer(state: SlicerState, action: SlicerAction): SlicerS
                 material: state.material,
                 printDirection: state.printDirection,
                 includeLeader: state.includeLeader,
-                wallPreset: state.wallPreset,
-                wallLoops: state.wallLoops,
-                infillDensity: state.infillDensity,
+                wallLoops: PRODUCTION_WALL_LOOPS,
+                hardness: state.hardness,
+                infillOverridePct: state.infillOverridePct,
             };
         case "highlight":
             return { ...state, missingHighlight: action.field };
@@ -166,6 +187,7 @@ export function slicerReducer(state: SlicerState, action: SlicerAction): SlicerS
                 files: action.files,
                 error: null,
                 missingHighlight: null,
+                uploadNotice: null,
             };
         case "progress":
             return {
@@ -195,20 +217,13 @@ export function slicerReducer(state: SlicerState, action: SlicerAction): SlicerS
                     f.id === action.id ? { ...f, mesh: action.mesh, treatedAsInches: true } : f,
                 ),
             });
-        case "set-material": {
-            const nextLoops =
-                state.wallPreset === "standard"
-                    ? defaultWallLoopsForMaterial(action.material)
-                    : state.wallPreset === "reinforced"
-                      ? REINFORCED_WALL_LOOPS
-                      : state.wallLoops;
+        case "set-material":
             return markOutdated({
                 ...state,
                 material: action.material,
-                wallLoops: nextLoops,
+                wallLoops: PRODUCTION_WALL_LOOPS,
                 missingHighlight: state.missingHighlight === "material" ? null : state.missingHighlight,
             });
-        }
         case "set-direction":
             return markOutdated({
                 ...state,
@@ -217,32 +232,12 @@ export function slicerReducer(state: SlicerState, action: SlicerAction): SlicerS
             });
         case "set-leader":
             return markOutdated({ ...state, includeLeader: action.includeLeader });
-        case "set-wall-preset": {
-            const loops =
-                action.preset === "reinforced"
-                    ? REINFORCED_WALL_LOOPS
-                    : defaultWallLoopsForMaterial(state.material);
-            return markOutdated({
-                ...state,
-                wallPreset: action.preset,
-                wallLoops: loops,
-            });
-        }
-        case "set-wall-loops":
-            return markOutdated({
-                ...state,
-                wallPreset: "custom",
-                wallLoops: action.wallLoops,
-            });
-        case "set-infill":
-            return markOutdated({ ...state, infillDensity: action.infillDensity });
-        case "reset-defaults":
-            return markOutdated({
-                ...state,
-                wallPreset: "standard",
-                wallLoops: defaultWallLoopsForMaterial(state.material),
-                infillDensity: DEFAULT_INFILL_DENSITY_PCT,
-            });
+        case "set-hardness":
+            return markOutdated({ ...state, hardness: action.hardness });
+        case "set-infill-override":
+            return markOutdated({ ...state, infillOverridePct: action.infillOverridePct });
+        case "upload-notice":
+            return { ...state, uploadNotice: action.message };
         case "toggle-advanced":
             return { ...state, advancedOpen: !state.advancedOpen };
         case "start-slicing":
@@ -335,15 +330,15 @@ export function demoSlicerState(kind: DemoSlicerState, fault?: string | null): S
         downloads: [
             {
                 gcode: "; material = ApexCore\n; print_direction = toe_first\nG28\n",
-                filename: "insole_ApexCore_toefirst_1w.gcode",
+                filename: "insole_ApexCore_toefirst_2w.gcode",
             },
         ],
         stats: DEMO_STATS,
         requestId: "demo-req-1",
         material: "apex_core",
         printDirection: "toe_first",
-        wallLoops: 1,
-        infillDensity: 20,
+        wallLoops: PRODUCTION_WALL_LOOPS,
+        infillDensity: slicerInfillPercent(DEFAULT_SLICER_HARDNESS, null),
     };
     switch (kind) {
         case "empty":

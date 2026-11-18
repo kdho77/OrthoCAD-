@@ -16,8 +16,8 @@ import {
     scaledMesh,
     unitsWarning,
     validateSlicerFileMeta,
-    weldToleranceMm,
     WELD_RELATIVE_TOLERANCE,
+    weldToleranceMm,
 } from "./slicer-mesh";
 
 /** Kendon's OrthoCAD export size: Extrusion_FlattenHeel_HolePattern_Left (2).stl */
@@ -139,6 +139,66 @@ function makeSubdividedBoxPositions(dx: number, dy: number, dz: number, division
     return Float32Array.from(tris);
 }
 
+function storeZip(files: { name: string; data: Uint8Array }[]): ArrayBuffer {
+    const chunks: Uint8Array[] = [];
+    for (const file of files) {
+        const name = new TextEncoder().encode(file.name);
+        const header = new Uint8Array(30 + name.length);
+        const view = new DataView(header.buffer);
+        view.setUint32(0, 0x04034b50, true);
+        view.setUint32(18, file.data.length, true);
+        view.setUint32(22, file.data.length, true);
+        view.setUint16(26, name.length, true);
+        header.set(name, 30);
+        chunks.push(header, file.data);
+    }
+    const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+    let offset = 0;
+    for (const chunk of chunks) {
+        out.set(chunk, offset);
+        offset += chunk.length;
+    }
+    return out.buffer;
+}
+
+function boxObjectXml(id: string, name: string, dx: number, dy: number, dz: number): string {
+    const hx = dx / 2;
+    const hy = dy / 2;
+    const hz = dz / 2;
+    const v = [
+        [-hx, -hy, -hz],
+        [hx, -hy, -hz],
+        [hx, hy, -hz],
+        [-hx, hy, -hz],
+        [-hx, -hy, hz],
+        [hx, -hy, hz],
+        [hx, hy, hz],
+        [-hx, hy, hz],
+    ];
+    const faces = [
+        [0, 2, 1],
+        [0, 3, 2],
+        [4, 5, 6],
+        [4, 6, 7],
+        [0, 1, 5],
+        [0, 5, 4],
+        [1, 2, 6],
+        [1, 6, 5],
+        [2, 3, 7],
+        [2, 7, 6],
+        [3, 0, 4],
+        [3, 4, 7],
+    ];
+    const vertices = v.map(([x, y, z]) => `<vertex x="${x}" y="${y}" z="${z}"/>`).join("");
+    const triangles = faces.map(([a, b, c]) => `<triangle v1="${a}" v2="${b}" v3="${c}"/>`).join("");
+    return `<object id="${id}" name="${name}" type="model"><mesh><vertices>${vertices}</vertices><triangles>${triangles}</triangles></mesh></object>`;
+}
+
+function threeMf(objects: string, items: string): ArrayBuffer {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources>${objects}</resources><build>${items}</build></model>`;
+    return storeZip([{ name: "3D/3dmodel.model", data: new TextEncoder().encode(xml) }]);
+}
+
 describe("slicer mesh", () => {
     test("known box STL has mm dimensions within 0.5 mm", async () => {
         const buffer = makeBoxStl(270, 90, 15);
@@ -229,21 +289,29 @@ describe("slicer mesh", () => {
         expect(meshOpenBoundaryIssue(mesh.topology)).toBe(null);
     });
 
-    test("one or two leftover edges warn but do not block; three edges block", () => {
+    test("tiny boundary edges warn and do not block; a loop over 2 mm blocks", () => {
         const closed = {
             boundaryEdges: 0,
             nonManifoldEdges: 0,
             weldedVertexCount: 8,
             triangleCount: 12,
+            boundaryLoops: 0,
+            longestBoundaryPerimeterMm: 0,
         };
         expect(meshOpenBoundaryIssue(closed)).toBe(null);
         expect(meshOpenBoundaryIssue({ ...closed, boundaryEdges: 1 })).toBe(null);
-        expect(meshOpenBoundaryIssue({ ...closed, boundaryEdges: 2 })).toBe(null);
-        expect(meshOpenBoundaryIssue({ ...closed, boundaryEdges: 3 })?.message).toMatch(/closed mesh/i);
-        expect(meshTopologyWarning({ ...closed, boundaryEdges: 2 })).toMatch(/unmatched edges/i);
+        expect(meshOpenBoundaryIssue({ ...closed, boundaryEdges: 3, longestBoundaryPerimeterMm: 0.04 })).toBe(
+            null,
+        );
         expect(
-            meshTopologyWarning({ ...closed, nonManifoldEdges: 3, triangleCount: 13 }),
-        ).toMatch(/non-manifold/i);
+            meshTopologyWarning({ ...closed, boundaryEdges: 3, longestBoundaryPerimeterMm: 0.04 }),
+        ).toMatch(/Small mesh gaps found/);
+        expect(
+            meshOpenBoundaryIssue({ ...closed, boundaryLoops: 1, longestBoundaryPerimeterMm: 5 })?.message,
+        ).toMatch(/closed mesh/i);
+        expect(meshTopologyWarning({ ...closed, nonManifoldEdges: 3, triangleCount: 13 })).toMatch(
+            /Small mesh gaps found/,
+        );
         expect(meshOpenBoundaryIssue({ ...closed, nonManifoldEdges: 3, triangleCount: 13 })).toBe(null);
     });
 
@@ -272,7 +340,106 @@ describe("slicer mesh", () => {
         expect(topology.boundaryEdges).toBe(0);
         expect(topology.nonManifoldEdges).toBeGreaterThan(0);
         expect(meshOpenBoundaryIssue(topology)).toBe(null);
-        expect(meshTopologyWarning(topology)).toMatch(/non-manifold/i);
+        expect(meshTopologyWarning(topology)).toMatch(/Small mesh gaps found/);
         expect(isClosedManifold(extra)).toBe(true);
+    });
+
+    test("degenerate triangles, duplicate faces, and a sub-0.05 mm crack warn and do not block", () => {
+        const base = parseStl(makeBoxStl(...INSOLE_MM));
+        const cracked = new Float32Array(base);
+        cracked[0] += 0.04;
+        const all = new Float32Array(cracked.length + 18);
+        all.set(cracked);
+        all.set(base.subarray(18, 27), cracked.length);
+        const d = cracked.length + 9;
+        all[d] = 0;
+        all[d + 1] = 0;
+        all[d + 2] = 0;
+        all[d + 3] = 4;
+        all[d + 4] = 0;
+        all[d + 5] = 0;
+        all[d + 6] = 8;
+        all[d + 7] = 0;
+        all[d + 8] = 0;
+        const topology = analyzeMeshTopology(all);
+        expect(meshOpenBoundaryIssue(topology)).toBe(null);
+        expect(meshTopologyWarning(topology)).toMatch(/Small mesh gaps found/);
+        expect(topology.longestBoundaryPerimeterMm).toBeLessThanOrEqual(2);
+    });
+
+    test("a 5 mm hole blocks as an open mesh", () => {
+        const base = parseStl(makeBoxStl(...INSOLE_MM));
+        let maxZ = -Infinity;
+        for (let i = 2; i < base.length; i += 3) maxZ = Math.max(maxZ, base[i]);
+        const kept: number[] = [];
+        for (let t = 0; t < base.length; t += 9) {
+            const onTop = [0, 1, 2].every((k) => Math.abs(base[t + k * 3 + 2] - maxZ) < 1e-3);
+            if (onTop) continue;
+            for (let k = 0; k < 9; k++) kept.push(base[t + k]);
+        }
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+        for (let t = 0; t < base.length; t += 9) {
+            const onTop = [0, 1, 2].every((k) => Math.abs(base[t + k * 3 + 2] - maxZ) < 1e-3);
+            if (!onTop) continue;
+            for (let k = 0; k < 3; k++) {
+                const x = base[t + k * 3];
+                const y = base[t + k * 3 + 1];
+                minX = Math.min(minX, x);
+                maxX = Math.max(maxX, x);
+                minY = Math.min(minY, y);
+                maxY = Math.max(maxY, y);
+            }
+        }
+        const hole = 2.5;
+        const z = maxZ;
+        const trap = (a: number[], b: number[], c: number[], d: number[]) => {
+            kept.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+            kept.push(a[0], a[1], a[2], c[0], c[1], c[2], d[0], d[1], d[2]);
+        };
+        const S = (x: number, y: number) => [x, y, z];
+        trap(S(minX, minY), S(maxX, minY), S(hole, -hole), S(-hole, -hole));
+        trap(S(minX, maxY), S(-hole, hole), S(hole, hole), S(maxX, maxY));
+        trap(S(maxX, minY), S(maxX, maxY), S(hole, hole), S(hole, -hole));
+        trap(S(minX, minY), S(-hole, -hole), S(-hole, hole), S(minX, maxY));
+        const topology = analyzeMeshTopology(Float32Array.from(kept));
+        expect(topology.longestBoundaryPerimeterMm).toBeGreaterThan(2);
+        expect(meshOpenBoundaryIssue(topology)?.message).toMatch(/closed mesh/i);
+    });
+
+    test("a one-foot 3MF keeps a shell and pad assembled in one mesh", async () => {
+        const buffer = threeMf(
+            boxObjectXml("1", "shell", 250, 80, 20) + boxObjectXml("2", "met pad", 30, 20, 4),
+            `<item objectid="1"/><item objectid="2" transform="1 0 0 40 0 1 0 10 0 0 1 22"/>`,
+        );
+        const mesh = await parseSlicerMesh({ name: "foot.3mf", size: buffer.byteLength }, buffer);
+        expect(meshOpenBoundaryIssue(mesh.topology)).toBe(null);
+        expect(mesh.triangleCount).toBe(24);
+        let sawPad = false;
+        for (let i = 0; i < mesh.positions.length; i += 3) {
+            if (Math.abs(mesh.positions[i] - 55) < 0.2 && Math.abs(mesh.positions[i + 2] - 24) < 0.2)
+                sawPad = true;
+        }
+        expect(sawPad).toBe(true);
+    });
+
+    test("a 3MF with two insole bodies or left and right names is rejected", async () => {
+        const sideBySide = threeMf(
+            boxObjectXml("1", "shell", 250, 80, 20) + boxObjectXml("2", "other", 250, 80, 20),
+            `<item objectid="1"/><item objectid="2" transform="1 0 0 300 0 1 0 0 0 0 1 0"/>`,
+        );
+        await expect(
+            parseSlicerMesh({ name: "pair.3mf", size: sideBySide.byteLength }, sideBySide),
+        ).rejects.toMatchObject({ issue: { message: "Upload each foot separately." } });
+
+        const named = threeMf(
+            boxObjectXml("1", "Left insole", 40, 20, 8) + boxObjectXml("2", "Right insole", 40, 20, 8),
+            `<item objectid="1"/><item objectid="2"/>`,
+        );
+        await expect(
+            parseSlicerMesh({ name: "feet.3mf", size: named.byteLength }, named),
+        ).rejects.toMatchObject({ issue: { message: "Upload each foot separately." } });
     });
 });

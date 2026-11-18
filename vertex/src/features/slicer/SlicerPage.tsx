@@ -29,6 +29,7 @@ import {
     type ParsedSlicerMesh,
     parseSlicerMesh,
     scaledMesh,
+    UPLOAD_EACH_FOOT_MESSAGE,
     validateSlicerFileMeta,
 } from "./slicer-mesh";
 import { ResultPanel } from "./slicer-result-panel";
@@ -38,10 +39,9 @@ import {
     demoSlicerState,
     initialSlicerState,
     type SlicerFileSlot,
+    slicerInfillPercent,
     slicerReducer,
 } from "./slicer-state";
-
-const MAX_FILES = 2;
 
 function boundsWithLeader(positions: Float32Array): MeshBounds {
     const bounds = positionBounds(positions);
@@ -162,46 +162,53 @@ export function SlicerPage() {
         };
     }, [state.status, state.sliceStep]);
 
-    const ingestFiles = useCallback(async (list: FileList | File[]) => {
-        const incoming = Array.from(list).slice(0, MAX_FILES);
-        if (incoming.length === 0) return;
-        const slots: SlicerFileSlot[] = incoming.map((file, i) => ({
-            id: `${file.name}-${file.size}-${Date.now()}-${i}`,
-            file,
-            mesh: null,
-            side: incoming.length === 2 ? (i === 0 ? "left" : "right") : null,
-            progress: 0,
-            issue: validateSlicerFileMeta(file),
-            treatedAsInches: false,
-        }));
-        dispatch({ type: "uploading", files: slots });
-        const validated: SlicerFileSlot[] = [];
-        for (const slot of slots) {
-            if (slot.issue) {
-                validated.push({ ...slot, progress: 100 });
-                continue;
+    const ingestFiles = useCallback(
+        async (list: FileList | File[]) => {
+            const incoming = Array.from(list);
+            if (incoming.length === 0) return;
+            if (incoming.length > 1 || state.files.length >= 1) {
+                dispatch({ type: "upload-notice", message: UPLOAD_EACH_FOOT_MESSAGE });
+                return;
             }
-            dispatch({ type: "set-status", status: "validating" });
-            try {
-                const buffer = await slot.file.arrayBuffer();
-                dispatch({ type: "progress", id: slot.id, progress: 100 });
-                const mesh = await parseSlicerMesh(slot.file, buffer);
-                validated.push({
-                    ...slot,
-                    mesh,
-                    progress: 100,
-                    issue: meshOpenBoundaryIssue(mesh.topology),
-                });
-            } catch (err) {
-                const issue = (err as { issue?: { message: string; fix: string } }).issue ?? {
-                    message: "This file isn't a closed mesh. Re-export from OrthoCAD with Export > STL.",
-                    fix: "Export a watertight STL and try again.",
-                };
-                validated.push({ ...slot, progress: 100, issue });
+            const slots: SlicerFileSlot[] = incoming.map((file, i) => ({
+                id: `${file.name}-${file.size}-${Date.now()}-${i}`,
+                file,
+                mesh: null,
+                side: null,
+                progress: 0,
+                issue: validateSlicerFileMeta(file),
+                treatedAsInches: false,
+            }));
+            dispatch({ type: "uploading", files: slots });
+            const validated: SlicerFileSlot[] = [];
+            for (const slot of slots) {
+                if (slot.issue) {
+                    validated.push({ ...slot, progress: 100 });
+                    continue;
+                }
+                dispatch({ type: "set-status", status: "validating" });
+                try {
+                    const buffer = await slot.file.arrayBuffer();
+                    dispatch({ type: "progress", id: slot.id, progress: 100 });
+                    const mesh = await parseSlicerMesh(slot.file, buffer);
+                    validated.push({
+                        ...slot,
+                        mesh,
+                        progress: 100,
+                        issue: meshOpenBoundaryIssue(mesh.topology),
+                    });
+                } catch (err) {
+                    const issue = (err as { issue?: { message: string; fix: string } }).issue ?? {
+                        message: "This file isn't a closed mesh. Re-export from OrthoCAD with Export > STL.",
+                        fix: "Export a watertight STL and try again.",
+                    };
+                    validated.push({ ...slot, progress: 100, issue });
+                }
             }
-        }
-        dispatch({ type: "validated", files: validated });
-    }, []);
+            dispatch({ type: "validated", files: validated });
+        },
+        [state.files.length],
+    );
 
     const onDrop = (event: React.DragEvent) => {
         event.preventDefault();
@@ -267,12 +274,13 @@ export function SlicerPage() {
             const statsList: GcodeStats[] = [];
             let requestId = "";
             for (const slot of validFiles) {
+                const infillDensity = slicerInfillPercent(state.hardness, state.infillOverridePct);
                 const response = await requestSlice({
                     file: slot.file,
                     material: state.material,
                     printDirection: state.printDirection,
                     wallLoops: state.wallLoops,
-                    infillDensity: state.infillDensity,
+                    infillDensity,
                     includeLeader: state.includeLeader,
                     fault,
                     signal: ac.signal,
@@ -305,7 +313,7 @@ export function SlicerPage() {
                     material: state.material,
                     printDirection: state.printDirection,
                     wallLoops: state.wallLoops,
-                    infillDensity: state.infillDensity,
+                    infillDensity: slicerInfillPercent(state.hardness, state.infillOverridePct),
                 },
             });
         } catch (err) {
@@ -323,11 +331,12 @@ export function SlicerPage() {
         }
     }, [
         state.files,
+        state.hardness,
         state.includeLeader,
+        state.infillOverridePct,
         state.material,
         state.printDirection,
         state.wallLoops,
-        state.infillDensity,
     ]);
 
     const onSliceClick = () => {
@@ -493,7 +502,6 @@ export function SlicerPage() {
                         fileInputRef.current?.click();
                     }}
                     onRemoveFile={(id) => dispatch({ type: "remove-file", id })}
-                    onSide={(id, side) => dispatch({ type: "set-side", id, side })}
                     onTreatInches={(slot) => {
                         if (!slot.mesh) return;
                         dispatch({
@@ -506,11 +514,11 @@ export function SlicerPage() {
                     onDirection={(printDirection) => dispatch({ type: "set-direction", printDirection })}
                     onLeader={(includeLeader) => dispatch({ type: "set-leader", includeLeader })}
                     leaderMessage={leaderView.message}
-                    onWallPreset={(preset) => dispatch({ type: "set-wall-preset", preset })}
+                    onHardness={(hardness) => dispatch({ type: "set-hardness", hardness })}
                     onToggleAdvanced={() => dispatch({ type: "toggle-advanced" })}
-                    onWallLoops={(wallLoops) => dispatch({ type: "set-wall-loops", wallLoops })}
-                    onInfill={(infillDensity) => dispatch({ type: "set-infill", infillDensity })}
-                    onResetDefaults={() => dispatch({ type: "reset-defaults" })}
+                    onInfillOverride={(infillOverridePct) =>
+                        dispatch({ type: "set-infill-override", infillOverridePct })
+                    }
                     onSlice={onSliceClick}
                     onCancel={() => abortRef.current?.abort()}
                     onKeepWaiting={() => dispatch({ type: "slicing-slow", slow: false })}

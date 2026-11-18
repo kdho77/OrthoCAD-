@@ -2,8 +2,16 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
+import { classDensityPct, NAMED_HARDNESS_CLASSES } from "../../lib/hardness";
+import { volumeSettingsFor } from "../../lib/hardness/report";
 import { canDownloadSlicerGcode } from "./slicer-pay";
-import { initialSlicerState, slicerReducer } from "./slicer-state";
+import {
+    DEFAULT_SLICER_HARDNESS,
+    initialSlicerState,
+    PRODUCTION_WALL_LOOPS,
+    slicerInfillPercent,
+    slicerReducer,
+} from "./slicer-state";
 
 function doneState() {
     let state = initialSlicerState();
@@ -44,6 +52,34 @@ describe("slicerReducer", () => {
         expect(state.status).toBe("outdated");
         state = slicerReducer(state, { type: "set-leader", includeLeader: false });
         expect(state.includeLeader).toBe(false);
+    });
+
+    test("each hardness level sends the OrthoCAD export infill and the production wall count", () => {
+        const initial = initialSlicerState();
+        expect(initial.hardness).toBe(DEFAULT_SLICER_HARDNESS);
+        expect(initial.hardness).toBe("Medium");
+        expect(initial.infillOverridePct).toBe(null);
+        expect(initial.wallLoops).toBe(PRODUCTION_WALL_LOOPS);
+        expect(PRODUCTION_WALL_LOOPS).toBe(2);
+        for (const level of NAMED_HARDNESS_CLASSES) {
+            const exported = volumeSettingsFor({
+                regionId: "insole",
+                kind: "zone",
+                hardnessClass: level,
+                priority: 0,
+                depth: { type: "full" },
+                side: "left",
+            });
+            expect(slicerInfillPercent(level, null)).toBe(exported.densityPct);
+            expect(slicerInfillPercent(level, null)).toBe(classDensityPct(level));
+            let state = slicerReducer(initial, { type: "set-hardness", hardness: level });
+            expect(slicerInfillPercent(state.hardness, state.infillOverridePct)).toBe(exported.densityPct);
+            expect(state.wallLoops).toBe(2);
+            state = slicerReducer(state, { type: "set-infill-override", infillOverridePct: 55 });
+            expect(slicerInfillPercent(state.hardness, state.infillOverridePct)).toBe(55);
+            state = slicerReducer(state, { type: "set-infill-override", infillOverridePct: null });
+            expect(slicerInfillPercent(state.hardness, state.infillOverridePct)).toBe(exported.densityPct);
+        }
     });
 
     test("download is locked until pay succeeds", () => {

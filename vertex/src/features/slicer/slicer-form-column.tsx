@@ -4,22 +4,23 @@
 import { ChevronDown, Upload } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
 import { Button } from "@/components/ui/button";
-import { MATERIAL_CARDS, standardWallLabel } from "@/features/slicer/materials";
+import { MATERIAL_CARDS } from "@/features/slicer/materials";
 import { cn } from "@/lib/utils";
+import { CLASS_DISPLAY_NAMES, CLASS_PREVIEW_COLORS } from "../../../shared/print-recipe/hardness-class-table";
 import {
-    DEFAULT_INFILL_DENSITY_PCT,
-    defaultWallLoopsForMaterial,
     INFILL_DENSITY_PCT_MAX,
     INFILL_DENSITY_PCT_MIN,
-    REINFORCED_WALL_LOOPS,
     VERTEXSLICE_MAX_UPLOAD_BYTES,
     type VertexSlicePrintDirection,
-    WALL_LOOPS_MAX,
-    WALL_LOOPS_MIN,
 } from "../../../shared/vertexslice/contract";
-import type { FootSideTag } from "./slicer-mesh";
+import { classDensityPct, NAMED_HARDNESS_CLASSES } from "../../lib/hardness";
 import { SliceButtonBar } from "./slicer-slice-bar";
-import type { SlicerFileSlot, SlicerState } from "./slicer-state";
+import {
+    type SlicerFileSlot,
+    type SlicerHardness,
+    type SlicerState,
+    slicerInfillPercent,
+} from "./slicer-state";
 import { FileChip, Segmented } from "./slicer-widgets";
 
 export function SlicerFormColumn({
@@ -35,17 +36,14 @@ export function SlicerFormColumn({
     onPick,
     onChooseFile,
     onRemoveFile,
-    onSide,
     onTreatInches,
     onMaterial,
     onDirection,
     onLeader,
     leaderMessage,
-    onWallPreset,
+    onHardness,
     onToggleAdvanced,
-    onWallLoops,
-    onInfill,
-    onResetDefaults,
+    onInfillOverride,
     onSlice,
     onCancel,
     onKeepWaiting,
@@ -63,17 +61,14 @@ export function SlicerFormColumn({
     onPick: (e: React.ChangeEvent<HTMLInputElement>) => void;
     onChooseFile: (e: React.MouseEvent) => void;
     onRemoveFile: (id: string) => void;
-    onSide: (id: string, side: FootSideTag) => void;
     onTreatInches: (slot: SlicerFileSlot) => void;
     onMaterial: (id: import("../../../shared/vertexslice/contract").VertexSliceMaterialId) => void;
     onDirection: (printDirection: VertexSlicePrintDirection) => void;
     onLeader: (includeLeader: boolean) => void;
     leaderMessage: string | null;
-    onWallPreset: (preset: "standard" | "reinforced") => void;
+    onHardness: (hardness: SlicerHardness) => void;
     onToggleAdvanced: () => void;
-    onWallLoops: (wallLoops: number) => void;
-    onInfill: (infillDensity: number) => void;
-    onResetDefaults: () => void;
+    onInfillOverride: (infillOverridePct: number | null) => void;
     onSlice: () => void;
     onCancel: () => void;
     onKeepWaiting: () => void;
@@ -103,9 +98,11 @@ export function SlicerFormColumn({
                         <h2 className="text-sm font-medium">Upload</h2>
                         <p className="mt-1 text-xs text-muted-foreground">
                             Drop an .stl or .3mf here, or choose a file. Max{" "}
-                            {Math.round(VERTEXSLICE_MAX_UPLOAD_BYTES / (1024 * 1024))} MB. One file at a time,
-                            or a left/right pair.
+                            {Math.round(VERTEXSLICE_MAX_UPLOAD_BYTES / (1024 * 1024))} MB. One file at a time.
                         </p>
+                        {state.uploadNotice ? (
+                            <p className="mt-2 text-xs text-destructive">{state.uploadNotice}</p>
+                        ) : null}
                         {state.missingHighlight === "file" ? (
                             <p className="mt-2 text-xs text-destructive">Add an STL or 3MF to slice.</p>
                         ) : null}
@@ -122,7 +119,6 @@ export function SlicerFormColumn({
                             ref={fileInputRef}
                             type="file"
                             accept=".stl,.3mf,model/stl,model/3mf"
-                            multiple
                             className="sr-only"
                             onChange={onPick}
                         />
@@ -132,11 +128,9 @@ export function SlicerFormColumn({
                     <FileChip
                         key={slot.id}
                         slot={slot}
-                        pair={state.files.length === 2}
                         uploading={state.status === "uploading"}
                         validating={state.status === "validating"}
                         onRemove={() => onRemoveFile(slot.id)}
-                        onSide={(side) => onSide(slot.id, side)}
                         onInches={() => onTreatInches(slot)}
                     />
                 ))}
@@ -219,33 +213,36 @@ export function SlicerFormColumn({
                     </p>
                 ) : null}
 
-                <p className="mt-4 text-xs text-muted-foreground">Walls</p>
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                    <button
-                        type="button"
-                        onClick={() => onWallPreset("standard")}
-                        className={cn(
-                            "rounded-md border px-3 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                            state.wallPreset === "standard"
-                                ? "border-primary bg-primary/15"
-                                : "border-border hover:border-primary/50",
-                        )}
-                    >
-                        {standardWallLabel(state.material)}
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => onWallPreset("reinforced")}
-                        className={cn(
-                            "rounded-md border px-3 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                            state.wallPreset === "reinforced"
-                                ? "border-primary bg-primary/15"
-                                : "border-border hover:border-primary/50",
-                        )}
-                    >
-                        Reinforced: {REINFORCED_WALL_LOOPS} walls
-                    </button>
-                </div>
+                <fieldset className="mt-4 space-y-1" aria-label="Hardness">
+                    <legend className="text-xs text-muted-foreground">Hardness</legend>
+                    {NAMED_HARDNESS_CLASSES.map((level) => {
+                        const selected = state.hardness === level;
+                        return (
+                            <button
+                                key={level}
+                                type="button"
+                                aria-pressed={selected}
+                                data-testid="slicer-hardness"
+                                data-hardness-option={level}
+                                onClick={() => onHardness(level)}
+                                className={cn(
+                                    "flex min-h-9 w-full items-center gap-2 rounded px-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                                    selected ? "bg-primary/15" : "hover:bg-muted",
+                                )}
+                            >
+                                <span
+                                    aria-hidden="true"
+                                    className="h-3 w-3 rounded-full"
+                                    style={{ backgroundColor: CLASS_PREVIEW_COLORS[level] }}
+                                />
+                                {CLASS_DISPLAY_NAMES[level]}
+                                <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
+                                    {classDensityPct(level)}%
+                                </span>
+                            </button>
+                        );
+                    })}
+                </fieldset>
 
                 <button
                     type="button"
@@ -262,41 +259,36 @@ export function SlicerFormColumn({
                     <div className="mt-2 space-y-3 rounded-md border border-border p-3">
                         <label className="block text-xs">
                             <span className="flex justify-between text-muted-foreground">
-                                Wall count{" "}
-                                <span className="tabular-nums text-foreground">{state.wallLoops}</span>
-                            </span>
-                            <input
-                                type="range"
-                                min={WALL_LOOPS_MIN}
-                                max={WALL_LOOPS_MAX}
-                                step={1}
-                                value={state.wallLoops}
-                                onChange={(e) => onWallLoops(Number(e.target.value))}
-                                className="mt-1 h-1 w-full cursor-pointer appearance-none rounded bg-muted accent-primary"
-                            />
-                        </label>
-                        <label className="block text-xs">
-                            <span className="flex justify-between text-muted-foreground">
-                                Infill %{" "}
-                                <span className="tabular-nums text-foreground">{state.infillDensity}%</span>
+                                Infill override{" "}
+                                <span className="tabular-nums text-foreground">
+                                    {slicerInfillPercent(state.hardness, state.infillOverridePct)}%
+                                </span>
                             </span>
                             <input
                                 type="range"
                                 min={INFILL_DENSITY_PCT_MIN}
                                 max={INFILL_DENSITY_PCT_MAX}
                                 step={1}
-                                value={state.infillDensity}
-                                onChange={(e) => onInfill(Number(e.target.value))}
+                                value={slicerInfillPercent(state.hardness, state.infillOverridePct)}
+                                aria-label="Infill override"
+                                onChange={(e) => onInfillOverride(Number(e.target.value))}
                                 className="mt-1 h-1 w-full cursor-pointer appearance-none rounded bg-muted accent-primary"
                             />
                         </label>
-                        <p className="text-[11px] text-muted-foreground">
-                            Material default: {defaultWallLoopsForMaterial(state.material)} walls,{" "}
-                            {DEFAULT_INFILL_DENSITY_PCT}% infill.
-                        </p>
-                        <Button type="button" size="sm" variant="ghost" onClick={onResetDefaults}>
-                            Reset to material defaults
-                        </Button>
+                        {state.infillOverridePct != null ? (
+                            <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => onInfillOverride(null)}
+                            >
+                                Use hardness infill
+                            </Button>
+                        ) : (
+                            <p className="text-[11px] text-muted-foreground">
+                                Uses the hardness level until you set a percentage.
+                            </p>
+                        )}
                     </div>
                 ) : null}
             </section>

@@ -4,6 +4,7 @@
 import { VERTEXSLICE_MAX_UPLOAD_BYTES } from "../../../shared/vertexslice/contract";
 import { analyzeMeshTopology, meshTopologyWarning } from "./slicer-topology";
 
+export type { MeshTopology } from "./slicer-topology";
 export {
     analyzeMeshTopology,
     cameraDistanceForBounds,
@@ -12,11 +13,10 @@ export {
     meshTopologyWarning,
     OPEN_BOUNDARY_BLOCK_EDGES,
     SLICER_VIEW_DIR,
+    WELD_RELATIVE_TOLERANCE,
     weldToleranceMm,
     weldVertexIds,
-    WELD_RELATIVE_TOLERANCE,
 } from "./slicer-topology";
-export type { MeshTopology } from "./slicer-topology";
 
 export const ACCEPTED_EXTENSIONS = [".stl", ".3mf"] as const;
 export const LENGTH_WARN_MIN_MM = 150;
@@ -24,6 +24,9 @@ export const LENGTH_WARN_MAX_MM = 350;
 export const INCH_SCALE = 25.4;
 
 export type FootSideTag = "left" | "right";
+
+/** One model, one foot, one G-code. A second file or a two-foot 3MF uses this. */
+export const UPLOAD_EACH_FOOT_MESSAGE = "Upload each foot separately.";
 
 export interface MeshBounds {
     min: [number, number, number];
@@ -180,7 +183,54 @@ export async function readZipEntries(buffer: ArrayBuffer): Promise<ZipEntry[]> {
     return entries;
 }
 
-function parse3mfModel(xml: string): Float32Array {
+interface MeshPart {
+    name: string;
+    positions: Float32Array;
+}
+
+function xmlAttr(tag: string, name: string): string | undefined {
+    const match = new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`, "i").exec(tag);
+    return match?.[1];
+}
+
+/** 3MF transform is a row-major 3×4 affine matrix. */
+function parseTransform(raw: string | undefined): number[] | null {
+    if (!raw) return null;
+    const values = raw.trim().split(/\s+/).map(Number);
+    if (values.length < 12 || values.some((n) => !Number.isFinite(n))) return null;
+    return values.slice(0, 12);
+}
+
+function multiplyTransform(outer: number[], inner: number[]): number[] {
+    const out = new Array<number>(12);
+    for (let row = 0; row < 3; row++) {
+        const a0 = outer[row * 4];
+        const a1 = outer[row * 4 + 1];
+        const a2 = outer[row * 4 + 2];
+        const a3 = outer[row * 4 + 3];
+        out[row * 4] = a0 * inner[0] + a1 * inner[4] + a2 * inner[8];
+        out[row * 4 + 1] = a0 * inner[1] + a1 * inner[5] + a2 * inner[9];
+        out[row * 4 + 2] = a0 * inner[2] + a1 * inner[6] + a2 * inner[10];
+        out[row * 4 + 3] = a0 * inner[3] + a1 * inner[7] + a2 * inner[11] + a3;
+    }
+    return out;
+}
+
+function transformPositions(local: Float32Array, matrix: number[] | null): Float32Array {
+    if (!matrix) return local;
+    const out = new Float32Array(local.length);
+    for (let i = 0; i < local.length; i += 3) {
+        const x = local[i];
+        const y = local[i + 1];
+        const z = local[i + 2];
+        out[i] = matrix[0] * x + matrix[1] * y + matrix[2] * z + matrix[3];
+        out[i + 1] = matrix[4] * x + matrix[5] * y + matrix[6] * z + matrix[7];
+        out[i + 2] = matrix[8] * x + matrix[9] * y + matrix[10] * z + matrix[11];
+    }
+    return out;
+}
+
+function meshFromXmlFragment(xml: string): Float32Array | null {
     const vertices: number[] = [];
     const vertexRe =
         /<vertex\b[^>]*\bx=["']([^"']+)["'][^>]*\by=["']([^"']+)["'][^>]*\bz=["']([^"']+)["'][^>]*\/?>/gi;
@@ -189,7 +239,7 @@ function parse3mfModel(xml: string): Float32Array {
         vertices.push(Number(vm[1]), Number(vm[2]), Number(vm[3]));
         vm = vertexRe.exec(xml);
     }
-    if (vertices.length < 9) throw new Error("3mf-vertices");
+    if (vertices.length < 9) return null;
     const positions: number[] = [];
     const triRe =
         /<triangle\b[^>]*\bv1=["'](\d+)["'][^>]*\bv2=["'](\d+)["'][^>]*\bv3=["'](\d+)["'][^>]*\/?>/gi;
@@ -198,6 +248,10 @@ function parse3mfModel(xml: string): Float32Array {
         const i1 = Number(tm[1]) * 3;
         const i2 = Number(tm[2]) * 3;
         const i3 = Number(tm[3]) * 3;
+        if (i1 + 2 >= vertices.length || i2 + 2 >= vertices.length || i3 + 2 >= vertices.length) {
+            tm = triRe.exec(xml);
+            continue;
+        }
         positions.push(
             vertices[i1],
             vertices[i1 + 1],
@@ -211,16 +265,169 @@ function parse3mfModel(xml: string): Float32Array {
         );
         tm = triRe.exec(xml);
     }
-    if (positions.length < 9) throw new Error("3mf-triangles");
+    if (positions.length < 9) return null;
     return Float32Array.from(positions);
 }
 
-export async function parse3mf(buffer: ArrayBuffer): Promise<Float32Array> {
+function hasFootWord(text: string, word: "left" | "right"): boolean {
+    return new RegExp(`(^|[^a-z])${word}([^a-z]|$)`, "i").test(text);
+}
+
+function isInsoleSizedBody(bounds: MeshBounds): boolean {
+    return (
+        bounds.lengthMm >= 150 &&
+        bounds.lengthMm <= 360 &&
+        bounds.widthMm >= 50 &&
+        bounds.widthMm <= 160 &&
+        bounds.heightMm <= 60
+    );
+}
+
+function centroidOf(positions: Float32Array): [number, number, number] {
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    const n = positions.length / 3;
+    for (let i = 0; i < positions.length; i += 3) {
+        x += positions[i];
+        y += positions[i + 1];
+        z += positions[i + 2];
+    }
+    return [x / n, y / n, z / n];
+}
+
+/**
+ * A 3MF may be a shell plus a pad. It is both feet when two insole-sized
+ * bodies sit apart, or when the names say left and right.
+ */
+export function threeMfHoldsBothFeet(parts: MeshPart[], fileName = ""): boolean {
+    const names = [fileName, ...parts.map((part) => part.name)].join(" ");
+    if (hasFootWord(names, "left") && hasFootWord(names, "right")) return true;
+    const bodies = parts.filter((part) => isInsoleSizedBody(boundsFromPositions(part.positions)));
+    for (let i = 0; i < bodies.length; i++) {
+        const a = centroidOf(bodies[i].positions);
+        for (let j = i + 1; j < bodies.length; j++) {
+            const b = centroidOf(bodies[j].positions);
+            if (Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) > 60) return true;
+        }
+    }
+    return false;
+}
+
+interface Parsed3mf {
+    positions: Float32Array;
+    bothFeet: boolean;
+}
+
+function parse3mfDocument(xml: string, fileName: string): Parsed3mf {
+    interface RawObject {
+        id: string;
+        name: string;
+        transform: number[] | null;
+        mesh: Float32Array | null;
+        components: Array<{ id: string; transform: number[] | null }>;
+    }
+    const objects = new Map<string, RawObject>();
+    const objectRe = /<object\b([^>]*)>([\s\S]*?)<\/object>/gi;
+    let om = objectRe.exec(xml);
+    while (om) {
+        const attrs = om[1] ?? "";
+        const body = om[2] ?? "";
+        const id = xmlAttr(attrs, "id");
+        if (id) {
+            const components: RawObject["components"] = [];
+            const compRe = /<component\b([^>]*)\/?>/gi;
+            let cm = compRe.exec(body);
+            while (cm) {
+                const cid = xmlAttr(cm[1] ?? "", "objectid");
+                if (cid)
+                    components.push({
+                        id: cid,
+                        transform: parseTransform(xmlAttr(cm[1] ?? "", "transform")),
+                    });
+                cm = compRe.exec(body);
+            }
+            objects.set(id, {
+                id,
+                name: xmlAttr(attrs, "name") ?? "",
+                transform: parseTransform(xmlAttr(attrs, "transform")),
+                mesh: meshFromXmlFragment(body),
+                components,
+            });
+        }
+        om = objectRe.exec(xml);
+    }
+    const items: Array<{ id: string; transform: number[] | null }> = [];
+    const itemRe = /<item\b([^>]*)\/?>/gi;
+    let im = itemRe.exec(xml);
+    while (im) {
+        const id = xmlAttr(im[1] ?? "", "objectid");
+        if (id) items.push({ id, transform: parseTransform(xmlAttr(im[1] ?? "", "transform")) });
+        im = itemRe.exec(xml);
+    }
+    const parts: MeshPart[] = [];
+    const emit = (id: string, extra: number[] | null, stack: Set<string>) => {
+        if (stack.has(id)) return;
+        const obj = objects.get(id);
+        if (!obj) return;
+        stack.add(id);
+        const matrix =
+            extra && obj.transform ? multiplyTransform(extra, obj.transform) : (extra ?? obj.transform);
+        if (obj.mesh) {
+            parts.push({ name: obj.name, positions: transformPositions(obj.mesh, matrix) });
+        }
+        for (const component of obj.components) {
+            const child =
+                matrix && component.transform
+                    ? multiplyTransform(matrix, component.transform)
+                    : (matrix ?? component.transform);
+            emit(component.id, child, stack);
+        }
+        stack.delete(id);
+    };
+    if (items.length > 0) {
+        for (const item of items) emit(item.id, item.transform, new Set());
+    } else {
+        for (const obj of objects.values()) emit(obj.id, null, new Set());
+    }
+    if (parts.length === 0) {
+        const flat = meshFromXmlFragment(xml);
+        if (!flat) throw new Error("3mf-triangles");
+        return { positions: flat, bothFeet: false };
+    }
+    if (threeMfHoldsBothFeet(parts, fileName)) {
+        const merged = parts.reduce((n, part) => n + part.positions.length, 0);
+        const positions = new Float32Array(merged);
+        return { positions, bothFeet: true };
+    }
+    const merged = new Float32Array(parts.reduce((n, part) => n + part.positions.length, 0));
+    let offset = 0;
+    for (const part of parts) {
+        merged.set(part.positions, offset);
+        offset += part.positions.length;
+    }
+    return { positions: merged, bothFeet: false };
+}
+
+export async function parse3mf(buffer: ArrayBuffer, fileName = ""): Promise<Float32Array> {
+    const parsed = await parse3mfParts(buffer, fileName);
+    if (parsed.bothFeet) {
+        const err = new Error("both-feet");
+        (err as Error & { issue: MeshIssue }).issue = {
+            message: UPLOAD_EACH_FOOT_MESSAGE,
+            fix: "This file has both feet.",
+        };
+        throw err;
+    }
+    return parsed.positions;
+}
+
+async function parse3mfParts(buffer: ArrayBuffer, fileName: string): Promise<Parsed3mf> {
     const entries = await readZipEntries(buffer);
     const model = entries.find((e) => /3dmodel\.model$/i.test(e.name) || /3d\/.*\.model$/i.test(e.name));
     if (!model) throw new Error("3mf-missing-model");
     const xml = new TextDecoder().decode(model.data);
-    return parse3mfModel(xml);
+    return parse3mfDocument(xml, fileName);
 }
 
 export function extensionOf(name: string): ".stl" | ".3mf" | null {
@@ -264,8 +471,10 @@ export async function parseSlicerMesh(
     }
     let positions: Float32Array;
     try {
-        positions = ext === ".3mf" ? await parse3mf(buffer) : parseStl(buffer);
-    } catch {
+        positions = ext === ".3mf" ? await parse3mf(buffer, file.name) : parseStl(buffer);
+    } catch (caught) {
+        const existing = (caught as { issue?: MeshIssue }).issue;
+        if (existing) throw caught;
         const err = new Error("parse");
         (err as Error & { issue: MeshIssue }).issue = {
             message: "This file isn't a closed mesh. Re-export from OrthoCAD with Export > STL.",

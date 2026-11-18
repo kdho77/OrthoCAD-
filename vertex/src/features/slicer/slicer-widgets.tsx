@@ -5,7 +5,7 @@ import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { VertexSlicePrintDirection } from "../../../shared/vertexslice/contract";
-import { formatDimensionsMm, type FootSideTag, unitsWarning } from "./slicer-mesh";
+import { formatDimensionsMm, unitsWarning } from "./slicer-mesh";
 import type { SlicerFileSlot } from "./slicer-state";
 
 export function formatBytes(n: number): string {
@@ -16,19 +16,15 @@ export function formatBytes(n: number): string {
 
 export function FileChip({
     slot,
-    pair,
     uploading,
     validating,
     onRemove,
-    onSide,
     onInches,
 }: {
     slot: SlicerFileSlot;
-    pair: boolean;
     uploading: boolean;
     validating: boolean;
     onRemove: () => void;
-    onSide: (side: FootSideTag) => void;
     onInches: () => void;
 }) {
     const warn = slot.mesh && !slot.treatedAsInches ? unitsWarning(slot.mesh.bounds.lengthMm) : null;
@@ -74,25 +70,6 @@ export function FileChip({
                     </Button>
                 </div>
             ) : null}
-            {pair ? (
-                <div className="mt-2 flex gap-2">
-                    {(["left", "right"] as const).map((side) => (
-                        <button
-                            key={side}
-                            type="button"
-                            onClick={() => onSide(side)}
-                            className={cn(
-                                "rounded px-2 py-1 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                                slot.side === side ? "bg-primary text-primary-foreground" : "bg-muted",
-                            )}
-                        >
-                            {side === "left" ? "Left" : "Right"}
-                        </button>
-                    ))}
-                </div>
-            ) : (
-                <p className="mt-2 text-[11px] text-muted-foreground">One file at a time.</p>
-            )}
         </div>
     );
 }

@@ -2,7 +2,6 @@
 // See LICENSE file in the project root for full license information.
 
 import {
-    defaultWallLoopsForMaterial,
     VERTEXSLICE_MATERIAL_DISPLAY,
     type VertexSliceMaterialId,
 } from "../../../shared/vertexslice/contract";
@@ -39,8 +38,3 @@ export const MATERIAL_CARDS: MaterialCard[] = [
         description: "TPU with a heated bed for more rebound.",
     },
 ];
-
-export function standardWallLabel(material: VertexSliceMaterialId | null): string {
-    const n = defaultWallLoopsForMaterial(material);
-    return n === 1 ? `Standard: ${n} wall` : `Standard: ${n} walls`;
-}
