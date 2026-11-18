@@ -4,7 +4,13 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { canDownloadSlicerGcode, formatSlicerPriceLabel } from "@/features/slicer/slicer-pay";
 import { useAuthStore } from "@/stores/auth-store";
-import type { VertexSliceMaterialId } from "../../../shared/vertexslice/contract";
+import {
+    attachLeaderToPositions,
+    LEADER_INCHES,
+    LEADER_NEEDS_STL,
+    positionBounds,
+} from "../../../shared/slicer/attach-leader";
+import type { VertexSliceMaterialId, VertexSlicePrintDirection } from "../../../shared/vertexslice/contract";
 import { slicerDownloadFilename } from "../../../shared/vertexslice/filename";
 import { type GcodeStats, sumGcodeStats } from "../../../shared/vertexslice/gcode-stats";
 import { SlicerPreview } from "./SlicerPreview";
@@ -18,7 +24,9 @@ import {
 import { SlicerFormColumn } from "./slicer-form-column";
 import {
     INCH_SCALE,
+    type MeshBounds,
     meshOpenBoundaryIssue,
+    type ParsedSlicerMesh,
     parseSlicerMesh,
     scaledMesh,
     validateSlicerFileMeta,
@@ -34,6 +42,40 @@ import {
 } from "./slicer-state";
 
 const MAX_FILES = 2;
+
+function boundsWithLeader(positions: Float32Array): MeshBounds {
+    const bounds = positionBounds(positions);
+    const sorted = [...bounds.size].sort((a, b) => b - a);
+    return {
+        min: bounds.min,
+        max: bounds.max,
+        size: bounds.size,
+        lengthMm: sorted[0] ?? 0,
+        widthMm: sorted[1] ?? 0,
+        heightMm: sorted[2] ?? 0,
+    };
+}
+
+function meshWithLeader(mesh: ParsedSlicerMesh, positions: Float32Array): ParsedSlicerMesh {
+    return {
+        ...mesh,
+        positions,
+        triangleCount: positions.length / 9,
+        bounds: boundsWithLeader(positions),
+    };
+}
+
+function leaderForSlot(
+    slot: SlicerFileSlot,
+    printDirection: VertexSlicePrintDirection,
+): { message: string | null; positions: Float32Array | null } {
+    if (!slot.mesh) return { message: null, positions: null };
+    if (slot.mesh.extension !== ".stl") return { message: LEADER_NEEDS_STL, positions: null };
+    if (slot.treatedAsInches) return { message: LEADER_INCHES, positions: null };
+    const attached = attachLeaderToPositions(slot.mesh.positions, printDirection);
+    if (!attached.ok) return { message: attached.message, positions: null };
+    return { message: null, positions: attached.positions };
+}
 
 function demoKindFromSearch(): { kind: DemoSlicerState; fault: string | null } | null {
     if (typeof window === "undefined") return null;
@@ -173,6 +215,18 @@ export function SlicerPage() {
     };
 
     const primaryMesh = state.files.find((f) => f.mesh)?.mesh ?? null;
+    const leaderView = useMemo(() => {
+        if (!state.includeLeader) return { mesh: primaryMesh, message: null as string | null };
+        let message: string | null = null;
+        let positions: Float32Array | null = null;
+        for (const slot of state.files) {
+            const result = leaderForSlot(slot, state.printDirection);
+            if (result.message && !message) message = result.message;
+            if (slot.mesh && slot.mesh === primaryMesh) positions = result.positions;
+        }
+        if (message || !primaryMesh || !positions) return { mesh: primaryMesh, message };
+        return { mesh: meshWithLeader(primaryMesh, positions), message: null };
+    }, [primaryMesh, state.files, state.includeLeader, state.printDirection]);
 
     const runSlice = useCallback(async () => {
         const validFiles = state.files.filter((f) => f.file && f.mesh && !f.issue);
@@ -186,6 +240,22 @@ export function SlicerPage() {
             dispatch({ type: "highlight", field: "material" });
             materialRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
             return;
+        }
+        if (state.includeLeader) {
+            for (const slot of validFiles) {
+                const result = leaderForSlot(slot, state.printDirection);
+                if (!result.message) continue;
+                dispatch({
+                    type: "error",
+                    error: {
+                        code: "validation",
+                        cause: result.message,
+                        nextStep: "Switch Toe first / Heel first, or turn the sacrificial leader off.",
+                        requestId: "",
+                    },
+                });
+                return;
+            }
         }
         abortRef.current?.abort();
         const ac = new AbortController();
@@ -203,6 +273,7 @@ export function SlicerPage() {
                     printDirection: state.printDirection,
                     wallLoops: state.wallLoops,
                     infillDensity: state.infillDensity,
+                    includeLeader: state.includeLeader,
                     fault,
                     signal: ac.signal,
                 });
@@ -250,7 +321,14 @@ export function SlicerPage() {
             });
             void err;
         }
-    }, [state.files, state.material, state.printDirection, state.wallLoops, state.infillDensity]);
+    }, [
+        state.files,
+        state.includeLeader,
+        state.material,
+        state.printDirection,
+        state.wallLoops,
+        state.infillDensity,
+    ]);
 
     const onSliceClick = () => {
         void runSlice();
@@ -426,6 +504,8 @@ export function SlicerPage() {
                     }}
                     onMaterial={(material) => dispatch({ type: "set-material", material })}
                     onDirection={(printDirection) => dispatch({ type: "set-direction", printDirection })}
+                    onLeader={(includeLeader) => dispatch({ type: "set-leader", includeLeader })}
+                    leaderMessage={leaderView.message}
                     onWallPreset={(preset) => dispatch({ type: "set-wall-preset", preset })}
                     onToggleAdvanced={() => dispatch({ type: "toggle-advanced" })}
                     onWallLoops={(wallLoops) => dispatch({ type: "set-wall-loops", wallLoops })}
@@ -460,7 +540,8 @@ export function SlicerPage() {
                 </SlicerFormColumn>
                 <div className="relative h-[50vh] min-h-[320px] min-w-0 w-full md:h-full md:min-h-0 md:flex-1">
                     <SlicerPreview
-                        mesh={primaryMesh}
+                        mesh={leaderView.mesh}
+                        toeBounds={primaryMesh?.bounds}
                         printDirection={state.printDirection}
                         resetNonce={resetNonce}
                         onResetView={() => setResetNonce((n) => n + 1)}

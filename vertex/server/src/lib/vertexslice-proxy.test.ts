@@ -2,6 +2,9 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
+import { taperedInsoleStl } from "../../../shared/slicer/tapered-insole-fixture";
+import type { VertexSliceSliceInput } from "../../../shared/vertexslice/contract";
+import { LEADER_SUFFIX_TRIANGLE_COUNT } from "../../../src/lib/geometry/leader-block";
 import { DEV_SUPER_ADMIN } from "./dev-auth";
 import { createMockVertexSliceClient } from "./vertexslice-mock";
 import { handleSlicerRequest, shouldUseMockSlicer } from "./vertexslice-proxy";
@@ -204,5 +207,98 @@ describe("slicer pay route", () => {
         expect(paid.status).toBe(200);
         expect(paidBody.files[0]?.gcode).toContain("; material = ApexCore");
         expect(JSON.stringify(paidBody)).not.toContain("secret-never-leak");
+    });
+});
+
+describe("slicer sacrificial leader flag", () => {
+    function capturingClient() {
+        let seen: Uint8Array | null = null;
+        const inner = createMockVertexSliceClient();
+        return {
+            seen: () => seen,
+            client: {
+                health: () => inner.health(),
+                materials: () => inner.materials(),
+                profiles: () => inner.profiles(),
+                async slice(input: VertexSliceSliceInput, init?: { signal?: AbortSignal }) {
+                    const model = input.model;
+                    seen =
+                        model instanceof Uint8Array
+                            ? model
+                            : model instanceof ArrayBuffer
+                              ? new Uint8Array(model)
+                              : new Uint8Array(await model.arrayBuffer());
+                    return inner.slice(input, init);
+                },
+            },
+        };
+    }
+
+    test("the leader flag off leaves the uploaded bytes unchanged", async () => {
+        const raw = taperedInsoleStl();
+        const capture = capturingClient();
+        const res = await handleSlicerRequest(
+            new Request("http://localhost/api/slicer", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                    filename: "insole.stl",
+                    modelBase64: Buffer.from(raw).toString("base64"),
+                    material: "apex_core",
+                    print_direction: "toe_first",
+                    sacrificial_leader: false,
+                }),
+            }),
+            { client: capture.client, env: {} },
+        );
+        expect(res.status).toBe(200);
+        const seen = capture.seen();
+        expect(seen).not.toBeNull();
+        expect(Buffer.from(seen ?? []).equals(Buffer.from(raw))).toBe(true);
+    });
+
+    test("the leader flag on sends the CAD leader and a bad orientation is refused", async () => {
+        const raw = taperedInsoleStl();
+        const before = new DataView(raw.buffer, raw.byteOffset, raw.byteLength).getUint32(80, true);
+        const capture = capturingClient();
+        const res = await handleSlicerRequest(
+            new Request("http://localhost/api/slicer", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                    filename: "insole.stl",
+                    modelBase64: Buffer.from(raw).toString("base64"),
+                    material: "apex_core",
+                    print_direction: "toe_first",
+                    sacrificial_leader: true,
+                }),
+            }),
+            { client: capture.client, env: {} },
+        );
+        expect(res.status).toBe(200);
+        const seen = capture.seen();
+        expect(seen).not.toBeNull();
+        expect(new DataView(seen?.buffer, seen?.byteOffset, seen?.byteLength).getUint32(80, true)).toBe(
+            before + LEADER_SUFFIX_TRIANGLE_COUNT,
+        );
+
+        const refused = await handleSlicerRequest(
+            new Request("http://localhost/api/slicer", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                    filename: "cube.stl",
+                    modelBase64: Buffer.from(raw).toString("base64"),
+                    material: "apex_core",
+                    print_direction: "heel_first",
+                    sacrificial_leader: true,
+                }),
+            }),
+            { client: capture.client, env: {} },
+        );
+        expect(refused.status).toBe(400);
+        const body = (await refused.json()) as { ok: boolean; error: { cause: string } };
+        expect(body.ok).toBe(false);
+        expect(body.error.cause).toContain("thinner toe");
     });
 });

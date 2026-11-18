@@ -58,6 +58,7 @@ export interface SliceProxyRequest {
     printDirection: VertexSlicePrintDirection;
     wallLoops: number;
     infillDensity: number;
+    includeLeader?: boolean;
     fault?: string | null;
     signal?: AbortSignal;
 }
@@ -82,6 +83,7 @@ export async function requestSlice(input: SliceProxyRequest): Promise<SliceProxy
     form.set(SLICE_FORM_FIELDS.printDirection, input.printDirection);
     form.set(SLICE_FORM_FIELDS.beltInsolePlace, "true");
     form.set(SLICE_FORM_FIELDS.material, input.material);
+    if (input.includeLeader) form.set("sacrificial_leader", "true");
     if (input.fault) form.set("fault", input.fault);
 
     const headers: Record<string, string> = {};

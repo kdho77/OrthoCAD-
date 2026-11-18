@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { TRPCError } from "@trpc/server";
+import { attachSacrificialLeader } from "../../../shared/slicer/attach-leader.js";
 import {
     DEFAULT_PROFILE_ID,
     SLICE_FORM_FIELDS,
@@ -161,9 +162,17 @@ function faultFromRequest(request: Request, formFault?: string | null): string |
     return urlFault || headerFault || formFault || null;
 }
 
+function sacrificialLeaderRequested(value: unknown): boolean {
+    if (value === true || value === 1) return true;
+    if (typeof value !== "string") return false;
+    const text = value.trim().toLowerCase();
+    return text === "1" || text === "true";
+}
+
 async function parseSliceInput(request: Request): Promise<{
     input: VertexSliceSliceInput;
     fault: string | null;
+    sacrificialLeader: boolean;
 }> {
     const contentType = request.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
@@ -182,6 +191,7 @@ async function parseSliceInput(request: Request): Promise<{
                 material: body.material as string | null | undefined,
             },
             fault: typeof body.fault === "string" ? body.fault : null,
+            sacrificialLeader: sacrificialLeaderRequested(body.sacrificial_leader),
         };
     }
 
@@ -211,6 +221,7 @@ async function parseSliceInput(request: Request): Promise<{
             material: (form.get(SLICE_FORM_FIELDS.material) as string | null) ?? null,
         },
         fault: typeof form.get("fault") === "string" ? (form.get("fault") as string) : null,
+        sacrificialLeader: sacrificialLeaderRequested(form.get("sacrificial_leader")),
     };
 }
 
@@ -389,6 +400,28 @@ export async function handleSlicerRequest(
 
     try {
         const parsed = await parseSliceInput(request);
+        if (parsed.sacrificialLeader) {
+            const raw = await modelToBytes(parsed.input.model);
+            const direction = parsed.input.printDirection === "heel_first" ? "heel_first" : "toe_first";
+            const attached = attachSacrificialLeader(raw, direction);
+            if (!attached.ok) {
+                return jsonResponse(
+                    {
+                        ok: false,
+                        error: {
+                            code: "validation",
+                            cause: attached.message,
+                            nextStep: "Switch Toe first / Heel first, or turn the sacrificial leader off.",
+                            requestId: id,
+                        },
+                    },
+                    400,
+                    id,
+                    request,
+                );
+            }
+            parsed.input = { ...parsed.input, model: attached.bytes };
+        }
         const fault = faultFromRequest(request, parsed.fault);
         const client = backend.mock && fault ? createMockVertexSliceClient({}, () => fault) : backend.client;
         const result = await client.slice(parsed.input, { signal: request.signal });

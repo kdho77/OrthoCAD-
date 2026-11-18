@@ -51,6 +51,8 @@ export interface SlicerState {
     files: SlicerFileSlot[];
     material: VertexSliceMaterialId | null;
     printDirection: VertexSlicePrintDirection;
+    /** Off leaves the uploaded bytes unchanged. On fuses the CAD sacrificial leader. */
+    includeLeader: boolean;
     wallPreset: WallPreset;
     wallLoops: number;
     infillDensity: number;
@@ -72,6 +74,7 @@ export function initialSlicerState(): SlicerState {
         files: [],
         material: null,
         printDirection: DEFAULT_PRINT_DIRECTION,
+        includeLeader: false,
         wallPreset: "standard",
         wallLoops: defaultWallLoopsForMaterial(null),
         infillDensity: DEFAULT_INFILL_DENSITY_PCT,
@@ -89,9 +92,14 @@ export function initialSlicerState(): SlicerState {
 }
 
 export function settingsFingerprint(s: SlicerState): string {
-    return [s.material, s.printDirection, s.wallLoops, s.infillDensity, ...s.files.map((f) => f.id)].join(
-        "|",
-    );
+    return [
+        s.material,
+        s.printDirection,
+        s.includeLeader ? "leader" : "no-leader",
+        s.wallLoops,
+        s.infillDensity,
+        ...s.files.map((f) => f.id),
+    ].join("|");
 }
 
 export type SlicerAction =
@@ -107,6 +115,7 @@ export type SlicerAction =
     | { type: "treat-inches"; id: string; mesh: ParsedSlicerMesh }
     | { type: "set-material"; material: VertexSliceMaterialId }
     | { type: "set-direction"; printDirection: VertexSlicePrintDirection }
+    | { type: "set-leader"; includeLeader: boolean }
     | { type: "set-wall-preset"; preset: WallPreset }
     | { type: "set-wall-loops"; wallLoops: number }
     | { type: "set-infill"; infillDensity: number }
@@ -141,6 +150,7 @@ export function slicerReducer(state: SlicerState, action: SlicerAction): SlicerS
                 ...initialSlicerState(),
                 material: state.material,
                 printDirection: state.printDirection,
+                includeLeader: state.includeLeader,
                 wallPreset: state.wallPreset,
                 wallLoops: state.wallLoops,
                 infillDensity: state.infillDensity,
@@ -205,6 +215,8 @@ export function slicerReducer(state: SlicerState, action: SlicerAction): SlicerS
                 printDirection: action.printDirection,
                 missingHighlight: state.missingHighlight === "direction" ? null : state.missingHighlight,
             });
+        case "set-leader":
+            return markOutdated({ ...state, includeLeader: action.includeLeader });
         case "set-wall-preset": {
             const loops =
                 action.preset === "reinforced"

@@ -6,6 +6,7 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { useLayoutEffect, useMemo } from "react";
 import * as THREE from "three";
 import { Button } from "@/components/ui/button";
+import { slicerLengthAxis } from "../../../shared/slicer/attach-leader";
 import type { VertexSlicePrintDirection } from "../../../shared/vertexslice/contract";
 import {
     cameraDistanceForBounds,
@@ -16,6 +17,8 @@ import {
 
 interface SlicerPreviewProps {
     mesh: ParsedSlicerMesh | null;
+    /** Bounds used for the toe marker. Defaults to the mesh, so a leader tab does not move the mark. */
+    toeBounds?: MeshBounds | null;
     printDirection: VertexSlicePrintDirection;
     onResetView: () => void;
     resetNonce: number;
@@ -32,6 +35,8 @@ function FitCamera({ bounds, resetNonce }: { bounds: MeshBounds; resetNonce: num
     const size = useThree((s) => s.size);
     const invalidate = useThree((s) => s.invalidate);
 
+    // resetNonce is a button signal, not a value the effect reads.
+    // biome-ignore lint/correctness/useExhaustiveDependencies: refit when Reset view is clicked
     useLayoutEffect(() => {
         const aspect = size.width / Math.max(size.height, 1);
         const { center, distance, viewDir } = cameraDistanceForBounds(bounds, camera.fov, aspect);
@@ -55,9 +60,11 @@ function FitCamera({ bounds, resetNonce }: { bounds: MeshBounds; resetNonce: num
 
 function MeshView({
     mesh,
+    toeBounds,
     printDirection,
 }: {
     mesh: ParsedSlicerMesh;
+    toeBounds: MeshBounds;
     printDirection: VertexSlicePrintDirection;
 }) {
     const geometry = useMemo(() => {
@@ -69,21 +76,15 @@ function MeshView({
     }, [mesh]);
 
     const { center, toePos, arrowDir } = useMemo(() => {
-        const b = mesh.bounds;
+        const b = toeBounds;
         const centerVec = new THREE.Vector3(
             (b.min[0] + b.max[0]) / 2,
             (b.min[1] + b.max[1]) / 2,
             (b.min[2] + b.max[2]) / 2,
         );
-        const axes: Array<{ axis: 0 | 1 | 2; size: number }> = [
-            { axis: 0, size: b.size[0] },
-            { axis: 1, size: b.size[1] },
-            { axis: 2, size: b.size[2] },
-        ];
-        axes.sort((a, c) => c.size - a.size);
-        const lengthAxis = axes[0].axis;
+        const lengthAxis = slicerLengthAxis(b.size);
         const toe = centerVec.clone();
-        toe.setComponent(lengthAxis, b.max[lengthAxis]);
+        toe.setComponent(lengthAxis, printDirection === "heel_first" ? b.min[lengthAxis] : b.max[lengthAxis]);
         const dir = new THREE.Vector3();
         dir.setComponent(lengthAxis, printDirection === "toe_first" ? -1 : 1);
         return {
@@ -91,7 +92,7 @@ function MeshView({
             toePos: toe,
             arrowDir: dir,
         };
-    }, [mesh, printDirection]);
+    }, [toeBounds, printDirection]);
 
     const coneQuat = useMemo(() => {
         const quat = new THREE.Quaternion();
@@ -136,7 +137,13 @@ function MeshView({
     );
 }
 
-export function SlicerPreview({ mesh, printDirection, onResetView, resetNonce }: SlicerPreviewProps) {
+export function SlicerPreview({
+    mesh,
+    toeBounds,
+    printDirection,
+    onResetView,
+    resetNonce,
+}: SlicerPreviewProps) {
     const description = mesh
         ? `Model ${formatDimensionsMm(mesh.bounds)}. Print direction ${printDirection === "toe_first" ? "toe first" : "heel first"}. Toe marker at the toe.`
         : "No model uploaded yet. The build plate is empty.";
@@ -166,7 +173,13 @@ export function SlicerPreview({ mesh, printDirection, onResetView, resetNonce }:
                     position={[0, 0, 0]}
                     rotation={[-Math.PI / 2, 0, 0]}
                 />
-                {mesh ? <MeshView mesh={mesh} printDirection={printDirection} /> : null}
+                {mesh ? (
+                    <MeshView
+                        mesh={mesh}
+                        toeBounds={toeBounds ?? mesh.bounds}
+                        printDirection={printDirection}
+                    />
+                ) : null}
                 <OrbitControls
                     makeDefault
                     enableDamping

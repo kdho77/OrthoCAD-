@@ -233,6 +233,7 @@
                 "vertex/server/src/routers/integrations/__tests__/cad-operator-design-read.test.ts",
                 "vertex/shared/admin/admin-domain.test.ts",
                 "vertex/shared/print-bridge-update.test.ts",
+                "vertex/shared/slicer/attach-leader.test.ts",
                 "vertex/shared/vertexslice/errors.test.ts",
                 "vertex/src/components/layout/SessionRecoveryDialog.test.tsx",
                 "vertex/src/components/viewer/AfoScanLandmarkLighting.test.ts",

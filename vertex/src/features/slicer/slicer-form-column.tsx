@@ -18,8 +18,8 @@ import {
     WALL_LOOPS_MIN,
 } from "../../../shared/vertexslice/contract";
 import type { FootSideTag } from "./slicer-mesh";
-import type { SlicerFileSlot, SlicerState } from "./slicer-state";
 import { SliceButtonBar } from "./slicer-slice-bar";
+import type { SlicerFileSlot, SlicerState } from "./slicer-state";
 import { FileChip, Segmented } from "./slicer-widgets";
 
 export function SlicerFormColumn({
@@ -39,6 +39,8 @@ export function SlicerFormColumn({
     onTreatInches,
     onMaterial,
     onDirection,
+    onLeader,
+    leaderMessage,
     onWallPreset,
     onToggleAdvanced,
     onWallLoops,
@@ -65,6 +67,8 @@ export function SlicerFormColumn({
     onTreatInches: (slot: SlicerFileSlot) => void;
     onMaterial: (id: import("../../../shared/vertexslice/contract").VertexSliceMaterialId) => void;
     onDirection: (printDirection: VertexSlicePrintDirection) => void;
+    onLeader: (includeLeader: boolean) => void;
+    leaderMessage: string | null;
     onWallPreset: (preset: "standard" | "reinforced") => void;
     onToggleAdvanced: () => void;
     onWallLoops: (wallLoops: number) => void;
@@ -190,6 +194,30 @@ export function SlicerFormColumn({
                         { value: "heel_first", label: "Heel first", hint: "Nozzle starts at the heel" },
                     ]}
                 />
+
+                <label className="mt-4 flex items-start gap-2 text-sm">
+                    <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 accent-primary"
+                        checked={state.includeLeader}
+                        data-testid="slicer-sacrificial-leader"
+                        onChange={(event) => onLeader(event.target.checked)}
+                    />
+                    <span>
+                        Add sacrificial leader
+                        <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">
+                            Same belt tab as a CAD export. Off leaves this file unchanged.
+                        </span>
+                    </span>
+                </label>
+                {leaderMessage ? (
+                    <p
+                        className="text-[11px] leading-snug text-amber-200"
+                        data-testid="slicer-leader-message"
+                    >
+                        {leaderMessage}
+                    </p>
+                ) : null}
 
                 <p className="mt-4 text-xs text-muted-foreground">Walls</p>
                 <div className="mt-2 grid grid-cols-2 gap-2">

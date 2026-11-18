@@ -36,6 +36,16 @@ describe("slicerReducer", () => {
         expect(state.result?.downloads[0]?.filename).toBe("insole_ApexCore_toefirst_1w.gcode");
     });
 
+    test("the sacrificial leader defaults off and marks a finished slice out of date", () => {
+        expect(initialSlicerState().includeLeader).toBe(false);
+        let state = doneState();
+        state = slicerReducer(state, { type: "set-leader", includeLeader: true });
+        expect(state.includeLeader).toBe(true);
+        expect(state.status).toBe("outdated");
+        state = slicerReducer(state, { type: "set-leader", includeLeader: false });
+        expect(state.includeLeader).toBe(false);
+    });
+
     test("download is locked until pay succeeds", () => {
         let state = doneState();
         expect(state.paymentStatus).toBe("unpaid");
