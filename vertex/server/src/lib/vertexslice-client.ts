@@ -540,8 +540,20 @@ export interface VertexSliceRequest {
     material: VertexSliceMaterialId | string;
     model: Uint8Array;
     filename?: string;
-    /** PrintRecipe hardness percent on the locked profile. Wall loops are never sent. */
+    /** PrintRecipe hardness percent on the locked profile. Wall loops are not sent unless set. */
     infillDensityPct?: number;
+    /**
+     * Self-serve /slicer only. CAD exports omit these, and the form then
+     * matches the locked PrintRecipe (no wall_loops or print_direction).
+     */
+    wallLoops?: number;
+    printDirection?: string;
+    beltInsolePlace?: boolean;
+    /**
+     * Uploaded STL/3MF. Skip manufacturing mesh prep so VertexSlice judges the
+     * file. CAD exports leave this unset and keep the prep path.
+     */
+    preserveUploadedMesh?: boolean;
     /**
      * Ref'd deadline for the materials GET, POST /v1/slice, and the G-code body.
      * Evaluated by the caller immediately before this call so download time counts.
@@ -559,7 +571,7 @@ export interface VertexSliceRequest {
 /**
  * Slice one STL on VertexSlice.
  * Sends `profile_id`, `model`, `material`, and the PrintRecipe infill percent.
- * Does not send wall loops or any other process override.
+ * Wall loops, print direction, and belt placement are sent only when the caller sets them.
  * Fails closed when the material is absent from `/v1/materials` or the slice call rejects it.
  */
 function regionsHeaderCount(response: Response): number | null {
@@ -584,7 +596,7 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
     }
     let triangles: number | null = null;
     let extentMm: [number, number, number] | null = null;
-    if (!is3mf) {
+    if (!is3mf && !request.preserveUploadedMesh) {
         let mesh = inspectManufacturingStl(bytes);
         if (mesh.problem) {
             throw new TRPCError({ code: "BAD_REQUEST", message: mesh.problem });
@@ -641,6 +653,29 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
                 });
             }
             form.append("infill_density", String(pct));
+        }
+        if (request.wallLoops != null) {
+            const walls = request.wallLoops;
+            if (!Number.isInteger(walls) || walls < 1 || walls > 6) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message: `Wall loops ${walls} are outside 1–6`,
+                });
+            }
+            form.append("wall_loops", String(walls));
+        }
+        if (request.printDirection != null && request.printDirection.trim() !== "") {
+            const direction = request.printDirection.trim();
+            if (direction !== "toe_first" && direction !== "heel_first") {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message: `Unknown print direction ${direction}`,
+                });
+            }
+            form.append("print_direction", direction);
+        }
+        if (request.beltInsolePlace != null) {
+            form.append("belt_insole_place", request.beltInsolePlace ? "true" : "false");
         }
         if (is3mf) {
             form.append(

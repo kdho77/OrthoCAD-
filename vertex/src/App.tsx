@@ -20,18 +20,20 @@ import { ClientFilePage } from "@/features/clients/ClientFilePage";
 import { ClientListPage } from "@/features/clients/ClientListPage";
 import { CLIENT_LIST_PATH } from "@/features/clients/client-list-nav";
 import { EditorChrome, useDesignRoute } from "@/features/clients/EditorChrome";
-import { usePersistDesignWorkflow } from "@/features/clients/usePersistDesignWorkflow";
 import { InactivityGuard } from "@/features/clients/InactivityGuard";
 import { parseClinicalPath } from "@/features/clients/routes";
+import { usePersistDesignWorkflow } from "@/features/clients/usePersistDesignWorkflow";
 import { exportDesign } from "@/features/exports/export-service";
 import { MillTableView } from "@/features/mill/MillTableView";
 import { ProductionPage } from "@/features/production/ProductionPage";
+import { SlicerApp } from "@/features/slicer/SlicerApp";
 import { useAuthBootstrap } from "@/hooks/useAuthBootstrap";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useViewportMode } from "@/hooks/useViewportMode";
 import { designNeedsDefaultStockResolution } from "@/lib/geometry/base-asset";
 import { applyViewerWallFlagFromSearch } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { stockDebug, stockGlbLog } from "@/lib/geometry/stock-debug";
+import { isSlicerPath } from "@/lib/navigate";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { isApiConfigured } from "@/lib/trpc";
 import { useAuthStore } from "@/stores/auth-store";
@@ -48,6 +50,16 @@ export default function App() {
     useEffect(() => {
         document.title = clinicalDocumentTitle();
     }, [pathname]);
+
+    // /slicer is a standalone pay-per-file page. It must not mount CAD chrome,
+    // the design store, or the stock-base loader. Sign-in is required only to pay.
+    if (isSlicerPath(pathname)) {
+        return (
+            <ErrorBoundary>
+                <SlicerApp />
+            </ErrorBoundary>
+        );
+    }
 
     if (authLoading) {
         return (
