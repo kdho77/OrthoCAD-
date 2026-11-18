@@ -258,20 +258,19 @@ describe("CNC SAMPLE_Top fixtures (Idaho two-pocket)", () => {
                     `acrossWidthGap ${measured.acrossWidthGapMm.toFixed(3)} euclideanGap ${euclidean.toFixed(3)}`,
             );
             expect(measured.clockwise).toBe(true);
-            // SAMPLE_Top is ~272×92 mm against Windows' ~295×100 mm, so the
-            // homothety is ~56 laps. The toe stays at the stretched pitch. The
-            // heel tip is capped near 1.98 mm: the natural ~2.47 mm leaves the
-            // 10 mm ball ~0.40 mm high in the cup.
-            expect(measured.laps).toBeGreaterThan(52);
-            expect(measured.laps).toBeLessThan(60);
+            // SAMPLE_Top is ~272×92 mm. The lap count is the heel grid, so the
+            // whole spiral (toe included) stays near 1.98 mm instead of the
+            // natural toe pitch of ~2.44 mm. Founder 2026-11-17: repin this pitch.
+            expect(measured.laps).toBeGreaterThan(66);
+            expect(measured.laps).toBeLessThan(76);
             expect(measured.lengthMm / 1000).toBeGreaterThan(16);
             expect(measured.lengthMm / 1000).toBeLessThan(23);
             expect(measured.heelPitchMm).toBeGreaterThan(1.9);
             expect(measured.heelPitchMm).toBeLessThan(2.05);
-            expect(measured.widthPitchMm).toBeGreaterThan(0.65);
-            expect(measured.widthPitchMm).toBeLessThan(0.85);
-            expect(measured.endPitchMm).toBeGreaterThan(2.3);
-            expect(measured.endPitchMm).toBeLessThan(2.6);
+            expect(measured.widthPitchMm).toBeGreaterThan(0.5);
+            expect(measured.widthPitchMm).toBeLessThan(0.7);
+            expect(measured.endPitchMm).toBeGreaterThan(1.85);
+            expect(measured.endPitchMm).toBeLessThan(2.05);
             expect(acrossWidthGapMm(plan.samples, wp.outline)).toBeLessThanOrEqual(0.75);
         }
         const g1Count = (text: string) => text.split("\n").filter((line) => line.startsWith("G1")).length;

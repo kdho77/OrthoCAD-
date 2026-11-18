@@ -118,11 +118,13 @@ function lapCount(rx: number, ry: number, step: number): number {
 }
 
 /**
- * Heel-tip radial pitch. The homothety on SAMPLE_Top already matches the toe
- * (~2.44 mm) and Windows (~2.55 mm) at ~2.47 mm. A 10 mm ball cannot seat the
- * heel cup there (excess max ~0.40 mm, P95 ~0.116 mm). 1.98 mm is the coarsest
- * uniform tip grid that stays inside the stock gate; the next step, ~2.01 mm,
- * leaves cells over 0.25 mm.
+ * Radial pitch of the whole center spiral. The geometric-mean homothety on
+ * SAMPLE_Top matches the toe (~2.44 mm) and Windows (~2.55 mm) at ~2.47 mm.
+ * A 10 mm ball cannot seat the heel cup there (excess max ~0.40 mm, P95
+ * ~0.116 mm). 1.98 mm is the coarsest uniform tip grid that stays inside the
+ * stock gate; the next step, ~2.01 mm, leaves cells over 0.25 mm. The lap
+ * count is raised to this pitch over the whole insole. A heel-only extra arc
+ * would return straight across the rearfoot.
  */
 const HEEL_PITCH_MM = 1.98;
 /** Heel tip, as a fraction of the length from min X. Stays clear of the width line. */
@@ -212,8 +214,10 @@ function splitPieces(loop: Point[], step: number): Point[][] {
 /**
  * Clockwise homothety from the bounding-box center out to `loop`.
  * Scale grows linearly with angle, so the pitch at the toe and heel is wider
- * than the pitch across the width. Heel-tip angles use their own radial grid
- * when {@link HEEL_PITCH_MM} is finer than that homothety.
+ * than the pitch across the width. The lap count is at least the heel-tip
+ * grid ({@link HEEL_PITCH_MM}), so that pitch covers the whole insole.
+ * One scale per revolution: a second heel-only arc would return straight
+ * across the width.
  */
 function emitHomothety(
     loop: Point[],
@@ -254,6 +258,9 @@ function emitHomothety(
     for (let j = 0; j < hLen; j++) rHeel = Math.max(rHeel, ray[hStart + j] ?? 0);
     const natural = rHeel / Math.max(1, laps);
     const nHeel = natural <= HEEL_PITCH_MM + 1e-6 ? laps : Math.max(laps, Math.round(rHeel / HEEL_PITCH_MM));
+    // The heel grid is the whole spiral. Extra heel-only arcs used to jump
+    // straight across the rearfoot between the two radii.
+    const nLaps = Math.max(laps, nHeel);
 
     const emit = (i: number, s: number, clock: number) => {
         const b = boundary[i]!;
@@ -269,26 +276,11 @@ function emitHomothety(
     pushSample(out, center, 0, component, true);
     let clock = 0;
     const tick = 1 / nAng;
-    let heelCursor = 0;
-    for (let lap = 0; lap < laps; lap++) {
-        const s1 = (lap + 1) / laps;
-        const pending: number[] = [];
-        while (heelCursor < nHeel && (heelCursor + 1) / nHeel <= s1 + 1e-9) {
-            pending.push((heelCursor + 1) / nHeel);
-            heelCursor++;
-        }
+    for (let lap = 0; lap < nLaps; lap++) {
+        const s = (lap + 1) / nLaps;
         for (let k = 0; k < nAng; k++) {
-            if (hLen > 0 && k === hStart) {
-                for (const s of pending) {
-                    for (let j = 0; j < hLen; j++) {
-                        clock += tick;
-                        emit(hStart + j, s, clock);
-                    }
-                }
-            }
-            if (hLen > 0 && k >= hStart && k < hStart + hLen) continue;
             clock += tick;
-            emit(k, s1, clock);
+            emit(k, s, clock);
         }
     }
     return { center, ring: cw };
@@ -297,7 +289,8 @@ function emitHomothety(
 /**
  * One clockwise center-out spiral per component, from that component's
  * bounding-box center. A waist that offsets into two loops is cut as two
- * spirals. The lap count is round(sqrt(rx*ry) / stepover), not ceil.
+ * spirals. The lap count is round(sqrt(rx*ry) / stepover), not ceil, and is
+ * raised to the heel-tip pitch when that grid is finer.
  */
 export function planCenterSpiral(outline: Point[], profile: MillingProfile, toolType: ToolType): SpiralPlan {
     const step = stepoverMm(profile, toolType);
