@@ -4,14 +4,16 @@
  * Sacrificial belt-printer leader, applied to the manufacturing STL before VertexSlice.
  *
  * Founder-locked (Kendon 2026-11-17; the neck is a scissor tab, and the joint has to
- * be a strong bond with no weak layers):
+ * be a strong bond with no weak layers). Kendon 2026-11-17 5:16 PM, after the Jabbour
+ * right print: where the neck ends on the toe it feathers flush into the insole top.
+ * No proud pad and no ridge or step.
  * - bridge 15 wide × 3 thick, 1 mm scissor span past the toe tip
  * - the embed walks back from the toe tip, one sample step at a time, until the
  *   insole's bottom-to-top thickness across the full 15 mm is at least 3 mm
- * - the walk stops at 12 mm; if that station is still thinner than 3 mm, the
- *   deepest 2 mm of the bridge is held at a 3 mm height (a pad; its height is reported)
- * - over the rest of the toe the bridge top is the local insole top, capped at 3 mm,
- *   so the joint fills the shell and does not stand up as a pad
+ * - the walk stops at 12 mm; a cap that is still thinner than 3 mm stays buried
+ *   on the local insole top (it is not held up at a 3 mm pad)
+ * - over the whole embed the bridge top is the local insole top, capped at 3 mm,
+ *   so the neck is inside the shell and the surface is the insole's own surface
  * - the bridge bottom stays on Z = 0; past the tip the section rises to the full 3 mm
  * - trapezoid block 20 deep × 10 high, width 20 → 30, on Z = 0
  * - block sits at the insole front (the 1 mm span) so the toe cannot fold under
@@ -19,6 +21,9 @@
  * - toe = the thinner max-X end in the OrthoCAD frame; abort if that end is not thinner
  *
  * Triangles are appended. The embed intersects the insole, so the mesh is not a boolean union.
+ * The blend is sampled on a copy of the shell and written only as that suffix. The insole
+ * triangles stay the input mesh, so an outline or forefoot-width measurement of the shell
+ * cannot pick up the neck.
  */
 
 export const LEADER_BRIDGE_WIDTH_MM = 15;
@@ -30,11 +35,6 @@ export const LEADER_BRIDGE_EMBED_STEP_MM = 0.25;
 export const LEADER_BRIDGE_EMBED_TARGET_MM = 3;
 /** The embed never reaches further than this into the insole, measured from the toe tip. */
 export const LEADER_BRIDGE_EMBED_MAX_MM = 12;
-/**
- * When the 12 mm cap is still thinner than the target, hold this deepest span at the
- * full 3 mm section. The rest of the toe stays clipped to the insole top.
- */
-export const LEADER_BRIDGE_EMBED_PAD_SPAN_MM = 2;
 /** Bridge continues this far past the block's near face so the joint is not face-touch only. */
 export const LEADER_BRIDGE_BLOCK_OVERLAP_MM = 2;
 /**
@@ -109,8 +109,9 @@ export interface LeaderEmbedPlan {
      */
     thicknessMm: number;
     /**
-     * How far the 3 mm floor stands above the lowest insole top under the deep end.
-     * 0 when the shell across the width already reaches the target thickness.
+     * How far the bridge top stands above the insole. The embed is flush
+     * (Kendon 2026-11-17 5:16 PM), so this is 0. A toe thinner than 3 mm stays
+     * on the local top instead of being padded up.
      */
     padMm: number;
 }
@@ -122,10 +123,16 @@ export function leaderEmbedPlan(stl: ArrayBuffer): LeaderEmbedPlan {
     return planEmbed(tris, frame.toeTip, embedSampleYs(frame.yCenter));
 }
 
+function cloneTri(t: Tri): Tri {
+    return { ...t };
+}
+
 export function applySacrificialLeaderBlock(stl: ArrayBuffer): ArrayBuffer {
-    const tris = readBinaryStl(stl);
-    const leader = leaderTrianglesForMesh(tris);
-    return writeBinaryStl(tris.concat(leader));
+    const body = readBinaryStl(stl);
+    // The neck is built from a copy and concatenated. body is written unchanged,
+    // so the blend cannot move an insole vertex the outline is measured from.
+    const leader = leaderTrianglesForMesh(body.map(cloneTri));
+    return writeBinaryStl(body.concat(leader));
 }
 
 export function translateBinaryStlY(stl: ArrayBuffer, dy: number): ArrayBuffer {
@@ -228,9 +235,8 @@ function leaderTrianglesForMesh(tris: Tri[]): Tri[] {
     const bridgeX1 = blockX0 + LEADER_BRIDGE_BLOCK_OVERLAP_MM;
     const half = LEADER_BRIDGE_WIDTH_MM / 2;
     const ys = [yCenter - half, yCenter, yCenter + half];
-    const padThroughX = plan.padMm > 0 ? bridgeX0 + LEADER_BRIDGE_EMBED_PAD_SPAN_MM : null;
-    const xs = bridgeXStations(bridgeX0, xEdge, toeTip, bridgeX1, padThroughX != null);
-    const zTop = xs.map((x) => bridgeTopRow(tris, x, ys, toeTip, padThroughX));
+    const xs = bridgeXStations(bridgeX0, xEdge, toeTip, bridgeX1);
+    const zTop = xs.map((x) => bridgeTopRow(tris, x, ys, toeTip));
     const bridge = heightFieldSlab(xs, ys, zTop);
     const block = trapezoidTriangles(
         blockX0,
@@ -253,32 +259,20 @@ function leaderTrianglesForMesh(tris: Tri[]): Tri[] {
  * Six strictly increasing X stations: deep embed, outline or mid-span, near tip,
  * toe tip, end of the short rise, and the overlap end. On a curved toe the second
  * station is the side-edge outline when that outline sits inside the embed, so the
- * lip meets that surface. When the deep end is padded, the second station is the
- * end of the 2 mm pad and the third drops back to the clipped shell immediately,
- * so the pad does not run out to the feather tip. The rise sits inside the scissor span.
+ * lip meets that surface. Heights at these stations follow the insole top, so the
+ * embed has no pad step. The rise sits inside the scissor span.
  */
 function bridgeXStations(
     bridgeX0: number,
     xEdge: number,
     toeTip: number,
     bridgeX1: number,
-    pad: boolean,
 ): number[] {
     const riseX = toeTip + LEADER_BRIDGE_RISE_MM;
     let mid: number;
     let nearTip: number;
     const span = toeTip - bridgeX0;
-    if (pad) {
-        const padEnd = bridgeX0 + LEADER_BRIDGE_EMBED_PAD_SPAN_MM;
-        const drop = padEnd + LEADER_BRIDGE_EMBED_STEP_MM;
-        if (drop < toeTip - 0.15) {
-            mid = padEnd;
-            nearTip = drop;
-        } else {
-            mid = bridgeX0 + span / 3;
-            nearTip = bridgeX0 + (2 * span) / 3;
-        }
-    } else if (xEdge > bridgeX0 + 0.2 && xEdge < toeTip - 0.2) {
+    if (xEdge > bridgeX0 + 0.2 && xEdge < toeTip - 0.2) {
         mid = xEdge;
         const back = Math.min((toeTip - xEdge) * 0.5, 0.6);
         nearTip = toeTip - back;
@@ -327,36 +321,20 @@ function planEmbed(tris: Tri[], toeTip: number, ys: number[]): LeaderEmbedPlan {
     );
     let depthMm = step;
     let thicknessMm = 0;
-    let solidTop = Number.POSITIVE_INFINITY;
-    let anyHit = false;
-    let reached = false;
     for (let i = 1; i <= steps; i++) {
         const depth = i * step;
-        const sample = thicknessAcross(window, toeTip - depth, ys);
+        const minMm = thicknessAcross(window, toeTip - depth, ys);
         depthMm = depth;
-        thicknessMm = sample.minMm;
-        solidTop = sample.solidTop;
-        anyHit = sample.anyHit;
-        if (sample.minMm + 1e-4 >= LEADER_BRIDGE_EMBED_TARGET_MM) {
-            reached = true;
-            break;
-        }
+        thicknessMm = minMm;
+        if (minMm + 1e-4 >= LEADER_BRIDGE_EMBED_TARGET_MM) break;
     }
-    const padMm = reached
-        ? 0
-        : anyHit && Number.isFinite(solidTop)
-          ? Math.max(0, LEADER_BRIDGE_THICKNESS_MM - solidTop)
-          : LEADER_BRIDGE_THICKNESS_MM;
-    return { depthMm, thicknessMm, padMm };
+    // Flush embed: the bridge top is the insole top, so the proud height is 0
+    // even when the cap is still thinner than 3 mm.
+    return { depthMm, thicknessMm, padMm: 0 };
 }
 
-function thicknessAcross(
-    tris: Tri[],
-    x: number,
-    ys: number[],
-): { minMm: number; solidTop: number; anyHit: boolean } {
+function thicknessAcross(tris: Tri[], x: number, ys: number[]): number {
     let minMm = Number.POSITIVE_INFINITY;
-    let solidTop = Number.POSITIVE_INFINITY;
     let anyHit = false;
     for (const y of ys) {
         const col = columnZ(tris, x, y);
@@ -366,10 +344,9 @@ function thicknessAcross(
         }
         anyHit = true;
         minMm = Math.min(minMm, col.top - col.bottom);
-        solidTop = Math.min(solidTop, col.top);
     }
-    if (!anyHit) return { minMm: 0, solidTop: Number.POSITIVE_INFINITY, anyHit: false };
-    return { minMm, solidTop, anyHit: true };
+    if (!anyHit) return 0;
+    return minMm;
 }
 
 /** Bottom and top of the shell on a vertical line. A single graze is not a thickness. */
@@ -393,24 +370,14 @@ function columnZ(tris: Tri[], x: number, y: number): { top: number; bottom: numb
 }
 
 /**
- * Over the toe, the bridge top is the local insole top capped at 3 mm (full local
- * thickness when the shell is thinner than the neck, buried when it is thicker).
- * A sample that misses the shell takes the lowest hit on that station so the
- * span cannot tent above the footprint. Past the tip the section is the full 3 mm.
- * Inside the pad span the top is held at least 3 mm.
+ * Over the whole embed the bridge top is the local insole top capped at 3 mm.
+ * It is never raised above that surface, so the neck feathers flush and the
+ * embedded portion stays inside the shell. A sample that misses the shell takes
+ * the lowest hit on that station so the span cannot tent above the footprint.
+ * Past the tip the section is the full 3 mm.
  */
-function bridgeTopRow(
-    tris: Tri[],
-    x: number,
-    ys: number[],
-    toeTip: number,
-    padThroughX: number | null,
-): number[] {
-    const row = clippedTopRow(tris, x, ys, toeTip);
-    if (padThroughX != null && x <= padThroughX + 1e-4) {
-        return row.map((z) => Math.max(z, LEADER_BRIDGE_THICKNESS_MM));
-    }
-    return row;
+function bridgeTopRow(tris: Tri[], x: number, ys: number[], toeTip: number): number[] {
+    return clippedTopRow(tris, x, ys, toeTip);
 }
 
 function clippedTopRow(tris: Tri[], x: number, ys: number[], toeTip: number): number[] {
