@@ -90,7 +90,7 @@ const PLATEAU_HALF_MIN_MM = 0.5;
  * Material left under the deepest sink. The whole insole is at least
  * depth + this, then the sink is cut from that top. There is no local mound.
  */
-export const FOREFOOT_THICKNESS_CLEARANCE_MM = 0.5;
+export const FOREFOOT_THICKNESS_CLEARANCE_MM = 1.0;
 /** Kept for the overlap-shoulder test. Thickness no longer blends over this length. */
 export const BLEND_LEN_MM = 25;
 /** Wall notch fades this far below the styloid floor. */
@@ -1200,7 +1200,7 @@ function prepare(ctx: SinkSurfaceContext): PreparedSink[] {
 }
 
 export interface ForefootThicknessPlan {
-    /** Deepest active sink + 0.5 mm. The whole insole uses max(set thickness, A). */
+    /** Deepest active sink + 1.0 mm. The whole insole uses max(set thickness, A). */
     A: number;
     /** No proximal blend. The shell is this thick everywhere, so both stations are 0. */
     xFull: number;
@@ -1218,7 +1218,7 @@ export function deepestActiveSinkDepthMm(ctx: SinkSurfaceContext): number {
 
 /**
  * Insole thickness the mesh should build. The Setup slider value is `setThicknessMm`
- * and is not overwritten. A sink raises the whole shell to depth + 0.5 mm when
+ * and is not overwritten. A sink raises the whole shell to depth + 1.0 mm when
  * that is thicker than the slider. No active sink leaves the slider unchanged.
  */
 export function effectiveInsoleThicknessMm(setThicknessMm: number, ctx: SinkSurfaceContext): number {
@@ -1899,7 +1899,7 @@ function raiseInboardOfGuardedRim(
 /**
  * Where two tapers cross, the hard max is a ridge. Lower only the shoulder,
  * in passes, so a vertex cannot fall away from a neighbour that stays put.
- * Plateau and rim vertices stay, which keeps the floor at depth + 0.5 mm
+ * Plateau and rim vertices stay, which keeps the floor at depth + 1.0 mm
  * and keeps the crest on the inside top.
  */
 function relaxOverlapShoulder(

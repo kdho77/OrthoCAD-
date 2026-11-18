@@ -507,7 +507,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
 
     // Uniform mode uses the slider thickness. Zonal mode samples t(u) and the
     // Setup slider adds its delta beside that sample (see solidTopLiftMm).
-    // A sink raises the same term by max(0, deepest + 0.5 − slider) everywhere.
+    // A sink raises the same term by max(0, deepest + 1.0 − slider) everywhere.
     // No active sink leaves the term bit-identical.
     const shellCtx = resolveShellThicknessContext(params);
     const shellRaise = effectiveInsoleThicknessMm(thicknessMm, params) - thicknessMm;
