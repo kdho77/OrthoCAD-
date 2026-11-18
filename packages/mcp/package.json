@@ -12,7 +12,7 @@
         "orthocad-mcp": "./dist/cli.js"
     },
     "scripts": {
-        "build": "tsc -p tsconfig.json",
+        "build": "node ./scripts/sync-export-filename.mjs && tsc -p tsconfig.json",
         "start": "node dist/cli.js",
         "dev": "tsx src/cli.ts"
     },

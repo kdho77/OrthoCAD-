@@ -17,7 +17,7 @@ import {
     exportSideSuffix,
     parsePatientNameForExport,
     physicalSideLabel,
-} from "../../../../vertex/shared/export-filename.js";
+} from "../shared/export-filename.js";
 import { VO_ATTACH_TEXT_MAX, voAttachArgumentError } from "./vo-attach-contract.js";
 
 export const FORBIDDEN_ORDER_STATUSES = [
