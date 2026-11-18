@@ -21,6 +21,9 @@
  * - toe = the thinner max-X end in the OrthoCAD frame; abort if that end is not thinner
  *
  * Triangles are appended. The embed intersects the insole, so the mesh is not a boolean union.
+ * The blend is sampled on a copy of the shell and written only as that suffix. The insole
+ * triangles stay the input mesh, so an outline or forefoot-width measurement of the shell
+ * cannot pick up the neck.
  */
 
 export const LEADER_BRIDGE_WIDTH_MM = 15;
@@ -120,10 +123,16 @@ export function leaderEmbedPlan(stl: ArrayBuffer): LeaderEmbedPlan {
     return planEmbed(tris, frame.toeTip, embedSampleYs(frame.yCenter));
 }
 
+function cloneTri(t: Tri): Tri {
+    return { ...t };
+}
+
 export function applySacrificialLeaderBlock(stl: ArrayBuffer): ArrayBuffer {
-    const tris = readBinaryStl(stl);
-    const leader = leaderTrianglesForMesh(tris);
-    return writeBinaryStl(tris.concat(leader));
+    const body = readBinaryStl(stl);
+    // The neck is built from a copy and concatenated. body is written unchanged,
+    // so the blend cannot move an insole vertex the outline is measured from.
+    const leader = leaderTrianglesForMesh(body.map(cloneTri));
+    return writeBinaryStl(body.concat(leader));
 }
 
 export function translateBinaryStlY(stl: ArrayBuffer, dy: number): ArrayBuffer {

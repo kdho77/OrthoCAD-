@@ -674,6 +674,21 @@ describe("sacrificial leader block", () => {
         }
     });
 
+    test("the flush blend is appended and the insole vertices stay the input mesh", () => {
+        const raw = toeAtMaxX(2.21);
+        const n = binaryStlTriangleCount(raw);
+        const withLeader = applySacrificialLeaderBlock(raw);
+        expect(binaryStlTriangleCount(withLeader)).toBe(n + LEADER_SUFFIX_TRIANGLE_COUNT);
+        const before = new DataView(raw);
+        const after = new DataView(withLeader);
+        for (let t = 0; t < n; t++) {
+            const base = 84 + t * 50 + 12;
+            for (let b = 0; b < 36; b += 4) {
+                expect(after.getFloat32(base + b, true)).toBe(before.getFloat32(base + b, true));
+            }
+        }
+    });
+
     test("aborts when the max-X end is the thick end", () => {
         const thickToe = writeBox(180, -20, 0, 200, 20, 30);
         const thinHeel = writeBox(0, -10, 0, 12, 10, 3);
