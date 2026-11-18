@@ -134,6 +134,12 @@ jobs:
             - name: Assert server entry boots under plain Node ESM
               run: node vertex/scripts/assert-server-esm-boot.mjs
 
+            - name: Build OrthoCAD MCP package
+              run: |
+                  npm ci --prefix packages/mcp
+                  npm run build --prefix packages/mcp
+                  test -f packages/mcp/dist/cli.js
+
             - name: Require unit shards and isolated PostgreSQL acceptance
               run: |
                   if [ "${{ needs.unit-tests.result }}" != "success" ] || [ "${{ needs.isolated-postgres-acceptance.result }}" != "success" ]; then

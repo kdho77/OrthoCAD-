@@ -1,10 +1,3 @@
-import {
-    buildExportFilename,
-    canonicalExportMaterialName,
-    type ExportFilenameBase,
-    exportSideSuffix,
-    parsePatientNameForExport,
-} from "../../../../vertex/shared/export-filename.js";
 import type { IntegrationClient } from "../clients/integration-client.js";
 import { IntegrationHttpError } from "../clients/integration-client.js";
 import type { ManufacturingClient } from "../clients/manufacturing-client.js";
@@ -12,6 +5,13 @@ import type { OrthocadMcpConfig } from "../config.js";
 import { requireCadOperatorKey } from "../config.js";
 import { buildDesignExportedPayload } from "../payload/design-exported-payload.js";
 import { buildVoAttachFilesHandoff, DOGFOOD_HELD_ID_PREFIXES } from "../payload/vo-attach-files.js";
+import {
+    buildExportFilename,
+    canonicalExportMaterialName,
+    type ExportFilenameBase,
+    exportSideSuffix,
+    parsePatientNameForExport,
+} from "../shared/export-filename.js";
 import {
     callerPrintMaterial,
     callerPrintPreset,
