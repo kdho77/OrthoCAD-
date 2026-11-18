@@ -11,7 +11,6 @@ import {
     LEADER_BLOCK_WIDTH_OUTER_MM,
     LEADER_BRIDGE_BLOCK_OVERLAP_MM,
     LEADER_BRIDGE_EMBED_MAX_MM,
-    LEADER_BRIDGE_EMBED_PAD_SPAN_MM,
     LEADER_BRIDGE_EMBED_STEP_MM,
     LEADER_BRIDGE_EMBED_TARGET_MM,
     LEADER_BRIDGE_LENGTH_MM,
@@ -28,6 +27,23 @@ import {
 function maxZNear(stl: ArrayBuffer, x: number, yAbs: number): number {
     const row = verticesNear(stl, x).filter((v) => Math.abs(Math.abs(v[1]) - yAbs) < 0.02);
     return Math.max(...row.map((v) => v[2]));
+}
+
+/** Bridge top samples along X at |y| = yAbs (centerline when yAbs is 0). Bottom vertices are dropped. */
+function topProfile(
+    stl: ArrayBuffer,
+    bodyTriangles: number,
+    yAbs: number,
+): Array<{ x: number; z: number }> {
+    const buckets = new Map<number, number>();
+    for (const v of suffixVertices(stl, bodyTriangles)) {
+        if (v[2] <= 0.02) continue;
+        if (Math.abs(Math.abs(v[1]) - yAbs) >= 0.02) continue;
+        const key = Math.round(v[0] * 1e4) / 1e4;
+        const prev = buckets.get(key);
+        buckets.set(key, prev === undefined ? v[2] : Math.max(prev, v[2]));
+    }
+    return [...buckets.entries()].map(([x, z]) => ({ x, z })).sort((a, b) => a.x - b.x);
 }
 
 /** Open edges in the leader suffix. A closed bridge plus a closed block is zero. */
@@ -351,7 +367,8 @@ describe("sacrificial leader block", () => {
         expect(LEADER_BRIDGE_EMBED_TARGET_MM).toBe(3);
         expect(LEADER_BRIDGE_EMBED_TARGET_MM).toBe(LEADER_BRIDGE_THICKNESS_MM);
         expect(LEADER_BRIDGE_EMBED_MAX_MM).toBe(12);
-        expect(LEADER_BRIDGE_EMBED_PAD_SPAN_MM).toBe(2);
+        // The 2 mm proud pad was removed (Kendon 2026-11-17 5:16 PM). The embed
+        // top is the insole top, so there is no pad span left to lock.
         expect(LEADER_BRIDGE_BLOCK_OVERLAP_MM).toBe(2);
         expect(LEADER_BRIDGE_RISE_MM).toBeLessThan(LEADER_BRIDGE_LENGTH_MM);
         expect(LEADER_BLOCK_WIDTH_INNER_MM).toBe(20);
@@ -440,10 +457,12 @@ describe("sacrificial leader block", () => {
         // The beak is narrower than 15 mm until its base, so the footprint stays empty inside the cap.
         expect(plan.depthMm).toBe(LEADER_BRIDGE_EMBED_MAX_MM);
         expect(plan.thicknessMm).toBe(0);
-        expect(plan.padMm).toBeGreaterThan(0);
+        expect(plan.padMm).toBe(0);
         const bridgeStart = before.maxX - plan.depthMm;
         const embedded = verticesNear(withLeader, bridgeStart);
-        expect(embedded.some((v) => Math.abs(v[2] - LEADER_BRIDGE_THICKNESS_MM) < 1e-4)).toBe(true);
+        // Centerline shell at 12 mm back is 2.4 mm. The bridge follows it instead of a 3 mm pad.
+        expect(Math.max(...embedded.map((v) => v[2]))).toBeCloseTo(2.4, 2);
+        expect(embedded.some((v) => Math.abs(v[2] - LEADER_BRIDGE_THICKNESS_MM) < 1e-4)).toBe(false);
         expect(embedded.some((v) => Math.abs(v[2]) < 1e-4)).toBe(true);
         const blockX0 = before.maxX + LEADER_BRIDGE_LENGTH_MM;
         const overlapEnd = blockX0 + LEADER_BRIDGE_BLOCK_OVERLAP_MM;
@@ -517,7 +536,7 @@ describe("sacrificial leader block", () => {
         );
     });
 
-    test("a toe that stays under 3 mm caps the embed at 12 mm and pads only the deep 2 mm", () => {
+    test("a toe that stays under 3 mm caps the embed at 12 mm and feathers flush", () => {
         const topZ = 1.2;
         const raw = toeAtMaxX(topZ);
         const before = binaryStlBounds(raw);
@@ -525,38 +544,33 @@ describe("sacrificial leader block", () => {
         const withLeader = applySacrificialLeaderBlock(raw);
         expect(plan.depthMm).toBe(LEADER_BRIDGE_EMBED_MAX_MM);
         expect(plan.thicknessMm).toBeCloseTo(topZ, 3);
-        expect(plan.padMm).toBeCloseTo(LEADER_BRIDGE_THICKNESS_MM - topZ, 3);
+        expect(plan.padMm).toBe(0);
         const bridgeStart = before.maxX - plan.depthMm;
-        const padEnd = bridgeStart + LEADER_BRIDGE_EMBED_PAD_SPAN_MM;
-        const dropX = padEnd + LEADER_BRIDGE_EMBED_STEP_MM;
         const riseX = before.maxX + LEADER_BRIDGE_RISE_MM;
         const overlapEnd = before.maxX + LEADER_BRIDGE_LENGTH_MM + LEADER_BRIDGE_BLOCK_OVERLAP_MM;
-        for (const x of [bridgeStart, padEnd]) {
-            const row = verticesNear(withLeader, x);
-            expect(
-                row.some((v) => Math.abs(v[2]) < 1e-4),
-                `bottom at x=${x}`,
-            ).toBe(true);
-            expect(maxZNear(withLeader, x, LEADER_BRIDGE_WIDTH_MM / 2), `pad height at x=${x}`).toBeCloseTo(
-                LEADER_BRIDGE_THICKNESS_MM,
-                3,
+        const bodyTris = binaryStlTriangleCount(raw);
+        for (const yAbs of [0, LEADER_BRIDGE_WIDTH_MM / 2]) {
+            const embed = topProfile(withLeader, bodyTris, yAbs).filter(
+                (p) => p.x >= bridgeStart - 1e-3 && p.x <= before.maxX + 1e-3,
             );
-            const width = Math.max(...row.map((v) => v[1])) - Math.min(...row.map((v) => v[1]));
-            expect(width, `width at x=${x}`).toBeCloseTo(LEADER_BRIDGE_WIDTH_MM, 2);
+            expect(embed.length, `embed samples at |y|=${yAbs}`).toBeGreaterThan(2);
+            for (let i = 0; i < embed.length; i++) {
+                const p = embed[i];
+                if (!p) continue;
+                expect(p.z, `proud at x=${p.x}`).toBeLessThanOrEqual(topZ + 0.05);
+                expect(p.z, `flush height at x=${p.x}`).toBeCloseTo(topZ, 3);
+                const prev = embed[i - 1];
+                if (!prev) continue;
+                expect(p.z, `step from x=${prev.x} to x=${p.x}`).toBeGreaterThanOrEqual(prev.z - 1e-4);
+                expect(Math.abs(p.z - prev.z), `jump from x=${prev.x}`).toBeLessThanOrEqual(0.05);
+            }
         }
-        for (const x of [dropX, before.maxX]) {
-            const tops = verticesNear(withLeader, x).filter(
-                (v) => Math.abs(v[1]) <= LEADER_BRIDGE_WIDTH_MM / 2 + 0.02 && v[2] > 0.01,
-            );
-            expect(tops.length, `tops at x=${x}`).toBeGreaterThan(0);
-            for (const v of tops)
-                expect(v[2], `pad past the deep end at x=${x}`).toBeLessThanOrEqual(topZ + 1e-3);
-            expect(Math.max(...tops.map((v) => v[2])), `clipped height at x=${x}`).toBeCloseTo(topZ, 3);
-            expect(
-                verticesNear(withLeader, x).some((v) => Math.abs(v[2]) < 1e-4),
-                `bottom at x=${x}`,
-            ).toBe(true);
-        }
+        expect(maxZNear(withLeader, bridgeStart, LEADER_BRIDGE_WIDTH_MM / 2)).toBeCloseTo(topZ, 3);
+        expect(maxZNear(withLeader, before.maxX, LEADER_BRIDGE_WIDTH_MM / 2)).toBeCloseTo(topZ, 3);
+        expect(
+            verticesNear(withLeader, bridgeStart).some((v) => Math.abs(v[2]) < 1e-4),
+            "bottom on Z=0",
+        ).toBe(true);
         expect(maxZNear(withLeader, riseX, LEADER_BRIDGE_WIDTH_MM / 2)).toBeCloseTo(
             LEADER_BRIDGE_THICKNESS_MM,
             3,
@@ -565,7 +579,99 @@ describe("sacrificial leader block", () => {
             LEADER_BRIDGE_THICKNESS_MM,
             3,
         );
-        expect(openEdgeCount(withLeader, binaryStlTriangleCount(raw))).toBe(0);
+        expect(openEdgeCount(withLeader, bodyTris)).toBe(0);
+        expect(binaryStlTriangleCount(withLeader) - bodyTris).toBe(LEADER_SUFFIX_TRIANGLE_COUNT);
+    });
+
+    test("Jabbour and Men's 9 toes at 2.21 mm feather flush with no ridge", () => {
+        // Jabbour / Men's 9 hit the 12 mm cap with the toe 2.21 mm thick, which used
+        // to stand a 0.79 mm pad. The flat shell is that section: its bridge top is
+        // constant, so it is continuous and monotone non-decreasing out to the tip.
+        // The taper is the same cap with the toe thinning to 1.01 mm. The bridge
+        // follows that fall, so it stays flush instead of holding a higher plateau.
+        const flatTop = 2.21;
+        const tipTop = 1.01;
+        const slope = 0.1;
+        const cases = [
+            {
+                name: "mens-9",
+                raw: toeAtMaxX(flatTop),
+                localTop: (_x: number) => flatTop,
+                monotone: true,
+            },
+            {
+                name: "jabbour",
+                raw: concatStls([
+                    writeBox(0, -30, 0, 20, 30, 40),
+                    writeSlopedToe(150, 200, -20, 20, tipTop, slope),
+                ]),
+                localTop: (x: number) => tipTop + (200 - x) * slope,
+                monotone: false,
+            },
+        ];
+        for (const specimen of cases) {
+            const before = binaryStlBounds(specimen.raw);
+            const plan = leaderEmbedPlan(specimen.raw);
+            const withLeader = applySacrificialLeaderBlock(specimen.raw);
+            expect(plan.depthMm, specimen.name).toBe(LEADER_BRIDGE_EMBED_MAX_MM);
+            expect(plan.thicknessMm, specimen.name).toBeCloseTo(flatTop, 2);
+            expect(plan.padMm, specimen.name).toBe(0);
+            const bridgeStart = before.maxX - plan.depthMm;
+            const bodyTris = binaryStlTriangleCount(specimen.raw);
+            let maxProud = 0;
+            for (const yAbs of [0, LEADER_BRIDGE_WIDTH_MM / 2]) {
+                const embed = topProfile(withLeader, bodyTris, yAbs).filter(
+                    (p) => p.x >= bridgeStart - 1e-3 && p.x <= before.maxX + 1e-3,
+                );
+                expect(embed.length, `${specimen.name} samples at |y|=${yAbs}`).toBeGreaterThan(2);
+                for (let i = 0; i < embed.length; i++) {
+                    const p = embed[i];
+                    if (!p) continue;
+                    const shell = specimen.localTop(p.x);
+                    const proud = p.z - shell;
+                    maxProud = Math.max(maxProud, proud);
+                    expect(proud, `${specimen.name} proud at x=${p.x}`).toBeLessThanOrEqual(0.05);
+                    expect(p.z, `${specimen.name} height at x=${p.x}`).toBeCloseTo(
+                        Math.min(shell, LEADER_BRIDGE_THICKNESS_MM),
+                        2,
+                    );
+                    const prev = embed[i - 1];
+                    if (!prev) continue;
+                    const clippedDz =
+                        Math.min(specimen.localTop(p.x), LEADER_BRIDGE_THICKNESS_MM) -
+                        Math.min(specimen.localTop(prev.x), LEADER_BRIDGE_THICKNESS_MM);
+                    expect(
+                        Math.abs(p.z - prev.z - clippedDz),
+                        `${specimen.name} step from x=${prev.x} to x=${p.x}`,
+                    ).toBeLessThanOrEqual(0.05);
+                    if (specimen.monotone) {
+                        expect(p.z, `${specimen.name} drop at x=${p.x}`).toBeGreaterThanOrEqual(prev.z - 1e-4);
+                    }
+                }
+            }
+            expect(maxProud, `${specimen.name} max proud`).toBeLessThanOrEqual(0.05);
+            const bridgeTris = LEADER_SUFFIX_TRIANGLE_COUNT - 12;
+            expect(facetNormalZ(withLeader, bodyTris), `${specimen.name} bridge normal`).toBeGreaterThan(-0.9);
+            expect(
+                facetNormalZ(withLeader, bodyTris + bridgeTris),
+                `${specimen.name} block normal`,
+            ).toBeGreaterThan(-0.9);
+            expect(leaderVolume(withLeader, bodyTris, bodyTris + bridgeTris), specimen.name).toBeGreaterThan(0);
+            expect(
+                leaderVolume(withLeader, bodyTris + bridgeTris, bodyTris + LEADER_SUFFIX_TRIANGLE_COUNT),
+                specimen.name,
+            ).toBeGreaterThan(0);
+            // splitLeader peels this same 80-triangle suffix.
+            expect(binaryStlTriangleCount(withLeader) - bodyTris, specimen.name).toBe(80);
+            expect(openEdgeCount(withLeader, bodyTris), specimen.name).toBe(0);
+            const riseX = before.maxX + LEADER_BRIDGE_RISE_MM;
+            const blockFace = before.maxX + LEADER_BRIDGE_LENGTH_MM;
+            const overlapEnd = blockFace + LEADER_BRIDGE_BLOCK_OVERLAP_MM;
+            expect(maxZNear(withLeader, riseX, 0), `${specimen.name} rise`).toBeCloseTo(3, 2);
+            expect(maxZNear(withLeader, overlapEnd, 0), `${specimen.name} overlap`).toBeCloseTo(3, 2);
+            expect(blockFace, `${specimen.name} block face inside the 3 mm span`).toBeGreaterThan(riseX);
+            expect(blockFace, specimen.name).toBeLessThan(overlapEnd);
+        }
     });
 
     test("aborts when the max-X end is the thick end", () => {
