@@ -648,7 +648,7 @@ describe("proximal metatarsal shift", () => {
         expect(SINK_PROFILES.mpj4.u).toBeCloseTo(0.665, 5);
         expect(SINK_PROFILES.mpj5.u).toBeCloseTo(0.64, 5);
         expect(SINK_PROFILES.styloid.u).toBeCloseTo(0.42, 5);
-        expect(FOREFOOT_THICKNESS_CLEARANCE_MM).toBe(0.5);
+        expect(FOREFOOT_THICKNESS_CLEARANCE_MM).toBe(1.0);
         expect(BLEND_LEN_MM).toBe(25);
 
         const rows: Array<Record<string, number | string>> = [];
@@ -692,6 +692,10 @@ describe("proximal metatarsal shift", () => {
     test("rim and crest match, the floor holds, and the lateral wall stays at 3 mm", async () => {
         const rows: Array<Record<string, number | string>> = [];
         const worstByWall: Record<string, number> = { straight: 0, round: 0, hybrid: 0 };
+        const maxSinks = allMax();
+        const maxSinkShellMm =
+            Math.max(...maxSinks.map((s) => SINK_PROFILES[s.kind].maxDepthMm)) +
+            FOREFOOT_THICKNESS_CLEARANCE_MM;
         for (const side of ["left", "right"] as const) {
             const raw = pair[side];
             for (const wall of ["straight", "round", "hybrid"] as const) {
@@ -699,9 +703,9 @@ describe("proximal metatarsal shift", () => {
                 const plain = await reconstructProceduralPreview(srcPlain, {
                     wallStyle: wall,
                     side,
-                    sourceField: baseModifierField(defaultDesign(), side, 4.5),
+                    sourceField: baseModifierField(defaultDesign(), side, maxSinkShellMm),
                     composedTop: true,
-                    thicknessMm: 4.5,
+                    thicknessMm: maxSinkShellMm,
                     stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
                 });
                 srcPlain.dispose();
@@ -709,7 +713,7 @@ describe("proximal metatarsal shift", () => {
                 const sunk = await reconstructProceduralPreview(srcSunk, {
                     wallStyle: wall,
                     side,
-                    sinks: allMax(),
+                    sinks: maxSinks,
                 });
                 srcSunk.dispose();
                 const ud = sunk.geometry.userData as { topVertexCount?: number };
@@ -727,7 +731,7 @@ describe("proximal metatarsal shift", () => {
                     sunk.geometry,
                     wall,
                     null,
-                    sinkTaper(side, allMax(), length, box.maxY - box.minY, sign, outline),
+                    sinkTaper(side, maxSinks, length, box.maxY - box.minY, sign, outline),
                 );
                 const a = plain.geometry.getAttribute("position");
                 const b = sunk.geometry.getAttribute("position");

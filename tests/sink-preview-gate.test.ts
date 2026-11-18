@@ -18,6 +18,8 @@ import {
 import {
     footOutlineFromGeometry,
     meshYToAnatomical,
+    effectiveInsoleThicknessMm,
+    FOREFOOT_THICKNESS_CLEARANCE_MM,
     SINK_DEFAULT_DEPTH_MM,
     SINK_KIND_ORDER,
     SINK_PROFILES,
@@ -120,25 +122,26 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         expect(hashes.round?.stl).toBe(STL_SHA256.round);
         expect(hashes.hybrid?.stl).toBe(STL_SHA256.hybrid);
 
+        const mpj1ShellMm = MPJ1.depthMm + FOREFOOT_THICKNESS_CLEARANCE_MM;
         const sunk = await reconstructProceduralPreview(raw, {
             wallStyle: "straight",
             side: "left",
             sinks: [MPJ1],
         });
-        const raised45 = await reconstructProceduralPreview(raw, {
+        const raisedMpj1Shell = await reconstructProceduralPreview(raw, {
             wallStyle: "straight",
             side: "left",
-            sourceField: baseModifierField(defaultDesign(), "left", 4.5),
+            sourceField: baseModifierField(defaultDesign(), "left", mpj1ShellMm),
             composedTop: true,
-            thicknessMm: 4.5,
+            thicknessMm: mpj1ShellMm,
             stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
         });
         const composedRaised = await reconstructProceduralPreview(raw, {
             wallStyle: "straight",
             side: "left",
-            sourceField: sliderField(4.5),
+            sourceField: sliderField(mpj1ShellMm),
             composedTop: true,
-            thicknessMm: 4.5,
+            thicknessMm: mpj1ShellMm,
             stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
         });
         const composedSunk = await reconstructProceduralPreview(raw, {
@@ -147,11 +150,11 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
             sourceField: field([MPJ1]),
             composedTop: true,
         });
-        const analytic = compareSolids(raised45.geometry, sunk.geometry);
+        const analytic = compareSolids(raisedMpj1Shell.geometry, sunk.geometry);
         const composed = compareSolids(composedRaised.geometry, composedSunk.geometry);
         console.log("[SINK-F1]", JSON.stringify({ analytic, composed, hashes }));
         expect(hashes.straight?.count).toBe(37924);
-        // The 4 mm sink is the 4.5 mm slider shell, then a 4 mm cut. No local mound.
+        // The 4 mm sink is the (4 + clearance) mm slider shell, then a 4 mm cut. No local mound.
         expect(analytic.vertexCount).toBe(analytic.baseVertexCount);
         expect(analytic.outlineMm).toBeLessThanOrEqual(0.02);
         expect(analytic.rearfootDzMm).toBeLessThanOrEqual(0.05);
@@ -168,18 +171,25 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
             kind,
             depthMm: SINK_DEFAULT_DEPTH_MM,
         }));
+        const defaultSinkContext = {
+            side: "left" as const,
+            lengthMm: 260,
+            widthMm: 95,
+            sinks: nonRkw,
+        };
+        const defaultSinkShellMm = effectiveInsoleThicknessMm(2.5, defaultSinkContext);
         const floors: Record<string, Record<string, { dz: number; weight: number }>> = {};
-        const raised25: Record<string, BufferGeometry> = {};
+        const raisedDefaultSinkShell: Record<string, BufferGeometry> = {};
         for (const wallStyle of ["straight", "round", "hybrid"] as const) {
             const shell = await reconstructProceduralPreview(raw, {
                 wallStyle,
                 side: "left",
-                sourceField: baseModifierField(defaultDesign(), "left", 2.5),
+                sourceField: baseModifierField(defaultDesign(), "left", defaultSinkShellMm),
                 composedTop: true,
-                thicknessMm: 2.5,
+                thicknessMm: defaultSinkShellMm,
                 stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
             });
-            raised25[wallStyle] = shell.geometry;
+            raisedDefaultSinkShell[wallStyle] = shell.geometry;
             const all = await reconstructProceduralPreview(raw, {
                 wallStyle,
                 side: "left",
@@ -210,7 +220,7 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
             side: "left",
             sinks: withRkw,
         });
-        const whileOn = deepestFloor(raised25.straight!, suppressed.geometry, withRkw);
+        const whileOn = deepestFloor(raisedDefaultSinkShell.straight!, suppressed.geometry, withRkw);
         expect(whileOn.mpj1, "RKW suppresses the MPJ1 floor hit").toBeUndefined();
         expect(whileOn.rkw, "RKW still cuts").toBeTruthy();
         expect(Math.abs(whileOn.rkw!.dz - -SINK_DEFAULT_DEPTH_MM)).toBeLessThanOrEqual(0.05);
@@ -220,7 +230,7 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
             side: "left",
             sinks: restoredSinks,
         });
-        const after = deepestFloor(raised25.straight!, restored.geometry, restoredSinks);
+        const after = deepestFloor(raisedDefaultSinkShell.straight!, restored.geometry, restoredSinks);
         expect(after.mpj1, "removing RKW restores the MPJ1 floor hit").toBeTruthy();
         suppressed.geometry.dispose();
         restored.geometry.dispose();
@@ -230,12 +240,13 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
             side: "left",
             sinks: [{ id: "styloid", kind: "styloid", depthMm: SINK_DEFAULT_DEPTH_MM }],
         });
-        const raised35 = await reconstructProceduralPreview(raw, {
+        const styloid3ShellMm = 3 + FOREFOOT_THICKNESS_CLEARANCE_MM;
+        const raisedStyloid3Shell = await reconstructProceduralPreview(raw, {
             wallStyle: "straight",
             side: "left",
-            sourceField: baseModifierField(defaultDesign(), "left", 3.5),
+            sourceField: baseModifierField(defaultDesign(), "left", styloid3ShellMm),
             composedTop: true,
-            thicknessMm: 3.5,
+            thicknessMm: styloid3ShellMm,
             stockThicknessMm: BASE_REFERENCE_THICKNESS_MM,
         });
         const styloid3 = await reconstructProceduralPreview(raw, {
@@ -243,8 +254,8 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
             side: "left",
             sinks: [{ id: "styloid", kind: "styloid", depthMm: 3 }],
         });
-        const drop2 = wallTopDropMm(raised25.straight!, styloid2.geometry);
-        const drop3 = wallTopDropMm(raised35.geometry, styloid3.geometry);
+        const drop2 = wallTopDropMm(raisedDefaultSinkShell.straight!, styloid2.geometry);
+        const drop3 = wallTopDropMm(raisedStyloid3Shell.geometry, styloid3.geometry);
         const angled = await reconstructProceduralPreview(raw, {
             wallStyle: "straight",
             side: "left",
@@ -259,14 +270,14 @@ describe("SAMPLE_Top M9 left preview sink gates", () => {
         expect(wallAngleDeg).toBeLessThanOrEqual(60);
 
         for (const geo of Object.values(plains)) geo.dispose();
-        for (const geo of Object.values(raised25)) geo.dispose();
+        for (const geo of Object.values(raisedDefaultSinkShell)) geo.dispose();
         sunk.geometry.dispose();
-        raised45.geometry.dispose();
+        raisedMpj1Shell.geometry.dispose();
         composedRaised.geometry.dispose();
         composedSunk.geometry.dispose();
         styloid2.geometry.dispose();
         styloid3.geometry.dispose();
-        raised35.geometry.dispose();
+        raisedStyloid3Shell.geometry.dispose();
         angled.geometry.dispose();
         raw.dispose();
     }, 900_000);
