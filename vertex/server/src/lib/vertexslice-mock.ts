@@ -23,7 +23,13 @@ import {
     validateWallLoops,
 } from "../../../shared/vertexslice/contract.js";
 import { VertexSliceHttpError } from "../../../shared/vertexslice/errors.js";
-import type { VertexSliceClient } from "./vertexslice-client.js";
+
+export interface VertexSliceClient {
+    health(): Promise<VertexSliceHealthResponse>;
+    materials(): Promise<VertexSliceMaterialsResponse>;
+    profiles(): Promise<VertexSliceProfilesResponse>;
+    slice(input: VertexSliceSliceInput, init?: { signal?: AbortSignal }): Promise<VertexSliceSliceSuccess>;
+}
 
 export type MockSlicerFault = "timeout" | "5xx" | "busy" | "bad_mesh";
 

@@ -3,11 +3,7 @@
 
 import { Check, Copy, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-    formatSlicerPriceUsd,
-    isSlicerPayMock,
-    type SlicerPaymentStatus,
-} from "@/features/slicer/slicer-pay";
+import type { SlicerPaymentStatus } from "@/features/slicer/slicer-pay";
 import { cn } from "@/lib/utils";
 import type { SlicerPublicError } from "../../../shared/vertexslice/errors";
 import { formatPrintTime } from "../../../shared/vertexslice/gcode-stats";
@@ -19,6 +15,8 @@ export function ResultPanel({
     result,
     paymentStatus,
     paymentError,
+    priceLabel,
+    payMock,
     copied,
     onCopy,
     onRetry,
@@ -31,6 +29,8 @@ export function ResultPanel({
     result: SliceResult | null;
     paymentStatus: SlicerPaymentStatus;
     paymentError: string | null;
+    priceLabel: string | null;
+    payMock: boolean;
     copied: boolean;
     onCopy: (id: string) => void;
     onRetry: () => void;
@@ -100,8 +100,10 @@ export function ResultPanel({
                 <div className="mt-4 rounded-md border border-border bg-background p-3">
                     <p className="text-sm font-medium">Pay &amp; download G-code</p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                        {formatSlicerPriceUsd(result.downloads.length)} · download unlocks after payment.
-                        {isSlicerPayMock() ? " Stripe is not wired — this preview uses mock checkout." : ""}
+                        {priceLabel ?? "Loading price…"} · download unlocks after payment.
+                        {payMock
+                            ? " Card checkout is not configured on this server, so pay uses a mock receipt."
+                            : ""}
                     </p>
                     {paymentError ? <p className="mt-2 text-xs text-destructive">{paymentError}</p> : null}
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -120,8 +122,10 @@ export function ResultPanel({
                                         <Loader2 className="h-4 w-4 animate-spin" />
                                         Paying…
                                     </>
+                                ) : priceLabel ? (
+                                    `Pay ${priceLabel} & download`
                                 ) : (
-                                    `Pay ${formatSlicerPriceUsd(result.downloads.length)} & download`
+                                    "Pay & download"
                                 )}
                             </Button>
                         )}

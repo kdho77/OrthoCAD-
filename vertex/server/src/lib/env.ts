@@ -47,4 +47,9 @@ export function validateServerEnv(): void {
     if (process.env.CORS_ORIGIN === "*" && process.env.NODE_ENV === "production") {
         console.warn("[vertex] CORS_ORIGIN is * in production — set to your SPA origin");
     }
+    if (!process.env.STRIPE_SECRET_KEY?.trim()) {
+        console.warn(
+            "[vertex] STRIPE_SECRET_KEY unset — /slicer pay uses a mock receipt. Set the same secret VertexOrders uses for Checkout.",
+        );
+    }
 }

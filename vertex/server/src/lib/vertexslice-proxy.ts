@@ -1,6 +1,7 @@
 // Part of the Chili3d Project, under the AGPL-3.0 License.
 // See LICENSE file in the project root for full license information.
 
+import { TRPCError } from "@trpc/server";
 import {
     DEFAULT_PROFILE_ID,
     SLICE_FORM_FIELDS,
@@ -11,13 +12,24 @@ import { mapVertexSliceError, VertexSliceHttpError } from "../../../shared/verte
 import { slicerDownloadFilename } from "../../../shared/vertexslice/filename.js";
 import { parseGcodeStats } from "../../../shared/vertexslice/gcode-stats.js";
 import { createFetchContext } from "../context.js";
-import { createVertexSliceClient, type VertexSliceClient } from "./vertexslice-client.js";
-import { createMockVertexSliceClient } from "./vertexslice-mock.js";
+import {
+    createSlicerCheckout,
+    liveSlicerStripe,
+    publicPayError,
+    type SlicerPayEnv,
+    type SlicerStripe,
+    sealSliceFiles,
+    slicerUnitAmountCents,
+    stripeConfigured,
+    unlockSlicerDownload,
+} from "./slicer-pay.js";
+import { sliceWithVertexSlice } from "./vertexslice-client.js";
+import { createMockVertexSliceClient, type VertexSliceClient } from "./vertexslice-mock.js";
 
 export const SLICER_REQUEST_ID_HEADER = "X-Request-Id";
 
-export interface SlicerProxyEnv {
-    VERTEXSLICE_URL?: string;
+export interface SlicerProxyEnv extends SlicerPayEnv {
+    VERTEXSLICE_SLICER_URL?: string;
     VERTEXSLICE_API_KEY?: string;
     SLICER_MOCK?: string;
 }
@@ -25,8 +37,87 @@ export interface SlicerProxyEnv {
 export function shouldUseMockSlicer(env: SlicerProxyEnv = process.env): boolean {
     const mockFlag = (env.SLICER_MOCK ?? "").trim();
     if (mockFlag === "1" || mockFlag.toLowerCase() === "true") return true;
-    const url = (env.VERTEXSLICE_URL ?? "").trim();
-    return url.length === 0;
+    const url = (env.VERTEXSLICE_SLICER_URL ?? "").trim();
+    const key = (env.VERTEXSLICE_API_KEY ?? "").trim();
+    return url.length === 0 || key.length === 0;
+}
+
+async function modelToBytes(model: VertexSliceSliceInput["model"]): Promise<Uint8Array> {
+    if (model instanceof Uint8Array) return model;
+    if (model instanceof ArrayBuffer) return new Uint8Array(model);
+    if (typeof Blob !== "undefined" && model instanceof Blob) {
+        return new Uint8Array(await model.arrayBuffer());
+    }
+    return new Uint8Array();
+}
+
+function mapLiveSliceError(err: unknown): VertexSliceHttpError {
+    if (err instanceof VertexSliceHttpError) return err;
+    if (err instanceof TRPCError) {
+        const status = err.code === "BAD_REQUEST" ? 400 : err.code === "UNAUTHORIZED" ? 401 : 502;
+        return new VertexSliceHttpError(status, err.message);
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.startsWith("VertexSlice timed out")) return new VertexSliceHttpError(504, message);
+    return new VertexSliceHttpError(502, message);
+}
+
+/** Live path. Uses the export VertexSlice client and the same server env. */
+export function createLiveVertexSliceClient(): VertexSliceClient {
+    return {
+        async health() {
+            throw new VertexSliceHttpError(501, "Unsupported");
+        },
+        async materials() {
+            throw new VertexSliceHttpError(501, "Unsupported");
+        },
+        async profiles() {
+            throw new VertexSliceHttpError(501, "Unsupported");
+        },
+        async slice(input, init) {
+            if (init?.signal?.aborted) throw new VertexSliceHttpError(504, "Slice cancelled.");
+            const model = await modelToBytes(input.model);
+            const infillRaw =
+                input.infillDensity == null || String(input.infillDensity).trim() === ""
+                    ? undefined
+                    : Number(String(input.infillDensity).replace(/%$/, ""));
+            const wallRaw =
+                input.wallLoops == null || String(input.wallLoops).trim() === ""
+                    ? undefined
+                    : Number(input.wallLoops);
+            try {
+                const gcode = await sliceWithVertexSlice({
+                    profileId: input.profileId || DEFAULT_PROFILE_ID,
+                    material: input.material || "apex_core",
+                    model,
+                    filename: input.filename,
+                    infillDensityPct:
+                        infillRaw !== undefined && Number.isInteger(infillRaw) ? infillRaw : undefined,
+                    wallLoops: wallRaw !== undefined && Number.isInteger(wallRaw) ? wallRaw : undefined,
+                    printDirection:
+                        input.printDirection != null && String(input.printDirection).trim() !== ""
+                            ? String(input.printDirection)
+                            : undefined,
+                    beltInsolePlace: input.beltInsolePlace,
+                    preserveUploadedMesh: true,
+                });
+                return {
+                    gcode,
+                    status: 200,
+                    headers: {
+                        sliceSeconds: "",
+                        peakRssKb: "",
+                        profileId: input.profileId || DEFAULT_PROFILE_ID,
+                        material: String(input.material || "apex_core"),
+                        ...(wallRaw != null ? { wallLoops: String(wallRaw) } : {}),
+                        ...(input.printDirection ? { printDirection: String(input.printDirection) } : {}),
+                    },
+                };
+            } catch (err) {
+                throw mapLiveSliceError(err);
+            }
+        },
+    };
 }
 
 export function createSlicerBackend(env: SlicerProxyEnv = process.env): {
@@ -36,13 +127,7 @@ export function createSlicerBackend(env: SlicerProxyEnv = process.env): {
     if (shouldUseMockSlicer(env)) {
         return { client: createMockVertexSliceClient(), mock: true };
     }
-    return {
-        client: createVertexSliceClient({
-            baseUrl: env.VERTEXSLICE_URL as string,
-            apiKey: (env.VERTEXSLICE_API_KEY ?? "").trim(),
-        }),
-        mock: false,
-    };
+    return { client: createLiveVertexSliceClient(), mock: false };
 }
 
 function requestId(): string {
@@ -129,19 +214,100 @@ async function parseSliceInput(request: Request): Promise<{
     };
 }
 
-async function authorize(request: Request): Promise<{ id: string; role: string } | null> {
+async function authorize(request: Request): Promise<{ id: string; email: string; role: string } | null> {
     const ctx = await createFetchContext({
         req: request,
         resHeaders: new Headers(),
     } as unknown as Parameters<typeof createFetchContext>[0]);
-    if (ctx.user) return { id: ctx.user.id, role: ctx.user.role };
-    // Pay-per-file: slice is allowed without an account. Nothing is persisted.
+    if (ctx.user?.id && ctx.user.email) {
+        return { id: ctx.user.id, email: ctx.user.email, role: ctx.user.role };
+    }
+    // Pay-per-file: slice is allowed without an account. Pay is not.
     return null;
+}
+
+function payEnv(env: SlicerProxyEnv | undefined): SlicerProxyEnv {
+    return env ?? process.env;
+}
+
+function resolveStripe(env: SlicerProxyEnv, stripe?: SlicerStripe): SlicerStripe | null {
+    if (!stripeConfigured(env)) return null;
+    if (stripe) return stripe;
+    return liveSlicerStripe(env);
+}
+
+function checkoutReturnUrls(request: Request): { successUrl: string; cancelUrl: string } | { error: string } {
+    const headerOrigin = request.headers.get("origin");
+    const fallback = (() => {
+        try {
+            return new URL(request.url).origin;
+        } catch {
+            return "";
+        }
+    })();
+    const origin = headerOrigin || fallback;
+    if (!origin) return { error: "Missing Origin" };
+    let parsed: URL;
+    try {
+        parsed = new URL(origin);
+    } catch {
+        return { error: "Bad Origin" };
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return { error: "Bad Origin" };
+    return {
+        successUrl: `${parsed.origin}/slicer/checkout-return?session_id={CHECKOUT_SESSION_ID}`,
+        cancelUrl: `${parsed.origin}/slicer?checkout=cancelled`,
+    };
+}
+
+async function handlePayAction(
+    request: Request,
+    action: "checkout" | "download",
+    id: string,
+    env: SlicerProxyEnv,
+    stripe: SlicerStripe | null,
+): Promise<Response> {
+    const user = await authorize(request).catch(() => null);
+    if (!user) {
+        return jsonResponse({ ok: false, error: "Sign in to pay." }, 401, id, request);
+    }
+    let body: Record<string, unknown> = {};
+    try {
+        body = (await request.json()) as Record<string, unknown>;
+    } catch {
+        return jsonResponse({ ok: false, error: "Expected JSON." }, 400, id, request);
+    }
+
+    if (action === "checkout") {
+        const seals = Array.isArray(body.seals)
+            ? body.seals.filter((item): item is string => typeof item === "string")
+            : [];
+        const urls = checkoutReturnUrls(request);
+        if ("error" in urls) {
+            return jsonResponse({ ok: false, error: urls.error }, 400, id, request);
+        }
+        const result = await createSlicerCheckout({
+            stripe,
+            user,
+            seals,
+            successUrl: urls.successUrl,
+            cancelUrl: urls.cancelUrl,
+            env,
+        });
+        if (!result.ok) return jsonResponse(result, 400, id, request);
+        return jsonResponse(result, 200, id, request);
+    }
+
+    const sealed = typeof body.sealed === "string" ? body.sealed : "";
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+    const result = await unlockSlicerDownload({ stripe, user, sealed, sessionId, env });
+    if (!result.ok) return jsonResponse(result, 402, id, request);
+    return jsonResponse({ ok: true, files: result.files }, 200, id, request);
 }
 
 export async function handleSlicerRequest(
     request: Request,
-    deps?: { client?: VertexSliceClient; env?: SlicerProxyEnv },
+    deps?: { client?: VertexSliceClient; env?: SlicerProxyEnv; stripe?: SlicerStripe },
 ): Promise<Response> {
     const id = request.headers.get(SLICER_REQUEST_ID_HEADER) || requestId();
     const origin = request.headers.get("origin");
@@ -151,8 +317,32 @@ export async function handleSlicerRequest(
     }
 
     if (request.method === "GET") {
-        const mock = shouldUseMockSlicer(deps?.env ?? process.env);
-        return jsonResponse({ ok: true, mock, service: "orthocad-vertexslice-proxy" }, 200, id, request);
+        const env = payEnv(deps?.env);
+        const mock = shouldUseMockSlicer(env);
+        let unitAmountCents: number;
+        try {
+            unitAmountCents = slicerUnitAmountCents(env);
+        } catch (err) {
+            return jsonResponse(
+                { ok: false, error: publicPayError(err, env.STRIPE_SECRET_KEY) },
+                500,
+                id,
+                request,
+            );
+        }
+        return jsonResponse(
+            {
+                ok: true,
+                mock,
+                payMock: !stripeConfigured(env),
+                service: "orthocad-vertexslice-proxy",
+                unitAmountCents,
+                priceUsdPerFile: unitAmountCents / 100,
+            },
+            200,
+            id,
+            request,
+        );
     }
 
     if (request.method !== "POST") {
@@ -172,13 +362,27 @@ export async function handleSlicerRequest(
         );
     }
 
+    const env = payEnv(deps?.env);
+    const action = new URL(request.url).searchParams.get("action");
+    if (action === "checkout" || action === "download") {
+        try {
+            return await handlePayAction(request, action, id, env, resolveStripe(env, deps?.stripe));
+        } catch (err) {
+            return jsonResponse(
+                { ok: false, error: publicPayError(err, env.STRIPE_SECRET_KEY) },
+                500,
+                id,
+                request,
+            );
+        }
+    }
+
     try {
         await authorize(request);
     } catch {
         // Anonymous pay-per-file slice still proceeds; nothing is persisted.
     }
 
-    const env = deps?.env ?? process.env;
     const backend = deps?.client
         ? { client: deps.client, mock: shouldUseMockSlicer(env) }
         : createSlicerBackend(env);
@@ -206,18 +410,20 @@ export async function handleSlicerRequest(
             printDirection: printDirection === "heel_first" ? "heel_first" : "toe_first",
             wallLoops: Number.isFinite(wallLoops) ? wallLoops : 1,
         });
+        const stats = parseGcodeStats(result.gcode);
+        const sealed = sealSliceFiles([{ filename, gcode: result.gcode }], env);
 
         return jsonResponse(
             {
                 ok: true,
                 mock: backend.mock,
-                gcode: result.gcode,
+                sealed,
                 headers: result.headers,
-                stats: parseGcodeStats(result.gcode),
+                stats,
                 filename,
                 requestId: id,
                 toolpaths: null,
-                layers: parseGcodeStats(result.gcode).layers,
+                layers: stats.layers,
             },
             200,
             id,

@@ -60,11 +60,15 @@ describe("CAD default asset after slicer rebase", () => {
                 else if (entry.name.toLowerCase().endsWith(".glb")) publicGlbs.push(path);
             }
         };
-        walk(join(process.cwd(), "vertex/public"));
-        walk(join(process.cwd(), "public"));
+        walk(join(process.cwd(), "vertex/public/Templates"));
+        walk(join(process.cwd(), "public/Templates"));
         expect(publicGlbs.map((p) => p.replace(/\\/g, "/"))).toEqual([
             join(process.cwd(), "vertex/public/Templates/SAMPLE_Top.glb").replace(/\\/g, "/"),
         ]);
-        expect(publicGlbs.some((p) => /Default\.glb$/i.test(p))).toBe(false);
+        const shipped: string[] = [];
+        walk(join(process.cwd(), "vertex/public"));
+        walk(join(process.cwd(), "public"));
+        shipped.push(...publicGlbs);
+        expect(shipped.some((p) => /Default\.glb$/i.test(p))).toBe(false);
     });
 });

@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 import { LogIn, LogOut } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,12 @@ export function SlicerShell({ children }: { children: ReactNode }) {
     const [password, setPassword] = useState(DEV_SUPER_ADMIN.password);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+
+    useEffect(() => {
+        const open = () => setLoginOpen(true);
+        window.addEventListener("orthocad-slicer-sign-in", open);
+        return () => window.removeEventListener("orthocad-slicer-sign-in", open);
+    }, []);
 
     const signIn = async () => {
         const supabase = getSupabase();
@@ -58,9 +64,7 @@ export function SlicerShell({ children }: { children: ReactNode }) {
                                 className="flex h-7 w-7 items-center justify-center rounded-full bg-secondary text-xs font-medium"
                                 title={user?.email ?? "Account"}
                             >
-                                {user?.fullName?.[0]?.toUpperCase() ??
-                                    user?.email?.[0]?.toUpperCase() ??
-                                    "?"}
+                                {user?.fullName?.[0]?.toUpperCase() ?? user?.email?.[0]?.toUpperCase() ?? "?"}
                             </div>
                             {supabaseOn ? (
                                 <Button
@@ -87,7 +91,7 @@ export function SlicerShell({ children }: { children: ReactNode }) {
                         <DialogTitle>Sign in</DialogTitle>
                     </DialogHeader>
                     <p className="mb-3 text-xs text-muted-foreground">
-                        Optional. The file still lives only in this session.
+                        Sign in to pay and download. The file still lives only in this session.
                     </p>
                     <form
                         className="space-y-3"
@@ -118,7 +122,7 @@ export function SlicerShell({ children }: { children: ReactNode }) {
                     <p className="mt-3 text-center text-[11px] text-muted-foreground">
                         {isLocalDevServer()
                             ? `Dev: ${DEV_SUPER_ADMIN.email}`
-                            : "Account is optional for this pay-per-file slicer."}
+                            : "Sign in to pay. Slicing does not require an account."}
                     </p>
                 </DialogContent>
             </Dialog>

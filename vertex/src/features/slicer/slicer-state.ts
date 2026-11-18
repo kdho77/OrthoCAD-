@@ -11,7 +11,7 @@ import {
 } from "../../../shared/vertexslice/contract";
 import type { SlicerPublicError } from "../../../shared/vertexslice/errors";
 import type { GcodeStats } from "../../../shared/vertexslice/gcode-stats";
-import { makeInsoleDemoMesh, type FootSideTag, type ParsedSlicerMesh } from "./slicer-mesh";
+import { type FootSideTag, makeInsoleDemoMesh, type ParsedSlicerMesh } from "./slicer-mesh";
 import type { SlicerPaymentStatus } from "./slicer-pay";
 
 export type SlicerUiStatus = "empty" | "uploading" | "validating" | "slicing" | "error" | "done" | "outdated";
@@ -30,7 +30,9 @@ export interface SlicerFileSlot {
 }
 
 export interface SliceDownload {
-    gcode: string;
+    /** Present only for the in-page demo fixture. Real slices keep G-code sealed until paid. */
+    gcode?: string;
+    sealed?: string;
     filename: string;
 }
 
@@ -311,11 +313,9 @@ const DEMO_STATS: GcodeStats = {
 export function demoSlicerState(kind: DemoSlicerState, fault?: string | null): SlicerState {
     const base = initialSlicerState();
     const meshy = demoFile({
-        file: new File(
-            [new Uint8Array([0])],
-            "Extrusion_FlattenHeel_HolePattern_Left.stl",
-            { type: "model/stl" },
-        ),
+        file: new File([new Uint8Array([0])], "Extrusion_FlattenHeel_HolePattern_Left.stl", {
+            type: "model/stl",
+        }),
         mesh: makeInsoleDemoMesh(),
         progress: 100,
     });

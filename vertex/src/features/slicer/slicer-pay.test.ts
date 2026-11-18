@@ -2,33 +2,19 @@
 // See LICENSE file in the project root for full license information.
 
 import { describe, expect, test } from "@rstest/core";
-import {
-    canDownloadSlicerGcode,
-    chargeSlicerExport,
-    formatSlicerPriceUsd,
-    isSlicerPayMock,
-    slicerPriceUsd,
-} from "./slicer-pay";
+import { canDownloadSlicerGcode, formatSlicerPriceLabel, formatUsdFromCents } from "./slicer-pay";
 
-describe("slicer pay", () => {
-    test("prices one file or an L/R pair", () => {
-        expect(slicerPriceUsd(1)).toBe(8);
-        expect(slicerPriceUsd(2)).toBe(16);
-        expect(formatSlicerPriceUsd(1)).toBe("$8.00");
+describe("slicer pay display", () => {
+    test("formats the server price for one file or an L/R pair", () => {
+        expect(formatUsdFromCents(800)).toBe("$8.00");
+        expect(formatSlicerPriceLabel(800, 1)).toBe("$8.00");
+        expect(formatSlicerPriceLabel(800, 2)).toBe("$16.00");
     });
 
-    test("mock checkout is on until Stripe is wired", () => {
-        expect(isSlicerPayMock()).toBe(true);
-    });
-
-    test("chargeSlicerExport resolves a mock payment id", async () => {
-        const result = await chargeSlicerExport({ fileCount: 1 });
-        expect(result.ok).toBe(true);
-        if (result.ok) {
-            expect(result.mock).toBe(true);
-            expect(result.paymentId.startsWith("mock_")).toBe(true);
-        }
+    test("download stays locked until the server confirms payment", () => {
         expect(canDownloadSlicerGcode("unpaid")).toBe(false);
+        expect(canDownloadSlicerGcode("paying")).toBe(false);
+        expect(canDownloadSlicerGcode("failed")).toBe(false);
         expect(canDownloadSlicerGcode("paid")).toBe(true);
     });
 });

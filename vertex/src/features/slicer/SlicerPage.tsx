@@ -2,14 +2,20 @@
 // See LICENSE file in the project root for full license information.
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { canDownloadSlicerGcode, chargeSlicerExport } from "@/features/slicer/slicer-pay";
+import { canDownloadSlicerGcode, formatSlicerPriceLabel } from "@/features/slicer/slicer-pay";
+import { useAuthStore } from "@/stores/auth-store";
 import type { VertexSliceMaterialId } from "../../../shared/vertexslice/contract";
 import { slicerDownloadFilename } from "../../../shared/vertexslice/filename";
-import { sumGcodeStats, type GcodeStats } from "../../../shared/vertexslice/gcode-stats";
-import { SlicerFormColumn } from "./slicer-form-column";
+import { type GcodeStats, sumGcodeStats } from "../../../shared/vertexslice/gcode-stats";
 import { SlicerPreview } from "./SlicerPreview";
-import { ResultPanel } from "./slicer-result-panel";
-import { downloadGcode, requestSlice } from "./slicer-api";
+import {
+    downloadGcode,
+    fetchSlicerQuote,
+    requestPaidGcode,
+    requestSlice,
+    requestSlicerCheckout,
+} from "./slicer-api";
+import { SlicerFormColumn } from "./slicer-form-column";
 import {
     INCH_SCALE,
     meshOpenBoundaryIssue,
@@ -17,6 +23,8 @@ import {
     scaledMesh,
     validateSlicerFileMeta,
 } from "./slicer-mesh";
+import { ResultPanel } from "./slicer-result-panel";
+import { SLICER_SLOW_MS, SLICER_STEPS, SliceButtonBar } from "./slicer-slice-bar";
 import {
     type DemoSlicerState,
     demoSlicerState,
@@ -24,7 +32,6 @@ import {
     type SlicerFileSlot,
     slicerReducer,
 } from "./slicer-state";
-import { SLICER_SLOW_MS, SLICER_STEPS, SliceButtonBar } from "./slicer-slice-bar";
 
 const MAX_FILES = 2;
 
@@ -61,6 +68,20 @@ export function SlicerPage() {
     const [resetNonce, setResetNonce] = useState(0);
     const [copied, setCopied] = useState(false);
     const [dragOver, setDragOver] = useState(false);
+    const [quote, setQuote] = useState<{ unitAmountCents: number; payMock: boolean } | null>(null);
+    const user = useAuthStore((s) => s.user);
+
+    useEffect(() => {
+        let cancelled = false;
+        void fetchSlicerQuote().then((next) => {
+            if (!cancelled && next) {
+                setQuote({ unitAmountCents: next.unitAmountCents, payMock: next.payMock });
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     const liveMessage = useMemo(() => {
         switch (state.status) {
@@ -172,7 +193,7 @@ export function SlicerPage() {
         dispatch({ type: "start-slicing" });
         const fault = new URLSearchParams(window.location.search).get("fault");
         try {
-            const downloads: { gcode: string; filename: string }[] = [];
+            const downloads: { sealed: string; filename: string }[] = [];
             const statsList: GcodeStats[] = [];
             let requestId = "";
             for (const slot of validFiles) {
@@ -192,7 +213,7 @@ export function SlicerPage() {
                 }
                 requestId = response.requestId;
                 downloads.push({
-                    gcode: response.gcode,
+                    sealed: response.sealed,
                     filename:
                         response.filename ||
                         slicerDownloadFilename({
@@ -235,17 +256,83 @@ export function SlicerPage() {
         void runSlice();
     };
 
-    const downloadPaidGcode = () => {
-        if (!state.result || !canDownloadSlicerGcode(state.paymentStatus)) return;
+    const downloadDemoFixture = () => {
+        if (!state.result) return;
         for (const file of state.result.downloads) {
-            downloadGcode(file.gcode, file.filename);
+            if (file.gcode) downloadGcode(file.gcode, file.filename);
         }
     };
 
+    const downloadVerified = async (sessionId: string) => {
+        if (!state.result) return;
+        for (const file of state.result.downloads) {
+            if (!file.sealed) continue;
+            const opened = await requestPaidGcode(file.sealed, sessionId);
+            if (!opened.ok) {
+                dispatch({ type: "pay-failed", error: opened.error });
+                return;
+            }
+            downloadGcode(opened.gcode, opened.filename || file.filename);
+        }
+        dispatch({ type: "paid", paymentId: sessionId });
+    };
+
+    const downloadPaidGcode = () => {
+        if (!state.result || !canDownloadSlicerGcode(state.paymentStatus)) return;
+        const demoFixture = state.result.downloads.every((file) => file.gcode && !file.sealed);
+        if (demoFixture) {
+            downloadDemoFixture();
+            return;
+        }
+        if (!state.paymentId) return;
+        void downloadVerified(state.paymentId);
+    };
+
+    const waitForCheckout = (popup: Window) =>
+        new Promise<string | null>((resolve) => {
+            let received = false;
+            const finish = (sessionId: string | null) => {
+                if (received) return;
+                received = true;
+                window.removeEventListener("message", onMessage);
+                window.clearInterval(timer);
+                resolve(sessionId);
+            };
+            const onMessage = (event: MessageEvent) => {
+                if (event.origin !== window.location.origin) return;
+                const data = event.data as { type?: string; sessionId?: string } | null;
+                if (!data || data.type !== "orthocad-slicer-checkout" || !data.sessionId) return;
+                finish(data.sessionId);
+            };
+            const timer = window.setInterval(() => {
+                if (!popup.closed) return;
+                window.clearInterval(timer);
+                window.setTimeout(() => finish(null), 1000);
+            }, 400);
+            window.addEventListener("message", onMessage);
+        });
+
     const onPayAndDownload = async () => {
         if (!state.result) return;
-        if (canDownloadSlicerGcode(state.paymentStatus)) {
-            downloadPaidGcode();
+        const demoFixture = state.result.downloads.every((file) => file.gcode && !file.sealed);
+        if (demoFixture && canDownloadSlicerGcode(state.paymentStatus)) {
+            downloadDemoFixture();
+            return;
+        }
+        if (canDownloadSlicerGcode(state.paymentStatus) && state.paymentId) {
+            await downloadVerified(state.paymentId);
+            return;
+        }
+        const seals = state.result.downloads
+            .map((file) => file.sealed)
+            .filter((seal): seal is string => Boolean(seal));
+        if (seals.length !== state.result.downloads.length) {
+            dispatch({ type: "pay-failed", error: "Slice again before paying." });
+            return;
+        }
+        if (!user?.email) {
+            window.dispatchEvent(new Event("orthocad-slicer-sign-in"));
+            dispatch({ type: "pay-failed", error: "Sign in to pay." });
             return;
         }
         payAbortRef.current?.abort();
@@ -253,19 +340,35 @@ export function SlicerPage() {
         payAbortRef.current = ac;
         dispatch({ type: "start-pay" });
         try {
-            const pay = await chargeSlicerExport({
-                fileCount: state.result.downloads.length,
-                signal: ac.signal,
-            });
+            const pay = await requestSlicerCheckout(seals);
             if (ac.signal.aborted) return;
             if (!pay.ok) {
                 dispatch({ type: "pay-failed", error: pay.error });
                 return;
             }
-            dispatch({ type: "paid", paymentId: pay.paymentId });
-            for (const file of state.result.downloads) {
-                downloadGcode(file.gcode, file.filename);
+            if (pay.mock) {
+                await downloadVerified(pay.sessionId);
+                return;
             }
+            if (!pay.url) {
+                dispatch({ type: "pay-failed", error: "Stripe Checkout did not return a URL." });
+                return;
+            }
+            const popup = window.open(pay.url, "orthocad-slicer-checkout", "popup,width=480,height=720");
+            if (!popup) {
+                dispatch({
+                    type: "pay-failed",
+                    error: "Allow popups to pay. This file stays in this tab.",
+                });
+                return;
+            }
+            const sessionId = await waitForCheckout(popup);
+            if (ac.signal.aborted) return;
+            if (!sessionId) {
+                dispatch({ type: "pay-failed", error: "Payment cancelled." });
+                return;
+            }
+            await downloadVerified(sessionId);
         } catch {
             if (ac.signal.aborted) return;
             dispatch({ type: "pay-failed", error: "Payment cancelled." });
@@ -338,6 +441,15 @@ export function SlicerPage() {
                         result={state.result}
                         paymentStatus={state.paymentStatus}
                         paymentError={state.paymentError}
+                        priceLabel={
+                            quote
+                                ? formatSlicerPriceLabel(
+                                      quote.unitAmountCents,
+                                      state.result?.downloads.length ?? 1,
+                                  )
+                                : null
+                        }
+                        payMock={quote?.payMock ?? false}
                         copied={copied}
                         onCopy={copyId}
                         onRetry={onSliceClick}

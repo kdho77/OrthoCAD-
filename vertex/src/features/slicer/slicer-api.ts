@@ -11,7 +11,7 @@ import type { GcodeStats } from "../../../shared/vertexslice/gcode-stats";
 export interface SliceProxySuccess {
     ok: true;
     mock: boolean;
-    gcode: string;
+    sealed: string;
     headers: {
         sliceSeconds: string;
         peakRssKb: string;
@@ -34,6 +34,23 @@ export interface SliceProxyFailure {
 }
 
 export type SliceProxyResponse = SliceProxySuccess | SliceProxyFailure;
+
+export interface SlicerQuote {
+    ok: true;
+    mock: boolean;
+    payMock: boolean;
+    unitAmountCents: number;
+    priceUsdPerFile: number;
+}
+
+export interface SlicerCheckoutResult {
+    ok: true;
+    mock: boolean;
+    sessionId: string;
+    url?: string;
+    unitAmountCents: number;
+    fileCount: number;
+}
 
 export interface SliceProxyRequest {
     file: File;
@@ -85,6 +102,55 @@ export async function requestSlice(input: SliceProxyRequest): Promise<SliceProxy
             requestId: res.headers.get("X-Request-Id") || "",
         },
     };
+}
+
+export async function fetchSlicerQuote(): Promise<SlicerQuote | null> {
+    const res = await fetch("/api/slicer");
+    const json = (await res.json().catch(() => null)) as SlicerQuote | null;
+    if (!json || json.ok !== true || typeof json.unitAmountCents !== "number") return null;
+    return json;
+}
+
+export async function requestSlicerCheckout(
+    seals: string[],
+): Promise<SlicerCheckoutResult | { ok: false; error: string }> {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    const auth = await authHeader();
+    if (auth) headers.Authorization = auth;
+    const res = await fetch("/api/slicer?action=checkout", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ seals }),
+    });
+    const json = (await res.json().catch(() => null)) as
+        | SlicerCheckoutResult
+        | { ok: false; error: string }
+        | null;
+    if (json && typeof json === "object" && "ok" in json) return json;
+    return { ok: false, error: "Checkout failed." };
+}
+
+export async function requestPaidGcode(
+    sealed: string,
+    sessionId: string,
+): Promise<{ ok: true; gcode: string; filename: string } | { ok: false; error: string }> {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    const auth = await authHeader();
+    if (auth) headers.Authorization = auth;
+    const res = await fetch("/api/slicer?action=download", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ sealed, sessionId }),
+    });
+    const json = (await res.json().catch(() => null)) as
+        | { ok: true; files: Array<{ gcode: string; filename: string }> }
+        | { ok: false; error: string }
+        | null;
+    if (json && "ok" in json && json.ok && json.files[0]) {
+        return { ok: true, gcode: json.files[0].gcode, filename: json.files[0].filename };
+    }
+    if (json && "ok" in json && !json.ok) return { ok: false, error: json.error };
+    return { ok: false, error: "Download is locked until payment is confirmed." };
 }
 
 export function downloadGcode(gcode: string, filename: string): void {

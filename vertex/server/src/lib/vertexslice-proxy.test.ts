@@ -11,29 +11,46 @@ function authHeaders(): HeadersInit {
 }
 
 describe("shouldUseMockSlicer", () => {
-    test("uses mock when URL is unset or SLICER_MOCK=1", () => {
+    test("uses mock when the VertexSlice env is unset or SLICER_MOCK=1", () => {
         expect(shouldUseMockSlicer({})).toBe(true);
-        expect(shouldUseMockSlicer({ VERTEXSLICE_URL: "" })).toBe(true);
-        expect(shouldUseMockSlicer({ VERTEXSLICE_URL: "https://slice.example", SLICER_MOCK: "1" })).toBe(
-            true,
-        );
-        expect(shouldUseMockSlicer({ VERTEXSLICE_URL: "https://slice.example" })).toBe(false);
+        expect(shouldUseMockSlicer({ VERTEXSLICE_SLICER_URL: "" })).toBe(true);
+        expect(shouldUseMockSlicer({ VERTEXSLICE_SLICER_URL: "https://slice.example" })).toBe(true);
+        expect(
+            shouldUseMockSlicer({
+                VERTEXSLICE_SLICER_URL: "https://slice.example",
+                VERTEXSLICE_API_KEY: "secret-never-leak",
+                SLICER_MOCK: "1",
+            }),
+        ).toBe(true);
+        expect(
+            shouldUseMockSlicer({
+                VERTEXSLICE_SLICER_URL: "https://slice.example",
+                VERTEXSLICE_API_KEY: "secret-never-leak",
+            }),
+        ).toBe(false);
     });
 });
 
 describe("handleSlicerRequest", () => {
     test("GET reports mock mode and never includes the API key", async () => {
         const res = await handleSlicerRequest(new Request("http://localhost/api/slicer"), {
-            env: { VERTEXSLICE_URL: "", VERTEXSLICE_API_KEY: "secret-never-leak" },
+            env: { VERTEXSLICE_SLICER_URL: "", VERTEXSLICE_API_KEY: "secret-never-leak" },
         });
-        const body = (await res.json()) as { ok: boolean; mock: boolean };
+        const body = (await res.json()) as {
+            ok: boolean;
+            mock: boolean;
+            payMock: boolean;
+            unitAmountCents: number;
+        };
         expect(body.ok).toBe(true);
         expect(body.mock).toBe(true);
+        expect(body.payMock).toBe(true);
+        expect(body.unitAmountCents).toBe(800);
         expect(JSON.stringify(body)).not.toContain("secret-never-leak");
         expect(res.headers.get("X-Request-Id")).toBeTruthy();
     });
 
-    test("POST mock success returns gcode, stats, and download filename", async () => {
+    test("POST mock success returns a sealed slice, stats, and download filename", async () => {
         const res = await handleSlicerRequest(
             new Request("http://localhost/api/slicer", {
                 method: "POST",
@@ -51,18 +68,22 @@ describe("handleSlicerRequest", () => {
         );
         const body = (await res.json()) as {
             ok: boolean;
-            gcode: string;
+            sealed: string;
+            gcode?: string;
             filename: string;
             stats: { layers: number };
             requestId: string;
         };
         expect(res.status).toBe(200);
         expect(body.ok).toBe(true);
-        expect(body.gcode).toContain("; material = ApexCore");
+        expect(body.gcode).toBeUndefined();
+        expect(body.sealed.length).toBeGreaterThan(20);
+        expect(JSON.stringify(body)).not.toContain("; material = ApexCore");
         expect(body.filename).toBe("insole_ApexCore_toefirst_1w.gcode");
         expect(body.stats.layers).toBe(42);
         expect(body.requestId).toBeTruthy();
         expect(JSON.stringify(body)).not.toContain("X-API-Key");
+        expect(JSON.stringify(body)).not.toContain("secret-never-leak");
     });
 
     test("POST succeeds without an account (pay-per-file, nothing persisted)", async () => {
@@ -124,5 +145,64 @@ describe("handleSlicerRequest", () => {
         expect(fiveBody.error.code).toBe("auth_config");
         expect(fiveBody.error.cause).toContain("Something on our side");
         expect(fiveBody.error.requestId).toBeTruthy();
+    });
+});
+
+describe("slicer pay route", () => {
+    test("download is refused without a paid session, and mock pay still unlocks when Stripe is unset", async () => {
+        const sliced = await handleSlicerRequest(
+            new Request("http://localhost/api/slicer", {
+                method: "POST",
+                headers: { "content-type": "application/json", origin: "http://localhost" },
+                body: JSON.stringify({
+                    filename: "insole.stl",
+                    modelBase64: Buffer.from([0, 1, 2]).toString("base64"),
+                    material: "apex_core",
+                }),
+            }),
+            { client: createMockVertexSliceClient(), env: {} },
+        );
+        const sliceBody = (await sliced.json()) as { ok: boolean; sealed: string };
+        expect(sliceBody.ok).toBe(true);
+        expect(JSON.stringify(sliceBody)).not.toContain("; material = ApexCore");
+
+        const refused = await handleSlicerRequest(
+            new Request("http://localhost/api/slicer?action=download", {
+                method: "POST",
+                headers: { "content-type": "application/json", ...authHeaders() },
+                body: JSON.stringify({ sealed: sliceBody.sealed, sessionId: "" }),
+            }),
+            { env: {} },
+        );
+        expect(refused.status).toBe(402);
+
+        const checkout = await handleSlicerRequest(
+            new Request("http://localhost/api/slicer?action=checkout", {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    origin: "http://localhost",
+                    ...authHeaders(),
+                },
+                body: JSON.stringify({ seals: [sliceBody.sealed] }),
+            }),
+            { env: {} },
+        );
+        const checkoutBody = (await checkout.json()) as { ok: boolean; mock: boolean; sessionId: string };
+        expect(checkout.status).toBe(200);
+        expect(checkoutBody.mock).toBe(true);
+
+        const paid = await handleSlicerRequest(
+            new Request("http://localhost/api/slicer?action=download", {
+                method: "POST",
+                headers: { "content-type": "application/json", ...authHeaders() },
+                body: JSON.stringify({ sealed: sliceBody.sealed, sessionId: checkoutBody.sessionId }),
+            }),
+            { env: {} },
+        );
+        const paidBody = (await paid.json()) as { ok: boolean; files: Array<{ gcode: string }> };
+        expect(paid.status).toBe(200);
+        expect(paidBody.files[0]?.gcode).toContain("; material = ApexCore");
+        expect(JSON.stringify(paidBody)).not.toContain("secret-never-leak");
     });
 });
