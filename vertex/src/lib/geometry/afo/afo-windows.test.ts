@@ -307,11 +307,12 @@ describe("AFO Windows parity", () => {
             plain: string;
             dancer: string;
         };
-        // Lock main's committed CNC golden. The dancer hash moved in #285; this
-        // test does not recompute it.
+        // Lock the committed CNC golden (tests/cnc/golden/sha.json). The dancer
+        // hash moved in #285. Both hashes moved again with the 1.98 mm
+        // whole-spiral pitch (2026-11-17). This test does not recompute them.
         expect(sha).toEqual({
-            plain: "70a633cf057b7f5087449e76c5eb553ebe66188e29b8be15df3f99b388a59e17",
-            dancer: "c4fa5ce08896169110f1d38542f98513846b9b8c778ca08a1542045b97c2e4dd",
+            plain: "18833b62030d856da6ed8e4cadba9541fa86b43af6102656983dfd78aa5eb289",
+            dancer: "763584222cdf27e27ad1e9d6f8a5c001aed16ae722202745d5f02eeea0d3e601",
         });
     });
 });

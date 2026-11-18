@@ -19,7 +19,43 @@ import {
 import { cloneProfile, IDAHO_PROFILE, toolRadiusMm } from "@/lib/cnc/profile";
 import { acrossWidthGapMm, measureSpiral, planCenterSpiral, type XyPoint } from "@/lib/cnc/spiral";
 import type { MillingProfile, PlacedPart, Point } from "@/lib/cnc/types";
-import { syntheticWorkpiece } from "./helpers";
+import { sampleTopWorkpiece, syntheticWorkpiece } from "./helpers";
+
+/** Heel pitch the whole finishing spiral runs at. */
+const HEEL_PITCH_MM = 1.98;
+
+function radialLapSpacing(samples: XyPoint[]): { max: number; min: number } {
+    const center = samples[0] ?? { x: 0, y: 0 };
+    const rays = 180;
+    const gaps: number[] = [];
+    for (let i = 0; i < rays; i++) {
+        const ang = (i / rays) * Math.PI * 2;
+        const ux = Math.cos(ang);
+        const uy = Math.sin(ang);
+        const radii: number[] = [];
+        for (let k = 1; k < samples.length; k++) {
+            const a = samples[k - 1]!;
+            const b = samples[k]!;
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const det = ux * dy - uy * dx;
+            if (Math.abs(det) < 1e-9) continue;
+            const ox = a.x - center.x;
+            const oy = a.y - center.y;
+            const t = (ox * dy - oy * dx) / det;
+            const s = (ox * uy - oy * ux) / det;
+            if (t > 0.2 && s >= -1e-6 && s <= 1 + 1e-6) radii.push(t);
+        }
+        radii.sort((p, q) => p - q);
+        let prev: number | undefined;
+        for (const r of radii) {
+            if (prev !== undefined && r - prev > 0.05) gaps.push(r - prev);
+            prev = r;
+        }
+    }
+    gaps.sort((a, b) => a - b);
+    return { max: gaps[gaps.length - 1] ?? Infinity, min: gaps[0] ?? 0 };
+}
 
 function distOpen(p: XyPoint, poly: XyPoint[]): number {
     if (poly.length === 0) return Infinity;
@@ -331,6 +367,70 @@ describe("center-out spiral", () => {
         const perDev = maxOrderedChordDeviation(contour.finish, centre);
         expect(perDev.xy).toBeLessThanOrEqual(0.05);
     });
+
+    test("Men's 9 finishing spiral has no cross-width stroke and one continuous wind", async () => {
+        const profile = cloneProfile(IDAHO_PROFILE);
+        const wp = await sampleTopWorkpiece("left", profile, false);
+        const plan = planCenterSpiral(wp.outline, profile, "ball");
+        const samples = plan.samples;
+        expect(samples.length).toBeGreaterThan(1000);
+        expect(new Set(samples.map((s) => s.component)).size).toBe(1);
+
+        const bb = bboxOf(wp.outline);
+        const longX = bb.maxX - bb.minX >= bb.maxY - bb.minY;
+        const limit = 2 * HEEL_PITCH_MM;
+        let cross = 0;
+        let maxStep = 0;
+        for (let i = 1; i < samples.length; i++) {
+            const a = samples[i - 1]!;
+            const b = samples[i]!;
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const len = Math.hypot(dx, dy);
+            if (len > maxStep) maxStep = len;
+            const across = Math.abs(longX ? dy : dx);
+            if (len > limit && across > limit) cross++;
+        }
+        expect(cross).toBe(0);
+        expect(maxStep).toBeLessThanOrEqual(limit);
+
+        const center = samples[0];
+        if (!center) throw new Error("empty spiral");
+        let prevAng: number | null = null;
+        let ccw = 0;
+        for (const s of samples) {
+            const dx = s.x - center.x;
+            const dy = s.y - center.y;
+            if (dx * dx + dy * dy < 1) continue;
+            const ang = Math.atan2(dy, dx);
+            if (prevAng !== null) {
+                let d = ang - prevAng;
+                while (d > Math.PI) d -= Math.PI * 2;
+                while (d < -Math.PI) d += Math.PI * 2;
+                if (d > 0.15) ccw++;
+            }
+            prevAng = ang;
+        }
+        expect(ccw).toBe(0);
+        const measured = measureSpiral(samples, wp.outline);
+        expect(measured.clockwise).toBe(true);
+        expect(measured.laps).toBeGreaterThan(66);
+        expect(measured.laps).toBeLessThan(76);
+    }, 120_000);
+
+    test("Men's 9 lap spacing stays within the 1.98 mm heel pitch", async () => {
+        const profile = cloneProfile(IDAHO_PROFILE);
+        const wp = await sampleTopWorkpiece("left", profile, false);
+        const plan = planCenterSpiral(wp.outline, profile, "ball");
+        const spacing = radialLapSpacing(plan.samples);
+        expect(spacing.max).toBeLessThanOrEqual(HEEL_PITCH_MM + 0.05);
+        expect(spacing.min).toBeGreaterThan(0.4);
+        const measured = measureSpiral(plan.samples, wp.outline);
+        expect(measured.heelPitchMm).toBeGreaterThan(1.9);
+        expect(measured.heelPitchMm).toBeLessThan(2.05);
+        expect(measured.endPitchMm).toBeLessThanOrEqual(HEEL_PITCH_MM + 0.05);
+        expect(acrossWidthGapMm(plan.samples, wp.outline)).toBeLessThanOrEqual(0.75);
+    }, 120_000);
 
     test("across-width gap of the synthetic dome is within 0.75 mm", () => {
         const profile = cloneProfile(IDAHO_PROFILE);
