@@ -10,6 +10,11 @@
         "node": "20.x"
     },
     "scripts": {
+        "postinstall": "npm install --prefix vertex --include=dev",
+        "build": "npm --prefix vertex run build",
+        "start": "npm --prefix vertex run preview -- --host 0.0.0.0 --port ${PORT:-4173}",
+        "prisma:generate": "npm --prefix vertex run prisma:generate",
+        "start:server": "npm --prefix vertex run start:server",
         "check": "biome check --write",
         "format": "biome check --write .",
         "test": "rstest",
