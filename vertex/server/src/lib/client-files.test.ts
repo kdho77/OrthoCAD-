@@ -8,6 +8,7 @@ import {
     type ClientRow,
     canRestoreDesign,
     clientMatchesQuery,
+    clientPatchFromDesignSetup,
     clinicalDocumentTitle,
     commitNotes,
     createClientFile,
@@ -37,6 +38,8 @@ import {
     restoreDeletedDesign,
     revertNotes,
     serializeClientListQuery,
+    setupShoeChartMatchesClient,
+    shoeChartFromDesignSetup,
     softDeleteDesignFile,
     updateClientFile,
     updateDesignMeta,
@@ -638,5 +641,30 @@ describe("client list query and PHI chrome", () => {
             t0 + 1000,
         );
         expect(forced.persist).toBe(true);
+    });
+});
+
+describe("design setup shoe chart helpers", () => {
+    test("shoeChartFromDesignSetup normalizes split and linked charts", () => {
+        const linked = shoeChartFromDesignSetup({ usMenSize: 9.25, shoeSizesLinked: true });
+        expect(linked.shoeSizeUs).toBe(9.5);
+        expect(linked.shoeSizesSplit).toBe(false);
+
+        const split = shoeChartFromDesignSetup({
+            shoeSizesLinked: false,
+            usMenSize: 9,
+            usMenSizeBySide: { left: 10, right: 11.5 },
+        });
+        expect(split.shoeSizesSplit).toBe(true);
+        expect(split.shoeSizeLeftUs).toBe(10);
+        expect(split.shoeSizeRightUs).toBe(11.5);
+    });
+
+    test("setupShoeChartMatchesClient and clientPatchFromDesignSetup", () => {
+        const client = defaultShoeChart();
+        expect(setupShoeChartMatchesClient({ usMenSize: 9 }, client)).toBe(true);
+        const patch = clientPatchFromDesignSetup({ usMenSize: 10 });
+        expect(patch.shoeSizeUs).toBe(10);
+        expect(patch.shoeSizesSplit).toBe(false);
     });
 });

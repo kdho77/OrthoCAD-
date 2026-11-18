@@ -273,6 +273,33 @@ export interface ShoeSizingDesign {
     usMenSize?: number;
     ukSize?: number;
     footLengthMm?: number;
+    /** When false, each foot uses `usMenSizeBySide` (setup unlock). Default linked. */
+    shoeSizesLinked?: boolean;
+    usMenSizeBySide?: { left?: number; right?: number };
+}
+
+export type FootprintSide = "left" | "right";
+
+/** US men's size for one foot; respects setup lock / per-side chart. */
+export function usMenSizeForSide(design?: ShoeSizingDesign | null, side: FootprintSide = "left"): number {
+    const linked = design?.shoeSizesLinked !== false;
+    if (!linked) {
+        const bySide = design?.usMenSizeBySide;
+        const raw = side === "left" ? bySide?.left : bySide?.right;
+        if (raw != null && Number.isFinite(raw)) return normalizeUsMenSize(raw);
+    }
+    return normalizeUsMenSize(design?.usMenSize ?? DEFAULT_US_MEN_SIZE);
+}
+
+/** Footprint layout for one foot; used by kernel build and stock scaling. */
+export function insoleLayoutForDesignSide(
+    design?: ShoeSizingDesign | null,
+    side: FootprintSide = "left",
+): InsoleLayout {
+    if (design?.shoeSizesLinked === false) {
+        return insoleLayoutForUsMenSize(usMenSizeForSide(design, side));
+    }
+    return insoleLayoutFromDesign(design);
 }
 
 /** Resolve layout from design state (missing ⇒ US Men's 9). */

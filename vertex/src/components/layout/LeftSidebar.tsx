@@ -5,17 +5,22 @@ import {
     FlipHorizontal,
     Footprints,
     Layers3,
+    Lock,
     Pencil,
     Save,
     Trash2,
+    Unlock,
     Upload,
     X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { PanelHeading } from "@/components/clinical/PanelHeading";
+import { productionMethodDisabledInUi } from "@/components/layout/production-method-ui";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { saveClientRecord } from "@/features/clients/client-actions";
 import {
     deleteCustomAsset,
     mirrorBaseGlb,
@@ -35,10 +40,12 @@ import {
     formatFootLengthLabel,
     formatUkShoeSizeLabel,
     formatUsShoeSizeLabel,
+    insoleLayoutForDesignSide,
     insoleLayoutFromDesign,
     normalizeShoeSizeSystem,
     type ShoeSizeSystem,
     ukShoeSizeOptions,
+    usMenSizeForSide,
     usMenToUk,
     usShoeSizeOptions,
 } from "@/lib/geometry/shoe-size";
@@ -52,12 +59,18 @@ import {
 } from "@/lib/geometry/shoe-width";
 import { mergePrefabLibrary, STOCK_PREFABS } from "@/lib/library/manifest";
 import { cn } from "@/lib/utils";
+import { useClientStore } from "@/stores/client-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { ProductionMethod, ScanPattern, Side } from "@/types";
-import { productionMethodDisabledInUi } from "@/components/layout/production-method-ui";
+import {
+    clientPatchFromDesignSetup,
+    type ShoeChart,
+    setupShoeChartMatchesClient,
+    shoeChartFromInput,
+} from "../../../shared/client-files";
 
 const METHODS: { id: ProductionMethod; label: string }[] = [
     { id: "printing_solid", label: "Printing — Solid" },
@@ -80,9 +93,16 @@ export function LeftSidebar({
         setMethod,
         setUsShoeSize,
         setShoeSizeSystem,
+        setShoeSizesLinked,
         setUkShoeSize,
         setFootLengthMm,
+        hydrateSetupShoeFromClientChart,
     } = useDesignStore();
+    const activeClient = useClientStore((s) => {
+        const id = s.activeClientId;
+        return id ? (s.clients.find((c) => c.id === id) ?? null) : null;
+    });
+    const clientChart = activeClient ? shoeChartFromInput(activeClient) : null;
     const customPrefabs = useCustomLibraryStore((s) => s.customPrefabs);
     const libraryLoading = useCustomLibraryStore((s) => s.loading);
     const baseMeshLoading = useDesignStore(
@@ -388,7 +408,11 @@ export function LeftSidebar({
                                     )}
                                 >
                                     <span className="flex items-center justify-between gap-2">
-                                        <span>{clinicalDeclutter === "setup" && m.id === "printing_solid" ? "Solid print" : m.label}</span>
+                                        <span>
+                                            {clinicalDeclutter === "setup" && m.id === "printing_solid"
+                                                ? "Solid print"
+                                                : m.label}
+                                        </span>
                                         {shellUiLocked ? (
                                             <span className="shrink-0 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
                                                 Coming soon
@@ -403,22 +427,19 @@ export function LeftSidebar({
             ) : null}
 
             {show("size") ? (
-                <Section
-                    icon={<Footprints className="h-3.5 w-3.5" />}
-                    title={clinicalDeclutter === "setup" ? "Shoe size" : "Size"}
-                >
-                    <ShoeSizeSelect
-                        system={normalizeShoeSizeSystem(design.sizeSystem)}
-                        usMenSize={design.usMenSize ?? DEFAULT_US_MEN_SIZE}
-                        ukSize={design.ukSize ?? usMenToUk(design.usMenSize ?? DEFAULT_US_MEN_SIZE)}
-                        footLengthMm={design.footLengthMm ?? insoleLayoutFromDesign(design).footLengthMm}
-                        onSystemChange={setShoeSizeSystem}
-                        onUsChange={setUsShoeSize}
-                        onUkChange={setUkShoeSize}
-                        onMmChange={setFootLengthMm}
-                    />
-                    <ShoeWidthSelect />
-                </Section>
+                <SetupShoeSizeSection
+                    clinicalSetup={clinicalDeclutter === "setup"}
+                    design={design}
+                    clientChart={clientChart}
+                    activeClientId={activeClient?.id ?? null}
+                    setUsShoeSize={setUsShoeSize}
+                    setShoeSizeSystem={setShoeSizeSystem}
+                    setShoeSizesLinked={setShoeSizesLinked}
+                    setUkShoeSize={setUkShoeSize}
+                    setFootLengthMm={setFootLengthMm}
+                    hydrateSetupShoeFromClientChart={hydrateSetupShoeFromClientChart}
+                    shoeWidthSelect={<ShoeWidthSelect />}
+                />
             ) : null}
 
             {show("import") ? (
@@ -461,6 +482,179 @@ function Section({
     );
 }
 
+function SetupShoeSizeSection({
+    clinicalSetup,
+    design,
+    clientChart,
+    activeClientId,
+    setUsShoeSize,
+    setShoeSizeSystem,
+    setShoeSizesLinked,
+    setUkShoeSize,
+    setFootLengthMm,
+    hydrateSetupShoeFromClientChart,
+    shoeWidthSelect,
+}: {
+    clinicalSetup: boolean;
+    design: ReturnType<typeof useDesignStore.getState>["design"];
+    clientChart: ShoeChart | null;
+    activeClientId: string | null;
+    setUsShoeSize: (menSize: number, side?: Side) => void;
+    setShoeSizeSystem: (system: ShoeSizeSystem) => void;
+    setShoeSizesLinked: (linked: boolean) => void;
+    setUkShoeSize: (ukSize: number) => void;
+    setFootLengthMm: (mm: number) => void;
+    hydrateSetupShoeFromClientChart: (chart: ShoeChart) => void;
+    shoeWidthSelect: React.ReactNode;
+}) {
+    const linked = design.shoeSizesLinked !== false;
+    const [chartPromptOpen, setChartPromptOpen] = useState(false);
+    const pendingChartCheck = useRef(false);
+    const hydratedClient = useRef<string | null>(null);
+
+    useEffect(() => {
+        if (!clinicalSetup || !clientChart?.shoeSizesSplit || !activeClientId) return;
+        if (hydratedClient.current === activeClientId) return;
+        hydratedClient.current = activeClientId;
+        hydrateSetupShoeFromClientChart(clientChart);
+    }, [clinicalSetup, clientChart, activeClientId, hydrateSetupShoeFromClientChart]);
+
+    const maybePromptChartUpdate = () => {
+        if (!clinicalSetup || !clientChart || !activeClientId) return;
+        pendingChartCheck.current = false;
+        if (setupShoeChartMatchesClient(design, clientChart)) return;
+        setChartPromptOpen(true);
+    };
+
+    const scheduleChartCheck = () => {
+        pendingChartCheck.current = true;
+    };
+
+    const onSelectBlur = () => {
+        if (pendingChartCheck.current) {
+            window.setTimeout(maybePromptChartUpdate, 0);
+        }
+    };
+
+    const updatePatientFile = async () => {
+        if (!activeClientId) return;
+        const client = useClientStore.getState().clients.find((c) => c.id === activeClientId);
+        if (!client) return;
+        const patch = clientPatchFromDesignSetup(design);
+        await saveClientRecord(activeClientId, {
+            firstName: client.firstName,
+            lastName: client.lastName,
+            ...patch,
+        });
+        setChartPromptOpen(false);
+    };
+
+    return (
+        <Section icon={<Footprints className="h-3.5 w-3.5" />} title={clinicalSetup ? "Shoe size" : "Size"}>
+            <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-muted-foreground">Size lock</span>
+                <button
+                    type="button"
+                    data-testid="shoe-size-lock-toggle"
+                    aria-pressed={linked}
+                    aria-label={linked ? "Unlock left and right shoe sizes" : "Lock to one shoe size"}
+                    onClick={() => setShoeSizesLinked(!linked)}
+                    className={cn(
+                        "inline-flex h-8 w-8 items-center justify-center rounded-md border",
+                        linked
+                            ? "border-primary/40 bg-primary/10 text-primary"
+                            : "border-border text-muted-foreground hover:bg-muted",
+                    )}
+                >
+                    {linked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+                </button>
+            </div>
+            {!linked ? (
+                <p className="text-[10px] text-muted-foreground">
+                    Unlocked — set left and right US men&apos;s sizes independently.
+                </p>
+            ) : null}
+            {linked ? (
+                <ShoeSizeSelect
+                    system={normalizeShoeSizeSystem(design.sizeSystem)}
+                    usMenSize={design.usMenSize ?? DEFAULT_US_MEN_SIZE}
+                    ukSize={design.ukSize ?? usMenToUk(design.usMenSize ?? DEFAULT_US_MEN_SIZE)}
+                    footLengthMm={design.footLengthMm ?? insoleLayoutFromDesign(design).footLengthMm}
+                    onSystemChange={setShoeSizeSystem}
+                    onUsChange={(size) => {
+                        scheduleChartCheck();
+                        setUsShoeSize(size);
+                    }}
+                    onUkChange={(size) => {
+                        scheduleChartCheck();
+                        setUkShoeSize(size);
+                    }}
+                    onMmChange={(mm) => {
+                        scheduleChartCheck();
+                        setFootLengthMm(mm);
+                    }}
+                    onCommitBlur={clinicalSetup ? onSelectBlur : undefined}
+                />
+            ) : (
+                <>
+                    <div className="grid grid-cols-2 gap-2">
+                        {(["left", "right"] as const).map((side) => (
+                            <ShoeSizeSelect
+                                key={side}
+                                sideLabel={side === "left" ? "Left" : "Right"}
+                                system="us"
+                                usMenSize={usMenSizeForSide(design, side)}
+                                ukSize={usMenToUk(usMenSizeForSide(design, side))}
+                                footLengthMm={insoleLayoutForDesignSide(design, side).footLengthMm}
+                                onSystemChange={setShoeSizeSystem}
+                                onUsChange={(size) => {
+                                    scheduleChartCheck();
+                                    setUsShoeSize(size, side);
+                                }}
+                                onUkChange={setUkShoeSize}
+                                onMmChange={setFootLengthMm}
+                                onCommitBlur={clinicalSetup ? onSelectBlur : undefined}
+                                usOnly
+                            />
+                        ))}
+                    </div>
+                    <p className="text-[10px] text-muted-foreground">
+                        Re-lock uses the left size ({usMenSizeForSide(design, "left")}).
+                    </p>
+                </>
+            )}
+            {shoeWidthSelect}
+            <Dialog open={chartPromptOpen} onOpenChange={setChartPromptOpen}>
+                <DialogContent data-testid="shoe-size-chart-prompt">
+                    <DialogHeader>
+                        <DialogTitle>Update the patient file with this shoe size?</DialogTitle>
+                    </DialogHeader>
+                    <p className="text-sm text-muted-foreground">
+                        The chart on this patient file no longer matches the sizes in this design.
+                    </p>
+                    <DialogFooter className="gap-2 sm:gap-0">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            data-testid="shoe-size-chart-design-only"
+                            onClick={() => setChartPromptOpen(false)}
+                        >
+                            Just this design
+                        </Button>
+                        <Button
+                            type="button"
+                            data-testid="shoe-size-chart-update-patient"
+                            onClick={() => void updatePatientFile()}
+                        >
+                            Update patient file
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </Section>
+    );
+}
+
 function ShoeSizeSelect({
     system,
     usMenSize,
@@ -470,6 +664,9 @@ function ShoeSizeSelect({
     onUsChange,
     onUkChange,
     onMmChange,
+    onCommitBlur,
+    sideLabel,
+    usOnly,
 }: {
     system: ShoeSizeSystem;
     usMenSize: number;
@@ -479,6 +676,9 @@ function ShoeSizeSelect({
     onUsChange: (menSize: number) => void;
     onUkChange: (ukSize: number) => void;
     onMmChange: (mm: number) => void;
+    onCommitBlur?: () => void;
+    sideLabel?: string;
+    usOnly?: boolean;
 }) {
     const layout = insoleLayoutFromDesign({
         sizeSystem: system,
@@ -497,30 +697,36 @@ function ShoeSizeSelect({
 
     return (
         <div className="space-y-1.5">
-            <div className="grid grid-cols-3 gap-1">
-                {systems.map((s) => (
-                    <button
-                        key={s.id}
-                        type="button"
-                        onClick={() => onSystemChange(s.id)}
-                        className={cn(
-                            "rounded border px-1 py-1 text-center text-[10px]",
-                            system === s.id
-                                ? "border-primary bg-primary/10 text-primary"
-                                : "border-border text-muted-foreground hover:bg-muted",
-                        )}
-                    >
-                        {s.label}
-                    </button>
-                ))}
-            </div>
+            {sideLabel ? (
+                <p className="text-[10px] font-medium uppercase text-muted-foreground">{sideLabel}</p>
+            ) : null}
+            {!usOnly ? (
+                <div className="grid grid-cols-3 gap-1">
+                    {systems.map((s) => (
+                        <button
+                            key={s.id}
+                            type="button"
+                            onClick={() => onSystemChange(s.id)}
+                            className={cn(
+                                "rounded border px-1 py-1 text-center text-[10px]",
+                                system === s.id
+                                    ? "border-primary bg-primary/10 text-primary"
+                                    : "border-border text-muted-foreground hover:bg-muted",
+                            )}
+                        >
+                            {s.label}
+                        </button>
+                    ))}
+                </div>
+            ) : null}
 
-            {system === "us" ? (
+            {usOnly || system === "us" ? (
                 <select
                     className={selectClass}
                     value={String(usMenSize)}
                     aria-label="US shoe size"
                     onChange={(e) => onUsChange(Number(e.target.value))}
+                    onBlur={onCommitBlur}
                 >
                     {usShoeSizeOptions().map((opt) => (
                         <option key={opt.menSize} value={String(opt.menSize)}>
@@ -530,12 +736,13 @@ function ShoeSizeSelect({
                 </select>
             ) : null}
 
-            {system === "uk" ? (
+            {!usOnly && system === "uk" ? (
                 <select
                     className={selectClass}
                     value={String(ukSize)}
                     aria-label="UK shoe size"
                     onChange={(e) => onUkChange(Number(e.target.value))}
+                    onBlur={onCommitBlur}
                 >
                     {ukShoeSizeOptions().map((opt) => (
                         <option key={opt.ukSize} value={String(opt.ukSize)}>
@@ -545,12 +752,13 @@ function ShoeSizeSelect({
                 </select>
             ) : null}
 
-            {system === "mm" ? (
+            {!usOnly && system === "mm" ? (
                 <select
                     className={selectClass}
                     value={String(Math.round(footLengthMm))}
                     aria-label="Foot length millimetres"
                     onChange={(e) => onMmChange(Number(e.target.value))}
+                    onBlur={onCommitBlur}
                 >
                     {footLengthMmOptions().map((opt) => (
                         <option key={opt.footLengthMm} value={String(opt.footLengthMm)}>

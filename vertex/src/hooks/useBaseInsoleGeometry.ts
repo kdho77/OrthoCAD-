@@ -70,7 +70,7 @@ import {
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { resolveViewerWallStyle } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
-import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
+import { insoleLayoutForDesignSide, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
@@ -185,7 +185,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const assetId = base?.assetId ?? null;
     const isMirroredForLoad = !!base?.mirrored;
     const baseUrl = base?.url ?? null;
-    const layout = insoleLayoutFromDesign(design);
+    const layout = insoleLayoutForDesignSide(design, side);
 
     const nativeGeoRef = useRef<BufferGeometry | null>(null);
     const baseGeoRef = useRef<BufferGeometry | null>(null);
