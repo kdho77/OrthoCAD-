@@ -25,6 +25,30 @@ function half(u: number): number {
     return outlineHalfWidth(u) * (WIDTH / 2);
 }
 
+/** vSigned for a medial-frame y given as a fraction of the local half-width. */
+function medialV(u: number, fraction: number): number {
+    return (half(u) * fraction) / (WIDTH / 2);
+}
+
+function riseAt(cut: ReturnType<typeof amp>, u: number, v: number): number {
+    return amputationDeltaMm(u, v, "left", LENGTH, WIDTH, cut, half);
+}
+
+/** Small closed patch in the medial forefoot, like the founder's green shape. */
+function medialForefootLoop(length = LENGTH, width = WIDTH, wind = 1): AmputationPoint[] {
+    const u = 0.72;
+    const cx = u * length;
+    const cy = outlineHalfWidth(u) * (width / 2) * 0.55;
+    const r = 16;
+    const pts: AmputationPoint[] = [];
+    for (let i = 0; i < 8; i++) {
+        const t = (wind * i * Math.PI) / 4;
+        pts.push({ x: cx + r * Math.cos(t), y: cy + r * Math.sin(t) });
+    }
+    pts.push({ ...pts[0]! });
+    return pts;
+}
+
 /** U from the medial edge, around the toe, to the lateral edge. */
 function forefootCut(length = LENGTH, width = WIDTH): AmputationPoint[] {
     const edge = (u: number) => outlineHalfWidth(u) * (width / 2);
@@ -150,6 +174,16 @@ describe("amputation draw", () => {
         expect(drawn.clipped).toBe(true);
         expect(Math.abs(drawn.points[1]!.y)).toBeLessThan(WIDTH / 2);
     });
+
+    test("a closed loop stays inside the outline instead of snapping onto the rim", () => {
+        const loop = medialForefootLoop();
+        const drawn = confirmAmputationDraw(loop, LENGTH, WIDTH, half);
+        expect(drawn.rejected).toBe(false);
+        const start = drawn.points[0]!;
+        expect(Math.hypot(start.x - loop[0]!.x, start.y - loop[0]!.y)).toBeLessThan(1);
+        expect(start.y).toBeGreaterThan(5);
+        expect(start.y).toBeLessThan(half(0.72) - 4);
+    });
 });
 
 describe("displayed top sheet", () => {
@@ -245,6 +279,40 @@ describe("amputation height field", () => {
         expect(toe).toBeCloseTo(15, 1);
         expect(Math.abs(toe - 15)).toBeLessThanOrEqual(0.1);
         expect(heel).toBe(0);
+    });
+
+    test("a closed medial forefoot shape raises its inside and leaves the rest of the insole", () => {
+        const spec = amp();
+        const reach = amputationOutsideReachMm(spec);
+        for (const wind of [1, -1] as const) {
+            const cut = amp({ points: medialForefootLoop(LENGTH, WIDTH, wind) });
+            const centerV = medialV(0.72, 0.55);
+            const clearV = (16 + reach + 8) / (WIDTH / 2);
+            const center = riseAt(cut, 0.72, centerV);
+            const toe = riseAt(cut, 0.97, 0);
+            const heel = riseAt(cut, 0.12, 0);
+            const lateral = riseAt(cut, 0.72, centerV - clearV);
+            const outside = riseAt(cut, 0.72 + (16 + reach + 8) / LENGTH, centerV);
+            expect(center).toBeGreaterThan(14);
+            expect(toe).toBe(0);
+            expect(heel).toBe(0);
+            expect(lateral).toBe(0);
+            expect(outside).toBe(0);
+        }
+    });
+
+    test("the smaller rim pocket is the fill, so a heel line raises the heel and leaves the toe", () => {
+        const u0 = 0.28;
+        const cut = amp({
+            points: [
+                { x: u0 * LENGTH, y: half(u0) },
+                { x: 0.16 * LENGTH, y: 0 },
+                { x: u0 * LENGTH, y: -half(u0) },
+            ],
+        });
+        expect(riseAt(cut, 0.08, 0)).toBeGreaterThan(14);
+        expect(riseAt(cut, 0.9, 0)).toBe(0);
+        expect(riseAt(cut, 0.7, medialV(0.7, 0.5))).toBe(0);
     });
 });
 

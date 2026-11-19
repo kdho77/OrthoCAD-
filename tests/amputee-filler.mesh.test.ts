@@ -8,10 +8,12 @@ import type { BufferGeometry } from "three";
 import { applyDisplayedAmputation } from "@/hooks/useBaseInsoleGeometry";
 import {
     type AmputationPoint,
+    amputationOutsideReachMm,
     confirmAmputationDraw,
     normalizeSideAmputation,
 } from "@/lib/geometry/amputee-filler";
 import { baseModifierField, baseModifierFieldAuthoritative } from "@/lib/geometry/base-asset";
+import { type BaseFootprintFrame, getBaseFootprintFrame } from "@/lib/geometry/base-modifier";
 import { buildValidatedExportGeometry } from "@/lib/geometry/export-geometry";
 import { outlineHalfWidth } from "@/lib/geometry/height-field";
 import { validateManifold } from "@/lib/geometry/mesh-close";
@@ -25,6 +27,7 @@ import {
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { geometryToBinarySTL } from "@/lib/geometry/stl";
+import { effectiveOutlineHalfWidth } from "@/lib/geometry/trimline";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { createDesignWithStockPlaceholder, defaultDesign, useDesignStore } from "@/stores/design-store";
 import type { PlacedSink, Side, SideAmputation } from "@/types";
@@ -475,4 +478,220 @@ describe("amputee draw on the design view", () => {
             filledExport.dispose();
         }
     }, 180_000);
+
+    test("a medial forefoot shape raises only its inside, on the sheet and the export", async () => {
+        const usMen = 12;
+        const layout = insoleLayoutForUsMenSize(usMen);
+        const { design } = arm(usMen, "left", null);
+        const native = await sampleTopFromArrayBuffer(sampleBytes.buffer.slice(0));
+        const raw = native.clone();
+        const shoeWidth = {
+            width: "medium" as const,
+            ballWidthMm: layout.widthMm,
+            heelWidthMm: layout.widthMm * 0.62,
+        };
+        const plainLeft = await composeViewerPrintSolidTop({
+            raw,
+            sourceField: baseModifierField(design, "left", design.thicknessMm),
+            shoeWidth,
+        });
+        const half = (u: number) =>
+            effectiveOutlineHalfWidth(u, layout.lengthMm, layout.widthMm, null) * (layout.widthMm / 2);
+        const loop = medialForefootLoop(layout.lengthMm, layout.widthMm, half);
+        const drawn = confirmAmputationDraw(loop, layout.lengthMm, layout.widthMm, half);
+        expect(drawn.rejected).toBe(false);
+        expect(drawn.clipped).toBe(false);
+        const spec = normalizeSideAmputation({
+            enabled: true,
+            points: drawn.points,
+            height: 15,
+            filletInside: 10,
+            filletOutside: 30,
+            interfaceFillet: true,
+        });
+        const reach = amputationOutsideReachMm(spec);
+        useDesignStore.getState().updateAmputation("left", { enabled: true, points: drawn.points });
+        const filled = useDesignStore.getState().design;
+        const before = Float32Array.from(plainLeft.getAttribute("position").array as Float32Array);
+        const shown = plainLeft.clone();
+        applyDisplayedAmputation(shown, baseModifierField(filled, "left", filled.thicknessMm));
+        const after = shown.getAttribute("position").array as Float32Array;
+        const frame = getBaseFootprintFrame(shown, "left");
+        const preview = riseSplit(before, after, frame, layout.lengthMm, layout.widthMm, drawn.spline, reach);
+
+        const u0 = 0.22;
+        const heelCut = confirmAmputationDraw(
+            [
+                { x: u0 * layout.lengthMm, y: half(u0) },
+                { x: 0.12 * layout.lengthMm, y: 0 },
+                { x: u0 * layout.lengthMm, y: -half(u0) },
+            ],
+            layout.lengthMm,
+            layout.widthMm,
+            half,
+        );
+        expect(heelCut.rejected).toBe(false);
+        const heelAmp = normalizeSideAmputation({
+            enabled: true,
+            points: heelCut.points,
+            height: 15,
+            filletInside: 10,
+            filletOutside: 30,
+            interfaceFillet: true,
+        });
+        const heelShown = plainLeft.clone();
+        const heelDesign = { ...design, amputation: { left: heelAmp } };
+        applyDisplayedAmputation(heelShown, baseModifierField(heelDesign, "left", design.thicknessMm));
+        const heelAfter = heelShown.getAttribute("position").array as Float32Array;
+
+        const filledExport = await buildValidatedExportGeometry("left");
+        useDesignStore.setState({ design });
+        const plainExport = await buildValidatedExportGeometry("left");
+        try {
+            expect(preview.inside).toBeGreaterThan(10);
+            expect(preview.outside).toBe(0);
+            expect(regionRise(before, heelAfter, 0, 0.08)).toBeGreaterThan(10);
+            expect(regionRise(before, heelAfter, 0.55, 1)).toBeLessThan(0.05);
+            const exported = exportRiseSplit(
+                plainExport,
+                filledExport,
+                layout.lengthMm,
+                layout.widthMm,
+                drawn.spline,
+                reach,
+            );
+            expect(exported.inside).toBeGreaterThan(8);
+            expect(exported.outside).toBeLessThan(0.75);
+        } finally {
+            native.dispose();
+            raw.dispose();
+            plainLeft.dispose();
+            shown.dispose();
+            heelShown.dispose();
+            plainExport.dispose();
+            filledExport.dispose();
+        }
+    }, 180_000);
 });
+
+/** Closed patch in the medial forefoot. Medial y is positive in the filler frame. */
+function medialForefootLoop(
+    lengthMm: number,
+    widthMm: number,
+    half: (u: number) => number,
+): AmputationPoint[] {
+    const u = 0.72;
+    const cx = u * lengthMm;
+    const cy = half(u) * 0.55;
+    const r = 16;
+    const pts: AmputationPoint[] = [];
+    for (let i = 0; i < 8; i++) {
+        const t = (i * Math.PI) / 4;
+        pts.push({ x: cx + r * Math.cos(t), y: cy + r * Math.sin(t) });
+    }
+    pts.push({ ...pts[0]! });
+    return pts;
+}
+
+/** Left-foot mesh point in the filler frame. Medial y is positive. */
+function fillerFramePoint(
+    positions: ArrayLike<number>,
+    index: number,
+    frame: BaseFootprintFrame,
+    lengthMm: number,
+    widthMm: number,
+): { x: number; y: number; z: number } {
+    const xMesh = positions[index * 3 + frame.lengthAxis] ?? 0;
+    const yMesh = positions[index * 3 + frame.widthAxis] ?? 0;
+    const z = positions[index * 3 + frame.thickAxis] ?? 0;
+    const u = (xMesh - frame.lenMin) / Math.max(1e-6, frame.lenSize);
+    const halfW = Math.max(1e-6, frame.widSize / 2);
+    const vSigned = Math.max(-1, Math.min(1, (frame.widthSign * (yMesh - frame.widCenter)) / halfW));
+    return { x: u * lengthMm, y: vSigned * (widthMm / 2), z };
+}
+
+function ringContains(p: { x: number; y: number }, ring: readonly AmputationPoint[]): boolean {
+    let wind = 0;
+    for (let i = 0; i < ring.length; i++) {
+        const a = ring[i]!;
+        const b = ring[(i + 1) % ring.length]!;
+        if (a.y <= p.y) {
+            if (b.y > p.y && (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) > 0) wind++;
+        } else if (b.y <= p.y && (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) < 0) wind--;
+    }
+    return wind !== 0;
+}
+
+function ringDistance(p: { x: number; y: number }, ring: readonly AmputationPoint[]): number {
+    let best = Infinity;
+    for (let i = 0; i < ring.length - 1; i++) {
+        const a = ring[i]!;
+        const b = ring[i + 1]!;
+        const abx = b.x - a.x;
+        const aby = b.y - a.y;
+        const len2 = abx * abx + aby * aby;
+        let t = 0;
+        if (len2 > 1e-12) t = Math.max(0, Math.min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2));
+        best = Math.min(best, Math.hypot(p.x - (a.x + abx * t), p.y - (a.y + aby * t)));
+    }
+    return best;
+}
+
+function riseSplit(
+    before: Float32Array,
+    after: Float32Array,
+    frame: BaseFootprintFrame,
+    lengthMm: number,
+    widthMm: number,
+    ring: readonly AmputationPoint[],
+    reach: number,
+): { inside: number; outside: number } {
+    const n = Math.min(before.length, after.length) / 3;
+    let inside = 0;
+    let outside = 0;
+    for (let i = 0; i < n; i++) {
+        const p = fillerFramePoint(before, i, frame, lengthMm, widthMm);
+        const dz = (after[i * 3 + frame.thickAxis] ?? 0) - (before[i * 3 + frame.thickAxis] ?? 0);
+        const dist = ringDistance(p, ring);
+        if (ringContains(p, ring) && dist > 8) inside = Math.max(inside, dz);
+        else if (!ringContains(p, ring) && dist > reach) outside = Math.max(outside, dz);
+    }
+    return { inside, outside };
+}
+
+function exportRiseSplit(
+    plain: BufferGeometry,
+    filled: BufferGeometry,
+    lengthMm: number,
+    widthMm: number,
+    ring: readonly AmputationPoint[],
+    reach: number,
+): { inside: number; outside: number } {
+    const cell = 8;
+    const bins = (geom: BufferGeometry) => {
+        const frame = getBaseFootprintFrame(geom, "left");
+        const pos = geom.getAttribute("position").array as Float32Array;
+        const map = new Map<string, number>();
+        for (let i = 0; i < pos.length / 3; i++) {
+            const p = fillerFramePoint(pos, i, frame, lengthMm, widthMm);
+            const key = `${Math.round(p.x / cell)}:${Math.round(p.y / cell)}`;
+            map.set(key, Math.max(map.get(key) ?? -Infinity, p.z));
+        }
+        return map;
+    };
+    const plainBins = bins(plain);
+    const filledBins = bins(filled);
+    let inside = 0;
+    let outside = 0;
+    for (const [key, z] of filledBins) {
+        const base = plainBins.get(key);
+        if (base == null || !Number.isFinite(base)) continue;
+        const [gx, gy] = key.split(":").map(Number);
+        const sample = { x: (gx ?? 0) * cell, y: (gy ?? 0) * cell };
+        const dist = ringDistance(sample, ring);
+        const dz = z - base;
+        if (ringContains(sample, ring) && dist > 12) inside = Math.max(inside, dz);
+        else if (!ringContains(sample, ring) && dist > reach + cell) outside = Math.max(outside, dz);
+    }
+    return { inside, outside };
+}
