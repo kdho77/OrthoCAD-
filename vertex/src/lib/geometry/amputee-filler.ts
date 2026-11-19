@@ -610,6 +610,13 @@ export function applyAmputationRiseToTop(args: {
     lenSize: number;
     vSignedAt: (y: number) => number;
     halfWidthMm: (u: number) => number;
+    /** Design-view sheet. The loft keeps the cap so a coarse triangle cannot fold the wall. */
+    capSlopes?: boolean;
+    /**
+     * Design-view sheet. SAMPLE_Top has interior chart seams, so a topological
+     * rim fades the whole toe. The lofted solid has one real rim and keeps the fade.
+     */
+    fadeRim?: boolean;
 }): AmputationRiseResult {
     const raised = new Set<number>();
     const bridges: AmputationBridge[] = [];
@@ -626,6 +633,8 @@ export function applyAmputationRiseToTop(args: {
         vSignedAt,
         halfWidthMm,
     } = args;
+    const capSlopes = args.capSlopes !== false;
+    const fadeRim = args.fadeRim !== false;
     if (!amputationFillerActive(amp) || !(lenSize > 1e-6)) return { raised, bridges };
     const n = Math.min(topCount, (positions.length / 3) | 0);
     const rim = topRimEdges(indices, n);
@@ -635,6 +644,7 @@ export function applyAmputationRiseToTop(args: {
         const u = Math.max(0, Math.min(1, (x - minX) / lenSize));
         const raw = amputationDeltaMm(u, vSignedAt(y), side, lengthMm, widthMm, amp, halfWidthMm);
         if (!(raw > 0)) return 0;
+        if (!fadeRim) return raw;
         const dist = rim.length > 0 ? distToSegments(x, y, positions, rim) : band;
         return raw * rimRiseTaper(dist, band);
     };
@@ -646,8 +656,76 @@ export function applyAmputationRiseToTop(args: {
         positions[i * 3 + 2] = (origZ[i] ?? 0) + rise;
         if (rise > 1e-6) raised.add(i);
     }
-    capRiseSlopes(positions, indices, n, origZ);
+    if (capSlopes) capRiseSlopes(positions, indices, n, origZ);
     return { raised, bridges };
+}
+
+export interface DisplayedTopFrame {
+    lengthAxis: number;
+    widthAxis: number;
+    thickAxis: number;
+    /** Length-axis minimum of the displayed sheet. */
+    minX: number;
+    lenSize: number;
+    widthSign: number;
+    widCenter: number;
+    widHalf: number;
+}
+
+/**
+ * Raise the design-view top sheet in place. The composed sheet is lofted
+ * unraised; this is the same plateau the print solid adds after the wall.
+ * Returns the largest rise written. A disabled filler leaves every vertex.
+ */
+export function raiseDisplayedTopPositions(
+    positions: ArrayLike<number> & { [index: number]: number },
+    vertexCount: number,
+    indices: number[],
+    field: {
+        side: Side;
+        lengthMm: number;
+        widthMm: number;
+        amputation?: SideAmputation | null;
+        halfWidthMm: (u: number) => number;
+    },
+    frame: DisplayedTopFrame,
+): number {
+    const amp = field.amputation;
+    if (!amp || !amputationFillerActive(amp) || !(frame.lenSize > 1e-6)) return 0;
+    const n = Math.min(vertexCount, (positions.length / 3) | 0);
+    const scratch: number[] = new Array(n * 3);
+    const baseThick: number[] = new Array(n);
+    for (let i = 0; i < n; i++) {
+        scratch[i * 3] = positions[i * 3 + frame.lengthAxis] ?? 0;
+        scratch[i * 3 + 1] = positions[i * 3 + frame.widthAxis] ?? 0;
+        const thick = positions[i * 3 + frame.thickAxis] ?? 0;
+        scratch[i * 3 + 2] = thick;
+        baseThick[i] = thick;
+    }
+    const half = Math.max(1e-6, frame.widHalf);
+    applyAmputationRiseToTop({
+        positions: scratch,
+        topCount: n,
+        indices,
+        side: field.side,
+        amp,
+        lengthMm: field.lengthMm,
+        widthMm: field.widthMm,
+        minX: frame.minX,
+        lenSize: frame.lenSize,
+        vSignedAt: (y) => Math.max(-1, Math.min(1, (frame.widthSign * (y - frame.widCenter)) / half)),
+        halfWidthMm: field.halfWidthMm,
+        capSlopes: false,
+        fadeRim: false,
+    });
+    let max = 0;
+    for (let i = 0; i < n; i++) {
+        const thick = scratch[i * 3 + 2] ?? baseThick[i] ?? 0;
+        const dz = thick - (baseThick[i] ?? 0);
+        if (dz > max) max = dz;
+        positions[i * 3 + frame.thickAxis] = thick;
+    }
+    return max;
 }
 
 /**

@@ -2,6 +2,8 @@
 
 import { afterEach, describe, expect, test } from "@rstest/core";
 import * as THREE from "three";
+import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-id";
+import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import {
@@ -62,6 +64,14 @@ describe("amputation draw session", () => {
     });
 
     test("starting Draw closes the trimline editor and the bottom-pattern editor", () => {
+        useBaseOutlineStore.getState().setOutline(`${SAMPLE_TOP_ASSET_ID}:left:p`, {
+            points: [
+                new THREE.Vector3(0, -20, 0),
+                new THREE.Vector3(80, -28, 0),
+                new THREE.Vector3(160, 0, 0),
+                new THREE.Vector3(80, 28, 0),
+            ],
+        });
         useMeshEditStore.getState().beginTrimlineEdit("left");
         expect(useMeshEditStore.getState().editMode).toBe("edit-trimline");
         useAmputationDrawStore.getState().start("left");

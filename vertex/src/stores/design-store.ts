@@ -536,7 +536,7 @@ export interface DesignStore {
 
     updateShapeFinish: (side: Side, patch: Partial<SideShapeFinish>) => void;
     setShapeFinishLinked: (linked: boolean) => void;
-    /** Per-foot amputation filler. Not mirrored by corrections.linked. */
+    /** Per-foot amputation filler. Mirrored when corrections.linked is on. */
     updateAmputation: (side: Side, patch: Partial<SideAmputation>) => void;
     setTextMarking: (patch: Partial<TextMarking>) => void;
 
@@ -854,10 +854,15 @@ export const useDesignStore = create<DesignStore>()(
                         ...patch,
                         points: patch.points ?? prev.points,
                     });
+                    const other: Side = side === "left" ? "right" : "left";
+                    const linked = s.design.corrections.linked;
+                    const mirrored = { ...next, points: next.points.map((p) => ({ ...p })) };
                     return {
                         design: {
                             ...s.design,
-                            amputation: { ...current, [side]: next },
+                            amputation: linked
+                                ? { ...current, [side]: next, [other]: mirrored }
+                                : { ...current, [side]: next },
                         },
                     };
                 }),

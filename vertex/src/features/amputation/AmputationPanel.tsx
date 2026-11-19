@@ -1,11 +1,10 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { type MouseEvent, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
     confirmAmputationDraw,
     defaultSideAmputation,
-    footOutlineMedial,
     normalizeSideAmputation,
 } from "@/lib/geometry/amputee-filler";
 import { outlineHalfWidth } from "@/lib/geometry/height-field";
@@ -33,7 +32,6 @@ export function AmputationPanel() {
     const drawing = useAmputationDrawStore((s) => s.side);
     const draft = useAmputationDrawStore((s) => s.points);
     const start = useAmputationDrawStore((s) => s.start);
-    const place = useAmputationDrawStore((s) => s.place);
     const undoPoint = useAmputationDrawStore((s) => s.undo);
     const cancelDraw = useAmputationDrawStore((s) => s.cancel);
     const [note, setNote] = useState<string | null>(null);
@@ -46,11 +44,6 @@ export function AmputationPanel() {
         setNote(
             "Click the insole from the medial edge, around the toe, to the lateral edge. The cut shows on the sheet as you place points.",
         );
-    };
-
-    const onPlace = (x: number, y: number) => {
-        if (!drawing) return;
-        place({ x, y });
     };
 
     const confirm = () => {
@@ -67,7 +60,7 @@ export function AmputationPanel() {
         }
         updateAmputation(drawing, { enabled: true, points: result.points });
         setNote(
-            result.clipped ? "Clipped to the outline." : "Line saved. The filler rebuilds when you reopen.",
+            result.clipped ? "Clipped to the outline. The toe side is raised." : "The toe side is raised.",
         );
         cancelDraw();
     };
@@ -97,17 +90,11 @@ export function AmputationPanel() {
                 );
             })}
             {drawing ? (
-                <div className="space-y-2 rounded-md border border-border p-2">
+                <div className="space-y-2">
                     <p className="text-[11px] text-muted-foreground">
-                        Drawing {SIDE_LABEL[drawing]}. Medial is the top of the outline.
+                        Click the {SIDE_LABEL[drawing]} insole from the medial edge, around the toe, to the
+                        lateral edge, then Confirm.
                     </p>
-                    <DrawCanvas
-                        lengthMm={layout.lengthMm}
-                        widthMm={layout.widthMm}
-                        halfWidthMm={halfWidthMm}
-                        points={draft}
-                        onPlace={onPlace}
-                    />
                     <div className="flex gap-2">
                         <Button type="button" size="sm" onClick={confirm}>
                             Confirm
@@ -224,84 +211,5 @@ function MmField({
                 <span className="text-muted-foreground">mm</span>
             </span>
         </label>
-    );
-}
-
-function DrawCanvas({
-    lengthMm,
-    widthMm,
-    halfWidthMm,
-    points,
-    onPlace,
-}: {
-    lengthMm: number;
-    widthMm: number;
-    halfWidthMm: (u: number) => number;
-    points: { id: string; x: number; y: number }[];
-    onPlace: (x: number, y: number) => void;
-}) {
-    const outline = footOutlineMedial(lengthMm, widthMm, halfWidthMm);
-    const sy = (y: number) => widthMm / 2 - y;
-    const outlineD = outline
-        .map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(2)},${sy(p.y).toFixed(2)}`)
-        .join(" ");
-    const lineD =
-        points.length > 1
-            ? points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(2)},${sy(p.y).toFixed(2)}`).join(" ")
-            : "";
-    const onClick = (event: MouseEvent<SVGSVGElement>) => {
-        const svg = event.currentTarget;
-        const pt = svg.createSVGPoint();
-        pt.x = event.clientX;
-        pt.y = event.clientY;
-        const ctm = svg.getScreenCTM();
-        if (!ctm) return;
-        const local = pt.matrixTransform(ctm.inverse());
-        onPlace(local.x, widthMm / 2 - local.y);
-    };
-    return (
-        <div className="h-36 w-full">
-            <svg
-                viewBox={`0 0 ${lengthMm} ${widthMm}`}
-                className="h-full w-full rounded bg-muted"
-                role="application"
-                aria-label="Amputation draw canvas"
-                onClick={onClick}
-                onKeyDown={() => {
-                    // Points are placed with the pointer. Confirm commits the cut.
-                }}
-            >
-                <title>Foot outline</title>
-                <path
-                    d={`${outlineD} Z`}
-                    fill="none"
-                    stroke="#64748b"
-                    strokeWidth={2}
-                    vectorEffect="non-scaling-stroke"
-                />
-                {lineD ? (
-                    <path
-                        d={lineD}
-                        fill="none"
-                        stroke="#f8fafc"
-                        strokeWidth={3.5}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        vectorEffect="non-scaling-stroke"
-                    />
-                ) : null}
-                {points.map((p) => (
-                    <circle
-                        key={p.id}
-                        cx={p.x}
-                        cy={sy(p.y)}
-                        r={Math.max(2.4, lengthMm / 70)}
-                        fill="#f8fafc"
-                        stroke="#e11d48"
-                        strokeWidth={Math.max(1.2, lengthMm / 160)}
-                    />
-                ))}
-            </svg>
-        </div>
     );
 }

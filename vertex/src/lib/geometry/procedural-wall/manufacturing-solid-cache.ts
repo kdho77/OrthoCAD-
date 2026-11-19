@@ -125,8 +125,23 @@ export function effectiveTrimlineHashes(options: ProceduralPreviewOptions): {
     return { compose: curveHash(compose), posting: curveHash(posting) };
 }
 
+/** Present only when the filler is on, so a stock field keeps its previous key. */
+function amputationIdentity(field: HeightFieldParams) {
+    const amp = field.amputation;
+    if (!amp) return null;
+    return {
+        enabled: amp.enabled === true,
+        height: amp.height,
+        filletInside: amp.filletInside,
+        filletOutside: amp.filletOutside,
+        interfaceFillet: amp.interfaceFillet !== false,
+        points: amp.points.map((p) => `${Math.round(p.x * 100)},${Math.round(p.y * 100)}`).join(";"),
+    };
+}
+
 function fieldIdentity(field: HeightFieldParams | undefined) {
     if (!field) return null;
+    const amputation = amputationIdentity(field);
     return {
         side: field.side,
         lengthMm: field.lengthMm,
@@ -146,6 +161,7 @@ function fieldIdentity(field: HeightFieldParams | undefined) {
         method: field.method ?? "",
         shapeFinish: field.shapeFinish ?? null,
         shoeWidth: field.shoeWidth ?? null,
+        ...(amputation ? { amputation } : {}),
     };
 }
 

@@ -128,6 +128,29 @@ describe("manufacturing solid fingerprint", () => {
             ],
             ["geometry version", manufacturingSolidFingerprint(options(), context({ geometryVersion: 2 }))],
             ["printLoftEpoch", manufacturingSolidFingerprint(options(), context({ printLoftEpoch: 5 }))],
+            [
+                "amputation",
+                manufacturingSolidFingerprint(
+                    options({
+                        sourceField: {
+                            ...options().sourceField,
+                            amputation: {
+                                enabled: true,
+                                height: 15,
+                                filletInside: 10,
+                                filletOutside: 30,
+                                interfaceFillet: true,
+                                points: [
+                                    { x: 160, y: 20 },
+                                    { x: 220, y: 0 },
+                                    { x: 160, y: -20 },
+                                ],
+                            },
+                        },
+                    }),
+                    context(),
+                ),
+            ],
         ];
         for (const [label, next] of changed) {
             expect(next, label).not.toBe(base);

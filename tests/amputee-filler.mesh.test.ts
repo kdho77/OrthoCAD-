@@ -5,11 +5,17 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, rs, test } from "@rstest/core";
 import type { BufferGeometry } from "three";
-import { type AmputationPoint, normalizeSideAmputation } from "@/lib/geometry/amputee-filler";
-import { baseModifierFieldAuthoritative } from "@/lib/geometry/base-asset";
+import { applyDisplayedAmputation } from "@/hooks/useBaseInsoleGeometry";
+import {
+    type AmputationPoint,
+    confirmAmputationDraw,
+    normalizeSideAmputation,
+} from "@/lib/geometry/amputee-filler";
+import { baseModifierField, baseModifierFieldAuthoritative } from "@/lib/geometry/base-asset";
 import { buildValidatedExportGeometry } from "@/lib/geometry/export-geometry";
 import { outlineHalfWidth } from "@/lib/geometry/height-field";
 import { validateManifold } from "@/lib/geometry/mesh-close";
+import { composeViewerPrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import { printSolidOptions } from "@/lib/geometry/procedural-wall/print-solid-options";
 import {
     buildProceduralExportSolid,
@@ -18,6 +24,7 @@ import {
     sampleTopFromArrayBuffer,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
+import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { createDesignWithStockPlaceholder, defaultDesign, useDesignStore } from "@/stores/design-store";
 import type { PlacedSink, Side, SideAmputation } from "@/types";
@@ -340,3 +347,132 @@ function plateauErrorMm(
     void wid;
     return { plateauCount, heelError, maxRise };
 }
+
+function regionRise(before: Float32Array, after: Float32Array, u0: number, u1: number): number {
+    const n = Math.min(before.length, after.length) / 3;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (let i = 0; i < n; i++) {
+        minX = Math.min(minX, before[i * 3] ?? 0);
+        maxX = Math.max(maxX, before[i * 3] ?? 0);
+    }
+    const len = Math.max(1e-6, maxX - minX);
+    let max = 0;
+    for (let i = 0; i < n; i++) {
+        const u = ((before[i * 3] ?? 0) - minX) / len;
+        if (u < u0 || u > u1) continue;
+        const dz = (after[i * 3 + 2] ?? 0) - (before[i * 3 + 2] ?? 0);
+        if (dz > max) max = dz;
+    }
+    return max;
+}
+
+/** Highest vertex in an X-fraction band. Either end can be the toe, depending on the solid. */
+function stlBandMaxZ(stl: ArrayBuffer, u0: number, u1: number): number {
+    const view = new DataView(stl);
+    const count = view.getUint32(80, true);
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let offset = 84;
+    for (let i = 0; i < count; i++) {
+        offset += 12;
+        for (let v = 0; v < 3; v++) {
+            const x = view.getFloat32(offset, true);
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            offset += 12;
+        }
+        offset += 2;
+    }
+    const span = Math.max(1e-6, maxX - minX);
+    const lo = minX + u0 * span;
+    const hi = minX + u1 * span;
+    offset = 84;
+    let maxZ = -Infinity;
+    for (let i = 0; i < count; i++) {
+        offset += 12;
+        for (let v = 0; v < 3; v++) {
+            const x = view.getFloat32(offset, true);
+            const z = view.getFloat32(offset + 8, true);
+            if (x >= lo && x <= hi && z > maxZ) maxZ = z;
+            offset += 12;
+        }
+        offset += 2;
+    }
+    return maxZ;
+}
+
+describe("amputee draw on the design view", () => {
+    test("confirming a drawn line raises the displayed sheet and the exported STL", async () => {
+        const usMen = 12;
+        const layout = insoleLayoutForUsMenSize(usMen);
+        const { design } = arm(usMen, "left", null);
+        expect(design.shoeWidth).toBe("medium");
+        expect(design.corrections.linked).toBe(true);
+        const native = await sampleTopFromArrayBuffer(sampleBytes.buffer.slice(0));
+        const raw = native.clone();
+        const shoeWidth = {
+            width: "medium" as const,
+            ballWidthMm: layout.widthMm,
+            heelWidthMm: layout.widthMm * 0.62,
+        };
+        const plainLeft = await composeViewerPrintSolidTop({
+            raw,
+            sourceField: baseModifierField(design, "left", design.thicknessMm),
+            shoeWidth,
+        });
+        const plainRight = await composeViewerPrintSolidTop({
+            raw,
+            sourceField: baseModifierField(design, "right", design.thicknessMm),
+            shoeWidth,
+        });
+        const half = (u: number) => outlineHalfWidth(u) * (layout.widthMm / 2);
+        const drawn = confirmAmputationDraw(
+            forefootCut(layout.lengthMm, layout.widthMm),
+            layout.lengthMm,
+            layout.widthMm,
+            half,
+        );
+        expect(drawn.rejected).toBe(false);
+        useDesignStore.getState().updateAmputation("left", { enabled: true, points: drawn.points });
+        const filled = useDesignStore.getState().design;
+        expect(filled.amputation?.left?.height).toBe(15);
+        expect(filled.amputation?.left?.filletInside).toBe(10);
+        expect(filled.amputation?.left?.filletOutside).toBe(30);
+        expect(filled.amputation?.right?.points).toEqual(filled.amputation?.left?.points);
+
+        const leftBefore = Float32Array.from(plainLeft.getAttribute("position").array as Float32Array);
+        const rightBefore = Float32Array.from(plainRight.getAttribute("position").array as Float32Array);
+        const leftShown = plainLeft.clone();
+        const rightShown = plainRight.clone();
+        applyDisplayedAmputation(leftShown, baseModifierField(filled, "left", filled.thicknessMm));
+        applyDisplayedAmputation(rightShown, baseModifierField(filled, "right", filled.thicknessMm));
+        const leftAfter = leftShown.getAttribute("position").array as Float32Array;
+        const rightAfter = rightShown.getAttribute("position").array as Float32Array;
+        const leftToe = regionRise(leftBefore, leftAfter, 0.72, 0.9);
+        const rightToe = regionRise(rightBefore, rightAfter, 0.72, 0.9);
+        expect(leftToe).toBeGreaterThan(10);
+        expect(regionRise(leftBefore, leftAfter, 0, 0.2)).toBeLessThan(0.05);
+        expect(rightToe).toBeGreaterThan(10);
+
+        const filledExport = await buildValidatedExportGeometry("left");
+        const filledStl = geometryToBinarySTL(filledExport);
+        useDesignStore.setState({ design });
+        const plainExport = await buildValidatedExportGeometry("left");
+        const plainStl = geometryToBinarySTL(plainExport);
+        try {
+            const toeEnd = stlBandMaxZ(filledStl, 0.8, 1) - stlBandMaxZ(plainStl, 0.8, 1);
+            const heelEnd = stlBandMaxZ(filledStl, 0, 0.2) - stlBandMaxZ(plainStl, 0, 0.2);
+            expect(Math.max(toeEnd, heelEnd)).toBeGreaterThan(1);
+        } finally {
+            native.dispose();
+            raw.dispose();
+            plainLeft.dispose();
+            plainRight.dispose();
+            leftShown.dispose();
+            rightShown.dispose();
+            plainExport.dispose();
+            filledExport.dispose();
+        }
+    }, 180_000);
+});

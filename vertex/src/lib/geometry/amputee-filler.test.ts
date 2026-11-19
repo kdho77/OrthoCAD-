@@ -11,6 +11,7 @@ import {
     confirmAmputationDraw,
     defaultSideAmputation,
     normalizeSideAmputation,
+    raiseDisplayedTopPositions,
     rimBlendBandMm,
     rimRiseTaper,
     subdivideTallWalls,
@@ -148,6 +149,45 @@ describe("amputation draw", () => {
         expect(drawn.rejected).toBe(false);
         expect(drawn.clipped).toBe(true);
         expect(Math.abs(drawn.points[1]!.y)).toBeLessThan(WIDTH / 2);
+    });
+});
+
+describe("displayed top sheet", () => {
+    test("confirming a drawn line raises toe vertices and leaves the heel", () => {
+        const drawn = confirmAmputationDraw(forefootCut(), LENGTH, WIDTH, half);
+        expect(drawn.rejected).toBe(false);
+        const saved = normalizeSideAmputation({
+            ...defaultSideAmputation(),
+            enabled: true,
+            points: drawn.points,
+        });
+        const positions = new Float32Array([20, 0, 4, 240, 0, 4, 210, 8, 4]);
+        const rise = raiseDisplayedTopPositions(
+            positions,
+            3,
+            [],
+            {
+                side: "left",
+                lengthMm: LENGTH,
+                widthMm: WIDTH,
+                amputation: saved,
+                halfWidthMm: half,
+            },
+            {
+                lengthAxis: 0,
+                widthAxis: 1,
+                thickAxis: 2,
+                minX: 0,
+                lenSize: LENGTH,
+                widthSign: -1,
+                widCenter: 0,
+                widHalf: WIDTH / 2,
+            },
+        );
+        expect(positions[2]).toBeCloseTo(4, 5);
+        expect(positions[5] - 4).toBeGreaterThan(10);
+        expect(positions[8] - 4).toBeGreaterThan(10);
+        expect(rise).toBeGreaterThan(10);
     });
 });
 
