@@ -933,7 +933,7 @@ function seatOuterContact(
         return sdCache[i] ?? 0;
     };
 
-    for (let pass = 0; pass < 4; pass++) {
+    for (let pass = 0; pass < 3; pass++) {
         const vertCount = (buf.length / 3) | 0;
         const sd = new Float64Array(vertCount);
         for (let i = 0; i < vertCount; i++) {
@@ -949,6 +949,20 @@ function seatOuterContact(
             const b = idx[f * 3 + 1] ?? 0;
             const c = idx[f * 3 + 2] ?? 0;
             if (!isOuter(a) || !isOuter(b) || !isOuter(c)) continue;
+            const da = sd[a] ?? 0;
+            const db = sd[b] ?? 0;
+            const dc = sd[c] ?? 0;
+            // A face can only split where an edge crosses the pattern or sits in the ramp band.
+            if (
+                Math.abs(da) >= band &&
+                Math.abs(db) >= band &&
+                Math.abs(dc) >= band &&
+                da * db >= 0 &&
+                db * dc >= 0 &&
+                dc * da >= 0
+            ) {
+                continue;
+            }
             outerFace[f] = 1;
             for (const [u, v] of [
                 [a, b],
