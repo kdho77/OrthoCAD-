@@ -299,10 +299,21 @@ export interface AfoShellOptions {
     /** Plantar / heel seed for the kept posterior-leaf region, in mesh millimetres. */
     heelSeed?: AfoVec3;
     /**
-     * Forefoot plate. Generate shell always sets this. Primitive shells
-     * (a sphere, a trim-only fixture) omit it and keep the plain offset.
+     * Built-down forefoot plate. Off unless the print panel's plate mode is on.
+     * Primitive shells (a sphere, a trim-only fixture) omit it and keep the plain offset.
      */
     flatPlate?: AfoFlatPlateSpec;
+    /**
+     * Patterned shallow contact cut on the outer skin. This is the default
+     * Generate shell path. Ignored when `flatPlate` is set, so plate mode
+     * stays the plate build.
+     */
+    contactCut?: AfoFlatPlateSpec;
+    /**
+     * Orthotic taper of the forefoot wall. On with a contact cut. Set false
+     * only to build the untapered shell for a comparison render.
+     */
+    forefootTaper?: boolean;
 }
 
 export interface TrimLoopValidation {

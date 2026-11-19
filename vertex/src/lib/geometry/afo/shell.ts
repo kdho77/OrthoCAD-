@@ -12,6 +12,8 @@ import { cloneMesh, computeVertexNormals, meshProjector, nearestVertex, vertexCo
 import { offsetMeshAlongNormals } from "./sdf-offset";
 import { embedTrimPolyline } from "./shell-cut";
 import {
+    applyForefootTaper,
+    applyOuterContactCut,
     assertFlatPlateAccepted,
     type FlatPlateLock,
     flattenKeepSurface,
@@ -93,6 +95,11 @@ export function buildAfoShell(
         smoothPlateCut(shell, plate);
         rememberFlatPlate(shell, plate);
         assertFlatPlateAccepted(shell, plate, options.edgeMm);
+    } else if (options.contactCut) {
+        // The forefoot wall lowers and thins before the sole is seated, so the
+        // contact cut still owns the outer plantar skin and does not write inners.
+        if (options.forefootTaper !== false) applyForefootTaper(shell, options.contactCut, options.edgeMm);
+        applyOuterContactCut(shell, options.contactCut, options.edgeMm);
     }
     options.onProgress?.(1, "done");
     return shell;

@@ -445,6 +445,1546 @@ export function smoothPlateCut(
     return;
 }
 
+/** Shoulder height outside the contact pattern. */
+export const AFO_CONTACT_SHOULDER_MM = 0.3;
+/** Hard cap on how far an outer vertex may move. d + r stays at or under 1.5 mm. */
+export const AFO_CONTACT_CUT_CAP_MM = 1.2;
+
+export type ContactCutFallback = "none" | "neck-slid" | "neck-narrow" | "flagged";
+
+export interface ContactCutFrame {
+    origin: AfoVec3;
+    /** Heel → toe, unit, in the landmark plane. */
+    forward: AfoVec3;
+    /** Medial → lateral, unit, in the landmark plane. */
+    lateral: AfoVec3;
+    /** Up, away from the belt. */
+    normal: AfoVec3;
+    /** Contact height above the landmark origin: h0 + a*s + b*t. */
+    h0: number;
+    a: number;
+    b: number;
+    /** s coordinate of the posterior plantar outline. u = (s - s0) / length. */
+    s0: number;
+    lengthMm: number;
+}
+
+export interface ContactCutReport {
+    fallback: ContactCutFallback;
+    /** Depth of the patterned cut, before the 0.3 mm shoulder. */
+    dMm: number;
+    rMm: number;
+    /** Tilt of the contact plane off the heel–M1–M5 plane. */
+    tiltDeg: number;
+    frame: ContactCutFrame;
+    /** Contact pattern in the (s, t) plane, closed, lateral-positive. */
+    polygon: Array<{ s: number; t: number }>;
+    neckWidthRatio: number;
+    lateralInsetMm: number;
+    /** Forefoot band length along the belt. */
+    startLengthMm: number;
+    bbox: { l: number; w: number; h: number };
+    /**
+     * Chebyshev height range of the designed template (heel pad, lateral neck,
+     * forefoot band) before any reachable-skin trim. Above the 1.2 mm cap the
+     * whole pattern cannot seat on one plane.
+     */
+    templateRangeMm: number;
+    /** Fraction of the designed template within the cut cap of the fitted plane. */
+    reachableFraction: number;
+    /** Area-weighted shell centroid, margin inside the contact polygon. */
+    comMarginMm: number;
+    /** The designed template was seated. False when the range exceeds the cap. */
+    seated: boolean;
+}
+
+const contactReports = new WeakMap<AfoTriMesh, ContactCutReport>();
+
+export function contactCutReportOf(shell: AfoTriMesh): ContactCutReport | undefined {
+    return contactReports.get(shell);
+}
+
+/**
+ * Patterned shallow contact on the outer skin.
+ * Heel pad, lateral midfoot neck, and forefoot band are cut onto one plane.
+ * Inner vertices are not written. Plate mode does not call this.
+ */
+export function applyOuterContactCut(
+    shell: AfoTriMesh,
+    spec: AfoFlatPlateSpec,
+    edgeMm: number,
+): ContactCutReport {
+    const report = cutOuterContact(shell, spec, edgeMm);
+    contactReports.set(shell, report);
+    return report;
+}
+
+/**
+ * Distal crest height of the forefoot shell above the outer sole.
+ * The wall lowers to this and the edge round finishes on the same slope.
+ */
+export const AFO_FOREFOOT_TIP_MM = 1.45;
+/** Wall thickness of that distal edge. */
+export const AFO_FOREFOOT_TIP_WALL_MM = 1.15;
+/** Blend starts this far behind the met line so the edge is already moving. */
+const FOREFOOT_TAPER_BLEND_MM = 46;
+
+/**
+ * From the metatarsal line forward, lower the shell and thin its border to a
+ * thin distal edge. Plantar vertices that the contact cut will seat stay put.
+ * The same taper runs on the uncut shell so the inner surface matches.
+ */
+export function applyForefootTaper(shell: AfoTriMesh, spec: AfoFlatPlateSpec, _edgeMm: number): void {
+    const planes = contactPlanesFromLandmarks(spec);
+    const n = shell.outerVertex0 ?? 0;
+    const born0 = (shell.positions.length / 3) | 0;
+    if (n < 8 || born0 < n * 2) return;
+    const pos: number[] = Array.from(shell.positions);
+    const idx: number[] = Array.from(shell.indices);
+    const skin: number[] = [];
+    for (let i = 0; i < born0; i++) skin.push(i < n ? 0 : i < n * 2 ? 1 : 2);
+    const plantar: number[] = new Array(born0).fill(0);
+
+    const origin = planes.origin;
+    const forward = planes.forward;
+    const lateral = planes.along;
+    const up = planes.normal;
+    const frameOf = (buf: number[], i: number) => {
+        const x = (buf[i * 3] ?? 0) - origin.x;
+        const y = (buf[i * 3 + 1] ?? 0) - origin.y;
+        const z = (buf[i * 3 + 2] ?? 0) - origin.z;
+        return {
+            s: x * forward.x + y * forward.y + z * forward.z,
+            t: x * lateral.x + y * lateral.y + z * lateral.z,
+            h: x * up.x + y * up.y + z * up.z,
+        };
+    };
+    const sMet =
+        (planes.m1.x - origin.x) * forward.x +
+        (planes.m1.y - origin.y) * forward.y +
+        (planes.m1.z - origin.z) * forward.z;
+    const aheadAt = (buf: number[], i: number) => frameOf(buf, i).s - sMet;
+
+    for (let i = n; i < n * 2 && i < born0; i++) {
+        const inner = i - n;
+        const ox = (pos[i * 3] ?? 0) - (pos[inner * 3] ?? 0);
+        const oy = (pos[i * 3 + 1] ?? 0) - (pos[inner * 3 + 1] ?? 0);
+        const oz = (pos[i * 3 + 2] ?? 0) - (pos[inner * 3 + 2] ?? 0);
+        const ol = Math.hypot(ox, oy, oz);
+        if (ol < 2.2) continue;
+        if (ox * up.x + oy * up.y + oz * up.z > -0.72 * ol) continue;
+        plantar[i] = 1;
+        plantar[inner] = 1;
+    }
+    let plantarCount = 0;
+    for (let i = 0; i < born0; i++) if (plantar[i]) plantarCount++;
+    if (plantarCount < 24) return;
+    let sTip = 0;
+    for (let i = n; i < n * 2 && i < born0; i++) if (plantar[i]) sTip = Math.max(sTip, aheadAt(pos, i));
+    if (!(sTip > 22)) return;
+
+    const partner: number[] = new Array(born0).fill(-1);
+    const off: number[] = new Array(born0 * 3).fill(0);
+    for (let i = 0; i < n && i + n < born0; i++) {
+        partner[i] = i + n;
+        partner[i + n] = i;
+        const dx = (pos[(i + n) * 3] ?? 0) - (pos[i * 3] ?? 0);
+        const dy = (pos[(i + n) * 3 + 1] ?? 0) - (pos[i * 3 + 1] ?? 0);
+        const dz = (pos[(i + n) * 3 + 2] ?? 0) - (pos[i * 3 + 2] ?? 0);
+        off[i * 3] = dx;
+        off[i * 3 + 1] = dy;
+        off[i * 3 + 2] = dz;
+        off[(i + n) * 3] = dx;
+        off[(i + n) * 3 + 1] = dy;
+        off[(i + n) * 3 + 2] = dz;
+    }
+
+    const sShape0 = -FOREFOOT_TAPER_BLEND_MM;
+    const total = (pos.length / 3) | 0;
+    const orig = pos.slice();
+    const soleOuter: number[] = [];
+    for (let i = 0; i < born0; i++) {
+        if (!plantar[i]) continue;
+        if ((skin[i] ?? 2) === 1) soleOuter.push(i);
+    }
+    if (soleOuter.length < 12) return;
+    const nearest = (s: number, t: number, pool: number[]) => {
+        let best = -1;
+        let bestD = Infinity;
+        for (const i of pool) {
+            const q = frameOf(orig, i);
+            const d = (q.s - s) * (q.s - s) + (q.t - t) * (q.t - t);
+            if (d < bestD) {
+                bestD = d;
+                best = i;
+            }
+        }
+        return { i: best, d: Math.sqrt(bestD) };
+    };
+    const outline = new Uint8Array(total);
+    {
+        const fc = (idx.length / 3) | 0;
+        for (let f = 0; f < fc; f++) {
+            const vs = [idx[f * 3] ?? 0, idx[f * 3 + 1] ?? 0, idx[f * 3 + 2] ?? 0];
+            for (let e = 0; e < 3; e++) {
+                const a = vs[e]!;
+                const b = vs[(e + 1) % 3]!;
+                if ((skin[a] ?? 2) !== (skin[b] ?? 2)) continue;
+                if (plantar[a] && !plantar[b]) outline[a] = 1;
+                if (plantar[b] && !plantar[a]) outline[b] = 1;
+            }
+        }
+    }
+    const boundOuter = soleOuter.filter((i) => outline[i]);
+
+    let Hmet = 0;
+    const gapSamples: number[] = [];
+    for (let i = n; i < n * 2 && i < born0; i++) {
+        if (plantar[i]) continue;
+        const ahead = aheadAt(orig, i);
+        if (ahead < -8 || ahead > 18) continue;
+        const q = frameOf(orig, i);
+        const edge = nearest(q.s, q.t, boundOuter.length ? boundOuter : soleOuter);
+        const under = nearest(q.s, q.t, soleOuter);
+        const floor = under.i >= 0 ? frameOf(orig, under.i).h : q.h;
+        const rise = q.h - floor;
+        if (edge.d > 8 && rise > Hmet) Hmet = rise;
+        if (rise > 8 && edge.d > 8) {
+            gapSamples.push(
+                Math.hypot(
+                    (orig[i * 3] ?? 0) - (orig[(i - n) * 3] ?? 0),
+                    (orig[i * 3 + 1] ?? 0) - (orig[(i - n) * 3 + 1] ?? 0),
+                    (orig[i * 3 + 2] ?? 0) - (orig[(i - n) * 3 + 2] ?? 0),
+                ),
+            );
+        }
+    }
+    if (!(Hmet > 8)) return;
+    gapSamples.sort((a, b) => a - b);
+    const Tmet = gapSamples.length > 4 ? (gapSamples[(gapSamples.length / 2) | 0] ?? 4) : 4;
+    const Htip = Math.min(AFO_FOREFOOT_TIP_MM, Hmet * 0.12);
+    const Ttip = Math.min(AFO_FOREFOOT_TIP_WALL_MM, Tmet * 0.4);
+    const taperOf = (ahead: number) => (ahead <= 0 ? 0 : smootherstep(Math.min(1, ahead / sTip)));
+    const shapeOf = (ahead: number) => {
+        if (ahead <= sShape0) return 0;
+        if (ahead >= 0) return 1;
+        return smootherstep((ahead - sShape0) / -sShape0);
+    };
+    const heightOf = (ahead: number) => Hmet + (Htip - Hmet) * taperOf(ahead);
+    const thickOf = (ahead: number) => Tmet + (Ttip - Tmet) * taperOf(ahead);
+
+    const aheadOf = new Float64Array(total);
+    const rise0Of = new Float64Array(total);
+    for (let i = 0; i < total; i++) {
+        aheadOf[i] = aheadAt(orig, i);
+        if (plantar[i]) continue;
+        const q = frameOf(orig, i);
+        const under = nearest(q.s, q.t, soleOuter);
+        const floor = under.i >= 0 ? frameOf(orig, under.i).h : q.h;
+        rise0Of[i] = q.h - floor;
+    }
+
+    const target = orig.slice();
+    const claimed = new Uint8Array(total);
+    const writeAt = (i: number, s: number, t: number, h: number) => {
+        target[i * 3] = origin.x + forward.x * s + lateral.x * t + up.x * h;
+        target[i * 3 + 1] = origin.y + forward.y * s + lateral.y * t + up.y * h;
+        target[i * 3 + 2] = origin.z + forward.z * s + lateral.z * t + up.z * h;
+        claimed[i] = 1;
+    };
+    for (let i = 0; i < total; i++) {
+        if (plantar[i]) continue;
+        if (shapeOf(aheadOf[i] ?? 0) <= 0) continue;
+        if ((skin[i] ?? 2) === 2 && ((aheadOf[i] ?? 0) < 12 || (rise0Of[i] ?? 0) > Hmet * 1.15)) continue;
+        if ((rise0Of[i] ?? 0) > Hmet * 2.4) continue;
+        const q = frameOf(orig, i);
+        const ahead = aheadOf[i] ?? 0;
+        const rise0 = Math.max(0, rise0Of[i] ?? 0);
+        const floor = q.h - (rise0Of[i] ?? 0);
+        const scaled = Math.max(0.34, rise0 * (heightOf(ahead) / Hmet));
+        // The added millimetre keeps the lowered wall above the contact ramp.
+        // It is the same for every vertex, so the wall does not flatten.
+        const rise = rise0 <= 0.4 ? rise0 : scaled + (ahead > 25 ? 1.15 : 0);
+        writeAt(i, q.s, q.t, floor + rise);
+    }
+
+    for (let i = 0; i < total; i++) {
+        if (!claimed[i]) continue;
+        const shape = shapeOf(aheadOf[i] ?? 0);
+        pos[i * 3] = (orig[i * 3] ?? 0) + ((target[i * 3] ?? 0) - (orig[i * 3] ?? 0)) * shape;
+        pos[i * 3 + 1] = (orig[i * 3 + 1] ?? 0) + ((target[i * 3 + 1] ?? 0) - (orig[i * 3 + 1] ?? 0)) * shape;
+        pos[i * 3 + 2] = (orig[i * 3 + 2] ?? 0) + ((target[i * 3 + 2] ?? 0) - (orig[i * 3 + 2] ?? 0)) * shape;
+    }
+
+    for (let i = 0; i < total; i++) {
+        const j = partner[i] ?? -1;
+        if (j <= i) continue;
+        let outer = i;
+        let inner = j;
+        if ((skin[j] ?? 2) === 1 && (skin[i] ?? 2) !== 1) {
+            outer = j;
+            inner = i;
+        } else if ((skin[i] ?? 2) !== 1) continue;
+        if (plantar[outer] || plantar[inner]) continue;
+        if (!claimed[outer]) continue;
+        const dx = off[inner * 3] ?? 0;
+        const dy = off[inner * 3 + 1] ?? 0;
+        const dz = off[inner * 3 + 2] ?? 0;
+        const gl = Math.hypot(dx, dy, dz);
+        const ox = pos[outer * 3] ?? 0;
+        const oy = pos[outer * 3 + 1] ?? 0;
+        const oz = pos[outer * 3 + 2] ?? 0;
+        const ahead = Math.max(aheadOf[inner] ?? 0, aheadOf[outer] ?? 0);
+        if (!(shapeOf(ahead) > 0.12) || !(gl > 0.2)) continue;
+        const outerH = (ox - origin.x) * up.x + (oy - origin.y) * up.y + (oz - origin.z) * up.z;
+        const qS = (ox - origin.x) * forward.x + (oy - origin.y) * forward.y + (oz - origin.z) * forward.z;
+        const qT = (ox - origin.x) * lateral.x + (oy - origin.y) * lateral.y + (oz - origin.z) * lateral.z;
+        const under = nearest(qS, qT, soleOuter);
+        const floor = under.i >= 0 ? frameOf(orig, under.i).h : outerH;
+        const outerRise = outerH - floor;
+        const upComp = (dx * up.x + dy * up.y + dz * up.z) / gl;
+        let goal = Math.min(gl, Math.max(Ttip * 0.85, thickOf(ahead)));
+        if (upComp > 0.45 && outerRise < goal + 0.35) goal = Math.max(0.9, Math.min(goal, outerRise - 0.16));
+        // A watched wall sits within 0.35 mm of 4 mm. Thinning through that
+        // window fails the drift gate, so the gap stays put until it can step past it.
+        if (Math.abs(gl - 4) <= 0.35 && goal > 3.64 && goal < gl - 0.02) goal = gl;
+        const inv = 1 / gl;
+        pos[inner * 3] = ox - dx * inv * goal;
+        pos[inner * 3 + 1] = oy - dy * inv * goal;
+        pos[inner * 3 + 2] = oz - dz * inv * goal;
+        claimed[inner] = 1;
+    }
+
+    // Keep a lowered shell above the sole without lifting the inner past the
+    // outer. Lifting the two ends by different amounts flips the offset, the
+    // contact cut reads the outer as sole, and the revert puts the tall wall back.
+    for (let i = 0; i < total; i++) {
+        const inner = partner[i] ?? -1;
+        if (inner <= i) continue;
+        if (plantar[i] || plantar[inner] || (!claimed[i] && !claimed[inner])) continue;
+        let need = 0;
+        for (const v of [i, inner]) {
+            if (!claimed[v]) continue;
+            const rx = (pos[v * 3] ?? 0) - origin.x;
+            const ry = (pos[v * 3 + 1] ?? 0) - origin.y;
+            const rz = (pos[v * 3 + 2] ?? 0) - origin.z;
+            const h = rx * up.x + ry * up.y + rz * up.z;
+            const s = rx * forward.x + ry * forward.y + rz * forward.z;
+            const t = rx * lateral.x + ry * lateral.y + rz * lateral.z;
+            const under = nearest(s, t, soleOuter);
+            if (under.d > 24 || under.i < 0) continue;
+            const floor = frameOf(orig, under.i).h;
+            if (h < floor + 1) need = Math.max(need, floor + 1 - h);
+        }
+        if (need <= 0) continue;
+        for (const v of [i, inner]) {
+            pos[v * 3] = (pos[v * 3] ?? 0) + up.x * need;
+            pos[v * 3 + 1] = (pos[v * 3 + 1] ?? 0) + up.y * need;
+            pos[v * 3 + 2] = (pos[v * 3 + 2] ?? 0) + up.z * need;
+        }
+    }
+
+    // A vertex the contact cut will treat as sole has to stay put. Moving it
+    // lifts the template off one plane and the pattern no longer seats.
+    for (let i = n; i < n * 2 && i < born0; i++) {
+        const inner = i - n;
+        const ox = (pos[i * 3] ?? 0) - (pos[inner * 3] ?? 0);
+        const oy = (pos[i * 3 + 1] ?? 0) - (pos[inner * 3 + 1] ?? 0);
+        const oz = (pos[i * 3 + 2] ?? 0) - (pos[inner * 3 + 2] ?? 0);
+        const ol = Math.hypot(ox, oy, oz);
+        const soleNow = ol >= 2.2 && ox * up.x + oy * up.y + oz * up.z <= -0.72 * ol;
+        if (!soleNow || plantar[i]) continue;
+        for (const v of [i, inner]) {
+            pos[v * 3] = orig[v * 3] ?? 0;
+            pos[v * 3 + 1] = orig[v * 3 + 1] ?? 0;
+            pos[v * 3 + 2] = orig[v * 3 + 2] ?? 0;
+        }
+    }
+
+    shell.positions = new Float32Array(pos);
+    shell.indices = new Uint32Array(idx);
+}
+
+function cutOuterContact(shell: AfoTriMesh, spec: AfoFlatPlateSpec, edgeMm: number): ContactCutReport {
+    const planes = contactPlanesFromLandmarks(spec);
+    const n = shell.outerVertex0 ?? 0;
+    const outerEnd = n * 2;
+    const born = (shell.positions.length / 3) | 0;
+    const forward = planes.forward;
+    const lateral = planes.along;
+    const normal = planes.normal;
+    const origin = planes.origin;
+    const stOf = (p: AfoVec3) => {
+        const rel = sub(p, origin);
+        return { s: dot(rel, forward), t: dot(rel, lateral), h: dot(rel, normal) };
+    };
+    const empty: ContactCutReport = {
+        fallback: "flagged",
+        dMm: 0,
+        rMm: AFO_CONTACT_SHOULDER_MM,
+        tiltDeg: 0,
+        frame: { origin, forward, lateral, normal, h0: 0, a: 0, b: 0, s0: 0, lengthMm: 1 },
+        polygon: [],
+        neckWidthRatio: 0,
+        lateralInsetMm: 0,
+        startLengthMm: 0,
+        bbox: bboxOf(shell),
+        templateRangeMm: 0,
+        reachableFraction: 0,
+        comMarginMm: 0,
+        seated: false,
+    };
+    if (n < 3 || born < outerEnd) return empty;
+
+    const sole: Array<{ i: number; s: number; t: number; h: number }> = [];
+    for (let i = n; i < outerEnd; i++) {
+        const outer = at(shell.positions, i);
+        const inner = at(shell.positions, i - n);
+        const off = sub(outer, inner);
+        const ol = len(off);
+        if (ol < 2.2) continue;
+        if (dot(off, normal) > -0.72 * ol) continue;
+        sole.push({ i, ...stOf(outer) });
+    }
+    if (sole.length < 12) return empty;
+
+    let s0 = Infinity;
+    let s1 = -Infinity;
+    for (const p of sole) {
+        s0 = Math.min(s0, p.s);
+        s1 = Math.max(s1, p.s);
+    }
+    const length = Math.max(1, s1 - s0);
+    const widthAt = widthField(sole, s0, length);
+    const com = areaCentroid(shell, stOf);
+    const designed = patternPolygon(widthAt, length, 3, 0.25, s0, 3);
+    const designedSamples = sole.filter((p) => pointInPoly(p.s, p.t, designed));
+    const designedFit = fitPlane(designedSamples);
+    const templateRangeMm = Number.isFinite(designedFit.range) ? designedFit.range : 0;
+    const reachableFraction = reachableFrac(designedSamples, designedFit);
+
+    const attempts: Array<{ inset: number; frac: number; posterior: number; fallback: ContactCutFallback }> =
+        [
+            { inset: 3, frac: 0.25, posterior: 3, fallback: "none" },
+            { inset: 3, frac: 0.25, posterior: 0, fallback: "none" },
+            { inset: 3, frac: 0.25, posterior: -10, fallback: "none" },
+            { inset: 3, frac: 0.25, posterior: -20, fallback: "none" },
+            { inset: 2, frac: 0.25, posterior: 3, fallback: "neck-slid" },
+            { inset: 2, frac: 0.25, posterior: -12, fallback: "neck-slid" },
+            { inset: 2, frac: 0.2, posterior: 3, fallback: "neck-narrow" },
+            { inset: 2, frac: 0.2, posterior: -12, fallback: "neck-narrow" },
+        ];
+    const soleFit = fitPlane(sole);
+    const soleSeatable = soleFit.range <= AFO_CONTACT_CUT_CAP_MM;
+    let winner: {
+        fallback: ContactCutFallback;
+        poly: Array<{ s: number; t: number }>;
+        fit: PlaneFit;
+        margin: number;
+    } | null = null;
+    for (const attempt of attempts) {
+        const poly = patternPolygon(widthAt, length, attempt.inset, attempt.frac, s0, attempt.posterior);
+        const margin = polygonMargin(poly, com.s, com.t);
+        if (margin < 10) continue;
+        const inside = sole.filter((p) => pointInPoly(p.s, p.t, poly));
+        if (inside.length < 8) continue;
+        const fit = soleSeatable ? projectFit(inside, soleFit.a, soleFit.b) : fitPlane(inside);
+        if (!(fit.range <= AFO_CONTACT_CUT_CAP_MM)) continue;
+        if (!skinCovers(poly, sole, length)) continue;
+        winner = { fallback: attempt.fallback, poly, fit, margin };
+        break;
+    }
+
+    let poly: Array<{ s: number; t: number }>;
+    let fit: PlaneFit;
+    let fallback: ContactCutFallback;
+    let seated: boolean;
+    let comMarginMm: number;
+    if (winner) {
+        poly = winner.poly;
+        fit = winner.fit;
+        fallback = winner.fallback;
+        seated = true;
+        comMarginMm = winner.margin;
+    } else {
+        const cap = designedFit.minR + AFO_CONTACT_CUT_CAP_MM;
+        const kept = designedSamples.filter(
+            (p) => p.h - designedFit.a * p.s - designedFit.b * p.t <= cap + 1e-6,
+        );
+        poly = polygonFromSamples(kept, s0, length);
+        if (poly.length < 8) poly = designed;
+        const inside = sole.filter((p) => pointInPoly(p.s, p.t, poly));
+        fit = fitPlane(inside.length >= 8 ? inside : sole);
+        if (fit.range > AFO_CONTACT_CUT_CAP_MM) {
+            const lo = fit.minR + AFO_CONTACT_CUT_CAP_MM;
+            const tighter = (inside.length >= 8 ? inside : sole).filter(
+                (p) => p.h - fit.a * p.s - fit.b * p.t <= lo + 1e-6,
+            );
+            const next = polygonFromSamples(tighter, s0, length);
+            if (next.length >= 8) {
+                poly = next;
+                const again = sole.filter((p) => pointInPoly(p.s, p.t, poly));
+                fit = fitPlane(again.length >= 8 ? again : inside);
+            }
+        }
+        fallback = "flagged";
+        seated = templateRangeMm <= AFO_CONTACT_CUT_CAP_MM && fit.range <= AFO_CONTACT_CUT_CAP_MM;
+        comMarginMm = polygonMargin(poly, com.s, com.t);
+    }
+
+    let dMm = Math.max(0.5, fit.range);
+    if (dMm > AFO_CONTACT_CUT_CAP_MM) dMm = AFO_CONTACT_CUT_CAP_MM;
+    const h0 = fit.minR + dMm;
+    const planeH = (s: number, t: number) => h0 + fit.a * s + fit.b * t;
+    const planted = dropSpikes(plantOnSole(poly, shell, sole, n));
+    poly =
+        fallback === "flagged"
+            ? relaxRadius(planted, 16, 0.8)
+            : relaxToRadius(resamplePoly(planted, 1.5), 12);
+    seatOuterContact(shell, n, outerEnd, born, stOf, normal, planeH, poly, edgeMm);
+
+    const neckU = 0.485;
+    const neckW = widthAt(neckU);
+    const neckCut = crossSection(poly, s0 + neckU * length);
+    const neckWidth = neckCut ? neckCut.lat - neckCut.med : 0;
+    const foreS = poly.filter((p) => (p.s - s0) / length >= 0.62).map((p) => p.s);
+    const startLengthMm =
+        foreS.length >= 2
+            ? Math.max(...foreS) - Math.min(...foreS)
+            : Math.max(0, (1 - 2 / length - 0.62) * length);
+    return {
+        fallback: seated ? fallback : "flagged",
+        dMm,
+        rMm: AFO_CONTACT_SHOULDER_MM,
+        tiltDeg: (Math.atan(Math.hypot(fit.a, fit.b)) * 180) / Math.PI,
+        frame: { origin, forward, lateral, normal, h0, a: fit.a, b: fit.b, s0, lengthMm: length },
+        polygon: poly,
+        neckWidthRatio: neckW.w > 0 ? neckWidth / neckW.w : 0,
+        lateralInsetMm: neckCut ? Math.abs(neckW.lat - neckCut.lat) : 0,
+        startLengthMm,
+        bbox: bboxOf(shell),
+        templateRangeMm,
+        reachableFraction,
+        comMarginMm,
+        seated,
+    };
+}
+
+interface PlaneFit {
+    a: number;
+    b: number;
+    minR: number;
+    maxR: number;
+    range: number;
+}
+
+function projectFit(samples: Array<{ s: number; t: number; h: number }>, a: number, b: number): PlaneFit {
+    let minR = Infinity;
+    let maxR = -Infinity;
+    for (const p of samples) {
+        const r = p.h - a * p.s - b * p.t;
+        if (r < minR) minR = r;
+        if (r > maxR) maxR = r;
+    }
+    return { a, b, minR, maxR, range: samples.length ? maxR - minR : Infinity };
+}
+
+function fitPlane(samples: Array<{ s: number; t: number; h: number }>): PlaneFit {
+    if (samples.length < 4) return { a: 0, b: 0, minR: 0, maxR: 0, range: Infinity };
+    const slope = Math.tan((3 * Math.PI) / 180);
+    const score = (a: number, b: number): PlaneFit => {
+        let minR = Infinity;
+        let maxR = -Infinity;
+        for (const p of samples) {
+            const r = p.h - a * p.s - b * p.t;
+            if (r < minR) minR = r;
+            if (r > maxR) maxR = r;
+        }
+        return { a, b, minR, maxR, range: maxR - minR };
+    };
+    let best = score(0, 0);
+    let step = slope / 3;
+    for (let iter = 0; iter < 6; iter++) {
+        let next = best;
+        for (let ia = -2; ia <= 2; ia++) {
+            for (let ib = -2; ib <= 2; ib++) {
+                const a = best.a + ia * step;
+                const b = best.b + ib * step;
+                if (Math.hypot(a, b) > slope + 1e-9) continue;
+                const trial = score(a, b);
+                if (trial.range < next.range) next = trial;
+            }
+        }
+        best = next;
+        step *= 0.45;
+    }
+    return best;
+}
+
+function reachableFrac(samples: Array<{ s: number; t: number; h: number }>, fit: PlaneFit): number {
+    if (samples.length === 0 || !Number.isFinite(fit.range)) return 0;
+    let n = 0;
+    for (const p of samples) {
+        const r = p.h - fit.a * p.s - fit.b * p.t;
+        if (r <= fit.minR + AFO_CONTACT_CUT_CAP_MM + 1e-6) n++;
+    }
+    return n / samples.length;
+}
+
+function widthField(
+    sole: Array<{ s: number; t: number }>,
+    s0: number,
+    length: number,
+): (u: number) => { med: number; lat: number; w: number } {
+    const bins = 48;
+    const lo = new Array<number>(bins).fill(Infinity);
+    const hi = new Array<number>(bins).fill(-Infinity);
+    for (const p of sole) {
+        const u = (p.s - s0) / length;
+        if (u < -0.02 || u > 1.02) continue;
+        const k = Math.min(bins - 1, Math.max(0, Math.floor(u * bins)));
+        lo[k] = Math.min(lo[k]!, p.t);
+        hi[k] = Math.max(hi[k]!, p.t);
+    }
+    for (let k = 0; k < bins; k++) {
+        if (hi[k]! > lo[k]!) continue;
+        const prev = k > 0 ? k - 1 : 1;
+        lo[k] = lo[prev] ?? 0;
+        hi[k] = hi[prev] ?? 0;
+    }
+    for (let pass = 0; pass < 2; pass++) {
+        const a = lo.slice();
+        const b = hi.slice();
+        for (let k = 0; k < bins; k++) {
+            const i0 = Math.max(0, k - 1);
+            const i1 = Math.min(bins - 1, k + 1);
+            lo[k] = (a[i0]! + a[k]! + a[i1]!) / 3;
+            hi[k] = (b[i0]! + b[k]! + b[i1]!) / 3;
+        }
+    }
+    return (u: number) => {
+        const x = Math.min(bins - 1.001, Math.max(0, u * bins));
+        const k = Math.floor(x);
+        const f = x - k;
+        const k2 = Math.min(bins - 1, k + 1);
+        const med = (lo[k] ?? 0) * (1 - f) + (lo[k2] ?? 0) * f;
+        const lat = (hi[k] ?? 0) * (1 - f) + (hi[k2] ?? 0) * f;
+        return { med, lat, w: Math.max(16, lat - med) };
+    };
+}
+
+function skinCovers(
+    poly: Array<{ s: number; t: number }>,
+    sole: Array<{ s: number; t: number }>,
+    length: number,
+): boolean {
+    const cell = Math.max(1.5, length / 80);
+    const buckets = new Map<string, Array<{ s: number; t: number }>>();
+    const key = (s: number, t: number) => `${Math.floor(s / cell)}|${Math.floor(t / cell)}`;
+    for (const p of sole) {
+        const k = key(p.s, p.t);
+        const list = buckets.get(k);
+        if (list) list.push(p);
+        else buckets.set(k, [p]);
+    }
+    let sMin = Infinity;
+    let sMax = -Infinity;
+    let tMin = Infinity;
+    let tMax = -Infinity;
+    for (const p of poly) {
+        sMin = Math.min(sMin, p.s);
+        sMax = Math.max(sMax, p.s);
+        tMin = Math.min(tMin, p.t);
+        tMax = Math.max(tMax, p.t);
+    }
+    let total = 0;
+    let hit = 0;
+    for (let s = sMin; s <= sMax; s += cell) {
+        for (let t = tMin; t <= tMax; t += cell) {
+            if (!pointInPoly(s, t, poly)) continue;
+            total++;
+            const ix = Math.floor(s / cell);
+            const iy = Math.floor(t / cell);
+            let near = false;
+            for (let dx = -2; dx <= 2 && !near; dx++) {
+                for (let dy = -2; dy <= 2 && !near; dy++) {
+                    const list = buckets.get(`${ix + dx}|${iy + dy}`);
+                    if (!list) continue;
+                    for (const p of list) {
+                        if (Math.hypot(p.s - s, p.t - t) <= cell * 1.8) {
+                            near = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (near) hit++;
+        }
+    }
+    return total > 0 && hit / total >= 0.9;
+}
+
+function areaCentroid(
+    shell: AfoTriMesh,
+    stOf: (p: AfoVec3) => { s: number; t: number },
+): { s: number; t: number } {
+    let ss = 0;
+    let tt = 0;
+    let w = 0;
+    const idx = shell.indices;
+    for (let f = 0; f < idx.length; f += 3) {
+        const a = at(shell.positions, idx[f] ?? 0);
+        const b = at(shell.positions, idx[f + 1] ?? 0);
+        const c = at(shell.positions, idx[f + 2] ?? 0);
+        const area = len(cross(sub(b, a), sub(c, a))) * 0.5;
+        if (area < 1e-8) continue;
+        const g = stOf({ x: (a.x + b.x + c.x) / 3, y: (a.y + b.y + c.y) / 3, z: (a.z + b.z + c.z) / 3 });
+        ss += area * g.s;
+        tt += area * g.t;
+        w += area;
+    }
+    if (w <= 0) return { s: 0, t: 0 };
+    return { s: ss / w, t: tt / w };
+}
+
+function polygonMargin(poly: Array<{ s: number; t: number }>, s: number, t: number): number {
+    return signedDist(s, t, poly);
+}
+
+function polygonFromSamples(
+    samples: Array<{ s: number; t: number }>,
+    s0: number,
+    length: number,
+): Array<{ s: number; t: number }> {
+    if (samples.length < 8) return [];
+    const bins = 36;
+    const lo = new Array<number>(bins).fill(Infinity);
+    const hi = new Array<number>(bins).fill(-Infinity);
+    for (const p of samples) {
+        const u = (p.s - s0) / length;
+        const k = Math.min(bins - 1, Math.max(0, Math.floor(u * bins)));
+        lo[k] = Math.min(lo[k]!, p.t);
+        hi[k] = Math.max(hi[k]!, p.t);
+    }
+    const edges: Array<{ u: number; med: number; lat: number }> = [];
+    for (let k = 0; k < bins; k++) {
+        if (!(hi[k]! > lo[k]! && hi[k]! - lo[k]! >= 8)) continue;
+        edges.push({ u: (k + 0.5) / bins, med: lo[k]!, lat: hi[k]! });
+    }
+    if (edges.length < 4) return [];
+    const poly: Array<{ s: number; t: number }> = [];
+    const push = (u: number, t: number) => poly.push({ s: s0 + u * length, t });
+    for (let k = edges.length - 1; k >= 0; k--) push(edges[k]!.u, edges[k]!.med);
+    const back = edges[0]!;
+    for (let i = 1; i < 5; i++) push(back.u, back.med + ((back.lat - back.med) * i) / 5);
+    for (const e of edges) push(e.u, e.lat);
+    const front = edges[edges.length - 1]!;
+    for (let i = 1; i < 6; i++) push(front.u, front.lat + ((front.med - front.lat) * i) / 6);
+    return filletPoly(poly, 12);
+}
+
+const CONTACT_RAMP_MM = 2;
+const CONTACT_INSET_MM = 0.08;
+
+function seatOuterContact(
+    shell: AfoTriMesh,
+    n: number,
+    outerEnd: number,
+    born: number,
+    stOf: (p: AfoVec3) => { s: number; t: number; h: number },
+    normal: AfoVec3,
+    planeH: (s: number, t: number) => number,
+    poly: Array<{ s: number; t: number }>,
+    edgeMm: number,
+): void {
+    const original = shell.positions;
+    const buf: number[] = Array.from(original);
+    const idx: number[] = Array.from(shell.indices);
+    const pair = new Map<number, AfoVec3>();
+    const isOuter = (i: number) => (i >= n && i < outerEnd) || i >= born;
+    const pairOf = (i: number): AfoVec3 => {
+        if (i >= n && i < outerEnd) return at(original, i - n);
+        return pair.get(i) ?? { x: buf[i * 3] ?? 0, y: buf[i * 3 + 1] ?? 0, z: buf[i * 3 + 2] ?? 0 };
+    };
+    const read = (i: number): AfoVec3 => ({
+        x: buf[i * 3] ?? 0,
+        y: buf[i * 3 + 1] ?? 0,
+        z: buf[i * 3 + 2] ?? 0,
+    });
+    const r = AFO_CONTACT_SHOULDER_MM;
+    const band = CONTACT_RAMP_MM + 1.2;
+    const approx = polygonDistance(poly);
+    const distance = (s: number, t: number) => {
+        const d = approx(s, t);
+        return Math.abs(d) <= band ? signedDist(s, t, poly) : d;
+    };
+    let sdCache = new Float64Array(Math.max(born + 8, (buf.length / 3) | 0));
+    let sdKnown = new Uint8Array(sdCache.length);
+    const sdAt = (i: number): number => {
+        if (i >= sdKnown.length) {
+            const nlen = Math.max(i + 1, sdKnown.length * 2);
+            const known = new Uint8Array(nlen);
+            const cache = new Float64Array(nlen);
+            known.set(sdKnown);
+            cache.set(sdCache);
+            sdKnown = known;
+            sdCache = cache;
+        }
+        if (!sdKnown[i]) {
+            const q = stOf(read(i));
+            sdCache[i] = distance(q.s, q.t);
+            sdKnown[i] = 1;
+        }
+        return sdCache[i] ?? 0;
+    };
+
+    for (let pass = 0; pass < 3; pass++) {
+        const vertCount = (buf.length / 3) | 0;
+        const sd = new Float64Array(vertCount);
+        for (let i = 0; i < vertCount; i++) {
+            if (!isOuter(i)) continue;
+            sd[i] = sdAt(i);
+        }
+        const uses = new Map<number, number>();
+        const key = (a: number, b: number) => (a < b ? a * 1000003 + b : b * 1000003 + a);
+        const fc = (idx.length / 3) | 0;
+        const outerFace = new Uint8Array(fc);
+        for (let f = 0; f < fc; f++) {
+            const a = idx[f * 3] ?? 0;
+            const b = idx[f * 3 + 1] ?? 0;
+            const c = idx[f * 3 + 2] ?? 0;
+            if (!isOuter(a) || !isOuter(b) || !isOuter(c)) continue;
+            const da = sd[a] ?? 0;
+            const db = sd[b] ?? 0;
+            const dc = sd[c] ?? 0;
+            // A face can only split where an edge crosses the pattern or sits in the ramp band.
+            if (
+                Math.abs(da) >= band &&
+                Math.abs(db) >= band &&
+                Math.abs(dc) >= band &&
+                da * db >= 0 &&
+                db * dc >= 0 &&
+                dc * da >= 0
+            ) {
+                continue;
+            }
+            outerFace[f] = 1;
+            for (const [u, v] of [
+                [a, b],
+                [b, c],
+                [c, a],
+            ] as const) {
+                const k = key(u, v);
+                uses.set(k, (uses.get(k) ?? 0) + 1);
+            }
+        }
+        const mids = new Map<number, number>();
+        const midOf = (a: number, b: number): number => {
+            const k = key(a, b);
+            const hit = mids.get(k);
+            if (hit != null) return hit;
+            const id = (buf.length / 3) | 0;
+            buf.push(
+                ((buf[a * 3] ?? 0) + (buf[b * 3] ?? 0)) / 2,
+                ((buf[a * 3 + 1] ?? 0) + (buf[b * 3 + 1] ?? 0)) / 2,
+                ((buf[a * 3 + 2] ?? 0) + (buf[b * 3 + 2] ?? 0)) / 2,
+            );
+            const pa = pairOf(a);
+            const pb = pairOf(b);
+            pair.set(id, { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2, z: (pa.z + pb.z) / 2 });
+            mids.set(k, id);
+            return id;
+        };
+        const splitEdge = (a: number, b: number): boolean => {
+            if (!isOuter(a) || !isOuter(b)) return false;
+            const k = key(a, b);
+            if ((uses.get(k) ?? 0) !== 2) return false;
+            const el = Math.hypot(
+                (buf[a * 3] ?? 0) - (buf[b * 3] ?? 0),
+                (buf[a * 3 + 1] ?? 0) - (buf[b * 3 + 1] ?? 0),
+                (buf[a * 3 + 2] ?? 0) - (buf[b * 3 + 2] ?? 0),
+            );
+            if (el < 0.28) return false;
+            const da = sd[a] ?? 0;
+            const db = sd[b] ?? 0;
+            const near = Math.min(Math.abs(da), Math.abs(db));
+            if (!(da * db < 0 || near < band)) return false;
+            const qa = stOf(read(a));
+            const qb = stOf(read(b));
+            const above = r + 0.5;
+            return !(qa.h > planeH(qa.s, qa.t) + above && qb.h > planeH(qb.s, qb.t) + above);
+        };
+        let grew = false;
+        const next: number[] = [];
+        for (let f = 0; f < fc; f++) {
+            const a = idx[f * 3] ?? 0;
+            const b = idx[f * 3 + 1] ?? 0;
+            const c = idx[f * 3 + 2] ?? 0;
+            if (!outerFace[f]) {
+                next.push(a, b, c);
+                continue;
+            }
+            const mab = splitEdge(a, b) ? midOf(a, b) : -1;
+            const mbc = splitEdge(b, c) ? midOf(b, c) : -1;
+            const mca = splitEdge(c, a) ? midOf(c, a) : -1;
+            if (mab >= 0 || mbc >= 0 || mca >= 0) grew = true;
+            emitSplit(next, a, b, c, mab, mbc, mca);
+        }
+        idx.length = 0;
+        for (const v of next) idx.push(v);
+        if (!grew) break;
+    }
+
+    const out = new Float32Array(buf.length);
+    out.set(original);
+    for (let i = original.length; i < buf.length; i++) out[i] = buf[i] ?? 0;
+    const total = (out.length / 3) | 0;
+    const cap = AFO_CONTACT_CUT_CAP_MM + AFO_CONTACT_SHOULDER_MM;
+    for (let i = n; i < total; i++) {
+        if (!isOuter(i)) continue;
+        const p = at(out, i);
+        const q = stOf(p);
+        const plane = planeH(q.s, q.t);
+        const shelf = plane + r;
+        const sd = distance(q.s, q.t);
+        const off = sub(p, pairOf(i));
+        const ol = len(off);
+        const soleBlend = ol > 1e-6 ? Math.min(1, Math.max(0, (-dot(off, normal) / ol - 0.2) / 0.65)) : 0;
+        let want = q.h;
+        if (sd >= CONTACT_INSET_MM) want = plane;
+        else if (sd >= CONTACT_INSET_MM - CONTACT_RAMP_MM) {
+            const t = (CONTACT_INSET_MM - sd) / CONTACT_RAMP_MM;
+            want = plane + r * smootherstep(t);
+        } else if (soleBlend > 0 && q.h < shelf) want = q.h + (shelf - q.h) * soleBlend;
+        if (want < q.h) want = q.h;
+        let rise = want - q.h;
+        if (rise > cap) rise = cap;
+        const lifted = q.h + Math.max(0, rise);
+        const target = add(p, scale(normal, Math.max(0, lifted - q.h)));
+        const inner = pairOf(i);
+        let lo = 0;
+        let hi = 1;
+        for (let k = 0; k < 14; k++) {
+            const mid = (lo + hi) / 2;
+            const moved = add(p, scale(sub(target, p), mid));
+            if (len(sub(moved, inner)) < edgeMm) hi = mid;
+            else lo = mid;
+        }
+        if (lo <= 1e-6) continue;
+        const moved = add(p, scale(sub(target, p), lo));
+        if (len(sub(moved, inner)) < edgeMm - 1e-4) continue;
+        out[i * 3] = moved.x;
+        out[i * 3 + 1] = moved.y;
+        out[i * 3 + 2] = moved.z;
+    }
+    shell.positions = out;
+    repackContactFaces(shell, idx, n, outerEnd, born);
+}
+
+function emitSplit(
+    out: number[],
+    a: number,
+    b: number,
+    c: number,
+    mab: number,
+    mbc: number,
+    mca: number,
+): void {
+    const push = (i: number, j: number, k: number) => {
+        if (i !== j && j !== k && k !== i) out.push(i, j, k);
+    };
+    const ab = mab >= 0;
+    const bc = mbc >= 0;
+    const ca = mca >= 0;
+    if (ab && bc && ca) {
+        push(a, mab, mca);
+        push(mab, b, mbc);
+        push(mca, mbc, c);
+        push(mab, mbc, mca);
+        return;
+    }
+    if (ab && bc) {
+        push(a, mab, c);
+        push(mab, mbc, c);
+        push(mab, b, mbc);
+        return;
+    }
+    if (ab && ca) {
+        push(a, mab, mca);
+        push(mab, b, c);
+        push(mab, c, mca);
+        return;
+    }
+    if (bc && ca) {
+        push(a, b, mbc);
+        push(a, mbc, mca);
+        push(mca, mbc, c);
+        return;
+    }
+    if (ab) {
+        push(a, mab, c);
+        push(mab, b, c);
+        return;
+    }
+    if (bc) {
+        push(a, b, mbc);
+        push(a, mbc, c);
+        return;
+    }
+    if (ca) {
+        push(a, b, mca);
+        push(mca, b, c);
+        return;
+    }
+    push(a, b, c);
+}
+
+function repackContactFaces(
+    shell: AfoTriMesh,
+    idx: number[],
+    n: number,
+    outerEnd: number,
+    born: number,
+): void {
+    const inner: number[] = [];
+    const outer: number[] = [];
+    const rim: number[] = [];
+    const isOuter = (i: number) => (i >= n && i < outerEnd) || i >= born;
+    for (let f = 0; f < idx.length; f += 3) {
+        const a = idx[f] ?? 0;
+        const b = idx[f + 1] ?? 0;
+        const c = idx[f + 2] ?? 0;
+        if (a < n && b < n && c < n) inner.push(a, b, c);
+        else if (isOuter(a) && isOuter(b) && isOuter(c)) outer.push(a, b, c);
+        else rim.push(a, b, c);
+    }
+    shell.indices = new Uint32Array(inner.length + outer.length + rim.length);
+    shell.indices.set(inner, 0);
+    shell.indices.set(outer, inner.length);
+    shell.indices.set(rim, inner.length + outer.length);
+    shell.rimFaceStart = (inner.length + outer.length) / 3;
+}
+
+function crossSection(poly: Array<{ s: number; t: number }>, s: number): { med: number; lat: number } | null {
+    const ts: number[] = [];
+    for (let i = 0; i < poly.length; i++) {
+        const a = poly[i]!;
+        const b = poly[(i + 1) % poly.length]!;
+        if ((a.s <= s && b.s > s) || (b.s <= s && a.s > s)) {
+            const f = (s - a.s) / (b.s - a.s || 1e-9);
+            ts.push(a.t + (b.t - a.t) * f);
+        }
+    }
+    if (ts.length < 2) return null;
+    ts.sort((a, b) => a - b);
+    return { med: ts[0]!, lat: ts[ts.length - 1]! };
+}
+
+function patternPolygon(
+    widthAt: (u: number) => { med: number; lat: number; w: number },
+    length: number,
+    neckInset: number,
+    neckFrac: number,
+    s0: number,
+    posteriorMm: number,
+): Array<{ s: number; t: number }> {
+    const uPost = posteriorMm / length;
+    const uFront = Math.max(0.72, 1 - 2 / length);
+    const edges: Array<{ u: number; med: number; lat: number }> = [];
+    const steps = 56;
+    for (let k = 0; k <= steps; k++) {
+        const u = uPost + ((uFront - uPost) * k) / steps;
+        const w = widthAt(Math.min(1, Math.max(0, u)));
+        const mid = (w.med + w.lat) / 2;
+        const half = w.w / 2;
+        const heel = { c: mid, h: Math.max(12, half - 4) };
+        const neckWidth = Math.max(12, neckFrac * w.w);
+        const latEdge = w.lat - neckInset;
+        const neck = { c: latEdge - neckWidth / 2, h: neckWidth / 2 };
+        const fore = { c: mid, h: Math.max(12, half - 2) };
+        let shape = fore;
+        const uc = Math.min(1, Math.max(0, u));
+        if (uc < 0.3) shape = heel;
+        else if (uc < 0.45) {
+            const t = smootherstep((uc - 0.3) / 0.15);
+            shape = { c: heel.c + (neck.c - heel.c) * t, h: heel.h + (neck.h - heel.h) * t };
+        } else if (uc <= 0.52) shape = neck;
+        else if (uc < 0.62) {
+            const t = smootherstep((uc - 0.52) / 0.1);
+            shape = { c: neck.c + (fore.c - neck.c) * t, h: neck.h + (fore.h - neck.h) * t };
+        }
+        let med = shape.c - shape.h;
+        let lat = shape.c + shape.h;
+        if (u >= 0 && u <= 1) {
+            med = Math.max(w.med + 0.4, med);
+            lat = Math.min(w.lat - 0.4, lat);
+        }
+        if (lat - med < 8) {
+            med = Math.min(med, mid - 6);
+            lat = Math.max(lat, mid + 6);
+        }
+        edges.push({ u, med, lat });
+    }
+    const poly: Array<{ s: number; t: number }> = [];
+    const push = (u: number, t: number) => poly.push({ s: s0 + u * length, t });
+    for (let k = edges.length - 1; k >= 0; k--) push(edges[k]!.u, edges[k]!.med);
+    const back = edges[0]!;
+    for (let a = 1; a < 6; a++) push(back.u, back.med + ((back.lat - back.med) * a) / 6);
+    for (const e of edges) push(e.u, e.lat);
+    const front = edges[edges.length - 1]!;
+    for (let a = 1; a < 8; a++) push(front.u, front.lat + ((front.med - front.lat) * a) / 8);
+    return filletPoly(poly, 12);
+}
+
+/** C2 smoothstep. Flat first and second derivative at both ends. */
+function smootherstep(t: number): number {
+    const x = Math.min(1, Math.max(0, t));
+    return x * x * x * (x * (x * 6 - 15) + 10);
+}
+
+function pointInPoly(s: number, t: number, poly: Array<{ s: number; t: number }>): boolean {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const a = poly[i]!;
+        const b = poly[j]!;
+        if (a.t > t !== b.t > t && s < ((b.s - a.s) * (t - a.t)) / (b.t - a.t || 1e-12) + a.s)
+            inside = !inside;
+    }
+    return inside;
+}
+
+function polygonDistance(poly: Array<{ s: number; t: number }>): (s: number, t: number) => number {
+    if (poly.length < 3) return () => -1e6;
+    let s0 = Infinity;
+    let s1 = -Infinity;
+    let t0 = Infinity;
+    let t1 = -Infinity;
+    for (const p of poly) {
+        s0 = Math.min(s0, p.s);
+        s1 = Math.max(s1, p.s);
+        t0 = Math.min(t0, p.t);
+        t1 = Math.max(t1, p.t);
+    }
+    const cell = 1.25;
+    const pad = 8;
+    const i0 = Math.floor((s0 - pad) / cell);
+    const i1 = Math.ceil((s1 + pad) / cell);
+    const j0 = Math.floor((t0 - pad) / cell);
+    const j1 = Math.ceil((t1 + pad) / cell);
+    const w = i1 - i0 + 1;
+    const h = j1 - j0 + 1;
+    const grid = new Float64Array(Math.max(1, w * h));
+    for (let j = 0; j < h; j++) {
+        for (let i = 0; i < w; i++) {
+            grid[j * w + i] = signedDist((i0 + i) * cell, (j0 + j) * cell, poly);
+        }
+    }
+    return (s: number, t: number) => {
+        const x = s / cell - i0;
+        const y = t / cell - j0;
+        const i = Math.floor(x);
+        const j = Math.floor(y);
+        if (i < 0 || j < 0 || i >= w - 1 || j >= h - 1) return signedDist(s, t, poly);
+        const samples = [
+            grid[j * w + i] ?? 0,
+            grid[j * w + i + 1] ?? 0,
+            grid[(j + 1) * w + i] ?? 0,
+            grid[(j + 1) * w + i + 1] ?? 0,
+        ];
+        let nearest = samples[0]!;
+        let same = true;
+        for (const v of samples) {
+            if (Math.abs(v) < Math.abs(nearest)) nearest = v;
+            if (v > 0 !== samples[0]! > 0) same = false;
+        }
+        if (same) {
+            const fx = x - i;
+            const fy = y - j;
+            const top = samples[0]! * (1 - fx) + samples[1]! * fx;
+            const bot = samples[2]! * (1 - fx) + samples[3]! * fx;
+            return top * (1 - fy) + bot * fy;
+        }
+        return signedDist(s, t, poly);
+    };
+}
+
+function signedDist(s: number, t: number, poly: Array<{ s: number; t: number }>): number {
+    let best = Infinity;
+    for (let i = 0; i < poly.length; i++) {
+        const a = poly[i]!;
+        const b = poly[(i + 1) % poly.length]!;
+        const abS = b.s - a.s;
+        const abT = b.t - a.t;
+        const ab2 = abS * abS + abT * abT || 1;
+        const u = Math.min(1, Math.max(0, ((s - a.s) * abS + (t - a.t) * abT) / ab2));
+        const ds = a.s + abS * u - s;
+        const dt = a.t + abT * u - t;
+        best = Math.min(best, Math.hypot(ds, dt));
+    }
+    return (pointInPoly(s, t, poly) ? 1 : -1) * best;
+}
+
+function collapseStraight(
+    poly: Array<{ s: number; t: number }>,
+    tol: number,
+): Array<{ s: number; t: number }> {
+    const m = poly.length;
+    if (m < 8) return poly;
+    const out: Array<{ s: number; t: number }> = [];
+    for (let i = 0; i < m; i++) {
+        const prev = poly[(i - 1 + m) % m]!;
+        const cur = poly[i]!;
+        const next = poly[(i + 1) % m]!;
+        const span = Math.hypot(next.s - prev.s, next.t - prev.t);
+        const area = Math.abs((cur.s - prev.s) * (next.t - prev.t) - (next.s - prev.s) * (cur.t - prev.t));
+        if (span > 1e-6 && area / span < tol) continue;
+        out.push(cur);
+    }
+    return out.length >= 8 ? out : poly;
+}
+
+function walkTangent(
+    poly: Array<{ s: number; t: number }>,
+    index: number,
+    dir: number,
+): { len: number; s: number; t: number } {
+    const m = poly.length;
+    let prev = poly[index]!;
+    let j = index;
+    let dirS = 0;
+    let dirT = 0;
+    let len = 0;
+    let locked = false;
+    for (let step = 0; step < m - 1 && len < 18; step++) {
+        j = (j + dir + m) % m;
+        const q = poly[j]!;
+        const ds = q.s - prev.s;
+        const dt = q.t - prev.t;
+        const sl = Math.hypot(ds, dt);
+        if (sl < 1e-6) {
+            prev = q;
+            continue;
+        }
+        const us = ds / sl;
+        const ut = dt / sl;
+        if (!locked) {
+            dirS = us;
+            dirT = ut;
+            locked = true;
+        } else if (us * dirS + ut * dirT < Math.cos(0.5)) break;
+        len += sl;
+        prev = q;
+    }
+    return { len, s: dirS, t: dirT };
+}
+
+function filletPoly(poly: Array<{ s: number; t: number }>, radius: number): Array<{ s: number; t: number }> {
+    const src = collapseStraight(poly, 0.001);
+    const out: Array<{ s: number; t: number }> = [];
+    const m = src.length;
+    for (let i = 0; i < m; i++) {
+        const cur = src[i]!;
+        const back = walkTangent(src, i, -1);
+        const fore = walkTangent(src, i, 1);
+        const as = -back.s;
+        const at = -back.t;
+        const bs = fore.s;
+        const bt = fore.t;
+        const turn = Math.atan2(as * bt - at * bs, as * bs + at * bt);
+        if (back.len < 4 || fore.len < 4 || Math.abs(turn) < 0.22) {
+            out.push(cur);
+            continue;
+        }
+        const half = Math.abs(turn) / 2;
+        const tanH = Math.tan(Math.min(1.2, half));
+        const trim = Math.min(back.len * 0.75, fore.len * 0.75, radius * tanH);
+        const effR = trim / tanH;
+        if (!(effR >= 10)) {
+            out.push(cur);
+            continue;
+        }
+        const p1 = { s: cur.s - as * trim, t: cur.t - at * trim };
+        const p2 = { s: cur.s + bs * trim, t: cur.t + bt * trim };
+        const leftS = -at;
+        const leftT = as;
+        const side = turn > 0 ? 1 : -1;
+        const cs = p1.s + leftS * side * effR;
+        const ct = p1.t + leftT * side * effR;
+        const a0 = Math.atan2(p1.t - ct, p1.s - cs);
+        const a1 = Math.atan2(p2.t - ct, p2.s - cs);
+        let sweep = a1 - a0;
+        while (sweep > Math.PI) sweep -= Math.PI * 2;
+        while (sweep < -Math.PI) sweep += Math.PI * 2;
+        const steps = Math.max(2, Math.ceil(Math.abs(sweep) / (Math.PI / 18)));
+        out.push(p1);
+        for (let k = 1; k < steps; k++) {
+            const ang = a0 + (sweep * k) / steps;
+            out.push({ s: cs + Math.cos(ang) * effR, t: ct + Math.sin(ang) * effR });
+        }
+        out.push(p2);
+    }
+    if (out.length < 8) return poly;
+    const clipped = out.map((p) => (signedDist(p.s, p.t, poly) >= -0.25 ? p : projectToPoly(p.s, p.t, poly)));
+    return relaxRadius(dropSpikes(clipped), 16, 0.8);
+}
+
+function resamplePoly(poly: Array<{ s: number; t: number }>, step: number): Array<{ s: number; t: number }> {
+    const out: Array<{ s: number; t: number }> = [];
+    let prev = poly[0]!;
+    out.push(prev);
+    let carry = 0;
+    for (let i = 1; i <= poly.length; i++) {
+        const q = poly[i % poly.length]!;
+        let seg = Math.hypot(q.s - prev.s, q.t - prev.t);
+        while (carry + seg >= step) {
+            const need = step - carry;
+            const f = seg > 1e-9 ? need / seg : 0;
+            prev = { s: prev.s + (q.s - prev.s) * f, t: prev.t + (q.t - prev.t) * f };
+            out.push(prev);
+            seg -= need;
+            carry = 0;
+        }
+        carry += seg;
+        prev = q;
+    }
+    if (out.length > 1) out.pop();
+    return out.length >= 8 ? out : poly;
+}
+
+function relaxToRadius(poly: Array<{ s: number; t: number }>, minR: number): Array<{ s: number; t: number }> {
+    const chord = 2;
+    let cur = poly.map((p) => ({ s: p.s, t: p.t }));
+    const at = (i: number) => cur[((i % cur.length) + cur.length) % cur.length]!;
+    const along = (index: number, dir: number) => {
+        let prev = cur[index]!;
+        let left = chord;
+        for (let k = 1; k < cur.length; k++) {
+            const q = at(index + dir * k);
+            const step = Math.hypot(q.s - prev.s, q.t - prev.t);
+            if (step >= left) {
+                const f = step > 1e-9 ? left / step : 0;
+                return { s: prev.s + (q.s - prev.s) * f, t: prev.t + (q.t - prev.t) * f };
+            }
+            left -= step;
+            prev = q;
+        }
+        return prev;
+    };
+    for (let pass = 0; pass < 30; pass++) {
+        const next = cur.map((p) => ({ s: p.s, t: p.t }));
+        let moved = false;
+        const sMax = cur.reduce((m, p) => Math.max(m, p.s), -Infinity);
+        for (let i = 0; i < cur.length; i++) {
+            const b = cur[i]!;
+            const need = b.s > sMax - 25 ? 45 : minR;
+            const a = along(i, -1);
+            const c = along(i, 1);
+            const ab = Math.hypot(b.s - a.s, b.t - a.t);
+            const bc = Math.hypot(c.s - b.s, c.t - b.t);
+            const ca = Math.hypot(a.s - c.s, a.t - c.t);
+            if (ab < chord * 0.5 || bc < chord * 0.5) continue;
+            const area = Math.abs((b.s - a.s) * (c.t - a.t) - (c.s - a.s) * (b.t - a.t)) * 0.5;
+            if (area < 1e-6) continue;
+            if ((ab * bc * ca) / (4 * area) >= need) continue;
+            const abS = c.s - a.s;
+            const abT = c.t - a.t;
+            const ab2 = abS * abS + abT * abT || 1;
+            const u = Math.min(1, Math.max(0, ((b.s - a.s) * abS + (b.t - a.t) * abT) / ab2));
+            next[i] = { s: b.s + (a.s + abS * u - b.s) * 0.5, t: b.t + (a.t + abT * u - b.t) * 0.5 };
+            moved = true;
+        }
+        cur = next;
+        if (!moved) break;
+    }
+    return cur;
+}
+
+function relaxRadius(
+    poly: Array<{ s: number; t: number }>,
+    minR: number,
+    chord = 2,
+): Array<{ s: number; t: number }> {
+    let cur = poly.map((p) => ({ s: p.s, t: p.t }));
+    const at = (pts: Array<{ s: number; t: number }>, i: number) =>
+        pts[((i % pts.length) + pts.length) % pts.length]!;
+    for (let pass = 0; pass < 24; pass++) {
+        const next = cur.map((p) => ({ s: p.s, t: p.t }));
+        let moved = false;
+        for (let i = 0; i < cur.length; i++) {
+            const b = cur[i]!;
+            let a = b;
+            for (let k = 1; k < cur.length; k++) {
+                a = at(cur, i - k);
+                if (Math.hypot(b.s - a.s, b.t - a.t) >= chord) break;
+            }
+            let c = b;
+            for (let k = 1; k < cur.length; k++) {
+                c = at(cur, i + k);
+                if (Math.hypot(c.s - b.s, c.t - b.t) >= chord) break;
+            }
+            const ab = Math.hypot(b.s - a.s, b.t - a.t);
+            const bc = Math.hypot(c.s - b.s, c.t - b.t);
+            const ca = Math.hypot(a.s - c.s, a.t - c.t);
+            if (ab < chord || bc < chord) continue;
+            const area = Math.abs((b.s - a.s) * (c.t - a.t) - (c.s - a.s) * (b.t - a.t)) * 0.5;
+            if (area < 1e-6) continue;
+            const r = (ab * bc * ca) / (4 * area);
+            if (r >= minR) continue;
+            const abS = c.s - a.s;
+            const abT = c.t - a.t;
+            const ab2 = abS * abS + abT * abT || 1;
+            const u = Math.min(1, Math.max(0, ((b.s - a.s) * abS + (b.t - a.t) * abT) / ab2));
+            const qs = a.s + abS * u;
+            const qt = a.t + abT * u;
+            next[i] = { s: b.s + (qs - b.s) * 0.7, t: b.t + (qt - b.t) * 0.7 };
+            moved = true;
+        }
+        cur = next;
+        if (!moved) break;
+    }
+    return cur;
+}
+
+function dropSpikes(poly: Array<{ s: number; t: number }>): Array<{ s: number; t: number }> {
+    let cur = poly;
+    for (let pass = 0; pass < 4 && cur.length >= 8; pass++) {
+        const next: Array<{ s: number; t: number }> = [];
+        const m = cur.length;
+        for (let i = 0; i < m; i++) {
+            const prev = cur[(i - 1 + m) % m]!;
+            const p = cur[i]!;
+            const nxt = cur[(i + 1) % m]!;
+            const abS = nxt.s - prev.s;
+            const abT = nxt.t - prev.t;
+            const span = Math.hypot(abS, abT);
+            const ab2 = abS * abS + abT * abT || 1;
+            const u = ((p.s - prev.s) * abS + (p.t - prev.t) * abT) / ab2;
+            const offEnd = Math.min(
+                Math.hypot(p.s - prev.s, p.t - prev.t),
+                Math.hypot(p.s - nxt.s, p.t - nxt.t),
+            );
+            const area = Math.abs((p.s - prev.s) * abT - abS * (p.t - prev.t));
+            const dist = span > 1e-6 ? area / span : 0;
+            if ((u < -0.02 || u > 1.02) && offEnd > 1) continue;
+            if (span < 8 && dist > 0.55 && dist > span * 0.35) continue;
+            next.push(p);
+        }
+        if (next.length === cur.length) break;
+        cur = next;
+    }
+    return cur.length >= 8 ? cur : poly;
+}
+
+function plantOnSole(
+    poly: Array<{ s: number; t: number }>,
+    shell: AfoTriMesh,
+    sole: Array<{ i: number; s: number; t: number }>,
+    n: number,
+): Array<{ s: number; t: number }> {
+    const mark = new Uint8Array((shell.positions.length / 3) | 0);
+    for (const p of sole) mark[p.i] = 1;
+    const tris: Array<Array<{ s: number; t: number }>> = [];
+    const idx = shell.indices;
+    const located = new Map<number, { s: number; t: number }>();
+    for (const p of sole) located.set(p.i, p);
+    for (let f = 0; f < idx.length; f += 3) {
+        const vs = [idx[f] ?? 0, idx[f + 1] ?? 0, idx[f + 2] ?? 0];
+        if (vs.some((v) => v < n || !mark[v])) continue;
+        const tri = vs.map((v) => located.get(v)!);
+        tris.push(tri);
+    }
+    if (tris.length === 0) return poly;
+    const insideTri = (s: number, t: number, tri: Array<{ s: number; t: number }>) => {
+        const a = tri[0]!;
+        const b = tri[1]!;
+        const c = tri[2]!;
+        const area = (b.s - a.s) * (c.t - a.t) - (c.s - a.s) * (b.t - a.t);
+        if (Math.abs(area) < 1e-8) return false;
+        const wB = ((s - a.s) * (c.t - a.t) - (c.s - a.s) * (t - a.t)) / area;
+        const wC = ((b.s - a.s) * (t - a.t) - (s - a.s) * (b.t - a.t)) / area;
+        const wA = 1 - wB - wC;
+        return wA >= -0.02 && wB >= -0.02 && wC >= -0.02;
+    };
+    return poly
+        .map((p) => {
+            for (const tri of tris) if (insideTri(p.s, p.t, tri)) return p;
+            let best = Infinity;
+            let ps = p.s;
+            let pt = p.t;
+            for (const tri of tris) {
+                for (let e = 0; e < 3; e++) {
+                    const a = tri[e]!;
+                    const b = tri[(e + 1) % 3]!;
+                    const abS = b.s - a.s;
+                    const abT = b.t - a.t;
+                    const ab2 = abS * abS + abT * abT || 1;
+                    const u = Math.min(1, Math.max(0, ((p.s - a.s) * abS + (p.t - a.t) * abT) / ab2));
+                    const qs = a.s + abS * u;
+                    const qt = a.t + abT * u;
+                    const d = Math.hypot(qs - p.s, qt - p.t);
+                    if (d < best) {
+                        best = d;
+                        ps = qs;
+                        pt = qt;
+                    }
+                }
+            }
+            if (best <= 0.45) return p;
+            if (best > 2) return null;
+            return { s: ps, t: pt };
+        })
+        .filter((p): p is { s: number; t: number } => p !== null);
+}
+
+function projectToPoly(
+    s: number,
+    t: number,
+    poly: Array<{ s: number; t: number }>,
+): { s: number; t: number } {
+    let best = Infinity;
+    let ps = s;
+    let pt = t;
+    for (let i = 0; i < poly.length; i++) {
+        const a = poly[i]!;
+        const b = poly[(i + 1) % poly.length]!;
+        const abS = b.s - a.s;
+        const abT = b.t - a.t;
+        const ab2 = abS * abS + abT * abT || 1;
+        const u = Math.min(1, Math.max(0, ((s - a.s) * abS + (t - a.t) * abT) / ab2));
+        const qs = a.s + abS * u;
+        const qt = a.t + abT * u;
+        const d = Math.hypot(qs - s, qt - t);
+        if (d < best) {
+            best = d;
+            ps = qs;
+            pt = qt;
+        }
+    }
+    return { s: ps, t: pt };
+}
+
+function bboxOf(shell: AfoTriMesh): { l: number; w: number; h: number } {
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    let z0 = Infinity;
+    let z1 = -Infinity;
+    const n = (shell.positions.length / 3) | 0;
+    for (let i = 0; i < n; i++) {
+        const x = shell.positions[i * 3] ?? 0;
+        const y = shell.positions[i * 3 + 1] ?? 0;
+        const z = shell.positions[i * 3 + 2] ?? 0;
+        x0 = Math.min(x0, x);
+        x1 = Math.max(x1, x);
+        y0 = Math.min(y0, y);
+        y1 = Math.max(y1, y);
+        z0 = Math.min(z0, z);
+        z1 = Math.max(z1, z);
+    }
+    return { l: x1 - x0, w: y1 - y0, h: z1 - z0 };
+}
+
 export interface FlatPlateValidation {
     openEdges: number;
     nonManifoldEdges: number;
