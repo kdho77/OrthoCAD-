@@ -11,13 +11,14 @@ import { analyzeManifoldBuffers } from "@/lib/geometry/manifold-core";
 import type { Side } from "@/types";
 import { buildCurledAfoCast, buildCurledSoleSheet, curledSoleZ, soleSheetBoundary } from "./curled-afo-cast";
 import { AFO_EDGE_MM, AFO_FLARE_MM, defaultAfoDesignState } from "./defaults";
-import { countTriangleSelfIntersections } from "./self-intersection";
 import { orientMeshOutward } from "./mesh-ops";
+import { countTriangleSelfIntersections } from "./self-intersection";
 import { buildAfoShell, trimPolygonForShell } from "./shell";
 import {
     AFO_FOREFOOT_BLEND_MM,
     AFO_FOREFOOT_PLANAR_MM,
     afoFlatPlateInputFields,
+    applyForefootTaper,
     applyOuterContactCut,
     assertFlatPlateAccepted,
     contactCutReportOf,
@@ -547,15 +548,20 @@ describe("patterned outer contact", () => {
                 heelSeed: cast.heel,
             };
             const plain = buildAfoShell(cast.mesh, [0, 1, 2], common);
+            applyForefootTaper(plain, spec, AFO_EDGE_MM);
             const cut = buildAfoShell(cast.mesh, [0, 1, 2], { ...common, contactCut: spec });
             const report = contactCutReportOf(cut);
             expect(report, side).toBeTruthy();
             const n = cut.outerVertex0 ?? 0;
             for (let i = 0; i < n * 3; i++) expect(cut.positions[i], side).toBe(plain.positions[i]);
-            expect(report!.templateRangeMm, `${side} range ${report!.templateRangeMm.toFixed(2)}`).toBeGreaterThan(1.5);
-            expect(report!.reachableFraction, `${side} reachable ${report!.reachableFraction.toFixed(2)}`).toBeLessThan(
-                0.98,
-            );
+            expect(
+                report!.templateRangeMm,
+                `${side} range ${report!.templateRangeMm.toFixed(2)}`,
+            ).toBeGreaterThan(1.5);
+            expect(
+                report!.reachableFraction,
+                `${side} reachable ${report!.reachableFraction.toFixed(2)}`,
+            ).toBeLessThan(0.98);
             expect(report!.seated, side).toBe(false);
             expect(report!.dMm + report!.rMm, side).toBeLessThanOrEqual(1.5 + 1e-6);
             const manifold = analyzeManifoldBuffers(cut.positions, cut.indices);
@@ -563,7 +569,9 @@ describe("patterned outer contact", () => {
             expect(manifold.nonManifoldEdges, side).toBe(0);
             expect(manifold.isWatertight, side).toBe(true);
             expect(maxRise(plain, cut), side).toBeLessThanOrEqual(1.5 + 1e-3);
-            expect(minPairedWall(cut), side).toBeGreaterThanOrEqual(Math.min(minPairedWall(plain), AFO_EDGE_MM) - 1e-3);
+            expect(minPairedWall(cut), side).toBeGreaterThanOrEqual(
+                Math.min(minPairedWall(plain), AFO_EDGE_MM) - 1e-3,
+            );
         }
     });
 
@@ -602,9 +610,93 @@ describe("patterned outer contact", () => {
         }
         times.sort((a, b) => a - b);
         const median = times[1] ?? times[0] ?? Infinity;
-        expect(median, `median ${median.toFixed(0)} ms of ${times.map((t) => t.toFixed(0)).join(", ")}`).toBeLessThan(
-            4000,
-        );
+        expect(
+            median,
+            `median ${median.toFixed(0)} ms of ${times.map((t) => t.toFixed(0)).join(", ")}`,
+        ).toBeLessThan(4000);
+    });
+});
+
+describe("forefoot distal taper", () => {
+    test("US M9 shell lowers and thins from the met heads to a thin distal edge", () => {
+        for (const side of ["left", "right"] as const) {
+            const cast = buildUsM9MediumCast(side);
+            const spec = { heel: cast.heel, m1: cast.m1, m5: cast.m5, thicknessMm: 4 };
+            const shell = buildAfoShell(cast.mesh, [0, 1, 2], {
+                thicknessMm: 4,
+                edgeMm: AFO_EDGE_MM,
+                flareMm: AFO_FLARE_MM,
+                trimPolygon: trimPolygonForShell(cast.trim, true) ?? undefined,
+                heelSeed: cast.heel,
+                contactCut: spec,
+            });
+            const report = contactCutReportOf(shell);
+            expect(report?.seated, side).toBe(true);
+            const frame = report!.frame;
+            const planes = contactPlanesFromLandmarks(spec);
+            const sMet =
+                (planes.m1.x - planes.origin.x) * planes.forward.x +
+                (planes.m1.y - planes.origin.y) * planes.forward.y +
+                (planes.m1.z - planes.origin.z) * planes.forward.z;
+            const n = shell.outerVertex0 ?? 0;
+            const beltOf = (i: number) => {
+                const x = (shell.positions[i * 3] ?? 0) - frame.origin.x;
+                const y = (shell.positions[i * 3 + 1] ?? 0) - frame.origin.y;
+                const z = (shell.positions[i * 3 + 2] ?? 0) - frame.origin.z;
+                const s = x * frame.forward.x + y * frame.forward.y + z * frame.forward.z;
+                const t = x * frame.lateral.x + y * frame.lateral.y + z * frame.lateral.z;
+                const h = x * frame.normal.x + y * frame.normal.y + z * frame.normal.z;
+                return { s, z: h - (frame.h0 + frame.a * s + frame.b * t) };
+            };
+            let sHi = -Infinity;
+            for (let i = n; i < n * 2; i++) sHi = Math.max(sHi, beltOf(i).s);
+            const heights: number[] = [];
+            const walls: number[] = [];
+            for (let k = 0; k <= 14; k++) {
+                const s = sMet + ((sHi - sMet) * k) / 14;
+                let maxZ = -Infinity;
+                const slice: Array<{ z: number; gap: number }> = [];
+                for (let i = n; i < n * 2; i++) {
+                    const b = beltOf(i);
+                    if (Math.abs(b.s - s) > 3.5) continue;
+                    maxZ = Math.max(maxZ, b.z);
+                    const j = i - n;
+                    const gap = Math.hypot(
+                        (shell.positions[i * 3] ?? 0) - (shell.positions[j * 3] ?? 0),
+                        (shell.positions[i * 3 + 1] ?? 0) - (shell.positions[j * 3 + 1] ?? 0),
+                        (shell.positions[i * 3 + 2] ?? 0) - (shell.positions[j * 3 + 2] ?? 0),
+                    );
+                    slice.push({ z: b.z, gap });
+                }
+                const zCut = Math.max(0.9, maxZ * 0.35);
+                let minWall = Infinity;
+                for (const p of slice) if (p.z >= zCut && p.gap > 0.05) minWall = Math.min(minWall, p.gap);
+                heights.push(maxZ);
+                walls.push(minWall);
+            }
+            const tipH = heights[heights.length - 1] ?? Infinity;
+            const tipW = walls[walls.length - 1] ?? Infinity;
+            expect(heights[0], `${side} met height`).toBeGreaterThan(25);
+            expect(tipH, `${side} tip height ${tipH.toFixed(2)}`).toBeLessThan(2.6);
+            expect(tipW, `${side} tip wall ${tipW.toFixed(2)}`).toBeLessThan(1.7);
+            expect((heights[0] ?? 0) - tipH, side).toBeGreaterThan(25);
+            for (let k = 1; k < heights.length; k++) {
+                expect(
+                    heights[k],
+                    `${side} height station ${k} ${heights.map((h) => h.toFixed(2)).join(" ")}`,
+                ).toBeLessThanOrEqual((heights[k - 1] ?? 0) + 0.45);
+            }
+            for (let k = 1; k < walls.length; k++) {
+                if (!Number.isFinite(walls[k]) || !Number.isFinite(walls[k - 1])) continue;
+                expect(
+                    walls[k],
+                    `${side} wall station ${k} ${walls.map((h) => h.toFixed(2)).join(" ")}`,
+                ).toBeLessThanOrEqual((walls[k - 1] ?? 0) + 0.8);
+            }
+            const manifold = analyzeManifoldBuffers(shell.positions, shell.indices);
+            expect(manifold.isWatertight, side).toBe(true);
+            expect(manifold.openEdges, side).toBe(0);
+        }
     });
 });
 
@@ -639,6 +731,7 @@ function expectSeatedContact(side: "left" | "right"): void {
         heelSeed: cast.heel,
     };
     const plain = buildAfoShell(cast.mesh, [0, 1, 2], common);
+    applyForefootTaper(plain, spec, AFO_EDGE_MM);
     const cut = buildAfoShell(cast.mesh, [0, 1, 2], { ...common, contactCut: spec });
     const report = contactCutReportOf(cut);
     expect(report, side).toBeTruthy();
@@ -720,6 +813,7 @@ function expectSeatedContact(side: "left" | "right"): void {
     const com = areaComMargin(cut, frame, poly);
     let away = 0;
     let awayN = 0;
+    let awayAt = "";
     for (let i = n; i < Math.min(total, n * 2); i++) {
         const b = beltOf(i, plain);
         if (b.z < report!.rMm + 2) continue;
@@ -727,7 +821,10 @@ function expectSeatedContact(side: "left" | "right"): void {
         const gap = pairedGap(cut, i);
         const was = pairedGap(plain, i);
         if (Math.abs(was - 4) > 0.35) continue;
-        away = Math.max(away, Math.abs(gap - 4));
+        const err = Math.abs(gap - 4);
+        if (err > away)
+            awayAt = `i=${i} s=${b.s.toFixed(1)} t=${b.t.toFixed(1)} z=${b.z.toFixed(2)} gap=${gap.toFixed(3)} was=${was.toFixed(3)}`;
+        away = Math.max(away, err);
         awayN++;
     }
     expect(
@@ -743,9 +840,15 @@ function expectSeatedContact(side: "left" | "right"): void {
     expect(iou, `${side} iou ${iou.toFixed(3)} cov ${coverage.toFixed(3)}`).toBeGreaterThanOrEqual(0.95);
     expect(coverage, `${side} coverage ${coverage.toFixed(3)}`).toBeGreaterThanOrEqual(0.98);
     expect(haus, `${side} hausdorff ${haus.toFixed(2)}`).toBeLessThanOrEqual(1);
-    expect(report!.neckWidthRatio, `${side} neck ${report!.neckWidthRatio.toFixed(3)}`).toBeGreaterThanOrEqual(0.22);
+    expect(
+        report!.neckWidthRatio,
+        `${side} neck ${report!.neckWidthRatio.toFixed(3)}`,
+    ).toBeGreaterThanOrEqual(0.22);
     expect(report!.neckWidthRatio, side).toBeLessThanOrEqual(0.28);
-    expect(report!.lateralInsetMm, `${side} inset ${report!.lateralInsetMm.toFixed(2)}`).toBeGreaterThanOrEqual(2);
+    expect(
+        report!.lateralInsetMm,
+        `${side} inset ${report!.lateralInsetMm.toFixed(2)}`,
+    ).toBeGreaterThanOrEqual(2);
     expect(report!.lateralInsetMm, side).toBeLessThanOrEqual(4);
     expect(radius, `${side} edge radius ${radius.toFixed(1)}`).toBeGreaterThanOrEqual(10);
     expect(report!.startLengthMm, side).toBeGreaterThanOrEqual(20);
@@ -756,9 +859,11 @@ function expectSeatedContact(side: "left" | "right"): void {
     expect(report!.dMm + report!.rMm, side).toBeLessThanOrEqual(1.5 + 1e-6);
     expect(report!.dMm, side).toBeGreaterThanOrEqual(0.5);
     expect(report!.dMm, side).toBeLessThanOrEqual(1.2);
-    expect(minPairedWall(cut), side).toBeGreaterThanOrEqual(Math.min(minPairedWall(plain), AFO_EDGE_MM) - 1e-3);
+    expect(minPairedWall(cut), side).toBeGreaterThanOrEqual(
+        Math.min(minPairedWall(plain), AFO_EDGE_MM) - 1e-3,
+    );
     expect(awayN, side).toBeGreaterThan(10);
-    expect(away, `${side} wall drift ${away.toFixed(3)}`).toBeLessThanOrEqual(0.1);
+    expect(away, `${side} wall drift ${away.toFixed(3)} ${awayAt}`).toBeLessThanOrEqual(0.1);
     expect(com, `${side} com ${com.toFixed(1)}`).toBeGreaterThanOrEqual(10);
     expect(ramp, `${side} ramp dihedral ${ramp.toFixed(1)}`).toBeLessThanOrEqual(15);
     // A few edges at the ball rim and the toe exceed 60 degrees. They sit on rim
@@ -946,12 +1051,16 @@ function leadingEdge(loop: Array<{ s: number; t: number }>): { radius: number; l
     const band = loop.filter((p) => p.s >= sMax - 1.5).sort((a, b) => a.t - b.t);
     let lo = 0;
     let hi = band.length - 1;
-    const transverse = (p: { s: number; t: number }, q: { s: number; t: number }) => Math.abs(q.t - p.t) >= Math.abs(q.s - p.s);
+    const transverse = (p: { s: number; t: number }, q: { s: number; t: number }) =>
+        Math.abs(q.t - p.t) >= Math.abs(q.s - p.s);
     while (lo < hi && !transverse(band[lo]!, band[lo + 1]!)) lo++;
     while (hi > lo && !transverse(band[hi - 1]!, band[hi]!)) hi--;
     const front = band.slice(lo, hi + 1);
     if (front.length < 2) return { radius: 0, length: 0 };
-    const length = Math.hypot(front[front.length - 1]!.s - front[0]!.s, front[front.length - 1]!.t - front[0]!.t);
+    const length = Math.hypot(
+        front[front.length - 1]!.s - front[0]!.s,
+        front[front.length - 1]!.t - front[0]!.t,
+    );
     let radius = Infinity;
     const far = (from: number, dir: number) => {
         const origin = front[from]!;
@@ -1047,8 +1156,18 @@ function countSharpFolds(plain: AfoTriMesh, cut: AfoTriMesh, limitDeg: number): 
         if (list.length !== 2) continue;
         const [sa, sb] = k.split("|").map(Number);
         if (!moved(sa!) && !moved(sb!)) continue;
-        const a = triNormal(cut, faceVert(cut, list[0]!, 0), faceVert(cut, list[0]!, 1), faceVert(cut, list[0]!, 2));
-        const b = triNormal(cut, faceVert(cut, list[1]!, 0), faceVert(cut, list[1]!, 1), faceVert(cut, list[1]!, 2));
+        const a = triNormal(
+            cut,
+            faceVert(cut, list[0]!, 0),
+            faceVert(cut, list[0]!, 1),
+            faceVert(cut, list[0]!, 2),
+        );
+        const b = triNormal(
+            cut,
+            faceVert(cut, list[1]!, 0),
+            faceVert(cut, list[1]!, 1),
+            faceVert(cut, list[1]!, 2),
+        );
         const d = Math.min(1, Math.max(-1, a.x * b.x + a.y * b.y + a.z * b.z));
         const deg = (Math.acos(d) * 180) / Math.PI;
         if (deg > limitDeg) folds++;
@@ -1060,7 +1179,12 @@ function faceVert(mesh: AfoTriMesh, f: number, k: number): number {
     return mesh.indices[f * 3 + k] ?? 0;
 }
 
-function triNormal(mesh: AfoTriMesh, ia: number, ib: number, ic: number): { x: number; y: number; z: number } {
+function triNormal(
+    mesh: AfoTriMesh,
+    ia: number,
+    ib: number,
+    ic: number,
+): { x: number; y: number; z: number } {
     const ax = mesh.positions[ia * 3] ?? 0;
     const ay = mesh.positions[ia * 3 + 1] ?? 0;
     const az = mesh.positions[ia * 3 + 2] ?? 0;
@@ -1316,8 +1440,7 @@ function buildUsM9MediumCast(side: Side): {
             const d = bottomAt(i + 1, j + 1);
             push(a, c, b);
             push(c, d, b);
-            const inside =
-                inWin(i, j) && inWin(i + 1, j) && inWin(i, j + 1) && inWin(i + 1, j + 1);
+            const inside = inWin(i, j) && inWin(i + 1, j) && inWin(i, j + 1) && inWin(i + 1, j + 1);
             if (inside) continue;
             const ta = topAt(i, j);
             const tb = topAt(i + 1, j);
@@ -1396,7 +1519,10 @@ function buildUsM9MediumCast(side: Side): {
             z: positions[id * 3 + 2] ?? 0,
         });
     }
-    const mesh = orientMeshOutward({ positions: new Float32Array(positions), indices: new Uint32Array(indices) });
+    const mesh = orientMeshOutward({
+        positions: new Float32Array(positions),
+        indices: new Uint32Array(indices),
+    });
     const med = medialSign(side);
     const metX = 170;
     return {

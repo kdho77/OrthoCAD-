@@ -309,6 +309,11 @@ export interface AfoShellOptions {
      * stays the plate build.
      */
     contactCut?: AfoFlatPlateSpec;
+    /**
+     * Orthotic taper of the forefoot wall. On with a contact cut. Set false
+     * only to build the untapered shell for a comparison render.
+     */
+    forefootTaper?: boolean;
 }
 
 export interface TrimLoopValidation {
