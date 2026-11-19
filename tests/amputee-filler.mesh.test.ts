@@ -234,9 +234,9 @@ describe("amputee filler mesh", () => {
                     for (let i = 0; i < n; i++) {
                         const z0 = a[i * 3 + 2] ?? 0;
                         const z1 = b[i * 3 + 2] ?? 0;
-                        // The sink runs after the filler, so the floor is the filled
-                        // surface. A cut may not open a hole through that rise.
-                        if (z1 < z0 - 0.05) cutThrough++;
+                        // The sink may carve its own depth out of the filled surface.
+                        // Deeper than that is a hole through the rise. The floor stays at 2 mm.
+                        if (z1 < z0 - (sink.depthMm + 0.05)) cutThrough++;
                         if (z0 >= 2 && z1 < 2 - 1e-3) belowFloor++;
                     }
                     expect(cutThrough).toBe(0);
