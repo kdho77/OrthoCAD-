@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { type ThreeEvent, useFrame, useThree } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { sideOffsetX } from "@/lib/geometry/layout";
@@ -10,7 +10,6 @@ import type { Side } from "@/types";
 import {
     AMPUTATION_CUT_COLOR,
     AMPUTATION_CUT_HALO,
-    amputationPointFromMesh,
     type FootBounds,
     layoutFootBounds,
     strokeLocals,
@@ -35,10 +34,8 @@ export function AmputationDrawOverlay() {
 function AmputationDrawSide({ side, points }: { side: Side; points: DrawPoint[] }) {
     const design = useDesignStore((s) => s.design);
     const layout = insoleLayoutFromDesign(design);
-    const place = useAmputationDrawStore((s) => s.place);
     const { scene } = useThree();
     const groupRef = useRef<THREE.Group>(null);
-    const downRef = useRef<{ x: number; y: number } | null>(null);
     const [live, setLive] = useState<{ geo: THREE.BufferGeometry; bounds: FootBounds } | null>(null);
     const geoSeen = useRef<THREE.BufferGeometry | null>(null);
 
@@ -65,8 +62,6 @@ function AmputationDrawSide({ side, points }: { side: Side; points: DrawPoint[] 
     });
 
     const bounds = live?.bounds ?? layoutFootBounds(layout.lengthMm, layout.widthMm);
-    const boundsRef = useRef(bounds);
-    boundsRef.current = bounds;
 
     const display = useMemo(() => {
         const z = bounds.maxZ + 1.8;
@@ -75,70 +70,11 @@ function AmputationDrawSide({ side, points }: { side: Side; points: DrawPoint[] 
         );
     }, [points, side, layout.lengthMm, layout.widthMm, bounds]);
 
-    const placeHit = (event: ThreeEvent<PointerEvent>) => {
-        const group = groupRef.current;
-        if (!group) return;
-        group.updateWorldMatrix(true, false);
-        const local = group.worldToLocal(event.point.clone());
-        const hit = amputationPointFromMesh(
-            local.x,
-            local.y,
-            side,
-            layout.lengthMm,
-            layout.widthMm,
-            boundsRef.current,
-        );
-        place({ x: hit.x, y: hit.y, localX: local.x, localY: local.y });
-    };
-
-    const onPointerDown = (event: ThreeEvent<PointerEvent>) => {
-        event.stopPropagation();
-        downRef.current = { x: event.nativeEvent.clientX, y: event.nativeEvent.clientY };
-    };
-
-    const onPointerUp = (event: ThreeEvent<PointerEvent>) => {
-        event.stopPropagation();
-        const start = downRef.current;
-        downRef.current = null;
-        if (!start) return;
-        const dx = event.nativeEvent.clientX - start.x;
-        const dy = event.nativeEvent.clientY - start.y;
-        if (dx * dx + dy * dy > 16) return;
-        placeHit(event);
-    };
-
     const centerX = layout.lengthMm / 2;
     const offsetY = sideOffsetX(side, layout.widthMm);
-    const pickZ = bounds.maxZ + 0.8;
 
     return (
         <group ref={groupRef} position={[-centerX, offsetY, 0]}>
-            {live?.geo ? (
-                <mesh
-                    geometry={live.geo}
-                    position={[0, 0, 0.8]}
-                    renderOrder={180}
-                    onPointerDown={onPointerDown}
-                    onPointerUp={onPointerUp}
-                >
-                    <meshBasicMaterial transparent opacity={0} depthWrite={false} side={THREE.DoubleSide} />
-                </mesh>
-            ) : (
-                <mesh
-                    position={[(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2, pickZ]}
-                    renderOrder={180}
-                    onPointerDown={onPointerDown}
-                    onPointerUp={onPointerUp}
-                >
-                    <planeGeometry
-                        args={[
-                            Math.max(1, bounds.maxX - bounds.minX),
-                            Math.max(1, bounds.maxY - bounds.minY),
-                        ]}
-                    />
-                    <meshBasicMaterial transparent opacity={0} depthWrite={false} side={THREE.DoubleSide} />
-                </mesh>
-            )}
             {display.length > 1 ? (
                 <>
                     <StrokeTubes pts={display} radius={3.1} color={AMPUTATION_CUT_HALO} order={210} />
@@ -146,7 +82,13 @@ function AmputationDrawSide({ side, points }: { side: Side; points: DrawPoint[] 
                 </>
             ) : null}
             {display.map((p, i) => (
-                <mesh key={points[i]?.id ?? `cut-${i}`} position={p} renderOrder={212} frustumCulled={false}>
+                <mesh
+                    key={points[i]?.id ?? `cut-${i}`}
+                    position={p}
+                    renderOrder={212}
+                    frustumCulled={false}
+                    raycast={() => null}
+                >
                     <sphereGeometry args={[3.2, 12, 12]} />
                     <meshBasicMaterial
                         color={AMPUTATION_CUT_COLOR}
@@ -188,7 +130,7 @@ function StrokeTubes({
     useEffect(() => () => geo?.dispose(), [geo]);
     if (!geo) return null;
     return (
-        <mesh geometry={geo} renderOrder={order} frustumCulled={false}>
+        <mesh geometry={geo} renderOrder={order} frustumCulled={false} raycast={() => null}>
             <meshBasicMaterial color={color} depthTest={false} depthWrite={false} toneMapped={false} />
         </mesh>
     );

@@ -20,23 +20,23 @@ import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { Button } from "@/components/ui/button";
 import { AfoScanGuidedCard } from "@/features/afo/AfoScanGuidedCard";
 import { afoViewportPlacementLayer, scanForAfoWorkflow } from "@/features/afo/afo-scan-markers";
-import { shouldDeferTopMeshLoad } from "@/features/clients/start-path";
 import { afoPlacementComplete, ensureAfoScanPlacement } from "@/features/afo/afo-scan-ui";
 import { AmputationDrawOverlay } from "@/features/amputation/AmputationDrawOverlay";
 import { useAmputationDrawStore } from "@/features/amputation/amputation-draw-store";
+import { shouldDeferTopMeshLoad } from "@/features/clients/start-path";
 import { HardnessLegend } from "@/features/clinical/SplitSettingsPanel";
 import { MeasureOverlay } from "@/features/measure/MeasureOverlay";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
+import { afoShellIsCurrent } from "@/lib/geometry/afo/shell-fingerprint";
 import { afoDesignBaseLabel } from "@/lib/geometry/afo/trim-preview";
 import { hasActiveModifiers, resolveDesignMode } from "@/lib/geometry/base-modifier";
+import { afoViewportFramingMesh } from "@/lib/geometry/measure/afo-target";
 import { viewerLoftOverlayState } from "@/lib/geometry/procedural-wall/preview-loft-ui";
 import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
-import { afoShellIsCurrent } from "@/lib/geometry/afo/shell-fingerprint";
-import { afoViewportFramingMesh } from "@/lib/geometry/measure/afo-target";
 import { applyCameraViewPreset, VIEW_CAMERA_POS } from "@/lib/geometry/viewport-side-layout";
-import { useAfoStore } from "@/stores/afo-store";
 import { cn } from "@/lib/utils";
+import { useAfoStore } from "@/stores/afo-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { type CameraView, useDesignStore, type ViewerSettings } from "@/stores/design-store";
 import { type MeshEditTarget, useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -46,7 +46,11 @@ import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
 import { AfoMarkerPlacement } from "./AfoMarkerPlacement";
 import { AfoMeshes } from "./AfoMeshes";
-import { applyAfoBottomAnchoredViewPreset, recenterAfoScanCamera, useAfoScanCameraFrame } from "./AfoScanCameraFrame";
+import {
+    applyAfoBottomAnchoredViewPreset,
+    recenterAfoScanCamera,
+    useAfoScanCameraFrame,
+} from "./AfoScanCameraFrame";
 import { AfoScanHoverDot } from "./AfoScanHoverDot";
 import { AfoScanLandmarkLighting } from "./AfoScanLandmarkLighting";
 import { AfoScanLandmarkPlacement } from "./AfoScanLandmarkPlacement";
@@ -387,7 +391,7 @@ export function Viewer3D() {
                     makeDefault
                     enableDamping
                     dampingFactor={0.1}
-                    enabled={!trimlineEdit?.isDragging && !afoDraggingTrim && !afoTrimGesture}
+                    enabled={!drawingSide && !trimlineEdit?.isDragging && !afoDraggingTrim && !afoTrimGesture}
                 />
             </Canvas>
 
