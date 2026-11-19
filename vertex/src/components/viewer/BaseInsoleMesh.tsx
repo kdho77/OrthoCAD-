@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
+import { amputationPointFromMesh } from "@/features/amputation/amputation-draw";
+import { useAmputationDrawStore } from "@/features/amputation/amputation-draw-store";
 import { publishTextGuide } from "@/features/exports/text-guide-store";
 import { useBaseInsoleGeometry } from "@/hooks/useBaseInsoleGeometry";
 import { applyDesignElementColors } from "@/lib/geometry/element-visualization";
@@ -64,6 +66,7 @@ export function BaseInsoleMesh({
     const selectedElementId = useDesignStore((s) => s.selectedElementId);
     const { geometry, building, elementReference } = useBaseInsoleGeometry(design, side);
     const textDrag = useTextSurfaceDrag(side);
+    const drawingThisSide = useAmputationDrawStore((s) => s.side) === side;
 
     useEffect(() => {
         const ud = geometry?.userData as { textGuide?: TextGuide; textFitError?: string } | undefined;
@@ -156,7 +159,32 @@ export function BaseInsoleMesh({
                 position={[-layout.lengthMm / 2, offsetX, 0]}
                 castShadow={!building}
                 receiveShadow
-                onPointerDown={textDrag.onPointerDown}
+                onPointerDown={(event) => {
+                    if (!drawingThisSide) {
+                        textDrag.onPointerDown(event);
+                        return;
+                    }
+                    event.stopPropagation();
+                    const box = new THREE.Box3().setFromBufferAttribute(
+                        event.object.geometry.getAttribute("position") as THREE.BufferAttribute,
+                    );
+                    const local = event.object.worldToLocal(event.point.clone());
+                    const foot = insoleLayoutFromDesign(useDesignStore.getState().design);
+                    const hit = amputationPointFromMesh(local.x, local.y, side, foot.lengthMm, foot.widthMm, {
+                        minX: box.min.x,
+                        maxX: box.max.x,
+                        minY: box.min.y,
+                        maxY: box.max.y,
+                        minZ: box.min.z,
+                        maxZ: box.max.z,
+                    });
+                    useAmputationDrawStore.getState().place({
+                        x: hit.x,
+                        y: hit.y,
+                        localX: local.x,
+                        localY: local.y,
+                    });
+                }}
                 onPointerMove={textDrag.onPointerMove}
                 onPointerUp={textDrag.onPointerUp}
             />

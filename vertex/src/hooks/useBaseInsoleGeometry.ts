@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { BufferGeometry } from "three";
 import { shouldDeferTopMeshLoad } from "@/features/clients/start-path";
 import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
+import { amputationFillerActive, raiseDisplayedTopPositions } from "@/lib/geometry/amputee-filler";
 import {
     baseModifierField,
     DEFAULT_STOCK_PRIMARY_SIDE,
@@ -75,7 +76,11 @@ import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-wi
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { textMarkingHash } from "@/lib/geometry/text-marking/hash";
-import { clipGeometryToOutline, extractMeshOutline } from "@/lib/geometry/trimline";
+import {
+    clipGeometryToOutline,
+    effectiveOutlineHalfWidth,
+    extractMeshOutline,
+} from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured } from "@/lib/trpc";
 import { useBaseBoundsStore } from "@/stores/base-bounds-store";
@@ -114,6 +119,50 @@ function forefootViewerCacheKey(input: {
         corrections: { ...input.corrections, forefootWidthMm: 0 },
         fullLengthToeHoldU,
     });
+}
+
+/** Design view shows the composed top, which is lofted unraised. Raise that clone. */
+export function applyDisplayedAmputation(geometry: BufferGeometry, field: HeightFieldParams): void {
+    if (!amputationFillerActive(field.amputation) || !field.amputation) return;
+    const pos = geometry.getAttribute("position");
+    const index = geometry.getIndex();
+    if (!pos || !index) return;
+    let frame: ReturnType<typeof getBaseFootprintFrame>;
+    try {
+        frame = getBaseFootprintFrame(geometry, field.side);
+    } catch {
+        return;
+    }
+    const indices = new Array<number>(index.count);
+    for (let i = 0; i < index.count; i++) indices[i] = index.getX(i);
+    raiseDisplayedTopPositions(
+        pos.array as Float32Array,
+        pos.count,
+        indices,
+        {
+            side: field.side,
+            lengthMm: field.lengthMm,
+            widthMm: field.widthMm,
+            amputation: field.amputation,
+            halfWidthMm: (u) =>
+                effectiveOutlineHalfWidth(u, field.lengthMm, field.widthMm, field.trimline) *
+                (field.widthMm / 2),
+        },
+        {
+            lengthAxis: frame.lengthAxis,
+            widthAxis: frame.widthAxis,
+            thickAxis: frame.thickAxis,
+            minX: frame.lenMin,
+            lenSize: frame.lenSize,
+            widthSign: frame.widthSign,
+            widCenter: frame.widCenter,
+            widHalf: frame.widSize / 2,
+        },
+    );
+    pos.needsUpdate = true;
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
 }
 
 function fieldWithoutForefoot(field: HeightFieldParams, foreW: number): HeightFieldParams {
@@ -618,6 +667,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         if (!interacting) display.computeVertexNormals();
                     }
                 }
+                applyDisplayedAmputation(display, field);
                 const previous = workRef.current;
                 const previousOut = outRef.current;
                 workRef.current = display;
@@ -851,6 +901,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         ...(field.sinks && field.sinks.length > 0
                             ? { sinks: field.sinks, sinkStyloidThicken: field.sinkStyloidThicken === true }
                             : {}),
+                        ...(field.amputation ? { amputation: field.amputation } : {}),
                     }),
                     shapeFinishJson: JSON.stringify(field.shapeFinish ?? null),
                     elementsJson: elementGeometryKey(field.elements ?? []),
@@ -1063,6 +1114,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.textMarking,
         design.sinks,
         design.sinkStyloidThicken,
+        design.amputation,
         correctionPreview,
         thicknessPreview,
         elementPreviews,
