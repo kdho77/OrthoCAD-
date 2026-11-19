@@ -11,10 +11,12 @@ export type { AmputationPoint, SideAmputation };
  * the toe, y millimetres from the midline with medial positive. The same
  * points on the left and the right foot are the same anatomical cut.
  *
- * The drawn line is the step. The toe side of that line is a flat rise of
- * `height` millimetres. Fillet inside is the convex rounding of the top edge.
- * Fillet outside is the concave blend back into the insole. Interface fillet
- * off replaces that blend with about 1 mm of cleanup and a near-vertical step.
+ * The drawn shape is the fill. Its inside rises by `height` millimetres.
+ * A closed loop is that shape. An open line is closed along the insole rim,
+ * and the smaller region that closure cuts off is the inside. Fillet inside
+ * rounds the top edge. Fillet outside blends back into the unfilled insole.
+ * Interface fillet off replaces that blend with about 1 mm of cleanup and a
+ * near-vertical step.
  */
 
 export const AMPUTATION_HEIGHT_MM = 15;
@@ -133,7 +135,7 @@ function profileGeom(spec: AmputationProfile): ProfileGeom {
     };
 }
 
-/** Rise (mm) from signed distance to the cut. Positive distance is the toe side. */
+/** Rise (mm) from signed distance to the shape. Positive distance is inside. */
 export function amputationRiseMm(signedMm: number, spec: AmputationProfile): number {
     const g = profileGeom(spec);
     if (!(g.height > 0)) return 0;
@@ -274,6 +276,29 @@ function pointInOutline(p: AmputationPoint, outline: OutlineSample[]): boolean {
     return wind !== 0;
 }
 
+function catmullRomClosed(points: AmputationPoint[], stepsPerSpan: number): AmputationPoint[] {
+    const ring =
+        points.length > 1 &&
+        Math.hypot(points[0]!.x - points[points.length - 1]!.x, points[0]!.y - points[points.length - 1]!.y) <
+            1e-3
+            ? points.slice(0, -1)
+            : points.slice();
+    if (ring.length < 3) return catmullRom(points, stepsPerSpan);
+    const out: AmputationPoint[] = [];
+    const n = ring.length;
+    for (let i = 0; i < n; i++) {
+        const p0 = ring[(i - 1 + n) % n]!;
+        const p1 = ring[i]!;
+        const p2 = ring[(i + 1) % n]!;
+        const p3 = ring[(i + 2) % n]!;
+        for (let s = 0; s < stepsPerSpan; s++) {
+            out.push(centripetal(p0, p1, p2, p3, s / stepsPerSpan));
+        }
+    }
+    if (out.length > 0) out.push({ ...out[0]! });
+    return out;
+}
+
 function catmullRom(points: AmputationPoint[], stepsPerSpan: number): AmputationPoint[] {
     if (points.length < 2) return points.map((p) => ({ ...p }));
     if (points.length === 2) return densify(points[0]!, points[1]!, stepsPerSpan);
@@ -342,16 +367,38 @@ function lerpKnot(
 
 export interface AmputationDrawResult {
     points: AmputationPoint[];
-    /** Dense cut used by the height field, after the outline closure is applied. */
+    /** Dense boundary of the drawn shape. A closed loop repeats its first point. */
     spline: AmputationPoint[];
     clipped: boolean;
     rejected: boolean;
     reason?: string;
 }
 
+/** Inside the foot rectangle. The stylized outline is narrower than the mesh. */
+function inFootRect(p: AmputationPoint, lengthMm: number, widthMm: number): boolean {
+    const halfW = Math.max(1, widthMm) / 2;
+    return p.x >= -0.5 && p.x <= lengthMm + 0.5 && Math.abs(p.y) <= halfW + 0.5;
+}
+
+/** A loop the user closed, rather than a line that still needs the rim. */
+function endsMeet(points: readonly AmputationPoint[], lengthMm: number): boolean {
+    if (points.length < 3) return false;
+    const a = points[0]!;
+    const b = points[points.length - 1]!;
+    const gap = Math.hypot(a.x - b.x, a.y - b.y);
+    let span = 0;
+    for (let i = 1; i < points.length; i++) {
+        span += Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y);
+    }
+    const tol = Math.max(8, lengthMm * 0.035);
+    return gap <= tol && span > gap * 3;
+}
+
 /**
- * Click points → clip to the outline, drop self-crossings, fit a smooth spline.
- * Endpoints land on the outline. The toe side closes along that outline.
+ * Click points → drop self-crossings and fit a smooth spline.
+ * A closed shape stays where it was drawn, including on the mesh past the
+ * stylized outline. An open line has its ends on the outline so the fill can
+ * close along the rim.
  */
 export function confirmAmputationDraw(
     raw: readonly AmputationPoint[],
@@ -371,15 +418,23 @@ export function confirmAmputationDraw(
             reason: "Draw at least three points.",
         };
     }
+    const closed = endsMeet(finite, lengthMm);
     const parked = finite.map((p) => {
+        if (closed) {
+            if (inFootRect(p, lengthMm, widthMm)) return p;
+            clipped = true;
+            return nearestOnOutline(p, outline);
+        }
         if (pointInOutline(p, outline)) return p;
         clipped = true;
         return nearestOnOutline(p, outline);
     });
     const ends = parked.slice();
-    ends[0] = nearestOnOutline(ends[0]!, outline);
-    ends[ends.length - 1] = nearestOnOutline(ends[ends.length - 1]!, outline);
-    if (ends[0]!.x !== parked[0]!.x || ends[0]!.y !== parked[0]!.y) clipped = true;
+    if (!closed) {
+        ends[0] = nearestOnOutline(ends[0]!, outline);
+        ends[ends.length - 1] = nearestOnOutline(ends[ends.length - 1]!, outline);
+        if (ends[0]!.x !== parked[0]!.x || ends[0]!.y !== parked[0]!.y) clipped = true;
+    }
     const simple = clipSelfCrossingLine(ends);
     if (simple.clipped) clipped = true;
     if (simple.points.length < 3) {
@@ -388,11 +443,17 @@ export function confirmAmputationDraw(
             spline: [],
             clipped,
             rejected: true,
-            reason: "That line crosses itself. Draw a single U from the medial edge to the lateral edge.",
+            reason: "That line crosses itself. Draw one region to fill.",
         };
     }
-    let spline = catmullRom(simple.points, 6);
+    const closedShape = closed && endsMeet(simple.points, lengthMm);
+    let spline = closedShape ? catmullRomClosed(simple.points, 6) : catmullRom(simple.points, 6);
     spline = spline.map((p) => {
+        if (closedShape) {
+            if (inFootRect(p, lengthMm, widthMm)) return p;
+            clipped = true;
+            return nearestOnOutline(p, outline);
+        }
         if (pointInOutline(p, outline)) return p;
         clipped = true;
         return nearestOnOutline(p, outline);
@@ -409,10 +470,89 @@ export function confirmAmputationDraw(
 
 interface PreparedCut {
     key: string;
-    spline: AmputationPoint[];
+    /** Fillet is measured to this curve. A closed shape repeats its first point. */
+    boundary: AmputationPoint[];
+    /**
+     * Open line only. +1 when the smaller rim pocket lies to the left of the
+     * directed line. Null for a closed shape, which uses the polygon interior.
+     */
+    insideSign: number | null;
     spec: AmputationProfile;
-    /** +1 when the toe lies to the left of the directed cut. */
-    toeSign: number;
+}
+
+function polygonArea(pts: readonly AmputationPoint[]): number {
+    let area = 0;
+    for (let i = 0; i < pts.length; i++) {
+        const a = pts[i]!;
+        const b = pts[(i + 1) % pts.length]!;
+        area += a.x * b.y - b.x * a.y;
+    }
+    return area / 2;
+}
+
+function nearestOutlineIndex(p: AmputationPoint, outline: readonly OutlineSample[]): number {
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < outline.length; i++) {
+        const q = outline[i]!;
+        const d = (q.x - p.x) ** 2 + (q.y - p.y) ** 2;
+        if (d < bestD) {
+            bestD = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+/** Outline samples strictly between `from` and `to`, walking `step` (±1). */
+function outlineArc(
+    outline: readonly OutlineSample[],
+    from: number,
+    to: number,
+    step: 1 | -1,
+): AmputationPoint[] {
+    const n = outline.length;
+    const out: AmputationPoint[] = [];
+    let i = from;
+    for (let guard = 0; guard <= n; guard++) {
+        i = (i + step + n) % n;
+        if (i === to) break;
+        out.push({ x: outline[i]!.x, y: outline[i]!.y });
+    }
+    return out;
+}
+
+/** The rim arc that cuts off the smaller region between the line's ends. */
+function closeAgainstRim(
+    spline: readonly AmputationPoint[],
+    outline: readonly OutlineSample[],
+): AmputationPoint[] {
+    const from = nearestOutlineIndex(spline[spline.length - 1]!, outline);
+    const to = nearestOutlineIndex(spline[0]!, outline);
+    const forward = [...spline, ...outlineArc(outline, from, to, 1)];
+    const back = [...spline, ...outlineArc(outline, from, to, -1)];
+    return Math.abs(polygonArea(forward)) <= Math.abs(polygonArea(back)) ? forward : back;
+}
+
+/** Which side of an open line the smaller rim pocket is on. */
+function pocketSign(spline: readonly AmputationPoint[], ring: readonly AmputationPoint[]): number {
+    const step = Math.max(1, Math.floor((spline.length - 1) / 12));
+    for (let i = 0; i < spline.length - 1; i += step) {
+        const a = spline[i]!;
+        const b = spline[i + 1]!;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 1e-6) continue;
+        const nx = -dy / len;
+        const ny = dx / len;
+        const mx = (a.x + b.x) / 2;
+        const my = (a.y + b.y) / 2;
+        const leftIn = pointInOutline({ x: mx + nx * 2, y: my + ny * 2 }, ring);
+        const rightIn = pointInOutline({ x: mx - nx * 2, y: my - ny * 2 }, ring);
+        if (leftIn !== rightIn) return leftIn ? 1 : -1;
+    }
+    return 1;
 }
 
 const preparedCache = new WeakMap<SideAmputation, PreparedCut>();
@@ -441,11 +581,24 @@ function prepareCut(
     const draw = confirmAmputationDraw(amp.points, lengthMm, widthMm, halfWidthMm);
     if (draw.rejected || draw.spline.length < 2) return null;
     const outline = footOutlineMedial(lengthMm, widthMm, halfWidthMm);
-    const toe = outline.reduce((best, p) => (p.x > best.x ? p : best), outline[0]!);
+    const start = draw.spline[0]!;
+    const end = draw.spline[draw.spline.length - 1]!;
+    const closed = Math.hypot(start.x - end.x, start.y - end.y) <= 1.5 || endsMeet(draw.points, lengthMm);
+    const boundary = draw.spline.slice();
+    let insideSign: number | null = null;
+    if (closed) {
+        const a = boundary[0]!;
+        const b = boundary[boundary.length - 1]!;
+        if (Math.hypot(a.x - b.x, a.y - b.y) > 1e-3) {
+            boundary.push({ ...boundary[0]! });
+        }
+    } else {
+        insideSign = pocketSign(draw.spline, closeAgainstRim(draw.spline, outline));
+    }
     const prep: PreparedCut = {
         key,
-        spline: draw.spline,
-        toeSign: nearestSplineSide(toe, draw.spline).side,
+        boundary,
+        insideSign,
         spec: {
             height: amp.height,
             filletInside: amp.filletInside,
@@ -502,11 +655,12 @@ export function amputationDeltaMm(
     const medial = -(vSigned * medialSign);
     const y = medial * (widthMm / 2);
     const p = { x, y };
-    // Side of the cut line, not the stylized outline. The outline is narrower
-    // than the mesh, and using it as the sign flipped toe-side vertices just
-    // past that curve into the heel fillet.
-    const hit = nearestSplineSide(p, prep.spline);
-    const signed = hit.side === prep.toeSign ? hit.dist : -hit.dist;
+    const hit = nearestSplineSide(p, prep.boundary);
+    // Closed shape: the polygon interior. Open line: the smaller pocket the
+    // line cuts off against the rim. Distance stays on the drawn curve, so a
+    // vertex past the stylized outline on the pocket side still counts as inside.
+    const inside = prep.insideSign == null ? pointInOutline(p, prep.boundary) : hit.side === prep.insideSign;
+    const signed = inside ? hit.dist : -hit.dist;
     return amputationRiseMm(signed, prep.spec);
 }
 

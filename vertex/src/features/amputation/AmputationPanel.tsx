@@ -19,7 +19,7 @@ const SIDE_LABEL: Record<Side, string> = { left: "Left", right: "Right" };
 /**
  * Windows Amputation panel: per foot, Enabled and Draw, then Height,
  * Fillet inside, Fillet outside, and Interface Fillet.
- * Draw clicks a U from the medial edge, around the toe, to the lateral edge.
+ * Draw outlines the area to fill on the insole.
  */
 export function AmputationPanel() {
     const design = useDesignStore((s) => s.design);
@@ -42,7 +42,7 @@ export function AmputationPanel() {
         if (drawing === side) return;
         start(side);
         setNote(
-            "Click the insole from the medial edge, around the toe, to the lateral edge. The cut shows on the sheet as you place points.",
+            "Click the insole to outline the area to fill. The shape shows on the sheet as you place points.",
         );
     };
 
@@ -60,7 +60,9 @@ export function AmputationPanel() {
         }
         updateAmputation(drawing, { enabled: true, points: result.points });
         setNote(
-            result.clipped ? "Clipped to the outline. The toe side is raised." : "The toe side is raised.",
+            result.clipped
+                ? "Clipped to the outline. The inside of the shape is raised."
+                : "The inside of the shape is raised.",
         );
         cancelDraw();
     };
@@ -69,8 +71,9 @@ export function AmputationPanel() {
         <section className="space-y-3" aria-label="Amputation">
             <h3 className="text-sm font-medium">Amputation</h3>
             <p className="text-[11px] leading-snug text-muted-foreground">
-                Toe side of the line rises by Height. Fillet inside rounds the top edge. Fillet outside blends
-                into the insole. Interface Fillet off is a near-vertical step with about 1 mm of cleanup.
+                The inside of the drawn shape rises by Height. Fillet inside rounds the top edge. Fillet
+                outside blends into the insole. Interface Fillet off is a near-vertical step with about 1 mm
+                of cleanup.
             </p>
             {SIDES.map((side) => {
                 const amp = normalizeSideAmputation(design.amputation?.[side] ?? defaultSideAmputation());
@@ -92,8 +95,7 @@ export function AmputationPanel() {
             {drawing ? (
                 <div className="space-y-2">
                     <p className="text-[11px] text-muted-foreground">
-                        Click the {SIDE_LABEL[drawing]} insole from the medial edge, around the toe, to the
-                        lateral edge, then Confirm.
+                        Click the {SIDE_LABEL[drawing]} insole to outline the area to fill, then Confirm.
                     </p>
                     <div className="flex gap-2">
                         <Button type="button" size="sm" onClick={confirm}>
