@@ -28,7 +28,7 @@ import { AFO_TRIM_PIN_RADIUS_MM } from "@/lib/geometry/afo/defaults";
 import { afoMeshToGeometry, meshCentroid } from "@/lib/geometry/afo/mesh-ops";
 import { useAfoShellCurrent } from "@/lib/geometry/afo/shell-fingerprint";
 import { afoTrimPreview, cursorCrossSegments } from "@/lib/geometry/afo/trim-preview";
-import { fitSurfaceSpline } from "@/lib/geometry/afo/trim-spline";
+import { fitSurfaceSpline, trimDisplayPoints } from "@/lib/geometry/afo/trim-spline";
 import type { AfoVec3 } from "@/lib/geometry/afo/types";
 import { afoMeasureSolidId, afoMeasureTarget } from "@/lib/geometry/measure/afo-target";
 import { triangleMeshFromGeometry } from "@/lib/geometry/measure/mesh-ops";
@@ -85,6 +85,13 @@ export function AfoMeshes() {
         const live = extend && trimHover ? [...base, trimHover] : base;
         if (live.length < 2) return afo.trimCurve ?? [];
         const closed = afo.trimClosed && !extend;
+        // A closed loop already stores its faired curve. Draw that, so a preset
+        // trim stays on the clinical samples instead of a second fit. Drag still
+        // refits from the pins below.
+        if (closed && !draggingTrim && (afo.trimCurve?.length ?? 0) >= 4) {
+            const lifted = trimDisplayPoints(working, afo.trimCurve);
+            return lifted.length >= 2 ? lifted : afo.trimCurve;
+        }
         if (!closed && live.length < 3) {
             const open = fitSurfaceSpline(working, live, { closed: false, spacingMm: 0.5, quick: true });
             return open.display.length >= 2 ? open.display : open.curve;

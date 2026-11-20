@@ -198,7 +198,8 @@ export type AfoAnatomicalLandmarkId =
     | "fifth_met_base"
     | "medial_malleolus"
     | "lateral_malleolus"
-    | "fibular_head";
+    | "fibular_head"
+    | "toe_tip";
 
 /** Values derived from the landmark frame. Shell/trim geometry does not read these yet. */
 export interface AfoScanDerived {

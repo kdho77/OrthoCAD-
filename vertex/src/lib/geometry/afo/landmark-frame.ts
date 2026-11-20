@@ -44,6 +44,7 @@ export const AFO_LANDMARK_STEPS: readonly {
     { id: "medial_malleolus", label: "Medial malleolus", optional: false },
     { id: "lateral_malleolus", label: "Lateral malleolus", optional: false },
     { id: "fibular_head", label: "Fibular head", optional: true },
+    { id: "toe_tip", label: "Toe tip", optional: true },
 ];
 
 export const AFO_REQUIRED_LANDMARK_COUNT = AFO_LANDMARK_STEPS.filter((step) => !step.optional).length;
@@ -366,6 +367,7 @@ export interface OrientedLandmarks {
     medial_malleolus?: AfoVec3;
     lateral_malleolus?: AfoVec3;
     fibular_head?: AfoVec3;
+    toe_tip?: AfoVec3;
 }
 
 /**
