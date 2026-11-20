@@ -3,13 +3,13 @@
 import { type Matrix4, Vector3 } from "three";
 
 /** Reduced ambient so directional shading reads on bony relief. */
-export const AFO_SCAN_LANDMARK_AMBIENT_INTENSITY = 0.15;
+export const AFO_SCAN_LANDMARK_AMBIENT_INTENSITY = 0.08;
 
 /** Weak sky/ground fill — shadowed sides stay visible, not black. */
-export const AFO_SCAN_LANDMARK_HEMISPHERE_INTENSITY = 0.28;
+export const AFO_SCAN_LANDMARK_HEMISPHERE_INTENSITY = 0.14;
 
 export const AFO_SCAN_LANDMARK_KEY_INTENSITY = 1.05;
-export const AFO_SCAN_LANDMARK_FILL_INTENSITY = 0.24;
+export const AFO_SCAN_LANDMARK_FILL_INTENSITY = 0.12;
 
 /** World-mm offset of the key light from the camera (camera-local axes). */
 export const AFO_SCAN_LANDMARK_KEY_CAMERA_OFFSET = {
