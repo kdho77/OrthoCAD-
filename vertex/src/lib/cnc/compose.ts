@@ -1,12 +1,19 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
-import { baseModifierFieldAuthoritative, getDesignBase, loadBaseGeometry } from "@/lib/geometry/base-asset";
+import {
+    baseModifierFieldAuthoritative,
+    getDesignBase,
+    isSampleTopStockBase,
+    loadBaseGeometry,
+} from "@/lib/geometry/base-asset";
 import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
+import { loadSampleTopGeometry } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { thicknessMmForDesignSide } from "@/lib/geometry/shape-finish-modifiers";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
+import { mirrorGeometry } from "@/lib/library/loaders";
 import type { DesignState, Side } from "@/types";
 import type { CncWorkpiece, MillingProfile } from "./types";
 import { workpieceFromGeometry } from "./workpiece";
@@ -58,6 +65,35 @@ export function workpieceFromComposed(
 }
 
 /**
+ * SAMPLE_Top is authored with its plantar floor at z = 2 mm (the reference
+ * thickness). CAM reads Z as height above the table, so load it the way the
+ * viewer and print loft do (author Z kept). Other bases are unchanged.
+ */
+export async function loadCncBaseGeometry(design: DesignState, side: Side): Promise<BufferGeometry | null> {
+    const base = getDesignBase(design, side);
+    if (!base) return null;
+    if (!isSampleTopStockBase(base)) return loadBaseGeometry(base);
+    const geo = await loadSampleTopGeometry();
+    if (!base.mirrored) return geo;
+    const mirrored = mirrorGeometry(geo);
+    geo.dispose();
+    return mirrored;
+}
+
+/**
+ * Legacy integration saves stored milled designs as uniform with a raised
+ * thickness. Uniform never lifts the SAMPLE_Top floor, so mill them as the
+ * zonal shell a re-save (#385) produces. Reference thickness is untouched.
+ */
+export function millShellDesign(design: DesignState): DesignState {
+    if (design.method !== "milling_3axis" || design.shellThicknessMode !== "uniform") return design;
+    const raised = [design.thicknessMm, design.paired?.leftThicknessMm, design.paired?.rightThicknessMm].some(
+        (t) => typeof t === "number" && Math.abs(t - BASE_REFERENCE_THICKNESS_MM) > 1e-9,
+    );
+    return raised ? { ...design, shellThicknessMode: "zonal" } : design;
+}
+
+/**
  * Read-only: compose the same print-solid top the elements use, then rasterize
  * for CAM. Never writes design state.
  */
@@ -65,14 +101,10 @@ export async function workpiecesFromDesign(
     design: DesignState,
     sides: Side[],
     profile: MillingProfile,
-    loadGeo: (side: Side) => Promise<BufferGeometry | null> = async (side) => {
-        const base = getDesignBase(design, side);
-        if (!base) return null;
-        return loadBaseGeometry(base);
-    },
+    loadGeo: (side: Side) => Promise<BufferGeometry | null> = (side) => loadCncBaseGeometry(design, side),
 ): Promise<CncWorkpiece[]> {
     const out: CncWorkpiece[] = [];
-    const cncDesign = designWithoutText(design);
+    const cncDesign = millShellDesign(designWithoutText(design));
     const layout = insoleLayoutFromDesign(cncDesign);
     for (const side of sides) {
         const loaded = await loadGeo(side);
