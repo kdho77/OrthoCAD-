@@ -1,0 +1,143 @@
+{
+    "_note": "Design 6236d861 saved parameters only (OrthoCAD get_design_params 2026-11-20). Identifiers, names, tenant and order ids removed.",
+    "id": "00000000-0000-4000-8000-000000006236",
+    "kind": "insole",
+    "linked": true,
+    "method": "milling_3axis",
+    "name": "fixture",
+    "pattern": "full_contact",
+    "settingsJson": {
+        "schemaVersion": 1,
+        "settings": {
+            "base": {
+                "assetId": "sample-top",
+                "glbPath": "Templates/SAMPLE_Top.glb",
+                "name": "SAMPLE_Top (Left)",
+                "offlinePlaceholder": true,
+                "primarySide": "left",
+                "resolutionFallback": true,
+                "source": "stock",
+                "url": "/Templates/SAMPLE_Top.glb"
+            },
+            "corrections": {
+                "left": {
+                    "apexMoveMm": 0,
+                    "archEaseMm": 0,
+                    "archElongationMm": 0,
+                    "archFillMm": 0,
+                    "archHeightMm": -3.5,
+                    "forefootPostingDeg": 0,
+                    "forefootWidthMm": 0,
+                    "heelCupDepthMm": 0,
+                    "heelCupHeightMm": 0,
+                    "heelCupWidthMm": 0,
+                    "heelLiftMm": 0,
+                    "lateralFlangeMm": 0,
+                    "lateralSkiveMm": 0,
+                    "medialFlangeMm": 0,
+                    "medialSkiveMm": 0,
+                    "rearfootPostingDeg": 0
+                },
+                "linked": true,
+                "right": {
+                    "apexMoveMm": 0,
+                    "archEaseMm": 0,
+                    "archElongationMm": 0,
+                    "archFillMm": 0,
+                    "archHeightMm": -3.5,
+                    "forefootPostingDeg": 0,
+                    "forefootWidthMm": 0,
+                    "heelCupDepthMm": 0,
+                    "heelCupHeightMm": 0,
+                    "heelCupWidthMm": 0,
+                    "heelLiftMm": 0,
+                    "lateralFlangeMm": 0,
+                    "lateralSkiveMm": 0,
+                    "medialFlangeMm": 0,
+                    "medialSkiveMm": 0,
+                    "rearfootPostingDeg": 0
+                },
+                "unit": "mm"
+            },
+            "customPrefabId": "sample-top",
+            "customPrefabName": "SAMPLE_Top (Left)",
+            "dogfoodManufacturing": {
+                "hardness": null,
+                "hardnessSource": "unspecified",
+                "scansUsed": false,
+                "shoeWidth": "xx_wide",
+                "shoeWidthSource": "prescribed",
+                "template": "SAMPLE_Top"
+            },
+            "elements": [],
+            "method": "milling_3axis",
+            "paired": {
+                "leftBase": {
+                    "assetId": "sample-top",
+                    "glbPath": "Templates/SAMPLE_Top.glb",
+                    "name": "SAMPLE_Top (Left)",
+                    "offlinePlaceholder": true,
+                    "primarySide": "left",
+                    "resolutionFallback": true,
+                    "source": "stock",
+                    "url": "/Templates/SAMPLE_Top.glb"
+                },
+                "leftMethod": "milling_3axis",
+                "leftThicknessMm": 4,
+                "linked": false,
+                "rightBase": {
+                    "assetId": "sample-top",
+                    "glbPath": "Templates/SAMPLE_Top.glb",
+                    "mirrored": true,
+                    "mirroredFrom": "sample-top",
+                    "name": "SAMPLE_Top (Right)",
+                    "offlinePlaceholder": true,
+                    "primarySide": "left",
+                    "resolutionFallback": true,
+                    "source": "stock",
+                    "url": "/Templates/SAMPLE_Top.glb"
+                },
+                "rightMethod": "milling_3axis",
+                "rightThicknessMm": 4
+            },
+            "pattern": "full_contact",
+            "printRecipe": {
+                "defaultHardness": "Medium",
+                "pattern": "gyroid",
+                "profileId": "apex-belt-v2",
+                "version": 1,
+                "zones": []
+            },
+            "shapeFinish": {
+                "left": {
+                    "archGrindDepthMm": 0,
+                    "archSkiveMm": 0,
+                    "archSkiveSide": "medial",
+                    "topCoverAccommodateMm": 1.25,
+                    "trimmableForefoot": false,
+                    "trimmableForefootExtraMm": 5
+                },
+                "linked": true,
+                "right": {
+                    "archGrindDepthMm": 0,
+                    "archSkiveMm": 0,
+                    "archSkiveSide": "medial",
+                    "topCoverAccommodateMm": 1.25,
+                    "trimmableForefoot": false,
+                    "trimmableForefootExtraMm": 5
+                }
+            },
+            "shellThicknessBlendMm": 12,
+            "shellThicknessFfMm": 2,
+            "shellThicknessMfMm": 2.5,
+            "shellThicknessMode": "uniform",
+            "shellThicknessRfMm": 3,
+            "shoeWidth": "xx_wide",
+            "sizeSystem": "us",
+            "thicknessMm": 4,
+            "usMenSize": 8
+        }
+    },
+    "thicknessMm": 4,
+    "unit": "mm"
+}
