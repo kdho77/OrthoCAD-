@@ -5,17 +5,39 @@ import { Euler, type Matrix4, PerspectiveCamera, Vector3 } from "three";
 import { afoScanLandmarkLitSurfaceSpec } from "./AfoSurfaceMaterial";
 import {
     AFO_SCAN_LANDMARK_AMBIENT_INTENSITY,
+    AFO_SCAN_LANDMARK_FILL_INTENSITY,
+    AFO_SCAN_LANDMARK_HEMISPHERE_INTENSITY,
     AFO_SCAN_LANDMARK_KEY_CAMERA_OFFSET,
+    AFO_SCAN_LANDMARK_KEY_INTENSITY,
     afoScanLandmarkFillLightPosition,
     afoScanLandmarkKeyLightOffAxisDistanceMm,
     afoScanLandmarkKeyLightPosition,
 } from "./afo-scan-landmark-lighting-config";
 
+const PRIOR_AMBIENT = 0.15;
+const PRIOR_HEMISPHERE = 0.28;
+const PRIOR_FILL = 0.24;
+const PRIOR_KEY = 1.05;
+
 describe("AFO scan landmark lighting", () => {
-    test("ambient is reduced below the old headlight wash", () => {
-        expect(AFO_SCAN_LANDMARK_AMBIENT_INTENSITY).toBeGreaterThanOrEqual(0.12);
-        expect(AFO_SCAN_LANDMARK_AMBIENT_INTENSITY).toBeLessThanOrEqual(0.18);
-        expect(AFO_SCAN_LANDMARK_AMBIENT_INTENSITY).toBeLessThan(0.35);
+    test("non-directional fill is lowered so relief shadows read; key unchanged", () => {
+        expect(AFO_SCAN_LANDMARK_AMBIENT_INTENSITY).toBeGreaterThanOrEqual(0.06);
+        expect(AFO_SCAN_LANDMARK_AMBIENT_INTENSITY).toBeLessThanOrEqual(0.1);
+        expect(AFO_SCAN_LANDMARK_HEMISPHERE_INTENSITY).toBeGreaterThanOrEqual(0.12);
+        expect(AFO_SCAN_LANDMARK_HEMISPHERE_INTENSITY).toBeLessThanOrEqual(0.16);
+        expect(AFO_SCAN_LANDMARK_FILL_INTENSITY).toBeGreaterThanOrEqual(0.1);
+        expect(AFO_SCAN_LANDMARK_FILL_INTENSITY).toBeLessThanOrEqual(0.14);
+        expect(AFO_SCAN_LANDMARK_KEY_INTENSITY).toBe(PRIOR_KEY);
+
+        const nonDirectional =
+            AFO_SCAN_LANDMARK_AMBIENT_INTENSITY +
+            AFO_SCAN_LANDMARK_HEMISPHERE_INTENSITY +
+            AFO_SCAN_LANDMARK_FILL_INTENSITY;
+        const priorNonDirectional = PRIOR_AMBIENT + PRIOR_HEMISPHERE + PRIOR_FILL;
+        expect(nonDirectional).toBeLessThan(priorNonDirectional);
+        expect(AFO_SCAN_LANDMARK_AMBIENT_INTENSITY).toBeLessThan(PRIOR_AMBIENT);
+        expect(AFO_SCAN_LANDMARK_HEMISPHERE_INTENSITY).toBeLessThan(PRIOR_HEMISPHERE);
+        expect(AFO_SCAN_LANDMARK_FILL_INTENSITY).toBeLessThan(PRIOR_FILL);
     });
 
     test("key light sits off the camera view axis for every preset orientation", () => {
