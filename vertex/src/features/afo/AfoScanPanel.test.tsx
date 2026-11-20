@@ -134,7 +134,7 @@ describe("AFO scan marker placement", () => {
             buttonByText(container, "Apply alignment").click();
         });
         expect(useAfoStore.getState().sourceMesh?.positions.length ?? 0).toBeGreaterThan(0);
-        expect(container.textContent).toMatch(/Landmarks · 0\/5 required \(\+3 optional\)/);
+        expect(container.textContent).toMatch(/Landmarks · 0\/5 required \(\+4 optional\)/);
         expect(evaluateScanStepGate().ok).toBe(false);
 
         const landmarks = [
@@ -150,7 +150,7 @@ describe("AFO scan marker placement", () => {
         await act(async () => {
             for (const point of landmarks) commitAfoScanPoint(point, "leg", 1);
         });
-        expect(container.textContent).toMatch(/Landmarks · 5\/5 required \(\+3 optional\)/);
+        expect(container.textContent).toMatch(/Landmarks · 5\/5 required \(\+4 optional\)/);
         expect(evaluateScanStepGate().ok).toBe(true);
         const workflow = useDesignStore.getState().design.afo?.scanWorkflow;
         expect(workflow?.landmarks.medial_malleolus).toBeTruthy();
@@ -181,7 +181,7 @@ describe("AFO scan marker placement", () => {
             commitAfoScanPoint({ x: 18, y: 14, z: 70 }, "leg", 1);
         });
 
-        expect(container.textContent).toMatch(/5\/5 required \(\+3 optional\)/);
+        expect(container.textContent).toMatch(/5\/5 required \(\+4 optional\)/);
         expect(container.textContent).toMatch(/Proximal trim cap is unchecked/);
         expect(evaluateScanStepGate().ok).toBe(true);
         const workflow = useDesignStore.getState().design.afo?.scanWorkflow;
@@ -328,7 +328,9 @@ describe("AFO marker placement helpers", () => {
             commitAfoScanPoint(M5P, "leg", 1);
         });
         expect(buttonByText(container, "Apply alignment").disabled).toBe(false);
-        const resetControl = container.querySelector('[data-testid="afo-reset-alignment"]') as HTMLButtonElement;
+        const resetControl = container.querySelector(
+            '[data-testid="afo-reset-alignment"]',
+        ) as HTMLButtonElement;
         expect(resetControl).toBeTruthy();
         await act(async () => {
             resetControl.click();

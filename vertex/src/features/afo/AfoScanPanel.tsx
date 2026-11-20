@@ -25,7 +25,6 @@ import {
     resetAfoAlignmentMarkers,
     resetAfoLandmarkSection,
 } from "@/features/afo/afo-scan-ui";
-import { skippedLandmarkIds } from "@/lib/geometry/afo/landmark-frame";
 import { ScanImport } from "@/features/scans/ScanImport";
 import { selectAfoLandmarkRevision, selectScanGateRevision } from "@/lib/clinical/clinical-step-gates";
 import { defaultAfoScanWorkflow } from "@/lib/geometry/afo/defaults";
@@ -33,10 +32,12 @@ import {
     buildPlantarFrame,
     forefootToRearfootDeg,
     PlantarFrameError,
+    skippedLandmarkIds,
 } from "@/lib/geometry/afo/landmark-frame";
-import { geometryToAfoMesh, meshCentroid } from "@/lib/geometry/afo/mesh-ops";
+import { afoMeshToGeometry, geometryToAfoMesh, meshCentroid } from "@/lib/geometry/afo/mesh-ops";
 import { buildSyntheticLegMesh } from "@/lib/geometry/afo/synthetic-leg";
 import type { AfoScanWorkflow, AfoVec3 } from "@/lib/geometry/afo/types";
+import { analyzeManifold } from "@/lib/geometry/manifold";
 import { getAfoState, ingestOrientedScan, useAfoStore } from "@/stores/afo-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -141,7 +142,21 @@ export function AfoScanPanel() {
             <button
                 type="button"
                 className="h-8 w-full rounded-md border border-border bg-background text-[12px]"
-                onClick={() => ingestOrientedScan(buildSyntheticLegMesh())}
+                onClick={() => {
+                    const mesh = buildSyntheticLegMesh();
+                    const geometry = afoMeshToGeometry(mesh);
+                    const side = getAfoState().side === "right" ? "right" : "left";
+                    useScanStore.getState().addScan({
+                        id: crypto.randomUUID(),
+                        name: "synthetic-demo-leg.stl",
+                        side,
+                        format: "stl",
+                        triangleCount: mesh.indices.length / 3,
+                        geometry,
+                        manifold: analyzeManifold(geometry),
+                    });
+                    ingestOrientedScan(mesh);
+                }}
             >
                 Load synthetic demo leg
             </button>

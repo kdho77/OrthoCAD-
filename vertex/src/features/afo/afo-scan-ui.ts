@@ -429,6 +429,7 @@ export const AFO_MARKER_PILL: Record<AfoMarkerKey, string> = {
     medial_malleolus: "MM",
     lateral_malleolus: "LM",
     fibular_head: "FH",
+    toe_tip: "TT",
 };
 
 export const AFO_MARKER_FULL_NAME: Record<AfoMarkerKey, string> = {
@@ -443,6 +444,7 @@ export const AFO_MARKER_FULL_NAME: Record<AfoMarkerKey, string> = {
     medial_malleolus: "Medial malleolus",
     lateral_malleolus: "Lateral malleolus",
     fibular_head: "Fibular head",
+    toe_tip: "Toe tip",
 };
 
 export const AFO_MARKER_CLICK_HINT: Record<AfoMarkerKey, string> = {
@@ -457,6 +459,7 @@ export const AFO_MARKER_CLICK_HINT: Record<AfoMarkerKey, string> = {
     medial_malleolus: "Click the apex of the medial malleolus.",
     lateral_malleolus: "Click the apex of the lateral malleolus.",
     fibular_head: "Click the fibular head at the proximal lateral leg.",
+    toe_tip: "Click the distal toe tip.",
 };
 
 export const AFO_MARKER_HELP: Record<AfoMarkerKey, string> = {
@@ -471,6 +474,8 @@ export const AFO_MARKER_HELP: Record<AfoMarkerKey, string> = {
     medial_malleolus: "Medial malleolus apex — defines the ankle axis with the lateral malleolus.",
     lateral_malleolus: "Lateral malleolus apex — should sit slightly distal to the medial.",
     fibular_head: "Optional. Fibular head — sets the proximal trim reference when placed.",
+    toe_tip:
+        "Optional. Distal toe tip — the balance-brace preset uses it for the toe round. The preset asks for it when it is missing.",
 };
 
 export function markerColor(id: AfoMarkerKey, optional: boolean, stage1: boolean): string {
