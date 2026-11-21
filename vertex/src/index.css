@@ -14,7 +14,10 @@
         --muted: 218 16% 18%;
         --muted-foreground: 215 14% 60%;
 
-        --primary: 199 89% 48%;
+        /* Brand button fill: RGB(0, 224, 231) / #00E0E7 */
+        --primary: 182 100% 45.3%;
+        --primary-hover: 182 100% 39.3%;
+        --primary-active: 182 100% 34.3%;
         --primary-foreground: 222 47% 11%;
 
         --secondary: 217 19% 20%;
