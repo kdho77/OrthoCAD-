@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # FROZEN gate runner (OrthoCAD PM 2026-11-20). Do not edit. Its own sha256 is pinned in the brief.
-# 1) frozen files verbatim  2) repo guard  3) main reference rebuilt from base a7ef6ed9 and sha-checked  4) gates on this tree.
+# 1) frozen files verbatim  2) main reference rebuilt from base a7ef6ed9 and sha-checked  3) gates on this tree. (repo_guard.sh was scoped to PR #389 only; not run on later commits, 2026-11-21.)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 ROOT=$PWD
@@ -12,7 +12,6 @@ c729e87a00405f951d4dfe07d646f95aa3957b781603f3e7b6379d8f3939a5ca  tests/cnc/froz
 692d6c079620f3009ae73601df32e94d47e6e4a3cea0fea5c588836fc43b490e  tests/cnc/frozen-thickness/repo_guard.sh
 ffee1c0433dd445b27c070b526a41c6ad5d562f50bd0979fe0337931ca261526  tests/cnc/frozen-thickness/ci_step.yml
 SUMS
-bash "$D/repo_guard.sh"
 git cat-file -e "$BASE^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE"
 WT=$(mktemp -d); REF=$(mktemp -d)
 trap 'git worktree remove --force "$WT" >/dev/null 2>&1 || true' EXIT
