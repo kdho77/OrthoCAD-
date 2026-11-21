@@ -110,7 +110,7 @@ export function TopNav({ active, onNavigate, onOpenPrescription, leading, onLogo
                     <button
                         type="button"
                         onClick={() => navigate("/admin")}
-                        className="hidden items-center gap-1.5 rounded-md border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20 md:flex"
+                        className="hidden items-center gap-1.5 rounded-md border border-primary/40 bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary-hover active:bg-primary-active md:flex"
                     >
                         <Shield className="h-3.5 w-3.5" />
                         Super admin
