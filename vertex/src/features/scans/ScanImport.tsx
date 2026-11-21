@@ -163,7 +163,7 @@ function ScanMarkersSection({
                                                 "rounded px-2 py-0.5 text-[11px]",
                                                 already
                                                     ? "bg-muted text-muted-foreground"
-                                                    : "bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30",
+                                                    : "bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-active",
                                             )}
                                         >
                                             {already ? `${id} placed` : `Confirm ${id}`}
@@ -196,9 +196,7 @@ function ScanMarkersSection({
                             className={cn(
                                 "flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
                                 placing
-                                    ? nextLabel?.startsWith("ARCH")
-                                        ? "bg-fuchsia-500/20 text-fuchsia-300"
-                                        : "bg-amber-500/20 text-amber-300"
+                                    ? "bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-active"
                                     : "bg-muted text-muted-foreground hover:text-foreground",
                                 !baseReady && "cursor-not-allowed opacity-50",
                             )}
@@ -756,7 +754,7 @@ export function ScanImport() {
                                             onClick={() => suggestSizeForScan(s.id)}
                                             className={cn(
                                                 "flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
-                                                "bg-sky-500/15 text-sky-200 hover:bg-sky-500/25",
+                                                "bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-active",
                                                 matchBusyId === s.id && "cursor-not-allowed opacity-50",
                                             )}
                                         >
@@ -776,7 +774,7 @@ export function ScanImport() {
                                                 }}
                                                 className={cn(
                                                     "flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
-                                                    "bg-sky-500/25 text-sky-100 hover:bg-sky-500/35",
+                                                    "bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-active",
                                                     (matchBusyId === s.id ||
                                                         !sizeSuggestionByScanId[s.id]?.inRange) &&
                                                         "cursor-not-allowed opacity-50",
@@ -811,7 +809,7 @@ export function ScanImport() {
                                             onClick={() => matchDesignFromScan(s.id)}
                                             className={cn(
                                                 "flex w-full items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
-                                                "bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25",
+                                                "bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-active",
                                                 (matchBusyId === s.id ||
                                                     !landmarkSourceAssetId ||
                                                     !rawBaseBySourceId[landmarkSourceAssetId ?? ""] ||
@@ -874,7 +872,7 @@ export function ScanImport() {
                                                 className={cn(
                                                     "flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-[11px]",
                                                     isSelected
-                                                        ? "bg-violet-500/25 text-violet-200"
+                                                        ? "bg-primary text-primary-foreground"
                                                         : "bg-muted text-muted-foreground hover:text-foreground",
                                                 )}
                                                 title="Select scan to drag or nudge with arrow keys"

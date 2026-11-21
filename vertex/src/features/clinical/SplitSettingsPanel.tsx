@@ -32,7 +32,7 @@ function ToggleRow({
                 data-testid={testId}
                 onClick={() => onChange(!checked)}
                 className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
-                    checked ? "bg-cyan-400" : "bg-muted"
+                    checked ? "bg-primary" : "bg-muted"
                 }`}
             >
                 <span

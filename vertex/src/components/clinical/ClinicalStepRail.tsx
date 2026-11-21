@@ -85,11 +85,11 @@ export function ClinicalStepRail() {
                                 state === "current" && "bg-primary text-primary-foreground",
                                 state === "completed" &&
                                     !scanOptional &&
-                                    "border border-emerald-500/40 bg-emerald-500/10 text-emerald-200",
+                                    "border border-primary/40 bg-primary text-primary-foreground",
                                 state === "visited" &&
                                     "border border-border bg-background text-muted-foreground hover:text-foreground",
                                 state === "attention" &&
-                                    "border border-amber-500/50 bg-amber-500/10 text-amber-100",
+                                    "border border-primary/40 bg-primary text-primary-foreground",
                                 state === "upcoming" &&
                                     !scanOptional &&
                                     "bg-muted text-muted-foreground hover:text-foreground",

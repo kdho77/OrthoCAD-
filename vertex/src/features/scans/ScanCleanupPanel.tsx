@@ -120,7 +120,7 @@ function ScanPlaneSliceControls({ scanId }: { scanId: string }) {
                             setSliceError(null);
                             beginSlice(scanId);
                         }}
-                        className="rounded bg-sky-500/20 px-2 py-1 text-[11px] text-sky-100 hover:bg-sky-500/30"
+                        className="rounded bg-primary px-2 py-1 text-[11px] text-primary-foreground hover:bg-primary-hover active:bg-primary-active"
                     >
                         Draw slice plane
                     </button>
