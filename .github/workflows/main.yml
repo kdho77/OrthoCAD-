@@ -140,6 +140,10 @@ jobs:
                   npm run build --prefix packages/mcp
                   test -f packages/mcp/dist/cli.js
 
+            # FROZEN (OrthoCAD PM 2026-11-20): milled SAMPLE_Top thickness gates. Do not edit.
+            - name: Frozen CNC thickness gates
+              run: bash tests/cnc/frozen-thickness/run_cnc_thickness_gates.sh
+
             - name: Require unit shards and isolated PostgreSQL acceptance
               run: |
                   if [ "${{ needs.unit-tests.result }}" != "success" ] || [ "${{ needs.isolated-postgres-acceptance.result }}" != "success" ]; then
