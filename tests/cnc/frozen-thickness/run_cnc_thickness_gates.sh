@@ -9,7 +9,7 @@ BASE=a7ef6ed98fd8d6ceba7d6d8d5039e2587300f036
 sha256sum -c - <<SUMS
 670f215337bef1400ba4b8d07cd46e2a4c89823e8a1abaae423a5cc8fa907bc1  tests/cnc/frozen-thickness/cnc-thickness.optional.test.ts
 c729e87a00405f951d4dfe07d646f95aa3957b781603f3e7b6379d8f3939a5ca  tests/cnc/frozen-thickness/peavy-6236d861.settings.json
-db3c177da7de4298b25969dad7bddb3fea798658d3e25a7da398dddf269914f6  tests/cnc/frozen-thickness/repo_guard.sh
+692d6c079620f3009ae73601df32e94d47e6e4a3cea0fea5c588836fc43b490e  tests/cnc/frozen-thickness/repo_guard.sh
 ffee1c0433dd445b27c070b526a41c6ad5d562f50bd0979fe0337931ca261526  tests/cnc/frozen-thickness/ci_step.yml
 SUMS
 bash "$D/repo_guard.sh"

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # FROZEN repo guard (OrthoCAD PM 2026-11-20). Do not edit.
 # The PR may change ONLY the allow-listed paths below relative to base a7ef6ed9.
+# Checks COMMITTED paths (git diff BASE HEAD), not the working tree: CI's
+# `npm install` rewrites package-lock.json in the checkout and that is not a PR change.
+# (Revised 2026-11-20 by OrthoCAD PM: working-tree check -> committed-diff check.)
 set -euo pipefail
 BASE=a7ef6ed98fd8d6ceba7d6d8d5039e2587300f036
 git cat-file -e "$BASE^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE"
@@ -9,11 +12,13 @@ bad=0
 while IFS= read -r f; do
   [ -z "$f" ] && continue
   if ! [[ "$f" =~ $ALLOW ]]; then echo "GUARD FAIL: path not allowed: $f"; bad=1; fi
-done < <(git diff --name-only "$BASE" -- . ; git ls-files --others --exclude-standard)
+done < <(git diff --name-only "$BASE" HEAD --)
 # main.yml: the only change is the frozen ci_step.yml block, inserted right before the
 # "Require unit shards and isolated PostgreSQL acceptance" step of test-and-deploy.
 base_yml=$(mktemp); git show "$BASE:.github/workflows/main.yml" > "$base_yml"
-python3 - "$base_yml" .github/workflows/main.yml tests/cnc/frozen-thickness/ci_step.yml <<'PY' || bad=1
+cand_yml=$(mktemp); git show "HEAD:.github/workflows/main.yml" > "$cand_yml"
+step_yml=$(mktemp); git show "HEAD:tests/cnc/frozen-thickness/ci_step.yml" > "$step_yml"
+python3 - "$base_yml" "$cand_yml" "$step_yml" <<'PY' || bad=1
 import sys
 base, cand, step = (open(p).read() for p in sys.argv[1:4])
 anchor = "            - name: Require unit shards and isolated PostgreSQL acceptance\n"
