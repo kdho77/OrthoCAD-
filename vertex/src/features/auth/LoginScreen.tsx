@@ -159,7 +159,7 @@ export function LoginScreen() {
                         <button
                             type="submit"
                             data-testid="login-submit"
-                            className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-[10px] bg-[#22D3EE] text-[15px] font-medium text-[#04212B] transition-colors hover:bg-[#06B6D4] active:bg-[#0891B2] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[rgba(34,211,238,0.35)] disabled:cursor-default"
+                            className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-[10px] bg-primary text-[15px] font-medium text-primary-foreground transition-colors hover:bg-primary-hover active:bg-primary-active focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring disabled:cursor-default disabled:opacity-50"
                             aria-busy={busy}
                         >
                             {busy ? (
