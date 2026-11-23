@@ -386,6 +386,7 @@
                 "vertex/src/lib/geometry/height-field-arch-elongation.test.ts",
                 "vertex/src/lib/geometry/measure/afo-shell-measure.test.ts",
                 "vertex/src/lib/geometry/migrate-corrections.test.ts",
+                "vertex/src/lib/geometry/mortons-shape-gates.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/densify-stations.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/modifiers.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/preview-loft-ui.test.ts",
