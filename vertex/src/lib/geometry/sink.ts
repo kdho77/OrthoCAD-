@@ -1967,6 +1967,101 @@ function relaxOverlapShoulder(
 }
 
 /**
+ * Highest wall triangle directly under (x, y), or 0 when the plantar is the
+ * first surface. z comes from `zAt` so the caller can pass the wall after the
+ * column scale. A hit on the plantar (z < 0.05) stays 0, and the floor guard's
+ * cut is left unchanged.
+ */
+function wallUndersideQuery(
+    positions: number[],
+    nS: number,
+    nJ: number,
+    vertAt: (row: number, station: number) => number,
+    zAt: (vi: number) => number,
+): (x: number, y: number, zTop: number) => number {
+    const cell = 4;
+    const coords: number[] = [];
+    const buckets = new Map<string, number[]>();
+    const add = (a: number, b: number, c: number) => {
+        const ax = positions[a * 3];
+        const ay = positions[a * 3 + 1];
+        const az = zAt(a);
+        const bx = positions[b * 3];
+        const by = positions[b * 3 + 1];
+        const bz = zAt(b);
+        const cx = positions[c * 3];
+        const cy = positions[c * 3 + 1];
+        const cz = zAt(c);
+        if (
+            ax === undefined ||
+            ay === undefined ||
+            az === undefined ||
+            bx === undefined ||
+            by === undefined ||
+            bz === undefined ||
+            cx === undefined ||
+            cy === undefined ||
+            cz === undefined
+        ) {
+            return;
+        }
+        const cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        if (Math.abs(cross) < 1e-8) return;
+        const id = coords.length / 9;
+        coords.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+        const i0 = Math.floor(Math.min(ax, bx, cx) / cell);
+        const i1 = Math.floor(Math.max(ax, bx, cx) / cell);
+        const j0 = Math.floor(Math.min(ay, by, cy) / cell);
+        const j1 = Math.floor(Math.max(ay, by, cy) / cell);
+        for (let ix = i0; ix <= i1; ix++) {
+            for (let iy = j0; iy <= j1; iy++) {
+                const key = `${ix},${iy}`;
+                const list = buckets.get(key);
+                if (list) list.push(id);
+                else buckets.set(key, [id]);
+            }
+        }
+    };
+    if (nJ >= 2 && nS >= 3) {
+        for (let row = 0; row < nJ - 1; row++) {
+            for (let s = 0; s < nS; s++) {
+                const a = vertAt(row, s);
+                const b = vertAt(row, s + 1);
+                const c = vertAt(row + 1, s);
+                const d = vertAt(row + 1, s + 1);
+                add(a, b, c);
+                add(b, d, c);
+            }
+        }
+    }
+    return (x: number, y: number, zTop: number) => {
+        const list = buckets.get(`${Math.floor(x / cell)},${Math.floor(y / cell)}`);
+        if (!list) return 0;
+        let best = 0;
+        for (const id of list) {
+            const o = id * 9;
+            const ax = coords[o]!;
+            const ay = coords[o + 1]!;
+            const az = coords[o + 2]!;
+            const bx = coords[o + 3]!;
+            const by = coords[o + 4]!;
+            const bz = coords[o + 5]!;
+            const cx = coords[o + 6]!;
+            const cy = coords[o + 7]!;
+            const cz = coords[o + 8]!;
+            const denom = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+            if (Math.abs(denom) < 1e-9) continue;
+            const u = ((by - cy) * (x - cx) + (cx - bx) * (y - cy)) / denom;
+            const v = ((cy - ay) * (x - cx) + (ax - cx) * (y - cy)) / denom;
+            if (u < -1e-4 || v < -1e-4 || u + v > 1 + 1e-4) continue;
+            const hitZ = az * u + bz * v + cz * (1 - u - v);
+            if (hitZ < zTop - 0.2 && hitZ > best) best = hitZ;
+        }
+        return best < 0.05 ? 0 : best;
+    };
+}
+
+/**
  * T, then S, then a vertical wall stretch and styloid notch.
  * The loft has already been built from the unsunk rim, so only z is written.
  */
@@ -2127,6 +2222,104 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
     }
     const styloid = input.sinks!.find((s) => s.kind === "styloid");
     const depth = styloid ? clampSinkDepth("styloid", styloid.depthMm).depthMm : 0;
+    // The wall column is scaled onto the lowered rim after this. Predict that
+    // z and hold the top 1 mm above it. The plantar (no triangle, or z < 0.05)
+    // leaves the cut exactly as the floor guard wrote it.
+    const predicted = new Float64Array(input.positions.length / 3);
+    for (let i = 0; i < predicted.length; i++) predicted[i] = input.positions[i * 3 + 2]!;
+    const predictedTouched = new Set<number>();
+    for (let s = 0; s < input.nS; s++) {
+        const T = rimT[s]!;
+        const R = rimR[s]!;
+        if (T <= 1e-8 && R <= 1e-8) continue;
+        const H = rimH[s]!;
+        const notch = rimIsStyloid[s] === 1 && depth > 0 && R > 1e-8;
+        const crest = notch ? H + T : H + T - R;
+        for (let row = 1; row < input.nJ; row++) {
+            const vi = input.vertAt(row, s);
+            if (vi < topCount || predictedTouched.has(vi)) continue;
+            const z = input.positions[vi * 3 + 2]!;
+            if (z <= 1e-4) continue;
+            predictedTouched.add(vi);
+            const zS = H > 1e-3 ? (z / H) * crest : z;
+            const dz = notch ? styloidWallReliefAt(zS, crest, depth, R) : 0;
+            predicted[vi] = Math.max(0, zS + dz);
+        }
+    }
+    let lowered = false;
+    for (let i = 0; i < topCount; i++) {
+        if (input.positions[i * 3 + 2]! < plainZ[i]! - 1e-4) {
+            lowered = true;
+            break;
+        }
+    }
+    if (lowered) {
+        const undersideAt = wallUndersideQuery(
+            input.positions,
+            input.nS,
+            input.nJ,
+            input.vertAt,
+            (vi) => predicted[vi] ?? 0,
+        );
+        const preLift = new Float64Array(topCount);
+        for (let i = 0; i < topCount; i++) preLift[i] = input.positions[i * 3 + 2]!;
+        for (let i = 0; i < topCount; i++) {
+            const plain = plainZ[i]!;
+            const zNow = preLift[i]!;
+            if (zNow >= plain - 1e-4) continue;
+            const under = undersideAt(input.positions[i * 3]!, input.positions[i * 3 + 1]!, zNow);
+            if (under < 0.05) continue;
+            const minZ = under + FLOOR_MIN_MM;
+            if (plain < minZ - 1e-6) continue;
+            if (zNow < minZ) input.positions[i * 3 + 2] = Math.min(plain, minZ);
+        }
+        // Same 30° lip as a held rim. A one-vertex step up off the wall
+        // folds the top past 60°. The ramp stays on the cut that was
+        // already written, and never rises above the unsunk top.
+        // Gentler than the rim lip. A 30° step on this sheet still folds a
+        // shared edge past the 60° gate; 12° keeps that edge under it.
+        const slope = Math.tan((12 * Math.PI) / 180);
+        const cell = 4;
+        const buckets = new Map<string, number[]>();
+        for (let i = 0; i < topCount; i++) {
+            const key = `${Math.floor(input.positions[i * 3]! / cell)},${Math.floor(input.positions[i * 3 + 1]! / cell)}`;
+            const bucket = buckets.get(key);
+            if (bucket) bucket.push(i);
+            else buckets.set(key, [i]);
+        }
+        const lifted = new Uint8Array(topCount);
+        for (let i = 0; i < topCount; i++) if (input.positions[i * 3 + 2]! > preLift[i]! + 1e-4) lifted[i] = 1;
+        for (let iter = 0; iter < 16; iter++) {
+            let moved = false;
+            for (let i = 0; i < topCount; i++) {
+                if (!lifted[i]) continue;
+                const x = input.positions[i * 3]!;
+                const y = input.positions[i * 3 + 1]!;
+                const cx = Math.floor(x / cell);
+                const cy = Math.floor(y / cell);
+                let cap = input.positions[i * 3 + 2]!;
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        const bucket = buckets.get(`${cx + dx},${cy + dy}`);
+                        if (!bucket) continue;
+                        for (const j of bucket) {
+                            if (j === i) continue;
+                            const dist = Math.hypot(x - input.positions[j * 3]!, y - input.positions[j * 3 + 1]!);
+                            if (dist < 0.15 || dist > cell) continue;
+                            const allowed = input.positions[j * 3 + 2]! + dist * slope;
+                            if (allowed < cap) cap = allowed;
+                        }
+                    }
+                }
+                if (cap < preLift[i]!) cap = preLift[i]!;
+                if (cap < input.positions[i * 3 + 2]! - 1e-4) {
+                    input.positions[i * 3 + 2] = cap;
+                    moved = true;
+                }
+            }
+            if (!moved) break;
+        }
+    }
     const touched = new Set<number>();
     for (let s = 0; s < input.nS; s++) {
         const T = rimT[s]!;
