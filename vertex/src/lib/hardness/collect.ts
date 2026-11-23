@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { ELEMENT_PROFILES } from "@/lib/geometry/elements";
 import type { DesignState, PlacedElement, Side } from "@/types";
+import type { NamedHardnessClass } from "../../../shared/print-recipe/hardness-class-table";
 import {
     DEFAULT_ELEMENT_DEPTH,
     DEFAULT_ELEMENT_PRIORITY,
@@ -8,12 +10,19 @@ import {
 } from "../../../shared/print-recipe/hardness-region";
 import { migratePrintRecipe } from "../../../shared/print-recipe/print-recipe";
 
+/** Profile hardness for an element that was never given a class. Morton's is Extra Hard. */
+function profileDefaultHardness(el: PlacedElement): NamedHardnessClass | undefined {
+    if (el.kind === "custom") return undefined;
+    return ELEMENT_PROFILES[el.kind].defaultHardnessClass;
+}
+
 export function elementToRegion(el: PlacedElement): HardnessRegion | null {
-    if (!el.hardnessClass) return null;
+    const hardnessClass = el.hardnessClass ?? profileDefaultHardness(el);
+    if (!hardnessClass) return null;
     return {
         regionId: el.regionId ?? el.id,
         kind: "element",
-        hardnessClass: el.hardnessClass,
+        hardnessClass,
         priority: el.priority ?? DEFAULT_ELEMENT_PRIORITY,
         depth: el.depth ?? { ...DEFAULT_ELEMENT_DEPTH },
         overrides: el.overrides,
@@ -55,11 +64,22 @@ export function collectHardnessRegions(design: DesignState, side?: Side): Hardne
  * hardness fields on the elements and drops those modifiers from the preview
  * and from export. Explicit zones and freehand regions are not split-element
  * modifiers, so they stay when the toggle is off.
+ *
+ * A Morton's extension with no hardnessClass is the exception: it prints at
+ * the profile default (Extra Hard) through this same element-region path
+ * whether or not the toggle is on. An explicit hardnessClass is not replaced.
  */
+function regionStaysWhenSplitOff(design: DesignState, region: HardnessRegion): boolean {
+    if (region.kind !== "element") return true;
+    const id = region.elementId ?? region.regionId;
+    const el = design.elements.find((element) => element.id === id);
+    return !!el && !el.hardnessClass && profileDefaultHardness(el) !== undefined;
+}
+
 export function effectiveHardnessRegions(design: DesignState, side?: Side): HardnessRegion[] {
     const regions = collectHardnessRegions(design, side);
     if (design.splitElements === true) return regions;
-    return regions.filter((region) => region.kind !== "element");
+    return regions.filter((region) => regionStaysWhenSplitOff(design, region));
 }
 
 export function findElement(design: DesignState, region: HardnessRegion): PlacedElement | undefined {

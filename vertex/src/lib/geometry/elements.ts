@@ -24,6 +24,7 @@ import {
 } from "@/lib/geometry/mortons-extension";
 import { insoleLayoutFromDesign, type ShoeSizingDesign } from "@/lib/geometry/shoe-size";
 import type { ElementKind, PlacedElement, Side } from "@/types";
+import type { NamedHardnessClass } from "../../../shared/print-recipe/hardness-class-table";
 
 /**
  * Height-field contribution of additive/subtractive orthotic elements.
@@ -94,6 +95,11 @@ export interface ElementProfile {
     defaultMedial: number;
     /** Registered border. Both feet use {@link meshYForAnatomicalSide}. */
     anatomicalSide: AnatomicalSide;
+    /**
+     * Hardness used when a placed element has no hardnessClass.
+     * Only Morton's extension sets this. Other kinds stay on the device infill.
+     */
+    defaultHardnessClass?: NamedHardnessClass;
 }
 
 export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
@@ -165,6 +171,7 @@ export const ELEMENT_PROFILES: Record<ElementKind, ElementProfile> = {
         defaultU: MORTONS_DEFAULT_U,
         defaultMedial: MORTONS_DEFAULT_MEDIAL,
         anatomicalSide: "medial",
+        defaultHardnessClass: "Extra Hard",
     },
     // Reverse Morton's: the same 1st-ray footprint as Morton's. The only
     // difference is the sign — this one lowers the ray.

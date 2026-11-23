@@ -197,6 +197,17 @@ describe("elements require explicit library placement", () => {
         expect(useDesignStore.getState().design.elements).toEqual([]);
     });
 
+    test("a new Morton's extension keeps no hardness class so the Extra Hard profile default can apply", () => {
+        useDesignStore.getState().setSplitElements(true);
+        useDesignStore.getState().addElement("mortons_extension", "left");
+        useDesignStore.getState().addElement("met_pad", "right");
+        const elements = useDesignStore.getState().design.elements;
+        expect(elements.find((el) => el.kind === "mortons_extension")?.hardnessClass).toBeUndefined();
+        expect(elements.find((el) => el.kind === "met_pad")?.hardnessClass).toBe("Medium");
+        expect(ELEMENT_PROFILES.mortons_extension.defaultHardnessClass).toBe("Extra Hard");
+        expect(ELEMENT_PROFILES.met_pad.defaultHardnessClass).toBeUndefined();
+    });
+
     test("removeElementsForSides is a no-op with nothing to clear", () => {
         useDesignStore.getState().addElement("dancers_pad", "left");
         useDesignStore.setState({ history: [], future: [] });

@@ -396,6 +396,7 @@
                 "vertex/src/lib/geometry/sink.test.ts",
                 "vertex/src/lib/geometry/text-marking/text-marking.test.ts",
                 "vertex/src/lib/geometry/wedge-topcount-diag.test.ts",
+                "vertex/src/lib/hardness/collect.test.ts",
                 "vertex/src/lib/trpc-errors.test.ts",
                 "vertex/src/stores/client-store.persist.test.ts",
                 "vertex/src/stores/outline-edit-leave.test.ts"

@@ -142,6 +142,9 @@ describe("SAMPLE_Top saved-design snapshot", () => {
         });
         expect(numbered.design.elements[0]?.heightMm).toBe(3.5);
         expect(numbered.design.elements[0]?.side).toBe("right");
+        expect(named.design.elements[0]?.hardnessClass).toBeUndefined();
+        expect(numbered.design.elements[0]?.hardnessClass).toBeUndefined();
+        expect(named.design.splitElements).not.toBe(true);
         expect(build({ sliders: { heel_lift_mm: 6 } }).design.corrections.left.heelLiftMm).toBe(6);
         expect(build({ sliders: { heel_lift_mm: 6 } }).paths).toContain(
             "settings.corrections.left.heelLiftMm",

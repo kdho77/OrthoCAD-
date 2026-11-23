@@ -22,6 +22,7 @@ import { BASE_REFERENCE_THICKNESS_MM } from "@/lib/geometry/base-modifier";
 import { type ConstraintViolation, constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import {
     defaultElementPose,
+    ELEMENT_PROFILES,
     elementPlacementRefusal,
     repositionLegacyFirstRayDesign,
 } from "@/lib/geometry/elements";
@@ -1041,7 +1042,11 @@ export const useDesignStore = create<DesignStore>()(
                         kind,
                         side,
                         ...pose,
-                        ...(s.design.splitElements ? defaultSplitHardnessPatch(id) : {}),
+                        // Morton's has a profile hardness. Leave the class unset so that
+                        // default applies. Other kinds still get Medium when split is on.
+                        ...(s.design.splitElements && !ELEMENT_PROFILES[kind].defaultHardnessClass
+                            ? defaultSplitHardnessPatch(id)
+                            : {}),
                     };
                     const next = { ...s.design, elements: [...s.design.elements, el] };
                     const eff = buildEffectiveTrimlines(next);
