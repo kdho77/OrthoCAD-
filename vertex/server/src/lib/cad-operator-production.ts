@@ -12,6 +12,14 @@ import {
     type PrintRecipeV1,
     resolveGyroidManufacturingPrintRecipe,
 } from "../../../shared/print-recipe/print-recipe.js";
+import {
+    downloadVertexSliceJobResult,
+    getVertexSliceJob,
+    sliceWithVertexSlice,
+    submitVertexSliceJob,
+    type VertexSliceJobSnapshot,
+    type VertexSliceRequest,
+} from "./vertexslice-client.js";
 
 /** Pro serverless cap. waitUntil work is still inside this budget. */
 export const CAD_PRODUCTION_MAX_DURATION_SEC = 300;
@@ -19,8 +27,85 @@ export const CAD_PRODUCTION_MAX_DURATION_SEC = 300;
 /** Reserve before the platform maxDuration so slice can fail and mark the production failed. */
 export const CAD_VERTEX_SLICE_SAFETY_BUFFER_SEC = 20;
 
-/** Upper bound on a single POST /v1/slice fetch wait. */
+/** Upper bound on a single POST /v1/slice fetch wait. The job path does not use this as slice time. */
 export const CAD_VERTEX_SLICE_MAX_TIMEOUT_SEC = 240;
+
+/** One Vercel invocation polls the slice job for at most this long. */
+export const SLICE_JOB_POLL_BUDGET_MS = 60_000;
+
+/** Pause between job status reads inside one invocation. */
+export const SLICE_JOB_POLL_INTERVAL_MS = 5_000;
+
+/** Queue time before started_at. It does not count toward the slice cap. */
+export const SLICE_JOB_QUEUE_WAIT_CAP_MS = 20 * 60 * 1000;
+
+/** Slice time from the server's started_at. Queue wait is not included. */
+export const SLICE_JOB_SLICE_CAP_MS = 260_000;
+
+/**
+ * productions has no JSON column. The in-flight VertexSlice job id is JSON in
+ * the existing error text and is removed from the public production payload.
+ */
+export const SLICE_CHECKPOINT_PREFIX = "slice-checkpoint:v1:";
+
+export interface SliceCheckpointV1 {
+    v: 1;
+    jobId: string;
+    acceptedAt: string;
+    stlStorageKey: string;
+    meshFingerprint: string | null;
+    expectedRegionCount: number;
+    credentialId: string;
+    serverStartedAt: string | null;
+}
+
+export function encodeSliceCheckpoint(checkpoint: SliceCheckpointV1): string {
+    return (
+        SLICE_CHECKPOINT_PREFIX +
+        JSON.stringify({
+            v: 1,
+            jobId: checkpoint.jobId,
+            acceptedAt: checkpoint.acceptedAt,
+            stlStorageKey: checkpoint.stlStorageKey,
+            meshFingerprint: checkpoint.meshFingerprint,
+            expectedRegionCount: checkpoint.expectedRegionCount,
+            credentialId: checkpoint.credentialId,
+            serverStartedAt: checkpoint.serverStartedAt,
+        })
+    );
+}
+
+export function readSliceCheckpoint(error: string | null | undefined): SliceCheckpointV1 | null {
+    if (!error?.startsWith(SLICE_CHECKPOINT_PREFIX)) return null;
+    try {
+        const parsed = JSON.parse(error.slice(SLICE_CHECKPOINT_PREFIX.length)) as Partial<SliceCheckpointV1>;
+        if (parsed.v !== 1 || typeof parsed.jobId !== "string" || !parsed.jobId.trim()) return null;
+        if (typeof parsed.acceptedAt !== "string" || typeof parsed.stlStorageKey !== "string") return null;
+        if (typeof parsed.credentialId !== "string") return null;
+        return {
+            v: 1,
+            jobId: parsed.jobId,
+            acceptedAt: parsed.acceptedAt,
+            stlStorageKey: parsed.stlStorageKey,
+            meshFingerprint: typeof parsed.meshFingerprint === "string" ? parsed.meshFingerprint : null,
+            expectedRegionCount:
+                typeof parsed.expectedRegionCount === "number" && parsed.expectedRegionCount > 0
+                    ? parsed.expectedRegionCount
+                    : 0,
+            credentialId: parsed.credentialId,
+            serverStartedAt: typeof parsed.serverStartedAt === "string" ? parsed.serverStartedAt : null,
+        };
+    } catch {
+        return null;
+    }
+}
+
+export function sleepMs(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        timer.ref?.();
+    });
+}
 
 /** Longer than maxDuration so a live invocation is not stolen before the platform stops it. */
 export const CAD_PRODUCTION_LEASE_MS = (CAD_PRODUCTION_MAX_DURATION_SEC + 60) * 1000;
@@ -134,10 +219,16 @@ export function isLeaseExpired(row: CadProductionRow, now: Date): boolean {
     return row.leaseExpiresAt.getTime() <= now.getTime();
 }
 
+function sliceJobStillOwned(row: CadProductionRow): boolean {
+    return (row.status === "pending" || row.status === "running") && readSliceCheckpoint(row.error) !== null;
+}
+
 export function decideClaim(existing: CadProductionRow | null, now: Date): "insert" | "reuse" | "rerun" {
     if (!existing) return "insert";
     if (existing.status === "succeeded") return "reuse";
     if (existing.status === "failed") return "rerun";
+    // A stored job id is resumed. A second generate must not submit another slice.
+    if (sliceJobStillOwned(existing)) return "reuse";
     if (isLeaseExpired(existing, now)) return "rerun";
     return "reuse";
 }
@@ -147,7 +238,9 @@ export function freshSliceIdempotencyKey(canonicalKey: string): string {
 }
 
 function isInFlight(row: CadProductionRow, now: Date): boolean {
-    return (row.status === "pending" || row.status === "running") && !isLeaseExpired(row, now);
+    if (row.status !== "pending" && row.status !== "running") return false;
+    if (readSliceCheckpoint(row.error)) return true;
+    return !isLeaseExpired(row, now);
 }
 
 function leaseDeadline(now: Date): Date {
@@ -249,6 +342,7 @@ export async function expireStaleProduction(
 ): Promise<CadProductionRow | null> {
     const row = await store.findById(id);
     if (!row) return null;
+    if (sliceJobStillOwned(row)) return row;
     if (!isLeaseExpired(row, now)) return row;
     const updated = await store.updateIf(id, (current) => isLeaseExpired(current, now), {
         status: "failed",
@@ -397,10 +491,19 @@ export function publicProductionError(error: unknown, side?: CadFootSide | null)
     ];
     if (
         message.startsWith("VertexSlice timed out after") ||
+        message.startsWith("VertexSlice queue wait exceeded") ||
+        message.startsWith("VertexSlice slice exceeded") ||
+        message.startsWith("VertexSlice job lost") ||
         message.startsWith("Manufacturing STL ") ||
         message.startsWith("Regional hardness")
     ) {
-        return message;
+        return capPublicProductionMessage(message);
+    }
+    if (message.startsWith("VertexSlice server error:")) {
+        const detail = sanitizePublicFragment(message.slice("VertexSlice server error:".length));
+        return capPublicProductionMessage(
+            detail ? `VertexSlice server error: ${detail}` : "VertexSlice server error",
+        );
     }
     if (message.startsWith("Manufacturing mesh is not sliceable")) {
         return message;
@@ -509,7 +612,7 @@ export function toPublicProduction(row: CadProductionRow): PublicProduction {
         createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
         gcodeStorageKey: row.gcodeStorageKey,
-        error: row.error,
+        error: readSliceCheckpoint(row.error) ? null : row.error,
         download: ready ? { tool: "get_export_download", productionId: row.id } : null,
     };
 }
@@ -598,6 +701,12 @@ export interface CadProductionSliceContext {
     sliceTimeoutSec: number;
     /** executeCadOperatorProduction start. Recompute the slice budget after STL download. */
     invocationStartedAt: Date;
+    checkpoint: SliceCheckpointV1 | null;
+    meshFingerprint: string | null;
+    budgetMs: number;
+    now: () => Date;
+    sleep: (ms: number) => Promise<void>;
+    persistCheckpoint?: (checkpoint: SliceCheckpointV1) => Promise<void>;
 }
 
 export interface ExecuteCadProductionArgs {
@@ -608,7 +717,10 @@ export interface ExecuteCadProductionArgs {
     slice: (
         stlStorageKey: string,
         ctx?: CadProductionSliceContext,
-    ) => Promise<{ gcode: string; jobId: string }>;
+    ) => Promise<{ gcode: string; jobId: string } | { pending: true; checkpoint: SliceCheckpointV1 }>;
+    /** Job-status polling cap for this invocation. Default is one minute. */
+    sliceBudgetMs?: number;
+    sleep?: (ms: number) => Promise<void>;
     uploadGcode: (gcode: string) => Promise<{ storageKey: string }>;
     charge: (args: {
         storageKey: string;
@@ -643,6 +755,9 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
     const started = args.now();
     let stlStorageKey: string | null = null;
     try {
+        const checkpoint = readSliceCheckpoint(
+            (await args.store.findById(args.row.id))?.error ?? args.row.error,
+        );
         const running = await args.store.updateIf(
             args.row.id,
             (row) => row.status === "pending" || row.status === "running",
@@ -650,7 +765,7 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
                 status: "running",
                 leaseExpiresAt: leaseDeadline(started),
                 updatedAt: started,
-                error: null,
+                ...(checkpoint ? {} : { error: null }),
             },
         );
         if (!running) return;
@@ -667,14 +782,20 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
             return;
         }
 
-        const materialized = await args.materialize();
-        stlStorageKey = materialized.stlStorageKey;
-        if (args.deliverMaterializedStl) {
+        let meshFingerprint: string | null = checkpoint?.meshFingerprint ?? null;
+        if (checkpoint && !args.deliverMaterializedStl) {
+            stlStorageKey = checkpoint.stlStorageKey;
+        } else {
+            const materialized = await args.materialize();
+            stlStorageKey = materialized.stlStorageKey;
+            meshFingerprint = materialized.meshFingerprint;
+        }
+        if (!checkpoint && args.deliverMaterializedStl) {
             if (!stlStorageKey) throw new Error("Manufacturing service returned empty output");
             const charged = await args.charge({
                 storageKey: stlStorageKey,
                 jobId: `stl_${args.row.id}`,
-                meshFingerprint: materialized.meshFingerprint,
+                meshFingerprint,
             });
             await args.store.updateIf(args.row.id, () => true, {
                 chargedAt: args.now(),
@@ -694,11 +815,41 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
         const sliceNow = args.now();
         const sliceTimeoutMs = cadVertexSliceSliceTimeoutMs(started, sliceNow);
         const sliceTimeoutSec = Math.max(1, Math.ceil(sliceTimeoutMs / 1000));
-        const sliced = await args.slice(stlStorageKey, {
+        const sliced = await args.slice(stlStorageKey ?? "", {
             sliceTimeoutMs,
             sliceTimeoutSec,
             invocationStartedAt: started,
+            checkpoint,
+            meshFingerprint,
+            budgetMs: args.sliceBudgetMs ?? SLICE_JOB_POLL_BUDGET_MS,
+            now: args.now,
+            sleep: args.sleep ?? sleepMs,
+            persistCheckpoint: async (next) => {
+                await args.store.updateIf(
+                    args.row.id,
+                    (row) => row.status === "pending" || row.status === "running",
+                    {
+                        status: "running",
+                        error: encodeSliceCheckpoint(next),
+                        leaseExpiresAt: leaseDeadline(args.now()),
+                        updatedAt: args.now(),
+                    },
+                );
+            },
         });
+        if ("pending" in sliced) {
+            await args.store.updateIf(
+                args.row.id,
+                (row) => row.status === "pending" || row.status === "running",
+                {
+                    status: "running",
+                    error: encodeSliceCheckpoint(sliced.checkpoint),
+                    leaseExpiresAt: leaseDeadline(args.now()),
+                    updatedAt: args.now(),
+                },
+            );
+            return;
+        }
         if (!sliced.gcode) {
             throw new Error("Manufacturing service returned empty output");
         }
@@ -706,7 +857,7 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
         const charged = await args.charge({
             storageKey: uploaded.storageKey,
             jobId: sliced.jobId,
-            meshFingerprint: materialized.meshFingerprint,
+            meshFingerprint,
         });
         await args.store.updateIf(args.row.id, () => true, {
             chargedAt: args.now(),
@@ -746,6 +897,151 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
         });
         const assetCause = assetLoadCauseForLog(error);
         if (assetCause) console.error(assetCause);
+    }
+}
+
+function sideSuffix(side: CadFootSide | null | undefined): string {
+    return side ? ` (${side})` : "";
+}
+
+function isoMs(value: string | null | undefined): number | null {
+    if (!value) return null;
+    const ms = Date.parse(value);
+    return Number.isFinite(ms) ? ms : null;
+}
+
+function queueWaitError(side: CadFootSide | null, waitedMs: number): Error {
+    const waitedSec = Math.max(1, Math.floor(waitedMs / 1000));
+    return new Error(`VertexSlice queue wait exceeded ${waitedSec}s${sideSuffix(side)}`);
+}
+
+function sliceTimeError(side: CadFootSide | null): Error {
+    return new Error(`VertexSlice slice exceeded ${SLICE_JOB_SLICE_CAP_MS / 1000}s${sideSuffix(side)}`);
+}
+
+function serverJobError(side: CadFootSide | null, detail: string): Error {
+    const text = detail.replace(/\s+/g, " ").trim() || "slice failed";
+    return new Error(`VertexSlice server error: ${text}${sideSuffix(side)}`);
+}
+
+function jobLostError(side: CadFootSide | null): Error {
+    return new Error(`VertexSlice job lost (404)${sideSuffix(side)}; retryable`);
+}
+
+function queueWaitMs(
+    checkpoint: SliceCheckpointV1,
+    job: VertexSliceJobSnapshot | null,
+    nowMs: number,
+): number {
+    const queuedAt = isoMs(job?.queuedAt) ?? isoMs(checkpoint.acceptedAt) ?? nowMs;
+    const end = job && job.status !== "queued" ? (isoMs(job.startedAt) ?? nowMs) : nowMs;
+    return Math.max(0, end - queuedAt);
+}
+
+function sliceElapsedMs(
+    checkpoint: SliceCheckpointV1,
+    job: VertexSliceJobSnapshot | null,
+    nowMs: number,
+): number | null {
+    if (job?.status === "queued") return null;
+    const started = isoMs(job?.startedAt) ?? isoMs(checkpoint.serverStartedAt);
+    if (started == null) {
+        if (job?.elapsedS != null) return job.elapsedS * 1000;
+        return null;
+    }
+    const fromClock = Math.max(0, nowMs - started);
+    if (job?.elapsedS != null) return Math.max(fromClock, job.elapsedS * 1000);
+    return fromClock;
+}
+
+function assertSliceCaps(
+    checkpoint: SliceCheckpointV1,
+    job: VertexSliceJobSnapshot | null,
+    nowMs: number,
+    side: CadFootSide | null,
+): void {
+    const sliceStarted = job
+        ? job.status === "running" || job.status === "succeeded"
+        : isoMs(checkpoint.serverStartedAt) != null;
+    if (!sliceStarted && queueWaitMs(checkpoint, job, nowMs) >= SLICE_JOB_QUEUE_WAIT_CAP_MS) {
+        throw queueWaitError(side, queueWaitMs(checkpoint, job, nowMs));
+    }
+    const stillSlicing = job?.status === "running" || (!job && isoMs(checkpoint.serverStartedAt) != null);
+    if (stillSlicing) {
+        const elapsed = sliceElapsedMs(checkpoint, job, nowMs);
+        if (elapsed != null && elapsed >= SLICE_JOB_SLICE_CAP_MS) throw sliceTimeError(side);
+    }
+}
+
+export async function runCadSliceAttempt(args: {
+    request: VertexSliceRequest | null;
+    checkpoint: SliceCheckpointV1 | null;
+    stlStorageKey: string;
+    meshFingerprint: string | null;
+    credentialId: string;
+    side: CadFootSide | null;
+    now: () => Date;
+    sleep: (ms: number) => Promise<void>;
+    budgetMs: number;
+    persistCheckpoint?: (checkpoint: SliceCheckpointV1) => Promise<void>;
+}): Promise<
+    { kind: "gcode"; gcode: string; jobId: string } | { kind: "pending"; checkpoint: SliceCheckpointV1 }
+> {
+    const budgetEnd = args.now().getTime() + Math.max(0, args.budgetMs);
+    let checkpoint = args.checkpoint;
+    if (!checkpoint) {
+        if (!args.request) throw new Error("VertexSlice server error: slice request missing");
+        const submitted = await submitVertexSliceJob(args.request);
+        if (submitted.kind === "unsupported") {
+            const gcode = await sliceWithVertexSlice(args.request);
+            const stamp = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            return { kind: "gcode", gcode, jobId: `vs_${stamp}` };
+        }
+        checkpoint = {
+            v: 1,
+            jobId: submitted.jobId,
+            acceptedAt: args.now().toISOString(),
+            stlStorageKey: args.stlStorageKey,
+            meshFingerprint: args.meshFingerprint,
+            expectedRegionCount: args.request.expectedRegionCount ?? 0,
+            credentialId: args.credentialId,
+            serverStartedAt: null,
+        };
+        await args.persistCheckpoint?.(checkpoint);
+    }
+    if (!checkpoint) throw new Error("VertexSlice server error: slice request missing");
+
+    for (;;) {
+        const nowMs = args.now().getTime();
+        const viewed = await getVertexSliceJob(checkpoint.jobId);
+        if (viewed.kind === "missing") throw jobLostError(args.side);
+        if (viewed.kind === "unavailable") {
+            assertSliceCaps(checkpoint, null, nowMs, args.side);
+        } else {
+            const job = viewed.job;
+            if (job.startedAt && job.startedAt !== checkpoint.serverStartedAt) {
+                checkpoint = { ...checkpoint, serverStartedAt: job.startedAt };
+                await args.persistCheckpoint?.(checkpoint);
+            }
+            assertSliceCaps(checkpoint, job, nowMs, args.side);
+            if (job.status === "failed") throw serverJobError(args.side, job.error ?? "slice failed");
+            if (job.status === "succeeded") {
+                const result = await downloadVertexSliceJobResult(
+                    checkpoint.jobId,
+                    checkpoint.expectedRegionCount,
+                );
+                if (result.kind === "missing") throw jobLostError(args.side);
+                if (result.kind === "gcode") {
+                    return { kind: "gcode", gcode: result.gcode, jobId: `vs_${checkpoint.jobId}` };
+                }
+            }
+        }
+        if (args.now().getTime() >= budgetEnd) return { kind: "pending", checkpoint };
+        if (args.now().getTime() + SLICE_JOB_POLL_INTERVAL_MS > budgetEnd)
+            return { kind: "pending", checkpoint };
+        const beforeSleep = args.now().getTime();
+        await args.sleep(SLICE_JOB_POLL_INTERVAL_MS);
+        if (args.now().getTime() <= beforeSleep) return { kind: "pending", checkpoint };
     }
 }
 

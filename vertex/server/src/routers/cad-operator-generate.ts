@@ -26,6 +26,7 @@ import { getSupabaseAdmin } from "../context.js";
 import {
     beginCadOperatorProduction,
     type CadFootSide,
+    type CadProductionRow,
     type CadProductionStatus,
     CENTRAL_FAB_STL_COST,
     CNC_GCODE_COST,
@@ -36,7 +37,11 @@ import {
     HYBRID_GCODE_COST,
     infillPctForCadSlice,
     type PublicProduction,
+    readSliceCheckpoint,
+    runCadSliceAttempt,
+    SLICE_JOB_POLL_BUDGET_MS,
     scheduleCadProduction,
+    sleepMs,
     toPublicProduction,
 } from "../lib/cad-operator-production.js";
 import { chargeExistingProduction, PrismaCadProductionStore } from "../lib/cad-operator-production-prisma.js";
@@ -49,7 +54,7 @@ import {
 } from "../lib/manufacturing-stl-lifecycle.js";
 import { deleteAsset, MANUFACTURING_BUCKET, signedDownloadUrl, uploadAsset } from "../lib/storage.js";
 import { assertActiveLicense, getUserTokenBalance, requireSupabaseAdmin } from "../lib/supabase-db.js";
-import { sliceWithVertexSlice } from "../lib/vertexslice-client.js";
+import type { VertexSliceRequest } from "../lib/vertexslice-client.js";
 import {
     loadDogfoodDesign,
     materializeCadOperatorStl,
@@ -87,6 +92,123 @@ export interface CadGenerateRequestInput {
     hardness?: string;
     material?: string;
     forceNewSlice?: boolean;
+}
+
+async function beltSliceRequest(args: {
+    stlStorageKey: string;
+    side: CadFootSide;
+    plan: Awaited<ReturnType<typeof prepareCadOperatorGenerate>>;
+    regional3mf: { bytes: Uint8Array; regionCount: number } | null;
+    sliceTimeoutMs: number | undefined;
+}): Promise<VertexSliceRequest> {
+    const supabase = requireStorage();
+    const stlUrl = await signedDownloadUrl(supabase, args.stlStorageKey, 3600, MANUFACTURING_BUCKET);
+    const stlBytes = await downloadManufacturingStl(stlUrl);
+    const upload = selectVertexSliceUpload({
+        stl: stlBytes,
+        stlFilename: `${args.side}.stl`,
+        regional3mf: args.regional3mf,
+        regional3mfEnabled: vertexSliceRegional3mfEnabled(),
+    });
+    return {
+        profileId: args.plan.presetId,
+        material: args.plan.material,
+        model: upload.bytes,
+        filename: upload.filename,
+        infillDensityPct: infillPctForCadSlice(args.plan.presetId, args.plan.printRecipe),
+        expectedRegionCount: upload.expectedRegionCount,
+        sliceTimeoutMs: args.sliceTimeoutMs,
+        side: args.side,
+    };
+}
+
+async function continueInFlightSlice(args: {
+    prisma: PrismaClient;
+    store: PrismaCadProductionStore;
+    row: CadProductionRow;
+    now: Date;
+}): Promise<void> {
+    const checkpoint = readSliceCheckpoint(args.row.error);
+    if (!checkpoint) return;
+    if (args.row.status !== "pending" && args.row.status !== "running") return;
+    const design = await args.prisma.design.findUnique({
+        where: { id: args.row.designId },
+        select: { ownerId: true },
+    });
+    const fileName = `${args.row.side ?? "pair"}-${args.row.id}.gcode`;
+    await executeCadOperatorProduction({
+        row: args.row,
+        store: args.store,
+        now: () => args.now,
+        sliceBudgetMs: 0,
+        materialize: async () => {
+            throw new Error("slice job resume does not loft");
+        },
+        slice: async (stlStorageKey, sliceCtx) => {
+            const attempt = await runCadSliceAttempt({
+                request: null,
+                checkpoint: sliceCtx?.checkpoint ?? checkpoint,
+                stlStorageKey,
+                meshFingerprint: sliceCtx?.meshFingerprint ?? checkpoint.meshFingerprint,
+                credentialId: checkpoint.credentialId,
+                side: args.row.side,
+                now: sliceCtx?.now ?? (() => args.now),
+                sleep: sliceCtx?.sleep ?? sleepMs,
+                budgetMs: sliceCtx?.budgetMs ?? 0,
+                persistCheckpoint: sliceCtx?.persistCheckpoint,
+            });
+            if (attempt.kind === "pending") return { pending: true, checkpoint: attempt.checkpoint };
+            return { gcode: attempt.gcode, jobId: attempt.jobId };
+        },
+        uploadGcode: async (gcode) => {
+            const storageKey = buildCadOperatorGcodeKey(checkpoint.credentialId, args.row.designId, fileName);
+            await uploadAsset(
+                requireStorage(),
+                storageKey,
+                Buffer.from(gcode, "utf-8"),
+                "text/plain",
+                MANUFACTURING_BUCKET,
+            );
+            return { storageKey };
+        },
+        charge: async ({ storageKey, jobId, meshFingerprint }) => {
+            if (!design?.ownerId) throw new Error("Manufacturing charge failed");
+            try {
+                return await chargeExistingProduction(args.prisma, {
+                    userId: design.ownerId,
+                    cost: HYBRID_GCODE_COST,
+                    productionId: args.row.id,
+                    designId: args.row.designId,
+                    exportFormat: "gcode",
+                    side: args.row.side,
+                    fileName,
+                    presetId: args.row.presetId,
+                    beltAngleDeg: args.row.beltAngleDeg,
+                    layerHeightMm: args.row.layerHeightMm,
+                    isGcode: true,
+                    storageKey,
+                    jobId,
+                    ip: null,
+                    metadata: {
+                        kind: "manufacturing_hybrid",
+                        outputType: "gcode",
+                        presetId: args.row.presetId,
+                        beltAngleDeg: args.row.beltAngleDeg,
+                        material: args.row.material,
+                        manufacturingFingerprint: meshFingerprint,
+                        slicer: "vertexslice",
+                        side: args.row.side,
+                        source: "cad_operator_slice_job",
+                    },
+                });
+            } catch (error) {
+                mapChargeFailure(error);
+            }
+        },
+        deleteTemp: async (stlStorageKey) => {
+            deleteManufacturingTempBestEffort(getSupabaseAdmin(), stlStorageKey);
+        },
+    });
 }
 
 function requireStorage() {
@@ -203,36 +325,30 @@ export async function runCadOperatorGenerateRequest(args: {
                     };
                 },
                 slice: async (stlStorageKey, sliceCtx) => {
-                    const supabase = requireStorage();
-                    const stlUrl = await signedDownloadUrl(
-                        supabase,
+                    const attempt = await runCadSliceAttempt({
+                        request: sliceCtx?.checkpoint
+                            ? null
+                            : await beltSliceRequest({
+                                  stlStorageKey,
+                                  side: input.side,
+                                  plan,
+                                  regional3mf,
+                                  sliceTimeoutMs: sliceCtx?.invocationStartedAt
+                                      ? cadVertexSliceSliceTimeoutMs(sliceCtx.invocationStartedAt, now())
+                                      : sliceCtx?.sliceTimeoutMs,
+                              }),
+                        checkpoint: sliceCtx?.checkpoint ?? null,
                         stlStorageKey,
-                        3600,
-                        MANUFACTURING_BUCKET,
-                    );
-                    const stlBytes = await downloadManufacturingStl(stlUrl);
-                    const infillDensityPct = infillPctForCadSlice(plan.presetId, plan.printRecipe);
-                    const sliceTimeoutMs = sliceCtx?.invocationStartedAt
-                        ? cadVertexSliceSliceTimeoutMs(sliceCtx.invocationStartedAt, now())
-                        : sliceCtx?.sliceTimeoutMs;
-                    const upload = selectVertexSliceUpload({
-                        stl: stlBytes,
-                        stlFilename: `${input.side}.stl`,
-                        regional3mf,
-                        regional3mfEnabled: vertexSliceRegional3mfEnabled(),
-                    });
-                    const gcode = await sliceWithVertexSlice({
-                        profileId: plan.presetId,
-                        material: plan.material,
-                        model: upload.bytes,
-                        filename: upload.filename,
-                        infillDensityPct,
-                        expectedRegionCount: upload.expectedRegionCount,
-                        sliceTimeoutMs,
+                        meshFingerprint: sliceCtx?.meshFingerprint ?? null,
+                        credentialId: sliceCtx?.checkpoint?.credentialId ?? args.principal.credentialId,
                         side: input.side,
+                        now: sliceCtx?.now ?? now,
+                        sleep: sliceCtx?.sleep ?? sleepMs,
+                        budgetMs: sliceCtx?.budgetMs ?? SLICE_JOB_POLL_BUDGET_MS,
+                        persistCheckpoint: sliceCtx?.persistCheckpoint,
                     });
-                    const jobStamp = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-                    return { gcode, jobId: `vs_${jobStamp}` };
+                    if (attempt.kind === "pending") return { pending: true, checkpoint: attempt.checkpoint };
+                    return { gcode: attempt.gcode, jobId: attempt.jobId };
                 },
                 uploadGcode: async (gcode) => {
                     const safeName = userExportFileName.replace(/[^a-zA-Z0-9_.-]/g, "_");
@@ -719,7 +835,12 @@ export async function readCadOperatorProduction(args: {
     if (hiddenFromOperator(args.principal, row.gcodeStorageKey)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Production not found or access denied" });
     }
-    const visible = (await expireStaleProduction(store, row.id, args.now ?? new Date())) ?? row;
+    const now = args.now ?? new Date();
+    if (readSliceCheckpoint(row.error)) {
+        await continueInFlightSlice({ prisma: args.prisma, store, row, now });
+    }
+    const refreshed = (await store.findById(row.id)) ?? row;
+    const visible = (await expireStaleProduction(store, refreshed.id, now)) ?? refreshed;
     return toPublicProduction(visible);
 }
 
@@ -739,7 +860,11 @@ export async function listCadOperatorProductions(args: {
     const productions: PublicProduction[] = [];
     for (const row of rows) {
         if (hiddenFromOperator(args.principal, row.gcodeStorageKey)) continue;
-        const visible = (await expireStaleProduction(store, row.id, now)) ?? row;
+        if (readSliceCheckpoint(row.error)) {
+            await continueInFlightSlice({ prisma: args.prisma, store, row, now });
+        }
+        const refreshed = (await store.findById(row.id)) ?? row;
+        const visible = (await expireStaleProduction(store, refreshed.id, now)) ?? refreshed;
         productions.push(toPublicProduction(visible));
     }
     return { productions };
