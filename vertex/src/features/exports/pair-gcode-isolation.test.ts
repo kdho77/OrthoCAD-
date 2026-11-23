@@ -19,12 +19,16 @@ const footSolids: {
     pair: ArrayBuffer;
     sides: string[];
     pairs: number;
+    inFlight: number;
+    maxInFlight: number;
 } = {
     left: new ArrayBuffer(0),
     right: new ArrayBuffer(0),
     pair: new ArrayBuffer(0),
     sides: [],
     pairs: 0,
+    inFlight: 0,
+    maxInFlight: 0,
 };
 
 const sliceRequests: Array<{ side?: string; stlStorageKey?: string; fileName?: string }> = [];
@@ -33,6 +37,10 @@ const uploads: Array<{ url: string; bytes: Uint8Array }> = [];
 rs.mock("@/lib/geometry/export-geometry", () => ({
     buildExportStl: async (side: string) => {
         footSolids.sides.push(side);
+        footSolids.inFlight += 1;
+        footSolids.maxInFlight = Math.max(footSolids.maxInFlight, footSolids.inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        footSolids.inFlight -= 1;
         const buf = side === "right" ? footSolids.right : footSolids.left;
         return buf.slice(0);
     },
@@ -185,6 +193,8 @@ beforeEach(() => {
     footSolids.pair = concatStls([footSolids.left, translateStlY(footSolids.right, 200)]);
     footSolids.sides = [];
     footSolids.pairs = 0;
+    footSolids.inFlight = 0;
+    footSolids.maxInFlight = 0;
     sliceRequests.length = 0;
     uploads.length = 0;
     useDesignStore.setState({
@@ -226,6 +236,7 @@ describe("paired printer G-code isolation", () => {
         expect(result.ok).toBe(true);
         expect(footSolids.pairs).toBe(0);
         expect(footSolids.sides).toEqual(["left", "right"]);
+        expect(footSolids.maxInFlight).toBe(2);
         expect(sliceRequests.map((request) => request.side)).toEqual(["left", "right"]);
         expect(sliceRequests[0]?.fileName).toMatch(/_ApexCore_L\.gcode$/);
         expect(sliceRequests[1]?.fileName).toMatch(/_ApexCore_R\.gcode$/);

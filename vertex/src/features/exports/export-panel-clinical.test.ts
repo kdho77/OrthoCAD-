@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { beforeEach, describe, expect, test } from "@rstest/core";
+import * as loftWorker from "@/lib/geometry/procedural-wall/preview-loft-worker";
 import { useDesignStore } from "@/stores/design-store";
 import {
     clinicalExportFormatTabs,
@@ -174,5 +175,25 @@ describe("export panel clinical gcode", () => {
         expect(hybridSpy).toHaveBeenCalledTimes(2);
         expect(created).toEqual([]);
         URL.createObjectURL = original;
+    });
+
+    test("cancel cleans up export solid workers", async () => {
+        const stop = rs.spyOn(loftWorker, "terminateExportSolidWorkers").mockImplementation(() => {});
+        const design = useDesignStore.getState().design;
+        let started = false;
+        hybridSpy.mockImplementation(async () => {
+            started = true;
+            return { ok: true as const, filename: "hybrid-left.gcode", blob: new Blob(["L"]) };
+        });
+        const cancelled = await exportClinicalPrinterGcode({
+            side: "left",
+            feet: "both",
+            design,
+            shouldAbort: () => started,
+        });
+        expect(cancelled.ok).toBe(false);
+        expect(cancelled.cancelled).toBe(true);
+        expect(stop).toHaveBeenCalled();
+        stop.mockRestore();
     });
 });

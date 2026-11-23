@@ -16,6 +16,7 @@ import {
 } from "@/features/exports/export-service";
 import { exportMachineFamily, pairExportLayout } from "@/features/exports/machine-export-layout";
 import { orderDownloadSides } from "@/lib/geometry/export-geometry";
+import { terminateExportSolidWorkers } from "@/lib/geometry/procedural-wall/preview-loft-worker";
 import { resolveViewerWallStyle } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { type CamOverrides, type PrinterPreset, presetsForMethod } from "@/lib/kiri";
 import type { ViewerSettings } from "@/stores/design-store";
@@ -164,6 +165,7 @@ export async function exportClinicalPrinterGcode(input: {
     }
     const many = feet.length > 1;
     if (input.shouldAbort?.()) {
+        terminateExportSolidWorkers();
         return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
     }
     const results = await Promise.all(
@@ -185,6 +187,7 @@ export async function exportClinicalPrinterGcode(input: {
     const built: { side: Side; filename: string; blob: Blob }[] = [];
     for (const { foot, res } of results) {
         if (res.cancelled || input.shouldAbort?.()) {
+            terminateExportSolidWorkers();
             return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
         }
         if (!res.ok || !res.blob || !res.filename) {
