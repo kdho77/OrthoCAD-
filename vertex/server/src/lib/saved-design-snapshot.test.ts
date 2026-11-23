@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, test } from "@rstest/core";
 
@@ -685,5 +686,123 @@ describe("persist saved design snapshot", () => {
         });
         expect(() => assertMilledCncOrder(design)).toThrow(PRINT_ORDER_CNC_REFUSAL);
         expect(design.method).toBe("printing_solid");
+    });
+
+    test("a right-only 2 degree medial heel wedge reads back on the right foot only", async () => {
+        const result = await persistSavedDesignSnapshotOnDesign({
+            prisma: fakePrisma().prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: {
+                shoe_size: { system: "US_M", size: 9 },
+                rearfoot_wedge_by_side: {
+                    right: { side: "medial", value: 2, unit: "deg", degree_mode: "station" },
+                },
+            },
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        const corrections = readStoredDesignSettings(result.settingsJson)?.corrections as {
+            linked: boolean;
+            left: {
+                rearfootWedge?: { side: string; value: number; unit: string };
+                rearfootPostingDeg: number;
+            };
+            right: {
+                rearfootWedge?: { side: string; value: number; unit: string; degreeMode?: string };
+                rearfootPostingDeg: number;
+            };
+        };
+        expect(corrections.right.rearfootWedge).toEqual({
+            side: "medial",
+            value: 2,
+            unit: "deg",
+            degreeMode: "station",
+        });
+        expect(corrections.right.rearfootWedge?.value).toBeGreaterThan(0);
+        expect(corrections.left.rearfootWedge).toBeUndefined();
+        expect(corrections.left.rearfootPostingDeg).toBe(0);
+        expect(corrections.right.rearfootPostingDeg).toBe(0);
+        expect(corrections.linked).toBe(false);
+    });
+
+    test("a right-only heel wedge leaves a stored left heel wedge in place", async () => {
+        const existing = buildSavedDesignSnapshot({
+            stored: null,
+            catalog: parseSavedDesignCatalog({
+                shoe_size: { system: "US_M", size: 9 },
+                rearfoot_wedge_by_side: {
+                    left: { side: "lateral", value: 4, unit: "deg", degree_mode: "station" },
+                },
+            }),
+        });
+        const result = await persistSavedDesignSnapshotOnDesign({
+            prisma: fakePrisma(row({ settingsJson: settingsEnvelopeForSave(existing.design) })).prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: {
+                rearfoot_wedge_by_side: {
+                    right: { side: "medial", value: 2, unit: "deg", degree_mode: "station" },
+                },
+            },
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        const corrections = readStoredDesignSettings(result.settingsJson)?.corrections as {
+            left: { rearfootWedge?: { side: string; value: number } };
+            right: { rearfootWedge?: { side: string; value: number } };
+        };
+        expect(corrections.left.rearfootWedge).toEqual({
+            side: "lateral",
+            value: 4,
+            unit: "deg",
+            degreeMode: "station",
+        });
+        expect(corrections.right.rearfootWedge).toEqual({
+            side: "medial",
+            value: 2,
+            unit: "deg",
+            degreeMode: "station",
+        });
+    });
+
+    test("bilateral heel wedge and a design with no wedge match main", () => {
+        const stock = buildSavedDesignSnapshot({
+            stored: null,
+            catalog: parseSavedDesignCatalog({ shoe_size: { system: "US_M", size: 9 } }),
+        });
+        const bilateral = buildSavedDesignSnapshot({
+            stored: null,
+            catalog: parseSavedDesignCatalog({
+                shoe_size: { system: "US_M", size: 9 },
+                rearfoot_wedge: { side: "medial", value: 2, unit: "deg", degree_mode: "station" },
+            }),
+        });
+        const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+        // Captured on main 268aac85 before this catalog key existed.
+        expect(hash(stock.design)).toBe("c608222a9095fbc2f688cf8c890c8c4e51ee95bb07e826605e93f0c74bb438ce");
+        expect(hash(bilateral.design)).toBe(
+            "fd7c3861449e6b7e2621d807cc87c6eb1584936c3b8c4c59c08277965cc84d45",
+        );
+        expect(stock.design.corrections.left.rearfootWedge).toBeUndefined();
+        expect(stock.design.corrections.right.rearfootWedge).toBeUndefined();
+        expect(stock.design.corrections.linked).toBe(true);
+        expect(bilateral.design.corrections.left.rearfootWedge).toEqual(
+            bilateral.design.corrections.right.rearfootWedge,
+        );
+        expect(bilateral.design.corrections.linked).toBe(true);
+    });
+
+    test("rearfoot_wedge and rearfoot_wedge_by_side together are refused", () => {
+        expect(() =>
+            buildSavedDesignSnapshot({
+                stored: null,
+                catalog: parseSavedDesignCatalog({
+                    shoe_size: { system: "US_M", size: 9 },
+                    rearfoot_wedge: { side: "medial", value: 2, unit: "deg", degree_mode: "station" },
+                    rearfoot_wedge_by_side: {
+                        right: { side: "medial", value: 2, unit: "deg", degree_mode: "station" },
+                    },
+                }),
+            }),
+        ).toThrow(/rearfoot_wedge or rearfoot_wedge_by_side/);
     });
 });

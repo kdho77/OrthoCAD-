@@ -261,6 +261,22 @@ export const savedDesignCatalogSchema = z
             .strict()
             .optional(),
         rearfoot_wedge: wedgeSchema.optional(),
+        /**
+         * Heel wedge on one foot. The other foot is not written.
+         * side "medial" raises the medial heel. side "lateral" raises the lateral heel.
+         * value is a positive magnitude. A negative value does not flip the edge.
+         * unit "deg" with degree_mode "station" is the Corrections heel post
+         * (rise = heel chord × tan(degrees)). Omit degree_mode for the older local-width angle.
+         * Do not send this together with rearfoot_wedge. A positive rearfoot_posting_deg
+         * still raises the lateral side.
+         */
+        rearfoot_wedge_by_side: z
+            .object({
+                left: wedgeSchema.optional(),
+                right: wedgeSchema.optional(),
+            })
+            .strict()
+            .optional(),
         forefoot_wedge: wedgeSchema.optional(),
         full_length_wedge: z
             .object({
@@ -485,6 +501,14 @@ export const MCP_TOOL_DEFINITIONS = [
             "(per-foot medial/lateral flange 0–8 mm; omit medial_mm and lateral_mm for 3 mm default, mild level 2 mm, " +
             "standard/unspecified 3 mm, high 6 mm; out of range is 422, not clamped; omitted flange leaves flanges unchanged), " +
             "rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, " +
+            "rearfoot_wedge_by_side.left, rearfoot_wedge_by_side.right (same wedge keys, one foot only). " +
+            "side medial raises that foot's medial heel; side lateral raises the lateral heel. " +
+            "value is a positive magnitude in degrees or millimetres. A negative value does not flip the edge. " +
+            "unit deg with degree_mode station is the Corrections heel post: rise = heel chord × tan(degrees), full at the heel. " +
+            "Omit degree_mode to keep the older local-width angle. The other foot is left unchanged. " +
+            "A positive sliders.rearfoot_posting_deg still raises the lateral side; do not use that sign for a medial wedge. " +
+            "rearfoot_wedge without rearfoot_wedge_by_side still writes the same wedge on both feet. " +
+            "Provide rearfoot_wedge or rearfoot_wedge_by_side, not both. " +
             "forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, " +
             "full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit, " +
             "manufacturing_method (printing_solid or milling_3axis). Omit it to leave the order a print " +
@@ -524,6 +548,10 @@ export const MCP_TOOL_DEFINITIONS = [
             "Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. " +
             "depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). " +
             "Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. " +
+            "rearfoot_wedge_by_side.right (or .left) sets a heel wedge on that foot only. " +
+            "side medial raises the medial heel; side lateral raises the lateral heel. " +
+            "For 2 degrees medial on the right foot, send value 2, unit deg, degree_mode station. " +
+            "The other foot stays unchanged. rearfoot_wedge still applies to both feet. " +
             "flange.left / flange.right set medial_mm and lateral_mm (0–8) per foot; omit those mm for 3 mm default, " +
             "or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. " +
             "elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. " +

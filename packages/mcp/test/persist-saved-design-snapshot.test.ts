@@ -197,4 +197,45 @@ describe("persist_saved_design_snapshot tool", () => {
             }).success,
         ).toBe(false);
     });
+
+    test("accepts a right-only medial heel wedge in degrees and refuses a signed side", () => {
+        const catalog = {
+            shoe_size: { system: "US_M" as const, size: 9 },
+            rearfoot_wedge_by_side: {
+                right: {
+                    side: "medial" as const,
+                    value: 2,
+                    unit: "deg" as const,
+                    degree_mode: "station" as const,
+                },
+            },
+        };
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({ design_id: designId, catalog }).success,
+        ).toBe(true);
+        const built = buildSavedDesignSnapshot({
+            stored: { system: "US_M", size: 9, left: null, right: null, width: null },
+            catalog: parseSavedDesignCatalog(catalog),
+        });
+        expect(built.design.corrections.right.rearfootWedge).toEqual({
+            side: "medial",
+            value: 2,
+            unit: "deg",
+            degreeMode: "station",
+        });
+        expect(built.design.corrections.left.rearfootWedge).toBeUndefined();
+        expect(
+            persistSavedDesignSnapshotInputSchema.safeParse({
+                design_id: designId,
+                catalog: {
+                    rearfoot_wedge_by_side: {
+                        right: { side: "varus", value: 2, unit: "deg" },
+                    },
+                },
+            }).success,
+        ).toBe(false);
+        const tool = MCP_TOOL_DEFINITIONS.find((entry) => entry.name === "persist_saved_design_snapshot");
+        expect(tool?.description).toContain("medial heel");
+        expect(tool?.description).toContain("rearfoot_wedge_by_side");
+    });
 });
