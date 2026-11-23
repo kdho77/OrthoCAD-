@@ -102,5 +102,6 @@ PASS. Stock left, no corrections, no text: sha256 `4c0e3fa857504ddf81f2722737c83
 
 - Grader branch: `cursor/mortons-name-gates-1123`. Freeze `8e5d3dcf`. Candidate graded: `5a67b17fcf1a3f0694d0098f16221bfad0a8a326`.
 - Overall: PASS on G-DEFECT, G-DETECTOR, G-OTHER-FOOT, G-ELEMENT, G-R1 through G-R7, and G-ONE.
-- Residuals: none that fail a frozen gate. The CI shard list gained one test path. The worker test fixture string is `CASEY`.
+- Residuals: none that fail a frozen gate. The worker CI shard list gained one test path. The worker test fixture string is `CASEY`.
+- Grader CI: run 45258603564 failed the shard counter because `measure.test.ts` was one file past `ci/unit-test-shards.json` (370 vs 369). No unit test executed, and `test-and-deploy` stopped at that aggregate. The recorder is now `measure.optional.test.ts`. Thresholds and `score.mjs` are unchanged from `8e5d3dcf`.
 - Next step: leave this PR unmerged. It is the grade of #397, not the fix.

@@ -1,5 +1,7 @@
 // Geometry measurement for the frozen Morton's-name gates.
 // Records facts only. Pass/fail is score.mjs, which is frozen before the candidate run.
+// The .optional.test.ts suffix is the existing exclude in scripts/ci/list-unit-test-files.mjs
+// and rstest.config.ts, so this recorder is not a required unit shard. Run it by path.
 
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
