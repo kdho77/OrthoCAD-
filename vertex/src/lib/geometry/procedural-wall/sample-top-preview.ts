@@ -8,6 +8,7 @@ import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
 import { perfMark } from "@/lib/geometry/perf/load-export-perf";
 import { scaleSourceShapeToFootprint } from "@/lib/geometry/shoe-size";
+import { shoeWidthAffineActive } from "@/lib/geometry/shoe-width";
 import { effectiveInsoleThicknessMm } from "@/lib/geometry/sink";
 import { hasActiveComposedTextMarking } from "@/lib/geometry/text-marking/compose";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
@@ -381,6 +382,40 @@ async function withDefaultPrintCompose(options: ProceduralPreviewOptions): Promi
     };
 }
 
+function heelCupWidthMmOf(options: ProceduralPreviewOptions): number {
+    return options.corrections?.heelCupWidthMm ?? options.sourceField?.corrections?.heelCupWidthMm ?? 0;
+}
+
+/**
+ * Men's 9 fair, then a uniform size scale, does not include the shoe-width
+ * move the top sheet gets next. On a short narrow foot the rim moves in and
+ * the station ray hits the far side of that pattern (S1-PRELOFT skew).
+ * Heel-cup width already follows the rim, and that path already exports, so
+ * it is left alone.
+ */
+function patternNeedsShoeWidthFollow(options: ProceduralPreviewOptions): boolean {
+    const sw = options.shoeWidth;
+    if (!sw || !shoeWidthAffineActive(sw.width, sw.heelOverrideMm)) return false;
+    return Math.abs(heelCupWidthMmOf(options)) < 1e-6;
+}
+
+function rimPlanOf(model: StockWallModel): PolyPoint[] | null {
+    const pos = model.top.meshPositions;
+    const rim = model.top.rimLocal;
+    if (!pos || !rim || rim.length < 3) return null;
+    return rim.map((i) => ({
+        x: pos[i * 3] ?? 0,
+        y: pos[i * 3 + 1] ?? 0,
+        z: 0,
+    }));
+}
+
+function isPreloftSkewError(error: unknown): boolean {
+    return (
+        error instanceof Error && error.message.includes("[S1-PRELOFT]") && error.message.includes("skew[")
+    );
+}
+
 export async function reconstructProceduralPreview(
     topGeo: BufferGeometry,
     options: ProceduralPreviewOptions = {},
@@ -393,6 +428,7 @@ export async function reconstructProceduralPreview(
     let working = topGeo;
     let footprintClone: BufferGeometry | null = null;
     let scaledPattern: PolyPoint[] | null = null;
+    let nativeFairScaled = false;
     if (footprintScale != null && Number.isFinite(footprintScale) && Math.abs(footprintScale - 1) > 1e-9) {
         if (!topGeo.boundingBox) topGeo.computeBoundingBox();
         const box = topGeo.boundingBox;
@@ -410,6 +446,7 @@ export async function reconstructProceduralPreview(
                 );
             }
         } else if (center && insetsForScanPattern(options.scanPattern) == null) {
+            nativeFairScaled = true;
             const native = topGeo.clone();
             try {
                 const nativeModel = extractTopOnlyModel(native, {
@@ -428,6 +465,19 @@ export async function reconstructProceduralPreview(
         footprintClone = topGeo.clone();
         scaleSourceShapeToFootprint(footprintClone, footprintScale, BASE_REFERENCE_THICKNESS_MM);
         working = footprintClone;
+    }
+    // Rim before the shoe-width affine. Captured from the sized sheet, before
+    // compose moves it. Used only if the unmoved pattern fails the skew gate.
+    let shoeWidthRimBefore: PolyPoint[] | null = null;
+    if (nativeFairScaled && scaledPattern && patternNeedsShoeWidthFollow(options)) {
+        const sized = working.clone();
+        try {
+            shoeWidthRimBefore = rimPlanOf(
+                extractTopOnlyModel(sized, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME }),
+            );
+        } finally {
+            sized.dispose();
+        }
     }
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
     let source = working;
@@ -518,6 +568,12 @@ export async function reconstructProceduralPreview(
     try {
         return loft(requested);
     } catch (e) {
+        // Designs that already clear the skew gate keep the unaligned pattern,
+        // so their mesh stays byte-for-byte. Only a failed gate is rebuilt.
+        const shoeWidthRimAfter = shoeWidthRimBefore ? rimPlanOf(model) : null;
+        if (shoeWidthRimBefore && shoeWidthRimAfter && scaledPattern && isPreloftSkewError(e)) {
+            return loft(shiftPatternByRimFollow(scaledPattern, shoeWidthRimBefore, shoeWidthRimAfter, 1));
+        }
         if (options.bottomPattern?.length || !options.scanPattern || options.scanPattern === "full_contact") {
             throw e;
         }
