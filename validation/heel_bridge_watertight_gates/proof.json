@@ -1,0 +1,140 @@
+{
+  "pass": true,
+  "failures": [],
+  "synthetic": [
+    {
+      "gate": "G1",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "clean foot passes; si 4 fails"
+    },
+    {
+      "gate": "G2",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "full fixture passes; kind-only fixture fails"
+    },
+    {
+      "gate": "G3",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "failed == 0 passes; one failure is detected"
+    },
+    {
+      "gate": "G4",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "equal sha256 passes; one flipped nibble fails"
+    },
+    {
+      "gate": "G5",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "baseline 0 passes; a copy set to 4 fails"
+    },
+    {
+      "gate": "G6",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "frozen seam numbers pass; limit 9 and print-recipe fail"
+    },
+    {
+      "gate": "G7",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "bottom engrave passes; wall emboss and a text-marking edit fail"
+    },
+    {
+      "gate": "G8",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "empty diff and elements.ts pass; python-service fails"
+    },
+    {
+      "gate": "G9",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "sample-top passes; a new mesh id and a replaced glb fail"
+    },
+    {
+      "gate": "G10",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "bottom engrave passes; a new engraving file fails"
+    },
+    {
+      "gate": "G11",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "empty diff passes; a workflow path and api_key fail"
+    },
+    {
+      "gate": "G12",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "watertight stock predicate passes; openEdges 2 fails"
+    },
+    {
+      "gate": "G13",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "elements.ts passes; cnc profile fails"
+    },
+    {
+      "gate": "G14",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "pinned BASE head passes; main with a foreign sha fails"
+    }
+  ],
+  "live": {
+    "baseline": {
+      "pass": true,
+      "reasons": []
+    },
+    "seam": {
+      "limit": 6,
+      "fallback": 9.5,
+      "slack": 0.01,
+      "spline": 6.05
+    },
+    "text": {
+      "surface": "bottom",
+      "mode": "engrave"
+    },
+    "assetId": "sample-top",
+    "glbPath": "Templates/SAMPLE_Top.glb",
+    "stock": {
+      "id": "stock-left",
+      "exported": true,
+      "si": 0,
+      "productSi": 0,
+      "openEdges": 0,
+      "nonManifold": 0,
+      "watertight": true,
+      "euler": 2,
+      "productEuler": 2,
+      "topVertexCount": 7815,
+      "bridgeTriangles": 904,
+      "sha256": "ad742f2e7e6f2ad36053de3a1713237b60fff21bf84ebad5a15d854050bbe85f",
+      "md5": "96969efc2727da8e85e063e59c6bbda4",
+      "triangles": 110308,
+      "error": null,
+      "baselineSeen": 0
+    },
+    "existing": {
+      "passed": 30,
+      "failed": 0,
+      "exitCode": 0,
+      "tail": "\"counts\": { \"testFiles\": 2, \"failedFiles\": 0, \"tests\": 30, \"failedTests\": 0, \"passedTests\": 30, \"skippedTests\": 0, \"todoTests\": 0 }"
+    }
+  },
+  "broken": {
+    "baselineRejected": true,
+    "stockSi4Rejected": true,
+    "brokenTest": {
+      "detected": true,
+      "detail": "broken test exit 1 failedTests=1"
+    }
+  }
+}
