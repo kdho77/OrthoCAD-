@@ -1,0 +1,36 @@
+{
+    "allowExact": [
+        "vertex/shared/saved-design-snapshot.ts",
+        "vertex/shared/saved-design-catalog.ts",
+        "vertex/server/src/lib/saved-design-snapshot.ts",
+        "vertex/server/src/lib/saved-design-snapshot.test.ts",
+        "vertex/src/lib/clinical/saved-design-snapshot.ts",
+        "vertex/src/lib/clinical/saved-design-snapshot.test.ts",
+        "packages/mcp/src/tools/schemas.ts",
+        "packages/mcp/src/tools/handlers.ts",
+        "vertex/server/src/orthocad-mcp.bundled.mjs"
+    ],
+    "denySubstrings": [
+        "vertex-web",
+        "vertex-api",
+        "railway",
+        "vertex/api/",
+        "vertex/print-bridge/",
+        "vertex/src/lib/kiri/",
+        "vertex/src/lib/geometry/",
+        "production-jobs",
+        "production-orders",
+        ".github/workflows/"
+    ],
+    "r6ForbiddenSubstrings": [
+        "vertex-web",
+        "vertex-api",
+        "railway",
+        "vertex/api/",
+        "vertex/print-bridge/",
+        "production-jobs",
+        "production-orders",
+        ".github/workflows/",
+        "/printer"
+    ]
+}

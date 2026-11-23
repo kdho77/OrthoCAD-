@@ -1,0 +1,36 @@
+{
+    "baseSha": "268aac85847160b5b2703a05688721ea4cb93b24",
+    "candidateSha": "bb5235d9f2f51f6fdb2a9553e3e0d112db8d7d4a",
+    "explicitLateralMm": 0,
+    "medialMm": 3,
+    "forbiddenLateralDefaultMm": 3,
+    "sliders": {
+        "medialFlangeMm": 3,
+        "lateralFlangeMm": 0,
+        "rightMedialFlangeMm": 0,
+        "rightLateralFlangeMm": 0
+    },
+    "bilateral": {
+        "split": { "Lmed": 4, "Llat": 5, "Rmed": 6, "Rlat": 1 },
+        "emptyLeft": { "Lmed": 3, "Llat": 3, "Rmed": 0, "Rlat": 0 },
+        "mildRight": { "Lmed": 0, "Llat": 0, "Rmed": 2, "Rlat": 2 },
+        "highLeft": { "Lmed": 6, "Llat": 6, "Rmed": 0, "Rlat": 0 },
+        "levelPlusMedial": { "Lmed": 3, "Llat": 6, "Rmed": 0, "Rlat": 0 }
+    },
+    "sampleTop": {
+        "assetId": "sample-top",
+        "glbPath": "Templates/SAMPLE_Top.glb",
+        "url": "/Templates/SAMPLE_Top.glb",
+        "rightMirrored": true
+    },
+    "textMarking": {
+        "surface": "bottom",
+        "mode": "engrave",
+        "addPatientName": true,
+        "bold": true
+    },
+    "r7MaxDifferingCatalogs": 0,
+    "r6MaxSecretHits": 0,
+    "r6MaxForbiddenPaths": 0,
+    "existingTestsExitCode": 0
+}
