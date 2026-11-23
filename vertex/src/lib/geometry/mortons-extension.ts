@@ -3,6 +3,7 @@
 import { meshYForAnatomicalSide, meshYSign } from "@/lib/geometry/handedness";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import type { Side } from "@/types";
+import { SINK_PROFILES } from "../../../shared/sink-profiles";
 
 /**
  * Morton's extension default footprint.
@@ -10,12 +11,13 @@ import type { Side } from "@/types";
  * u is the fraction of insole length from the heel. v is the fraction of
  * LOCAL width from the medial edge (0 = medial border, 1 = lateral border).
  * Width uses the station's own medial-to-lateral span, not a fixed millimetre
- * width and not the bounding-box width. The 8 mm fillet and both feathers
- * stay in millimetres. Thickness does not scale.
+ * width and not the bounding-box width. Thickness does not scale.
  *
- * The design-view ring is this polygon with a hard edge. The solid feathers
- * inside the lateral border and the proximal border with quintics, so each
- * edge meets the insole top with continuous tangent and curvature.
+ * The extension solid is a straight lateral edge through the 1st/2nd
+ * intermetatarsal midpoint, full height back to the 1st met neck, then a
+ * 25 mm quintic into the arch. The polygon below is the legacy outline:
+ * Reverse Morton's still feathers inside it. The design-view ring is that
+ * polygon with a hard edge.
  */
 
 /** Proximal arc dips to this u at v = 0.20. */
@@ -43,6 +45,20 @@ const MORTONS_TAPER_LATERAL_TOE_MM = 6;
  * and short of the toe edge and the lateral plateau.
  */
 export const MORTONS_TAPER_PROXIMAL_MM = 32;
+/**
+ * Extension only. Full height holds this far proximal of the 1st MPJ center
+ * (the 10–12 mm neck window), then falls to 0 over {@link MORTONS_BLEND_PROXIMAL_MM}.
+ */
+export const MORTONS_NECK_PROXIMAL_MM = 11;
+/** Extension only. Added height returns to the arch over this length. */
+export const MORTONS_BLEND_PROXIMAL_MM = 25;
+/**
+ * Extension only. Constant lateral bevel. A quintic over 6 mm is flat for
+ * about 1 mm at each end and peaks under 1.0 mm/mm at 3 mm. A 2–3 mm bevel
+ * cannot do both; 8 mm is the absolute cap. Reverse Morton's still uses
+ * {@link MORTONS_TAPER_LATERAL_MM}.
+ */
+export const MORTONS_LATERAL_BEVEL_MM = 6;
 export const MORTONS_HEIGHT_DEFAULT_MM = 3;
 export const MORTONS_HEIGHT_WARN_MM = 5;
 export const MORTONS_HEIGHT_MAX_MM = 6;
@@ -552,13 +568,14 @@ function chainDistance(
 }
 
 /**
- * Solid weight 0..1 at a mesh-local point (origin = anchor, +x distal).
- * Full thickness on the medial edge and the toe edge. The lateral border
- * feathers over {@link MORTONS_TAPER_LATERAL_MM} (shorter at the toe) and
- * the proximal border over {@link MORTONS_TAPER_PROXIMAL_MM}, both quintic
- * (C2) and both inside the sharp outline.
+ * Legacy solid weight 0..1 at a mesh-local point (origin = anchor, +x distal).
+ * Reverse Morton's still uses this. Full thickness on the medial edge and the
+ * toe edge. The lateral border feathers over {@link MORTONS_TAPER_LATERAL_MM}
+ * (shorter at the toe) and the proximal border over
+ * {@link MORTONS_TAPER_PROXIMAL_MM}, both quintic and both inside the sharp
+ * outline. The extension solid does not.
  */
-export function mortonsSolidWeight(
+export function mortonsLegacySolidWeight(
     side: Side,
     lengthMm: number,
     widthMm: number,
@@ -584,6 +601,159 @@ export function mortonsSolidWeight(
         weight *= quintic01(proximal / MORTONS_TAPER_PROXIMAL_MM);
     }
     return weight;
+}
+
+export interface MortonsExtensionFrame {
+    /** Signed millimetres. Positive is lateral of the straight edge (outside the pad). */
+    lateralMm(xHeel: number, meshY: number): number;
+    /** 1 on the plateau, 0 proximal of the 25 mm blend and past the toe. */
+    longitudinal(xHeel: number): number;
+    fullHeightX: number;
+    toeX: number;
+    blendStartX: number;
+    dirX: number;
+    dirY: number;
+    /** Unit normal pointing lateral, the gradient of {@link lateralMm}. */
+    normalX: number;
+    normalY: number;
+    midX: number;
+    midY: number;
+    cornerX: number;
+    cornerY: number;
+    toeEdgeX: number;
+    toeEdgeY: number;
+}
+
+const extensionFrameCache = new Map<string, MortonsExtensionFrame>();
+
+/**
+ * Straight lateral edge of the extension, in heel-frame millimetres.
+ *
+ * The edge passes through the midpoint of the 1st and 2nd MPJ centers.
+ * No hallux/2nd-toe cleft is registered on the stock outline, so the edge
+ * is parallel to the medial forefoot contour from the 1st MPJ to the toe.
+ * Full height holds to {@link MORTONS_NECK_PROXIMAL_MM} proximal of the 1st
+ * MPJ, then a quintic falls to 0 over {@link MORTONS_BLEND_PROXIMAL_MM}.
+ * The lateral and proximal fades are not multiplied.
+ */
+export function mortonsExtensionFrame(
+    side: Side,
+    lengthMm: number,
+    widthMm: number,
+    outline?: readonly MortonsOutlinePoint[] | null,
+): MortonsExtensionFrame {
+    const outlineKey =
+        outline && outline.length >= 6
+            ? outline.map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(";")
+            : "";
+    const key = `${side}|${lengthMm.toFixed(3)}|${widthMm.toFixed(3)}|${outlineKey}`;
+    const hit = extensionFrameCache.get(key);
+    if (hit) return hit;
+    const foot = frameOf(lengthMm, widthMm, side, outline);
+    const at = (u: number, v: number) => {
+        const p = pointAt(u, v, foot, "medial");
+        return { x: p.x, y: p.y };
+    };
+    const mpj1 = at(SINK_PROFILES.mpj1.u, SINK_PROFILES.mpj1.v);
+    const mpj2 = at(SINK_PROFILES.mpj2.u, SINK_PROFILES.mpj2.v);
+    const midX = (mpj1.x + mpj2.x) / 2;
+    const midY = (mpj1.y + mpj2.y) / 2;
+    const medialNeck = at(SINK_PROFILES.mpj1.u, 0);
+    const medialToe = at(1, 0);
+    let dirX = medialToe.x - medialNeck.x;
+    let dirY = medialToe.y - medialNeck.y;
+    const dirLen = Math.hypot(dirX, dirY);
+    if (!(dirLen > 1e-6)) {
+        dirX = 1;
+        dirY = 0;
+    } else {
+        dirX /= dirLen;
+        dirY /= dirLen;
+    }
+    // Perpendicular distance. Positive on the left of the distal direction.
+    const raw = (x: number, y: number) => dirX * (y - midY) - dirY * (x - midX);
+    const flip = raw(medialNeck.x, medialNeck.y) > 0 ? -1 : 1;
+    const lateralMm = (x: number, y: number) => flip * raw(x, y);
+    const fullHeightX = mpj1.x - MORTONS_NECK_PROXIMAL_MM;
+    const toeX = foot.originX + foot.length;
+    const tAtX = (x: number) => (Math.abs(dirX) > 1e-6 ? (x - midX) / dirX : 0);
+    const tCorner = tAtX(fullHeightX);
+    const tToe = tAtX(toeX);
+    const built: MortonsExtensionFrame = {
+        lateralMm,
+        longitudinal(x: number) {
+            if (x > toeX) return 0;
+            if (x >= fullHeightX) return 1;
+            const proximal = fullHeightX - x;
+            if (proximal >= MORTONS_BLEND_PROXIMAL_MM) return 0;
+            // Quintic smoothstep: tangent and curvature 0 at both ends. A cubic
+            // smoothstep's one-sided slope jump at 3 mm is 0.014 mm/mm.
+            return 1 - quintic01(proximal / MORTONS_BLEND_PROXIMAL_MM);
+        },
+        fullHeightX,
+        toeX,
+        blendStartX: fullHeightX - MORTONS_BLEND_PROXIMAL_MM,
+        dirX,
+        dirY,
+        normalX: flip * -dirY,
+        normalY: flip * dirX,
+        midX,
+        midY,
+        cornerX: midX + tCorner * dirX,
+        cornerY: midY + tCorner * dirY,
+        toeEdgeX: midX + tToe * dirX,
+        toeEdgeY: midY + tToe * dirY,
+    };
+    if (extensionFrameCache.size > 64) extensionFrameCache.clear();
+    extensionFrameCache.set(key, built);
+    return built;
+}
+
+/**
+ * Extension solid weight 0..1 in heel-frame millimetres.
+ * Full height medial of the straight edge, from the toe back to the neck
+ * line. Lateral of the edge, a constant-width quintic bevel. Proximal of
+ * the neck line, a 25 mm quintic down to 0. The two fades are combined with
+ * a minimum so the corner stays the intersection of two straight ramps.
+ */
+export function mortonsExtensionWeightAt(
+    side: Side,
+    lengthMm: number,
+    widthMm: number,
+    xHeel: number,
+    meshY: number,
+    outline?: readonly MortonsOutlinePoint[] | null,
+): number {
+    const plan = mortonsExtensionFrame(side, lengthMm, widthMm, outline);
+    const along = plan.longitudinal(xHeel);
+    if (along <= 0) return 0;
+    const d = plan.lateralMm(xHeel, meshY);
+    if (d >= MORTONS_LATERAL_BEVEL_MM) return 0;
+    const lateral = d <= 0 ? 1 : 1 - quintic01(d / MORTONS_LATERAL_BEVEL_MM);
+    return Math.min(along, lateral);
+}
+
+/**
+ * Extension solid weight at a mesh-local point (origin = anchor, +x distal).
+ * Straight lateral edge, full height to the 1st met neck, 25 mm proximal blend.
+ */
+export function mortonsSolidWeight(
+    side: Side,
+    lengthMm: number,
+    widthMm: number,
+    localX: number,
+    localY: number,
+    outline?: readonly MortonsOutlinePoint[] | null,
+): number {
+    const built = cachedBuild(side, lengthMm, widthMm, outline);
+    return mortonsExtensionWeightAt(
+        side,
+        lengthMm,
+        widthMm,
+        built.anchor.x + localX,
+        built.anchor.y + localY,
+        outline,
+    );
 }
 
 /** Solid weight at a station. v is from the medial edge. Used by the footprint tests. */
@@ -723,7 +893,8 @@ export function mortonsFootprintT(
     return mortonsContainsLocal(side, lengthMm, widthMm, lx * sx, ly * sy) ? 0 : 2;
 }
 
-export function mortonsHeightMm(
+function mortonsHeightWith(
+    weightAt: typeof mortonsSolidWeight,
     side: Side,
     lengthMm: number,
     widthMm: number,
@@ -743,12 +914,72 @@ export function mortonsHeightMm(
     const ly = dx * Math.sin(a) + dy * Math.cos(a);
     const sx = scaleX > 1e-6 ? scaleX : 1;
     const sy = scaleY > 1e-6 ? scaleY : 1;
-    // User scale grows the pad. Taper distances stay in millimetres of the
-    // unscaled clinical outline so a larger insole does not thicken the fade.
-    const weight = mortonsSolidWeight(side, lengthMm, widthMm, lx / sx, ly / sy, null);
+    // User scale grows the pad. Bevel and blend distances stay in millimetres
+    // of the unscaled clinical outline so a larger insole does not thicken the fade.
+    const weight = weightAt(side, lengthMm, widthMm, lx / sx, ly / sy, null);
     if (weight <= 0) return 0;
     const h = Math.min(MORTONS_HEIGHT_MAX_MM, Math.max(0, heightMm));
     return h * weight;
+}
+
+/** Extension added height. Straight edge, neck plateau, 25 mm proximal blend. */
+export function mortonsHeightMm(
+    side: Side,
+    lengthMm: number,
+    widthMm: number,
+    anchorX: number,
+    anchorY: number,
+    meshX: number,
+    meshY: number,
+    rotationDeg: number,
+    scaleX: number,
+    scaleY: number,
+    heightMm: number,
+): number {
+    return mortonsHeightWith(
+        mortonsSolidWeight,
+        side,
+        lengthMm,
+        widthMm,
+        anchorX,
+        anchorY,
+        meshX,
+        meshY,
+        rotationDeg,
+        scaleX,
+        scaleY,
+        heightMm,
+    );
+}
+
+/** Reverse Morton's added magnitude. The pre-change filleted footprint. */
+export function mortonsLegacyHeightMm(
+    side: Side,
+    lengthMm: number,
+    widthMm: number,
+    anchorX: number,
+    anchorY: number,
+    meshX: number,
+    meshY: number,
+    rotationDeg: number,
+    scaleX: number,
+    scaleY: number,
+    heightMm: number,
+): number {
+    return mortonsHeightWith(
+        mortonsLegacySolidWeight,
+        side,
+        lengthMm,
+        widthMm,
+        anchorX,
+        anchorY,
+        meshX,
+        meshY,
+        rotationDeg,
+        scaleX,
+        scaleY,
+        heightMm,
+    );
 }
 
 export function mortonsReferenceWidthMm(lengthMm: number): number {
