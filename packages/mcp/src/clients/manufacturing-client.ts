@@ -42,7 +42,11 @@ export type OrthocadMcpTrpcProxy = {
             mutate: (input: { designId: string; side: "left" | "right" }) => Promise<Record<string, unknown>>;
         };
         generateCncGcode: {
-            mutate: (input: { designId: string }) => Promise<Record<string, unknown>>;
+            mutate: (input: {
+                designId: string;
+                material?: string;
+                millSide?: "LR" | "RR" | "LL";
+            }) => Promise<Record<string, unknown>>;
         };
         createSavedDesign: {
             mutate: (input: {
@@ -125,7 +129,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
          * Returns `{ productionId, status, sides, fileExtension }`. No G-code bytes.
          * Call site: vertex/server/src/routers/manufacturing.ts generateCncGcode.
          */
-        generateCncGcode(input: { designId: string; material?: string }) {
+        generateCncGcode(input: { designId: string; material?: string; millSide?: "LR" | "RR" | "LL" }) {
             return trpc.manufacturing.generateCncGcode.mutate(input);
         },
 

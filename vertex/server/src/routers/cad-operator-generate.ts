@@ -492,7 +492,7 @@ export async function runCadOperatorCncGcodeRequest(args: {
     prisma: PrismaClient;
     principal: CadOperatorPrincipal;
     ip: string | null;
-    input: { designId: string; material?: string };
+    input: { designId: string; material?: string; millSide?: "LR" | "RR" | "LL" };
     schedule?: (work: Promise<void>) => void;
     now?: () => Date;
 }): Promise<{
@@ -515,17 +515,20 @@ export async function runCadOperatorCncGcodeRequest(args: {
         design.updatedAt instanceof Date ? design.updatedAt.toISOString() : String(design.updatedAt);
     let prepared: Awaited<ReturnType<typeof prepareHeadlessMillDesign>>;
     try {
-        prepared = await prepareHeadlessMillDesign({
-            id: design.id,
-            pattern: design.pattern,
-            method: design.method,
-            thicknessMm: design.thicknessMm,
-            linked: design.linked,
-            unit: design.unit,
-            createdAt: updatedAt,
-            updatedAt,
-            settingsJson: design.settingsJson,
-        });
+        prepared = await prepareHeadlessMillDesign(
+            {
+                id: design.id,
+                pattern: design.pattern,
+                method: design.method,
+                thicknessMm: design.thicknessMm,
+                linked: design.linked,
+                unit: design.unit,
+                createdAt: updatedAt,
+                updatedAt,
+                settingsJson: design.settingsJson,
+            },
+            { millSide: args.input.millSide },
+        );
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const refused =
@@ -543,6 +546,7 @@ export async function runCadOperatorCncGcodeRequest(args: {
         lastName: row.client.lastName ?? "",
         material: args.input.material,
         sides,
+        millSide: args.input.millSide,
     });
     const exportMaterial = canonicalExportMaterialName(args.input.material);
     const identity = cadOperatorManufacturingIdentity({
@@ -591,7 +595,9 @@ export async function runCadOperatorCncGcodeRequest(args: {
                 now,
                 materialize: async () => ({ stlStorageKey: "memory", meshFingerprint: null }),
                 slice: async () => {
-                    const milled = await buildHeadlessMillCncGcode(prepared.design);
+                    const milled = await buildHeadlessMillCncGcode(prepared.design, {
+                        millSide: args.input.millSide,
+                    });
                     if (milled.fileExtension !== CNC_FILE_EXTENSION) {
                         throw new Error("CNC profile extension is not .gcode");
                     }
