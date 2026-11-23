@@ -116,8 +116,9 @@ export const generateCncGcodeInputSchema = z
          * Omit or LR: one left and one right, filename suffix _LR.
          * RR: two copies of the physical right foot, suffix _RR.
          * LL: two copies of the physical left foot, suffix _LL.
+         * Omitted input parses as LR.
          */
-        mill_side: z.enum(["LR", "RR", "LL"]).optional(),
+        mill_side: z.enum(["LR", "RR", "LL"]).default("LR"),
     })
     .strict();
 

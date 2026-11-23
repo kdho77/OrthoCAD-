@@ -8,13 +8,9 @@ export function assertMilledCncOrder(design: { method?: string }): void;
 
 export function designStateFromDocument(doc: unknown): { method?: string };
 
-export function millExportSides(
-    design: unknown,
-    requested?: unknown,
-    millSide?: "LR" | "RR" | "LL",
-): Array<"left" | "right">;
+export function millExportSides(design: unknown): Array<"left" | "right">;
 
-export function buildMillCncGcode(input: { design: unknown; millSide?: "LR" | "RR" | "LL" }): Promise<{
+export function buildMillCncGcode(input: { design: unknown }): Promise<{
     gcode: string;
     sides: Array<"left" | "right">;
     fileExtension: string;

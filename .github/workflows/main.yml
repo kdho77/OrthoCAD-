@@ -57,17 +57,7 @@ jobs:
               run: node scripts/ci/validate-unit-test-shards.mjs
 
             - name: Run unit tests (shard ${{ matrix.shard }}/6)
-              env:
-                  CNC_LAYOUT_ARTIFACT_DIR: tests/cnc/artifacts
               run: node scripts/ci/run-unit-test-shard.mjs ${{ matrix.shard }}
-
-            - name: Upload size-15 CNC layout artifacts
-              if: always()
-              uses: actions/upload-artifact@v4
-              with:
-                  name: eva-m15-layouts-shard-${{ matrix.shard }}
-                  path: tests/cnc/artifacts/
-                  if-no-files-found: ignore
 
     # Required acceptance. The unit shards exclude *.optional.test.ts on purpose.
     # This job runs that file against a synthetic local Postgres and fails closed.

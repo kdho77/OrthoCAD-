@@ -20,12 +20,8 @@ interface MillJobModule {
     PRINT_ORDER_CNC_REFUSAL: string;
     assertMilledCncOrder(design: MillDesign): void;
     designStateFromDocument(doc: unknown): MillDesign;
-    millExportSides(
-        design: unknown,
-        requested?: unknown,
-        millSide?: "LR" | "RR" | "LL",
-    ): Array<"left" | "right">;
-    buildMillCncGcode(input: { design: unknown; millSide?: "LR" | "RR" | "LL" }): Promise<HeadlessMillGcode>;
+    millExportSides(design: unknown): Array<"left" | "right">;
+    buildMillCncGcode(input: { design: unknown }): Promise<HeadlessMillGcode>;
 }
 
 let millModule: MillJobModule | null = null;
@@ -111,35 +107,22 @@ async function bundledSampleTop(): Promise<Uint8Array> {
 }
 
 /** Hydrate the saved document the way the editor does, then refuse a print order. */
-export async function prepareHeadlessMillDesign(
-    doc: unknown,
-    millSide?: "LR" | "RR" | "LL",
-): Promise<{
+export async function prepareHeadlessMillDesign(doc: unknown): Promise<{
     design: MillDesign;
     sides: Array<"left" | "right">;
 }> {
     const mod = await loadMillModule();
     const design = mod.designStateFromDocument(doc);
     mod.assertMilledCncOrder(design);
-    // Omitted and LR keep the one-argument call so a pair file stays today's sides.
-    if (millSide === "RR" || millSide === "LL") {
-        return { design, sides: mod.millExportSides(design, undefined, millSide) };
-    }
     return { design, sides: mod.millExportSides(design) };
 }
 
 /** Pair (or single-foot) CNC file. Bytes match `buildMillCncGcode` on the same design. */
-export async function buildHeadlessMillCncGcode(
-    design: unknown,
-    millSide?: "LR" | "RR" | "LL",
-): Promise<HeadlessMillGcode> {
+export async function buildHeadlessMillCncGcode(design: unknown): Promise<HeadlessMillGcode> {
     const mod = await loadMillModule();
     mod.assertMilledCncOrder(design as MillDesign);
     installBundledSampleTopFetch(await bundledSampleTop());
     const { Cache } = await import("three");
     Cache.clear();
-    if (millSide === "RR" || millSide === "LL") {
-        return mod.buildMillCncGcode({ design, millSide });
-    }
     return mod.buildMillCncGcode({ design });
 }

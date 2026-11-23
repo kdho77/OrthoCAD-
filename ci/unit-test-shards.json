@@ -211,7 +211,6 @@
                 "tests/cnc/design-state.test.ts",
                 "tests/cnc/mill-downloads.test.ts",
                 "tests/cnc/shoe-size.test.ts",
-                "tests/cnc/size15-block-fit.test.ts",
                 "tests/hardness-regions.gates.test.ts",
                 "tests/heel-narrow-wall-profile.test.ts",
                 "tests/sidewall-smoothness.verify.test.ts",

@@ -542,8 +542,6 @@ export function cadOperatorManufacturingIdentity(input: {
     millSides?: readonly CadFootSide[];
     /** Included only when true, so an off gate keeps today's fingerprint. */
     regional3mf?: boolean;
-    /** Included only for RR/LL, so an omitted or LR mill keeps today's fingerprint. */
-    millSide?: "RR" | "LL";
 }): { fingerprint: string; idempotencyKey: string } {
     const fingerprint = createHash("sha256")
         .update(
@@ -562,7 +560,6 @@ export function cadOperatorManufacturingIdentity(input: {
                 ...(input.deliverable ? { deliverable: input.deliverable } : {}),
                 ...(input.millSides ? { millSides: input.millSides } : {}),
                 ...(input.regional3mf ? { regional3mf: true } : {}),
-                ...(input.millSide ? { millSide: input.millSide } : {}),
             }),
         )
         .digest("hex");

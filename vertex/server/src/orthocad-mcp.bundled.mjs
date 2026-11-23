@@ -25473,8 +25473,9 @@ var generateCncGcodeInputSchema = external_exports.object({
    * Omit or LR: one left and one right, filename suffix _LR.
    * RR: two copies of the physical right foot, suffix _RR.
    * LL: two copies of the physical left foot, suffix _LL.
+   * Omitted input parses as LR.
    */
-  mill_side: external_exports.enum(["LR", "RR", "LL"]).optional()
+  mill_side: external_exports.enum(["LR", "RR", "LL"]).default("LR")
 }).strict();
 var getProductionInputSchema = external_exports.object({
   production_id: external_exports.string().uuid()
@@ -26030,7 +26031,7 @@ async function dispatchTool(name, args, deps) {
       const result = await manufacturing.generateCncGcode({
         designId: input.design_id,
         ...input.material ? { material: input.material } : {},
-        ...input.mill_side ? { millSide: input.mill_side } : {}
+        ...input.mill_side === "RR" || input.mill_side === "LL" ? { millSide: input.mill_side } : {}
       });
       const status = typeof result.status === "string" && PRODUCTION_STATUSES.has(result.status) ? result.status : null;
       if (!status) throw new Error("CNC G-code did not return a production status");

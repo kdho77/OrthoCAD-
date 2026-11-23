@@ -428,6 +428,12 @@ export const MAX_TOE_SLIDE_MM = 30;
 export const SWEEP_OUTLINE_CLEARANCE_MM = 1;
 
 /**
+ * The envelope bbox sits on the 1 mm line, but an emitted centreline can land a few
+ * thousandths of a millimetre outside it. This pad is only for the whole-block pose.
+ */
+const BLOCK_EDGE_GCODE_PAD_MM = 0.01;
+
+/**
  * Resampled surface chords may leave the planned path by {@link TOOLPATH_CHORD_DEV_MM}.
  * The gate adds that so the cut G-code stays at least {@link SWEEP_OUTLINE_CLEARANCE_MM} off.
  */
@@ -592,7 +598,8 @@ function envelopeInsideBlock(placed: PlacedPart, profile: MillingProfile): boole
 
 /**
  * Heel X follows today's align rule on the full block. Y pushes the tool envelope
- * to one block edge, keeping {@link ENVELOPE_CLEARANCE_MM}.
+ * to one block edge. The inset is 1 mm plus {@link BLOCK_EDGE_GCODE_PAD_MM} so the
+ * emitted centreline stays at least 1 mm off the block after the tool radius.
  */
 function unslidBlockPose(
     profile: MillingProfile,
@@ -602,15 +609,16 @@ function unslidBlockPose(
 ): { tx: number; ty: number; cx: number; cy: number } {
     const c = centroid(outline);
     const rotBb = rotatedLocalBbox(outline, c.x, c.y, rotationDeg);
-    const margin = placementMarginMm(profile, outline, rotationDeg);
+    const edgeClearance = ENVELOPE_CLEARANCE_MM + BLOCK_EDGE_GCODE_PAD_MM;
+    const margin = placementMarginMm(profile, outline, rotationDeg) + BLOCK_EDGE_GCODE_PAD_MM;
     const table = { x: 0, y: 0, width: profile.tableWidthMm, length: profile.tableLengthMm };
     const auto = autoTranslate(profile, table, rotBb, margin);
     const footprint = toolFootprintLocal(outline, profile);
     const envBb = rotatedLocalBbox(footprint.length >= 3 ? footprint : outline, c.x, c.y, rotationDeg);
     const ty =
         edge === "front"
-            ? ENVELOPE_CLEARANCE_MM - envBb.minY
-            : profile.tableLengthMm - ENVELOPE_CLEARANCE_MM - envBb.maxY;
+            ? edgeClearance - envBb.minY
+            : profile.tableLengthMm - edgeClearance - envBb.maxY;
     return { tx: auto.tx, ty, cx: c.x, cy: c.y };
 }
 

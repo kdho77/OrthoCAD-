@@ -94,7 +94,10 @@ describe("generate_cnc_gcode", () => {
     });
 
     test("mill_side is optional LR/RR/LL and is forwarded", async () => {
-        expect(generateCncGcodeInputSchema.parse({ design_id: designId })).toEqual({ design_id: designId });
+        expect(generateCncGcodeInputSchema.parse({ design_id: designId })).toEqual({
+            design_id: designId,
+            mill_side: "LR",
+        });
         expect(generateCncGcodeInputSchema.parse({ design_id: designId, mill_side: "LR" }).mill_side).toBe(
             "LR",
         );

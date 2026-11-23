@@ -407,7 +407,6 @@ export const manufacturingRouter = router({
             z.object({
                 designId: z.string().uuid(),
                 material: z.string().trim().min(1).max(80).optional(),
-                millSide: z.enum(["LR", "RR", "LL"]).optional(),
             }),
         )
         .mutation(async ({ ctx, input }) => {

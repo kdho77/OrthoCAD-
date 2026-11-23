@@ -492,7 +492,7 @@ export async function runCadOperatorCncGcodeRequest(args: {
     prisma: PrismaClient;
     principal: CadOperatorPrincipal;
     ip: string | null;
-    input: { designId: string; material?: string; millSide?: "LR" | "RR" | "LL" };
+    input: { designId: string; material?: string };
     schedule?: (work: Promise<void>) => void;
     now?: () => Date;
 }): Promise<{
@@ -504,8 +504,6 @@ export async function runCadOperatorCncGcodeRequest(args: {
     sides: CadFootSide[];
     fileExtension: string;
 }> {
-    const millSide =
-        args.input.millSide === "RR" || args.input.millSide === "LL" ? args.input.millSide : undefined;
     const { row, design } = await loadDogfoodDesign(args.prisma, args.principal, args.input.designId);
     if (!row) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Design not found" });
@@ -517,20 +515,17 @@ export async function runCadOperatorCncGcodeRequest(args: {
         design.updatedAt instanceof Date ? design.updatedAt.toISOString() : String(design.updatedAt);
     let prepared: Awaited<ReturnType<typeof prepareHeadlessMillDesign>>;
     try {
-        prepared = await prepareHeadlessMillDesign(
-            {
-                id: design.id,
-                pattern: design.pattern,
-                method: design.method,
-                thicknessMm: design.thicknessMm,
-                linked: design.linked,
-                unit: design.unit,
-                createdAt: updatedAt,
-                updatedAt,
-                settingsJson: design.settingsJson,
-            },
-            millSide,
-        );
+        prepared = await prepareHeadlessMillDesign({
+            id: design.id,
+            pattern: design.pattern,
+            method: design.method,
+            thicknessMm: design.thicknessMm,
+            linked: design.linked,
+            unit: design.unit,
+            createdAt: updatedAt,
+            updatedAt,
+            settingsJson: design.settingsJson,
+        });
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const refused =
@@ -548,7 +543,6 @@ export async function runCadOperatorCncGcodeRequest(args: {
         lastName: row.client.lastName ?? "",
         material: args.input.material,
         sides,
-        ...(millSide ? { millSide } : {}),
     });
     const exportMaterial = canonicalExportMaterialName(args.input.material);
     const identity = cadOperatorManufacturingIdentity({
@@ -564,7 +558,6 @@ export async function runCadOperatorCncGcodeRequest(args: {
         stlStorageKey: null,
         deliverable: "cnc_gcode",
         millSides: sides,
-        ...(millSide ? { millSide } : {}),
     });
     const storedSide: CadFootSide | null = sides.length === 1 ? (sides[0] ?? null) : null;
     const store = new PrismaCadProductionStore(args.prisma);
@@ -598,7 +591,7 @@ export async function runCadOperatorCncGcodeRequest(args: {
                 now,
                 materialize: async () => ({ stlStorageKey: "memory", meshFingerprint: null }),
                 slice: async () => {
-                    const milled = await buildHeadlessMillCncGcode(prepared.design, millSide);
+                    const milled = await buildHeadlessMillCncGcode(prepared.design);
                     if (milled.fileExtension !== CNC_FILE_EXTENSION) {
                         throw new Error("CNC profile extension is not .gcode");
                     }
