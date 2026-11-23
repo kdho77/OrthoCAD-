@@ -220,11 +220,11 @@ PASS `G-R6-DEPLOY` measured (none) ; threshold no railway, vertex-web, vertex-ap
 
 PASS `G-R7-DEFAULT` measured fe88d0a938c0b009b15964b5cb5f606b1326bcbc1740c9d51d48c932ee9a5600 ; threshold sha256 fe88d0a938c0b009b15964b5cb5f606b1326bcbc1740c9d51d48c932ee9a5600<br>PASS `G-R7-UNIFORM3` measured 1e75979e06a5f33d9c5c7511c2c60c64406e76256e230e43982041fd8276d2f0 ; threshold sha256 1e75979e06a5f33d9c5c7511c2c60c64406e76256e230e43982041fd8276d2f0
 
-### PUSH: PASS
+### PUSH: FAIL
 
 > PUSH: new branch cursor/sink-depth-gates-1123 (from BASE) -> ONE draft PR "[GATES ONLY - DO NOT MERGE] sink-depth gates". Never push to the worker branch; never push/merge main, deploy, Railway (never touch vertex-web / vertex-api or #310), printers, production orders.
 
-Grader conduct, not a product gate. Branch `cursor/sink-depth-gates-1123` from `268aac85847160b5b2703a05688721ea4cb93b24`. Commits stay on that branch. The worker ref `cursor/make-a-sink-remove-exactly-its-configured-depth-observed-design-b2d48d94-order-c813e723-mpj5-si-d7cf` was read in a detached worktree at `/tmp/sink-candidate` and was not pushed. No push or merge to main. No Railway, vertex-web, vertex-api, or PR #310 change.
+`cursor/sink-depth-gates-1123` is on the remote at `4f8ce17139ee12ee1ca2269e5fd67c5373b3cf39`. Draft PR #414 has the required title and is not merged. Its head is `cursor/independent-grader-frozen-gates-for-sink-depth-worker-pr-401-8f25` at that same commit, because the pull-request tool only opens the session branch. The worker branch was not pushed. Main was not pushed. Railway, vertex-web, vertex-api, and PR #310 were not touched.
 
 ### FILES: PASS
 
