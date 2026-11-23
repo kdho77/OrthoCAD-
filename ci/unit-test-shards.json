@@ -388,6 +388,7 @@
                 "vertex/src/lib/geometry/migrate-corrections.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/densify-stations.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/modifiers.test.ts",
+                "vertex/src/lib/geometry/procedural-wall/narrow-heelcup-preloft.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/preview-loft-ui.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/quad-grid.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/sample-top-display.test.ts",
