@@ -7,7 +7,7 @@ import type { PartPlacement } from "@/lib/cnc/placement";
 import { cloneProfile, IDAHO_PROFILE } from "@/lib/cnc/profile";
 import type { CncJobResult, MillingProfile } from "@/lib/cnc/types";
 import type { DesignState, Side } from "@/types";
-import { isMilledOrder, millExportSides } from "./order-sides";
+import { isMilledOrder, type MillSide, millExportSides } from "./order-sides";
 
 export { designStateFromDocument } from "@/features/clients/design-document";
 export { isMilledOrder, millExportSides } from "./order-sides";
@@ -38,9 +38,11 @@ export async function buildMillCncGcode(input: {
     profile?: MillingProfile;
     placements?: PartPlacement[];
     requestedSides?: Side[];
+    /** Omitted and `LR` mill the order pair. `RR` / `LL` mill two copies of that physical foot. */
+    millSide?: MillSide | null;
 }): Promise<MillCncGcode> {
     const profile = input.profile ?? cloneProfile(IDAHO_PROFILE);
-    const sides = millExportSides(input.design, input.requestedSides);
+    const sides = millExportSides(input.design, input.requestedSides, input.millSide);
     const parts = await workpiecesFromDesign(input.design, sides, profile);
     if (parts.length === 0) throw new Error("No insole geometry to mill");
     const job = generateCncJob(profile, parts, { placements: input.placements ?? [] });

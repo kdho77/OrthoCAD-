@@ -5,6 +5,7 @@ import { describe, expect, test } from "@rstest/core";
 import type { ManufacturingClient } from "../src/clients/manufacturing-client.js";
 import type { OrthocadMcpConfig } from "../src/config.js";
 import { handleOrthocadTool } from "../src/tools/handlers.js";
+import { generateCncGcodeInputSchema } from "../src/tools/schemas.js";
 
 const config = {
     apiBase: "http://127.0.0.1:9",
@@ -90,5 +91,53 @@ describe("generate_cnc_gcode", () => {
         expect(refused.isError).toBe(true);
         expect(refused.content[0]?.text).toContain("Print orders are not CNC G-code");
         expect(refused.content[0]?.text).not.toContain("production_id");
+    });
+
+    test("mill_side is optional LR/RR/LL and is forwarded", async () => {
+        expect(generateCncGcodeInputSchema.parse({ design_id: designId })).toEqual({
+            design_id: designId,
+            mill_side: "LR",
+        });
+        expect(generateCncGcodeInputSchema.parse({ design_id: designId, mill_side: "LR" }).mill_side).toBe(
+            "LR",
+        );
+        expect(generateCncGcodeInputSchema.parse({ design_id: designId, mill_side: "RR" }).mill_side).toBe(
+            "RR",
+        );
+        expect(generateCncGcodeInputSchema.parse({ design_id: designId, mill_side: "LL" }).mill_side).toBe(
+            "LL",
+        );
+        expect(() => generateCncGcodeInputSchema.parse({ design_id: designId, mill_side: "RX" })).toThrow();
+
+        let forwarded: { designId?: string; material?: string; millSide?: string } | undefined;
+        const manufacturing = {
+            generateCncGcode: async (input: { designId: string; material?: string; millSide?: string }) => {
+                forwarded = input;
+                return {
+                    ok: true,
+                    outputType: "gcode",
+                    productionId,
+                    status: "pending",
+                    side: null,
+                    sides: ["left", "left"],
+                    fileExtension: ".gcode",
+                };
+            },
+        } as unknown as ManufacturingClient;
+        const enqueued = await handleOrthocadTool(
+            "generate_cnc_gcode",
+            { design_id: designId, mill_side: "RR" },
+            { config, manufacturing },
+        );
+        expect(enqueued.isError).toBeUndefined();
+        expect(forwarded).toEqual({ designId, millSide: "RR" });
+
+        const refused = await handleOrthocadTool(
+            "generate_cnc_gcode",
+            { design_id: designId, mill_side: "RX" },
+            { config, manufacturing },
+        );
+        expect(refused.isError).toBe(true);
+        expect(refused.content[0]?.text).not.toContain(productionId);
     });
 });

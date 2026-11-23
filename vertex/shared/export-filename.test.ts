@@ -113,6 +113,33 @@ describe("canonicalExportMaterialName", () => {
                 sides: ["left", "right"],
             }),
         ).toBe("Anginette_Arrington_EVA_LR.gcode");
+        expect(
+            cncPairGcodeFilename({
+                firstName: "Fixture",
+                lastName: "Sample",
+                material: "EVA",
+                sides: ["left", "right"],
+                millSide: "LR",
+            }),
+        ).toBe("Fixture_Sample_EVA_LR.gcode");
+        expect(
+            cncPairGcodeFilename({
+                firstName: "Fixture",
+                lastName: "Sample",
+                material: "EVA",
+                sides: ["left", "left"],
+                millSide: "RR",
+            }),
+        ).toBe("Fixture_Sample_EVA_RR.gcode");
+        expect(
+            cncPairGcodeFilename({
+                firstName: "Fixture",
+                lastName: "Sample",
+                material: "EVA",
+                sides: ["right", "right"],
+                millSide: "LL",
+            }),
+        ).toBe("Fixture_Sample_EVA_LL.gcode");
     });
 });
 

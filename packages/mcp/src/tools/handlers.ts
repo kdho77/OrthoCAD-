@@ -459,6 +459,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
             const result = await manufacturing.generateCncGcode({
                 designId: input.design_id,
                 ...(input.material ? { material: input.material } : {}),
+                ...(input.mill_side === "RR" || input.mill_side === "LL" ? { millSide: input.mill_side } : {}),
             });
             const status =
                 typeof result.status === "string" && PRODUCTION_STATUSES.has(result.status)
