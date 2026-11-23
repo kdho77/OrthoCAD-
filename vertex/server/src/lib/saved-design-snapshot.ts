@@ -242,6 +242,12 @@ function mergeStoredClinicalIntoSnapshot(
             if (catalogSetsSliderField(catalog, side, key)) continue;
             if (key === "archHeightMm" && catalog.arch !== undefined) continue;
             if (key === "apexMoveMm" && catalog.flexible_foot !== undefined) continue;
+            if (
+                (key === "medialFlangeMm" || key === "lateralFlangeMm") &&
+                catalog.flange?.[side] !== undefined
+            ) {
+                continue;
+            }
             if (value === undefined) continue;
             (target as unknown as Record<string, unknown>)[key] = structuredClone(value);
         }

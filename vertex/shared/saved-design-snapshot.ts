@@ -617,6 +617,29 @@ function assertFlangeMm(sideName: string, border: "medial" | "lateral", value: n
     }
 }
 
+type FlangeSideEntry = NonNullable<NonNullable<SavedDesignCatalog["flange"]>["left"]>;
+type FlangeMmKey = "medial_mm" | "lateral_mm";
+
+/**
+ * Level/default mm apply only when both borders are omitted, or when `level` is set
+ * alongside a partially specified foot. A lone medial_mm (or lateral_mm) must not
+ * back-fill the other border with the default 3 mm.
+ */
+function resolveFlangeBorderMm(
+    entry: FlangeSideEntry,
+    border: FlangeMmKey,
+    fallback: number,
+): number | undefined {
+    if (entry[border] !== undefined) {
+        return entry[border];
+    }
+    const other: FlangeMmKey = border === "medial_mm" ? "lateral_mm" : "medial_mm";
+    if (entry[other] !== undefined && entry.level === undefined) {
+        return undefined;
+    }
+    return fallback;
+}
+
 function applyFlange(design: DesignState, catalog: SavedDesignCatalog, paths: string[]): void {
     const flange = catalog.flange;
     if (!flange) return;
@@ -626,14 +649,18 @@ function applyFlange(design: DesignState, catalog: SavedDesignCatalog, paths: st
         if (entry === undefined) continue;
         touched = true;
         const fallback = defaultFlangeMmFromLevel(entry.level);
-        const medial = entry.medial_mm ?? fallback;
-        const lateral = entry.lateral_mm ?? fallback;
-        assertFlangeMm(sideName, "medial", medial);
-        assertFlangeMm(sideName, "lateral", lateral);
-        design.corrections[sideName].medialFlangeMm = medial;
-        design.corrections[sideName].lateralFlangeMm = lateral;
-        paths.push(`settings.corrections.${sideName}.medialFlangeMm`);
-        paths.push(`settings.corrections.${sideName}.lateralFlangeMm`);
+        const medial = resolveFlangeBorderMm(entry, "medial_mm", fallback);
+        const lateral = resolveFlangeBorderMm(entry, "lateral_mm", fallback);
+        if (medial !== undefined) {
+            assertFlangeMm(sideName, "medial", medial);
+            design.corrections[sideName].medialFlangeMm = medial;
+            paths.push(`settings.corrections.${sideName}.medialFlangeMm`);
+        }
+        if (lateral !== undefined) {
+            assertFlangeMm(sideName, "lateral", lateral);
+            design.corrections[sideName].lateralFlangeMm = lateral;
+            paths.push(`settings.corrections.${sideName}.lateralFlangeMm`);
+        }
     }
     if (touched) {
         design.corrections.linked = false;
