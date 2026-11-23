@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { ELEMENT_PROFILES, elementHeightAt } from "@/lib/geometry/elements";
+import { heightFieldYFromMeshY } from "@/lib/geometry/handedness";
 import { type HeightFieldParams, heightAt, outlineHalfWidth } from "@/lib/geometry/height-field";
 import { sampleDefaultOutline } from "@/lib/geometry/trimline";
 import type { PlacedElement } from "@/types";
@@ -288,7 +289,8 @@ function elementLocalGrid(el: PlacedElement, sampler: SurfaceSampler) {
     const rx = Math.max(2, p.rxMm * el.scale.x) + 6;
     const ry = Math.max(2, p.ryMm * el.scale.y) + 6;
     const cx = sampler.lengthMm / 2 + el.position.x;
-    const cy = el.position.y;
+    // Morton's lift is sampled in height-field Y. The stored position is mesh Y.
+    const cy = el.kind === "mortons_extension" ? heightFieldYFromMeshY(el.position.y) : el.position.y;
     const rot = (el.rotationDeg * Math.PI) / 180;
     const c = Math.abs(Math.cos(rot));
     const s = Math.abs(Math.sin(rot));
