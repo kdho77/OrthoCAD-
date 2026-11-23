@@ -18,6 +18,7 @@ import {
     type HeightFieldParams,
     quinticSmoothstep,
 } from "@/lib/geometry/height-field";
+import { MORTONS_TAPER_LATERAL_MM } from "@/lib/geometry/mortons-extension";
 import { applySinkCutToGeometry, sinksActive } from "@/lib/geometry/sink";
 import type { PlacedElement } from "@/types";
 import { loadTransformedAssetPositions, resolvePlacedAssetContexts } from "./element-asset";
@@ -230,6 +231,74 @@ async function applyAssetContext(
     }
 }
 
+/**
+ * Plan distance from each vertex to the open boundary.
+ * The round wall reads its tangent from the faces on that loop and smooths it
+ * about 10 mm along the rim. Null when the sheet has no open edge.
+ */
+function distanceToOpenBoundaryMm(geometry: BufferGeometry): Float32Array | null {
+    const index = geometry.getIndex();
+    const pos = geometry.getAttribute("position");
+    if (!index || !pos) return null;
+    const count = new Map<string, number>();
+    const ends = new Map<string, [number, number]>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let t = 0; t < index.count; t += 3) {
+        const tri = [index.getX(t), index.getX(t + 1), index.getX(t + 2)];
+        for (let k = 0; k < 3; k++) {
+            const a = tri[k]!;
+            const b = tri[(k + 1) % 3]!;
+            if (a === b) continue;
+            const edge = key(a, b);
+            count.set(edge, (count.get(edge) ?? 0) + 1);
+            ends.set(edge, [a, b]);
+        }
+    }
+    const rimX: number[] = [];
+    const rimY: number[] = [];
+    const seen = new Set<number>();
+    for (const [edge, n] of count) {
+        if (n !== 1) continue;
+        const pair = ends.get(edge);
+        if (!pair) continue;
+        for (const vi of pair) {
+            if (seen.has(vi)) continue;
+            seen.add(vi);
+            rimX.push(pos.getX(vi));
+            rimY.push(pos.getY(vi));
+        }
+    }
+    if (rimX.length === 0) return null;
+    const dist = new Float32Array(pos.count);
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        let best = Number.POSITIVE_INFINITY;
+        for (let k = 0; k < rimX.length; k++) {
+            const dx = x - rimX[k]!;
+            const dy = y - rimY[k]!;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < best) best = d2;
+        }
+        dist[i] = Math.sqrt(best);
+    }
+    return dist;
+}
+
+/**
+ * Keep the lofted rim at the stock shell. The wall-tangent smooth reaches
+ * ~10 mm, so the recess stays off for 12 mm, then uses the same 15 mm quintic
+ * as Morton's lateral border (zero slope at both ends, no step on the top).
+ */
+const REVERSE_MORTONS_RIM_HOLD_MM = 12;
+
+function reverseMortonsRimScale(distanceMm: number): number {
+    if (distanceMm <= REVERSE_MORTONS_RIM_HOLD_MM) return 0;
+    const t = (distanceMm - REVERSE_MORTONS_RIM_HOLD_MM) / MORTONS_TAPER_LATERAL_MM;
+    if (t >= 1) return 1;
+    return quinticSmoothstep(t);
+}
+
 function applyProceduralElements(
     geometry: BufferGeometry,
     base: BufferGeometry,
@@ -241,6 +310,14 @@ function applyProceduralElements(
         (e) => e.side === field.side && e.kind !== "custom" && !assetKinds.has(e.kind),
     );
     if (procedural.length === 0) return;
+    // Reverse Morton's is full depth on the medial border, and that border is
+    // the insole rim. Dropping the rim onto the 1.5 mm material floor makes the
+    // round wall's first row land on the rim. Those zero-area stitch triangles
+    // are counted as heel-bridge self-intersections. Sinks already stay off the
+    // lofted rim. Scale this recess the same way, then quintic back to full depth.
+    // No reverse Morton's: one height sample, same as before.
+    const holdRim = procedural.some((element) => element.kind === "reverse_mortons");
+    const rimDistance = holdRim ? distanceToOpenBoundaryMm(geometry) : null;
     const frame = getBaseFootprintFrame(base, field.side);
     const pos = geometry.getAttribute("position") as BufferAttribute;
     const basePos = base.getAttribute("position")!.array as Float32Array;
@@ -256,7 +333,13 @@ function applyProceduralElements(
         const yMm = heightFieldYFromMeshY(widCoord - frame.widCenter);
         const { u, vSigned: vs } = vertexFootprintAt(frame, basePos, i);
         if (rimBandClipFactor(u, vs, field) < 0.5) continue;
-        const h = elementHeightAt(procedural, xFromHeel, yMm, field.lengthMm, field.widthMm);
+        const rimScale = rimDistance ? reverseMortonsRimScale(rimDistance[i] ?? 0) : 1;
+        const h =
+            rimScale < 1
+                ? elementHeightAt(procedural, xFromHeel, yMm, field.lengthMm, field.widthMm, (kind) =>
+                      kind === "reverse_mortons" ? rimScale : 1,
+                  )
+                : elementHeightAt(procedural, xFromHeel, yMm, field.lengthMm, field.widthMm);
         if (h === 0) continue;
         const z0 = arr[i * 3 + ta]!;
         if (h > 0) arr[i * 3 + ta] = Math.max(z0, z0 + h);
