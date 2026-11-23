@@ -31,7 +31,10 @@ import {
     resolveLiveBottomPattern,
 } from "@/lib/geometry/procedural-wall/live-bottom-pattern";
 import {
+    cachedManufacturingSolidIncludesExportText,
+    composedEngravingKey,
     manufacturingSolidFingerprint,
+    peekManufacturingSolid,
     publishPreviewManufacturingSolid,
     trackManufacturingLoftInflight,
 } from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
@@ -74,13 +77,14 @@ import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometr
 import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
-import { textMarkingHash } from "@/lib/geometry/text-marking/hash";
+import { patientDisplayNameFromParts } from "@/lib/geometry/text-marking/compose";
 import { clipGeometryToOutline, extractMeshOutline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured } from "@/lib/trpc";
 import { useBaseBoundsStore } from "@/stores/base-bounds-store";
 import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
+import { useClientStore } from "@/stores/client-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { resolveActiveTrimline, useMeshEditStore } from "@/stores/mesh-edit-store";
@@ -173,6 +177,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         return s.phaseBySide[active] === "ready";
     });
     const clinicalStep = useClinicalWorkflowStore((s) => s.step);
+    const patientDisplayName = useClientStore((s) => {
+        if (!s.activeClientId) return "";
+        const client = s.clients.find((row) => row.id === s.activeClientId);
+        return client ? patientDisplayNameFromParts(client.firstName, client.lastName) : "";
+    });
     const designStartPath = useClinicalWorkflowStore((s) => s.designStartPath);
     const setLoftPhase = usePreviewLoftStatusStore((s) => s.setSidePhase);
     const setLoftError = usePreviewLoftStatusStore((s) => s.setError);
@@ -856,7 +865,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                     elementsJson: elementGeometryKey(field.elements ?? []),
                     trimlineHash: printTrim ? hashPatternPoints(printTrim.points) : "",
                     shoeWidth: widthId,
-                    textMarkingHash: textMarkingHash(design.textMarking),
+                    textMarkingHash: composedEngravingKey(
+                        design.textMarking,
+                        patientDisplayName || null,
+                        side,
+                    ),
                 });
                 if (lastLoftKeyRef.current === loftKey && outRef.current) {
                     setBaseMeshLoading(side, false);
@@ -925,8 +938,16 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             bottomPattern: livePts,
                         });
                         const fingerprint = manufacturingSolidFingerprint(solidOptions, cacheCtx);
+                        const cachedSolid = peekManufacturingSolid(fingerprint, side);
+                        const reuseCached =
+                            cachedSolid != null &&
+                            cachedManufacturingSolidIncludesExportText(cachedSolid, solidOptions);
+                        const adopted = reuseCached ? cachedSolid : null;
+                        if (!adopted) cachedSolid?.dispose();
                         const loftWork = (async () => {
-                            const preview = await reconstructProceduralPreviewInWorker(raw, solidOptions);
+                            const previewGeometry =
+                                adopted ??
+                                (await reconstructProceduralPreviewInWorker(raw, solidOptions)).geometry;
                             let placementReference: BufferGeometry;
                             try {
                                 placementReference = await composeViewerPrintSolidTop({
@@ -944,26 +965,28 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                     trimline: printTrim,
                                 });
                             } catch (error) {
-                                preview.geometry.dispose();
+                                previewGeometry.dispose();
                                 throw error;
                             }
                             if (session.cancelled) {
                                 placementReference.dispose();
-                                preview.geometry.dispose();
+                                previewGeometry.dispose();
                                 return;
                             }
-                            publishPreviewManufacturingSolid(solidOptions, cacheCtx, preview.geometry);
+                            if (!reuseCached) {
+                                publishPreviewManufacturingSolid(solidOptions, cacheCtx, previewGeometry);
+                            }
                             setElementReference(placementReference);
                             if (outRef.current && outRef.current !== workRef.current) {
                                 outRef.current.dispose();
                             }
-                            outRef.current = preview.geometry;
+                            outRef.current = previewGeometry;
                             lastLoftKeyRef.current = loftKey;
-                            setGeometry(preview.geometry);
+                            setGeometry(previewGeometry);
                             setLoftPhase(side, "ready", `Print solid ready (${side})`);
                             usePreviewLoftStatusStore.getState().markElapsed(performance.now() - started);
                         })();
-                        trackManufacturingLoftInflight(fingerprint, side, loftWork);
+                        if (!reuseCached) trackManufacturingLoftInflight(fingerprint, side, loftWork);
                         try {
                             await loftWork;
                         } catch (e) {
@@ -1061,6 +1084,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.shapeFinish,
         design.trimlines,
         design.textMarking,
+        patientDisplayName,
         design.sinks,
         design.sinkStyloidThicken,
         correctionPreview,

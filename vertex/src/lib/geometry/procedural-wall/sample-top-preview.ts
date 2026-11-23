@@ -23,6 +23,7 @@ import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
 import {
     awaitManufacturingLoftInflight,
+    cachedManufacturingSolidIncludesExportText,
     type ManufacturingSolidContext,
     manufacturingSolidFingerprint,
     noteManufacturingSolidBuilt,
@@ -162,7 +163,7 @@ function tagManufacturingSolid(geometry: BufferGeometry, fingerprint: string, fr
     };
 }
 
-/** Leader is not applied here. Text runs once on a hit or a fresh loft. */
+/** Leader is not applied here. Text runs once, and only when this mesh is not already engraved. */
 async function applyExportText(
     geometry: BufferGeometry,
     options: ProceduralPreviewOptions & { mirrored?: boolean },
@@ -202,8 +203,9 @@ async function applyExportText(
 
 /**
  * Print / STL: loft the approved solid. Same reconstruct math as the frozen STLs.
- * A cache hit skips reconstruct only. Text still runs once. The caller still
- * closes and validates the mesh, then the G-code path adds the leader once.
+ * A cache hit skips reconstruct. Print already engraved the composed patient
+ * name, so that hit is returned as-is. Text runs only for a pre-text loft.
+ * The caller still closes and validates the mesh, then the G-code path adds the leader once.
  */
 export async function buildProceduralExportSolid(
     options: ProceduralPreviewOptions & { mirrored?: boolean } = {},
@@ -217,7 +219,9 @@ export async function buildProceduralExportSolid(
         const cached = peekManufacturingSolid(fingerprint, side);
         if (cached) {
             perfMark("export:loft", { side, warm: true });
-            const geometry = await applyExportText(cached, options);
+            const geometry = cachedManufacturingSolidIncludesExportText(cached, options)
+                ? cached
+                : await applyExportText(cached, options);
             tagManufacturingSolid(geometry, fingerprint, true);
             noteManufacturingSolidReused(side, performance.now() - started);
             return { model: cacheHitModel(), pattern: [], geometry };
