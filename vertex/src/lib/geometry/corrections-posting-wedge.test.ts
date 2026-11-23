@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
@@ -18,17 +19,21 @@ import {
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt } from "@/lib/geometry/height-field";
 import { deriveNativeShellThicknessDatum } from "@/lib/geometry/native-shell-thickness";
+import { postingMmAtStation, REARFOOT_POST_U } from "@/lib/geometry/posting-degrees";
 import { generatedMinWallMm } from "@/lib/geometry/procedural-wall/metrics";
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import {
     reconstructProceduralPreview,
     sampleTopFromArrayBuffer,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import { geometryToBinarySTL } from "@/lib/geometry/stl";
 import { effectiveOutlineHalfWidth } from "@/lib/geometry/trimline";
 import { getForefootFactor, wedgeDeltaAt } from "@/lib/geometry/wedge";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import { defaultDesign } from "@/stores/design-store";
 import type { Side, SideCorrections } from "@/types";
+import { parseSavedDesignCatalog } from "../../../shared/saved-design-catalog";
+import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot";
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "tests/fixtures/SAMPLE_Top.glb");
 const WEDGE_LIFT_TOL_MM = 0.01;
@@ -708,4 +713,125 @@ describe("posting wedge (design viewer height field)", () => {
             }, 180_000);
         }
     }
+});
+
+/** STL md5 of one composed top. Used to prove an untouched foot matches the stock export. */
+function composedStlMd5(geo: BufferGeometry): string {
+    return createHash("md5")
+        .update(Buffer.from(geometryToBinarySTL(geo)))
+        .digest("hex");
+}
+
+async function loadSampleTop(side: Side): Promise<BufferGeometry> {
+    const buf = readFileSync(SAMPLE_TOP_PATH);
+    let raw = await sampleTopFromArrayBuffer(
+        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+    );
+    if (side === "left") {
+        const mirrored = mirrorGeometry(raw);
+        raw.dispose();
+        raw = mirrored;
+    }
+    return raw;
+}
+
+describe("per-side heel wedge export", () => {
+    test("right-only 2° medial raises the right medial heel and leaves the left stock", async () => {
+        const stock = buildSavedDesignSnapshot({
+            stored: null,
+            catalog: parseSavedDesignCatalog({ shoe_size: { system: "US_M", size: 9 } }),
+        });
+        const built = buildSavedDesignSnapshot({
+            stored: null,
+            catalog: parseSavedDesignCatalog({
+                shoe_size: { system: "US_M", size: 9 },
+                rearfoot_wedge_by_side: {
+                    right: { side: "medial", value: 2, unit: "deg", degree_mode: "station" },
+                },
+            }),
+        });
+        expect(built.design.corrections.right.rearfootWedge).toEqual({
+            side: "medial",
+            value: 2,
+            unit: "deg",
+            degreeMode: "station",
+        });
+        expect(built.design.corrections.left.rearfootWedge).toBeUndefined();
+
+        const rightField = baseModifierField(built.design, "right", built.design.thicknessMm);
+        const outline = {
+            lengthMm: rightField.lengthMm,
+            widthMm: rightField.widthMm,
+            shoeWidth: rightField.shoeWidth,
+        };
+        const expectedMm = postingMmAtStation("rearfoot", 2, outline);
+        expect(expectedMm).toBeGreaterThan(1);
+        const wedgeParams = { ...outline, trimline: rightField.trimline ?? null };
+        const medialEdge = wedgeDeltaAt(REARFOOT_POST_U, -1, "right", rightField.corrections, wedgeParams);
+        const lateralEdge = wedgeDeltaAt(REARFOOT_POST_U, 1, "right", rightField.corrections, wedgeParams);
+        expect(Math.abs(medialEdge - expectedMm)).toBeLessThanOrEqual(0.01);
+        expect(lateralEdge).toBeLessThanOrEqual(0.01);
+
+        const rawRight = await loadSampleTop("right");
+        const neutralRight: HeightFieldParams = {
+            ...rightField,
+            corrections: { ...rightField.corrections, rearfootWedge: undefined },
+        };
+        const posted = await composePrintSolidTop(rawRight, { sourceField: rightField });
+        const neutral = await composePrintSolidTop(rawRight, { sourceField: neutralRight });
+        const frame = getBaseFootprintFrame(rawRight, "right");
+        const basePos = rawRight.getAttribute("position")!.array as Float32Array;
+        const postedPos = posted.getAttribute("position")!.array as Float32Array;
+        const neutralPos = neutral.getAttribute("position")!.array as Float32Array;
+        const ta = frame.thickAxis;
+        let medial = { v: Infinity, lift: 0, fieldMm: 0 };
+        let lateral = { v: -Infinity, lift: 0, fieldMm: 0 };
+        const n = basePos.length / 3;
+        for (let i = 0; i < n; i++) {
+            const { u, vSigned } = vertexFootprintAt(frame, basePos, i);
+            if (u < 0.1 || u > 0.2) continue;
+            const lift = postedPos[i * 3 + ta]! - neutralPos[i * 3 + ta]!;
+            const fieldMm = wedgeMmAtBaseVertex(rawRight, rightField, i);
+            if (vSigned < medial.v) medial = { v: vSigned, lift, fieldMm };
+            if (vSigned > lateral.v) lateral = { v: vSigned, lift, fieldMm };
+        }
+        // Right-foot medial is −v. The rim vertex is the raised edge; the +v rim is the hinge.
+        expect(medial.v).toBeLessThan(-0.75);
+        expect(lateral.v).toBeGreaterThan(0.75);
+        expect(
+            Math.abs(medial.lift - medial.fieldMm),
+            `export lift ${medial.lift} mm vs field ${medial.fieldMm} mm at v ${medial.v}`,
+        ).toBeLessThanOrEqual(0.01);
+        expect(medial.lift).toBeGreaterThan(expectedMm * 0.85);
+        expect(lateral.lift).toBeLessThan(expectedMm * 0.2);
+        expect(medial.lift).toBeGreaterThan(lateral.lift);
+
+        const rawLeft = await loadSampleTop("left");
+        const leftWedged = await composePrintSolidTop(rawLeft, {
+            sourceField: baseModifierField(built.design, "left", built.design.thicknessMm),
+        });
+        const leftStock = await composePrintSolidTop(rawLeft, {
+            sourceField: baseModifierField(stock.design, "left", stock.design.thicknessMm),
+        });
+        const rightStock = await composePrintSolidTop(rawRight, {
+            sourceField: baseModifierField(stock.design, "right", stock.design.thicknessMm),
+        });
+        expect(composedStlMd5(leftWedged)).toBe(composedStlMd5(leftStock));
+        const rightStockMd5 = composedStlMd5(rightStock);
+        const leftStockMd5 = composedStlMd5(leftStock);
+        expect(composedStlMd5(posted)).not.toBe(rightStockMd5);
+        // Stock composed tops captured on main 268aac85 (SAMPLE_Top, US men's 9, no corrections).
+        expect({ right: rightStockMd5, left: leftStockMd5 }).toEqual({
+            right: "87f9a443c2422e6e98f7d455ae53cab2",
+            left: "83baf39471a8fcfd31cb91551d889fe0",
+        });
+
+        posted.dispose();
+        neutral.dispose();
+        leftWedged.dispose();
+        leftStock.dispose();
+        rightStock.dispose();
+        rawRight.dispose();
+        rawLeft.dispose();
+    }, 180_000);
 });

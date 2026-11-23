@@ -767,7 +767,27 @@ export function buildSavedDesignSnapshot(input: {
         paths.push("settings.corrections.left.apexMoveMm", "settings.corrections.right.apexMoveMm");
     }
 
-    if (catalog.rearfoot_wedge) {
+    const perSideHeel = catalog.rearfoot_wedge_by_side;
+    const perSideHeelRequested = Boolean(perSideHeel?.left || perSideHeel?.right);
+    if (catalog.rearfoot_wedge && perSideHeelRequested) {
+        throw new SavedDesignSnapshotError("provide rearfoot_wedge or rearfoot_wedge_by_side, not both.");
+    }
+    if (perSideHeelRequested && perSideHeel) {
+        // One foot only. Unlink so a later linked edit cannot copy the empty foot over this wedge.
+        design.corrections.linked = false;
+        if (!paths.includes("settings.corrections.linked")) paths.push("settings.corrections.linked");
+        for (const sideName of ["left", "right"] as const) {
+            const entry = perSideHeel[sideName];
+            if (!entry) continue;
+            design.corrections[sideName].rearfootWedge = {
+                side: entry.side,
+                value: entry.value,
+                unit: entry.unit,
+                ...(entry.degree_mode ? { degreeMode: entry.degree_mode } : {}),
+            };
+            paths.push(`settings.corrections.${sideName}.rearfootWedge`);
+        }
+    } else if (catalog.rearfoot_wedge) {
         const wedge = {
             side: catalog.rearfoot_wedge.side,
             value: catalog.rearfoot_wedge.value,

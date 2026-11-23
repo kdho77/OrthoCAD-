@@ -129,6 +129,12 @@ function sliderHasNumber(sliders: SavedDesignSlider | undefined): boolean {
     return Object.values(sliders).some((value) => typeof value === "number");
 }
 
+/** True when this catalog write replaces that foot's heel wedge. */
+function catalogSetsRearfootWedge(catalog: SavedDesignCatalog, side: "left" | "right"): boolean {
+    if (catalog.rearfoot_wedge) return true;
+    return catalog.rearfoot_wedge_by_side?.[side] !== undefined;
+}
+
 function catalogSetsSliderField(catalog: SavedDesignCatalog, side: "left" | "right", field: string): boolean {
     const bySide = catalog.sliders_by_side?.[side];
     if (bySide) {
@@ -233,6 +239,9 @@ function mergeStoredClinicalIntoSnapshot(
     const hasSliders =
         sliderHasNumber(catalog.sliders) ||
         Boolean(catalog.sliders_by_side?.left || catalog.sliders_by_side?.right);
+    const perSideHeel = Boolean(
+        catalog.rearfoot_wedge_by_side?.left || catalog.rearfoot_wedge_by_side?.right,
+    );
 
     for (const side of ["left", "right"] as const) {
         const target = built.design.corrections[side];
@@ -245,7 +254,7 @@ function mergeStoredClinicalIntoSnapshot(
             if (value === undefined) continue;
             (target as unknown as Record<string, unknown>)[key] = structuredClone(value);
         }
-        if (!catalog.rearfoot_wedge && source.rearfootWedge !== undefined) {
+        if (!catalogSetsRearfootWedge(catalog, side) && source.rearfootWedge !== undefined) {
             target.rearfootWedge = structuredClone(source.rearfootWedge) as typeof target.rearfootWedge;
         }
         if (!catalog.forefoot_wedge && source.forefootWedge !== undefined) {
@@ -261,6 +270,7 @@ function mergeStoredClinicalIntoSnapshot(
         catalog.arch === undefined &&
         catalog.flexible_foot !== true &&
         !catalog.rearfoot_wedge &&
+        !perSideHeel &&
         !catalog.forefoot_wedge &&
         !catalog.full_length_wedge
     ) {

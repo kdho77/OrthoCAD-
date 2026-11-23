@@ -188,6 +188,23 @@ export const savedDesignCatalogSchema = z
             .strict()
             .optional(),
         rearfoot_wedge: wedgeSchema.optional(),
+        /**
+         * Heel wedge on one foot. The other foot is not written.
+         * `side: "medial"` raises the medial heel. `side: "lateral"` raises the lateral heel.
+         * `value` is a positive magnitude in `unit`. A negative value does not flip the edge.
+         * `unit: "deg"` with `degree_mode: "station"` is the Corrections heel post:
+         * rise = heel chord × tan(degrees), full at the heel station.
+         * Omit `degree_mode` for the older local-width angle.
+         * Do not send this together with `rearfoot_wedge` (that key still writes both feet).
+         * A positive `rearfoot_posting_deg` still raises the lateral side. Do not use it for a medial wedge.
+         */
+        rearfoot_wedge_by_side: z
+            .object({
+                left: wedgeSchema.optional(),
+                right: wedgeSchema.optional(),
+            })
+            .strict()
+            .optional(),
         forefoot_wedge: wedgeSchema.optional(),
         full_length_wedge: fullLengthWedgeSchema.optional(),
         /**
