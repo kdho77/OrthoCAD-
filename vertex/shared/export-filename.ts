@@ -9,7 +9,7 @@ export const SAMPLE_TOP_TEMPLATE_ASSET_ID = "sample-top";
 
 export type ExportFilenameBase = Pick<{ assetId?: string | null }, "assetId">;
 
-export type ExportFilenameSide = "L" | "R" | "LR";
+export type ExportFilenameSide = "L" | "R" | "LR" | "RR" | "LL";
 
 export interface BuildExportFilenameInput {
     firstName?: string | null;
@@ -188,12 +188,19 @@ export function cncPairGcodeFilename(input: {
     lastName?: string | null;
     material?: string | null;
     sides: ReadonlyArray<"left" | "right">;
+    /**
+     * Omitted and `LR` keep {@link exportSideSuffix} (`_LR` for a pair).
+     * `RR` / `LL` are two copies of one physical foot.
+     */
+    millSide?: "LR" | "RR" | "LL" | null;
 }): string {
+    const side =
+        input.millSide === "RR" || input.millSide === "LL" ? input.millSide : exportSideSuffix(input.sides);
     return buildExportFilename({
         firstName: input.firstName,
         lastName: input.lastName,
         material: input.material ?? "",
-        side: exportSideSuffix(input.sides),
+        side,
         ext: ".gcode",
     });
 }

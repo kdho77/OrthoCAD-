@@ -24922,7 +24922,36 @@ var EMPTY_COMPLETION_RESULT = {
 // packages/mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
 
-// vertex/shared/export-filename.ts
+// packages/mcp/src/tools/handlers.ts
+init_integration_client();
+
+// packages/mcp/src/payload/design-exported-payload.ts
+function buildDesignExportedPayload(input) {
+  if (input.source !== "vo2") {
+    throw new Error('source must be "vo2" for VO handoff payloads');
+  }
+  return {
+    design_id: input.design_id,
+    external_order_id: input.external_order_id,
+    tenant_id: input.tenant_id,
+    source: "vo2",
+    files: input.files.map((file) => ({
+      side: file.side,
+      machine: file.machine,
+      format: file.format,
+      material: file.material,
+      download_url: file.download_url,
+      expires_at: file.expires_at,
+      content_type: file.content_type,
+      filename: file.filename
+    }))
+  };
+}
+
+// packages/mcp/src/payload/vo-attach-files.ts
+import { createHash as createHash2 } from "node:crypto";
+
+// packages/mcp/src/shared/export-filename.ts
 var EXPORT_PATIENT_FALLBACK = "Unknown_Patient";
 var DEFAULT_EXPORT_MATERIAL_ID = "ApexCore";
 var SAMPLE_TOP_TEMPLATE_ASSET_ID = "sample-top";
@@ -25011,35 +25040,6 @@ function buildExportFilename(input) {
   const extension = normalizeExtension(input.ext);
   return `${patient}_${material}_${input.side}${extension}`;
 }
-
-// packages/mcp/src/tools/handlers.ts
-init_integration_client();
-
-// packages/mcp/src/payload/design-exported-payload.ts
-function buildDesignExportedPayload(input) {
-  if (input.source !== "vo2") {
-    throw new Error('source must be "vo2" for VO handoff payloads');
-  }
-  return {
-    design_id: input.design_id,
-    external_order_id: input.external_order_id,
-    tenant_id: input.tenant_id,
-    source: "vo2",
-    files: input.files.map((file) => ({
-      side: file.side,
-      machine: file.machine,
-      format: file.format,
-      material: file.material,
-      download_url: file.download_url,
-      expires_at: file.expires_at,
-      content_type: file.content_type,
-      filename: file.filename
-    }))
-  };
-}
-
-// packages/mcp/src/payload/vo-attach-files.ts
-import { createHash as createHash2 } from "node:crypto";
 
 // packages/mcp/src/payload/vo-attach-contract.ts
 var VO_ATTACH_ARGUMENT_KEYS = [
@@ -25468,7 +25468,13 @@ var generateCncGcodeInputSchema = external_exports.object({
    * Order or design material for the filename. EVA Milled and EVA 45 Shore A
    * are EVA. Omitted stays the Apex Core filename. Not inferred from method.
    */
-  material: external_exports.string().trim().min(1).max(80).optional()
+  material: external_exports.string().trim().min(1).max(80).optional(),
+  /**
+   * Omit or LR: one left and one right, filename suffix _LR.
+   * RR: two copies of the physical right foot, suffix _RR.
+   * LL: two copies of the physical left foot, suffix _LL.
+   */
+  mill_side: external_exports.enum(["LR", "RR", "LL"]).optional()
 }).strict();
 var getProductionInputSchema = external_exports.object({
   production_id: external_exports.string().uuid()
@@ -25678,7 +25684,7 @@ var MCP_TOOL_DEFINITIONS = [
   },
   {
     name: "generate_cnc_gcode",
-    description: "Pair CNC milling G-code from a saved milled design. One file for the order (L+R when both feet are on the order, one foot when the order is single-sided), the same bytes as the web Mill export with the default Idaho machine profile and the .gcode extension. Returns one production_id and status. The server builds the toolpath after that response. Poll get_production. Download with get_export_download only after succeeded. No G-code bytes in this response. Print and belt designs are refused. Optional material is the order material used in the filename (EVA Milled and EVA 45 Shore A are EVA). The pair name is First_Last_Material_LR.gcode. A pair file is one production (side is empty). Auth: CAD-operator key, manufacturing:generate.",
+    description: "Pair CNC milling G-code from a saved milled design. One file for the order (L+R when both feet are on the order, one foot when the order is single-sided), the same bytes as the web Mill export with the default Idaho machine profile and the .gcode extension. Returns one production_id and status. The server builds the toolpath after that response. Poll get_production. Download with get_export_download only after succeeded. No G-code bytes in this response. Print and belt designs are refused. Optional material is the order material used in the filename (EVA Milled and EVA 45 Shore A are EVA). The pair name is First_Last_Material_LR.gcode. Optional mill_side is LR (default), RR, or LL. Omit it or pass LR for the same pair file. RR mills two copies of the physical right foot and the filename suffix is _RR. LL mills two copies of the physical left foot and the filename suffix is _LL. SAMPLE_Top stores the physical right foot on internal left. A pair file is one production (side is empty). Auth: CAD-operator key, manufacturing:generate.",
     inputSchema: generateCncGcodeInputSchema
   },
   {
@@ -26023,7 +26029,8 @@ async function dispatchTool(name, args, deps) {
       assertToolNotHeld(input.design_id);
       const result = await manufacturing.generateCncGcode({
         designId: input.design_id,
-        ...input.material ? { material: input.material } : {}
+        ...input.material ? { material: input.material } : {},
+        ...input.mill_side ? { millSide: input.mill_side } : {}
       });
       const status = typeof result.status === "string" && PRODUCTION_STATUSES.has(result.status) ? result.status : null;
       if (!status) throw new Error("CNC G-code did not return a production status");

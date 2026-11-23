@@ -112,6 +112,12 @@ export const generateCncGcodeInputSchema = z
          * are EVA. Omitted stays the Apex Core filename. Not inferred from method.
          */
         material: z.string().trim().min(1).max(80).optional(),
+        /**
+         * Omit or LR: one left and one right, filename suffix _LR.
+         * RR: two copies of the physical right foot, suffix _RR.
+         * LL: two copies of the physical left foot, suffix _LL.
+         */
+        mill_side: z.enum(["LR", "RR", "LL"]).optional(),
     })
     .strict();
 
@@ -423,6 +429,10 @@ export const MCP_TOOL_DEFINITIONS = [
             "No G-code bytes in this response. Print and belt designs are refused. " +
             "Optional material is the order material used in the filename (EVA Milled and EVA 45 Shore A are EVA). " +
             "The pair name is First_Last_Material_LR.gcode. " +
+            "Optional mill_side is LR (default), RR, or LL. Omit it or pass LR for the same pair file. " +
+            "RR mills two copies of the physical right foot and the filename suffix is _RR. " +
+            "LL mills two copies of the physical left foot and the filename suffix is _LL. " +
+            "SAMPLE_Top stores the physical right foot on internal left. " +
             "A pair file is one production (side is empty). Auth: CAD-operator key, manufacturing:generate.",
         inputSchema: generateCncGcodeInputSchema,
     },
