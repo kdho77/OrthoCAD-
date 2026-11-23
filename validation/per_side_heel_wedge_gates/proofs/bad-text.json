@@ -1,0 +1,11 @@
+[
+  {
+    "id": "R5",
+    "rule": "R5",
+    "quote": "every printed device has the patient name on the bottom via the existing textMarking field (bottom surface, engrave mode so the sole stays flat); no new engraving system.",
+    "pass": false,
+    "measured": "text files changed 1; surface wall; mode engrave; addPatientName true",
+    "threshold": "0 text-marking files changed; surface bottom; mode engrave; addPatientName true",
+    "command": "git diff --name-only 268aac85847160b5b2703a05688721ea4cb93b24 && npx rstest run --config validation/per_side_heel_wedge_gates/rstest.config.ts"
+  }
+]

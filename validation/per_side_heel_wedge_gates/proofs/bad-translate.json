@@ -1,0 +1,20 @@
+[
+  {
+    "id": "R7",
+    "rule": "R7",
+    "quote": "designs and exports not affected by your defect must produce identical output to current main (prove with a before/after comparison on at least the SAMPLE_Top stock design with no corrections).",
+    "pass": false,
+    "measured": "stock design sha256 c608222a9095fbc2f688cf8c890c8c4e51ee95bb07e826605e93f0c74bb438ce; left stl 36e1c866786ff5993ed191b96db532d0; right stl 5f01a5260ab005bdc5709ab45c14c98b",
+    "threshold": "sha256 c608222a9095fbc2f688cf8c890c8c4e51ee95bb07e826605e93f0c74bb438ce; left md5 83baf39471a8fcfd31cb91551d889fe0; right md5 87f9a443c2422e6e98f7d455ae53cab2",
+    "command": "git diff --name-only 268aac85847160b5b2703a05688721ea4cb93b24 && npx rstest run --config validation/per_side_heel_wedge_gates/rstest.config.ts"
+  },
+  {
+    "id": "MUST_MATCH",
+    "rule": "MUST-MATCH",
+    "quote": "bilateral posting and designs without wedges unchanged",
+    "pass": false,
+    "measured": "bilateral wedge sha256 fd7c3861449e6b7e2621d807cc87c6eb1584936c3b8c4c59c08277965cc84d45; posting sha256 7d9c5086404c6f539d27634b0be4860ae1d9dd559168f36a817842699e4e8bfe; bilateral stl L 828ef737ae7174e3c454eccd6e82d36a R 782c247095e7941da93fe69c4de1da1b; both feet equal true; posting deg L/R 2/2; stock wedges unset true",
+    "threshold": "wedge sha256 fd7c3861449e6b7e2621d807cc87c6eb1584936c3b8c4c59c08277965cc84d45; posting sha256 7d9c5086404c6f539d27634b0be4860ae1d9dd559168f36a817842699e4e8bfe; stl L 97684f4f8bdbe03ba05d9e02dea81dfc R 868c6d77c46c44b71eae8e0b8f9f9bd4; both feet carry the same wedge; rearfootPostingDeg 2/2; stock wedges unset",
+    "command": "git diff --name-only 268aac85847160b5b2703a05688721ea4cb93b24 && npx rstest run --config validation/per_side_heel_wedge_gates/rstest.config.ts"
+  }
+]

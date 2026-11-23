@@ -1,0 +1,29 @@
+[
+  {
+    "id": "R1",
+    "rule": "R1",
+    "quote": "print surface quality is locked permanently. Never let any agent or change put seams or layer changes on the top surface or sides, and never touch surface quality.",
+    "pass": false,
+    "measured": "changed vertex/src/lib/kiri/slicer.ts",
+    "threshold": "0 files under the surface, seam, and layer-change paths",
+    "command": "git diff --name-only 268aac85847160b5b2703a05688721ea4cb93b24 && npx rstest run --config validation/per_side_heel_wedge_gates/rstest.config.ts"
+  },
+  {
+    "id": "R2",
+    "rule": "R2",
+    "quote": "seams and layer changes must always be on the bottom (plantar/belt face).",
+    "pass": false,
+    "measured": "changed vertex/src/lib/kiri/slicer.ts",
+    "threshold": "0 changes to slicer, seam, loft, or layer-placement files versus BASE",
+    "command": "git diff --name-only 268aac85847160b5b2703a05688721ea4cb93b24 && npx rstest run --config validation/per_side_heel_wedge_gates/rstest.config.ts"
+  },
+  {
+    "id": "R3",
+    "rule": "R3",
+    "quote": "slicer and geometry briefs must not grow scope. Solve only the defect Kendon has observed; anything else comes to him as a question first. Copy known methods rather than inventing new constructions.",
+    "pass": false,
+    "measured": "outside scope: vertex/src/lib/kiri/slicer.ts",
+    "threshold": "every changed product file is the saved-design catalog, its persist path, the MCP schema or bundle, a test, or a doc",
+    "command": "git diff --name-only 268aac85847160b5b2703a05688721ea4cb93b24 && npx rstest run --config validation/per_side_heel_wedge_gates/rstest.config.ts"
+  }
+]

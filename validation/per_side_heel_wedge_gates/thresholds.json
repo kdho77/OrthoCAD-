@@ -1,0 +1,26 @@
+{
+  "baseSha": "268aac85847160b5b2703a05688721ea4cb93b24",
+  "stockDesignSha256": "c608222a9095fbc2f688cf8c890c8c4e51ee95bb07e826605e93f0c74bb438ce",
+  "bilateralWedgeDesignSha256": "fd7c3861449e6b7e2621d807cc87c6eb1584936c3b8c4c59c08277965cc84d45",
+  "bilateralPostingDesignSha256": "7d9c5086404c6f539d27634b0be4860ae1d9dd559168f36a817842699e4e8bfe",
+  "stockStlMd5": {
+    "left": "83baf39471a8fcfd31cb91551d889fe0",
+    "right": "87f9a443c2422e6e98f7d455ae53cab2"
+  },
+  "bilateralWedgeStlMd5": {
+    "left": "97684f4f8bdbe03ba05d9e02dea81dfc",
+    "right": "868c6d77c46c44b71eae8e0b8f9f9bd4"
+  },
+  "directMedial": {
+    "chordMm": 58.46838180727107,
+    "expectedMm": 2.0417608836472096,
+    "medialFieldMm": 2.0417608836472096,
+    "lateralFieldMm": 0,
+    "medialLiftMm": 1.8428573608398438,
+    "lateralLiftMm": 0.20722007751464844,
+    "medialV": -0.8051646368404105,
+    "lateralV": 0.797018372860653,
+    "rightStlMd5": "868c6d77c46c44b71eae8e0b8f9f9bd4",
+    "leftStlMd5": "83baf39471a8fcfd31cb91551d889fe0"
+  }
+}
