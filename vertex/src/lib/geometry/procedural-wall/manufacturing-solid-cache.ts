@@ -167,7 +167,14 @@ export function composedEngravingKey(
     if (!marking) return "";
     if (marking.surface === "wall" || marking.surface === "medial") return textMarkingHash(marking);
     const composed = composeMarkingTextForSide(marking, side, patientDisplayName);
-    if (!composed) return `bottom:${addPatientNameEnabled(marking) ? "1" : "0"}`;
+    if (!composed) {
+        // The saved-design template stores the default bottom row (checkbox on,
+        // extra line empty). With no name and no extra line that engraves the
+        // same solid as a design that never set textMarking, so the key stays
+        // empty. Turning the checkbox off still misses.
+        if (addPatientNameEnabled(marking)) return "";
+        return "bottom:0";
+    }
     return textMarkingHash({ ...marking, text: composed });
 }
 

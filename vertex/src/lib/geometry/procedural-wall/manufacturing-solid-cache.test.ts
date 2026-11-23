@@ -195,6 +195,14 @@ describe("manufacturing solid fingerprint", () => {
                 context({ side: "right" }),
             ),
         ).not.toBe(base);
+        const noName = manufacturingSolidFingerprint(options({ textMarking: marking }), context());
+        expect(noName).toBe(manufacturingSolidFingerprint(options(), context()));
+        expect(
+            manufacturingSolidFingerprint(
+                options({ textMarking: { ...marking, addPatientName: false } }),
+                context(),
+            ),
+        ).not.toBe(noName);
     });
 
     test("stock preview options and export options share one fingerprint", () => {
