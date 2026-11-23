@@ -347,6 +347,7 @@
                 "tests/dihedral-gate.test.ts",
                 "tests/export-order-parity.test.ts",
                 "tests/heel-cup-depth.export-solid.test.ts",
+                "tests/mortons-bottom-name.test.ts",
                 "tests/sink-export.smoke.test.ts",
                 "tests/sink-preview-gate.test.ts",
                 "tests/synced-bottom-shell-field.test.ts",
