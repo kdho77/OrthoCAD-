@@ -1,0 +1,682 @@
+{
+  "label": "candidate",
+  "sha": "8e3a686926b5eee54841cd6e2a9c5df7f8e3610d",
+  "ownEntryMaxMm": 0.01492002143408655,
+  "gates": [
+    {
+      "id": "G1",
+      "pass": true,
+      "measured": "sample-m9 7386ff09e8a8 Fixture_Sample_EVA_LR.gcode; sample-m12 8f6648eb17ef Fixture_Sample_EVA_LR.gcode; sample-m13 BASE refuses — not a byte-identity case; clinical-m9 7386ff09e8a8 Fixture_Sample_EVA_LR.gcode",
+      "threshold": "sha256 and filename equal BASE where BASE placement passes; sha.json unchanged"
+    },
+    {
+      "id": "G2",
+      "pass": true,
+      "measured": "M13.5 edge 1.005 mm; M14 edge 1.009 mm; M15 edge 1.006 mm",
+      "threshold": "M13.5 M14 M15 produce G-code; tool sweep inside 368.3 x 260.35 with >= 1 mm edge clearance"
+    },
+    {
+      "id": "G3",
+      "pass": true,
+      "measured": "sample-m9 [slot1:left=25.177, slot2:right=24.243] ownEntry 0.014 | sample-m12 [slot1:left=15.984, slot2:right=15.982] ownEntry 0.015 | sample-m13 [slot1:left=12.353, slot2:right=11.360] ownEntry 0.016 | clinical-m9 [slot1:left=25.177, slot2:right=24.243] ownEntry 0.014 | sample-m13.5 [slot1:left=9.311, slot2:right=9.312] ownEntry 0.015 | sample-m14 [slot1:left=6.248, slot2:right=5.309] ownEntry 0.015 | sample-m15 [slot1:left=1.051, slot2:right=1.055] ownEntry 0.016",
+      "threshold": "sweep-to-other-outline >= 1 mm; own cutout entry <= BASE max 0.015 + 0.1 mm"
+    },
+    {
+      "id": "G4",
+      "pass": true,
+      "measured": "sample-m9 LR slide 0.000 mm; sample-m12 LR slide 0.000 mm; sample-m13 LR slide 0.000 mm; clinical-m9 LR slide 0.000 mm; sample-m13.5 LR slide -0.010 mm; sample-m14 LR slide 0.000 mm; sample-m15 LR slide 23.800 mm; sample-m9-RR RR slide 0.000 mm; sample-m9-LL LL slide 0.000 mm; clinical-m9-RR RR slide 0.000 mm; clinical-m9-LL LL slide 0.000 mm",
+      "threshold": "second-slot toe slide <= 30 mm"
+    },
+    {
+      "id": "G5",
+      "pass": true,
+      "measured": "omitted=LR RR=RR LL=LL RX=rejected; top-level keys stay external_order_id,manufacturing_method,client_id,catalog,patient_name,given_name,family_name",
+      "threshold": "RR/LL mill two copies of the physical foot; filenames _EVA_RR/_EVA_LL; mill_side default LR; create_saved_design has no side parameter"
+    },
+    {
+      "id": "G6",
+      "pass": true,
+      "measured": "diff inside FILES; Idaho cutter/feeds/stepover/strategy/Z unchanged",
+      "threshold": "worker FILES allowlist only; profile.ts cutter, feeds, stepover, strategy, Z unchanged"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "sample-m9",
+      "menSize": 9,
+      "sampleTop": true,
+      "millSide": "omit",
+      "refused": false,
+      "error": null,
+      "sha256": "7386ff09e8a8dc1a9be796607d26f3c3b4ce8b600108c6e86881309711ad7b8e",
+      "bytes": 1639710,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0042,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 25.17672221677235
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 24.242829136804087
+        }
+      ],
+      "minOtherGapMm": 24.242829136804087,
+      "ownEntryMm": 0.01382250857245726,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 260,
+      "placementMedianMm": 0.000024103651707597724,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m9",
+      "menSize": 9,
+      "sampleTop": true,
+      "millSide": "LR",
+      "refused": false,
+      "error": null,
+      "sha256": "7386ff09e8a8dc1a9be796607d26f3c3b4ce8b600108c6e86881309711ad7b8e",
+      "bytes": 1639710,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0042,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 25.17672221677235
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 24.242829136804087
+        }
+      ],
+      "minOtherGapMm": 24.242829136804087,
+      "ownEntryMm": 0.01382250857245726,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 260,
+      "placementMedianMm": 0.000024103651707597724,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m12",
+      "menSize": 12,
+      "sampleTop": true,
+      "millSide": "omit",
+      "refused": false,
+      "error": null,
+      "sha256": "8f6648eb17ef26e1cb0383ee83d82847a98d6db7f382730a721a737d69f63a0b",
+      "bytes": 1900444,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0000999999999998,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 15.983949984306701
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 15.98178380136996
+        }
+      ],
+      "minOtherGapMm": 15.98178380136996,
+      "ownEntryMm": 0.01492002143408655,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 285.1613,
+      "placementMedianMm": 0.000026945059500331827,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m12",
+      "menSize": 12,
+      "sampleTop": true,
+      "millSide": "LR",
+      "refused": false,
+      "error": null,
+      "sha256": "8f6648eb17ef26e1cb0383ee83d82847a98d6db7f382730a721a737d69f63a0b",
+      "bytes": 1900444,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0000999999999998,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 15.983949984306701
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 15.98178380136996
+        }
+      ],
+      "minOtherGapMm": 15.98178380136996,
+      "ownEntryMm": 0.01492002143408655,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 285.1613,
+      "placementMedianMm": 0.000026945059500331827,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m13",
+      "menSize": 13,
+      "sampleTop": true,
+      "millSide": "omit",
+      "refused": false,
+      "error": null,
+      "sha256": "a01dfdfb24aa594a9b38fa04b4aecf0e354f25eea94ba957d627462f78041d02",
+      "bytes": 1993387,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0112000000000307,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 12.352569453956114
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 11.359505091828169
+        }
+      ],
+      "minOtherGapMm": 11.359505091828169,
+      "ownEntryMm": 0.015549359080114122,
+      "slideMm": 0,
+      "slot1HeelX": 11.01,
+      "slot2HeelX": 11.01,
+      "outlineLengthMm": 293.5484,
+      "placementMedianMm": 0.000024647309302595837,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m13",
+      "menSize": 13,
+      "sampleTop": true,
+      "millSide": "LR",
+      "refused": false,
+      "error": null,
+      "sha256": "a01dfdfb24aa594a9b38fa04b4aecf0e354f25eea94ba957d627462f78041d02",
+      "bytes": 1993387,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0112000000000307,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 12.352569453956114
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 11.359505091828169
+        }
+      ],
+      "minOtherGapMm": 11.359505091828169,
+      "ownEntryMm": 0.015549359080114122,
+      "slideMm": 0,
+      "slot1HeelX": 11.01,
+      "slot2HeelX": 11.01,
+      "outlineLengthMm": 293.5484,
+      "placementMedianMm": 0.000024647309302595837,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "clinical-m9",
+      "menSize": 9,
+      "sampleTop": false,
+      "millSide": "omit",
+      "refused": false,
+      "error": null,
+      "sha256": "7386ff09e8a8dc1a9be796607d26f3c3b4ce8b600108c6e86881309711ad7b8e",
+      "bytes": 1639710,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0042,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 25.17672221677235
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 24.242829136804087
+        }
+      ],
+      "minOtherGapMm": 24.242829136804087,
+      "ownEntryMm": 0.01382250857245726,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 260,
+      "placementMedianMm": 0.000024103651707597724,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "clinical-m9",
+      "menSize": 9,
+      "sampleTop": false,
+      "millSide": "LR",
+      "refused": false,
+      "error": null,
+      "sha256": "7386ff09e8a8dc1a9be796607d26f3c3b4ce8b600108c6e86881309711ad7b8e",
+      "bytes": 1639710,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0042,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 25.17672221677235
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 24.242829136804087
+        }
+      ],
+      "minOtherGapMm": 24.242829136804087,
+      "ownEntryMm": 0.01382250857245726,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 260,
+      "placementMedianMm": 0.000024103651707597724,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m13.5",
+      "menSize": 13.5,
+      "sampleTop": true,
+      "millSide": "LR",
+      "refused": false,
+      "error": null,
+      "sha256": "b5e04ea000e0d3e47ca1881d0f8ba44e0b867a2fcd52bdde350840044c392a5d",
+      "bytes": 2041674,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0052000000000003,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 9.311441352247867
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 9.312159116605027
+        }
+      ],
+      "minOtherGapMm": 9.311441352247867,
+      "ownEntryMm": 0.015251691897763209,
+      "slideMm": -0.009999999999990905,
+      "slot1HeelX": 11.01,
+      "slot2HeelX": 11.000000000000009,
+      "outlineLengthMm": 297.7419,
+      "placementMedianMm": 0.000024554479192182048,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m14",
+      "menSize": 14,
+      "sampleTop": true,
+      "millSide": "LR",
+      "refused": false,
+      "error": null,
+      "sha256": "eede568a9bce9bf97aa30ea09185775ce57b40c12d01c337c6c88342ff02a6e5",
+      "bytes": 2117078,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0090000000000003,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 6.24815055589673
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 5.308692327906817
+        }
+      ],
+      "minOtherGapMm": 5.308692327906817,
+      "ownEntryMm": 0.014930551512905232,
+      "slideMm": 0,
+      "slot1HeelX": 11.01,
+      "slot2HeelX": 11.01,
+      "outlineLengthMm": 301.9355,
+      "placementMedianMm": 0.000025757027590659718,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m15",
+      "menSize": 15,
+      "sampleTop": true,
+      "millSide": "LR",
+      "refused": false,
+      "error": null,
+      "sha256": "63977f8802603373247dfe0e05095b29a9a437bf67fd5ffc7a9a2ce289c7bb34",
+      "bytes": 2216300,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0065,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 1.050601134453995
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 1.054742804566688
+        }
+      ],
+      "minOtherGapMm": 1.050601134453995,
+      "ownEntryMm": 0.015523473390612885,
+      "slideMm": 23.800000000000004,
+      "slot1HeelX": 11.01,
+      "slot2HeelX": 34.81,
+      "outlineLengthMm": 310.3226,
+      "placementMedianMm": 0.00002463927251538249,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m9-RR",
+      "menSize": 9,
+      "sampleTop": true,
+      "millSide": "RR",
+      "refused": false,
+      "error": null,
+      "sha256": "c8901418e86659053cf8df8eb346986fbfd0289231dbd12a9695153b2b5bc220",
+      "bytes": 1639903,
+      "filename": "Fixture_Sample_EVA_RR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_RR.gcode",
+      "footComment": "left+left",
+      "sides": [
+        "left",
+        "left"
+      ],
+      "edgeClearanceMm": 1.0042999999999997,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 25.788245346132165
+        },
+        {
+          "slot": 1,
+          "foot": "left",
+          "otherGapMm": 25.785901717711646
+        }
+      ],
+      "minOtherGapMm": 25.785901717711646,
+      "ownEntryMm": 0.01382250857245726,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 260,
+      "placementMedianMm": 0.000024684531125607497,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": true,
+      "outlineDetail": "left mean 0.000 other 3.840; left mean 0.000 other 3.840"
+    },
+    {
+      "id": "sample-m9-LL",
+      "menSize": 9,
+      "sampleTop": true,
+      "millSide": "LL",
+      "refused": false,
+      "error": null,
+      "sha256": "bf7f1765bcfa11585d8aba6e73696f49868eb8a30b3658467114b6b17c336284",
+      "bytes": 1639936,
+      "filename": "Fixture_Sample_EVA_LL.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LL.gcode",
+      "footComment": "right+right",
+      "sides": [
+        "right",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0042,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "right",
+          "otherGapMm": 25.78591007037236
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 23.861871669210917
+        }
+      ],
+      "minOtherGapMm": 23.861871669210917,
+      "ownEntryMm": 0.013798678705951417,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 260,
+      "placementMedianMm": 0.000023223241164945542,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": true,
+      "outlineDetail": "right mean 0.000 other 3.840; right mean 0.000 other 3.840"
+    },
+    {
+      "id": "clinical-m9-RR",
+      "menSize": 9,
+      "sampleTop": false,
+      "millSide": "RR",
+      "refused": false,
+      "error": null,
+      "sha256": "bf7f1765bcfa11585d8aba6e73696f49868eb8a30b3658467114b6b17c336284",
+      "bytes": 1639936,
+      "filename": "Fixture_Sample_EVA_RR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_RR.gcode",
+      "footComment": "right+right",
+      "sides": [
+        "right",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0042,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "right",
+          "otherGapMm": 25.78591007037236
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 23.861871669210917
+        }
+      ],
+      "minOtherGapMm": 23.861871669210917,
+      "ownEntryMm": 0.013798678705951417,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 260,
+      "placementMedianMm": 0.000023223241164945542,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": true,
+      "outlineDetail": "right mean 0.000 other 3.840; right mean 0.000 other 3.840"
+    },
+    {
+      "id": "clinical-m9-LL",
+      "menSize": 9,
+      "sampleTop": false,
+      "millSide": "LL",
+      "refused": false,
+      "error": null,
+      "sha256": "c8901418e86659053cf8df8eb346986fbfd0289231dbd12a9695153b2b5bc220",
+      "bytes": 1639903,
+      "filename": "Fixture_Sample_EVA_LL.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LL.gcode",
+      "footComment": "left+left",
+      "sides": [
+        "left",
+        "left"
+      ],
+      "edgeClearanceMm": 1.0042999999999997,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 25.788245346132165
+        },
+        {
+          "slot": 1,
+          "foot": "left",
+          "otherGapMm": 25.785901717711646
+        }
+      ],
+      "minOtherGapMm": 25.785901717711646,
+      "ownEntryMm": 0.01382250857245726,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 260,
+      "placementMedianMm": 0.000024684531125607497,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": true,
+      "outlineDetail": "left mean 0.000 other 3.840; left mean 0.000 other 3.840"
+    }
+  ],
+  "profileDiffs": [],
+  "scope": {
+    "ok": true,
+    "reasons": []
+  },
+  "schema": "omitted=LR RR=RR LL=LL RX=rejected",
+  "savedDesign": "top-level keys stay external_order_id,manufacturing_method,client_id,catalog,patient_name,given_name,family_name"
+}

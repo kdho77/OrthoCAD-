@@ -3,8 +3,8 @@
 Independent grade. Gates were frozen before the candidate run. This file is the measured output.
 
 - Base SHA: `4e2e196561bada8f2a4faf4ad174a716306d8c94`
-- Candidate SHA: `3260b001686883fa74ea95b1833df42100bfc656`
-- Graded HEAD recorded by the candidate run: `3260b001686883fa74ea95b1833df42100bfc656`
+- Candidate SHA: `8e3a686926b5eee54841cd6e2a9c5df7f8e3610d`
+- Graded HEAD recorded by the candidate run: `8e3a686926b5eee54841cd6e2a9c5df7f8e3610d`
 - BASE own-cutout entry max: `0.01492002143408655` mm
 
 ## Proofs
@@ -64,11 +64,11 @@ Deliberately broken copy of that G-code / segment list:
 | Gate | BASE | Candidate | Threshold | Candidate measured |
 | --- | --- | --- | --- | --- |
 | G1 | PASS | PASS | sha256 and filename equal BASE where BASE placement passes; sha.json unchanged | sample-m9 7386ff09e8a8 Fixture_Sample_EVA_LR.gcode; sample-m12 8f6648eb17ef Fixture_Sample_EVA_LR.gcode; sample-m13 BASE refuses — not a byte-identity case; clinical-m9 7386ff09e8a8 Fixture_Sample_EVA_LR.gcode |
-| G2 | FAIL | FAIL | M13.5 M14 M15 produce G-code; tool sweep inside 368.3 x 260.35 with >= 1 mm edge clearance | M13.5 edge 0.995 mm; M14 edge 0.999 mm; M15 edge 0.997 mm |
-| G3 | FAIL | PASS | sweep-to-other-outline >= 1 mm; own cutout entry <= BASE max 0.015 + 0.1 mm | sample-m9 [slot1:left=25.177, slot2:right=24.243] ownEntry 0.014 | sample-m12 [slot1:left=15.984, slot2:right=15.982] ownEntry 0.015 | sample-m13 [slot1:left=12.373, slot2:right=11.379] ownEntry 0.016 | clinical-m9 [slot1:left=25.177, slot2:right=24.243] ownEntry 0.014 | sample-m13.5 [slot1:left=9.331, slot2:right=9.332] ownEntry 0.015 | sample-m14 [slot1:left=6.268, slot2:right=5.329] ownEntry 0.015 | sample-m15 [slot1:left=1.050, slot2:right=1.054] ownEntry 0.016 |
-| G4 | PASS | PASS | second-slot toe slide <= 30 mm | sample-m9 LR slide 0.000 mm; sample-m12 LR slide 0.000 mm; sample-m13 LR slide 0.000 mm; clinical-m9 LR slide 0.000 mm; sample-m13.5 LR slide -0.010 mm; sample-m14 LR slide 0.000 mm; sample-m15 LR slide 23.520 mm; sample-m9-RR RR slide 0.000 mm; sample-m9-LL LL slide 0.000 mm; clinical-m9-RR RR slide 0.000 mm; clinical-m9-LL LL slide 0.000 mm |
-| G5 | FAIL | FAIL | RR/LL mill two copies of the physical foot; filenames _EVA_RR/_EVA_LL; mill_side default LR; create_saved_design has no side parameter | omitted=undefined RR=RR LL=LL RX=rejected |
-| G6 | PASS | FAIL | worker FILES allowlist only; profile.ts cutter, feeds, stepover, strategy, Z unchanged | outside FILES: .github/workflows/main.yml; outside FILES: ci/unit-test-shards.json; outside FILES: packages/mcp/src/clients/manufacturing-client.ts; outside FILES: vertex/server/src/lib/cad-operator-production.ts; outside FILES: vertex/server/src/lib/cnc-mill-job.d.ts; outside FILES: vertex/server/src/lib/cnc-mill-runner.ts; outside FILES: vertex/server/src/routers/cad-operator-generate.ts; outside FILES: vertex/server/src/routers/manufacturing.ts |
+| G2 | FAIL | PASS | M13.5 M14 M15 produce G-code; tool sweep inside 368.3 x 260.35 with >= 1 mm edge clearance | M13.5 edge 1.005 mm; M14 edge 1.009 mm; M15 edge 1.006 mm |
+| G3 | FAIL | PASS | sweep-to-other-outline >= 1 mm; own cutout entry <= BASE max 0.015 + 0.1 mm | sample-m9 [slot1:left=25.177, slot2:right=24.243] ownEntry 0.014 | sample-m12 [slot1:left=15.984, slot2:right=15.982] ownEntry 0.015 | sample-m13 [slot1:left=12.353, slot2:right=11.360] ownEntry 0.016 | clinical-m9 [slot1:left=25.177, slot2:right=24.243] ownEntry 0.014 | sample-m13.5 [slot1:left=9.311, slot2:right=9.312] ownEntry 0.015 | sample-m14 [slot1:left=6.248, slot2:right=5.309] ownEntry 0.015 | sample-m15 [slot1:left=1.051, slot2:right=1.055] ownEntry 0.016 |
+| G4 | PASS | PASS | second-slot toe slide <= 30 mm | sample-m9 LR slide 0.000 mm; sample-m12 LR slide 0.000 mm; sample-m13 LR slide 0.000 mm; clinical-m9 LR slide 0.000 mm; sample-m13.5 LR slide -0.010 mm; sample-m14 LR slide 0.000 mm; sample-m15 LR slide 23.800 mm; sample-m9-RR RR slide 0.000 mm; sample-m9-LL LL slide 0.000 mm; clinical-m9-RR RR slide 0.000 mm; clinical-m9-LL LL slide 0.000 mm |
+| G5 | FAIL | PASS | RR/LL mill two copies of the physical foot; filenames _EVA_RR/_EVA_LL; mill_side default LR; create_saved_design has no side parameter | omitted=LR RR=RR LL=LL RX=rejected; top-level keys stay external_order_id,manufacturing_method,client_id,catalog,patient_name,given_name,family_name |
+| G6 | PASS | PASS | worker FILES allowlist only; profile.ts cutter, feeds, stepover, strategy, Z unchanged | diff inside FILES; Idaho cutter/feeds/stepover/strategy/Z unchanged |
 
 ## Commands
 
@@ -105,13 +105,13 @@ bash validation/eva_cnc_gates/run_gates.sh format
 | sample-m9 | LR | no | 7386ff09e8a8 | Fixture_Sample_EVA_LR.gcode | 1.004 | 24.243 | 0.014 | 0.000 | left:25.177 right:24.243 |
 | sample-m12 | omit | no | 8f6648eb17ef | Fixture_Sample_EVA_LR.gcode | 1.000 | 15.982 | 0.015 | 0.000 | left:15.984 right:15.982 |
 | sample-m12 | LR | no | 8f6648eb17ef | Fixture_Sample_EVA_LR.gcode | 1.000 | 15.982 | 0.015 | 0.000 | left:15.984 right:15.982 |
-| sample-m13 | omit | no | 10ea8e892113 | Fixture_Sample_EVA_LR.gcode | 1.001 | 11.379 | 0.016 | 0.000 | left:12.373 right:11.379 |
-| sample-m13 | LR | no | 10ea8e892113 | Fixture_Sample_EVA_LR.gcode | 1.001 | 11.379 | 0.016 | 0.000 | left:12.373 right:11.379 |
+| sample-m13 | omit | no | a01dfdfb24aa | Fixture_Sample_EVA_LR.gcode | 1.011 | 11.360 | 0.016 | 0.000 | left:12.353 right:11.360 |
+| sample-m13 | LR | no | a01dfdfb24aa | Fixture_Sample_EVA_LR.gcode | 1.011 | 11.360 | 0.016 | 0.000 | left:12.353 right:11.360 |
 | clinical-m9 | omit | no | 7386ff09e8a8 | Fixture_Sample_EVA_LR.gcode | 1.004 | 24.243 | 0.014 | 0.000 | left:25.177 right:24.243 |
 | clinical-m9 | LR | no | 7386ff09e8a8 | Fixture_Sample_EVA_LR.gcode | 1.004 | 24.243 | 0.014 | 0.000 | left:25.177 right:24.243 |
-| sample-m13.5 | LR | no | 5d6a3faaa2c6 | Fixture_Sample_EVA_LR.gcode | 0.995 | 9.331 | 0.015 | -0.010 | left:9.331 right:9.332 |
-| sample-m14 | LR | no | c807551f727a | Fixture_Sample_EVA_LR.gcode | 0.999 | 5.329 | 0.015 | 0.000 | left:6.268 right:5.329 |
-| sample-m15 | LR | no | 037cc535acb2 | Fixture_Sample_EVA_LR.gcode | 0.997 | 1.050 | 0.016 | 23.520 | left:1.050 right:1.054 |
+| sample-m13.5 | LR | no | b5e04ea000e0 | Fixture_Sample_EVA_LR.gcode | 1.005 | 9.311 | 0.015 | -0.010 | left:9.311 right:9.312 |
+| sample-m14 | LR | no | eede568a9bce | Fixture_Sample_EVA_LR.gcode | 1.009 | 5.309 | 0.015 | 0.000 | left:6.248 right:5.309 |
+| sample-m15 | LR | no | 63977f880260 | Fixture_Sample_EVA_LR.gcode | 1.006 | 1.051 | 0.016 | 23.800 | left:1.051 right:1.055 |
 | sample-m9-RR | RR | no | c8901418e866 | Fixture_Sample_EVA_RR.gcode | 1.004 | 25.786 | 0.014 | 0.000 | left:25.788 left:25.786 |
 | sample-m9-LL | LL | no | bf7f1765bcfa | Fixture_Sample_EVA_LL.gcode | 1.004 | 23.862 | 0.014 | 0.000 | right:25.786 right:23.862 |
 | clinical-m9-RR | RR | no | bf7f1765bcfa | Fixture_Sample_EVA_RR.gcode | 1.004 | 23.862 | 0.014 | 0.000 | right:25.786 right:23.862 |
@@ -121,9 +121,9 @@ bash validation/eva_cnc_gates/run_gates.sh format
 
 Candidate profile diffs: none
 
-Candidate scope: FAIL outside FILES: .github/workflows/main.yml; outside FILES: ci/unit-test-shards.json; outside FILES: packages/mcp/src/clients/manufacturing-client.ts; outside FILES: vertex/server/src/lib/cad-operator-production.ts; outside FILES: vertex/server/src/lib/cnc-mill-job.d.ts; outside FILES: vertex/server/src/lib/cnc-mill-runner.ts; outside FILES: vertex/server/src/routers/cad-operator-generate.ts; outside FILES: vertex/server/src/routers/manufacturing.ts
+Candidate scope: PASS 
 
-Schema: omitted=undefined RR=RR LL=LL RX=rejected
+Schema: omitted=LR RR=RR LL=LL RX=rejected
 
 create_saved_design: top-level keys stay external_order_id,manufacturing_method,client_id,catalog,patient_name,given_name,family_name
 
@@ -131,22 +131,33 @@ G1 byte identity uses full sha256 in the JSON artifacts `base.json` and `candida
 
 ## Size-15 slide and clearance
 
-- M13.5 LR: refused=false edge=0.995 mm gap=9.331 mm slide=-0.010 mm heels 11.000 -> 10.990 ownEntry=0.015 mm
-- M14 LR: refused=false edge=0.999 mm gap=5.329 mm slide=0.000 mm heels 11.000 -> 11.000 ownEntry=0.015 mm
-- M15 LR: refused=false edge=0.997 mm gap=1.050 mm slide=23.520 mm heels 11.000 -> 34.520 ownEntry=0.016 mm
+- M13.5 LR: refused=false edge=1.005 mm gap=9.311 mm slide=-0.010 mm heels 11.010 -> 11.000 ownEntry=0.015 mm
+- M14 LR: refused=false edge=1.009 mm gap=5.309 mm slide=0.000 mm heels 11.010 -> 11.010 ownEntry=0.015 mm
+- M15 LR: refused=false edge=1.006 mm gap=1.051 mm slide=23.800 mm heels 11.010 -> 34.810 ownEntry=0.016 mm
 
-## Grade
+## Re-grade of 8e3a6869
 
-Candidate `3260b001686883fa74ea95b1833df42100bfc656` against gates frozen at `af6250a8ec0fa6f9f3ec675008cb69af6b936a11`: **FAIL**.
+Frozen checkers were not edited. This table is PR #392 head `8e3a686926b5eee54841cd6e2a9c5df7f8e3610d`, not the earlier head `3260b001`. The earlier FAIL is still in `candidate.json`. This run is `candidate-8e3a6869.json`. CI run 45153009093 on this SHA completed success.
 
-| Gate | Candidate | Why |
+**Candidate: PASS** on G1, G2, G3, G4, G5, and G6.
+
+| Gate | Result | Measured vs threshold |
 | --- | --- | --- |
-| G1 | PASS | Men's 9 and 12 SAMPLE_Top, and clinical Men's 9, omit and LR match BASE sha256 and `Fixture_Sample_EVA_LR.gcode`. Men's 13 refuses on BASE, so it is not a byte-identity case. `tests/cnc/golden/sha.json` is not in the diff. |
-| G2 | FAIL | M13.5, M14, and M15 produce G-code. Tool-sweep edge clearance is 0.9952 mm, 0.9990 mm, and 0.9965 mm. Threshold is >= 1 mm inside the 368.3 x 260.35 block. |
-| G3 | PASS | Smallest other-outline sweep gap is M15 slot 1 left 1.050 mm and slot 2 right 1.054 mm. Own cutout entry stays within BASE max 0.01492 mm + 0.1 mm. |
-| G4 | PASS | Largest second-slot toe slide is M15 LR 23.520 mm. Cap is 30 mm. |
-| G5 | FAIL | RR and LL mill two copies of the physical foot on SAMPLE_Top and the clinical fixture, and the filenames end `_EVA_RR.gcode` / `_EVA_LL.gcode`. `create_saved_design` gained no side parameter. `generate_cnc_gcode` parses an omitted `mill_side` as `undefined`, not default `LR`. |
-| G6 | FAIL | Eight paths are outside the worker FILES list. `profile.ts` is unchanged. Feeds, tool, and spindle match the frozen Idaho profile. |
+| G1 | PASS | M9 `7386ff09e8a8dc1a9be796607d26f3c3b4ce8b600108c6e86881309711ad7b8e`, M12 `8f6648eb17ef26e1cb0383ee83d82847a98d6db7f382730a721a737d69f63a0b`, clinical M9 equals M9. omit == LR == BASE. Filename `Fixture_Sample_EVA_LR.gcode`. M13 still refuses on BASE, so it is not a byte-identity case. |
+| G2 | PASS | No refusal. Tool-sweep edge M13.5 **1.0052 mm**, M14 **1.0090 mm**, M15 **1.0065 mm**. Threshold >= **1 mm** inside 368.3 x 260.35. |
+| G3 | PASS | M15 other-outline sweep slot1 left **1.051 mm**, slot2 right **1.055 mm**. Own cutout entry stays within BASE max 0.01492 mm + 0.1 mm. |
+| G4 | PASS | Largest second-slot toe slide is M15 LR **23.800 mm** (heels 11.010 -> 34.810). Cap **30 mm**. |
+| G5 | PASS | Omitted `mill_side` parses as **LR**. RR and LL accepted, RX rejected. Filenames `Fixture_Sample_EVA_RR.gcode` and `Fixture_Sample_EVA_LL.gcode`. SAMPLE_Top RR is two internal left outlines; clinical RR is two internal right outlines. `create_saved_design` keys unchanged. |
+| G6 | PASS | Diff is inside the worker FILES list. `profile.ts` unchanged. Feeds, 10 mm ball, and spindle match the frozen profile. |
 
-Next step: Kendon decides. This grade does not merge, deploy, or change product code.
+Command, from a detached worktree at that SHA, with the frozen `run_gates.ts` and `base.json`:
+
+```bash
+env EVA_GATE_MODE=grade EVA_GATE_LABEL=candidate \
+  EVA_GATE_BASE_JSON=validation/eva_cnc_gates/base.json \
+  EVA_GATE_OUT=validation/eva_cnc_gates/candidate-8e3a6869.json \
+  node_modules/.bin/rstest run --config validation/eva_cnc_gates/rstest.config.ts
+```
+
+Next: Kendon decides. Gates-only PR #393 stays unmerged. PR #392 stays unmerged.
 
