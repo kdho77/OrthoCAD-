@@ -393,6 +393,7 @@
                 "vertex/src/lib/geometry/procedural-wall/sample-top-display.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/viewer-wall-flag.test.ts",
                 "vertex/src/lib/geometry/scan-plane-slice.test.ts",
+                "vertex/src/lib/geometry/sink-uniform-floor.test.ts",
                 "vertex/src/lib/geometry/sink.test.ts",
                 "vertex/src/lib/geometry/text-marking/text-marking.test.ts",
                 "vertex/src/lib/geometry/wedge-topcount-diag.test.ts",
