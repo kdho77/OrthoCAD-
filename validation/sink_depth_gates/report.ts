@@ -200,12 +200,12 @@ export function render(base: Report, candidate: Report): string {
     lines.push("## Commands");
     lines.push("");
     lines.push("```");
-    lines.push("npx rstest validation/sink_depth_gates/run.test.ts -t instrument");
+    lines.push("npx rstest validation/sink_depth_gates/run.spec.ts -t instrument");
     lines.push(
-        'SINK_GATE_LIVE=1 SINK_GATE_LABEL=base SINK_GATE_SHA=<base> npx rstest validation/sink_depth_gates/run.test.ts -t "export grade"',
+        'SINK_GATE_LIVE=1 SINK_GATE_LABEL=base SINK_GATE_SHA=<base> npx rstest validation/sink_depth_gates/run.spec.ts -t "export grade"',
     );
     lines.push(
-        'SINK_GATE_LIVE=1 SINK_GATE_LABEL=candidate SINK_GATE_SHA=<candidate> npx rstest validation/sink_depth_gates/run.test.ts -t "export grade"',
+        'SINK_GATE_LIVE=1 SINK_GATE_LABEL=candidate SINK_GATE_SHA=<candidate> npx rstest validation/sink_depth_gates/run.spec.ts -t "export grade"',
     );
     lines.push("```");
     lines.push("");

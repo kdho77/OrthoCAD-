@@ -266,7 +266,7 @@ SINK_GATE_LIVE=1 SINK_GATE_LABEL=base \
   SINK_GATE_DIFF_BASE=268aac85847160b5b2703a05688721ea4cb93b24 \
   SINK_GATE_DIFF_HEAD=268aac85847160b5b2703a05688721ea4cb93b24 \
   SINK_GATE_OUT=/tmp/sink-depth-gates-base.json \
-  npx rstest validation/sink_depth_gates/run.test.ts -t "export grade"
+  npx rstest validation/sink_depth_gates/run.spec.ts -t "export grade"
 ```
 
 Candidate grade, cwd `/tmp/sink-candidate` (detached HEAD `b7e09d62208d1a40011f3a4ab1f7ecc215c70c08`). `git diff` of the raw candidate SHA fails in this partial clone, so the frozen diff interface was given `HEAD`, which is that commit:
@@ -276,11 +276,13 @@ SINK_GATE_LIVE=1 SINK_GATE_LABEL=candidate \
   SINK_GATE_DIFF_BASE=268aac85847160b5b2703a05688721ea4cb93b24 \
   SINK_GATE_DIFF_HEAD=HEAD \
   SINK_GATE_OUT=/tmp/sink-depth-gates-candidate.json \
-  npx rstest validation/sink_depth_gates/run.test.ts -t "export grade"
+  npx rstest validation/sink_depth_gates/run.spec.ts -t "export grade"
 ```
+
+The runner is named `run.spec.ts`. The shard manifest counts `*.test.ts` only, so the product shard count stays 369. `npx rstest` still runs this file by path. Thresholds were not changed.
 
 Instrument (no-op and bad-change proofs) on the freeze tree, and again on the candidate worktree. The candidate run exited 0 (3 passed, the live grade skipped): synthetic proofs, the real flat cut, and the deliberately deeper copy.
 
 ```
-npx rstest validation/sink_depth_gates/run.test.ts -t instrument
+npx rstest validation/sink_depth_gates/run.spec.ts -t instrument
 ```
