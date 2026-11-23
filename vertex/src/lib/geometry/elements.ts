@@ -694,6 +694,7 @@ export function repositionLegacyFirstRayDesign<T extends ShoeSizingDesign & { el
 /**
  * Summed element height contribution at insole-surface point (xMm along length
  * from heel, yMm across width from centerline) for one foot.
+ * `kindScale` multiplies one kind's contribution. Omitted, every kind is 1.
  */
 export function elementHeightAt(
     elements: PlacedElement[],
@@ -701,6 +702,7 @@ export function elementHeightAt(
     yMm: number,
     lengthMm: number,
     widthMm = mortonsReferenceWidthMm(lengthMm),
+    kindScale?: (kind: ElementKind | "custom") => number,
 ): number {
     if (elements.length === 0) return 0;
     const centerX = lengthMm / 2;
@@ -727,13 +729,17 @@ export function elementHeightAt(
                 el.scale.y,
                 el.heightMm,
             );
-            const signed = el.kind === "reverse_mortons" ? -magnitude : magnitude;
+            const signed =
+                (el.kind === "reverse_mortons" ? -magnitude : magnitude) * (kindScale?.(el.kind) ?? 1);
             if (signed < 0) lower = Math.min(lower, signed);
             else sum += signed;
             continue;
         }
         if (el.kind === "kinetic_wedge") {
-            lower = Math.min(lower, kineticWedgeDelta(el, xMm, yMm, lengthMm, widthMm));
+            lower = Math.min(
+                lower,
+                kineticWedgeDelta(el, xMm, yMm, lengthMm, widthMm) * (kindScale?.(el.kind) ?? 1),
+            );
             continue;
         }
         const cx = centerX + el.position.x;
@@ -753,7 +759,7 @@ export function elementHeightAt(
         const t = elementFootprintT(el.kind, lx, ly, rx, ry, el.side);
         const w = domeWeight(t);
         if (w > 0) {
-            const delta = p.sign * el.heightMm * w;
+            const delta = p.sign * el.heightMm * w * (kindScale?.(el.kind) ?? 1);
             if (delta < 0) lower = Math.min(lower, delta);
             else sum += delta;
         }
