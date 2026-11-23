@@ -1,0 +1,444 @@
+{
+  "label": "base",
+  "sha": "4e2e196561bada8f2a4faf4ad174a716306d8c94",
+  "ownEntryMaxMm": 0.01492002143408655,
+  "gates": [
+    {
+      "id": "G1",
+      "pass": true,
+      "measured": "sample-m9 7386ff09e8a8 Fixture_Sample_EVA_LR.gcode; sample-m12 8f6648eb17ef Fixture_Sample_EVA_LR.gcode; sample-m13 refuses on BASE — not a byte-identity case; clinical-m9 7386ff09e8a8 Fixture_Sample_EVA_LR.gcode",
+      "threshold": "sha256 and filename equal BASE where BASE placement passes; sha.json unchanged"
+    },
+    {
+      "id": "G2",
+      "pass": false,
+      "measured": "M13.5=refused; M14=refused; M15=refused",
+      "threshold": "M13.5 M14 M15 produce G-code; tool sweep inside 368.3 x 260.35 with >= 1 mm edge clearance"
+    },
+    {
+      "id": "G3",
+      "pass": false,
+      "measured": "sample-m13.5 no program | sample-m14 no program | sample-m15 no program | sample-m9 [slot1:left=25.177, slot2:right=24.243] ownEntry 0.014 | sample-m12 [slot1:left=15.984, slot2:right=15.982] ownEntry 0.015 | clinical-m9 [slot1:left=25.177, slot2:right=24.243] ownEntry 0.014",
+      "threshold": "sweep-to-other-outline >= 1 mm; own cutout entry <= BASE max 0.015 + 0.1 mm"
+    },
+    {
+      "id": "G4",
+      "pass": true,
+      "measured": "sample-m9 LR slide 0.000 mm; sample-m12 LR slide 0.000 mm; clinical-m9 LR slide 0.000 mm",
+      "threshold": "second-slot toe slide <= 30 mm"
+    },
+    {
+      "id": "G5",
+      "pass": false,
+      "measured": "omitted=undefined RR=undefined LL=undefined RX=rejected; sample-m9-RR not run; sample-m9-LL not run; clinical-m9-RR not run; clinical-m9-LL not run",
+      "threshold": "RR/LL mill two copies of the physical foot; filenames _EVA_RR/_EVA_LL; mill_side default LR; create_saved_design has no side parameter"
+    },
+    {
+      "id": "G6",
+      "pass": true,
+      "measured": "diff inside FILES; Idaho cutter/feeds/stepover/strategy/Z unchanged",
+      "threshold": "worker FILES allowlist only; profile.ts cutter, feeds, stepover, strategy, Z unchanged"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "sample-m9",
+      "menSize": 9,
+      "sampleTop": true,
+      "millSide": "omit",
+      "refused": false,
+      "error": null,
+      "sha256": "7386ff09e8a8dc1a9be796607d26f3c3b4ce8b600108c6e86881309711ad7b8e",
+      "bytes": 1639710,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0042,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 25.17672221677235
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 24.242829136804087
+        }
+      ],
+      "minOtherGapMm": 24.242829136804087,
+      "ownEntryMm": 0.01382250857245726,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 260,
+      "placementMedianMm": 0.000024103651707597724,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m9",
+      "menSize": 9,
+      "sampleTop": true,
+      "millSide": "LR",
+      "refused": false,
+      "error": null,
+      "sha256": "7386ff09e8a8dc1a9be796607d26f3c3b4ce8b600108c6e86881309711ad7b8e",
+      "bytes": 1639710,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0042,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 25.17672221677235
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 24.242829136804087
+        }
+      ],
+      "minOtherGapMm": 24.242829136804087,
+      "ownEntryMm": 0.01382250857245726,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 260,
+      "placementMedianMm": 0.000024103651707597724,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m12",
+      "menSize": 12,
+      "sampleTop": true,
+      "millSide": "omit",
+      "refused": false,
+      "error": null,
+      "sha256": "8f6648eb17ef26e1cb0383ee83d82847a98d6db7f382730a721a737d69f63a0b",
+      "bytes": 1900444,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0000999999999998,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 15.983949984306701
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 15.98178380136996
+        }
+      ],
+      "minOtherGapMm": 15.98178380136996,
+      "ownEntryMm": 0.01492002143408655,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 285.1613,
+      "placementMedianMm": 0.000026945059500331827,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m12",
+      "menSize": 12,
+      "sampleTop": true,
+      "millSide": "LR",
+      "refused": false,
+      "error": null,
+      "sha256": "8f6648eb17ef26e1cb0383ee83d82847a98d6db7f382730a721a737d69f63a0b",
+      "bytes": 1900444,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0000999999999998,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 15.983949984306701
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 15.98178380136996
+        }
+      ],
+      "minOtherGapMm": 15.98178380136996,
+      "ownEntryMm": 0.01492002143408655,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 285.1613,
+      "placementMedianMm": 0.000026945059500331827,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m13",
+      "menSize": 13,
+      "sampleTop": true,
+      "millSide": "omit",
+      "refused": true,
+      "error": "Tool envelope does not fit pocket 2 (envelope 128.740 mm, usable 128.175 mm)",
+      "sha256": null,
+      "bytes": null,
+      "filename": null,
+      "filenameMcp": null,
+      "footComment": null,
+      "sides": [],
+      "edgeClearanceMm": null,
+      "feet": [],
+      "minOtherGapMm": null,
+      "ownEntryMm": null,
+      "slideMm": null,
+      "slot1HeelX": null,
+      "slot2HeelX": null,
+      "outlineLengthMm": null,
+      "placementMedianMm": null,
+      "feedsOk": null,
+      "toolsOk": null,
+      "spindleOk": null,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m13",
+      "menSize": 13,
+      "sampleTop": true,
+      "millSide": "LR",
+      "refused": true,
+      "error": "Tool envelope does not fit pocket 2 (envelope 128.740 mm, usable 128.175 mm)",
+      "sha256": null,
+      "bytes": null,
+      "filename": null,
+      "filenameMcp": null,
+      "footComment": null,
+      "sides": [],
+      "edgeClearanceMm": null,
+      "feet": [],
+      "minOtherGapMm": null,
+      "ownEntryMm": null,
+      "slideMm": null,
+      "slot1HeelX": null,
+      "slot2HeelX": null,
+      "outlineLengthMm": null,
+      "placementMedianMm": null,
+      "feedsOk": null,
+      "toolsOk": null,
+      "spindleOk": null,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "clinical-m9",
+      "menSize": 9,
+      "sampleTop": false,
+      "millSide": "omit",
+      "refused": false,
+      "error": null,
+      "sha256": "7386ff09e8a8dc1a9be796607d26f3c3b4ce8b600108c6e86881309711ad7b8e",
+      "bytes": 1639710,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0042,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 25.17672221677235
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 24.242829136804087
+        }
+      ],
+      "minOtherGapMm": 24.242829136804087,
+      "ownEntryMm": 0.01382250857245726,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 260,
+      "placementMedianMm": 0.000024103651707597724,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "clinical-m9",
+      "menSize": 9,
+      "sampleTop": false,
+      "millSide": "LR",
+      "refused": false,
+      "error": null,
+      "sha256": "7386ff09e8a8dc1a9be796607d26f3c3b4ce8b600108c6e86881309711ad7b8e",
+      "bytes": 1639710,
+      "filename": "Fixture_Sample_EVA_LR.gcode",
+      "filenameMcp": "Fixture_Sample_EVA_LR.gcode",
+      "footComment": "left+right",
+      "sides": [
+        "left",
+        "right"
+      ],
+      "edgeClearanceMm": 1.0042,
+      "feet": [
+        {
+          "slot": 0,
+          "foot": "left",
+          "otherGapMm": 25.17672221677235
+        },
+        {
+          "slot": 1,
+          "foot": "right",
+          "otherGapMm": 24.242829136804087
+        }
+      ],
+      "minOtherGapMm": 24.242829136804087,
+      "ownEntryMm": 0.01382250857245726,
+      "slideMm": 0,
+      "slot1HeelX": 11,
+      "slot2HeelX": 11,
+      "outlineLengthMm": 260,
+      "placementMedianMm": 0.000024103651707597724,
+      "feedsOk": true,
+      "toolsOk": true,
+      "spindleOk": true,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m13.5",
+      "menSize": 13.5,
+      "sampleTop": true,
+      "millSide": "LR",
+      "refused": true,
+      "error": "Tool envelope does not fit pocket 2 (envelope 129.470 mm, usable 128.175 mm)",
+      "sha256": null,
+      "bytes": null,
+      "filename": null,
+      "filenameMcp": null,
+      "footComment": null,
+      "sides": [],
+      "edgeClearanceMm": null,
+      "feet": [],
+      "minOtherGapMm": null,
+      "ownEntryMm": null,
+      "slideMm": null,
+      "slot1HeelX": null,
+      "slot2HeelX": null,
+      "outlineLengthMm": null,
+      "placementMedianMm": null,
+      "feedsOk": null,
+      "toolsOk": null,
+      "spindleOk": null,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m14",
+      "menSize": 14,
+      "sampleTop": true,
+      "millSide": "LR",
+      "refused": true,
+      "error": "Tool envelope does not fit pocket 1 (envelope 131.760 mm, usable 128.175 mm)",
+      "sha256": null,
+      "bytes": null,
+      "filename": null,
+      "filenameMcp": null,
+      "footComment": null,
+      "sides": [],
+      "edgeClearanceMm": null,
+      "feet": [],
+      "minOtherGapMm": null,
+      "ownEntryMm": null,
+      "slideMm": null,
+      "slot1HeelX": null,
+      "slot2HeelX": null,
+      "outlineLengthMm": null,
+      "placementMedianMm": null,
+      "feedsOk": null,
+      "toolsOk": null,
+      "spindleOk": null,
+      "outlineOk": null,
+      "outlineDetail": null
+    },
+    {
+      "id": "sample-m15",
+      "menSize": 15,
+      "sampleTop": true,
+      "millSide": "LR",
+      "refused": true,
+      "error": "Tool envelope does not fit pocket 1 (envelope 134.800 mm, usable 128.175 mm)",
+      "sha256": null,
+      "bytes": null,
+      "filename": null,
+      "filenameMcp": null,
+      "footComment": null,
+      "sides": [],
+      "edgeClearanceMm": null,
+      "feet": [],
+      "minOtherGapMm": null,
+      "ownEntryMm": null,
+      "slideMm": null,
+      "slot1HeelX": null,
+      "slot2HeelX": null,
+      "outlineLengthMm": null,
+      "placementMedianMm": null,
+      "feedsOk": null,
+      "toolsOk": null,
+      "spindleOk": null,
+      "outlineOk": null,
+      "outlineDetail": null
+    }
+  ],
+  "profileDiffs": [],
+  "scope": {
+    "ok": true,
+    "reasons": []
+  },
+  "schema": "omitted=undefined RR=undefined LL=undefined RX=rejected",
+  "savedDesign": "top-level keys stay external_order_id,manufacturing_method,client_id,catalog,patient_name,given_name,family_name"
+}

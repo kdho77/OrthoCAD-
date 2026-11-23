@@ -1,0 +1,76 @@
+{
+  "pass": true,
+  "failures": [],
+  "synthetic": [
+    {
+      "gate": "G1",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "byte copy vs one-byte-changed copy"
+    },
+    {
+      "gate": "G2",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "safe edge 25.000 mm; broken centerline x=2"
+    },
+    {
+      "gate": "G3",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "safe gap 3.000 mm; broken path inside the other outline"
+    },
+    {
+      "gate": "G3-own",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "cutout tangent vs cutout through its own outline"
+    },
+    {
+      "gate": "G4",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "slide 8.00 mm vs broken 38.00 mm"
+    },
+    {
+      "gate": "G5",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "RR filename and physical map; broken create_saved_design side key; mirrored outline rejected"
+    },
+    {
+      "gate": "G6",
+      "noopPass": true,
+      "badDetected": true,
+      "detail": "empty diff vs a profile.ts edit"
+    }
+  ],
+  "live": {
+    "sha256": "7386ff09e8a8dc1a9be796607d26f3c3b4ce8b600108c6e86881309711ad7b8e",
+    "filename": "Fixture_Sample_EVA_LR.gcode",
+    "edgeClearanceMm": 1.0042,
+    "minOtherGapMm": 24.242829136804087,
+    "ownEntryMm": 0.01382250857245726,
+    "slideMm": 0,
+    "outlineLengthMm": 260,
+    "placementMedianMm": 0.000024103651707597724,
+    "feet": [
+      {
+        "slot": 0,
+        "foot": "left",
+        "otherGapMm": 25.17672221677235
+      },
+      {
+        "slot": 1,
+        "foot": "right",
+        "otherGapMm": 24.242829136804087
+      }
+    ]
+  },
+  "broken": {
+    "hashChanged": true,
+    "brokenEdgeMm": -5,
+    "insideOtherGapMm": -44.187901649258535,
+    "profileRejected": true
+  }
+}
