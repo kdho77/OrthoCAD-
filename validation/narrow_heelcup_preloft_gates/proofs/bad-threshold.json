@@ -1,0 +1,67 @@
+{
+    "mode": "base",
+    "product": "/tmp/narrow-heelcup-gate-rVjULh",
+    "baseSha": "268aac85847160b5b2703a05688721ea4cb93b24",
+    "head": "268aac85847160b5b2703a05688721ea4cb93b24",
+    "changed": ["vertex/src/lib/geometry/procedural-wall/station-gates.ts"],
+    "gates": [
+        {
+            "id": "G-R1",
+            "status": "PASS",
+            "measured": "10 surface/seam files byte-identical to BASE",
+            "threshold": "kiri, base-modifier, wall-spline, ring-seam, densify-stations unchanged",
+            "evidence": "R1 print surface quality is untouched",
+            "command": "git hash-object vs BASE"
+        },
+        {
+            "id": "G-R2",
+            "status": "PASS",
+            "measured": "4 slicer files byte-identical to BASE",
+            "threshold": "kiri engine/gcode/presets/slicer unchanged",
+            "evidence": "R2 seam and layer-change placement stays on the existing bottom path",
+            "command": "git hash-object vs BASE"
+        },
+        {
+            "id": "G-R3",
+            "status": "PASS",
+            "measured": "changed=vertex/src/lib/geometry/procedural-wall/station-gates.ts; outside=(none); shardRemoved=0",
+            "threshold": "only procedural-wall, shoe-width, shoe-size, height-field, and an additive procedural-wall shard line",
+            "evidence": "R3 scope stays on the preloft outline defect",
+            "command": "git diff --name-only BASE"
+        },
+        {
+            "id": "G-R4",
+            "status": "PASS",
+            "measured": "meshPaths=(none); id/glb match BASE",
+            "threshold": "SAMPLE_Top id and both SAMPLE_Top.glb blobs unchanged; no new glb/stl/obj/3mf/ply",
+            "evidence": "R4 designs still start from the approved SAMPLE_Top stock mesh",
+            "command": "git hash-object SAMPLE_Top.glb"
+        },
+        {
+            "id": "G-R5",
+            "status": "PASS",
+            "measured": "text-marking files 30; new=(none)",
+            "threshold": "vertex/src/lib/geometry/text-marking identical to BASE; no new engraving file",
+            "evidence": "R5 patient marking stays on the existing textMarking bottom engrave",
+            "command": "git hash-object text-marking"
+        },
+        {
+            "id": "G-R6",
+            "status": "PASS",
+            "measured": "secretLines=0; phiLines=0; deployPaths=(none)",
+            "threshold": "no api_key/bearer/token-like secret, no patient name literal, no vertex-web/vertex-api/railway/print-bridge path",
+            "evidence": "R6 secrets, PHI, Railway, and printers stay out of the diff",
+            "command": "git diff -U0 | secret scan"
+        },
+        {
+            "id": "G-MUST-THRESHOLD",
+            "status": "FAIL",
+            "measured": "SKEW_INSET_RATIO station-gates=10 stations=0.5; SKEW_LIMIT_MM=2; PRELOFT_HEADING_MAX_DEG=15; POSTLOFT_DIHEDRAL_MAX_DEG=150; redefined=1; blobs=false",
+            "threshold": "SKEW_INSET_RATIO=0.5; SKEW_LIMIT_MM=2; PRELOFT_HEADING_MAX_DEG=15; POSTLOFT_DIHEDRAL_MAX_DEG=150; station-gates.ts stations.ts reconstruct.ts identical",
+            "evidence": "MUST-MATCH skew thresholds unchanged",
+            "command": "git hash-object + const parse"
+        }
+    ],
+    "runtimeTail": "",
+    "existingTail": ""
+}

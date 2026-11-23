@@ -1,0 +1,72 @@
+[
+    {
+        "name": "noop",
+        "status": "PASS",
+        "detail": "BASE passes the gates it should pass; the defect gates fail closed"
+    },
+    {
+        "name": "bad-r1",
+        "status": "PASS",
+        "detail": "gate failed as required: G-R1"
+    },
+    {
+        "name": "bad-r2",
+        "status": "PASS",
+        "detail": "gate failed as required: G-R2"
+    },
+    {
+        "name": "bad-r3",
+        "status": "PASS",
+        "detail": "gate failed as required: G-R3"
+    },
+    {
+        "name": "bad-r4",
+        "status": "PASS",
+        "detail": "gate failed as required: G-R4"
+    },
+    {
+        "name": "bad-r5",
+        "status": "PASS",
+        "detail": "gate failed as required: G-R5"
+    },
+    {
+        "name": "bad-r6-secret",
+        "status": "PASS",
+        "detail": "gate failed as required: G-R6"
+    },
+    {
+        "name": "bad-r6-railway",
+        "status": "PASS",
+        "detail": "gate failed as required: G-R6"
+    },
+    {
+        "name": "bad-threshold",
+        "status": "PASS",
+        "detail": "gate failed as required: G-MUST-THRESHOLD"
+    },
+    {
+        "name": "bad-identity",
+        "status": "PASS",
+        "detail": "gate failed as required: G-R7,G-MUST-IDENTITY"
+    },
+    {
+        "name": "bad-export",
+        "status": "PASS",
+        "detail": "gate failed as required: G-TESTS-EXPORT"
+    },
+    {
+        "name": "bad-one-threshold",
+        "status": "PASS",
+        "detail": "gate failed as required: G-ONE,G-MUST-THRESHOLD"
+    },
+    {
+        "name": "bad-existing",
+        "status": "PASS",
+        "detail": "gate failed as required: G-TESTS-EXISTING"
+    },
+    {
+        "name": "bad-new-test",
+        "status": "PASS",
+        "detail": "gate failed as required: G-TESTS-NEW"
+    }
+]
