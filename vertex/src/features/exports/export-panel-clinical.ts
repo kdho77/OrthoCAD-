@@ -78,7 +78,7 @@ function objectUrlForBlob(blob: Blob): string {
     }
 }
 
-/** Both clicks happen in one turn, after every foot has a file. */
+/** Trigger browser saves for one or more files (pair belt exports call this per foot as each slice finishes). */
 export function downloadNamedBlobs(files: ReadonlyArray<{ filename: string; blob: Blob }>): void {
     const urls: string[] = [];
     for (const file of files) {
@@ -166,7 +166,10 @@ export async function exportClinicalPrinterGcode(input: {
     if (input.shouldAbort?.()) {
         return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
     }
-    const results = await Promise.all(
+    const built: { side: Side; filename: string; blob: Blob }[] = [];
+    const footOutcomes: { foot: Side; res: ExportOutcome }[] = [];
+
+    await Promise.all(
         feet.map(async (foot) => {
             const options = {
                 apexMaterialId,
@@ -176,27 +179,44 @@ export async function exportClinicalPrinterGcode(input: {
                 onProgress: (step: string) =>
                     input.onProgress?.(many ? `${SIDE_LABELS[foot]}: ${step}` : step),
             };
-            return {
-                foot,
-                res: await generateHybridGcode(foot, preset, grindingStyle, overrides, options),
-            };
+            const res = await generateHybridGcode(foot, preset, grindingStyle, overrides, options);
+            footOutcomes.push({ foot, res });
+            if (res.cancelled || input.shouldAbort?.()) {
+                return;
+            }
+            if (res.ok && res.blob && res.filename) {
+                downloadNamedBlobs([{ filename: res.filename, blob: res.blob }]);
+                built.push({ side: foot, filename: res.filename, blob: res.blob });
+            }
         }),
     );
-    const built: { side: Side; filename: string; blob: Blob }[] = [];
-    for (const { foot, res } of results) {
-        if (res.cancelled || input.shouldAbort?.()) {
-            return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
-        }
-        if (!res.ok || !res.blob || !res.filename) {
-            const detail = res.reason ?? "G-code export failed";
-            const reason = many
-                ? `${SIDE_LABELS[foot]} G-code failed. No files were downloaded. ${detail}`
-                : detail;
-            return { ok: false, reason };
-        }
-        built.push({ side: foot, filename: res.filename, blob: res.blob });
+
+    footOutcomes.sort((a, b) => feet.indexOf(a.foot) - feet.indexOf(b.foot));
+
+    if (footOutcomes.some(({ res }) => res.cancelled) || input.shouldAbort?.()) {
+        return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
     }
-    downloadNamedBlobs(built);
+
+    const failures = footOutcomes.filter(({ res }) => !res.ok || !res.blob || !res.filename);
+    const firstFailure = failures[0];
+    if (firstFailure) {
+        const { foot, res } = firstFailure;
+        const detail = res.reason ?? "G-code export failed";
+        if (many && built.length > 0) {
+            const downloaded = built.map((file) => file.filename).join(", ");
+            return {
+                ok: false,
+                reason: `${SIDE_LABELS[foot]} G-code failed after ${downloaded} downloaded. ${detail}`,
+                filename: built.map((file) => file.filename).join(", "),
+                filenames: built.map((file) => file.filename),
+                blob: built[0]?.blob,
+            };
+        }
+        const reason = many
+            ? `${SIDE_LABELS[foot]} G-code failed. No files were downloaded. ${detail}`
+            : detail;
+        return { ok: false, reason };
+    }
     const filenames = built.map((file) => file.filename);
     return {
         ok: true,

@@ -442,7 +442,7 @@ export interface HybridGcodeOptions {
     /** Default on for belt G-code. Mesh and CNC callers leave this unset. */
     includeLeaderBlock?: boolean;
     onProgress?: (step: string) => void;
-    /** Pair export downloads after every foot succeeds. */
+    /** When true, the caller triggers the browser save (pair exports download each foot as it finishes). */
     deferDownload?: boolean;
     shouldAbort?: () => boolean;
 }

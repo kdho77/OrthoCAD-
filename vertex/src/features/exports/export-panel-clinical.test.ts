@@ -134,6 +134,45 @@ describe("export panel clinical gcode", () => {
         expect(rightOnly.filenames).toEqual(["hybrid-right.gcode"]);
     });
 
+    test("pair belt export downloads each foot as soon as that foot finishes slicing", async () => {
+        const design = useDesignStore.getState().design;
+        let releaseLeft!: () => void;
+        const leftGate = new Promise<void>((resolve) => {
+            releaseLeft = resolve;
+        });
+        let releaseRight!: () => void;
+        const rightGate = new Promise<void>((resolve) => {
+            releaseRight = resolve;
+        });
+        hybridSpy.mockImplementation(async (side: string) => {
+            if (side === "left") await leftGate;
+            else await rightGate;
+            return {
+                ok: true as const,
+                filename: `hybrid-${side}.gcode`,
+                blob: new Blob([side === "left" ? "L" : "R"]),
+            };
+        });
+        const created: string[] = [];
+        const original = URL.createObjectURL;
+        URL.createObjectURL = ((blob: Blob) => {
+            created.push(String(blob.size));
+            return "blob:test";
+        }) as typeof URL.createObjectURL;
+
+        const exportPromise = exportClinicalPrinterGcode({ side: "left", feet: "both", design });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(created).toEqual([]);
+        releaseLeft();
+        await new Promise((r) => setTimeout(r, 0));
+        expect(created).toEqual(["1"]);
+        releaseRight();
+        const done = await exportPromise;
+        expect(done.ok).toBe(true);
+        expect(created).toEqual(["1", "1"]);
+        URL.createObjectURL = original;
+    });
+
     test("a pair failure is not a one-foot success, and cancel downloads nothing", async () => {
         const design = useDesignStore.getState().design;
         hybridSpy
@@ -153,10 +192,12 @@ describe("export panel clinical gcode", () => {
         expect(failed.ok).toBe(false);
         if (!failed.ok) {
             expect(failed.reason).toMatch(/Right/);
-            expect(failed.reason).toMatch(/No files were downloaded/);
+            expect(failed.reason).toMatch(/downloaded/);
+            expect(failed.reason).not.toMatch(/No files were downloaded/);
         }
-        expect(created).toEqual([]);
+        expect(created).toEqual(["1"]);
 
+        created.length = 0;
         hybridSpy.mockReset();
         let started = false;
         hybridSpy.mockImplementation(async () => {
