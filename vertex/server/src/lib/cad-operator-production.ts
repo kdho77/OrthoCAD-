@@ -736,6 +736,23 @@ export interface ExecuteCadProductionArgs {
     deliverMaterializedStl?: boolean;
 }
 
+function roundSeconds(seconds: number): number {
+    return Math.round(seconds * 1000) / 1000;
+}
+
+/** Wall-clock loft and slice. loft_s is materialize; slice_s is the VertexSlice call. */
+function logCadOperatorTiming(row: CadProductionRow, loftS: number, sliceS: number): void {
+    console.log(
+        JSON.stringify({
+            msg: "cad-operator-timing",
+            productionId: row.id,
+            side: row.side,
+            loft_s: roundSeconds(loftS),
+            slice_s: roundSeconds(sliceS),
+        }),
+    );
+}
+
 async function markFailed(
     store: CadProductionStore,
     id: string,
@@ -754,6 +771,15 @@ async function markFailed(
 export async function executeCadOperatorProduction(args: ExecuteCadProductionArgs): Promise<void> {
     const started = args.now();
     let stlStorageKey: string | null = null;
+    let loftS = 0;
+    let sliceS = 0;
+    let timingStarted = false;
+    let timingLogged = false;
+    const logTiming = () => {
+        if (!timingStarted || timingLogged) return;
+        timingLogged = true;
+        logCadOperatorTiming(args.row, loftS, sliceS);
+    };
     try {
         const checkpoint = readSliceCheckpoint(
             (await args.store.findById(args.row.id))?.error ?? args.row.error,
@@ -783,12 +809,18 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
         }
 
         let meshFingerprint: string | null = checkpoint?.meshFingerprint ?? null;
+        timingStarted = true;
         if (checkpoint && !args.deliverMaterializedStl) {
             stlStorageKey = checkpoint.stlStorageKey;
         } else {
-            const materialized = await args.materialize();
-            stlStorageKey = materialized.stlStorageKey;
-            meshFingerprint = materialized.meshFingerprint;
+            const loftStarted = performance.now();
+            try {
+                const materialized = await args.materialize();
+                stlStorageKey = materialized.stlStorageKey;
+                meshFingerprint = materialized.meshFingerprint;
+            } finally {
+                loftS = (performance.now() - loftStarted) / 1000;
+            }
         }
         if (!checkpoint && args.deliverMaterializedStl) {
             if (!stlStorageKey) throw new Error("Manufacturing service returned empty output");
@@ -810,33 +842,40 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
                 updatedAt: args.now(),
                 leaseExpiresAt: null,
             });
+            logTiming();
             return;
         }
         const sliceNow = args.now();
         const sliceTimeoutMs = cadVertexSliceSliceTimeoutMs(started, sliceNow);
         const sliceTimeoutSec = Math.max(1, Math.ceil(sliceTimeoutMs / 1000));
-        const sliced = await args.slice(stlStorageKey ?? "", {
-            sliceTimeoutMs,
-            sliceTimeoutSec,
-            invocationStartedAt: started,
-            checkpoint,
-            meshFingerprint,
-            budgetMs: args.sliceBudgetMs ?? SLICE_JOB_POLL_BUDGET_MS,
-            now: args.now,
-            sleep: args.sleep ?? sleepMs,
-            persistCheckpoint: async (next) => {
-                await args.store.updateIf(
-                    args.row.id,
-                    (row) => row.status === "pending" || row.status === "running",
-                    {
-                        status: "running",
-                        error: encodeSliceCheckpoint(next),
-                        leaseExpiresAt: leaseDeadline(args.now()),
-                        updatedAt: args.now(),
-                    },
-                );
-            },
-        });
+        const sliceStarted = performance.now();
+        let sliced: Awaited<ReturnType<ExecuteCadProductionArgs["slice"]>>;
+        try {
+            sliced = await args.slice(stlStorageKey ?? "", {
+                sliceTimeoutMs,
+                sliceTimeoutSec,
+                invocationStartedAt: started,
+                checkpoint,
+                meshFingerprint,
+                budgetMs: args.sliceBudgetMs ?? SLICE_JOB_POLL_BUDGET_MS,
+                now: args.now,
+                sleep: args.sleep ?? sleepMs,
+                persistCheckpoint: async (next) => {
+                    await args.store.updateIf(
+                        args.row.id,
+                        (row) => row.status === "pending" || row.status === "running",
+                        {
+                            status: "running",
+                            error: encodeSliceCheckpoint(next),
+                            leaseExpiresAt: leaseDeadline(args.now()),
+                            updatedAt: args.now(),
+                        },
+                    );
+                },
+            });
+        } finally {
+            sliceS = (performance.now() - sliceStarted) / 1000;
+        }
         if ("pending" in sliced) {
             await args.store.updateIf(
                 args.row.id,
@@ -848,6 +887,7 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
                     updatedAt: args.now(),
                 },
             );
+            logTiming();
             return;
         }
         if (!sliced.gcode) {
@@ -881,7 +921,9 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
             updatedAt: args.now(),
             leaseExpiresAt: null,
         });
+        logTiming();
     } catch (error) {
+        logTiming();
         if (stlStorageKey && args.deleteTemp) {
             try {
                 await args.deleteTemp(stlStorageKey);
