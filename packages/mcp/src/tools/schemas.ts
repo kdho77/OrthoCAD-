@@ -616,7 +616,14 @@ function zodFieldToJson(field: z.ZodTypeAny): Record<string, unknown> {
         if (inner._def.checks?.some((c) => c.kind === "uuid")) out.format = "uuid";
         return withDescription(field, out);
     }
-    if (inner instanceof z.ZodNumber) return withDescription(field, { type: "number" });
+    if (inner instanceof z.ZodNumber) {
+        const out: Record<string, unknown> = { type: "number" };
+        for (const check of inner._def.checks ?? []) {
+            if (check.kind === "min") out.minimum = check.value;
+            if (check.kind === "max") out.maximum = check.value;
+        }
+        return withDescription(field, out);
+    }
     if (inner instanceof z.ZodBoolean) return withDescription(field, { type: "boolean" });
     if (inner instanceof z.ZodEnum)
         return withDescription(field, { type: "string", enum: inner._def.values });

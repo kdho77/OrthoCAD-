@@ -145,6 +145,20 @@ function memoryPrisma() {
             }
             return { ...row };
         },
+        async updateMany({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) {
+            const row = productions.get(String(where.id));
+            if (!row) return { count: 0 };
+            const matches = Object.entries(where).every(([key, value]) => {
+                const actual = row[key];
+                if (actual instanceof Date && value instanceof Date) return actual.getTime() === value.getTime();
+                return actual === value;
+            });
+            if (!matches) return { count: 0 };
+            for (const [key, value] of Object.entries(data)) {
+                if (value !== undefined) row[key] = value;
+            }
+            return { count: 1 };
+        },
         async findMany() {
             return [...productions.values()];
         },

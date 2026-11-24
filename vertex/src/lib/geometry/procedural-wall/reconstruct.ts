@@ -1598,7 +1598,20 @@ export function reconstructProceduralWalls(
     };
     applySmoothedB();
     ensureSourceRimStations(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, sourceRim);
-    evenSplitSourceEdges(stations, rimLocal, positions, indices, hygiened.loop, model.bounds, rimPts);
+    const mortonsExtensionOnRim = (options.sourceField?.elements ?? []).some(
+        (element) => element.kind === "mortons_extension",
+    );
+    evenSplitSourceEdges(
+        stations,
+        rimLocal,
+        positions,
+        indices,
+        hygiened.loop,
+        model.bounds,
+        rimPts,
+        undefined,
+        mortonsExtensionOnRim ? "xy" : "xyz",
+    );
     markSourceRimStations(stations, rimLocal, sourceRim);
     const stationSkewOpts = {
         forefootWidthMm: foreW,

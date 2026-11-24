@@ -8,8 +8,10 @@ import { baseModifierFieldAuthoritative } from "@/lib/geometry/base-asset";
 import { defaultElementPose } from "@/lib/geometry/elements";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import type { ShoeWidthId } from "@/lib/geometry/shoe-width";
+import { mirrorGeometry } from "@/lib/library/loaders";
 import { createDesignWithStockPlaceholder } from "@/stores/design-store";
 import type { DesignState, PlacedElement } from "@/types";
+import { hausdorffReport } from "./metrics";
 import { printSolidOptions } from "./print-solid-options";
 import {
     buildProceduralExportSolid,
@@ -19,6 +21,22 @@ import {
 } from "./sample-top-preview";
 
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "vertex/public/Templates/SAMPLE_Top.glb");
+
+/** Left short-narrow exports that already pass on main. The retry must not move them. */
+const LEFT_SHORT: Record<string, { hash: string; verts: number }> = {
+    "m5-narrow-height9-met": {
+        hash: "aaf6ecb80e64fe1a44894cee2c19d374e84a1c00158469830ff47304410a3654",
+        verts: 56074,
+    },
+    "m6-narrow-height9-met": {
+        hash: "c7b5f0ac597e561592bf240466d8e60555fa10f5121ef65a2be3368b57bc75cc",
+        verts: 57406,
+    },
+    "m8-narrow-height9-met": {
+        hash: "d5eeff5ea07c452fc10c71577d58ee090ed9b73d2a682888f565cf0aa3a055ce",
+        verts: 59169,
+    },
+};
 
 /**
  * Meshes that already cleared S1-PRELOFT on main, hashed before the
@@ -48,7 +66,9 @@ function designFor(input: {
     size?: number;
     heelCupHeightMm?: number;
     metPad?: boolean;
+    side?: "left" | "right";
 }): DesignState {
+    const side = input.side ?? "left";
     const design = createDesignWithStockPlaceholder();
     design.method = "printing_solid";
     if (input.size != null) design.usMenSize = input.size;
@@ -65,11 +85,11 @@ function designFor(input: {
     }
     if (input.metPad) {
         const layout = insoleLayoutFromDesign(design);
-        const pose = defaultElementPose("met_pad", "left", layout.lengthMm, layout.widthMm);
+        const pose = defaultElementPose("met_pad", side, layout.lengthMm, layout.widthMm);
         const el: PlacedElement = {
-            id: "met-left",
+            id: side === "left" ? "met-left" : "met-right",
             kind: "met_pad",
-            side: "left",
+            side,
             position: pose.position,
             rotationDeg: pose.rotationDeg,
             scale: pose.scale,
@@ -111,7 +131,40 @@ async function exportLeft(design: DesignState) {
     return buildProceduralExportSolid(options);
 }
 
+async function exportRight(design: DesignState) {
+    const field = baseModifierFieldAuthoritative(design, "right", design.thicknessMm);
+    const options = printSolidOptions({
+        design,
+        side: "right",
+        field,
+        viewer: { wallModel: "procedural", wallStyle: "round" },
+        trimline: null,
+        bottomPattern: null,
+    });
+    return buildProceduralExportSolid({ ...options, mirrored: true });
+}
+
 describe("narrow width + 9 mm heel cup preloft", () => {
+    test("mirrored right US M5, M6, and M8 narrow, heel cup height 9 mm, default met pad exports without S1-PRELOFT skew", async () => {
+        await loadTemplate();
+        for (const size of [5, 6, 8]) {
+            const built = await exportRight(
+                designFor({ width: "narrow", size, heelCupHeightMm: 9, metPad: true, side: "right" }),
+            );
+            const n = built.geometry.getAttribute("position")?.count ?? 0;
+            expect(n, `right US M${size}`).toBeGreaterThan(1000);
+            const left = await exportLeft(
+                designFor({ width: "narrow", size, heelCupHeightMm: 9, metPad: true }),
+            );
+            const mirroredLeft = mirrorGeometry(left.geometry);
+            const gap = hausdorffReport(mirroredLeft, built.geometry);
+            expect(gap.maxMm, `right US M${size} vs mirrored left`).toBeLessThanOrEqual(0.05);
+            mirroredLeft.dispose();
+            left.geometry.dispose();
+            built.geometry.dispose();
+        }
+    }, 720_000);
+
     test("US M6 narrow, heel cup height 9 mm, default met pad exports without S1-PRELOFT skew", async () => {
         await loadTemplate();
         // US M6 is the order: skew[45]=50.577>29.076; skew[46]=76.058>25.756.
@@ -120,8 +173,14 @@ describe("narrow width + 9 mm heel cup preloft", () => {
             const built = await exportLeft(
                 designFor({ width: "narrow", size, heelCupHeightMm: 9, metPad: true }),
             );
-            const n = built.geometry.getAttribute("position")?.count ?? 0;
-            expect(n, `US M${size}`).toBeGreaterThan(1000);
+            const pos = built.geometry.getAttribute("position").array as Float32Array;
+            const index = built.geometry.getIndex();
+            const id = `m${size}-narrow-height9-met`;
+            const pin = LEFT_SHORT[id];
+            if (!index || !pin) throw new Error(`missing mesh pin for ${id}`);
+            const idx = index.array as Uint32Array;
+            expect(pos.length / 3, id).toBe(pin.verts);
+            expect(meshHash(pos, idx), id).toBe(pin.hash);
             built.geometry.dispose();
         }
     }, 240_000);
