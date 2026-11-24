@@ -7,6 +7,7 @@ import { AfoDesignPanel } from "@/features/afo/AfoDesignPanel";
 import { AfoExportPanel } from "@/features/afo/AfoExportPanel";
 import { AfoPrintPanel } from "@/features/afo/AfoPrintPanel";
 import { AfoScanPanel } from "@/features/afo/AfoScanPanel";
+import { AmputationPanel } from "@/features/amputation/AmputationPanel";
 import { ClinicalPrintStepPanel } from "@/features/clinical/ClinicalPrintStepPanel";
 import { ClinicalScanStepPanel } from "@/features/clinical/ClinicalScanStepPanel";
 import { HardnessStepPanel } from "@/features/clinical/HardnessStepPanel";
@@ -58,6 +59,7 @@ export function RightPanel() {
                         {!isAfo && step === "corrections" ? (
                             <div className="space-y-3">
                                 <CorrectionPresetsPanel />
+                                <AmputationPanel />
                                 <CorrectionsPanel />
                             </div>
                         ) : null}
