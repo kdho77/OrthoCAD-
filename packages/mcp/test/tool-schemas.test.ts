@@ -69,9 +69,18 @@ describe("OrthoCAD MCP tool schemas", () => {
         expect(getProductionInputSchema.safeParse({ production_id: id, wait_s: 301 }).success).toBe(false);
         const tool = MCP_TOOL_DEFINITIONS.find((t) => t.name === "get_production");
         const jsonSchema = zodToJsonSchema(tool!.inputSchema);
-        const wait = (jsonSchema.properties as Record<string, unknown>).wait_s as { type?: string };
+        const wait = (jsonSchema.properties as Record<string, unknown>).wait_s as {
+            type?: string;
+            minimum?: number;
+            maximum?: number;
+        };
         expect(wait.type).toBe("number");
+        expect(wait.minimum).toBe(0);
+        expect(wait.maximum).toBe(300);
+        expect(jsonSchema.required ?? []).not.toContain("wait_s");
+        expect((jsonSchema.properties as Record<string, unknown>).production_id).toBeTruthy();
         expect(tool?.description).toMatch(/wait_s/i);
+        expect(tool?.description).toMatch(/0–300|0-300/);
     });
 
     test("each tool schema accepts a minimal valid payload", () => {

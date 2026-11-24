@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 
+import type { PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, test } from "@rstest/core";
 
 import { HARDNESS_TO_INFILL_PCT } from "../../../shared/print-recipe/hardness-to-infill-pct.js";
@@ -27,6 +28,7 @@ import {
     SLICE_JOB_SLICE_CAP_MS,
     toPublicProduction,
 } from "./cad-operator-production.js";
+import { PrismaCadProductionStore } from "./cad-operator-production-prisma.js";
 import { sliceWithVertexSlice } from "./vertexslice-client.js";
 
 const recipe: PrintRecipeV1 = {
@@ -1377,5 +1379,241 @@ describe("VertexSlice job productions", () => {
         expect(row?.error).toContain("server error");
         expect(row?.error).toContain("slice exceeded 260s");
         expect(row?.error).not.toContain("Manufacturing timed out");
+    });
+});
+
+const PAIR_FIXTURE_GCODE = "G90\nG1 X10 Y0 Z0.2\n";
+const PAIR_FIXTURE_STL = {
+    left: "stl/cad-operator/fixture/left.stl",
+    right: "stl/cad-operator/fixture/right.stl",
+} as const;
+
+/**
+ * Interactive transactions yield between statements. A sibling foot's
+ * CPU-bound loft can then run before COMMIT. Prisma's default timeout is 5s.
+ */
+function blockEventLoop(ms: number): void {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+        // Matches a long synchronous loft on the other foot.
+    }
+}
+
+function pairRow(side: "left" | "right", now: Date) {
+    return {
+        id: side === "left" ? "11111111-1111-4111-8111-111111111111" : "22222222-2222-4222-8222-222222222222",
+        designId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        side,
+        presetId: "apex-v2-insole-95a",
+        status: "pending" as const,
+        idempotencyKey: `cadop:v1:pair:${side}`,
+        settingsFingerprint: "fp-pair",
+        gcodeStorageKey: null,
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+        leaseExpiresAt: new Date(now.getTime() + 60_000),
+        chargedAt: null,
+        exportId: null,
+        method: "printing_solid" as const,
+        beltAngleDeg: 45,
+        layerHeightMm: null,
+        material: "apex_core",
+    };
+}
+
+function sameStoredValue(actual: unknown, expected: unknown): boolean {
+    if (actual instanceof Date && expected instanceof Date) return actual.getTime() === expected.getTime();
+    return actual === expected;
+}
+
+function createPairPrisma(): {
+    prisma: PrismaClient;
+    transactions: () => number;
+    openTransactions: () => number;
+} {
+    type Stored = Record<string, unknown>;
+    const rows = new Map<string, Stored>();
+    let transactions = 0;
+    let openTransactions = 0;
+
+    function read(where: { id?: string }): Stored | null {
+        if (!where.id) return null;
+        const row = rows.get(where.id);
+        return row ? { ...row } : null;
+    }
+
+    const production = {
+        async create({ data }: { data: Stored }) {
+            const row: Stored = {
+                id: data.id,
+                designId: data.designId,
+                side: data.side ?? null,
+                presetId: data.presetId,
+                status: data.status,
+                idempotencyKey: data.idempotencyKey ?? null,
+                settingsFingerprint: data.settingsFingerprint ?? null,
+                gcodeStorageKey: data.gcodeStorageKey ?? null,
+                error: data.error ?? null,
+                createdAt: data.createdAt,
+                updatedAt: data.updatedAt,
+                leaseExpiresAt: data.leaseExpiresAt ?? null,
+                chargedAt: data.chargedAt ?? null,
+                exportId: data.exportId ?? null,
+                method: data.method,
+                beltAngleDeg: data.beltAngleDeg ?? null,
+                layerHeightMm: data.layerHeightMm ?? null,
+                material: data.material ?? null,
+            };
+            rows.set(String(row.id), row);
+            return { ...row };
+        },
+        async findUnique({ where }: { where: { id?: string } }) {
+            return read(where);
+        },
+        async updateMany({ where, data }: { where: Stored; data: Stored }) {
+            const current = rows.get(String(where.id));
+            if (!current) return { count: 0 };
+            const matches = Object.entries(where).every(([key, value]) =>
+                sameStoredValue(current[key], value),
+            );
+            if (!matches) return { count: 0 };
+            for (const [key, value] of Object.entries(data)) {
+                if (value !== undefined) current[key] = value;
+            }
+            return { count: 1 };
+        },
+        async update({ where, data }: { where: { id: string }; data: Stored }) {
+            const current = rows.get(where.id);
+            if (!current) throw new Error("missing production");
+            for (const [key, value] of Object.entries(data)) {
+                if (value !== undefined) current[key] = value;
+            }
+            return { ...current };
+        },
+    };
+
+    const prisma = {
+        production,
+        async $transaction(fn: (tx: unknown) => Promise<unknown>) {
+            transactions += 1;
+            openTransactions += 1;
+            const started = Date.now();
+            const assertWithinTimeout = () => {
+                const elapsed = Date.now() - started;
+                if (elapsed > 5_000) {
+                    throw new Error(
+                        `Transaction already closed: The timeout for this transaction was 5000 ms, however ${elapsed} ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction.`,
+                    );
+                }
+            };
+            const tx = {
+                async $queryRaw() {
+                    await new Promise((resolve) => setImmediate(resolve));
+                    assertWithinTimeout();
+                    return [{ id: "locked" }];
+                },
+                production: {
+                    async findUnique(args: { where: { id?: string } }) {
+                        await new Promise((resolve) => setImmediate(resolve));
+                        assertWithinTimeout();
+                        return production.findUnique(args);
+                    },
+                    async update(args: { where: { id: string }; data: Stored }) {
+                        await new Promise((resolve) => setImmediate(resolve));
+                        assertWithinTimeout();
+                        return production.update(args);
+                    },
+                },
+            };
+            try {
+                const result = await fn(tx);
+                assertWithinTimeout();
+                return result;
+            } finally {
+                openTransactions -= 1;
+            }
+        },
+    };
+
+    return {
+        prisma: prisma as unknown as PrismaClient,
+        transactions: () => transactions,
+        openTransactions: () => openTransactions,
+    };
+}
+
+describe("CAD-operator pair production transactions", () => {
+    test("updateIf commits one matching status change without an interactive transaction", async () => {
+        const handle = createPairPrisma();
+        const store = new PrismaCadProductionStore(handle.prisma);
+        const now = new Date("2026-11-24T17:00:00.000Z");
+        const row = await store.insert(pairRow("right", now));
+        const updated = await store.updateIf(row.id, (current) => current.status === "pending", {
+            status: "running",
+            updatedAt: new Date("2026-11-24T17:00:01.000Z"),
+        });
+        expect(updated?.status).toBe("running");
+        expect(handle.transactions()).toBe(0);
+        const lost = await store.updateIf(row.id, (current) => current.status === "pending", {
+            status: "failed",
+            error: "nope",
+            updatedAt: new Date("2026-11-24T17:00:02.000Z"),
+        });
+        expect(lost).toBeNull();
+        expect((await store.findById(row.id))?.status).toBe("running");
+        expect((await store.findById(row.id))?.error).toBeNull();
+    });
+
+    test("a both-feet run with a loft longer than 5s does not fail with a Prisma interactive-transaction timeout", async () => {
+        const handle = createPairPrisma();
+        const store = new PrismaCadProductionStore(handle.prisma);
+        const created = new Date("2026-11-24T17:16:00.000Z");
+        const uploaded = new Map<"left" | "right", string>();
+        const sliced: string[] = [];
+        let openDuringLoft = false;
+
+        await store.insert(pairRow("left", created));
+        await store.insert(pairRow("right", created));
+        const left = await store.findById(pairRow("left", created).id);
+        const right = await store.findById(pairRow("right", created).id);
+        if (!left || !right) throw new Error("pair rows missing");
+
+        const run = (row: typeof left) =>
+            executeCadOperatorProduction({
+                row,
+                store,
+                now: () => new Date(),
+                materialize: async () => {
+                    if (handle.openTransactions() > 0) openDuringLoft = true;
+                    blockEventLoop(6_000);
+                    return {
+                        stlStorageKey: PAIR_FIXTURE_STL[row.side ?? "left"],
+                        meshFingerprint: "fixture-mesh",
+                    };
+                },
+                slice: async (stlStorageKey) => {
+                    sliced.push(stlStorageKey);
+                    return { gcode: PAIR_FIXTURE_GCODE, jobId: `job-${row.side}` };
+                },
+                uploadGcode: async (gcode) => {
+                    if (row.side) uploaded.set(row.side, gcode);
+                    return { storageKey: `gcode/cad-operator/fixture/${row.side}.gcode` };
+                },
+                charge: async () => ({ exportId: `exp-${row.side}`, balance: 1, alreadyCharged: false }),
+            });
+
+        await Promise.all([run(left), run(right)]);
+
+        expect(openDuringLoft).toBe(false);
+        expect(handle.transactions()).toBe(0);
+        for (const side of ["left", "right"] as const) {
+            const row = await store.findById(pairRow(side, created).id);
+            expect(row?.status).toBe("succeeded");
+            expect(row?.error ?? "").not.toContain("Manufacturing timed out");
+            expect(row?.error ?? "").not.toMatch(/Transaction already closed/);
+            expect(uploaded.get(side)).toBe(PAIR_FIXTURE_GCODE);
+        }
+        expect(sliced.slice().sort()).toEqual([PAIR_FIXTURE_STL.left, PAIR_FIXTURE_STL.right].slice().sort());
     });
 });
