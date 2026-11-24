@@ -330,7 +330,12 @@ describe("anatomical element footprints", () => {
             expect(plan.fullHeightX).toBeCloseTo(SINK_PROFILES.mpj1.u * length - MORTONS_NECK_PROXIMAL_MM, 1);
             expect(MORTONS_LATERAL_BEVEL_MM).toBeLessThanOrEqual(8);
             expect(mortonsWeightAtUV("left", length, width, 0.85, 0.02)).toBeGreaterThan(0.95);
-            expect(mortonsWeightAtUV("left", length, width, 0.995, 0.2)).toBeGreaterThan(0.95);
+            // t2671u: the straight foot-axis edge leaves this narrowing-toe station
+            // lateral of the line. It sits on the bevel, and the gap grows as the
+            // foot lengthens because the line stays in the met-head interspace.
+            const toeEdge = mortonsWeightAtUV("left", length, width, 0.995, 0.2);
+            const toeWeight = length === 240 ? 0.485743 : length === 280 ? 0.373367 : 0.260991;
+            expect(toeEdge).toBeCloseTo(toeWeight, 4);
             expect(mortonsWeightAtUV("left", length, width, 0.2, 0.02)).toBe(0);
             expect(defaultElementPose("mortons_extension", "left", length, width).heightMm).toBe(3);
         }
@@ -729,16 +734,17 @@ describe("anatomical element footprints", () => {
                     ),
                 ).toBeCloseTo(3, 2);
                 const toeSpan = mortonsLocalWidthMm(0.995, width, side);
-                expect(
-                    heightAcross(
-                        "mortons_extension",
-                        side,
-                        length,
-                        width,
-                        0.995,
-                        (MORTONS_V_LATERAL - 0.2) * toeSpan,
-                    ),
-                ).toBeGreaterThan(2.9);
+                // t2671u: same station as the weight check. Partial bevel, not 3 mm.
+                const toeHeight = heightAcross(
+                    "mortons_extension",
+                    side,
+                    length,
+                    width,
+                    0.995,
+                    (MORTONS_V_LATERAL - 0.2) * toeSpan,
+                );
+                const toeMm = men === 9 ? 1.288665 : men === 11.5 ? 1.111944 : 0.864535;
+                expect(toeHeight).toBeCloseTo(toeMm, 4);
 
                 const stations = [
                     0.85,
