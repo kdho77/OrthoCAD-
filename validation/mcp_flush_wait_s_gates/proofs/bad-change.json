@@ -1,0 +1,416 @@
+{
+  "kind": "bad-change",
+  "baseSha": "f759bde1e212ae99d475601fc58dd89dd37469c7",
+  "command": "node prove-bad-change.mjs",
+  "pass": true,
+  "cases": [
+    {
+      "name": "synthetic-good-control",
+      "expect": "all pass",
+      "status": 0,
+      "gates": {
+        "G1": true,
+        "G2": true,
+        "G3": true,
+        "G4": true,
+        "G5": true
+      },
+      "pass": true,
+      "measured": {
+        "G1": {
+          "responseMs": 1,
+          "budgetMs": 5000,
+          "loftBlockMs": 6000,
+          "loftEnteredBeforeReturn": 0,
+          "race": "done",
+          "productionIds": {
+            "left": "5fa70c99-2337-485e-8b81-a3cb54fcc406",
+            "right": "b8c5b8e9-b098-4474-b439-86c69eee325f"
+          },
+          "bothIds": true,
+          "error": null
+        },
+        "G2": {
+          "invokeGapMs": 0,
+          "enqueueGapMs": 0,
+          "budgetMs": 5000,
+          "parallelProbeMs": 6000,
+          "invokeOrder": [
+            "left",
+            "right"
+          ],
+          "bothInvoked": true,
+          "bothEnqueued": true,
+          "error": null
+        },
+        "G3": {
+          "cap": 300,
+          "accepts300": true,
+          "rejects301": true,
+          "retainsZero": true,
+          "omittedFetches": 1,
+          "omittedMs": 0,
+          "zeroFetches": 1,
+          "zeroMs": 0,
+          "positiveWaitS": 5,
+          "positiveFetches": 3,
+          "positiveMs": 5001,
+          "positiveMinFetches": 2,
+          "positiveMinMs": 3500,
+          "positiveMaxMs": 15000
+        },
+        "G4": {
+          "geometryPathCount": 0,
+          "geometryPaths": [],
+          "productDiffCount": 3,
+          "productDiff": [
+            "packages/mcp/src/tools/handlers.ts",
+            "packages/mcp/src/tools/schemas.ts",
+            "vertex/server/src/lib/cad-operator-production.ts"
+          ],
+          "stockLoft": {
+            "tests/fixtures/SAMPLE_Top.glb": {
+              "live": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "base": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "match": true
+            },
+            "vertex/public/Templates/SAMPLE_Top.glb": {
+              "live": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "base": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "match": true
+            }
+          },
+          "baseSha": "f759bde1e212ae99d475601fc58dd89dd37469c7"
+        },
+        "G5": {
+          "resolvedBeforeExecute": true,
+          "executeEnteredAfterDrain": true,
+          "source": {
+            "ok": true,
+            "kind": "setImmediate",
+            "deferAt": 1153,
+            "execAt": 1206
+          }
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "name": "missing-setImmediate",
+      "expectReject": [
+        "G5",
+        "G1"
+      ],
+      "status": 1,
+      "gates": {
+        "G1": false,
+        "G2": false,
+        "G3": true,
+        "G4": true,
+        "G5": false
+      },
+      "pass": true,
+      "measured": {
+        "G1": {
+          "responseMs": 12000,
+          "budgetMs": 5000,
+          "loftBlockMs": 6000,
+          "loftEnteredBeforeReturn": 2,
+          "race": "done",
+          "productionIds": {
+            "left": "d7cb1527-c5b0-4cca-899b-febc754f87f2",
+            "right": "d3a6bdf2-5ae6-4841-ba6c-dde2a2949c1b"
+          },
+          "bothIds": true,
+          "error": null
+        },
+        "G5": {
+          "resolvedBeforeExecute": false,
+          "executeEnteredAfterDrain": true,
+          "source": {
+            "ok": false,
+            "reason": "no setImmediate or setTimeout(0) in beginCadOperatorProduction",
+            "deferAt": -1,
+            "execAt": 1085
+          }
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "name": "wait_s-cap-120",
+      "expectReject": [
+        "G3"
+      ],
+      "status": 1,
+      "gates": {
+        "G1": true,
+        "G2": true,
+        "G3": false,
+        "G4": true,
+        "G5": true
+      },
+      "pass": true,
+      "measured": {
+        "G3": {
+          "cap": 300,
+          "accepts300": false,
+          "rejects301": true,
+          "retainsZero": true,
+          "omittedFetches": 1,
+          "omittedMs": 1,
+          "zeroFetches": 1,
+          "zeroMs": 0,
+          "positiveWaitS": null,
+          "positiveFetches": null,
+          "positiveMs": null,
+          "positiveMinFetches": 2,
+          "positiveMinMs": 3500,
+          "positiveMaxMs": 15000
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "name": "wait-for-loft-before-return",
+      "expectReject": [
+        "G1"
+      ],
+      "status": 1,
+      "gates": {
+        "G1": false,
+        "G2": true,
+        "G3": true,
+        "G4": true,
+        "G5": true
+      },
+      "pass": true,
+      "measured": {
+        "G1": {
+          "responseMs": 12001,
+          "budgetMs": 5000,
+          "loftBlockMs": 6000,
+          "loftEnteredBeforeReturn": 2,
+          "race": "done",
+          "productionIds": {
+            "left": "1de70020-2583-4fb8-9cc1-6bd72a7a2154",
+            "right": "6cf8d92b-3a7b-4fc3-b373-0980a3382735"
+          },
+          "bothIds": true,
+          "error": null
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "name": "sequential-enqueue",
+      "expectReject": [
+        "G2"
+      ],
+      "status": 1,
+      "gates": {
+        "G1": true,
+        "G2": false,
+        "G3": true,
+        "G4": true,
+        "G5": true
+      },
+      "pass": true,
+      "measured": {
+        "G2": {
+          "invokeGapMs": 6003,
+          "enqueueGapMs": 0,
+          "budgetMs": 5000,
+          "parallelProbeMs": 6000,
+          "invokeOrder": [
+            "left",
+            "right"
+          ],
+          "bothInvoked": true,
+          "bothEnqueued": true,
+          "error": null
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "name": "stl-byte-change",
+      "expectReject": [
+        "G4"
+      ],
+      "status": 1,
+      "gates": {
+        "G1": true,
+        "G2": true,
+        "G3": true,
+        "G4": false,
+        "G5": true
+      },
+      "pass": true,
+      "measured": {
+        "G4": {
+          "geometryPathCount": 1,
+          "geometryPaths": [
+            "tests/fixtures/SAMPLE_Top.glb"
+          ],
+          "productDiffCount": 4,
+          "productDiff": [
+            "packages/mcp/src/tools/handlers.ts",
+            "packages/mcp/src/tools/schemas.ts",
+            "tests/fixtures/SAMPLE_Top.glb",
+            "vertex/server/src/lib/cad-operator-production.ts"
+          ],
+          "stockLoft": {
+            "tests/fixtures/SAMPLE_Top.glb": {
+              "live": "ae275ab76a42d5997c1bb242780ceed01ca647f2f1f801294035b2c89df16102",
+              "base": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "match": false
+            },
+            "vertex/public/Templates/SAMPLE_Top.glb": {
+              "live": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "base": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "match": true
+            }
+          },
+          "baseSha": "f759bde1e212ae99d475601fc58dd89dd37469c7"
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "name": "geometry-file-change",
+      "expectReject": [
+        "G4"
+      ],
+      "status": 1,
+      "gates": {
+        "G1": true,
+        "G2": true,
+        "G3": true,
+        "G4": false,
+        "G5": true
+      },
+      "pass": true,
+      "measured": {
+        "G4": {
+          "geometryPathCount": 1,
+          "geometryPaths": [
+            "vertex/src/lib/geometry/procedural-wall/ring-seam.ts"
+          ],
+          "productDiffCount": 4,
+          "productDiff": [
+            "packages/mcp/src/tools/handlers.ts",
+            "packages/mcp/src/tools/schemas.ts",
+            "vertex/server/src/lib/cad-operator-production.ts",
+            "vertex/src/lib/geometry/procedural-wall/ring-seam.ts"
+          ],
+          "stockLoft": {
+            "tests/fixtures/SAMPLE_Top.glb": {
+              "live": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "base": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "match": true
+            },
+            "vertex/public/Templates/SAMPLE_Top.glb": {
+              "live": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "base": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "match": true
+            }
+          },
+          "baseSha": "f759bde1e212ae99d475601fc58dd89dd37469c7"
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "name": "setTimeout-0-equivalent",
+      "expectReject": [],
+      "status": 0,
+      "gates": {
+        "G1": true,
+        "G2": true,
+        "G3": true,
+        "G4": true,
+        "G5": true
+      },
+      "pass": true,
+      "measured": {
+        "G1": {
+          "responseMs": 0,
+          "budgetMs": 5000,
+          "loftBlockMs": 6000,
+          "loftEnteredBeforeReturn": 0,
+          "race": "done",
+          "productionIds": {
+            "left": "ccef3e2c-056c-4978-8a36-bab54496b081",
+            "right": "f5d1b43d-3998-49f1-979b-d1d082a9633f"
+          },
+          "bothIds": true,
+          "error": null
+        },
+        "G2": {
+          "invokeGapMs": 0,
+          "enqueueGapMs": 0,
+          "budgetMs": 5000,
+          "parallelProbeMs": 6000,
+          "invokeOrder": [
+            "left",
+            "right"
+          ],
+          "bothInvoked": true,
+          "bothEnqueued": true,
+          "error": null
+        },
+        "G3": {
+          "cap": 300,
+          "accepts300": true,
+          "rejects301": true,
+          "retainsZero": true,
+          "omittedFetches": 1,
+          "omittedMs": 1,
+          "zeroFetches": 1,
+          "zeroMs": 0,
+          "positiveWaitS": 5,
+          "positiveFetches": 3,
+          "positiveMs": 5002,
+          "positiveMinFetches": 2,
+          "positiveMinMs": 3500,
+          "positiveMaxMs": 15000
+        },
+        "G4": {
+          "geometryPathCount": 0,
+          "geometryPaths": [],
+          "productDiffCount": 3,
+          "productDiff": [
+            "packages/mcp/src/tools/handlers.ts",
+            "packages/mcp/src/tools/schemas.ts",
+            "vertex/server/src/lib/cad-operator-production.ts"
+          ],
+          "stockLoft": {
+            "tests/fixtures/SAMPLE_Top.glb": {
+              "live": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "base": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "match": true
+            },
+            "vertex/public/Templates/SAMPLE_Top.glb": {
+              "live": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "base": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+              "match": true
+            }
+          },
+          "baseSha": "f759bde1e212ae99d475601fc58dd89dd37469c7"
+        },
+        "G5": {
+          "resolvedBeforeExecute": true,
+          "executeEnteredAfterDrain": true,
+          "source": {
+            "ok": true,
+            "kind": "setTimeout(0)",
+            "deferAt": 1153,
+            "execAt": 1204
+          }
+        }
+      },
+      "stderrTail": ""
+    }
+  ]
+}

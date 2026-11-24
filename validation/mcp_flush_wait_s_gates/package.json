@@ -1,0 +1,9 @@
+{
+  "name": "mcp-flush-wait-s-gates",
+  "private": true,
+  "type": "module",
+  "description": "Frozen gates for generate_gcode flush and get_production wait_s. Not product code.",
+  "dependencies": {
+    "zod": "3.23.8"
+  }
+}
