@@ -1,0 +1,81 @@
+{
+    "base": "8aced4b5042bdafc2d300006fa80802bca1b94b9",
+    "name": "JABBOUR",
+    "center": {
+        "x": 86.80000000000001,
+        "y": 0
+    },
+    "mappedWidthMm": 82.99328859060404,
+    "gates": {
+        "G1": {
+            "id": "G1",
+            "pass": false,
+            "measured": {
+                "leftA": -1,
+                "leftD": 1,
+                "leftB": 0,
+                "leftC": 0,
+                "leftDet": -1,
+                "leftAdvanceMm": -72.821,
+                "leftHookLeft": false,
+                "rightA": -1,
+                "rightD": 1,
+                "rightB": 0,
+                "rightC": 0,
+                "rightDet": -1,
+                "rightAdvanceMm": -72.821,
+                "rightHookLeft": false
+            },
+            "failures": [
+                "left advance maps to screen x -1.000 (need > 0.5)",
+                "left physical advance -72.82 mm (need > 20)",
+                "left J hook is not lower-left in the physical camera",
+                "right advance maps to screen x -1.000 (need > 0.5)",
+                "right physical advance -72.82 mm (need > 20)",
+                "right J hook is not lower-left in the physical camera"
+            ]
+        },
+        "G2": {
+            "id": "G2",
+            "pass": true,
+            "measured": {
+                "surface": "bottom",
+                "mode": "engrave",
+                "depthMm": 0.6,
+                "capMm": 12,
+                "placementU": 0.32,
+                "rotationDeg": 0,
+                "pivotXmm": 86.8,
+                "pivotYmm": 0,
+                "mappedWidthMm": 82.9933,
+                "centroidZAbsErrMm": 0,
+                "bold": true
+            },
+            "failures": []
+        },
+        "G3": {
+            "id": "G3",
+            "pass": true,
+            "measured": {
+                "outsideVertices": 0,
+                "outsideMaxMm": 0,
+                "gcodeOutsideBase": 2,
+                "gcodeOutsideCandidate": 2,
+                "scopeHits": 0,
+                "skewInsetChanged": false,
+                "soleBottomMaxAbsZmm": 0
+            },
+            "failures": []
+        },
+        "G4": {
+            "id": "G4",
+            "pass": true,
+            "measured": {
+                "sameBytes": true,
+                "baseHash": "c3c28185f93a960c1fddd71953e32bfacbe49e9361f1bef0bd189fc4450eccc2",
+                "candidateHash": "c3c28185f93a960c1fddd71953e32bfacbe49e9361f1bef0bd189fc4450eccc2"
+            },
+            "failures": []
+        }
+    }
+}

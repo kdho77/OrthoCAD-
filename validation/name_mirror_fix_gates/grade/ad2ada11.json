@@ -1,0 +1,73 @@
+{
+    "sha": "ad2ada118a4bdf635d4bb20249ee7ee9fc7cbc9f",
+    "skewInset": 0.5,
+    "skewFrozen": 0.5,
+    "gantryA": -1.0000000000000049,
+    "gantryD": 0.9999999999999998,
+    "gantryHook": false,
+    "gates": {
+        "G1": {
+            "id": "G1",
+            "pass": true,
+            "measured": {
+                "leftA": 1,
+                "leftD": 1,
+                "leftB": 0,
+                "leftC": 0,
+                "leftDet": 1,
+                "leftAdvanceMm": 72.821,
+                "leftHookLeft": true,
+                "rightA": 1,
+                "rightD": 1,
+                "rightB": 0,
+                "rightC": 0,
+                "rightDet": 1,
+                "rightAdvanceMm": 72.821,
+                "rightHookLeft": true
+            },
+            "failures": []
+        },
+        "G2": {
+            "id": "G2",
+            "pass": true,
+            "measured": {
+                "surface": "bottom",
+                "mode": "engrave",
+                "depthMm": 0.6,
+                "capMm": 12,
+                "placementU": 0.32,
+                "rotationDeg": 0,
+                "pivotXmm": 86.8,
+                "pivotYmm": 0,
+                "mappedWidthMm": 82.9933,
+                "centroidZAbsErrMm": 0,
+                "bold": true
+            },
+            "failures": []
+        },
+        "G3": {
+            "id": "G3",
+            "pass": true,
+            "measured": {
+                "outsideVertices": 0,
+                "outsideMaxMm": 0,
+                "gcodeOutsideBase": 2,
+                "gcodeOutsideCandidate": 2,
+                "scopeHits": 0,
+                "skewInsetChanged": false,
+                "soleBottomMaxAbsZmm": 0
+            },
+            "failures": []
+        },
+        "G4": {
+            "id": "G4",
+            "pass": true,
+            "measured": {
+                "sameBytes": true,
+                "baseHash": "c3c28185f93a960c1fddd71953e32bfacbe49e9361f1bef0bd189fc4450eccc2",
+                "candidateHash": "c3c28185f93a960c1fddd71953e32bfacbe49e9361f1bef0bd189fc4450eccc2"
+            },
+            "failures": []
+        }
+    }
+}
