@@ -191,8 +191,10 @@ describe("export panel clinical gcode", () => {
         const failed = await exportClinicalPrinterGcode({ side: "left", feet: "both", design });
         expect(failed.ok).toBe(false);
         if (!failed.ok) {
-            expect(failed.reason).toMatch(/Right/);
-            expect(failed.reason).toMatch(/downloaded/);
+            expect(failed.reason).toMatch(/(left|foot 1)/i);
+            expect(failed.reason).toMatch(/download/i);
+            expect(failed.reason).toMatch(/(right|foot 2)/i);
+            expect(failed.reason).toMatch(/fail/i);
             expect(failed.reason).not.toMatch(/No files were downloaded/);
         }
         expect(created).toEqual(["1"]);
