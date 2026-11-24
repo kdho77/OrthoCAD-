@@ -129,7 +129,7 @@ No frozen gate failed on the candidate. No case missed the 15 s ceiling on this 
 ## Handoff
 
 - Candidate SHA: `4037d24aca54351f6447f8271e0e62548879be47` (draft PR #422). Do not merge it from this grade.
-- Freeze commit: `14aad8cbd25e7cd5e285f6808ee557e8c64326fd` on `cursor/headless-loft-speed-gates-1124`.
+- Freeze commit: `14aad8cbd25e7cd5e285f6808ee557e8c64326fd`. Graded record: `4bf7f3f615751e17c7bc97571e73cbc7973812a7` on `cursor/headless-loft-speed-gates-1124` and on draft PR #425 (https://github.com/kdho77/OrthoCAD-/pull/425).
 - Tests: `prove_bad_change.py` exit 0; `run_gates.py --expect noop` on main exit 0; `run_gates.py --expect pass` on `4037d24a` exit 0.
 - Next step: leave both draft PRs unmerged. The gates branch is the grading record only.
 
@@ -139,7 +139,7 @@ No frozen gate failed on the candidate. No case missed the 15 s ceiling on this 
 
 > PUSH: new branch cursor/headless-loft-speed-gates-1124 (from BASE) -> ONE draft PR titled "[GATES ONLY - DO NOT MERGE] headless loft speed gates". Never push to the worker branch or PR #422; never push/merge main, deploy, Railway (never touch vertex-web / vertex-api or #310). Never edit any other [GATES ONLY - DO NOT MERGE] PR. Do not merge.
 
-PASS. Branch `cursor/headless-loft-speed-gates-1124` was created from `f759bde1e212ae99d475601fc58dd89dd37469c7`. This file is the only post-freeze edit. Worker branch `cursor/speed-headless-server-loft-toward-10-15s-per-foot-and-add-loft-s-slice-s-logs-96f7` was fetched and not pushed. No merge, no deploy, no Railway change.
+PASS. Branch `cursor/headless-loft-speed-gates-1124` was created from `f759bde1e212ae99d475601fc58dd89dd37469c7` and pushed at `4bf7f3f615751e17c7bc97571e73cbc7973812a7`. Draft PR #425 is https://github.com/kdho77/OrthoCAD-/pull/425 with the required title. Its head ref is `cursor/independent-grader-frozen-gates-then-grade-of-pr-422-headless-loft-speedup-7ee4` at that same commit, because this run can open a pull request only from that head. One draft PR. It is not merged. Worker branch `cursor/speed-headless-server-loft-toward-10-15s-per-foot-and-add-loft-s-slice-s-logs-96f7` was fetched and not pushed. No merge, no deploy, no Railway change.
 
 ### FILES
 
