@@ -392,11 +392,7 @@ function extractTopRim(geo: BufferGeometry): { points: PolyPoint[]; indices: num
     }
 }
 
-function followWallToPlantar(
-    trim: PolyPoint,
-    wallHash: Map<string, PolyPoint[]>,
-    plantarHash: Map<string, PolyPoint[]>,
-): PolyPoint {
+function followWallToPlantar(trim: PolyPoint, wallHash: PointHash, plantarHash: PointHash): PolyPoint {
     let x = trim.x;
     let y = trim.y;
     let z = trim.z;
@@ -514,26 +510,149 @@ function collectWallAndPlantar(geo: BufferGeometry): {
     return { wall, plantar, top };
 }
 
-function hashKey(x: number, y: number, z: number, cell: number): string {
-    return `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`;
+/**
+ * Packed cell index for the sparse fallback. Exact for cell coordinates in
+ * [-65536, 65536). The dense grid below is the same buckets in insertion order.
+ */
+const CELL_PACK_OFF = 65536;
+const CELL_PACK_STRIDE = 131072;
+/** A foot at WALL_HASH_CELL is ~1e5 cells. Larger spans keep the map. */
+const POINT_HASH_DENSE_MAX = 400_000;
+
+interface PointHash {
+    dense: Array<PolyPoint[] | undefined> | null;
+    ix0: number;
+    iy0: number;
+    iz0: number;
+    nx: number;
+    ny: number;
+    nz: number;
+    numeric: Map<number, PolyPoint[]>;
+    spilled: Map<string, PolyPoint[]>;
 }
 
-function buildPointHash(points: PolyPoint[], cell: number): Map<string, PolyPoint[]> {
-    const map = new Map<string, PolyPoint[]>();
+function cellPackKey(ix: number, iy: number, iz: number): number {
+    return (
+        ix +
+        CELL_PACK_OFF +
+        (iy + CELL_PACK_OFF) * CELL_PACK_STRIDE +
+        (iz + CELL_PACK_OFF) * CELL_PACK_STRIDE * CELL_PACK_STRIDE
+    );
+}
+
+function cellInPackRange(ix: number, iy: number, iz: number): boolean {
+    return (
+        ix > -CELL_PACK_OFF &&
+        ix < CELL_PACK_OFF &&
+        iy > -CELL_PACK_OFF &&
+        iy < CELL_PACK_OFF &&
+        iz > -CELL_PACK_OFF &&
+        iz < CELL_PACK_OFF
+    );
+}
+
+function buildPointHash(points: PolyPoint[], cell: number): PointHash {
+    const numeric = new Map<number, PolyPoint[]>();
+    const spilled = new Map<string, PolyPoint[]>();
+    const hash: PointHash = {
+        dense: null,
+        ix0: 0,
+        iy0: 0,
+        iz0: 0,
+        nx: 0,
+        ny: 0,
+        nz: 0,
+        numeric,
+        spilled,
+    };
+    if (!points.length || !(cell > 0) || !Number.isFinite(cell)) return hash;
+    let minX = Infinity;
+    let minY = Infinity;
+    let minZ = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let maxZ = -Infinity;
+    let finite = true;
     for (const p of points) {
-        const k = hashKey(p.x, p.y, p.z, cell);
-        let b = map.get(k);
-        if (!b) {
-            b = [];
-            map.set(k, b);
+        if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
+            finite = false;
+            break;
         }
-        b.push(p);
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.z < minZ) minZ = p.z;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+        if (p.z > maxZ) maxZ = p.z;
     }
-    return map;
+    if (finite) {
+        const ix0 = Math.floor(minX / cell);
+        const iy0 = Math.floor(minY / cell);
+        const iz0 = Math.floor(minZ / cell);
+        const nx = Math.floor(maxX / cell) - ix0 + 1;
+        const ny = Math.floor(maxY / cell) - iy0 + 1;
+        const nz = Math.floor(maxZ / cell) - iz0 + 1;
+        if (nx > 0 && ny > 0 && nz > 0 && nx * ny * nz <= POINT_HASH_DENSE_MAX) {
+            const dense = new Array<PolyPoint[] | undefined>(nx * ny * nz);
+            for (const p of points) {
+                const lx = Math.floor(p.x / cell) - ix0;
+                const ly = Math.floor(p.y / cell) - iy0;
+                const lz = Math.floor(p.z / cell) - iz0;
+                const at = (lz * ny + ly) * nx + lx;
+                let bucket = dense[at];
+                if (!bucket) dense[at] = bucket = [];
+                bucket.push(p);
+            }
+            hash.dense = dense;
+            hash.ix0 = ix0;
+            hash.iy0 = iy0;
+            hash.iz0 = iz0;
+            hash.nx = nx;
+            hash.ny = ny;
+            hash.nz = nz;
+            return hash;
+        }
+    }
+    for (const p of points) {
+        const ix = Math.floor(p.x / cell);
+        const iy = Math.floor(p.y / cell);
+        const iz = Math.floor(p.z / cell);
+        if (cellInPackRange(ix, iy, iz)) {
+            const key = cellPackKey(ix, iy, iz);
+            let bucket = numeric.get(key);
+            if (!bucket) {
+                bucket = [];
+                numeric.set(key, bucket);
+            }
+            bucket.push(p);
+        } else {
+            const key = `${ix},${iy},${iz}`;
+            let bucket = spilled.get(key);
+            if (!bucket) {
+                bucket = [];
+                spilled.set(key, bucket);
+            }
+            bucket.push(p);
+        }
+    }
+    return hash;
+}
+
+function bucketAt(hash: PointHash, cx: number, cy: number, cz: number): PolyPoint[] | undefined {
+    if (hash.dense) {
+        const lx = cx - hash.ix0;
+        const ly = cy - hash.iy0;
+        const lz = cz - hash.iz0;
+        if (lx < 0 || ly < 0 || lz < 0 || lx >= hash.nx || ly >= hash.ny || lz >= hash.nz) return undefined;
+        return hash.dense[(lz * hash.ny + ly) * hash.nx + lx];
+    }
+    return cellInPackRange(cx, cy, cz)
+        ? hash.numeric.get(cellPackKey(cx, cy, cz))
+        : hash.spilled.get(`${cx},${cy},${cz}`);
 }
 
 function nearestInHash(
-    hash: Map<string, PolyPoint[]>,
+    hash: PointHash,
     x: number,
     y: number,
     z: number,
@@ -549,7 +668,7 @@ function nearestInHash(
     for (let dz = -rCells; dz <= rCells; dz++) {
         for (let dy = -rCells; dy <= rCells; dy++) {
             for (let dx = -rCells; dx <= rCells; dx++) {
-                const bucket = hash.get(`${ix + dx},${iy + dy},${iz + dz}`);
+                const bucket = bucketAt(hash, ix + dx, iy + dy, iz + dz);
                 if (!bucket) continue;
                 for (const p of bucket) {
                     const d = (p.x - x) ** 2 + (p.y - y) ** 2 + (p.z - z) ** 2;

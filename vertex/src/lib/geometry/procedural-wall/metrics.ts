@@ -1160,7 +1160,99 @@ export interface WindingReport {
 }
 
 /** Outward winding: positive volume and every welded-mesh edge used once each way. */
+/** Directed weld-id pairs. Ids stay below this, so a*STRIDE+b does not collide. */
+const WINDING_ID_STRIDE = 2_097_152;
+
 export function windingReport(geo: BufferGeometry): WindingReport {
+    const pos = geo.getAttribute("position").array as Float32Array;
+    const index = geo.getIndex();
+    if (!index) return { signedVolume: 0, oppositeEdgeMismatch: 0, consistent: false };
+    const idx = index.array;
+    const quant = 1e-4;
+    const nVerts = pos.length / 3;
+    const idOf = new Int32Array(nVerts);
+    const xMap = new Map<number, Map<number, Map<number, number>>>();
+    let nextId = 1;
+    const idFor = (i: number): number => {
+        const cached = idOf[i] ?? 0;
+        if (cached) return cached;
+        const x = Math.round(pos[i * 3]! / quant);
+        const y = Math.round(pos[i * 3 + 1]! / quant);
+        const z = Math.round(pos[i * 3 + 2]! / quant);
+        let yz = xMap.get(x);
+        if (!yz) {
+            yz = new Map();
+            xMap.set(x, yz);
+        }
+        let zs = yz.get(y);
+        if (!zs) {
+            zs = new Map();
+            yz.set(y, zs);
+        }
+        let id = zs.get(z);
+        if (id === undefined) {
+            id = nextId++;
+            zs.set(z, id);
+        }
+        idOf[i] = id;
+        return id;
+    };
+    const directed = new Map<number, number>();
+    let vol6 = 0;
+    for (let t = 0; t < idx.length; t += 3) {
+        const a = idx[t]!;
+        const b = idx[t + 1]!;
+        const c = idx[t + 2]!;
+        const ax = pos[a * 3]!;
+        const ay = pos[a * 3 + 1]!;
+        const az = pos[a * 3 + 2]!;
+        const bx = pos[b * 3]!;
+        const by = pos[b * 3 + 1]!;
+        const bz = pos[b * 3 + 2]!;
+        const cx = pos[c * 3]!;
+        const cy = pos[c * 3 + 1]!;
+        const cz = pos[c * 3 + 2]!;
+        vol6 += ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx);
+        const wa = idFor(a);
+        const wb = idFor(b);
+        const wc = idFor(c);
+        for (const [p, qid] of [
+            [wa, wb],
+            [wb, wc],
+            [wc, wa],
+        ] as const) {
+            if (p === qid) continue;
+            const k = p * WINDING_ID_STRIDE + qid;
+            directed.set(k, (directed.get(k) ?? 0) + 1);
+        }
+    }
+    let mismatch = 0;
+    if (nextId > WINDING_ID_STRIDE) {
+        return windingReportStringKeys(geo);
+    }
+    const seen = new Set<number>();
+    for (const key of directed.keys()) {
+        const p = Math.floor(key / WINDING_ID_STRIDE);
+        const qq = key - p * WINDING_ID_STRIDE;
+        const lo = p < qq ? p : qq;
+        const hi = p < qq ? qq : p;
+        const und = lo * WINDING_ID_STRIDE + hi;
+        if (seen.has(und)) continue;
+        seen.add(und);
+        const fwd = directed.get(p * WINDING_ID_STRIDE + qq) ?? 0;
+        const back = directed.get(qq * WINDING_ID_STRIDE + p) ?? 0;
+        if (fwd !== 1 || back !== 1) mismatch++;
+    }
+    const signedVolume = vol6 / 6;
+    return {
+        signedVolume,
+        oppositeEdgeMismatch: mismatch,
+        consistent: signedVolume > 0 && mismatch === 0,
+    };
+}
+
+/** Same weld strings as the original report. Used only if a mesh exceeds the id stride. */
+function windingReportStringKeys(geo: BufferGeometry): WindingReport {
     const pos = geo.getAttribute("position").array as Float32Array;
     const index = geo.getIndex();
     if (!index) return { signedVolume: 0, oppositeEdgeMismatch: 0, consistent: false };

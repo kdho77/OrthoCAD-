@@ -435,10 +435,32 @@ function flippedWallFaces(
     sample: Array<{ i: number; j: number; u: number; where: string; wR: number; w: number }>;
 } {
     const q = 1e-4;
-    const keyOf = (i: number): string =>
-        `${Math.round(positions[i * 3]! / q)},${Math.round(positions[i * 3 + 1]! / q)},${Math.round(positions[i * 3 + 2]! / q)}`;
-    const directed = new Map<string, number>();
-    const owner = new Map<string, { i: number; j: number }>();
+    const stride = 2_097_152;
+    const idOf = new Map<number, Map<number, Map<number, number>>>();
+    let nextId = 1;
+    const keyOf = (vi: number): number => {
+        const x = Math.round(positions[vi * 3]! / q);
+        const y = Math.round(positions[vi * 3 + 1]! / q);
+        const z = Math.round(positions[vi * 3 + 2]! / q);
+        let yz = idOf.get(x);
+        if (!yz) {
+            yz = new Map();
+            idOf.set(x, yz);
+        }
+        let zs = yz.get(y);
+        if (!zs) {
+            zs = new Map();
+            yz.set(y, zs);
+        }
+        let id = zs.get(z);
+        if (id === undefined) {
+            id = nextId++;
+            zs.set(z, id);
+        }
+        return id;
+    };
+    const directed = new Map<number, number>();
+    const owner = new Map<number, { i: number; j: number }>();
     for (let t = 0; t < indices.length; t += 3) {
         const vs = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
         const loc = vs.map(lookup);
@@ -452,12 +474,12 @@ function flippedWallFaces(
             const p = keys[e]!;
             const qq = keys[(e + 1) % 3]!;
             if (p === qq) continue;
-            const k = `${p}>${qq}`;
+            const k = p * stride + qq;
             directed.set(k, (directed.get(k) ?? 0) + 1);
             if (!owner.has(k)) owner.set(k, { i, j });
         }
     }
-    const seen = new Set<string>();
+    const seen = new Set<number>();
     const sample: Array<{ i: number; j: number; u: number; where: string; wR: number; w: number }> = [];
     let n = 0;
     let rim = 0;
@@ -465,17 +487,18 @@ function flippedWallFaces(
     let bot = 0;
     let blend = 0;
     for (const key of directed.keys()) {
-        const sep = key.indexOf(">");
-        const p = key.slice(0, sep);
-        const qq = key.slice(sep + 1);
-        const und = p < qq ? `${p}|${qq}` : `${qq}|${p}`;
+        const p = Math.floor(key / stride);
+        const qq = key - p * stride;
+        const lo = p < qq ? p : qq;
+        const hi = p < qq ? qq : p;
+        const und = lo * stride + hi;
         if (seen.has(und)) continue;
         seen.add(und);
-        const fwd = directed.get(`${p}>${qq}`) ?? 0;
-        const back = directed.get(`${qq}>${p}`) ?? 0;
+        const fwd = directed.get(p * stride + qq) ?? 0;
+        const back = directed.get(qq * stride + p) ?? 0;
         // 1+0 is the rim/plantar seam (opposite half is on the top sheet or sole).
         if ((fwd === 1 && back === 1) || fwd + back === 1) continue;
-        const at = owner.get(`${p}>${qq}`) ?? owner.get(`${qq}>${p}`);
+        const at = owner.get(p * stride + qq) ?? owner.get(qq * stride + p);
         if (!at) continue;
         n++;
         const fr = frames[at.i];
@@ -586,15 +609,32 @@ function weldGenerated(
 
 function countCoincidentVerts(positions: number[], start: number, end: number, eps = 1e-9): number {
     const cell = Math.max(eps, 1e-6);
-    const buckets = new Map<string, number[]>();
+    const buckets = new Map<number, Map<number, Map<number, number[]>>>();
+    const bucketOf = (x: number, y: number, z: number, create: boolean): number[] | undefined => {
+        let yz = buckets.get(x);
+        if (!yz) {
+            if (!create) return undefined;
+            yz = new Map();
+            buckets.set(x, yz);
+        }
+        let zs = yz.get(y);
+        if (!zs) {
+            if (!create) return undefined;
+            zs = new Map();
+            yz.set(y, zs);
+        }
+        let list = zs.get(z);
+        if (!list && create) {
+            list = [];
+            zs.set(z, list);
+        }
+        return list;
+    };
     for (let i = start; i < end; i++) {
         const x = Math.floor(positions[i * 3]! / cell);
         const y = Math.floor(positions[i * 3 + 1]! / cell);
         const z = Math.floor(positions[i * 3 + 2]! / cell);
-        const k = `${x},${y},${z}`;
-        const list = buckets.get(k) ?? [];
-        list.push(i);
-        buckets.set(k, list);
+        bucketOf(x, y, z, true)!.push(i);
     }
     const lim2 = eps * eps;
     let dups = 0;
@@ -607,7 +647,7 @@ function countCoincidentVerts(positions: number[], start: number, end: number, e
         for (let dx = -1; dx <= 1; dx++) {
             for (let dy = -1; dy <= 1; dy++) {
                 for (let dz = -1; dz <= 1; dz++) {
-                    const hit = buckets.get(`${x0 + dx},${y0 + dy},${z0 + dz}`);
+                    const hit = bucketOf(x0 + dx, y0 + dy, z0 + dz, false);
                     if (!hit) continue;
                     for (const j of hit) {
                         if (j <= i) continue;

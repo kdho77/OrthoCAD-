@@ -371,10 +371,23 @@ function collectSole(geo: BufferGeometry): { tris: SoleTri[]; wantNegZ: boolean 
     return { tris, wantNegZ: nzSum < 0 };
 }
 
+function glyphSamplesOf(glyphs: TextGlyphGroup[]): TextXy[] {
+    const samples: TextXy[] = [];
+    for (const g of glyphs) {
+        for (const p of g.outer) samples.push(p);
+        for (const hole of g.holes) for (const p of hole) samples.push(p);
+    }
+    return samples;
+}
+
 function glyphHitsTri(
     pos: BufferGeometry["attributes"]["position"],
     tri: SoleTri,
-    glyphs: TextGlyphGroup[],
+    samples: TextXy[],
+    minX: number,
+    minY: number,
+    maxX: number,
+    maxY: number,
 ): boolean {
     const ax = pos.getX(tri.a);
     const ay = pos.getY(tri.a);
@@ -382,11 +395,19 @@ function glyphHitsTri(
     const by = pos.getY(tri.b);
     const cx = pos.getX(tri.c);
     const cy = pos.getY(tri.c);
-    const samples: TextXy[] = [];
-    for (const g of glyphs) {
-        samples.push(...g.outer);
-        for (const h of g.holes) samples.push(...h);
-    }
+    let tMinX = ax;
+    let tMaxX = ax;
+    let tMinY = ay;
+    let tMaxY = ay;
+    if (bx < tMinX) tMinX = bx;
+    else if (bx > tMaxX) tMaxX = bx;
+    if (cx < tMinX) tMinX = cx;
+    else if (cx > tMaxX) tMaxX = cx;
+    if (by < tMinY) tMinY = by;
+    else if (by > tMaxY) tMaxY = by;
+    if (cy < tMinY) tMinY = cy;
+    else if (cy > tMaxY) tMaxY = cy;
+    if (tMaxX < minX || tMinX > maxX || tMaxY < minY || tMinY > maxY) return false;
     for (const p of samples) {
         if (inTri(p.x, p.y, ax, ay, bx, by, cx, cy)) return true;
         if (Math.hypot(p.x - ax, p.y - ay) <= 2) return true;
@@ -740,12 +761,25 @@ export async function engraveBottomPlanar(
     const clipped = resampleGroups(inset ? clipGlyphs(groups, inset) : groups);
     const { tris: sole, wantNegZ } = collectSole(host);
     const posAttr = host.getAttribute("position");
+    const samples = glyphSamplesOf(clipped);
+    let sMinX = Infinity;
+    let sMinY = Infinity;
+    let sMaxX = -Infinity;
+    let sMaxY = -Infinity;
+    for (const p of samples) {
+        if (p.x < sMinX) sMinX = p.x;
+        if (p.y < sMinY) sMinY = p.y;
+        if (p.x > sMaxX) sMaxX = p.x;
+        if (p.y > sMaxY) sMaxY = p.y;
+    }
     const near = absorbPinches(
         sole,
         absorbEnclosed(
             posAttr,
             sole,
-            sole.filter((tri) => glyphHitsTri(posAttr, tri, clipped)),
+            sole.filter((tri) =>
+                glyphHitsTri(posAttr, tri, samples, sMinX - 2, sMinY - 2, sMaxX + 2, sMaxY + 2),
+            ),
         ),
     );
     if (!near.length) throw new TextMarkingError("boolean", "glyphs missed the sole faces");
