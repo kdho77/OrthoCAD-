@@ -1,0 +1,92 @@
+{
+  "singleLeft": [
+    {
+      "beltAngleDeg": 45,
+      "fileName": "Stream_Gate_ApexCore_L.gcode",
+      "grindingStyle": {
+        "radius_mm": 3,
+        "type": "rounded"
+      },
+      "material": "apex_core",
+      "outputType": "gcode",
+      "presetId": "apex-v2-insole-95a",
+      "printRecipe": {
+        "defaultHardness": "Medium",
+        "pattern": "gyroid",
+        "profileId": "apex-v2-insole-95a",
+        "version": 1,
+        "zones": []
+      },
+      "side": "left",
+      "stlStorageKey": "temp/left"
+    }
+  ],
+  "singleRight": [
+    {
+      "beltAngleDeg": 45,
+      "fileName": "Stream_Gate_ApexCore_R.gcode",
+      "grindingStyle": {
+        "radius_mm": 3,
+        "type": "rounded"
+      },
+      "material": "apex_core",
+      "outputType": "gcode",
+      "presetId": "apex-v2-insole-95a",
+      "printRecipe": {
+        "defaultHardness": "Medium",
+        "pattern": "gyroid",
+        "profileId": "apex-v2-insole-95a",
+        "version": 1,
+        "zones": []
+      },
+      "side": "right",
+      "stlStorageKey": "temp/right"
+    }
+  ],
+  "pair": [
+    {
+      "beltAngleDeg": 45,
+      "fileName": "Stream_Gate_ApexCore_L.gcode",
+      "grindingStyle": {
+        "radius_mm": 3,
+        "type": "rounded"
+      },
+      "material": "apex_core",
+      "outputType": "gcode",
+      "presetId": "apex-v2-insole-95a",
+      "printRecipe": {
+        "defaultHardness": "Medium",
+        "pattern": "gyroid",
+        "profileId": "apex-v2-insole-95a",
+        "version": 1,
+        "zones": []
+      },
+      "side": "left",
+      "stlStorageKey": "temp/left"
+    },
+    {
+      "beltAngleDeg": 45,
+      "fileName": "Stream_Gate_ApexCore_R.gcode",
+      "grindingStyle": {
+        "radius_mm": 3,
+        "type": "rounded"
+      },
+      "material": "apex_core",
+      "outputType": "gcode",
+      "presetId": "apex-v2-insole-95a",
+      "printRecipe": {
+        "defaultHardness": "Medium",
+        "pattern": "gyroid",
+        "profileId": "apex-v2-insole-95a",
+        "version": 1,
+        "zones": []
+      },
+      "side": "right",
+      "stlStorageKey": "temp/right"
+    }
+  ],
+  "pairFilenames": [
+    "Stream_Gate_ApexCore_L.gcode",
+    "Stream_Gate_ApexCore_R.gcode"
+  ]
+}
