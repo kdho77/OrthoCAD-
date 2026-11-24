@@ -24,7 +24,7 @@ Run the frozen gates:
 ```
 node validation/heel_lift_cup_regression_gates/prove-noop.mjs
 node validation/heel_lift_cup_regression_gates/prove-bad-change.mjs
-npx rstest run validation/heel_lift_cup_regression_gates/checker.test.ts
+npx rstest run --config validation/heel_lift_cup_regression_gates/rstest.gates.config.ts validation/heel_lift_cup_regression_gates/checker.optional.test.ts
 ```
 
 Grade a candidate without editing these files:

@@ -33,7 +33,7 @@ The live compose gate exits non-zero. Identity, surface, cap, tolerance, and pro
 
 ## Bad-change proofs
 
-`node validation/heel_lift_cup_regression_gates/prove-bad-change.mjs` (exit 0) and `checker.test.ts` (7 passed).
+`node validation/heel_lift_cup_regression_gates/prove-bad-change.mjs` (exit 0) and `checker.optional.test.ts` (7 passed). The checker is optional so the unit-test shard manifest, which this change does not edit, stays valid.
 
 | Bad change | Result |
 | --- | --- |

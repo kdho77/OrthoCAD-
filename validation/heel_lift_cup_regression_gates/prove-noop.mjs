@@ -58,7 +58,13 @@ expectPass("cap", run(node, [resolve(here, "check-cap.mjs")]));
 expectPass("tolerances", run(node, [resolve(here, "check-tolerances.mjs")]));
 expectPass(
     "checker",
-    run("npx", ["rstest", "run", "validation/heel_lift_cup_regression_gates/checker.test.ts"]),
+    run("npx", [
+        "rstest",
+        "run",
+        "--config",
+        "validation/heel_lift_cup_regression_gates/rstest.gates.config.ts",
+        "validation/heel_lift_cup_regression_gates/checker.optional.test.ts",
+    ]),
 );
 expectClinicalFail(
     run("npx", [
