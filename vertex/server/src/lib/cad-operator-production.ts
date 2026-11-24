@@ -1111,9 +1111,14 @@ export async function beginCadOperatorProduction(args: {
             return { productionId: claimed.row.id, status: "failed", side: args.insert.side };
         }
     }
-    const work = args.execute(claimed.row);
+    const row = claimed.row;
+    const work = new Promise<void>((resolve, reject) => {
+        setImmediate(() => {
+            Promise.resolve(args.execute(row)).then(resolve, reject);
+        });
+    });
     args.schedule(work);
-    return { productionId: claimed.row.id, status: "pending", side: args.insert.side };
+    return { productionId: row.id, status: "pending", side: args.insert.side };
 }
 
 /**

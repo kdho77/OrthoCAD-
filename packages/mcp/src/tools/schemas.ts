@@ -129,7 +129,7 @@ export const getProductionInputSchema = z.object({
      * When greater than 0, polls every ~2 s until status is succeeded or failed,
      * or until the deadline, then returns the latest public status.
      */
-    wait_s: z.number().min(0).max(120).optional(),
+    wait_s: z.number().min(0).max(300).optional(),
 });
 
 export const listProductionsByDesignInputSchema = z.object({
@@ -448,7 +448,7 @@ export const MCP_TOOL_DEFINITIONS = [
         description:
             "CAD-operator production status by production_id. Returns id, design, side, preset, status, timestamps, " +
             "G-code storage key, a non-PHI error, and a get_export_download hint when succeeded. No G-code bytes and no PHI. " +
-            "Optional wait_s (0–120, default 0) long-polls in-process about every 2 s until succeeded, failed, or the deadline.",
+            "Optional wait_s (0–300, default 0) long-polls in-process about every 2 s until succeeded, failed, or the deadline.",
         inputSchema: getProductionInputSchema,
     },
     {
