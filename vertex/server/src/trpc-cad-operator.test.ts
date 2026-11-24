@@ -275,6 +275,9 @@ async function sliceCallerMaterial(input: { material?: string; presetId?: string
                 status: 200,
             });
         }
+        if (url.endsWith("/v1/slice/jobs")) {
+            return new Response("job route is not deployed", { status: 404 });
+        }
         if (url.endsWith("/v1/slice")) {
             sliceCalls += 1;
             forms.push(init?.body as FormData);

@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 
-import { describe, expect, test } from "@rstest/core";
+import { afterEach, describe, expect, test } from "@rstest/core";
 
 import { HARDNESS_TO_INFILL_PCT } from "../../../shared/print-recipe/hardness-to-infill-pct.js";
 import type { PrintRecipeV1 } from "../../../shared/print-recipe/print-recipe.js";
@@ -20,6 +20,11 @@ import {
     infillPctForCadSlice,
     MemoryCadProductionStore,
     publicProductionError,
+    readSliceCheckpoint,
+    runCadSliceAttempt,
+    SLICE_JOB_POLL_BUDGET_MS,
+    SLICE_JOB_QUEUE_WAIT_CAP_MS,
+    SLICE_JOB_SLICE_CAP_MS,
     toPublicProduction,
 } from "./cad-operator-production.js";
 import { sliceWithVertexSlice } from "./vertexslice-client.js";
@@ -822,5 +827,419 @@ describe("publicProductionError operational messages", () => {
         );
         expect(email).toBe("VertexSlice error (502): rejected patient [redacted]");
         expect(email.length).toBeLessThanOrEqual(200);
+    });
+});
+
+interface MockSliceJob {
+    id: string;
+    acceptedAt: number;
+    queueMs: number;
+    sliceMs: number;
+    gcode: string;
+    failedError?: string;
+}
+
+function iso(ms: number): string {
+    return new Date(ms).toISOString();
+}
+
+function mockJobView(job: MockSliceJob, nowMs: number) {
+    const start = job.acceptedAt + job.queueMs;
+    const finish = start + job.sliceMs;
+    const queuedAt = iso(job.acceptedAt);
+    if (job.failedError && nowMs >= start) {
+        return {
+            job_id: job.id,
+            status: "failed",
+            position: null,
+            queued_at: queuedAt,
+            started_at: iso(start),
+            finished_at: iso(start),
+            elapsed_s: 0,
+            error: job.failedError,
+        };
+    }
+    if (nowMs < start) {
+        return {
+            job_id: job.id,
+            status: "queued",
+            position: 1,
+            queued_at: queuedAt,
+            started_at: null,
+            finished_at: null,
+            elapsed_s: null,
+            error: null,
+        };
+    }
+    if (nowMs < finish) {
+        return {
+            job_id: job.id,
+            status: "running",
+            position: null,
+            queued_at: queuedAt,
+            started_at: iso(start),
+            finished_at: null,
+            elapsed_s: (nowMs - start) / 1000,
+            error: null,
+        };
+    }
+    return {
+        job_id: job.id,
+        status: "succeeded",
+        position: null,
+        queued_at: queuedAt,
+        started_at: iso(start),
+        finished_at: iso(finish),
+        elapsed_s: job.sliceMs / 1000,
+        error: null,
+    };
+}
+
+function installSliceJobFetch(args: {
+    nowMs: () => number;
+    jobs: MockSliceJob[];
+    mode: "jobs" | "jobs-404" | "lose";
+    syncBody?: string;
+}): string[] {
+    const calls: string[] = [];
+    let posted = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        calls.push(`${method} ${url}`);
+        if (url.endsWith("/v1/materials")) {
+            return new Response(JSON.stringify(["apex_core"]), {
+                status: 200,
+                headers: { "content-type": "application/json" },
+            });
+        }
+        if (method === "POST" && url.endsWith("/v1/slice/jobs")) {
+            if (args.mode === "jobs-404") return new Response("not deployed", { status: 404 });
+            const job = args.jobs[posted];
+            posted += 1;
+            if (!job) return new Response("unexpected job", { status: 500 });
+            job.acceptedAt = args.nowMs();
+            return new Response(JSON.stringify({ job_id: job.id, status: "queued", position: posted }), {
+                status: 202,
+                headers: { "content-type": "application/json" },
+            });
+        }
+        if (args.mode === "lose" && url.includes("/v1/slice/jobs/")) {
+            return new Response("restarted", { status: 404 });
+        }
+        const result = url.match(/\/v1\/slice\/jobs\/([^/]+)\/result$/);
+        if (result) {
+            const job = args.jobs.find((item) => item.id === decodeURIComponent(result[1] ?? ""));
+            if (!job) return new Response("missing", { status: 404 });
+            if (mockJobView(job, args.nowMs()).status !== "succeeded")
+                return new Response("busy", { status: 409 });
+            return new Response(job.gcode, { status: 200, headers: { "content-type": "text/plain" } });
+        }
+        const status = url.match(/\/v1\/slice\/jobs\/([^/]+)$/);
+        if (status && method === "GET") {
+            const job = args.jobs.find((item) => item.id === decodeURIComponent(status[1] ?? ""));
+            if (!job) return new Response("missing", { status: 404 });
+            return new Response(JSON.stringify(mockJobView(job, args.nowMs())), {
+                status: 200,
+                headers: { "content-type": "application/json" },
+            });
+        }
+        if (method === "POST" && url.endsWith("/v1/slice")) {
+            return new Response(args.syncBody ?? "", {
+                status: 200,
+                headers: { "content-type": "text/plain" },
+            });
+        }
+        return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+    return calls;
+}
+
+describe("VertexSlice job productions", () => {
+    const originalFetch = globalThis.fetch;
+    const foot = triangleStl([0, 0, 0, 120, 0, 0, 0, 40, 8]);
+
+    async function drive(args: {
+        store: MemoryCadProductionStore;
+        rowId: string;
+        side: "left" | "right";
+        budgetMs: number;
+        now: () => Date;
+        sleep: (ms: number) => Promise<void>;
+        saved: Map<string, string>;
+    }): Promise<void> {
+        const row = await args.store.findById(args.rowId);
+        if (!row) throw new Error("missing production");
+        await executeCadOperatorProduction({
+            row,
+            store: args.store,
+            now: args.now,
+            sliceBudgetMs: args.budgetMs,
+            sleep: args.sleep,
+            materialize: async () => ({ stlStorageKey: `tmp/${args.side}.stl`, meshFingerprint: "mesh" }),
+            slice: async (stlStorageKey, sliceCtx) => {
+                const attempt = await runCadSliceAttempt({
+                    request: sliceCtx?.checkpoint
+                        ? null
+                        : {
+                              profileId: "apex-v2-insole-95a",
+                              material: "apex_core",
+                              model: foot,
+                              filename: `${args.side}.stl`,
+                              infillDensityPct: 32,
+                              side: args.side,
+                              sliceTimeoutMs: sliceCtx?.sliceTimeoutMs,
+                          },
+                    checkpoint: sliceCtx?.checkpoint ?? null,
+                    stlStorageKey,
+                    meshFingerprint: sliceCtx?.meshFingerprint ?? "mesh",
+                    credentialId: "cred",
+                    side: args.side,
+                    now: sliceCtx?.now ?? args.now,
+                    sleep: sliceCtx?.sleep ?? args.sleep,
+                    budgetMs: sliceCtx?.budgetMs ?? args.budgetMs,
+                    persistCheckpoint: sliceCtx?.persistCheckpoint,
+                });
+                if (attempt.kind === "pending") return { pending: true, checkpoint: attempt.checkpoint };
+                return { gcode: attempt.gcode, jobId: attempt.jobId };
+            },
+            uploadGcode: async (gcode) => {
+                args.saved.set(args.side, gcode);
+                return { storageKey: `gcode/${args.side}.gcode` };
+            },
+            charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+        });
+    }
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch;
+        delete process.env.VERTEXSLICE_SLICER_URL;
+        delete process.env.VERTEXSLICE_API_KEY;
+    });
+
+    test("two overlapping productions succeed when the second waits 200s in queue", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const t0 = Date.parse("2026-11-23T16:00:00.000Z");
+        let nowMs = t0;
+        const now = () => new Date(nowMs);
+        const sleep = async (ms: number) => {
+            nowMs += ms;
+        };
+        const leftGcode = "G1 X1 ; foot-a\n";
+        const rightGcode = "G1 X2 ; foot-b\n";
+        const jobs: MockSliceJob[] = [
+            { id: "job-left", acceptedAt: 0, queueMs: 0, sliceMs: 30_000, gcode: leftGcode },
+            { id: "job-right", acceptedAt: 0, queueMs: 200_000, sliceMs: 10_000, gcode: rightGcode },
+        ];
+        installSliceJobFetch({ nowMs: () => nowMs, jobs, mode: "jobs" });
+        const store = new MemoryCadProductionStore();
+        const left = await claimProduction(store, insert("left", "overlap-left"), now());
+        const right = await claimProduction(store, insert("right", "overlap-right"), now());
+        const saved = new Map<string, string>();
+        await drive({ store, rowId: left.row.id, side: "left", budgetMs: 1, now, sleep, saved });
+        await drive({ store, rowId: right.row.id, side: "right", budgetMs: 1, now, sleep, saved });
+        const queued = await store.findById(right.row.id);
+        expect(queued?.status).toBe("running");
+        expect(readSliceCheckpoint(queued?.error)?.jobId).toBe("job-right");
+        expect(toPublicProduction(queued ?? right.row).error).toBeNull();
+        expect(toPublicProduction(queued ?? right.row).status).toBe("running");
+
+        const before = nowMs;
+        await drive({
+            store,
+            rowId: right.row.id,
+            side: "right",
+            budgetMs: SLICE_JOB_POLL_BUDGET_MS,
+            now,
+            sleep,
+            saved,
+        });
+        expect(nowMs - before).toBeLessThanOrEqual(SLICE_JOB_POLL_BUDGET_MS);
+        const stillQueued = await store.findById(right.row.id);
+        expect(stillQueued?.status).toBe("running");
+        expect(stillQueued?.error).not.toContain("Manufacturing timed out");
+        expect(toPublicProduction(stillQueued ?? right.row).error).toBeNull();
+
+        nowMs = t0 + 210_000;
+        await drive({ store, rowId: right.row.id, side: "right", budgetMs: 0, now, sleep, saved });
+        await drive({ store, rowId: left.row.id, side: "left", budgetMs: 0, now, sleep, saved });
+        const doneLeft = await store.findById(left.row.id);
+        const doneRight = await store.findById(right.row.id);
+        expect(doneLeft?.status).toBe("succeeded");
+        expect(doneRight?.status).toBe("succeeded");
+        expect(saved.get("left")).toBe(leftGcode);
+        expect(saved.get("right")).toBe(rightGcode);
+        expect(doneRight?.error).toBeNull();
+    });
+
+    test("a stuck slice fails at 260s from started_at and names the slice hop", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const t0 = Date.parse("2026-11-23T16:00:00.000Z");
+        let nowMs = t0;
+        const jobs: MockSliceJob[] = [
+            { id: "job-stuck", acceptedAt: 0, queueMs: 0, sliceMs: 86_400_000, gcode: "G1 SHOULD-NOT\n" },
+        ];
+        installSliceJobFetch({ nowMs: () => nowMs, jobs, mode: "jobs" });
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(store, insert("left", "stuck-slice"), new Date(nowMs));
+        const saved = new Map<string, string>();
+        const now = () => new Date(nowMs);
+        const sleep = async (ms: number) => {
+            nowMs += ms;
+        };
+        await drive({ store, rowId: claimed.row.id, side: "left", budgetMs: 1, now, sleep, saved });
+        nowMs = t0 + SLICE_JOB_SLICE_CAP_MS - 1;
+        await drive({ store, rowId: claimed.row.id, side: "left", budgetMs: 0, now, sleep, saved });
+        expect((await store.findById(claimed.row.id))?.status).toBe("running");
+        nowMs = t0 + SLICE_JOB_SLICE_CAP_MS;
+        await drive({ store, rowId: claimed.row.id, side: "left", budgetMs: 0, now, sleep, saved });
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toBe("VertexSlice slice exceeded 260s (left)");
+        expect(row?.error).not.toContain("Manufacturing timed out");
+        expect(saved.has("left")).toBe(false);
+    });
+
+    test("a 404 on a known job is failed and retryable", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const t0 = Date.parse("2026-11-23T16:00:00.000Z");
+        const jobs: MockSliceJob[] = [
+            { id: "job-lost", acceptedAt: 0, queueMs: 0, sliceMs: 10_000, gcode: "G1\n" },
+        ];
+        installSliceJobFetch({ nowMs: () => t0, jobs, mode: "lose" });
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(store, insert("right", "lost-job"), new Date(t0));
+        await drive({
+            store,
+            rowId: claimed.row.id,
+            side: "right",
+            budgetMs: 1,
+            now: () => new Date(t0),
+            sleep: async () => undefined,
+            saved: new Map(),
+        });
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toContain("404");
+        expect(row?.error).toContain("retryable");
+        expect(row?.error).not.toContain("Manufacturing timed out");
+        const again = await claimProduction(store, insert("right", "lost-job"), new Date(t0 + 1_000));
+        expect(again.run).toBe(true);
+        expect(again.row.status).toBe("pending");
+        expect(again.row.error).toBeNull();
+    });
+
+    test("POST /v1/slice/jobs 404 falls back to sync /v1/slice bytes", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const syncBody = "G1 X0 \n; keep-bytes\n";
+        const calls = installSliceJobFetch({
+            nowMs: () => Date.parse("2026-11-23T16:00:00.000Z"),
+            jobs: [],
+            mode: "jobs-404",
+            syncBody,
+        });
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(
+            store,
+            insert("left", "fallback-sync"),
+            new Date("2026-11-23T16:00:00.000Z"),
+        );
+        const saved = new Map<string, string>();
+        await drive({
+            store,
+            rowId: claimed.row.id,
+            side: "left",
+            budgetMs: SLICE_JOB_POLL_BUDGET_MS,
+            now: () => new Date("2026-11-23T16:00:00.000Z"),
+            sleep: async () => undefined,
+            saved,
+        });
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("succeeded");
+        expect(saved.get("left")).toBe(syncBody);
+        expect(calls.some((call) => call.startsWith("POST") && call.endsWith("/v1/slice/jobs"))).toBe(true);
+        expect(calls.some((call) => call.startsWith("POST") && call.endsWith("/v1/slice"))).toBe(true);
+        expect(readSliceCheckpoint(row?.error)).toBeNull();
+    });
+
+    test("queue wait over 20 minutes names the queue hop", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const t0 = Date.parse("2026-11-23T16:00:00.000Z");
+        let nowMs = t0;
+        const jobs: MockSliceJob[] = [
+            {
+                id: "job-queue",
+                acceptedAt: 0,
+                queueMs: SLICE_JOB_QUEUE_WAIT_CAP_MS + 60_000,
+                sliceMs: 1_000,
+                gcode: "G1\n",
+            },
+        ];
+        installSliceJobFetch({ nowMs: () => nowMs, jobs, mode: "jobs" });
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(store, insert("right", "queue-cap"), new Date(t0));
+        const now = () => new Date(nowMs);
+        await drive({
+            store,
+            rowId: claimed.row.id,
+            side: "right",
+            budgetMs: 1,
+            now,
+            sleep: async () => undefined,
+            saved: new Map(),
+        });
+        nowMs = t0 + SLICE_JOB_QUEUE_WAIT_CAP_MS;
+        await drive({
+            store,
+            rowId: claimed.row.id,
+            side: "right",
+            budgetMs: 0,
+            now,
+            sleep: async () => undefined,
+            saved: new Map(),
+        });
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toContain("queue wait");
+        expect(row?.error).not.toContain("Manufacturing timed out");
+        expect(row?.error).not.toContain("slice exceeded");
+    });
+
+    test("a failed job records the server hop", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const t0 = Date.parse("2026-11-23T16:00:00.000Z");
+        const jobs: MockSliceJob[] = [
+            {
+                id: "job-fail",
+                acceptedAt: 0,
+                queueMs: 0,
+                sliceMs: 1_000,
+                gcode: "G1\n",
+                failedError: "slice exceeded 260s",
+            },
+        ];
+        installSliceJobFetch({ nowMs: () => t0 + 1_000, jobs, mode: "jobs" });
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(store, insert("left", "server-fail"), new Date(t0));
+        await drive({
+            store,
+            rowId: claimed.row.id,
+            side: "left",
+            budgetMs: 1,
+            now: () => new Date(t0 + 1_000),
+            sleep: async () => undefined,
+            saved: new Map(),
+        });
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toContain("server error");
+        expect(row?.error).toContain("slice exceeded 260s");
+        expect(row?.error).not.toContain("Manufacturing timed out");
     });
 });

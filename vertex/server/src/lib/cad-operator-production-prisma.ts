@@ -11,7 +11,7 @@ import type {
     CadProductionStatus,
     CadProductionStore,
 } from "./cad-operator-production.js";
-import { isLeaseExpired, UniqueIdempotencyError } from "./cad-operator-production.js";
+import { isLeaseExpired, readSliceCheckpoint, UniqueIdempotencyError } from "./cad-operator-production.js";
 
 type ProductionRecord = {
     id: string;
@@ -146,7 +146,7 @@ export class PrismaCadProductionStore implements CadProductionStore {
         });
         for (const row of rows) {
             const mapped = mapRow(row as ProductionRecord);
-            if (!isLeaseExpired(mapped, now)) return mapped;
+            if (readSliceCheckpoint(mapped.error) || !isLeaseExpired(mapped, now)) return mapped;
         }
         return null;
     }

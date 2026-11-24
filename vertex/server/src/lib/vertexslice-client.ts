@@ -251,6 +251,7 @@ function materialIsListed(listed: readonly string[], material: string): boolean 
 function isMaterialRejection(errorText: string, material: string): boolean {
     const text = errorText.toLowerCase();
     const id = material.trim().toLowerCase();
+    if (!id) return false;
     const mentionsMaterial = text.includes(id) || /\bmaterial\b|\bfilament\b/.test(text);
     if (!mentionsMaterial) return false;
     return /not available|not found|unknown|unsupported|unrecognized|invalid|not allowed|no such/.test(text);
@@ -570,10 +571,109 @@ function regionsHeaderCount(response: Response): number | null {
     return Number(text);
 }
 
-export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise<string> {
+/** Multipart fields shared by POST /v1/slice and POST /v1/slice/jobs. */
+export function buildSliceForm(args: {
+    profileId: string;
+    material: string;
+    infillDensityPct: number | undefined;
+    bytes: Uint8Array;
+    is3mf: boolean;
+    filename: string | undefined;
+}): FormData {
+    const form = new FormData();
+    form.append("profile_id", args.profileId);
+    form.append("material", args.material);
+    if (args.infillDensityPct !== undefined) {
+        const pct = args.infillDensityPct;
+        if (!Number.isInteger(pct) || pct < 5 || pct > 100) {
+            throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: `PrintRecipe infill ${pct}% is outside the locked slicer range (5–100)`,
+            });
+        }
+        form.append("infill_density", String(pct));
+    }
+    if (args.is3mf) {
+        form.append(
+            "model",
+            new Blob([args.bytes], { type: VERTEXSLICE_3MF_CONTENT_TYPE }),
+            VERTEXSLICE_3MF_FILENAME,
+        );
+    } else {
+        form.append("model", new Blob([args.bytes], { type: "model/stl" }), args.filename ?? "model.stl");
+    }
+    return form;
+}
+
+function assertSliceRegions(response: Response, expectedRegions: number): void {
+    if (expectedRegions <= 0) return;
+    const applied = regionsHeaderCount(response);
+    if (applied == null || applied < expectedRegions) {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+                applied == null
+                    ? `Regional hardness was not confirmed (missing ${VERTEXSLICE_REGIONS_HEADER}; sent ${expectedRegions} modifier regions). Refusing a single-density print.`
+                    : `Regional hardness applied ${applied} of ${expectedRegions} modifier regions. Refusing a single-density print.`,
+        });
+    }
+}
+
+function throwSliceHttpError(
+    status: number,
+    rawDetail: string,
+    statusText: string,
+    material: string,
+    expectedRegions: number,
+): never {
+    let detail = rawDetail.trim();
+    if (detail) {
+        try {
+            detail = upstreamErrorText(JSON.parse(rawDetail) as unknown, statusText);
+        } catch {
+            detail = rawDetail.trim();
+        }
+    } else {
+        detail = upstreamErrorText(null, statusText);
+    }
+    if (isMaterialRejection(detail, material)) {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: materialUnavailableMessage(material, detail),
+        });
+    }
+    if (status === 422 && expectedRegions > 0) {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Regional hardness was rejected by VertexSlice (422): ${detail}`,
+        });
+    }
+    throw new TRPCError({
+        code: status === 401 || status === 403 ? "UNAUTHORIZED" : "INTERNAL_SERVER_ERROR",
+        message: `VertexSlice error (${status}): ${detail}`,
+    });
+}
+
+interface OpenedSliceForm {
+    material: string;
+    profileId: string;
+    bytes: Uint8Array;
+    is3mf: boolean;
+    expectedRegions: number;
+    triangles: number | null;
+    extentMm: [number, number, number] | null;
+    form: FormData;
+    baseUrl: string;
+    apiKey: string;
+}
+
+async function openSliceForm(
+    request: VertexSliceRequest,
+    fetchOpts?: { signal?: AbortSignal; timedOut?: { timeoutSec: number; side?: string } },
+): Promise<OpenedSliceForm> {
     const material = assertEnabledVertexSliceMaterial(request.material);
     const profileId = assertLockedVertexSliceProfile(request.profileId.trim());
-    let bytes = new Uint8Array(request.model);
+    let bytes: Uint8Array = new Uint8Array(request.model);
     const expectedRegions = request.expectedRegionCount ?? 0;
     const is3mf = isVertexSlice3mfModel(bytes, request.filename);
     if (expectedRegions > 0 && !is3mf) {
@@ -607,7 +707,37 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
         triangles = mesh.triangles;
         extentMm = mesh.extentMm;
     }
+    const listed = await listVertexSliceMaterials(fetchOpts);
+    if (!materialIsListed(listed, material)) {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: materialUnavailableMessage(material),
+        });
+    }
+    const { baseUrl, apiKey } = getVertexSliceConfig();
+    const form = buildSliceForm({
+        profileId,
+        material,
+        infillDensityPct: request.infillDensityPct,
+        bytes,
+        is3mf,
+        filename: request.filename,
+    });
+    return {
+        material,
+        profileId,
+        bytes,
+        is3mf,
+        expectedRegions,
+        triangles,
+        extentMm,
+        form,
+        baseUrl,
+        apiKey,
+    };
+}
 
+export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise<string> {
     const sliceTimeoutMs =
         request.sliceTimeoutMs !== undefined ? Math.max(1, request.sliceTimeoutMs) : undefined;
     const sliceTimeoutSec =
@@ -617,40 +747,23 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
     const deadline = sliceTimeoutMs !== undefined ? armSliceDeadline(sliceTimeoutMs) : null;
 
     try {
-        const listed = await listVertexSliceMaterials(
+        const opened = await openSliceForm(
+            request,
             deadline ? { signal: deadline.signal, timedOut } : undefined,
         );
-        if (!materialIsListed(listed, material)) {
-            throw new TRPCError({
-                code: "BAD_REQUEST",
-                message: materialUnavailableMessage(material),
-            });
-        }
-
-        const { baseUrl, apiKey } = getVertexSliceConfig();
+        const {
+            material,
+            profileId,
+            bytes,
+            is3mf,
+            expectedRegions,
+            triangles,
+            extentMm,
+            form,
+            baseUrl,
+            apiKey,
+        } = opened;
         const endpoint = vertexSliceUrl(baseUrl, "/v1/slice");
-        const form = new FormData();
-        form.append("profile_id", profileId);
-        form.append("material", material);
-        if (request.infillDensityPct !== undefined) {
-            const pct = request.infillDensityPct;
-            if (!Number.isInteger(pct) || pct < 5 || pct > 100) {
-                throw new TRPCError({
-                    code: "BAD_REQUEST",
-                    message: `PrintRecipe infill ${pct}% is outside the locked slicer range (5–100)`,
-                });
-            }
-            form.append("infill_density", String(pct));
-        }
-        if (is3mf) {
-            form.append(
-                "model",
-                new Blob([bytes], { type: VERTEXSLICE_3MF_CONTENT_TYPE }),
-                VERTEXSLICE_3MF_FILENAME,
-            );
-        } else {
-            form.append("model", new Blob([bytes], { type: "model/stl" }), request.filename ?? "model.stl");
-        }
 
         console.log("[vertexslice] -> POST /v1/slice", {
             endpoint,
@@ -686,55 +799,15 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
 
         if (!response.ok) {
             const rawDetail = await settleWithinSignal(response.text(), deadline?.signal, timedOut);
-            let detail = rawDetail.trim();
-            if (detail) {
-                try {
-                    detail = upstreamErrorText(JSON.parse(rawDetail) as unknown, response.statusText);
-                } catch {
-                    detail = rawDetail.trim();
-                }
-            } else {
-                detail = upstreamErrorText(null, response.statusText);
-            }
             console.error("[vertexslice] slice failed", {
                 endpoint,
                 status: response.status,
-                detail,
                 material,
             });
-            if (isMaterialRejection(detail, material)) {
-                throw new TRPCError({
-                    code: "BAD_REQUEST",
-                    message: materialUnavailableMessage(material, detail),
-                });
-            }
-            if (response.status === 422 && expectedRegions > 0) {
-                throw new TRPCError({
-                    code: "BAD_REQUEST",
-                    message: `Regional hardness was rejected by VertexSlice (422): ${detail}`,
-                });
-            }
-            throw new TRPCError({
-                code:
-                    response.status === 401 || response.status === 403
-                        ? "UNAUTHORIZED"
-                        : "INTERNAL_SERVER_ERROR",
-                message: `VertexSlice error (${response.status}): ${detail}`,
-            });
+            throwSliceHttpError(response.status, rawDetail, response.statusText, material, expectedRegions);
         }
 
-        if (expectedRegions > 0) {
-            const applied = regionsHeaderCount(response);
-            if (applied == null || applied < expectedRegions) {
-                throw new TRPCError({
-                    code: "BAD_REQUEST",
-                    message:
-                        applied == null
-                            ? `Regional hardness was not confirmed (missing ${VERTEXSLICE_REGIONS_HEADER}; sent ${expectedRegions} modifier regions). Refusing a single-density print.`
-                            : `Regional hardness applied ${applied} of ${expectedRegions} modifier regions. Refusing a single-density print.`,
-                });
-            }
-        }
+        assertSliceRegions(response, expectedRegions);
 
         const gcode = await settleWithinSignal(response.text(), deadline?.signal, timedOut);
         if (!gcode.trim()) {
@@ -748,4 +821,244 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
     } finally {
         deadline?.cancel();
     }
+}
+
+/** One status or result round trip. Keeps a Vercel invocation off a multi-minute slice. */
+const SLICE_JOB_STATUS_TIMEOUT_MS = 15_000;
+const SLICE_JOB_RESULT_TIMEOUT_MS = 30_000;
+const SLICE_JOB_SUBMIT_TIMEOUT_MS = 20_000;
+
+export type VertexSliceJobStatusName = "queued" | "running" | "succeeded" | "failed";
+
+export interface VertexSliceJobSnapshot {
+    jobId: string;
+    status: VertexSliceJobStatusName;
+    position: number | null;
+    queuedAt: string | null;
+    startedAt: string | null;
+    finishedAt: string | null;
+    elapsedS: number | null;
+    error: string | null;
+}
+
+export type SubmitVertexSliceJobResult =
+    | { kind: "accepted"; jobId: string; position: number }
+    | { kind: "unsupported" };
+
+export type VertexSliceJobFetch =
+    | { kind: "job"; job: VertexSliceJobSnapshot }
+    | { kind: "missing" }
+    | { kind: "unavailable" };
+
+export type VertexSliceJobResult =
+    | { kind: "gcode"; gcode: string }
+    | { kind: "not-ready" }
+    | { kind: "missing" }
+    | { kind: "unavailable" };
+
+function sliceJobPath(jobId: string): string {
+    const id = jobId.trim();
+    if (!id || id.length > 200 || /[\s/?#\\]/.test(id) || id.includes("..")) {
+        throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "VertexSlice server error: invalid job id",
+        });
+    }
+    return `/v1/slice/jobs/${encodeURIComponent(id)}`;
+}
+
+function nullableString(value: unknown): string | null {
+    if (value == null) return null;
+    if (typeof value !== "string") return null;
+    const text = value.trim();
+    return text || null;
+}
+
+function nullableNumber(value: unknown): number | null {
+    if (value == null) return null;
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function parseJobSnapshot(payload: unknown): VertexSliceJobSnapshot | null {
+    if (!payload || typeof payload !== "object") return null;
+    const record = payload as Record<string, unknown>;
+    const jobId = typeof record.job_id === "string" ? record.job_id.trim() : "";
+    const status = record.status;
+    if (!jobId) return null;
+    if (status !== "queued" && status !== "running" && status !== "succeeded" && status !== "failed")
+        return null;
+    const position = record.position;
+    return {
+        jobId,
+        status,
+        position: typeof position === "number" && Number.isFinite(position) ? position : null,
+        queuedAt: nullableString(record.queued_at),
+        startedAt: nullableString(record.started_at),
+        finishedAt: nullableString(record.finished_at),
+        elapsedS: nullableNumber(record.elapsed_s),
+        error: nullableString(record.error),
+    };
+}
+
+function isTransientSliceFetch(err: unknown): boolean {
+    if (!(err instanceof Error)) return false;
+    if (err.message.startsWith("VertexSlice error (")) return false;
+    if (err.message.startsWith("VertexSlice timed out after")) return true;
+    if (err.message.startsWith("Could not reach VertexSlice")) return true;
+    return err.name === "AbortError" || err.name === "TimeoutError" || /aborted|timeout/i.test(err.message);
+}
+
+async function fetchSliceJob(
+    url: string,
+    timeoutMs: number,
+    init: RequestInit,
+): Promise<Response | "unavailable"> {
+    const deadline = armSliceDeadline(timeoutMs);
+    try {
+        return await vertexSliceFetch(url, { ...init, signal: deadline.signal });
+    } catch (err) {
+        if (isTransientSliceFetch(err)) return "unavailable";
+        throw err;
+    } finally {
+        deadline.cancel();
+    }
+}
+
+/**
+ * POST /v1/slice/jobs. Same auth and multipart fields as POST /v1/slice.
+ * HTTP 404 means this server does not have the job route yet.
+ * Any other 4xx is thrown immediately, the same way /v1/slice rejects it.
+ */
+export async function submitVertexSliceJob(request: VertexSliceRequest): Promise<SubmitVertexSliceJobResult> {
+    const deadline = armSliceDeadline(SLICE_JOB_SUBMIT_TIMEOUT_MS);
+    try {
+        const opened = await openSliceForm(request, { signal: deadline.signal });
+        const endpoint = vertexSliceUrl(opened.baseUrl, "/v1/slice/jobs");
+        console.log("[vertexslice] -> POST /v1/slice/jobs", {
+            profileId: opened.profileId,
+            material: opened.material,
+            modelBytes: opened.bytes.byteLength,
+            authenticated: true,
+        });
+        const response = await vertexSliceFetch(endpoint, {
+            method: "POST",
+            headers: authHeaders(opened.apiKey),
+            body: opened.form,
+            signal: deadline.signal,
+        });
+        if (response.status === 404) {
+            await response.text().catch(() => undefined);
+            return { kind: "unsupported" };
+        }
+        if (!response.ok) {
+            const rawDetail = await response.text();
+            throwSliceHttpError(
+                response.status,
+                rawDetail,
+                response.statusText,
+                opened.material,
+                opened.expectedRegions,
+            );
+        }
+        const raw = await response.text();
+        let payload: unknown = null;
+        try {
+            payload = raw ? (JSON.parse(raw) as unknown) : null;
+        } catch {
+            payload = null;
+        }
+        const job = parseJobSnapshot(payload);
+        const position =
+            payload &&
+            typeof payload === "object" &&
+            typeof (payload as { position?: unknown }).position === "number"
+                ? (payload as { position: number }).position
+                : null;
+        if (!job || job.status !== "queued" || position == null) {
+            throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: "VertexSlice server error: invalid job response",
+            });
+        }
+        console.log("[vertexslice] <- POST /v1/slice/jobs", { jobId: job.jobId, position });
+        return { kind: "accepted", jobId: job.jobId, position };
+    } catch (err) {
+        if (isTransientSliceFetch(err)) {
+            throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: "VertexSlice server error: submit unavailable",
+            });
+        }
+        throw err;
+    } finally {
+        deadline.cancel();
+    }
+}
+
+export async function getVertexSliceJob(jobId: string): Promise<VertexSliceJobFetch> {
+    const { baseUrl, apiKey } = getVertexSliceConfig();
+    const endpoint = vertexSliceUrl(baseUrl, sliceJobPath(jobId));
+    const response = await fetchSliceJob(endpoint, SLICE_JOB_STATUS_TIMEOUT_MS, {
+        method: "GET",
+        headers: authHeaders(apiKey),
+    });
+    if (response === "unavailable") return { kind: "unavailable" };
+    if (response.status === 404) {
+        await response.text().catch(() => undefined);
+        return { kind: "missing" };
+    }
+    if (!response.ok) {
+        const rawDetail = await response.text();
+        throwSliceHttpError(response.status, rawDetail, response.statusText, "", 0);
+    }
+    const raw = await response.text();
+    let payload: unknown = null;
+    try {
+        payload = raw ? (JSON.parse(raw) as unknown) : null;
+    } catch {
+        payload = null;
+    }
+    const job = parseJobSnapshot(payload);
+    if (!job) {
+        throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "VertexSlice server error: invalid job status",
+        });
+    }
+    return { kind: "job", job };
+}
+
+/** Result body is the same text POST /v1/slice returns. It is not rewritten. */
+export async function downloadVertexSliceJobResult(
+    jobId: string,
+    expectedRegionCount = 0,
+): Promise<VertexSliceJobResult> {
+    const { baseUrl, apiKey } = getVertexSliceConfig();
+    const endpoint = vertexSliceUrl(baseUrl, `${sliceJobPath(jobId)}/result`);
+    const response = await fetchSliceJob(endpoint, SLICE_JOB_RESULT_TIMEOUT_MS, {
+        method: "GET",
+        headers: authHeaders(apiKey),
+    });
+    if (response === "unavailable") return { kind: "unavailable" };
+    if (response.status === 404) {
+        await response.text().catch(() => undefined);
+        return { kind: "missing" };
+    }
+    if (response.status === 409) {
+        await response.text().catch(() => undefined);
+        return { kind: "not-ready" };
+    }
+    if (!response.ok) {
+        const rawDetail = await response.text();
+        throwSliceHttpError(response.status, rawDetail, response.statusText, "", expectedRegionCount);
+    }
+    assertSliceRegions(response, expectedRegionCount);
+    const gcode = await response.text();
+    if (!gcode.trim()) {
+        throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "VertexSlice returned empty G-code",
+        });
+    }
+    return { kind: "gcode", gcode };
 }

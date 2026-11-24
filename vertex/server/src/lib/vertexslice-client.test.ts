@@ -5,10 +5,13 @@ import { TRPCError } from "@trpc/server";
 import { APEX_V2_INSOLE_LOCKED_PROFILE_ID } from "../../../shared/print-recipe/print-recipe";
 import {
     assertEnabledVertexSliceMaterial,
+    downloadVertexSliceJobResult,
+    getVertexSliceJob,
     inspectManufacturingStl,
     manufacturingBackendForOutput,
     materialIdsFromPayload,
     sliceWithVertexSlice,
+    submitVertexSliceJob,
 } from "./vertexslice-client.js";
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -491,6 +494,100 @@ describe("VertexSlice printer G-code client", () => {
             }),
         ).rejects.toThrow(/Manufacturing mesh is not sliceable/);
         expect(calls).toHaveLength(0);
+    });
+});
+
+describe("VertexSlice job API", () => {
+    const model = new Uint8Array([1, 2, 3]);
+
+    test("POST /v1/slice/jobs sends the same multipart fields and API key header", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const calls = installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice/jobs")) {
+                return new Response(JSON.stringify({ job_id: "job-1", status: "queued", position: 0 }), {
+                    status: 202,
+                });
+            }
+            return new Response("G1 X0\n", { status: 200 });
+        });
+        const request = {
+            profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+            material: "apex_core",
+            model,
+            filename: "left.stl",
+            infillDensityPct: 32,
+            side: "left" as const,
+        };
+        const submitted = await submitVertexSliceJob(request);
+        expect(submitted).toEqual({ kind: "accepted", jobId: "job-1", position: 0 });
+        const gcode = await sliceWithVertexSlice(request);
+        expect(gcode).toBe("G1 X0\n");
+        const jobCall = calls.find((call) => call.url.endsWith("/v1/slice/jobs"));
+        const sliceCall = calls.find((call) => call.url.endsWith("/v1/slice"));
+        const jobForm = jobCall?.init.body as FormData;
+        const sliceForm = sliceCall?.init.body as FormData;
+        expect([...jobForm.keys()].sort()).toEqual([...sliceForm.keys()].sort());
+        expect(jobForm.get("profile_id")).toBe(sliceForm.get("profile_id"));
+        expect(jobForm.get("material")).toBe(sliceForm.get("material"));
+        expect(jobForm.get("infill_density")).toBe(sliceForm.get("infill_density"));
+        expect(jobForm.get("wall_loops")).toBeNull();
+        const jobHeaders = jobCall?.init.headers as Record<string, string>;
+        const sliceHeaders = sliceCall?.init.headers as Record<string, string>;
+        expect(jobHeaders["X-API-Key"]).toBe(sliceHeaders["X-API-Key"]);
+        expect(typeof jobHeaders["X-API-Key"]).toBe("string");
+    });
+
+    test("a 422 from the job route fails immediately and does not call sync /v1/slice", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const calls = installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice/jobs")) {
+                return new Response(JSON.stringify({ detail: "bad mesh" }), { status: 422 });
+            }
+            return new Response("should-not-run", { status: 200 });
+        });
+        await expect(
+            submitVertexSliceJob({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_core",
+                model,
+            }),
+        ).rejects.toThrow(/VertexSlice error \(422\)/);
+        expect(calls.some((call) => call.url.endsWith("/v1/slice"))).toBe(false);
+    });
+
+    test("the result body is the server bytes, and an unknown job is missing", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const body = "G1 X0 \n";
+        installFetch((url) => {
+            if (url.endsWith("/result")) return new Response(body, { status: 200 });
+            if (url.endsWith("/missing")) return new Response("no", { status: 404 });
+            return new Response(
+                JSON.stringify({
+                    job_id: "missing",
+                    status: "queued",
+                    position: 1,
+                    queued_at: null,
+                    started_at: null,
+                    finished_at: null,
+                    elapsed_s: null,
+                    error: null,
+                }),
+                { status: 404 },
+            );
+        });
+        const result = await downloadVertexSliceJobResult("job-9");
+        expect(result).toEqual({ kind: "gcode", gcode: body });
+        const missing = await getVertexSliceJob("missing");
+        expect(missing.kind).toBe("missing");
     });
 });
 
