@@ -1,0 +1,56 @@
+export function assertPreLoftStations(
+    stations: HermiteStation[],
+    r1: number,
+    r2: number,
+    opts?: ForefootSkewExempt & { minX?: number; lengthMm?: number },
+): void {
+    if (stations.length < 3) {
+        throw new Error("[S1-PRELOFT] station ring < 3");
+    }
+    const rim = stations.map((s) => s.rim);
+    const c = centroidOf(rim);
+    const fore = opts?.forefootWidthMm ?? 0;
+    const minX = opts?.minX ?? opts?.bounds?.minX ?? 0;
+    const lengthMm = opts?.lengthMm ?? (opts?.bounds ? opts.bounds.maxX - opts.bounds.minX : 0);
+    const bad: string[] = [];
+    for (let i = 0; i < stations.length; i++) {
+        const st = stations[i]!;
+        const nxt = stations[(i + 1) % stations.length]!;
+        const out = outwardNormal(rim, i, c);
+        const { insetMm, skewMm } = columnInsetSkew(st.rim, st.outline, out);
+        const u = lengthMm > 1e-3 ? Math.max(0, Math.min(1, (st.rim.x - minX) / lengthMm)) : 0;
+        const foreEnv = fore !== 0 ? forefootWidthLongitudinalEnvelope(u) : 0;
+        const need = minInsetAtStationMm(insetMm, r1, r2);
+        if (foreEnv <= 1e-3 && insetMm + 1e-3 < need) {
+            bad.push(`inset[${i}]=${insetMm.toFixed(3)}<${need.toFixed(3)}`);
+        }
+        if (foreEnv <= 1e-3) {
+            const skewCap = SKEW_INSET_RATIO * Math.max(insetMm, 0);
+            if (skewMm > skewCap + 1e-3) {
+                bad.push(`skew[${i}]=${skewMm.toFixed(3)}>${skewCap.toFixed(3)}`);
+            }
+        }
+        const col = columnHeading(st);
+        // B→R should sit in the outward half-plane of the rim.
+        const bx = st.rim.x - st.outline.x;
+        const by = st.rim.y - st.outline.y;
+        const bl = Math.hypot(bx, by);
+        const hx = bl > 1e-8 ? bx / bl : -col.h.x;
+        const hy = bl > 1e-8 ? by / bl : -col.h.y;
+        if (foreEnv <= 1e-3 && hx * out.x + hy * out.y < -1e-6) {
+            const deg = (Math.acos(Math.max(-1, Math.min(1, hx * out.x + hy * out.y))) * 180) / Math.PI;
+            bad.push(`column-vs-outward-rim[${i}]=${deg.toFixed(1)}>90`);
+        }
+        const h1 = columnHeading(nxt).h;
+        const d = Math.max(-1, Math.min(1, col.h.x * h1.x + col.h.y * h1.y));
+        const head = (Math.acos(d) * 180) / Math.PI;
+        const uNext = lengthMm > 1e-3 ? Math.max(0, Math.min(1, (nxt.rim.x - minX) / lengthMm)) : 0;
+        const nextEnv = fore !== 0 ? forefootWidthLongitudinalEnvelope(uNext) : 0;
+        if ((foreEnv <= 1e-3 || nextEnv <= 1e-3) && head > PRELOFT_HEADING_MAX_DEG + 1e-3) {
+            bad.push(`heading[${i}-${(i + 1) % stations.length}]=${head.toFixed(2)}>15`);
+        }
+    }
+    if (bad.length) {
+        throw new Error(`[S1-PRELOFT] ${bad.length} station(s): ${bad.slice(0, 24).join("; ")}`);
+    }
+}

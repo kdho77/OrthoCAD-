@@ -1,0 +1,10 @@
+vertex/src/lib/kiri/slicer.ts
+vertex/src/lib/kiri/engine.ts
+vertex/src/lib/kiri/gcode.ts
+vertex/src/lib/kiri/presets.ts
+python-service/app/services/slicer.py
+vertex/src/lib/geometry/procedural-wall/ring-seam.ts
+vertex/src/lib/geometry/procedural-wall/curves.ts
+vertex/src/lib/geometry/procedural-wall/wall-spline.ts
+vertex/src/lib/geometry/procedural-wall/bezier-column.ts
+vertex/src/lib/geometry/text-marking/bottom-engrave.ts

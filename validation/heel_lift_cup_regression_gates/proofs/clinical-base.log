@@ -1,0 +1,125 @@
+---
+tool: "@rstest/core@0.10.0"
+timestamp: "2026-11-24T20:57:42.970Z"
+runtime: {"node":"v22.23.4","platform":"linux","cwd":"/agent/repos/OrthoCAD-"}
+---
+
+# Rstest Test Execution Report
+
+## Summary
+
+```json
+{
+  "status": "fail",
+  "counts": {
+    "testFiles": 1,
+    "failedFiles": 1,
+    "tests": 1,
+    "failedTests": 1,
+    "passedTests": 0,
+    "skippedTests": 0,
+    "todoTests": 0
+  },
+  "durationMs": {
+    "total": 70647,
+    "build": 410,
+    "tests": 70237
+  },
+  "snapshot": {
+    "added": 0,
+    "updated": 0,
+    "unmatched": 0,
+    "removed": 0,
+    "unchecked": 0
+  }
+}
+```
+
+## Failures
+
+### [F01] validation/heel_lift_cup_regression_gates/heel-lift-cup.optional.test.ts :: heel-lift cup-depth gates (SAMPLE_Top US M11 medium, compose path) > seat, cup, taper, belt, and zero-lift identity
+
+repro:
+
+```bash
+npx rstest 'validation/heel_lift_cup_regression_gates/heel-lift-cup.optional.test.ts' --testNamePattern 'heel-lift cup-depth gates (SAMPLE_Top US M11 medium, compose path) > seat, cup, taper, belt, and zero-lift identity'
+```
+
+details:
+
+```json
+{
+  "testPath": "validation/heel_lift_cup_regression_gates/heel-lift-cup.optional.test.ts",
+  "project": "rstest",
+  "fullName": "heel-lift cup-depth gates (SAMPLE_Top US M11 medium, compose path) > seat, cup, taper, belt, and zero-lift identity",
+  "status": "fail",
+  "duration": 69587,
+  "retryCount": 0,
+  "errors": [
+    {
+      "type": "AssertionError",
+      "message": "PASS identity right-0-after-left-12 474e0f99d0ac907682452871fe08e053353962c39d8ac041ff0a827eb4e92797\nPASS identity right-0-after-left-6 474e0f99d0ac907682452871fe08e053353962c39d8ac041ff0a827eb4e92797\nPASS identity left-0 3eb6109ced32cff9db8d19ce6d16e3a54b16d0ed684f86eb23da59671f752e27\nPASS identity right zero is stable across left lifts\nFAIL clinical right H=6 dSeat=0.031 u=0.116 dRim=3.840 dCup=3.809 beltN=2540 beltMinZ=0.000 stations 0.05:0.340 0.15:0.043 0.3:0.583 0.45:0.410 0.6:0.101 0.75:0.000 :: seat rise 0.031 mm at u=0.116 is outside 6 ± 0.2 and heelLiftDeltaAt 5.071 ± 0.2 | cup depth change 3.809 mm (dRim 3.840, dSeat 0.031) exceeds ± 0.2 | added height rises from u=0.15 (0.043 mm) to u=0.3 (0.583 mm)\nFAIL clinical right H=12 dSeat=0.063 u=0.116 dRim=7.681 dCup=7.618 beltN=2558 beltMinZ=0.000 stations 0.05:0.679 0.15:0.086 0.3:1.167 0.45:0.820 0.6:0.202 0.75:0.000 :: seat rise 0.063 mm at u=0.116 is outside 12 ± 0.2 and heelLiftDeltaAt 10.143 ± 0.2 | cup depth change 7.618 mm (dRim 7.681, dSeat 0.063) exceeds ± 0.2 | added height rises from u=0.15 (0.086 mm) to u=0.3 (1.167 mm)\nFAIL clinical left H=6 dSeat=0.031 u=0.116 dRim=3.840 dCup=3.809 beltN=2550 beltMinZ=0.000 stations 0.05:0.340 0.15:0.043 0.3:0.583 0.45:0.410 0.6:0.101 0.75:0.000 :: seat rise 0.031 mm at u=0.116 is outside 6 ± 0.2 and heelLiftDeltaAt 5.071 ± 0.2 | cup depth change 3.809 mm (dRim 3.840, dSeat 0.031) exceeds ± 0.2 | added height rises from u=0.15 (0.043 mm) to u=0.3 (0.583 mm)\nFAIL clinical left H=12 dSeat=0.063 u=0.116 dRim=7.681 dCup=7.618 beltN=2564 beltMinZ=0.000 stations 0.05:0.679 0.15:0.086 0.3:1.167 0.45:0.820 0.6:0.202 0.75:0.000 :: seat rise 0.063 mm at u=0.116 is outside 12 ± 0.2 and heelLiftDeltaAt 10.143 ± 0.2 | cup depth change 7.618 mm (dRim 7.681, dSeat 0.063) exceeds ± 0.2 | added height rises from u=0.15 (0.086 mm) to u=0.3 (1.167 mm): expected [ …(4) ] to deeply equal []",
+      "topFrame": {
+        "file": "validation/heel_lift_cup_regression_gates/heel-lift-cup.optional.test.ts",
+        "line": 82,
+        "column": 32,
+        "method": "<unknown>"
+      },
+      "stackFrames": []
+    }
+  ],
+  "candidateFiles": [
+    {
+      "path": "validation/heel_lift_cup_regression_gates/heel-lift-cup.optional.test.ts",
+      "line": 82
+    }
+  ]
+}
+```
+
+diff:
+
+```diff
+- Expected
++ Received
+
+- []
++ [
++   "FAIL clinical right H=6 dSeat=0.031 u=0.116 dRim=3.840 dCup=3.809 beltN=2540 beltMinZ=0.000 stations 0.05:0.340 0.15:0.043 0.3:0.583 0.45:0.410 0.6:0.101 0.75:0.000 :: seat rise 0.031 mm at u=0.116 is outside 6 ± 0.2 and heelLiftDeltaAt 5.071 ± 0.2 | cup depth change 3.809 mm (dRim 3.840, dSeat 0.031) exceeds ± 0.2 | added height rises from u=0.15 (0.043 mm) to u=0.3 (0.583 mm)",
++   "FAIL clinical right H=12 dSeat=0.063 u=0.116 dRim=7.681 dCup=7.618 beltN=2558 beltMinZ=0.000 stations 0.05:0.679 0.15:0.086 0.3:1.167 0.45:0.820 0.6:0.202 0.75:0.000 :: seat rise 0.063 mm at u=0.116 is outside 12 ± 0.2 and heelLiftDeltaAt 10.143 ± 0.2 | cup depth change 7.618 mm (dRim 7.681, dSeat 0.063) exceeds ± 0.2 | added height rises from u=0.15 (0.086 mm) to u=0.3 (1.167 mm)",
++   "FAIL clinical left H=6 dSeat=0.031 u=0.116 dRim=3.840 dCup=3.809 beltN=2550 beltMinZ=0.000 stations 0.05:0.340 0.15:0.043 0.3:0.583 0.45:0.410 0.6:0.101 0.75:0.000 :: seat rise 0.031 mm at u=0.116 is outside 6 ± 0.2 and heelLiftDeltaAt 5.071 ± 0.2 | cup depth change 3.809 mm (dRim 3.840, dSeat 0.031) exceeds ± 0.2 | added height rises from u=0.15 (0.043 mm) to u=0.3 (0.583 mm)",
++   "FAIL clinical left H=12 dSeat=0.063 u=0.116 dRim=7.681 dCup=7.618 beltN=2564 beltMinZ=0.000 stations 0.05:0.679 0.15:0.086 0.3:1.167 0.45:0.820 0.6:0.202 0.75:0.000 :: seat rise 0.063 mm at u=0.116 is outside 12 ± 0.2 and heelLiftDeltaAt 10.143 ± 0.2 | cup depth change 7.618 mm (dRim 7.681, dSeat 0.063) exceeds ± 0.2 | added height rises from u=0.15 (0.086 mm) to u=0.3 (1.167 mm)",
++ ]
+```
+
+codeFrame (error 1):
+
+```text
+80 |         console.error(report);
+81 |         const failed = lines.filter((line) => line.startsWith("FAIL"));
+82 |         expect(failed, report).toEqual([]);
+   |                                ^
+83 |     }, 300_000);
+84 | });
+```
+
+console:
+
+```text
+[stdout] log: [S1-TOP-ROUND] {"n":54,"max":23.86,"band":[{"i":0,"u":0.4979,"deg":23},{"i":1,"u":0.5027,"deg":23.81},{"i":2,"u":0.5071,"deg":23.86},{"i":3,"u":0.5116,"deg":23.8},{"i":4,"u":0.516,"deg":23.73},{"i":5,"u":0.5204,"deg":23.56},{"i":6,"u":0.5248,"deg":23.38},{"i":7,"u":0.5293,"deg":23.09},{"i":8,"u":0.5342,"deg":22.8},{"i":9,"u":0.5387,"deg":22.42},{"i":225,"u":0.5373,"deg":20.17},{"i":226,"u":0.5337,"deg":20.05},{"i":227,"u":0.5303,"deg":20.19},{"i":228,"u":0.5303,"deg":20.11},{"i":2... [truncated]
+[stdout] log: [S1-ASPECT] {"i":-1,"j":-1,"short":0,"long":0,"ratio":0}
+[stdout] log: [S1-RATIO] {"i":377,"lo":1.0445787575443828,"hi":2.0864950804147795,"ratio":1.99745118818973,"ring":"R"}
+[stdout] log: [S1-ACROSS] {"i":313,"j":53,"u":0.096,"wrap":false,"deg":14.26,"p99":7.37}
+[stdout] log: [S1-BSEAM] {"signed":0,"flipped":0,"minS":0.049,"minH":0.002,"aspectB":20.61,"topSheet":23.86,"nRows":78,"lastChord":0.05,"chordFloor":0,"chordRise":6,"szMono":true,"rowPiece":true,"alongRow":10.29,"oblique":53.7,"obliqueWarn":0,"g1E":0,"g1F":6,"aspectAll":0,"aspectRound":0,"neighbourRatio":2,"neighbourRatioB":1.49,"neighbourRatioR":2,"colCross":0,"eTurn":7.4,"fTurn":6.69,"eTurnPlan":6.88,"fTurnPlan":6.58,"fold":11.93,"folds90":0,"inward":0,"seamNonFb":0,"fallback":0,"roundStep":7... [truncated]
+[stdout] log: [S1-COL-Q] {"maxAlong":23.86,"maxTcol":165.3,"reversals":0,"tColHits":0,"alongOver":173,"maxAcross":14.26,"topRound":23.86,"roundWall":0,"minEdge":0.024,"gapMult":1.49,"minL":1.588,"nTopDeg":2.79,"r1Pct":12.21,"r2Pct":8.94,"r1Mm":0.0739,"r2Mm":0.0572,"alaPack":-0.214,"chordLocal":0.534,"roundStep":7.63,"startInc":2.77,"filChord":0.168}
+[stdout] log: [S1-MIN-WALL] {"n":0,"sample":[],"postingHeightFlags":0}
+[stdout] log: [S2-JUNCTION-ANG] {"n":545,"minDeg":5}
+[stdout] log: [S1-LIFT] {"heelLiftMm":12,"postingDeg":{"rear":0,"fore":0},"meshMinZ":0,"plantarAbsMaxZ":0,"Bz":{"min":0,"max":0},"heelWallHeightMm":34.37,"postingClamps":0,"liftOnPlantar":false,"postingOnPlantar":false}
+[stderr] error: PASS identity right-0-after-left-12 474e0f99d0ac907682452871fe08e053353962c39d8ac041ff0a827eb4e92797
+PASS identity right-0-after-left-6 474e0f99d0ac907682452871fe08e053353962c39d8ac041ff0a827eb4e92797
+PASS identity left-0 3eb6109ced32cff9db8d19ce6d16e3a54b16d0ed684f86eb23da59671f752e27
+PASS identity right zero is stable across left lifts
+FAIL clinical right H=6 dSeat=0.031 u=0.116 dRim=3.840 dCup=3.809 beltN=2540 beltMinZ=0.000 stations 0.05:0.340 0.15:0.043 0.3:0.583 0.45:0.410 0... [truncated]
+```
+
+

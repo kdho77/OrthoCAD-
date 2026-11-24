@@ -1,0 +1,13 @@
+PASS bad-change: unchanged BASE cap
+PASS bad-change: unchanged tolerances
+PASS bad-change: unchanged surface files
+PASS bad-change: S1-PRELOFT SKEW_INSET_RATIO loosened from 0.5 to 1 rejected (exit 1)
+PASS bad-change: 0.5×inset cap multiplied by 4 rejected (exit 1)
+PASS bad-change: limitPairingSkew 0.5×inset cap multiplied by 4 rejected (exit 1)
+PASS bad-change: cup-depth tolerance loosened from 0.2 mm to 8 mm rejected (exit 1)
+PASS bad-change: outer-surface perimeter order reversed rejected (exit 1)
+PASS bad-change: layer-change timing constant edited rejected (exit 1)
+PASS bad-change: ring seam start moved off the frozen index rejected (exit 1)
+PASS bad-change: slicer layer height changed from 0.3 to 0.6 rejected (exit 1)
+PASS bad-change: product-diff classifier self-test
+PASS bad-change: rim cap, cup tolerance, belt-unrelated surface, seam, and slicer copies were rejected
