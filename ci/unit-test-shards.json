@@ -109,6 +109,7 @@
                 "vertex/src/lib/clinical/one-click-p7-matrix.test.ts",
                 "vertex/src/lib/geometry/afo/afo-corrections-side.test.ts",
                 "vertex/src/lib/geometry/afo/afo-rotation.test.ts",
+                "vertex/src/lib/geometry/afo/balance-brace-preset.test.ts",
                 "vertex/src/lib/geometry/afo/landmark-frame.test.ts",
                 "vertex/src/lib/geometry/afo/trim-cleanup.test.ts",
                 "vertex/src/lib/geometry/arch-grind.shape-finish.test.ts",

@@ -68,6 +68,8 @@ describe("AFO marker sides", () => {
         expect(cameraViewForAfoMarkerId("post_calcaneus", "right")).toBe("back");
         expect(cameraViewForAfoMarkerId("tibial_tuberosity", "left")).toBe("front");
         expect(cameraViewForAfoMarkerId("distal_crest", "right")).toBe("front");
+        expect(cameraViewForAfoMarkerId("toe_tip", "left")).toBe("front");
+        expect(cameraViewForAfoMarkerId("toe_tip", "right")).toBe("front");
     });
 });
 

@@ -1,14 +1,23 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { redoAfoMarker } from "@/features/afo/afo-scan-markers";
+import {
+    type BalanceBracePopup,
+    balanceBracePresetTable,
+    buildBalanceBracePreset,
+    presetPinVertex,
+} from "@/lib/geometry/afo/balance-brace-preset";
 import { AFO_DESIGN_MARKERS } from "@/lib/geometry/afo/defaults";
 import { nearestVertex } from "@/lib/geometry/afo/mesh-ops";
 import { flatPlateSpecFromAfo } from "@/lib/geometry/afo/shell-flatten";
 import { applyAfoTrimCleanup } from "@/lib/geometry/afo/trim-cleanup";
 import { loopNearZ, validateTrimLoop } from "@/lib/geometry/afo/trim-loop";
 import { AFO_TRIM_NO_MESH } from "@/lib/geometry/afo/trim-preview";
-import { balanceBracePins, fitSurfaceSpline, flatPlateTrimLoop } from "@/lib/geometry/afo/trim-spline";
+import { fitSurfaceSpline, flatPlateTrimLoop } from "@/lib/geometry/afo/trim-spline";
 import { getAfoState, patchAfoState, useAfoStore } from "@/stores/afo-store";
+import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 
 export function AfoDesignPanel() {
@@ -18,6 +27,8 @@ export function AfoDesignPanel() {
     const setPlacingTrim = useAfoStore((s) => s.setPlacingTrim);
     const placingTrim = useAfoStore((s) => s.placingTrim);
     const lastError = useAfoStore((s) => s.lastError);
+    const [presetPopup, setPresetPopup] = useState<BalanceBracePopup | null>(null);
+    const [presetFlags, setPresetFlags] = useState<string[]>([]);
     const correctedMesh = useAfoStore((s) => s.correctedMesh);
     const castMesh = useAfoStore((s) => s.castMesh);
     const working = correctedMesh ?? castMesh;
@@ -112,7 +123,9 @@ export function AfoDesignPanel() {
         if (!working) return;
         const spec = flatPlateSpecFromAfo(afo, afo.print.thicknessMm);
         if (!spec) {
-            useAfoStore.getState().setLastError("Place the plantar heel, 1st met head, and 5th met head first.");
+            useAfoStore
+                .getState()
+                .setLastError("Place the plantar heel, 1st met head, and 5th met head first.");
             return;
         }
         const loop = flatPlateTrimLoop(working, spec);
@@ -135,27 +148,48 @@ export function AfoDesignPanel() {
         );
     };
 
-    const placeBalanceBrace = () => {
+    const placeBalanceBrace = (continueWithFallbacks = false) => {
         if (!working) return;
-        const brace = balanceBracePins(working, afo);
-        const fit = fitSurfaceSpline(working, brace.pins);
-        if (!fit.ok) {
-            useAfoStore.getState().setLastError([...brace.reasons, ...fit.reasons].join(" "));
+        const preset = buildBalanceBracePreset(working, afo, { continueWithFallbacks });
+        setPresetFlags(preset.flags.map((flag) => flag.message));
+        if (!preset.placed) {
+            setPresetPopup(
+                preset.popup ?? {
+                    title: "Place the balance-brace markers",
+                    message: "The trimline needs the anatomical markers before it can be drawn.",
+                    issues: [],
+                    canContinue: false,
+                },
+            );
+            useAfoStore.getState().setLastError(null);
             return;
         }
-        useAfoStore.getState().setLastError(brace.reasons.join(" ") || null);
+        setPresetPopup(preset.popup);
+        useAfoStore.getState().setLastError(null);
+        const validation = validateTrimLoop(
+            working,
+            preset.pins.map(() => 0),
+            true,
+            { skipGeodesic: true, points: preset.pins },
+        );
         patchAfoState(
             {
-                trimCurve: fit.curve,
-                trimPoints: brace.pins.map((point) => ({
+                trimCurve: preset.curve,
+                trimPoints: preset.pins.map((point) => ({
                     point,
-                    vertexIndex: nearestVertex(working, point).index,
+                    vertexIndex: presetPinVertex(working, point),
                 })),
                 trimClosed: true,
-                trimConfirmed: false,
+                trimConfirmed: validation.ok,
             },
-            "afo-balance-brace",
+            "afo-balance-brace-preset",
         );
+    };
+
+    const placePresetMarker = (id: string) => {
+        setPresetPopup(null);
+        useClinicalWorkflowStore.getState().setStep("scan");
+        redoAfoMarker(id);
     };
 
     const snapBraceLoop = () => {
@@ -275,12 +309,33 @@ export function AfoDesignPanel() {
                 </button>
                 <button
                     type="button"
+                    data-testid="balance-brace-preset"
                     disabled={!working}
                     className="h-8 w-full rounded-md border border-border bg-background"
-                    onClick={placeBalanceBrace}
+                    onClick={() => placeBalanceBrace(false)}
                 >
-                    Balance brace
+                    Balance brace preset trimline
                 </button>
+                <details className="rounded border border-border px-2 py-1">
+                    <summary className="cursor-pointer text-[10px] text-muted-foreground">
+                        Balance brace preset numbers
+                    </summary>
+                    <table data-testid="balance-brace-preset-table" className="mt-1 w-full text-[10px]">
+                        <tbody>
+                            {balanceBracePresetTable().map((row) => (
+                                <tr key={row.id}>
+                                    <td className="py-0.5 pr-2 text-muted-foreground">{row.label}</td>
+                                    <td className="py-0.5 text-right">{row.value}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </details>
+                {presetFlags.map((flag) => (
+                    <p key={flag} className="text-[10px] text-amber-200">
+                        {flag}
+                    </p>
+                ))}
                 <button
                     type="button"
                     disabled={!working}
@@ -341,6 +396,39 @@ export function AfoDesignPanel() {
                     Strengthen
                 </button>
             </div>
+            <Dialog open={presetPopup != null} onOpenChange={(open) => !open && setPresetPopup(null)}>
+                <DialogContent data-testid="balance-brace-popup" className="max-w-sm">
+                    <DialogHeader>
+                        <DialogTitle>{presetPopup?.title ?? "Balance brace markers"}</DialogTitle>
+                    </DialogHeader>
+                    <p className="text-xs text-muted-foreground">{presetPopup?.message}</p>
+                    <div className="mt-3 space-y-1">
+                        {presetPopup?.issues.map((issue) => (
+                            <button
+                                key={issue.id}
+                                type="button"
+                                className="h-8 w-full rounded-md border border-border text-left text-[11px]"
+                                onClick={() => placePresetMarker(issue.id)}
+                            >
+                                Place {issue.label}
+                            </button>
+                        ))}
+                    </div>
+                    {presetPopup?.canContinue &&
+                    presetPopup.issues.some((issue) => issue.kind === "missing") ? (
+                        <button
+                            type="button"
+                            className="mt-3 h-8 w-full rounded-md bg-primary text-[12px] font-medium text-primary-foreground"
+                            onClick={() => {
+                                setPresetPopup(null);
+                                placeBalanceBrace(true);
+                            }}
+                        >
+                            Continue with the fallback
+                        </button>
+                    ) : null}
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

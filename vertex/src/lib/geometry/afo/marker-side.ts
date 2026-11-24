@@ -40,6 +40,7 @@ const AFO_MARKER_FIXED_VIEW: Record<string, CameraView> = {
     post_calcaneus: "back",
     tibial_tuberosity: "front",
     distal_crest: "front",
+    toe_tip: "front",
 };
 
 export function afoMarkerAnatomicalSide(id: string): AfoAnatomicalSide | null {
