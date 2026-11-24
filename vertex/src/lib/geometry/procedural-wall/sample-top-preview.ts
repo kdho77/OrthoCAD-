@@ -420,6 +420,31 @@ function isPreloftSkewError(error: unknown): boolean {
     );
 }
 
+function reflectPlanY(points: PolyPoint[], y0: number): PolyPoint[] {
+    return points.map((p) => ({ x: p.x, y: 2 * y0 - p.y, z: p.z ?? 0 }));
+}
+
+/**
+ * The right field was built on the mirrored sheet. Drop mesh closures so the
+ * left-frame loft rebuilds them from the unmirrored stock, and place elements
+ * on the opposite side of the centre.
+ */
+function leftFieldFromMirroredRight(field: HeightFieldParams): HeightFieldParams {
+    const copy: HeightFieldParams = {
+        ...field,
+        side: "left",
+        elements: field.elements?.map((el) => ({
+            ...el,
+            side: "left",
+            position: { x: el.position.x, y: -el.position.y },
+            rotationDeg: -el.rotationDeg,
+        })),
+    };
+    delete copy.topEdgeAvProfile;
+    delete copy.fullLengthRim;
+    return copy;
+}
+
 export async function reconstructProceduralPreview(
     topGeo: BufferGeometry,
     options: ProceduralPreviewOptions = {},
@@ -433,10 +458,12 @@ export async function reconstructProceduralPreview(
     let footprintClone: BufferGeometry | null = null;
     let scaledPattern: PolyPoint[] | null = null;
     let nativeFairScaled = false;
+    let fairCenter: { x: number; y: number } | null = null;
     if (footprintScale != null && Number.isFinite(footprintScale) && Math.abs(footprintScale - 1) > 1e-9) {
         if (!topGeo.boundingBox) topGeo.computeBoundingBox();
         const box = topGeo.boundingBox;
         const center = box ? { x: (box.min.x + box.max.x) / 2, y: (box.min.y + box.max.y) / 2 } : null;
+        fairCenter = center;
         if (center && options.bottomPattern?.length) {
             // Live / edited pattern is in the pre-scale frame. Use a fresh
             // bbox so the center matches scaleSourceShapeToFootprint.
@@ -576,6 +603,29 @@ export async function reconstructProceduralPreview(
         // so their mesh stays byte-for-byte. Only a failed gate is rebuilt.
         const shoeWidthRimAfter = shoeWidthRimBefore ? rimPlanOf(model) : null;
         if (shoeWidthRimBefore && shoeWidthRimAfter && scaledPattern && isPreloftSkewError(e)) {
+            // The rim-follow map is already the mirror of the left map, but the
+            // station loft is not mirror-symmetric and still misses the 0.5×inset
+            // cap. Run that same left loft on the unmirrored stock and mirror the
+            // solid back. Z is not flipped, so the seam stays on the bottom.
+            if (options.side === "right" && options.sourceField && fairCenter) {
+                const leftTop = mirrorGeometry(topGeo);
+                try {
+                    const leftPreview = await reconstructProceduralPreview(leftTop, {
+                        ...options,
+                        side: "left",
+                        sourceField: leftFieldFromMirroredRight(options.sourceField),
+                    });
+                    const geometry = mirrorGeometry(leftPreview.geometry);
+                    leftPreview.geometry.dispose();
+                    return {
+                        model,
+                        pattern: reflectPlanY(leftPreview.pattern, fairCenter.y),
+                        geometry,
+                    };
+                } finally {
+                    leftTop.dispose();
+                }
+            }
             return loft(shiftPatternByRimFollow(scaledPattern, shoeWidthRimBefore, shoeWidthRimAfter, 1));
         }
         if (options.bottomPattern?.length || !options.scanPattern || options.scanPattern === "full_contact") {
