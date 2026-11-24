@@ -1,0 +1,166 @@
+{
+  "proof": "bad_change",
+  "pass": true,
+  "original_sha256": "46673dd71c1a84891b3a65328eccf4d3b082126653ab89e09cc8dc0ebfadb076",
+  "results": [
+    {
+      "name": "identical_stl_passes",
+      "pass": true,
+      "detail": {
+        "pass": true,
+        "candidate_sha256": "46673dd71c1a84891b3a65328eccf4d3b082126653ab89e09cc8dc0ebfadb076",
+        "baseline_sha256": "46673dd71c1a84891b3a65328eccf4d3b082126653ab89e09cc8dc0ebfadb076",
+        "candidate_bytes": 134,
+        "baseline_bytes": 134
+      }
+    },
+    {
+      "name": "one_byte_stl_rejected",
+      "pass": true,
+      "detail": {
+        "pass": false,
+        "candidate_sha256": "136404934da7850b92ddaa2a1318cccc7a0dbe0d992fdb55cb624b3bda97c745",
+        "baseline_sha256": "46673dd71c1a84891b3a65328eccf4d3b082126653ab89e09cc8dc0ebfadb076",
+        "candidate_bytes": 134,
+        "baseline_bytes": 134
+      }
+    },
+    {
+      "name": "same_length_and_triangle_count_still_rejected",
+      "pass": true,
+      "detail": {
+        "identity": {
+          "pass": false,
+          "candidate_sha256": "e83f380432496ea5b2efcc35e189af9f592284ca3d245527248c9cc9b686a85e",
+          "baseline_sha256": "46673dd71c1a84891b3a65328eccf4d3b082126653ab89e09cc8dc0ebfadb076",
+          "candidate_bytes": 134,
+          "baseline_bytes": 134
+        },
+        "length_only_would_pass": true,
+        "triangle_count_header_matches": true
+      }
+    },
+    {
+      "name": "valid_timing_log_passes",
+      "pass": true,
+      "detail": {
+        "pass": true,
+        "accepted": [
+          {
+            "msg": "cad-operator-timing",
+            "productionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "side": "left",
+            "loft_s": 0.031,
+            "slice_s": 0.03
+          }
+        ],
+        "seen": [
+          {
+            "msg": "cad-operator-timing",
+            "productionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "side": "left",
+            "loft_s": 0.031,
+            "slice_s": 0.03
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing_loft_s_slice_s_rejected",
+      "pass": true,
+      "detail": {
+        "pass": false,
+        "accepted": [],
+        "seen": []
+      }
+    },
+    {
+      "name": "slice_s_missing_rejected",
+      "pass": true,
+      "detail": {
+        "pass": false,
+        "accepted": [],
+        "seen": [
+          {
+            "side": "left",
+            "loft_s": 0.031
+          }
+        ]
+      }
+    },
+    {
+      "name": "non_numeric_timings_rejected",
+      "pass": true,
+      "detail": {
+        "pass": false,
+        "accepted": [],
+        "seen": [
+          {
+            "side": "left",
+            "loft_s": "0.031",
+            "slice_s": "0.030"
+          }
+        ]
+      }
+    },
+    {
+      "name": "zero_timings_rejected",
+      "pass": true,
+      "detail": {
+        "pass": false,
+        "accepted": [],
+        "seen": [
+          {
+            "side": "left",
+            "loft_s": 0,
+            "slice_s": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "equal_loft_time_is_not_a_speedup",
+      "pass": true,
+      "detail": {
+        "pass": false,
+        "candidate_s": 10.0,
+        "baseline_s": 10.0,
+        "ratio": 1.0,
+        "max_ratio": 0.9
+      }
+    },
+    {
+      "name": "slower_loft_rejected",
+      "pass": true,
+      "detail": {
+        "pass": false,
+        "candidate_s": 11.0,
+        "baseline_s": 10.0,
+        "ratio": 1.1,
+        "max_ratio": 0.9
+      }
+    },
+    {
+      "name": "under_10_percent_speedup_rejected",
+      "pass": true,
+      "detail": {
+        "pass": false,
+        "candidate_s": 9.5,
+        "baseline_s": 10.0,
+        "ratio": 0.95,
+        "max_ratio": 0.9
+      }
+    },
+    {
+      "name": "ten_percent_speedup_passes",
+      "pass": true,
+      "detail": {
+        "pass": true,
+        "candidate_s": 8.9,
+        "baseline_s": 10.0,
+        "ratio": 0.89,
+        "max_ratio": 0.9
+      }
+    }
+  ]
+}

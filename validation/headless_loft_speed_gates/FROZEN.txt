@@ -1,0 +1,15 @@
+Frozen gate set for independent grading of PR #422.
+
+These files are frozen as of the commit that adds this marker.
+Do not edit them after grading starts:
+
+- GATES.md
+- thresholds.json
+- checks.py
+- prove_bad_change.py
+- run_gates.py
+- harness/
+- fixtures/
+- proofs/bad_change_proof.json
+
+RESULTS.md is the grading record written after this freeze. It is not a gate.

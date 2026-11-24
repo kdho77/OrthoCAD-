@@ -1,0 +1,30 @@
+{
+  "design_id_note": "fixtures carry no patient name; bottom text is the literal FIXTURE",
+  "cases": [
+    {
+      "id": "stock_left",
+      "side": "left",
+      "settings": "stock.json"
+    },
+    {
+      "id": "stock_right",
+      "side": "right",
+      "settings": "stock.json"
+    },
+    {
+      "id": "narrow_heelcup_left",
+      "side": "left",
+      "settings": "narrow_heelcup.json"
+    },
+    {
+      "id": "mortons_extension_left",
+      "side": "left",
+      "settings": "mortons_extension.json"
+    },
+    {
+      "id": "bottom_name_left",
+      "side": "left",
+      "settings": "bottom_name.json"
+    }
+  ]
+}
