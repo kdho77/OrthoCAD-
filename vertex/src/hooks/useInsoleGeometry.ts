@@ -106,6 +106,8 @@ export function useInsoleGeometry(options: UseInsoleGeometryOptions): InsoleGeom
         design.method,
         design.sizeSystem,
         design.usMenSize,
+        design.shoeSizesLinked,
+        design.usMenSizeBySide,
         design.ukSize,
         design.footLengthMm,
         design.corrections,

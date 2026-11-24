@@ -13,6 +13,7 @@ import {
     formatEuShoeSizeLabel,
     formatUkShoeSizeLabel,
     formatUsShoeSizeLabel,
+    insoleLayoutForDesignSide,
     insoleLayoutForFootLengthMm,
     insoleLayoutForUkSize,
     insoleLayoutForUsMenSize,
@@ -26,6 +27,7 @@ import {
     ukFootLengthMm,
     ukShoeSizeOptions,
     usMenFootLengthMm,
+    usMenSizeForSide,
     usMenSizeFromDisplayUnit,
     usMenToEu,
     usMenToUk,
@@ -160,6 +162,19 @@ describe("UK and mm sizing systems", () => {
         const mm = insoleLayoutFromDesign({ sizeSystem: "mm", footLengthMm: 270 });
         expect(mm.sizeSystem).toBe("mm");
         expect(mm.footLengthMm).toBe(270);
+    });
+
+    test("insoleLayoutForDesignSide uses per-foot US men's sizes when unlocked", () => {
+        const split = {
+            shoeSizesLinked: false as const,
+            usMenSize: 9,
+            usMenSizeBySide: { left: 10, right: 8 },
+        };
+        expect(usMenSizeForSide(split, "left")).toBe(10);
+        expect(usMenSizeForSide(split, "right")).toBe(8);
+        const left = insoleLayoutForDesignSide(split, "left");
+        const right = insoleLayoutForDesignSide(split, "right");
+        expect(left.lengthMm).toBeGreaterThan(right.lengthMm);
     });
 });
 

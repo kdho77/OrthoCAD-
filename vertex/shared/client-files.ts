@@ -129,6 +129,58 @@ export function formatClientShoeSummary(chart: ShoeChart): string {
     return `US men's ${chart.shoeSizeUs} · ${width}`;
 }
 
+/** Setup-step design fields that map onto the client shoe chart. */
+export interface DesignSetupShoeSizing {
+    usMenSize?: number;
+    shoeSizesLinked?: boolean;
+    usMenSizeBySide?: { left?: number; right?: number };
+}
+
+/** Normalize setup sizing into a client chart shape (US men's half sizes). */
+export function shoeChartFromDesignSetup(sizing: DesignSetupShoeSizing): ShoeChart {
+    const linked = sizing.shoeSizesLinked !== false;
+    const usMenSize = normalizeChartShoeSize(sizing.usMenSize);
+    if (linked) {
+        return shoeChartFromInput({
+            shoeSizeUs: usMenSize,
+            shoeSizesSplit: false,
+            shoeSizeLeftUs: usMenSize,
+            shoeSizeRightUs: usMenSize,
+        });
+    }
+    const left = normalizeChartShoeSize(sizing.usMenSizeBySide?.left ?? usMenSize);
+    const right = normalizeChartShoeSize(sizing.usMenSizeBySide?.right ?? usMenSize);
+    return shoeChartFromInput({
+        shoeSizeUs: usMenSize,
+        shoeSizesSplit: true,
+        shoeSizeLeftUs: left,
+        shoeSizeRightUs: right,
+    });
+}
+
+export function setupShoeChartMatchesClient(sizing: DesignSetupShoeSizing, client: ShoeChart): boolean {
+    const fromDesign = shoeChartFromDesignSetup(sizing);
+    const fromClient = shoeChartFromInput(client);
+    return (
+        fromDesign.shoeSizesSplit === fromClient.shoeSizesSplit &&
+        fromDesign.shoeSizeUs === fromClient.shoeSizeUs &&
+        fromDesign.shoeSizeLeftUs === fromClient.shoeSizeLeftUs &&
+        fromDesign.shoeSizeRightUs === fromClient.shoeSizeRightUs
+    );
+}
+
+export function clientPatchFromDesignSetup(
+    sizing: DesignSetupShoeSizing,
+): Pick<ClientInput, "shoeSizeUs" | "shoeSizesSplit" | "shoeSizeLeftUs" | "shoeSizeRightUs"> {
+    const chart = shoeChartFromDesignSetup(sizing);
+    return {
+        shoeSizeUs: chart.shoeSizeUs,
+        shoeSizesSplit: chart.shoeSizesSplit,
+        shoeSizeLeftUs: chart.shoeSizeLeftUs,
+        shoeSizeRightUs: chart.shoeSizeRightUs,
+    };
+}
+
 /** Internal Vertex staff/dogfood tenant; never used as an implicit Ordered by label. */
 export const VERTEX_DOGFOOD_TENANT_ID = "54b6a960-aa40-4988-b116-adf5ed6c72f8";
 

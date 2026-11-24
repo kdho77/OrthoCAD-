@@ -16,7 +16,9 @@ export function templateDesignFromChart(chart: ShoeChart): DesignState {
     const state = createDesignWithStockPlaceholder();
     const usMenSize = chartGeneratedSize(chart);
     const shoeWidth = chart.shoeWidth;
+    const split = chart.shoeSizesSplit === true;
     if (
+        !split &&
         usMenSize === DEFAULT_CHART_SHOE_SIZE_US &&
         shoeWidth === DEFAULT_CHART_SHOE_WIDTH &&
         state.usMenSize === DEFAULT_CHART_SHOE_SIZE_US &&
@@ -27,7 +29,11 @@ export function templateDesignFromChart(chart: ShoeChart): DesignState {
     return {
         ...state,
         sizeSystem: "us",
-        usMenSize,
+        usMenSize: chart.shoeSizeUs,
+        shoeSizesLinked: !split,
+        usMenSizeBySide: split
+            ? { left: chart.shoeSizeLeftUs, right: chart.shoeSizeRightUs }
+            : { left: usMenSize, right: usMenSize },
         shoeWidth,
         shoeWidthBySide: { left: shoeWidth, right: shoeWidth },
     };

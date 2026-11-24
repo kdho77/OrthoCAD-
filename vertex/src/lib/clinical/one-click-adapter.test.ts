@@ -77,7 +77,10 @@ describe("chart template and scan corrections", () => {
             shoeSizeRightUs: 8,
             shoeWidth: "medium",
         });
-        expect(templateDesignFromChart(chart).usMenSize).toBe(10);
-        expect(templateDesignFromChart(chart).shoeWidth).toBe("medium");
+        const design = templateDesignFromChart(chart);
+        expect(design.usMenSize).toBe(9);
+        expect(design.shoeSizesLinked).toBe(false);
+        expect(design.usMenSizeBySide).toEqual({ left: 10, right: 8 });
+        expect(design.shoeWidth).toBe("medium");
     });
 });

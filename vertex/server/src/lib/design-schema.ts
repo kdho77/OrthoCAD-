@@ -162,6 +162,14 @@ export const designStateSchema = z
         shellThicknessBlendMm: z.number().optional(),
         sizeSystem: z.enum(["us", "uk", "mm"]).optional(),
         usMenSize: z.number().optional(),
+        shoeSizesLinked: z.boolean().optional(),
+        usMenSizeBySide: z
+            .object({
+                left: z.number().optional(),
+                right: z.number().optional(),
+            })
+            .passthrough()
+            .optional(),
         ukSize: z.number().optional(),
         footLengthMm: z.number().optional(),
         shoeWidth: shoeWidth.optional(),
