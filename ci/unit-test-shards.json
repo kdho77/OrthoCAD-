@@ -50,6 +50,7 @@
                 "vertex/src/lib/geometry/element-assets/library-element-visible.test.ts",
                 "vertex/src/lib/geometry/elements.test.ts",
                 "vertex/src/lib/geometry/mortons-preview-export.test.ts",
+                "vertex/src/lib/geometry/mortons-shape-gates.test.ts",
                 "vertex/src/lib/geometry/handedness.test.ts",
                 "vertex/src/lib/geometry/kabsch.test.ts",
                 "vertex/src/lib/geometry/measure/measure.test.ts",

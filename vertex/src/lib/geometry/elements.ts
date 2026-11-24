@@ -19,6 +19,7 @@ import {
     mortonsEdgeMm,
     mortonsFootprintT,
     mortonsHeightMm,
+    mortonsLegacyHeightMm,
     mortonsLocalOutline,
     mortonsReferenceWidthMm,
 } from "@/lib/geometry/mortons-extension";
@@ -710,11 +711,11 @@ export function elementHeightAt(
 
     for (const el of elements) {
         if (el.kind === "custom") continue;
-        if (el.kind === "mortons_extension" || el.kind === "reverse_mortons") {
+        if (el.kind === "mortons_extension") {
             const anchorX = centerX + el.position.x;
             const anchorY = el.position.y;
             // yMm is height-field Y. The pad is authored in mesh Y.
-            const magnitude = mortonsHeightMm(
+            sum += mortonsHeightMm(
                 el.side,
                 lengthMm,
                 widthMm,
@@ -727,9 +728,26 @@ export function elementHeightAt(
                 el.scale.y,
                 el.heightMm,
             );
-            const signed = el.kind === "reverse_mortons" ? -magnitude : magnitude;
-            if (signed < 0) lower = Math.min(lower, signed);
-            else sum += signed;
+            continue;
+        }
+        if (el.kind === "reverse_mortons") {
+            const anchorX = centerX + el.position.x;
+            const anchorY = el.position.y;
+            // Reverse keeps the filleted footprint. The extension shape does not apply.
+            const magnitude = mortonsLegacyHeightMm(
+                el.side,
+                lengthMm,
+                widthMm,
+                anchorX,
+                anchorY,
+                xMm,
+                -yMm,
+                el.rotationDeg,
+                el.scale.x,
+                el.scale.y,
+                el.heightMm,
+            );
+            lower = Math.min(lower, -magnitude);
             continue;
         }
         if (el.kind === "kinetic_wedge") {
