@@ -1,8 +1,9 @@
-// Frozen Morton's shape gates.
-// Default mode (CI, no-op proof): defect gates FAIL on this checkout; gates that
-// should hold on main PASS; a deliberately broken copy FAIL the evaluator.
+// Frozen Morton's shape gates, v2 (Kendon's foot-axis edge).
+// Default mode (no-op proof): the new edge gates FAIL on this checkout; gates
+// that should hold on main PASS; a deliberately broken copy FAIL the evaluator.
 // MORTONS_GATE_MODE=grade records measured values and does not require the
 // defect to still be present. Thresholds live in measure.ts and are not retuned.
+// G4 at v = 0.3 is an accepted exception and does not fail the v2 scoreboard.
 
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -20,14 +21,17 @@ import { resetSampleTopGeometryCache } from "@/lib/geometry/procedural-wall/samp
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { createDesignWithStockPlaceholder, defaultDesign, useDesignStore } from "@/stores/design-store";
 import type { DesignState, PlacedElement, Side } from "@/types";
-import { clinicalFrame, frozenMedialSign, pointAtUV, vAtPoint } from "./anatomy";
+import { clinicalFrame, frozenMedialSign, lateralOffset, medialOfMpj2BorderMm, pointAtUV, vAtPoint } from "./anatomy";
 import {
     blendEndMetrics,
+    BORDER_MEDIAL_MAX_MM,
+    BORDER_MEDIAL_MIN_MM,
     countDifferingVertices,
     fitLine,
     G1_MAX_DEV_MM,
     G2_WIDTH_TOL_MM,
     G3_MIN_FRACTION,
+    G4_MIN_FRACTION,
     G5_MAX_RISE_MM,
     G6_MAX_POS_SLOPE,
     G7_MAX_SECOND_DIFF,
@@ -36,8 +40,11 @@ import {
     G11_MAX_ABS_MM,
     lineDeviationMm,
     maxSmoothedSlope,
+    MPJ2_MAX_ADDED_MM,
     riseAfterLocalMinMm,
     s5Verdict,
+    S1_MAX_AXIS_DEG,
+    scoreFootAxisEdge,
     widthSpreadMm,
 } from "./measure";
 import { SAMPLE_TOP_SHA256, STL_PINS } from "./pins";
@@ -152,6 +159,75 @@ describe("evaluator rejects a deliberately broken copy", () => {
         expect(guardVerdict(" context\n+    const note = 1;\n").pass).toBe(true);
     });
 
+    test("a foot-axis edge scores, and the old slant and a v=0.3 miss do not fail the wrong checks", () => {
+        const pass = scoreFootAxisEdge({
+            s1_angle_deg: 0,
+            s1_border_medial_mm: 0.9,
+            mpj2_added_mm: 0,
+            g3_fraction: 1,
+            g4: [
+                { v: 0.1, fraction: 1 },
+                { v: 0.2, fraction: 1 },
+                { v: 0.3, fraction: 0 },
+            ],
+            g5_rise: 0,
+            g6_slope: 0,
+            outsideDiffer: 0,
+        });
+        expect(pass.s1).toBe(true);
+        expect(pass.g3).toBe(true);
+        expect(pass.g4).toBe(true);
+        expect(pass.g4_v03_accepted).toBe(true);
+        expect(pass.g5).toBe(true);
+        expect(pass.g6).toBe(true);
+        expect(pass.g10).toBe(true);
+
+        const slant = scoreFootAxisEdge({
+            s1_angle_deg: 9.56,
+            s1_border_medial_mm: 0.9,
+            mpj2_added_mm: 0,
+            g3_fraction: 0,
+            g4: [
+                { v: 0.1, fraction: 1 },
+                { v: 0.2, fraction: 1 },
+                { v: 0.3, fraction: 0 },
+            ],
+            g5_rise: 0,
+            g6_slope: 0,
+            outsideDiffer: 42,
+        });
+        expect(slant.s1_angle).toBe(false);
+        expect(slant.s1).toBe(false);
+        expect(slant.g3).toBe(false);
+        expect(slant.g10).toBe(false);
+        expect(slant.g4).toBe(true);
+
+        const liftedHead = scoreFootAxisEdge({
+            s1_angle_deg: 0,
+            s1_border_medial_mm: 2.5,
+            mpj2_added_mm: 0.2,
+            g3_fraction: 1,
+            g4: [
+                { v: 0.1, fraction: 1 },
+                { v: 0.2, fraction: 0.5 },
+                { v: 0.3, fraction: 0 },
+            ],
+            g5_rise: 0.4,
+            g6_slope: 0.08,
+            outsideDiffer: 0,
+        });
+        expect(liftedHead.s1_border).toBe(false);
+        expect(liftedHead.s1_mpj2).toBe(false);
+        expect(liftedHead.g4).toBe(false);
+        expect(liftedHead.g5).toBe(false);
+        expect(liftedHead.g6).toBe(false);
+        expect(S1_MAX_AXIS_DEG).toBe(2);
+        expect(BORDER_MEDIAL_MIN_MM).toBe(0);
+        expect(BORDER_MEDIAL_MAX_MM).toBe(2);
+        expect(MPJ2_MAX_ADDED_MM).toBeLessThanOrEqual(G11_MAX_ABS_MM);
+        expect(G4_MIN_FRACTION).toBe(0.99);
+    });
+
     test("S5 fails when the 6 mm residual is unreported or the blend was replaced", () => {
         const quiet = s5Verdict({ g5mm6: 0.8, g6mm6: 0.1, source: "quintic", reportText: "no comment" });
         expect(quiet.pass).toBe(false);
@@ -203,6 +279,15 @@ describe("anatomy pins", () => {
         const vMid = vAtPoint(left.mid.x, left.mid.y, "left");
         expect(vMid).toBeGreaterThan(0.24);
         expect(vMid).toBeLessThan(0.27);
+        expect(left.dir).toEqual({ x: 1, y: 0 });
+        expect(right.dir).toEqual({ x: 1, y: 0 });
+        expect(left.lateral).toEqual({ x: 0, y: 1 });
+        expect(right.lateral).toEqual({ x: 0, y: -1 });
+        const lineAtHead = { x: left.mpj2.x, y: left.mid.y };
+        const referenceMedial = medialOfMpj2BorderMm(left, lineAtHead);
+        expect(referenceMedial).toBeGreaterThanOrEqual(BORDER_MEDIAL_MIN_MM);
+        expect(referenceMedial).toBeLessThanOrEqual(BORDER_MEDIAL_MAX_MM);
+        expect(lateralOffset(left, left.mid)).toBe(0);
         expect(pointAtUV(0.67, 0, "left").y).toBeLessThan(pointAtUV(0.67, 1, "left").y);
     });
 });
@@ -244,6 +329,8 @@ describe("product shape on the checkout under test", () => {
                 g6_slope: round(s.g6_slope),
                 g8_peak: round(s.g8_peak),
                 s1_angle_deg: round(s.s1_angle_deg),
+                s1_border_medial_mm: round(s.s1_border_medial_mm),
+                mpj2_added_mm: round(s.mpj2_added_mm),
                 s1_mid_dist_mm: round(s.s1_mid_dist_mm),
                 maxAdded: round(s.maxAdded),
             })),
@@ -251,10 +338,33 @@ describe("product shape on the checkout under test", () => {
             stockFixture,
             stockTemplate,
         };
-        const payload = `MORTONS_GATE_JSON_BEGIN${JSON.stringify(report)}MORTONS_GATE_JSON_END`;
+        const scores = shapes.map((s, i) =>
+            scoreFootAxisEdge({
+                s1_angle_deg: s.s1_angle_deg,
+                s1_border_medial_mm: s.s1_border_medial_mm,
+                mpj2_added_mm: s.mpj2_added_mm,
+                g3_fraction: s.g3_fraction,
+                g4: s.g4,
+                g5_rise: s.g5_rise,
+                g6_slope: s.g6_slope,
+                outsideDiffer: meshes[i]!.outsideDiffer,
+            }),
+        );
+        const axis = clinicalFrame("left");
+        const referenceBorderMedialMm = medialOfMpj2BorderMm(axis, { x: axis.mpj2.x, y: axis.mid.y });
+        const full = {
+            ...report,
+            scores,
+            edge: {
+                dir: axis.dir,
+                referenceBorderMedialMm: round(referenceBorderMedialMm),
+                note: "Scored edge is the heel-to-toe axis through the 1st/2nd midpoint. referenceBorderMedialMm is how far that line sits medial of the 2nd met head medial border.",
+            },
+        };
+        const payload = `MORTONS_GATE_JSON_BEGIN${JSON.stringify(full)}MORTONS_GATE_JSON_END`;
         console.log(payload);
         if (process.env.MORTONS_GATE_OUT)
-            writeFileSync(process.env.MORTONS_GATE_OUT, JSON.stringify(report, null, 2));
+            writeFileSync(process.env.MORTONS_GATE_OUT, JSON.stringify(full, null, 2));
         if (GRADE) return;
 
         expect(stockFixture, "SAMPLE_Top fixture").toBe(SAMPLE_TOP_SHA256);
@@ -262,6 +372,7 @@ describe("product shape on the checkout under test", () => {
 
         for (const s of shapes) {
             const tag = `${s.side} ${s.heightMm} mm`;
+            const score = scores[shapes.indexOf(s)]!;
             expect(s.maxAdded, `${tag} reaches nominal`).toBeGreaterThan(s.heightMm * 0.98);
             expect(s.arch_hits / s.arch_queries, `${tag} arch samples`).toBeGreaterThan(0.5);
             expect(s.g1_95_n, `${tag} 95% stations`).toBeGreaterThan(20);
@@ -269,14 +380,24 @@ describe("product shape on the checkout under test", () => {
             expect(s.g1_05, `${tag} G1 5%`).toBeGreaterThan(G1_MAX_DEV_MM);
             expect(s.g2_spread, `${tag} G2`).toBeGreaterThan(G2_WIDTH_TOL_MM);
             expect(s.g3_fraction, `${tag} G3`).toBeLessThan(G3_MIN_FRACTION);
+            expect(score.g3, `${tag} G3 score`).toBe(false);
             for (const row of s.g4) {
-                expect(row.fraction, `${tag} G4 v=${row.v}`).toBeLessThan(0.99);
+                if (row.v === 0.3) continue;
+                expect(row.fraction, `${tag} G4 v=${row.v}`).toBeLessThan(G4_MIN_FRACTION);
             }
+            expect(score.g4, `${tag} G4 v=0.1 and v=0.2`).toBe(false);
+            expect(score.g4_v03_accepted, `${tag} G4 v=0.3 accepted`).toBe(true);
             expect(s.g5_rise, `${tag} G5`).toBeGreaterThan(G5_MAX_RISE_MM);
             expect(s.g6_slope, `${tag} G6`).toBeGreaterThan(G6_MAX_POS_SLOPE);
+            expect(score.g5, `${tag} G5 score`).toBe(false);
+            expect(score.g6, `${tag} G6 score`).toBe(false);
             expect(s.s2_bevel_over_8, `${tag} bevel wider than 8 mm`).toBe(true);
-            expect(s.s1_angle_deg, `${tag} S1 angle`).toBeGreaterThan(2);
-            expect(s.s1_mid_dist_mm, `${tag} S1 offset`).toBeGreaterThan(1.5);
+            expect(s.s1_angle_deg, `${tag} S1 angle to foot axis`).toBeGreaterThan(S1_MAX_AXIS_DEG);
+            expect(score.s1_angle, `${tag} S1 angle score`).toBe(false);
+            expect(score.s1_border, `${tag} border offset`).toBe(false);
+            expect(s.mpj2_added_mm, `${tag} 2nd met head`).toBeGreaterThan(MPJ2_MAX_ADDED_MM);
+            expect(score.s1_mpj2, `${tag} 2nd met head score`).toBe(false);
+            expect(score.s1, `${tag} S1`).toBe(false);
             expect(s.s4_at_line / s.heightMm, `${tag} S4 plateau`).toBeLessThan(0.99);
             expect(Math.max(s.g7_start.slopeJump, s.g7_end.slopeJump), `${tag} G7 slope`).toBeLessThanOrEqual(
                 G7_MAX_SLOPE_JUMP,
@@ -289,6 +410,7 @@ describe("product shape on the checkout under test", () => {
         for (const m of meshes) {
             expect(m.planDiffer, `${m.side} ${m.heightMm} planform`).toBe(0);
             expect(m.outsideDiffer, `${m.side} ${m.heightMm} outside band`).toBeGreaterThan(0);
+            expect(scores[meshes.indexOf(m)]!.g10, `${m.side} ${m.heightMm} G10 score`).toBe(false);
             expect(m.g11n, `${m.side} ${m.heightMm} lifted vertices`).toBeGreaterThan(10);
             expect(m.g11MaxMm, `${m.side} ${m.heightMm} G11`).toBeLessThanOrEqual(G11_MAX_ABS_MM);
             expect(m.g11Miss, `${m.side} ${m.heightMm} G11 misses`).toBe(0);

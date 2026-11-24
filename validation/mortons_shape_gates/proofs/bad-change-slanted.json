@@ -1,0 +1,326 @@
+{
+  "shapes": [
+    {
+      "side": "left",
+      "heightMm": 3,
+      "maxAdded": 3,
+      "g1_95": 0.011537,
+      "g1_05": 0.011669,
+      "g1_95_n": 89,
+      "g1_05_n": 89,
+      "g2_spread": 0.011887,
+      "g2_median": 2.935473,
+      "g2_min": 2.9257574288278585,
+      "g2_max": 2.947359191470299,
+      "g2_n": 89,
+      "g3_fraction": 0.569141,
+      "g3_n": 1458,
+      "g4": [
+        {
+          "v": 0.1,
+          "fraction": 1,
+          "n": 93
+        },
+        {
+          "v": 0.2,
+          "fraction": 1,
+          "n": 93
+        },
+        {
+          "v": 0.3,
+          "fraction": 0,
+          "n": 93
+        }
+      ],
+      "g5_rise": 0,
+      "g6_slope": -0.002512,
+      "g6_n": 201,
+      "g7_start": {
+        "slopeJump": 0.002523,
+        "secondDiff": 0.002523
+      },
+      "g7_end": {
+        "slopeJump": 0.003945,
+        "secondDiff": 0.003945
+      },
+      "g8_peak": 0.946663,
+      "s1_angle_deg": 9.563995,
+      "s1_border_medial_mm": 0.471794,
+      "mpj2_added_mm": 0,
+      "s1_mid_dist_mm": 0.348396,
+      "s2_bevel_over_8": false,
+      "s4_at_line": 3,
+      "s4_at_blend_end": 0,
+      "arch_hits": 201,
+      "arch_queries": 201
+    },
+    {
+      "side": "left",
+      "heightMm": 6,
+      "maxAdded": 6,
+      "g1_95": 0.011537,
+      "g1_05": 0.011669,
+      "g1_95_n": 89,
+      "g1_05_n": 89,
+      "g2_spread": 0.011887,
+      "g2_median": 2.935473,
+      "g2_min": 2.9257574288278585,
+      "g2_max": 2.947359191470299,
+      "g2_n": 89,
+      "g3_fraction": 0.569141,
+      "g3_n": 1458,
+      "g4": [
+        {
+          "v": 0.1,
+          "fraction": 1,
+          "n": 93
+        },
+        {
+          "v": 0.2,
+          "fraction": 1,
+          "n": 93
+        },
+        {
+          "v": 0.3,
+          "fraction": 0,
+          "n": 93
+        }
+      ],
+      "g5_rise": 0.09104,
+      "g6_slope": 0.014648,
+      "g6_n": 201,
+      "g7_start": {
+        "slopeJump": 0.005046,
+        "secondDiff": 0.005046
+      },
+      "g7_end": {
+        "slopeJump": 0.00789,
+        "secondDiff": 0.00789
+      },
+      "g8_peak": 1.893326,
+      "s1_angle_deg": 9.563995,
+      "s1_border_medial_mm": 0.471794,
+      "mpj2_added_mm": 0,
+      "s1_mid_dist_mm": 0.348396,
+      "s2_bevel_over_8": false,
+      "s4_at_line": 6,
+      "s4_at_blend_end": 0,
+      "arch_hits": 201,
+      "arch_queries": 201
+    },
+    {
+      "side": "right",
+      "heightMm": 3,
+      "maxAdded": 3,
+      "g1_95": 0.011537,
+      "g1_05": 0.011669,
+      "g1_95_n": 89,
+      "g1_05_n": 89,
+      "g2_spread": 0.011887,
+      "g2_median": 2.935473,
+      "g2_min": 2.9257574288278585,
+      "g2_max": 2.947359191470299,
+      "g2_n": 89,
+      "g3_fraction": 0.569141,
+      "g3_n": 1458,
+      "g4": [
+        {
+          "v": 0.1,
+          "fraction": 1,
+          "n": 93
+        },
+        {
+          "v": 0.2,
+          "fraction": 1,
+          "n": 93
+        },
+        {
+          "v": 0.3,
+          "fraction": 0,
+          "n": 93
+        }
+      ],
+      "g5_rise": 0,
+      "g6_slope": -0.002512,
+      "g6_n": 201,
+      "g7_start": {
+        "slopeJump": 0.002523,
+        "secondDiff": 0.002523
+      },
+      "g7_end": {
+        "slopeJump": 0.003945,
+        "secondDiff": 0.003945
+      },
+      "g8_peak": 0.946663,
+      "s1_angle_deg": 9.563995,
+      "s1_border_medial_mm": 0.471794,
+      "mpj2_added_mm": 0,
+      "s1_mid_dist_mm": 0.348396,
+      "s2_bevel_over_8": false,
+      "s4_at_line": 3,
+      "s4_at_blend_end": 0,
+      "arch_hits": 201,
+      "arch_queries": 201
+    },
+    {
+      "side": "right",
+      "heightMm": 6,
+      "maxAdded": 6,
+      "g1_95": 0.011537,
+      "g1_05": 0.011669,
+      "g1_95_n": 89,
+      "g1_05_n": 89,
+      "g2_spread": 0.011887,
+      "g2_median": 2.935473,
+      "g2_min": 2.9257574288278585,
+      "g2_max": 2.947359191470299,
+      "g2_n": 89,
+      "g3_fraction": 0.569141,
+      "g3_n": 1458,
+      "g4": [
+        {
+          "v": 0.1,
+          "fraction": 1,
+          "n": 93
+        },
+        {
+          "v": 0.2,
+          "fraction": 1,
+          "n": 93
+        },
+        {
+          "v": 0.3,
+          "fraction": 0,
+          "n": 93
+        }
+      ],
+      "g5_rise": 0.09104,
+      "g6_slope": 0.014648,
+      "g6_n": 201,
+      "g7_start": {
+        "slopeJump": 0.005046,
+        "secondDiff": 0.005046
+      },
+      "g7_end": {
+        "slopeJump": 0.00789,
+        "secondDiff": 0.00789
+      },
+      "g8_peak": 1.893326,
+      "s1_angle_deg": 9.563995,
+      "s1_border_medial_mm": 0.471794,
+      "mpj2_added_mm": 0,
+      "s1_mid_dist_mm": 0.348396,
+      "s2_bevel_over_8": false,
+      "s4_at_line": 6,
+      "s4_at_blend_end": 0,
+      "arch_hits": 201,
+      "arch_queries": 201
+    }
+  ],
+  "meshes": [
+    {
+      "side": "left",
+      "heightMm": 3,
+      "vertices": 42134,
+      "outsideDiffer": 408,
+      "planDiffer": 0,
+      "moved": 6160,
+      "g11MaxMm": 4.7576743877897343e-7,
+      "g11n": 6001,
+      "g11Miss": 0
+    },
+    {
+      "side": "left",
+      "heightMm": 6,
+      "vertices": 42134,
+      "outsideDiffer": 408,
+      "planDiffer": 0,
+      "moved": 6160,
+      "g11MaxMm": 4.76837158203125e-7,
+      "g11n": 6022,
+      "g11Miss": 0
+    },
+    {
+      "side": "right",
+      "heightMm": 3,
+      "vertices": 42134,
+      "outsideDiffer": 408,
+      "planDiffer": 0,
+      "moved": 6160,
+      "g11MaxMm": 4.7576743877897343e-7,
+      "g11n": 6001,
+      "g11Miss": 0
+    },
+    {
+      "side": "right",
+      "heightMm": 6,
+      "vertices": 42134,
+      "outsideDiffer": 408,
+      "planDiffer": 0,
+      "moved": 6160,
+      "g11MaxMm": 4.76837158203125e-7,
+      "g11n": 6022,
+      "g11Miss": 0
+    }
+  ],
+  "stockFixture": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+  "stockTemplate": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+  "scores": [
+    {
+      "s1": false,
+      "s1_angle": false,
+      "s1_border": true,
+      "s1_mpj2": true,
+      "g3": false,
+      "g4": true,
+      "g4_v03_accepted": true,
+      "g5": true,
+      "g6": true,
+      "g10": false
+    },
+    {
+      "s1": false,
+      "s1_angle": false,
+      "s1_border": true,
+      "s1_mpj2": true,
+      "g3": false,
+      "g4": true,
+      "g4_v03_accepted": true,
+      "g5": false,
+      "g6": true,
+      "g10": false
+    },
+    {
+      "s1": false,
+      "s1_angle": false,
+      "s1_border": true,
+      "s1_mpj2": true,
+      "g3": false,
+      "g4": true,
+      "g4_v03_accepted": true,
+      "g5": true,
+      "g6": true,
+      "g10": false
+    },
+    {
+      "s1": false,
+      "s1_angle": false,
+      "s1_border": true,
+      "s1_mpj2": true,
+      "g3": false,
+      "g4": true,
+      "g4_v03_accepted": true,
+      "g5": false,
+      "g6": true,
+      "g10": false
+    }
+  ],
+  "edge": {
+    "dir": {
+      "x": 1,
+      "y": 0
+    },
+    "referenceBorderMedialMm": 1.26552,
+    "note": "Scored edge is the heel-to-toe axis through the 1st/2nd midpoint. referenceBorderMedialMm is how far that line sits medial of the 2nd met head medial border."
+  }
+}

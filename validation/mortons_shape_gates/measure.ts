@@ -13,6 +13,13 @@ export const G7_MAX_SECOND_DIFF = 0.02;
 export const G7_DX_MM = 1;
 export const G8_MAX_SLOPE_AT_3MM = 1.0;
 export const G11_MAX_ABS_MM = 1e-6;
+/** 99% contour vs the heel-to-toe axis. Replaces the v1 angle to the u=0.97 chord. */
+export const S1_MAX_AXIS_DEG = 2;
+/** Edge must sit this far medial of the 2nd met head's medial border. */
+export const BORDER_MEDIAL_MIN_MM = 0;
+export const BORDER_MEDIAL_MAX_MM = 2;
+/** 2nd met head center added height. Equal to 0 within the G11 equality. */
+export const MPJ2_MAX_ADDED_MM = 1e-6;
 
 export interface Xy {
     x: number;
@@ -259,6 +266,54 @@ export function maxAbsDelta(deltas: readonly number[]): number {
  * S5: a 6 mm miss passes only when the residual was reported and the blend
  * was not replaced by another construction (smooth-max against the arch).
  */
+export interface FootAxisScore {
+    s1: boolean;
+    s1_angle: boolean;
+    s1_border: boolean;
+    s1_mpj2: boolean;
+    g3: boolean;
+    /** v = 0.1 and v = 0.2 only. A miss at v = 0.3 does not fail this. */
+    g4: boolean;
+    g4_v03_accepted: true;
+    g5: boolean;
+    g6: boolean;
+    g10: boolean;
+}
+
+/**
+ * v2 scoreboard for Kendon's foot-axis edge. G4 at v = 0.3 is recorded and
+ * accepted; it cannot fail `g4`.
+ */
+export function scoreFootAxisEdge(input: {
+    s1_angle_deg: number;
+    s1_border_medial_mm: number;
+    mpj2_added_mm: number;
+    g3_fraction: number;
+    g4: readonly { v: number; fraction: number }[];
+    g5_rise: number;
+    g6_slope: number;
+    outsideDiffer: number;
+}): FootAxisScore {
+    const s1_angle = input.s1_angle_deg <= S1_MAX_AXIS_DEG;
+    const s1_border =
+        input.s1_border_medial_mm >= BORDER_MEDIAL_MIN_MM - 1e-12 &&
+        input.s1_border_medial_mm <= BORDER_MEDIAL_MAX_MM + 1e-12;
+    const s1_mpj2 = input.mpj2_added_mm <= MPJ2_MAX_ADDED_MM;
+    const at = (v: number) => input.g4.find((row) => row.v === v)?.fraction ?? 0;
+    return {
+        s1: s1_angle && s1_border && s1_mpj2,
+        s1_angle,
+        s1_border,
+        s1_mpj2,
+        g3: input.g3_fraction >= G3_MIN_FRACTION - 1e-12,
+        g4: at(0.1) >= G4_MIN_FRACTION - 1e-12 && at(0.2) >= G4_MIN_FRACTION - 1e-12,
+        g4_v03_accepted: true,
+        g5: input.g5_rise <= G5_MAX_RISE_MM + 1e-12,
+        g6: input.g6_slope <= G6_MAX_POS_SLOPE + 1e-12,
+        g10: input.outsideDiffer === 0,
+    };
+}
+
 export function s5Verdict(input: { g5mm6: number; g6mm6: number; source: string; reportText: string }): {
     pass: boolean;
     g5Fail: boolean;

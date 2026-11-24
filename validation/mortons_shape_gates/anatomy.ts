@@ -6,7 +6,15 @@ export const WIDTH_MM = 95;
 /** Sink profile centers on main. Midpoint is the 1st/2nd intermetatarsal space. */
 export const MPJ1 = { u: 0.665, v: 0.145 };
 export const MPJ2 = { u: 0.685, v: 0.365 };
-/** Medial-contour sample short of the toe cap, used as the 1st-ray direction. */
+/**
+ * 2nd metatarsal head width from SINK_PROFILES.mpj2.widthMm on main.
+ * The medial border is the center shifted toward the big toe by half of this.
+ */
+export const MPJ2_HEAD_WIDTH_MM = 18;
+/**
+ * v1 chord sample. Retired. v2 does not aim the scored edge at this station.
+ * The historical freeze that still uses it is PR #421.
+ */
 export const TOE_MEDIAL_U = 0.97;
 export const FULL_HEIGHT_REACH_MM = 10;
 export const FULL_HEIGHT_LINE_MM = 11;
@@ -96,14 +104,17 @@ export interface ClinicalFrame {
     side: FootSide;
     mpj1: Xy;
     mpj2: Xy;
+    /** Medial border of the 2nd metatarsal head. The scored edge sits at or medial of this point. */
+    mpj2Border: Xy;
+    /** 1st/2nd intermetatarsal midpoint. The scored edge passes through this point. */
     mid: Xy;
-    /** Unit direction of the medial forefoot contour, distal positive. */
+    /** Heel-to-toe axis, distal positive. Exactly (1, 0). Not the v1 medial chord. */
     dir: Xy;
     /** Unit normal pointing lateral. */
     lateral: Xy;
     /** Distal of this x, medial of the line, height must already be full (10 mm band). */
     xFullMin: number;
-    /** Nominal plateau end, 11 mm proximal of MPJ1. Blend starts here. */
+    /** Nominal plateau end, 11 mm proximal of MPJ1. The edge turns medially here. */
     xLine: number;
     /** 25 mm proximal of xLine. Added height is 0 here. */
     xBlendEnd: number;
@@ -113,37 +124,31 @@ export interface ClinicalFrame {
     xCorner: number;
 }
 
+/**
+ * Kendon's scored edge. Straight, parallel to the heel-to-toe axis, through the
+ * 1st/2nd intermetatarsal midpoint. It is not the v1 chord from the 1st MPJ
+ * medial border to u = 0.97. Proximal of the neck line the plateau closes
+ * medially; that corner is xLine, 11 mm proximal of the 1st MPJ.
+ */
 export function clinicalFrame(side: FootSide): ClinicalFrame {
     const mpj1 = pointAtUV(MPJ1.u, MPJ1.v, side);
     const mpj2 = pointAtUV(MPJ2.u, MPJ2.v, side);
     const mid = { x: (mpj1.x + mpj2.x) / 2, y: (mpj1.y + mpj2.y) / 2 };
-    const med0 = pointAtUV(MPJ1.u, 0, side);
-    const med1 = pointAtUV(TOE_MEDIAL_U, 0, side);
-    let dx = med1.x - med0.x;
-    let dy = med1.y - med0.y;
-    const len = Math.hypot(dx, dy) || 1;
-    dx /= len;
-    dy /= len;
-    if (dx < 0) {
-        dx = -dx;
-        dy = -dy;
-    }
-    const station = stockStation(MPJ1.u, side);
-    const towardLateralY = station.lateral - station.medial;
-    let nx = -dy;
-    let ny = dx;
-    if (ny * towardLateralY < 0) {
-        nx = -nx;
-        ny = -ny;
-    }
-    const nlen = Math.hypot(nx, ny) || 1;
+    const station = stockStation(MPJ2.u, side);
+    const towardLateral = Math.sign(station.lateral - station.medial) || 1;
+    const medial = frozenMedialSign(side);
+    const mpj2Border = {
+        x: mpj2.x,
+        y: mpj2.y + medial * (MPJ2_HEAD_WIDTH_MM / 2),
+    };
     return {
         side,
         mpj1,
         mpj2,
+        mpj2Border,
         mid,
-        dir: { x: dx, y: dy },
-        lateral: { x: nx / nlen, y: ny / nlen },
+        dir: { x: 1, y: 0 },
+        lateral: { x: 0, y: towardLateral },
         xFullMin: mpj1.x - FULL_HEIGHT_REACH_MM,
         xLine: mpj1.x - FULL_HEIGHT_LINE_MM,
         xBlendEnd: mpj1.x - FULL_HEIGHT_LINE_MM - BLEND_MM,
@@ -165,4 +170,12 @@ export function lineAtX(frame: ClinicalFrame, x: number): Xy & { s: number } {
 /** Lateral offset (mm) of a point from the clinical line. Positive is lateral. */
 export function lateralOffset(frame: ClinicalFrame, p: Xy): number {
     return (p.x - frame.mid.x) * frame.lateral.x + (p.y - frame.mid.y) * frame.lateral.y;
+}
+
+/**
+ * How far a point sits medial of the 2nd metatarsal head's medial border.
+ * Positive is medial of that border. Zero is on the border.
+ */
+export function medialOfMpj2BorderMm(frame: ClinicalFrame, p: Xy): number {
+    return lateralOffset(frame, frame.mpj2Border) - lateralOffset(frame, p);
 }

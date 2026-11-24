@@ -18,6 +18,7 @@ import {
     LENGTH_MM,
     lateralOffset,
     lineAtX,
+    medialOfMpj2BorderMm,
     pointAtUV,
     vAtPoint,
     WIDTH_MM,
@@ -236,7 +237,12 @@ export interface ShapeMetrics {
     g7_start: BlendEndMetrics;
     g7_end: BlendEndMetrics;
     g8_peak: number;
+    /** Angle of the 99% contour to the heel-to-toe axis. */
     s1_angle_deg: number;
+    /** 99% contour, at the 2nd met head, medial of that head's medial border. */
+    s1_border_medial_mm: number;
+    /** Added height at the 2nd met head center. */
+    mpj2_added_mm: number;
     s1_mid_dist_mm: number;
     s2_bevel_over_8: boolean;
     /** Added height at the spec plateau line and at the end of the 25 mm blend, v = 0.1. */
@@ -295,6 +301,17 @@ export async function measureShape(side: FootSide, heightMm: number): Promise<Sh
             const p = pointAtUV(x / LENGTH_MM, v, side);
             g3samples.push(added(p.x, p.y));
         }
+        // The slanted chord leaves a wedge only a couple of millimetres wide.
+        // Sample that strip explicitly. Points off the stock outline are skipped.
+        for (const inset of [0.25, 0.5, 1, 2]) {
+            const p = {
+                x: onLine.x - frame.lateral.x * inset,
+                y: onLine.y - frame.lateral.y * inset,
+            };
+            const v = vAtPoint(p.x, p.y, side);
+            if (v <= 0.01 || v >= 0.98) continue;
+            g3samples.push(added(p.x, p.y));
+        }
     }
 
     const g4 = [0.1, 0.2, 0.3].map((v) => {
@@ -306,6 +323,12 @@ export async function measureShape(side: FootSide, heightMm: number): Promise<Sh
         return { v, fraction: minFraction(samples, heightMm), n: samples.length };
     });
 
+    const headT = scanOffset(frame, added, frame.mpj2.x, 0.99 * heightMm);
+    const borderMedial =
+        headT === null
+            ? Number.NaN
+            : medialOfMpj2BorderMm(frame, pointFromOffset(frame, frame.mpj2.x, headT));
+
     const rayXs: number[] = [];
     const rayH: number[] = [];
     const rayAdded: number[] = [];
@@ -313,6 +336,7 @@ export async function measureShape(side: FootSide, heightMm: number): Promise<Sh
     let queries = 0;
     const xStart = frame.xLine - 60;
     const xEnd = frame.xLine + 40;
+    // Foot-axis ray through the 1st MPJ. dir is (1, 0), so mesh Y stays at the head.
     for (let x = xStart; x <= xEnd + 1e-6; x += 0.5) {
         const s = (x - frame.mpj1.x) / frame.dir.x;
         const p = {
@@ -385,6 +409,8 @@ export async function measureShape(side: FootSide, heightMm: number): Promise<Sh
         g7_end: blendEndMetrics(alongV, frame.xBlendEnd),
         g8_peak: g8,
         s1_angle_deg: Number.isFinite(ang) ? ang : 180,
+        s1_border_medial_mm: borderMedial,
+        mpj2_added_mm: added(frame.mpj2.x, frame.mpj2.y),
         s1_mid_dist_mm: distanceToFitMm(fit99, frame.mid),
         s2_bevel_over_8: width.max > 8,
         s4_at_line: alongV(frame.xLine),
@@ -450,6 +476,7 @@ export async function measureMesh(side: FootSide, heightMm: number): Promise<Mes
         const thickMoved = z0 !== z1;
         if (thickMoved || len0 !== len1 || wid0 !== wid1) moved++;
         const t = lateralOffset(clinical, { x, y: meshY });
+        // Band about the foot-axis edge: 25 mm blend through the toe, 8 mm bevel cap.
         const inBand = t <= 8 && x >= clinical.xBlendEnd - 0.5 && x <= LENGTH_MM + 1 && t >= -60;
         if (!inBand && (thickMoved || len0 !== len1 || wid0 !== wid1)) outsideDiffer++;
         const pred = added(x, meshY);

@@ -4,17 +4,17 @@
       "side": "left",
       "heightMm": 3,
       "maxAdded": 3,
-      "g1_95": 4.411559,
-      "g1_05": 12.919208,
-      "g1_95_n": 70,
-      "g1_05_n": 89,
-      "g2_spread": 6.664153,
-      "g2_median": 9.568173,
-      "g2_min": 3.8326256113469226,
-      "g2_max": 16.23232646085808,
-      "g2_n": 70,
+      "g1_95": 3.366815,
+      "g1_05": 11.570054,
+      "g1_95_n": 68,
+      "g1_05_n": 88,
+      "g2_spread": 5.583161,
+      "g2_median": 9.342469,
+      "g2_min": 3.7593077432956274,
+      "g2_max": 10.445472788774447,
+      "g2_n": 68,
       "g3_fraction": 0,
-      "g3_n": 1471,
+      "g3_n": 1458,
       "g4": [
         {
           "v": 0.1,
@@ -32,9 +32,9 @@
           "n": 93
         }
       ],
-      "g5_rise": 1.490122,
-      "g6_slope": 0.109351,
-      "g6_n": 134,
+      "g5_rise": 1.417168,
+      "g6_slope": 0.103239,
+      "g6_n": 201,
       "g7_start": {
         "slopeJump": 0.000931,
         "secondDiff": 0.000931
@@ -43,30 +43,32 @@
         "slopeJump": 0,
         "secondDiff": 0
       },
-      "g8_peak": 0.365484,
-      "s1_angle_deg": 6.670101,
-      "s1_mid_dist_mm": 3.522322,
+      "g8_peak": 0.904936,
+      "s1_angle_deg": 2.398765,
+      "s1_border_medial_mm": null,
+      "mpj2_added_mm": 0.110346,
+      "s1_mid_dist_mm": 3.19089,
       "s2_bevel_over_8": true,
       "s4_at_line": 1.0477225263739407e-7,
       "s4_at_blend_end": 0,
-      "arch_hits": 134,
+      "arch_hits": 201,
       "arch_queries": 201
     },
     {
       "side": "left",
       "heightMm": 6,
       "maxAdded": 6,
-      "g1_95": 4.411559,
-      "g1_05": 12.919208,
-      "g1_95_n": 70,
-      "g1_05_n": 89,
-      "g2_spread": 6.664153,
-      "g2_median": 9.568173,
-      "g2_min": 3.8326256113469226,
-      "g2_max": 16.23232646085808,
-      "g2_n": 70,
+      "g1_95": 3.366815,
+      "g1_05": 11.570054,
+      "g1_95_n": 68,
+      "g1_05_n": 88,
+      "g2_spread": 5.583161,
+      "g2_median": 9.342469,
+      "g2_min": 3.7593077432956274,
+      "g2_max": 10.445472788774447,
+      "g2_n": 68,
       "g3_fraction": 0,
-      "g3_n": 1471,
+      "g3_n": 1458,
       "g4": [
         {
           "v": 0.1,
@@ -84,9 +86,9 @@
           "n": 93
         }
       ],
-      "g5_rise": 4.291661,
-      "g6_slope": 0.283421,
-      "g6_n": 134,
+      "g5_rise": 4.198361,
+      "g6_slope": 0.274126,
+      "g6_n": 201,
       "g7_start": {
         "slopeJump": 0.001862,
         "secondDiff": 0.001862
@@ -95,30 +97,32 @@
         "slopeJump": 0,
         "secondDiff": 0
       },
-      "g8_peak": 0.730968,
-      "s1_angle_deg": 6.670101,
-      "s1_mid_dist_mm": 3.522322,
+      "g8_peak": 1.809871,
+      "s1_angle_deg": 2.398765,
+      "s1_border_medial_mm": null,
+      "mpj2_added_mm": 0.220692,
+      "s1_mid_dist_mm": 3.19089,
       "s2_bevel_over_8": true,
       "s4_at_line": 2.0954450527478815e-7,
       "s4_at_blend_end": 0,
-      "arch_hits": 134,
+      "arch_hits": 201,
       "arch_queries": 201
     },
     {
       "side": "right",
       "heightMm": 3,
       "maxAdded": 3,
-      "g1_95": 4.411559,
-      "g1_05": 12.919208,
-      "g1_95_n": 70,
-      "g1_05_n": 89,
-      "g2_spread": 6.664153,
-      "g2_median": 9.568173,
-      "g2_min": 3.8326256113469226,
-      "g2_max": 16.23232646085808,
-      "g2_n": 70,
+      "g1_95": 3.366815,
+      "g1_05": 11.570054,
+      "g1_95_n": 68,
+      "g1_05_n": 88,
+      "g2_spread": 5.583161,
+      "g2_median": 9.342469,
+      "g2_min": 3.7593077432956274,
+      "g2_max": 10.445472788774447,
+      "g2_n": 68,
       "g3_fraction": 0,
-      "g3_n": 1471,
+      "g3_n": 1458,
       "g4": [
         {
           "v": 0.1,
@@ -136,9 +140,9 @@
           "n": 93
         }
       ],
-      "g5_rise": 1.490122,
-      "g6_slope": 0.109351,
-      "g6_n": 134,
+      "g5_rise": 1.417168,
+      "g6_slope": 0.103239,
+      "g6_n": 201,
       "g7_start": {
         "slopeJump": 0.000931,
         "secondDiff": 0.000931
@@ -147,30 +151,32 @@
         "slopeJump": 0,
         "secondDiff": 0
       },
-      "g8_peak": 0.365484,
-      "s1_angle_deg": 6.670101,
-      "s1_mid_dist_mm": 3.522322,
+      "g8_peak": 0.904936,
+      "s1_angle_deg": 2.398765,
+      "s1_border_medial_mm": null,
+      "mpj2_added_mm": 0.110346,
+      "s1_mid_dist_mm": 3.19089,
       "s2_bevel_over_8": true,
       "s4_at_line": 1.0477225263739407e-7,
       "s4_at_blend_end": 0,
-      "arch_hits": 134,
+      "arch_hits": 201,
       "arch_queries": 201
     },
     {
       "side": "right",
       "heightMm": 6,
       "maxAdded": 6,
-      "g1_95": 4.411559,
-      "g1_05": 12.919208,
-      "g1_95_n": 70,
-      "g1_05_n": 89,
-      "g2_spread": 6.664153,
-      "g2_median": 9.568173,
-      "g2_min": 3.8326256113469226,
-      "g2_max": 16.23232646085808,
-      "g2_n": 70,
+      "g1_95": 3.366815,
+      "g1_05": 11.570054,
+      "g1_95_n": 68,
+      "g1_05_n": 88,
+      "g2_spread": 5.583161,
+      "g2_median": 9.342469,
+      "g2_min": 3.7593077432956274,
+      "g2_max": 10.445472788774447,
+      "g2_n": 68,
       "g3_fraction": 0,
-      "g3_n": 1471,
+      "g3_n": 1458,
       "g4": [
         {
           "v": 0.1,
@@ -188,9 +194,9 @@
           "n": 93
         }
       ],
-      "g5_rise": 4.291661,
-      "g6_slope": 0.283421,
-      "g6_n": 134,
+      "g5_rise": 4.198361,
+      "g6_slope": 0.274126,
+      "g6_n": 201,
       "g7_start": {
         "slopeJump": 0.001862,
         "secondDiff": 0.001862
@@ -199,13 +205,15 @@
         "slopeJump": 0,
         "secondDiff": 0
       },
-      "g8_peak": 0.730968,
-      "s1_angle_deg": 6.670101,
-      "s1_mid_dist_mm": 3.522322,
+      "g8_peak": 1.809871,
+      "s1_angle_deg": 2.398765,
+      "s1_border_medial_mm": null,
+      "mpj2_added_mm": 0.220692,
+      "s1_mid_dist_mm": 3.19089,
       "s2_bevel_over_8": true,
       "s4_at_line": 2.0954450527478815e-7,
       "s4_at_blend_end": 0,
-      "arch_hits": 134,
+      "arch_hits": 201,
       "arch_queries": 201
     }
   ],
@@ -214,7 +222,7 @@
       "side": "left",
       "heightMm": 3,
       "vertices": 42134,
-      "outsideDiffer": 259,
+      "outsideDiffer": 625,
       "planDiffer": 0,
       "moved": 5386,
       "g11MaxMm": 2.384185791015625e-7,
@@ -225,7 +233,7 @@
       "side": "left",
       "heightMm": 6,
       "vertices": 42134,
-      "outsideDiffer": 266,
+      "outsideDiffer": 625,
       "planDiffer": 0,
       "moved": 5393,
       "g11MaxMm": 4.76837158203125e-7,
@@ -236,7 +244,7 @@
       "side": "right",
       "heightMm": 3,
       "vertices": 42134,
-      "outsideDiffer": 259,
+      "outsideDiffer": 625,
       "planDiffer": 0,
       "moved": 5386,
       "g11MaxMm": 2.384185791015625e-7,
@@ -247,7 +255,7 @@
       "side": "right",
       "heightMm": 6,
       "vertices": 42134,
-      "outsideDiffer": 266,
+      "outsideDiffer": 625,
       "planDiffer": 0,
       "moved": 5393,
       "g11MaxMm": 4.76837158203125e-7,
@@ -256,5 +264,63 @@
     }
   ],
   "stockFixture": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
-  "stockTemplate": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1"
+  "stockTemplate": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+  "scores": [
+    {
+      "s1": false,
+      "s1_angle": false,
+      "s1_border": false,
+      "s1_mpj2": false,
+      "g3": false,
+      "g4": false,
+      "g4_v03_accepted": true,
+      "g5": false,
+      "g6": false,
+      "g10": false
+    },
+    {
+      "s1": false,
+      "s1_angle": false,
+      "s1_border": false,
+      "s1_mpj2": false,
+      "g3": false,
+      "g4": false,
+      "g4_v03_accepted": true,
+      "g5": false,
+      "g6": false,
+      "g10": false
+    },
+    {
+      "s1": false,
+      "s1_angle": false,
+      "s1_border": false,
+      "s1_mpj2": false,
+      "g3": false,
+      "g4": false,
+      "g4_v03_accepted": true,
+      "g5": false,
+      "g6": false,
+      "g10": false
+    },
+    {
+      "s1": false,
+      "s1_angle": false,
+      "s1_border": false,
+      "s1_mpj2": false,
+      "g3": false,
+      "g4": false,
+      "g4_v03_accepted": true,
+      "g5": false,
+      "g6": false,
+      "g10": false
+    }
+  ],
+  "edge": {
+    "dir": {
+      "x": 1,
+      "y": 0
+    },
+    "referenceBorderMedialMm": 1.26552,
+    "note": "Scored edge is the heel-to-toe axis through the 1st/2nd midpoint. referenceBorderMedialMm is how far that line sits medial of the 2nd met head medial border."
+  }
 }
