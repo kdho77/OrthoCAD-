@@ -206,7 +206,7 @@ export async function exportClinicalPrinterGcode(input: {
             const downloadedSides = built.map((file) => `${SIDE_LABELS[file.side]} downloaded`).join(". ");
             return {
                 ok: false,
-                reason: `${downloadedSides}. ${SIDE_LABELS[foot]} failed. ${detail}`,
+                reason: `${downloadedSides}. ${SIDE_LABELS[foot]} G-code failed. ${detail}`,
                 filename: built.map((file) => file.filename).join(", "),
                 filenames: built.map((file) => file.filename),
                 blob: built[0]?.blob,
