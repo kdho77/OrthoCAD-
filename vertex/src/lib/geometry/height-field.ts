@@ -466,10 +466,17 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     shaped += (c.medialFlangeMm * medialBlend + c.lateralFlangeMm * lateralBlend) * flangeRegion * edge;
 
     // --- Placed elements (met pads, bars, sinks, …) ---------------------------
+    // Morton's extension is added after the edge feather so the preview height
+    // matches the export add. The extension height itself is 0 on the sheet
+    // edge, which is the same vertex the export rim clip skips. Other elements
+    // stay inside the feathered term.
     const includeElements = params.includeElements ?? true;
+    const mortonsExtension = includeElements ? elements.filter((el) => el.kind === "mortons_extension") : [];
     if (includeElements) {
         const hw = resolveOutlineHalfWidth(u, params) * halfW;
-        shaped += elementHeightAt(elements, u * lengthMm, vSigned * hw, lengthMm, widthMm);
+        const shapedElements =
+            mortonsExtension.length > 0 ? elements.filter((el) => el.kind !== "mortons_extension") : elements;
+        shaped += elementHeightAt(shapedElements, u * lengthMm, vSigned * hw, lengthMm, widthMm);
     }
 
     // --- Natural edge feathering ----------------------------------------------
@@ -568,6 +575,11 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
         const hw = resolveOutlineHalfWidth(u, params) * halfW;
         const delta = elementHeightAt(elements, u * lengthMm, vSigned * hw, lengthMm, widthMm);
         if (delta < -1e-6) h = REMAINING_MATERIAL_MM;
+    }
+
+    if (mortonsExtension.length > 0) {
+        const hw = resolveOutlineHalfWidth(u, params) * halfW;
+        h += elementHeightAt(mortonsExtension, u * lengthMm, vSigned * hw, lengthMm, widthMm);
     }
 
     return h;
