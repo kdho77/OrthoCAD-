@@ -467,7 +467,9 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
 
     // --- Placed elements (met pads, bars, sinks, …) ---------------------------
     // Morton's extension is added after the edge feather so the preview height
-    // matches the export add. Other elements stay inside the feathered term.
+    // matches the export add. The extension height itself is 0 on the sheet
+    // edge, which is the same vertex the export rim clip skips. Other elements
+    // stay inside the feathered term.
     const includeElements = params.includeElements ?? true;
     const mortonsExtension = includeElements ? elements.filter((el) => el.kind === "mortons_extension") : [];
     if (includeElements) {

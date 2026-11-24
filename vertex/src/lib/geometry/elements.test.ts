@@ -322,8 +322,10 @@ describe("anatomical element footprints", () => {
             expect(mortonsWeightAtUV("left", length, width, plateauU, MORTONS_V_LATERAL)).toBe(0);
             const uMid = (plan.fullHeightX - MORTONS_BLEND_PROXIMAL_MM / 2) / length;
             const mid = mortonsWeightAtUV("left", length, width, uMid, 0.08);
-            expect(mid).toBeGreaterThan(0.45);
-            expect(mid).toBeLessThan(0.55);
+            // Past half: the arch falls faster at the proximal end, so more of
+            // the 25 mm rise is used there. Still strictly inside the blend.
+            expect(mid).toBeGreaterThan(0.6);
+            expect(mid).toBeLessThan(0.72);
             expect(mortonsWeightAtUV("left", length, width, (plan.blendStartX - 1) / length, 0.08)).toBe(0);
             expect(plan.fullHeightX).toBeCloseTo(SINK_PROFILES.mpj1.u * length - MORTONS_NECK_PROXIMAL_MM, 1);
             expect(MORTONS_LATERAL_BEVEL_MM).toBeLessThanOrEqual(8);

@@ -662,15 +662,8 @@ describe("Morton's extension shape gates", () => {
                 expect(row.v02 as number).toBeGreaterThanOrEqual(0.99);
                 expect(row.v03 as number).toBeLessThan(0.5);
             }
-            if (row.gate === "G5") {
-                if (row.height === 3) expect(row.after as number).toBeLessThanOrEqual(0.05);
-                // S5: the 25 mm blend does not meet 0.05 mm at 6 mm. Measured, not replaced.
-                else expect(row.after as number).toBeGreaterThan(0.05);
-            }
-            if (row.gate === "G6") {
-                if (row.height === 3) expect(row.after as number).toBeLessThanOrEqual(0.02);
-                else expect(row.after as number).toBeGreaterThan(0.02);
-            }
+            if (row.gate === "G5") expect(row.after as number).toBeLessThanOrEqual(0.05);
+            if (row.gate === "G6") expect(row.after as number).toBeLessThanOrEqual(0.02);
             if (row.gate === "G7") {
                 expect(row.slopeJump as number).toBeLessThanOrEqual(0.01);
                 expect(row.second as number).toBeLessThanOrEqual(0.02);
