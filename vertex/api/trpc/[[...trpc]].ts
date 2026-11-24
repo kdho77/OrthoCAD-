@@ -12,7 +12,8 @@
 // server/src/. Verify with `npx vercel build` + booting
 // .vercel/output/functions/api/trpc/[[...trpc]].func/api/trpc/[[...trpc]].js.
 // Keep helpers out of api/ (Vercel deploys every non-underscore file under api/
-// as its own function). node_modules are traced
+// as its own function). `/api/slicer` is the intentional extra function for the
+// multipart G-code proxy. node_modules are traced
 // automatically, including Prisma query engines — no `functions` config needed.
 //
 // Routing: the client calls /trpc (see src/lib/trpc.ts); rewrites in

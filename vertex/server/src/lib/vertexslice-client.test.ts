@@ -148,6 +148,37 @@ describe("VertexSlice printer G-code client", () => {
         expect(calls.map((call) => call.url).join(" ")).not.toContain("super-secret-key");
     });
 
+    test("an uploaded slicer mesh can send wall loops and print direction", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const calls = installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            return new Response("G1 X0\n", {
+                status: 200,
+                headers: { "X-API-Key": "should-not-echo" },
+            });
+        });
+        await sliceWithVertexSlice({
+            profileId: "apex-v2-insole-95a",
+            material: "apex_core",
+            model: new Uint8Array([1, 2, 3]),
+            filename: "outside.stl",
+            wallLoops: 4,
+            printDirection: "heel_first",
+            beltInsolePlace: true,
+            preserveUploadedMesh: true,
+        });
+        const form = calls.find((call) => call.url.endsWith("/v1/slice"))?.init.body as FormData;
+        expect(form.get("wall_loops")).toBe("4");
+        expect(form.get("print_direction")).toBe("heel_first");
+        expect(form.get("belt_insole_place")).toBe("true");
+        const headers = new Headers(calls.find((call) => call.url.endsWith("/v1/slice"))?.init.headers);
+        expect(headers.get("x-api-key")).toBe("super-secret-key");
+        expect(calls.map((call) => call.url).join(" ")).not.toContain("super-secret-key");
+    });
+
     test("apex_forge slice request mirrors apex_core except material", async () => {
         process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example/";
         process.env.VERTEXSLICE_API_KEY = "super-secret-key";
