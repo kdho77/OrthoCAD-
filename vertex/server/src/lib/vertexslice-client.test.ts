@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { afterEach, describe, expect, test } from "@rstest/core";
+import { afterEach, describe, expect, rstest, test } from "@rstest/core";
 import { TRPCError } from "@trpc/server";
 import { APEX_V2_INSOLE_LOCKED_PROFILE_ID } from "../../../shared/print-recipe/print-recipe";
 import {
@@ -20,6 +20,7 @@ afterEach(() => {
     globalThis.fetch = ORIGINAL_FETCH;
     delete process.env.VERTEXSLICE_SLICER_URL;
     delete process.env.VERTEXSLICE_API_KEY;
+    rstest.useRealTimers();
 });
 
 function installFetch(handler: (url: string, init: RequestInit) => Response | Promise<Response>) {
@@ -560,7 +561,259 @@ describe("VertexSlice job API", () => {
                 model,
             }),
         ).rejects.toThrow(/VertexSlice error \(422\)/);
+        expect(calls.filter((call) => call.url.endsWith("/v1/slice/jobs"))).toHaveLength(1);
         expect(calls.some((call) => call.url.endsWith("/v1/slice"))).toBe(false);
+    });
+
+    test("two concurrent submits are both accepted with distinct job ids", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        let posted = 0;
+        installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice/jobs")) {
+                posted += 1;
+                return new Response(
+                    JSON.stringify({ job_id: `job-${posted}`, status: "queued", position: posted }),
+                    { status: 202 },
+                );
+            }
+            return new Response("unexpected", { status: 500 });
+        });
+        const [left, right] = await Promise.all([
+            submitVertexSliceJob({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_core",
+                model,
+                filename: "left.stl",
+                side: "left",
+            }),
+            submitVertexSliceJob({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_core",
+                model,
+                filename: "right.stl",
+                side: "right",
+            }),
+        ]);
+        expect(left.kind).toBe("accepted");
+        expect(right.kind).toBe("accepted");
+        if (left.kind !== "accepted" || right.kind !== "accepted") return;
+        expect(left.jobId).not.toBe(right.jobId);
+        expect(new Set([left.jobId, right.jobId])).toEqual(new Set(["job-1", "job-2"]));
+        expect(posted).toBe(2);
+    });
+
+    test("form prep does not consume the POST deadline for a concurrent pair", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        rstest.useFakeTimers();
+        let posted = 0;
+        const signals: AbortSignal[] = [];
+        installFetch((url, init) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Promise((resolve) => {
+                    setTimeout(() => {
+                        resolve(new Response(JSON.stringify(["apex_core"]), { status: 200 }));
+                    }, 50_000);
+                });
+            }
+            if (url.endsWith("/v1/slice/jobs")) {
+                return new Promise((resolve, reject) => {
+                    const signal = init.signal;
+                    if (!signal) {
+                        reject(new Error("POST /v1/slice/jobs was sent without a deadline"));
+                        return;
+                    }
+                    signals.push(signal);
+                    const timer = setTimeout(() => {
+                        if (signal.aborted) {
+                            reject(signal.reason ?? new Error("POST aborted before the 202"));
+                            return;
+                        }
+                        posted += 1;
+                        resolve(
+                            new Response(
+                                JSON.stringify({
+                                    job_id: `job-late-${posted}`,
+                                    status: "queued",
+                                    position: posted,
+                                }),
+                                { status: 202 },
+                            ),
+                        );
+                    }, 21_000);
+                    signal.addEventListener(
+                        "abort",
+                        () => {
+                            clearTimeout(timer);
+                            reject(signal.reason ?? new Error("POST aborted"));
+                        },
+                        { once: true },
+                    );
+                });
+            }
+            return new Response("unexpected", { status: 500 });
+        });
+        const pending = Promise.all([
+            submitVertexSliceJob({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_core",
+                model,
+                filename: "left.stl",
+                side: "left",
+            }),
+            submitVertexSliceJob({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_core",
+                model,
+                filename: "right.stl",
+                side: "right",
+            }),
+        ]);
+        await rstest.advanceTimersByTimeAsync(49_000);
+        expect(posted).toBe(0);
+        expect(signals).toHaveLength(0);
+        await rstest.advanceTimersByTimeAsync(1_000);
+        expect(posted).toBe(0);
+        expect(signals).toHaveLength(2);
+        expect(signals.every((signal) => signal.aborted === false)).toBe(true);
+        await rstest.advanceTimersByTimeAsync(21_000);
+        const [left, right] = await pending;
+        expect(posted).toBe(2);
+        expect(signals.every((signal) => signal.aborted === false)).toBe(true);
+        if (left.kind !== "accepted" || right.kind !== "accepted") {
+            throw new Error("concurrent submits were not both accepted");
+        }
+        expect(left.jobId).not.toBe(right.jobId);
+        expect([left.jobId, right.jobId].sort()).toEqual(["job-late-1", "job-late-2"]);
+    });
+
+    test("a hung POST is aborted at 60s, not 20s, and a later 202 is accepted", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        rstest.useFakeTimers();
+        let posted = 0;
+        installFetch((url, init) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice/jobs")) {
+                posted += 1;
+                if (posted === 1) {
+                    return new Promise((_resolve, reject) => {
+                        const signal = init.signal;
+                        if (!signal) {
+                            reject(new Error("POST /v1/slice/jobs was sent without a deadline"));
+                            return;
+                        }
+                        const onAbort = () => reject(signal.reason ?? new Error("aborted"));
+                        if (signal.aborted) onAbort();
+                        else signal.addEventListener("abort", onAbort, { once: true });
+                    });
+                }
+                return new Response(JSON.stringify({ job_id: "job-retry", status: "queued", position: 1 }), {
+                    status: 202,
+                });
+            }
+            return new Response("unexpected", { status: 500 });
+        });
+        const pending = submitVertexSliceJob({
+            profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+            material: "apex_core",
+            model,
+            side: "left",
+        });
+        await rstest.advanceTimersByTimeAsync(21_000);
+        expect(posted).toBe(1);
+        await rstest.advanceTimersByTimeAsync(38_000);
+        expect(posted).toBe(1);
+        await rstest.advanceTimersByTimeAsync(2_000);
+        const submitted = await pending;
+        expect(posted).toBe(2);
+        expect(submitted).toEqual({ kind: "accepted", jobId: "job-retry", position: 1 });
+    });
+
+    test("a Could not reach submit is retried with bounded backoff and then accepted", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const postAt: number[] = [];
+        installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice/jobs")) {
+                postAt.push(Date.now());
+                if (postAt.length === 1) throw new TypeError("ECONNRESET");
+                return new Response(JSON.stringify({ job_id: "job-second", status: "queued", position: 0 }), {
+                    status: 202,
+                });
+            }
+            return new Response("unexpected", { status: 500 });
+        });
+        const submitted = await submitVertexSliceJob({
+            profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+            material: "apex_core",
+            model,
+            side: "right",
+        });
+        expect(submitted).toEqual({ kind: "accepted", jobId: "job-second", position: 0 });
+        expect(postAt).toHaveLength(2);
+        const gap = (postAt[1] ?? 0) - (postAt[0] ?? 0);
+        expect(gap).toBeGreaterThanOrEqual(250);
+        expect(gap).toBeLessThan(5_000);
+    });
+
+    test("transient submit failures stop after 3 attempts with submit unavailable", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const postAt: number[] = [];
+        installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice/jobs")) {
+                postAt.push(Date.now());
+                throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+            }
+            return new Response("unexpected", { status: 500 });
+        });
+        const started = Date.now();
+        await expect(
+            submitVertexSliceJob({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_core",
+                model,
+            }),
+        ).rejects.toThrow("VertexSlice server error: submit unavailable");
+        expect(postAt).toHaveLength(3);
+        expect((postAt[1] ?? 0) - (postAt[0] ?? 0)).toBeGreaterThanOrEqual(250);
+        expect((postAt[2] ?? 0) - (postAt[1] ?? 0)).toBeGreaterThanOrEqual(500);
+        expect(Date.now() - started).toBeLessThan(10_000);
+    });
+
+    test("HTTP 400 from the job route is not retried", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const calls = installFetch((url) => {
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice/jobs")) {
+                return new Response(JSON.stringify({ detail: "rejected" }), { status: 400 });
+            }
+            return new Response("unexpected", { status: 500 });
+        });
+        await expect(
+            submitVertexSliceJob({
+                profileId: APEX_V2_INSOLE_LOCKED_PROFILE_ID,
+                material: "apex_core",
+                model,
+            }),
+        ).rejects.toThrow(/VertexSlice error \(400\)/);
+        expect(calls.filter((call) => call.url.endsWith("/v1/slice/jobs"))).toHaveLength(1);
     });
 
     test("the result body is the server bytes, and an unknown job is missing", async () => {
