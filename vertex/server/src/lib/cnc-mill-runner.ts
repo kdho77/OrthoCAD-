@@ -20,8 +20,15 @@ interface MillJobModule {
     PRINT_ORDER_CNC_REFUSAL: string;
     assertMilledCncOrder(design: MillDesign): void;
     designStateFromDocument(doc: unknown): MillDesign;
-    millExportSides(design: unknown): Array<"left" | "right">;
-    buildMillCncGcode(input: { design: unknown }): Promise<HeadlessMillGcode>;
+    millExportSides(
+        design: unknown,
+        requestedSides?: Array<"left" | "right">,
+        millSide?: "LR" | "RR" | "LL" | null,
+    ): Array<"left" | "right">;
+    buildMillCncGcode(input: {
+        design: unknown;
+        millSide?: "LR" | "RR" | "LL" | null;
+    }): Promise<HeadlessMillGcode>;
 }
 
 let millModule: MillJobModule | null = null;
@@ -106,23 +113,48 @@ async function bundledSampleTop(): Promise<Uint8Array> {
     return sampleTopBytes;
 }
 
+export type HeadlessMillSide = "LR" | "RR" | "LL";
+
+function buildMillInput(
+    design: unknown,
+    millSide?: HeadlessMillSide | null,
+): { design: unknown; millSide?: HeadlessMillSide } {
+    if (millSide === "RR" || millSide === "LL") {
+        return { design, millSide };
+    }
+    return { design };
+}
+
 /** Hydrate the saved document the way the editor does, then refuse a print order. */
-export async function prepareHeadlessMillDesign(doc: unknown): Promise<{
+export async function prepareHeadlessMillDesign(
+    doc: unknown,
+    options?: { millSide?: HeadlessMillSide | null },
+): Promise<{
     design: MillDesign;
     sides: Array<"left" | "right">;
 }> {
     const mod = await loadMillModule();
     const design = mod.designStateFromDocument(doc);
     mod.assertMilledCncOrder(design);
-    return { design, sides: mod.millExportSides(design) };
+    const millSide = options?.millSide;
+    return {
+        design,
+        sides:
+            millSide === "RR" || millSide === "LL"
+                ? mod.millExportSides(design, undefined, millSide)
+                : mod.millExportSides(design),
+    };
 }
 
 /** Pair (or single-foot) CNC file. Bytes match `buildMillCncGcode` on the same design. */
-export async function buildHeadlessMillCncGcode(design: unknown): Promise<HeadlessMillGcode> {
+export async function buildHeadlessMillCncGcode(
+    design: unknown,
+    options?: { millSide?: HeadlessMillSide | null },
+): Promise<HeadlessMillGcode> {
     const mod = await loadMillModule();
     mod.assertMilledCncOrder(design as MillDesign);
     installBundledSampleTopFetch(await bundledSampleTop());
     const { Cache } = await import("three");
     Cache.clear();
-    return mod.buildMillCncGcode({ design });
+    return mod.buildMillCncGcode(buildMillInput(design, options?.millSide));
 }

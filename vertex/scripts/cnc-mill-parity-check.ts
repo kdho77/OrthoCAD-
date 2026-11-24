@@ -8,22 +8,25 @@ import { buildHeadlessMillCncGcode, prepareHeadlessMillDesign } from "../server/
 const mode = process.argv[2];
 const inPath = process.argv[3];
 const outPath = process.argv[4];
+const millSideRaw = process.argv[5];
+const millSide =
+    millSideRaw === "RR" || millSideRaw === "LL" || millSideRaw === "LR" ? millSideRaw : undefined;
 if (!mode || !inPath || !outPath) {
-    console.error("usage: cnc-mill-parity-check.ts <prepare|gcode> <in.json> <out.json>");
+    console.error("usage: cnc-mill-parity-check.ts <prepare|gcode> <in.json> <out.json> [LR|RR|LL]");
     process.exit(2);
 }
 
 const doc: unknown = JSON.parse(readFileSync(inPath, "utf8"));
 
 try {
-    const prepared = await prepareHeadlessMillDesign(doc);
+    const prepared = await prepareHeadlessMillDesign(doc, { millSide });
     if (mode === "prepare") {
         writeFileSync(
             outPath,
             JSON.stringify({ ok: true, sides: prepared.sides, method: prepared.design.method }),
         );
     } else if (mode === "gcode") {
-        const milled = await buildHeadlessMillCncGcode(prepared.design);
+        const milled = await buildHeadlessMillCncGcode(prepared.design, { millSide });
         writeFileSync(
             outPath,
             JSON.stringify({
