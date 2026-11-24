@@ -39,15 +39,22 @@ export function beltPrintedPoint(p: { x: number; y: number; z: number }): {
 }
 
 /**
- * Plantar face of the printed part, toe to the right.
- * The plastic sits at +height (model +Z). The camera looks +height.
- * right × up = −height and right = toe, which is −along, so screen-up is +across.
- * At z = 0 that is screen (mesh X, mesh Y). Cap must sit at +mesh Y on the
- * belt upload; the design mesh still uses −Y for its own plantar camera.
+ * Physical plantar face of the deposited part, toe toward the viewer.
+ *
+ * `beltPrintedPoint` is Rz(270) then BeltTransform forward (det −1). The gantry
+ * plot looks toward −height and is screen (−along, +across). At z = 0 that is
+ * (mesh X, mesh Y), toe to the right, and an X-unmirrored glyph reads there.
+ * That plot is a left-right mirror of the belt-contact face. This camera flips
+ * the plot's X and rolls so the toe (mesh +X, part −along) is screen-down:
+ * screen x = −across, screen y = +along, right × up = +height. The name runs
+ * along the foot, so the baseline points at the viewer. A 90° turn with no
+ * further mirror, screen (along, mesh Y) at z = 0, puts the cap up. Belt glyphs
+ * negate X, so that turn is right-reading. The design-mesh camera stays
+ * (mesh X, −mesh Y).
  */
 export function printedPlantarView(p: TextXy & { z?: number }): TextXy {
     const part = beltPrintedPoint({ x: p.x, y: p.y, z: p.z ?? 0 });
-    return { x: -part.along, y: part.across };
+    return { x: -part.across, y: part.along };
 }
 
 /** Linear det of model → printed part. −1 is the mirror. */

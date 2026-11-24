@@ -766,10 +766,13 @@ export function placeBottomText(
     // A side-keyed X flip would invert one foot.
     void side;
     // Design mesh, looked at from below (+Z, screen-right +X, screen-up −Y): negate Y.
-    // Belt upload: VertexSlice Rz(270) then BeltTransform forward (det −1) makes
-    // that same camera's screen-up equal +mesh Y. Leave Y so the printed plantar
-    // face reads upright. X stays put either way; (−x, y) would mirror the string.
+    // Belt upload: VertexSlice Rz(270) then BeltTransform forward (det −1). Keeping
+    // +Y makes the gantry plot (looking toward −height) upright. That plot is the
+    // other side of the belt-contact face, so the physical flip-over view is a
+    // left-right mirror of it. Negate X about the glyph centre on the belt path
+    // only. cx/cy, depth, and cap stay put. The design mesh does not negate X.
     const ySign = opts?.beltPrint ? 1 : -1;
+    const xSign = opts?.beltPrint ? -1 : 1;
     const cy = centrelineYAtX(ctx.outline, cx, ctx.midY) + (marking.nudgeAcrossMm ?? 0);
     const local = { x: flat.advanceMm / 2, y: flat.capHeightMm / 2 };
     const applyAt = (src: FlattenedText, scale: number): FlattenedText => {
@@ -781,7 +784,7 @@ export function placeBottomText(
         const rotated = transformGroups(pivoted, (p) => rotateAbout(p, { x: 0, y: 0 }, marking.rotationDeg));
         // opentype getPath is canvas-down. flattenPath negates Y again, so the cap
         // points +Y and the advance points +X.
-        const upright = transformGroups(rotated, (p) => ({ x: p.x, y: ySign * p.y }));
+        const upright = transformGroups(rotated, (p) => ({ x: xSign * p.x, y: ySign * p.y }));
         return transformGroups(upright, (p) => ({ x: p.x + cx, y: p.y + cy }));
     };
 
