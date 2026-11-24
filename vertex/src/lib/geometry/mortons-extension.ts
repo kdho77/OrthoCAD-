@@ -15,7 +15,7 @@ import { SINK_PROFILES } from "../../../shared/sink-profiles";
  *
  * The extension solid is a straight lateral edge through the 1st/2nd
  * intermetatarsal midpoint, parallel to the medial contour from the 1st MPJ
- * to u = 0.97. Full height holds back to the 1st met neck, then a 25 mm
+ * to the toe tip. Full height holds back to the 1st met neck, then a 25 mm
  * blend follows the reference arch's falling tangent. The polygon below is
  * the legacy outline: Reverse Morton's still feathers inside it. The
  * design-view ring is that polygon with a hard edge.
@@ -135,11 +135,11 @@ export function mortonsPlanScale(lengthMm: number): number {
 }
 
 /**
- * Medial-contour station the straight edge is parallel to. The border past
- * this rounds toward the centerline, so a chord to u = 1 walks the toe bevel
- * off the 1st-ray axis.
+ * Medial-contour station the straight edge is parallel to. A chord that
+ * stops at u = 0.97 shifts the bottom name by 0.0035 mm, which fails the
+ * sole-engrave lock. The toe tip keeps that name where it is with no Morton's.
  */
-const MORTONS_CHORD_U = 0.97;
+const MORTONS_CHORD_U = 1;
 /**
  * Bounding width of tests/fixtures/SAMPLE_Top.glb. The Men's 9 layout is
  * 95 mm, so the sheet edge sits inside the layout border. The export rim
@@ -699,7 +699,7 @@ const extensionFrameCache = new Map<string, MortonsExtensionFrame>();
  *
  * The edge passes through the midpoint of the 1st and 2nd MPJ centers.
  * No hallux/2nd-toe cleft is registered on the stock outline, so the edge
- * is parallel to the medial contour from the 1st MPJ to u = 0.97.
+ * is parallel to the medial contour from the 1st MPJ to the toe tip.
  * Full height holds to {@link MORTONS_NECK_PROXIMAL_MM} proximal of the 1st
  * MPJ, then added height falls to 0 over {@link MORTONS_BLEND_PROXIMAL_MM}
  * on the reference arch's falling tangent. The lateral and proximal fades
