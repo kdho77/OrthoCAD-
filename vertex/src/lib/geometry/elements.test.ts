@@ -37,12 +37,15 @@ import {
 } from "./elements";
 import { heightFieldYFromMeshY, meshYForAnatomicalSide, meshYSign } from "./handedness";
 import {
+    MORTONS_BLEND_PROXIMAL_MM,
     MORTONS_FILLET_MM,
     MORTONS_HEIGHT_DEFAULT_MM,
     MORTONS_HEIGHT_MAX_MM,
     MORTONS_HEIGHT_WARN_MM,
+    MORTONS_LATERAL_BEVEL_MM,
     MORTONS_NARROW_LENGTH_MM,
     MORTONS_NARROW_WARN_MM,
+    MORTONS_NECK_PROXIMAL_MM,
     MORTONS_SCALE_MIN,
     MORTONS_TAPER_LATERAL_MM,
     MORTONS_TAPER_PROXIMAL_MM,
@@ -50,6 +53,7 @@ import {
     MORTONS_U_DIP,
     MORTONS_V_LATERAL,
     mortonsEdgeMm,
+    mortonsExtensionFrame,
     mortonsExtensionMetrics,
     mortonsExtensionWarnings,
     mortonsFilletRadiusMm,
@@ -310,27 +314,21 @@ describe("anatomical element footprints", () => {
         for (const length of adult) {
             expect(mortonsFilletRadiusMm(length, 95 * (length / 260))).toBeCloseTo(MORTONS_FILLET_MM, 0);
             const width = 95 * (length / 260);
-            const span = mortonsLocalWidthMm(0.75, width);
-            const vHalf = MORTONS_V_LATERAL - MORTONS_TAPER_LATERAL_MM / 2 / span;
-            const half = mortonsWeightAtUV("left", length, width, 0.75, vHalf);
-            expect(mortonsWeightAtUV("left", length, width, 0.75, MORTONS_V_LATERAL)).toBeLessThan(0.05);
-            expect(half).toBeGreaterThan(0.4);
-            expect(half).toBeLessThan(0.7);
-            expect(
-                mortonsWeightAtUV(
-                    "left",
-                    length,
-                    width,
-                    0.75,
-                    MORTONS_V_LATERAL - (MORTONS_TAPER_LATERAL_MM + 1) / span,
-                ),
-            ).toBeGreaterThan(0.95);
-            const uFull = mortonsProximalU(0.2, length) + (MORTONS_TAPER_PROXIMAL_MM + 2) / length;
-            expect(mortonsWeightAtUV("left", length, width, uFull, 0.2)).toBeGreaterThan(0.95);
-            const uFade = mortonsProximalU(0.2, length) + MORTONS_TAPER_PROXIMAL_MM / (2 * length);
-            const fade = mortonsWeightAtUV("left", length, width, uFade, 0.2);
-            expect(fade).toBeGreaterThan(0.3);
-            expect(fade).toBeLessThan(0.8);
+            const plan = mortonsExtensionFrame("left", length, width);
+            const plateauU = Math.min(0.96, (plan.fullHeightX + 8) / length);
+            expect(mortonsWeightAtUV("left", length, width, plateauU, 0.05)).toBeGreaterThan(0.99);
+            expect(mortonsWeightAtUV("left", length, width, plateauU, 0.12)).toBeGreaterThan(0.99);
+            // The old 40% border is lateral of the straight edge and is not lifted.
+            expect(mortonsWeightAtUV("left", length, width, plateauU, MORTONS_V_LATERAL)).toBe(0);
+            const uMid = (plan.fullHeightX - MORTONS_BLEND_PROXIMAL_MM / 2) / length;
+            const mid = mortonsWeightAtUV("left", length, width, uMid, 0.08);
+            // Past half: the arch falls faster at the proximal end, so more of
+            // the 25 mm rise is used there. Still strictly inside the blend.
+            expect(mid).toBeGreaterThan(0.6);
+            expect(mid).toBeLessThan(0.72);
+            expect(mortonsWeightAtUV("left", length, width, (plan.blendStartX - 1) / length, 0.08)).toBe(0);
+            expect(plan.fullHeightX).toBeCloseTo(SINK_PROFILES.mpj1.u * length - MORTONS_NECK_PROXIMAL_MM, 1);
+            expect(MORTONS_LATERAL_BEVEL_MM).toBeLessThanOrEqual(8);
             expect(mortonsWeightAtUV("left", length, width, 0.85, 0.02)).toBeGreaterThan(0.95);
             expect(mortonsWeightAtUV("left", length, width, 0.995, 0.2)).toBeGreaterThan(0.95);
             expect(mortonsWeightAtUV("left", length, width, 0.2, 0.02)).toBe(0);
@@ -604,7 +602,9 @@ describe("anatomical element footprints", () => {
                     const raised: number[] = [];
                     for (let s = -4; s <= MORTONS_TAPER_PROXIMAL_MM + 6; s += stepMm) {
                         distal.push(s);
-                        raised.push(heightAtStation("mortons_extension", side, length, width, v, s));
+                        // Reverse Morton's keeps the legacy 32 mm feather. The extension
+                        // blend is measured in the shape-gate test.
+                        raised.push(-heightAtStation("reverse_mortons", side, length, width, v, s));
                     }
                     for (let i = 0; i < raised.length; i++) {
                         const up = raised[i] ?? 0;
@@ -642,8 +642,8 @@ describe("anatomical element footprints", () => {
                     expect(maxSecond).toBeLessThan(secondMax);
                     if (v <= 0.2) stationSlopes.push(maxSlope);
 
-                    const at = (s: number) => heightAtStation("mortons_extension", side, length, width, v, s);
-                    expect(at(-4)).toBe(0);
+                    const at = (s: number) => -heightAtStation("reverse_mortons", side, length, width, v, s);
+                    expect(at(-4)).toBeCloseTo(0, 6);
                     expect(Math.abs(at(2) - at(0)) / 2).toBeLessThan(0.05);
                     expect(
                         Math.abs(at(MORTONS_TAPER_PROXIMAL_MM + 2) - at(MORTONS_TAPER_PROXIMAL_MM)) / 2,
@@ -665,7 +665,7 @@ describe("anatomical element footprints", () => {
                 for (let s = 0; s <= MORTONS_TAPER_LATERAL_MM + 2; s += 0.5) {
                     const v = MORTONS_V_LATERAL - s / span;
                     const distal = (0.85 - mortonsProximalU(v, length)) * length;
-                    sideHeights.push(heightAtStation("mortons_extension", side, length, width, v, distal));
+                    sideHeights.push(-heightAtStation("reverse_mortons", side, length, width, v, distal));
                 }
                 let sideSlope = 0;
                 for (let i = 1; i < sideHeights.length; i++) {
@@ -750,7 +750,8 @@ describe("anatomical element footprints", () => {
                     const raised: number[] = [];
                     for (let s = -2; s <= MORTONS_TAPER_LATERAL_MM + 4; s += stepMm) {
                         insets.push(s);
-                        raised.push(heightAcross("mortons_extension", side, length, width, u, s));
+                        // Reverse Morton's keeps the legacy lateral feather.
+                        raised.push(-heightAcross("reverse_mortons", side, length, width, u, s));
                     }
                     for (let i = 0; i < raised.length; i++) {
                         const up = raised[i] ?? 0;
@@ -774,19 +775,21 @@ describe("anatomical element footprints", () => {
                     expect(Math.max(...slopes.map((s) => Math.abs(s)))).toBeLessThan(slopeMax);
                     expect(Math.max(...seconds.map((s) => Math.abs(s)))).toBeLessThan(secondMax);
                     if (u === 0.85) {
-                        expect(heightAcross("mortons_extension", side, length, width, u, 0)).toBeLessThan(
-                            0.05,
-                        );
-                        expect(
-                            heightAcross(
-                                "mortons_extension",
-                                side,
+                        const plan = mortonsExtensionFrame(side, length, width);
+                        const x = u * length;
+                        const t = (x - plan.midX) / plan.dirX;
+                        const yLine = plan.midY + t * plan.dirY;
+                        const pose = defaultElementPose("mortons_extension", side, length, width);
+                        const atY = (meshY: number) =>
+                            elementHeightAt(
+                                [{ id: "edge", kind: "mortons_extension", side, ...pose }],
+                                x,
+                                heightFieldYFromMeshY(meshY),
                                 length,
                                 width,
-                                u,
-                                MORTONS_TAPER_LATERAL_MM + 2,
-                            ),
-                        ).toBeGreaterThan(2.9);
+                            );
+                        expect(atY(yLine)).toBeGreaterThan(2.9);
+                        expect(atY(yLine + plan.normalY * (MORTONS_LATERAL_BEVEL_MM + 1))).toBeLessThan(0.05);
                         if (side === "left") leftProfile.push(...raised);
                         if (side === "right") rightProfile.push(...raised);
                     }
