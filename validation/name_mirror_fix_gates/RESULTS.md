@@ -4,7 +4,7 @@ BASE `8aced4b5042bdafc2d300006fa80802bca1b94b9` (origin/main, "Flush generate_gc
 
 Synthetic string: `JABBOUR`. No patient name.
 
-Worker branch `cursor/name-mirror-fix-1124` was not on the remote when these gates were frozen. No other open PR was graded.
+Gates were frozen at `2795c68adb910c3fc61b2e6ca574be75df72de2e` before the worker was graded. The worker SHA is graded below. No other open PR was graded.
 
 ## Camera
 
@@ -57,9 +57,24 @@ The gantry camera on the same identity placement has `a > 0.5`, `d > 0.5`, and t
 | No-text bytes differ | G4 | FAIL. |
 | X flip about the pivot, both feet | G1–G4 | PASS. Advance +72.821 mm, `a = 1`, `d = 1`, det = +1, hook lower-left, pivot unchanged. |
 
-## Worker
+## Worker grade
 
-Not graded. `gh api repos/kdho77/OrthoCAD-/git/matching-refs/heads/cursor/name-mirror` returned no branch. No open PR is titled as the name-mirror fix from this base. PR #433 and the other open drafts were left alone.
+SHA `ad2ada118a4bdf635d4bb20249ee7ee9fc7cbc9f` on `cursor/name-mirror-fix-1124`. Merge-base with BASE is `8aced4b5042bdafc2d300006fa80802bca1b94b9`. No pull request was open for that branch. The branch was not edited.
+
+Diff versus BASE is three files: `place.ts` (belt path sets `xSign = -1` about the glyph centre), `belt-print-frame.ts` (camera comment and `printedPlantarView`), and `belt-print-frame.test.ts`. The frozen gates do not import `printedPlantarView`. They call this SHA's `placeBottomText(..., { beltPrint: true })`.
+
+Command, in a detached worktree at that SHA: `npx rstest validation/name_mirror_fix_gates/grade-only.test.ts`.
+
+| Gate | Result | Measured |
+| --- | --- | --- |
+| G1 | PASS | both feet `a = 1`, `d = 1`, det = +1, advance = +72.821 mm, J hook lower-left |
+| G2 | PASS | bottom, engrave, depth 0.6 mm, cap 12, placementU 0.32, pivot (86.8, 0), width 82.9933 mm, centroid z error 0 |
+| G3 | PASS | 0 vertices outside the text region, 2 outside G1 lines match, 0 scope hits, `SKEW_INSET_RATIO` 0.5, sole \|z\| 0 |
+| G4 | PASS | same host, SHA-256 `c3c28185f93a960c1fddd71953e32bfacbe49e9361f1bef0bd189fc4450eccc2` |
+
+On this SHA the gantry camera measures `a = -1` and the J hook is not lower-left. That view is not acceptance. Thresholds were not changed to obtain the pass.
+
+R1–R7 on this SHA: the diff does not touch seam, layer-change, slicer, surface-quality, or `SKEW_INSET_RATIO` (still 0.5 on disk). Outer surface, seams, and layer-change placement are untouched. No worker file was edited by this grade.
 
 ## Residuals
 
@@ -97,11 +112,11 @@ PASS. None of those were done. The string is the synthetic `JABBOUR`.
 
 DELIVERABLE: `one [GATES ONLY - DO NOT MERGE] draft PR with frozen gates, no-op proof, bad-change proof, RESULTS.md, a rule-compliance report, and a handoff note. If the worker PR is up, a per-gate grade of that SHA. Never merge.`
 
-PASS for the gates PR. The worker grade is omitted because that PR was not up. The handoff note is the PR comment.
+PASS. The draft PR carries the frozen gates, both proofs, this report, and the grade of `ad2ada11`. That branch had no PR number. It was graded and not edited. No merge.
 
 HANDOFF: `post a handoff note on the gates PR with the gates SHA, proof results, candidate SHA if graded, per-gate grades, residuals, and next step (wait for Kendon's merge-and-deploy go). Do not merge or deploy.`
 
-PASS when the PR comment is posted. Candidate SHA: none. Next step is to wait for Kendon's merge-and-deploy go. No merge and no deploy in this change.
+PASS when the PR comment is posted. Candidate SHA `ad2ada118a4bdf635d4bb20249ee7ee9fc7cbc9f`. Gates SHA `2795c68adb910c3fc61b2e6ca574be75df72de2e` plus the grade commit. Next step is to wait for Kendon's merge-and-deploy go. No merge and no deploy in this change.
 
 R1 (2026-11-20 12:59 PM MT): `print surface quality is locked permanently. Never let any agent or change put seams or layer changes on the top surface or sides, and never touch surface quality.`
 
@@ -129,6 +144,6 @@ PASS. Proof output is gate numbers and a geometry hash. The string is synthetic 
 
 R7: `do not change worker code. Grade only. Outer surface, seams, layer-change placement, and surface quality may NOT change; seams and layer changes stay on the bottom/plantar face. The S1-PRELOFT 0.5×inset cap may NOT change.`
 
-PASS. No worker branch was present to edit. G3 rejects a slicer path and a `SKEW_INSET_RATIO` change off 0.5. Disk value read by the proof is 0.5.
+PASS. The worker branch was graded and not edited. Its diff does not change `SKEW_INSET_RATIO` (disk value 0.5). G3 rejects a slicer path and a ratio change off 0.5.
 
 This change does not alter the outer surface, seams, layer-change placement, or surface quality, and it does not edit a worker PR or product code.
