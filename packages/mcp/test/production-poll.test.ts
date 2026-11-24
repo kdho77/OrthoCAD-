@@ -19,6 +19,79 @@ function toolJson(result: { content: Array<{ text: string }> }): Record<string, 
 }
 
 describe("CAD-operator production tools", () => {
+    test("saved-design pair enqueues both feet in parallel before either completes", async () => {
+        const invokeOrder: string[] = [];
+        let releaseLeft!: () => void;
+        const leftGate = new Promise<void>((resolve) => {
+            releaseLeft = resolve;
+        });
+        const manufacturing = {
+            generateFromSavedDesign: async (input: { side: "left" | "right" }) => {
+                invokeOrder.push(`${input.side}:start`);
+                if (input.side === "left") {
+                    await leftGate;
+                }
+                invokeOrder.push(`${input.side}:done`);
+                return {
+                    productionId: input.side === "left" ? leftId : rightId,
+                    status: "pending",
+                    side: input.side,
+                };
+            },
+        } as unknown as ManufacturingClient;
+        const toolPromise = handleOrthocadTool(
+            "generate_gcode",
+            {
+                preset_id: "apex-v2-insole-95a",
+                use_saved_design: true,
+                design_id: designId,
+            },
+            { config, manufacturing },
+        );
+        await new Promise<void>((resolve) => {
+            const tick = () => {
+                if (invokeOrder.includes("right:start")) resolve();
+                else setImmediate(tick);
+            };
+            tick();
+        });
+        expect(invokeOrder).toContain("right:start");
+        expect(invokeOrder).not.toContain("left:done");
+        releaseLeft();
+        const result = await toolPromise;
+        expect(result.isError).toBeUndefined();
+        expect(invokeOrder.indexOf("right:start")).toBeLessThan(invokeOrder.indexOf("left:done"));
+    });
+
+    test("saved-design pair still returns a user question when both feet are enqueued", async () => {
+        let calls = 0;
+        const manufacturing = {
+            generateFromSavedDesign: async () => {
+                calls += 1;
+                return {
+                    ok: false,
+                    ask: "user",
+                    relay: "none",
+                    questions: [{ field: "hardness", prompt: "Which hardness?" }],
+                };
+            },
+        } as unknown as ManufacturingClient;
+        const result = await handleOrthocadTool(
+            "generate_gcode",
+            {
+                preset_id: "apex-v2-insole-95a",
+                use_saved_design: true,
+                design_id: designId,
+            },
+            { config, manufacturing },
+        );
+        expect(result.isError).toBeUndefined();
+        expect(calls).toBe(2);
+        const payload = toolJson(result);
+        expect(payload.ask).toBe("user");
+        expect(payload.files).toBeUndefined();
+    });
+
     test("generate_gcode returns a production id per foot without waiting for bytes", async () => {
         let downloads = 0;
         const manufacturing = {
@@ -177,5 +250,89 @@ describe("CAD-operator production tools", () => {
             downloadUrl: "https://files.example.test/left.gcode",
             productionId: leftId,
         });
+    });
+
+    test("get_production with wait_s omitted or zero performs a single fetch", async () => {
+        let fetches = 0;
+        const manufacturing = {
+            getProduction: async () => {
+                fetches += 1;
+                return { productionId: leftId, status: "pending", side: "left" };
+            },
+        } as unknown as ManufacturingClient;
+        const omitted = await handleOrthocadTool(
+            "get_production",
+            { production_id: leftId },
+            { config, manufacturing },
+        );
+        expect(omitted.isError).toBeUndefined();
+        expect(toolJson(omitted).status).toBe("pending");
+        expect(fetches).toBe(1);
+
+        fetches = 0;
+        const zero = await handleOrthocadTool(
+            "get_production",
+            { production_id: leftId, wait_s: 0 },
+            { config, manufacturing },
+        );
+        expect(zero.isError).toBeUndefined();
+        expect(fetches).toBe(1);
+    });
+
+    test("get_production wait_s polls until succeeded before the deadline", async () => {
+        let fetches = 0;
+        const manufacturing = {
+            getProduction: async () => {
+                fetches += 1;
+                return {
+                    productionId: leftId,
+                    designId,
+                    side: "left",
+                    presetId: "apex-v2-insole-95a",
+                    status: fetches >= 2 ? "succeeded" : "pending",
+                    createdAt: "2026-11-09T00:00:00.000Z",
+                    updatedAt: "2026-11-09T00:00:01.000Z",
+                    gcodeStorageKey: fetches >= 2 ? "gcode/cad-operator/left.gcode" : null,
+                    error: null,
+                };
+            },
+        } as unknown as ManufacturingClient;
+        const started = Date.now();
+        const result = await handleOrthocadTool(
+            "get_production",
+            { production_id: leftId, wait_s: 30 },
+            { config, manufacturing },
+        );
+        expect(result.isError).toBeUndefined();
+        expect(fetches).toBeGreaterThanOrEqual(2);
+        expect(toolJson(result).status).toBe("succeeded");
+        expect(toolJson(result).download).toEqual({ tool: "get_export_download", production_id: leftId });
+        expect(Date.now() - started).toBeGreaterThanOrEqual(1900);
+    });
+
+    test("get_production wait_s returns the latest pending status when the deadline expires", async () => {
+        let fetches = 0;
+        const manufacturing = {
+            getProduction: async () => {
+                fetches += 1;
+                return {
+                    productionId: leftId,
+                    designId,
+                    side: "left",
+                    status: "running",
+                };
+            },
+        } as unknown as ManufacturingClient;
+        const started = Date.now();
+        const result = await handleOrthocadTool(
+            "get_production",
+            { production_id: leftId, wait_s: 3 },
+            { config, manufacturing },
+        );
+        expect(result.isError).toBeUndefined();
+        expect(toolJson(result).status).toBe("running");
+        expect(fetches).toBeGreaterThanOrEqual(2);
+        expect(Date.now() - started).toBeGreaterThanOrEqual(2500);
+        expect(Date.now() - started).toBeLessThan(8000);
     });
 });

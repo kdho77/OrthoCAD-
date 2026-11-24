@@ -261,6 +261,69 @@ describe("CAD-operator production claim", () => {
         }
     });
 
+    test("begin returns pending before execute starts on the next event-loop turn", async () => {
+        const store = new MemoryCadProductionStore();
+        let executeStarted = false;
+        let returnedBeforeExecute = false;
+        const pending = beginCadOperatorProduction({
+            store,
+            insert: insert("left"),
+            now: new Date("2026-11-09T00:00:00.000Z"),
+            schedule: (work) => {
+                void work;
+            },
+            execute: () => {
+                executeStarted = true;
+                return Promise.resolve();
+            },
+        });
+        returnedBeforeExecute = await Promise.race([
+            pending.then(() => true),
+            new Promise<boolean>((resolve) => {
+                setImmediate(() => resolve(false));
+            }),
+        ]);
+        expect(returnedBeforeExecute).toBe(true);
+        expect(executeStarted).toBe(false);
+        await pending;
+        await new Promise<void>((resolve) => {
+            setImmediate(() => resolve());
+        });
+        expect(executeStarted).toBe(true);
+    });
+
+    test("begin returns before synchronous execute work would block the turn", async () => {
+        const store = new MemoryCadProductionStore();
+        let scheduled: Promise<void> | null = null;
+        let executeEntered = false;
+        const pending = beginCadOperatorProduction({
+            store,
+            insert: insert("left"),
+            now: new Date("2026-11-09T00:00:00.000Z"),
+            schedule: (work) => {
+                scheduled = work;
+            },
+            execute: () => {
+                executeEntered = true;
+                const deadline = Date.now() + 200;
+                while (Date.now() < deadline) {
+                    /* spin synchronously */
+                }
+                return Promise.resolve();
+            },
+        });
+        const started = await Promise.race([
+            pending,
+            new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error("begin blocked on synchronous execute")), 100);
+            }),
+        ]);
+        expect(started.status).toBe("pending");
+        expect(executeEntered).toBe(false);
+        await scheduled;
+        expect(executeEntered).toBe(true);
+    });
+
     test("begin returns before slicing finishes", async () => {
         const store = new MemoryCadProductionStore();
         let release: () => void = () => {};
@@ -540,6 +603,9 @@ describe("CAD-operator production claim", () => {
             });
         const [first, second] = await Promise.all([claim(), claim()]);
         expect(first.productionId).toBe(second.productionId);
+        await new Promise<void>((resolve) => {
+            setImmediate(() => resolve());
+        });
         expect(runs).toBe(1);
         expect([first.status, second.status].sort()).toEqual(["pending", "pending"]);
 
