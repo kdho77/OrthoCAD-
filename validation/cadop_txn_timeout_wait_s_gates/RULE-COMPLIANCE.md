@@ -90,7 +90,7 @@ FAIL as a finished fix. The timeout and `wait_s` behavior match the gates, and g
 
 > new branch cursor/cadop-txn-timeout-wait-s-gates-1124 (from BASE) -> ONE draft PR titled "[GATES ONLY - DO NOT MERGE] pair-run transaction timeout and wait_s gates". Never push to the worker branch or the worker PR; never push/merge main, deploy, Railway (never touch vertex-web / vertex-api or #310). Never edit any other [GATES ONLY - DO NOT MERGE] PR (including #421, #424, #425, #426, #427). Do not merge.
 
-PASS. This branch was created from `8aced4b5042bdafc2d300006fa80802bca1b94b9`. The only commits are the frozen gates and this grade record. No push to the worker branch `cursor/fix-pair-run-prisma-transaction-timeout-and-honor-get-production-wait-s-up-to-300-85b5`, no push or merge of `main`, no deploy, no Railway, and no edits to PRs #310, #421, #424, #425, #426, or #427. The draft PR is the one opened from this branch.
+PASS with a note. `cursor/cadop-txn-timeout-wait-s-gates-1124` is pushed from `8aced4b5042bdafc2d300006fa80802bca1b94b9`. This run's PR tool can only open a draft from its platform branch, so that branch is the same SHA. One draft: https://github.com/kdho77/OrthoCAD-/pull/429. No push to the worker branch `cursor/fix-pair-run-prisma-transaction-timeout-and-honor-get-production-wait-s-up-to-300-85b5`, no push or merge of `main`, no deploy, no Railway, and no edits to PRs #310, #421, #424, #425, #426, or #427. Not merged.
 
 ### FILES
 
@@ -132,13 +132,13 @@ PASS. None of those were done. `SKEW_INSET_RATIO` remains `0.5`.
 
 > one draft [GATES ONLY - DO NOT MERGE] PR with frozen gates, no-op proof, bad-change proof, RESULTS.md, a rule-compliance report, and a handoff note.
 
-PASS when the draft PR and the handoff comment on it exist. This file is the rule-compliance report.
+PASS. Draft PR https://github.com/kdho77/OrthoCAD-/pull/429. It contains the frozen gates, both proofs, `RESULTS.md`, and this report. The handoff comment is on that PR.
 
 ### HANDOFF
 
 > handoff note on the gates PR with candidate SHA, per-gate PASS/FAIL and measured values, residuals, next step (wait for Kendon's merge-and-deploy go; no merge, no deploy, no timing rerun from this agent).
 
-PASS when that comment is on the gates PR. This agent does not merge, deploy, or rerun the live pair timing test.
+PASS. The handoff comment is on https://github.com/kdho77/OrthoCAD-/pull/429. This agent does not merge, deploy, or rerun the live pair timing test.
 
 ### CAP
 
