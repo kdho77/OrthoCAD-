@@ -589,6 +589,76 @@ describe("CAD-operator production claim", () => {
         ).toBeNull();
     });
 
+    test("execute logs loft_s and slice_s for a finished foot and a loft failure", async () => {
+        const store = new MemoryCadProductionStore();
+        const lines: string[] = [];
+        const original = console.log;
+        console.log = (...args: unknown[]) => {
+            lines.push(args.map((arg) => String(arg)).join(" "));
+        };
+        try {
+            const claimed = await claimProduction(
+                store,
+                insert("left", "timing"),
+                new Date("2026-11-09T00:00:00.000Z"),
+            );
+            await executeCadOperatorProduction({
+                row: claimed.row,
+                store,
+                now: () => new Date("2026-11-09T00:00:01.000Z"),
+                materialize: async () => {
+                    await new Promise((resolve) => setTimeout(resolve, 5));
+                    return { stlStorageKey: "tmp/left.stl", meshFingerprint: "abc" };
+                },
+                slice: async () => {
+                    await new Promise((resolve) => setTimeout(resolve, 5));
+                    return { gcode: "G1\n", jobId: "job-1" };
+                },
+                uploadGcode: async () => ({ storageKey: "gcode/cad-operator/t/c/d/left.gcode" }),
+                charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+            });
+            const failed = await claimProduction(
+                store,
+                insert("right", "timing-fail"),
+                new Date("2026-11-09T00:00:02.000Z"),
+            );
+            await executeCadOperatorProduction({
+                row: failed.row,
+                store,
+                now: () => new Date("2026-11-09T00:00:03.000Z"),
+                materialize: async () => {
+                    throw new Error("loft failed");
+                },
+                slice: async () => ({ gcode: "G1\n", jobId: "job-2" }),
+                uploadGcode: async () => ({ storageKey: "gcode/cad-operator/t/c/d/right.gcode" }),
+                charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+            });
+        } finally {
+            console.log = original;
+        }
+        const parsed = lines
+            .map((line) => {
+                try {
+                    return JSON.parse(line) as {
+                        msg?: string;
+                        loft_s?: number;
+                        slice_s?: number;
+                        side?: string;
+                    };
+                } catch {
+                    return null;
+                }
+            })
+            .filter((row) => row?.msg === "cad-operator-timing");
+        expect(parsed).toHaveLength(2);
+        expect(parsed[0]).toMatchObject({ side: "left" });
+        expect(parsed[0]?.loft_s).toBeGreaterThan(0);
+        expect(parsed[0]?.slice_s).toBeGreaterThan(0);
+        expect(parsed[1]).toMatchObject({ side: "right", slice_s: 0 });
+        expect(parsed[1]?.loft_s).toBeGreaterThanOrEqual(0);
+        expect(JSON.stringify(parsed)).not.toMatch(/patient|settingsJson|api_key|token|bearer/i);
+    });
+
     test("a failed loft logs the font or element cause and keeps the public row error", async () => {
         const store = new MemoryCadProductionStore();
         const now = new Date("2026-11-09T00:00:00.000Z");

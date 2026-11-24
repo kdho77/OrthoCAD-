@@ -13,7 +13,50 @@ import type { TextApplyMeta, TextSurface } from "./types";
 const Z0_TOL = 0.08;
 
 /** Opposite-edge winding on the index graph (not a 1e-4 position weld). */
+/** Vertex indices stay below this so a*STRIDE+b does not collide. */
+const INDEX_EDGE_STRIDE = 2_097_152;
+
 function indexOppositeMismatch(geo: BufferGeometry): number {
+    const index = geo.getIndex();
+    if (!index) return 1;
+    const src = index.array as ArrayLike<number>;
+    let maxIndex = 0;
+    for (let i = 0; i < src.length; i++) {
+        const v = src[i] ?? 0;
+        if (v > maxIndex) maxIndex = v;
+    }
+    if (maxIndex >= INDEX_EDGE_STRIDE) return indexOppositeMismatchStrings(geo);
+    const dir = new Map<number, number>();
+    const add = (a: number, b: number) => {
+        const k = a * INDEX_EDGE_STRIDE + b;
+        dir.set(k, (dir.get(k) ?? 0) + 1);
+    };
+    for (let t = 0; t + 2 < index.count; t += 3) {
+        const a = src[t] ?? 0;
+        const b = src[t + 1] ?? 0;
+        const c = src[t + 2] ?? 0;
+        add(a, b);
+        add(b, c);
+        add(c, a);
+    }
+    let mismatch = 0;
+    const seen = new Set<number>();
+    for (const key of dir.keys()) {
+        const a = Math.floor(key / INDEX_EDGE_STRIDE);
+        const b = key - a * INDEX_EDGE_STRIDE;
+        const lo = a < b ? a : b;
+        const hi = a < b ? b : a;
+        const undirected = lo * INDEX_EDGE_STRIDE + hi;
+        if (seen.has(undirected)) continue;
+        seen.add(undirected);
+        const fwd = dir.get(a * INDEX_EDGE_STRIDE + b) ?? 0;
+        const rev = dir.get(b * INDEX_EDGE_STRIDE + a) ?? 0;
+        if (fwd !== 1 || rev !== 1) mismatch++;
+    }
+    return mismatch;
+}
+
+function indexOppositeMismatchStrings(geo: BufferGeometry): number {
     const index = geo.getIndex();
     if (!index) return 1;
     const src = index.array as ArrayLike<number>;
