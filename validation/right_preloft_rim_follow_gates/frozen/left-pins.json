@@ -1,0 +1,18 @@
+{
+    "s9-medium": {
+        "hash": "11a9b0627846c2da4638567c202a1cb7264c89b660b3aae0bc5bab2cc493c62d",
+        "verts": 55156
+    },
+    "s8-medium": {
+        "hash": "39111add1574cbd9401b2abb60b5652e3cbb3891267405e6beb8bb59c6ed7cbf",
+        "verts": 54357
+    },
+    "s8.5-narrow-height9-met": {
+        "hash": "9a302d9dc56f56e481726194e8a24ed3cd289087964e6e128002c08e0265fb2a",
+        "verts": 57012
+    },
+    "s10-narrow-height9-met": {
+        "hash": "439fffc428be4c3dfa697908af48a67594bd6a65c71cc1ebe3b63442fbb7984a",
+        "verts": 58421
+    }
+}

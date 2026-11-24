@@ -1,0 +1,6 @@
+base f759bde1e212ae99d475601fc58dd89dd37469c7
+rim-follow call locked
+assert call locked
+ratio export const SKEW_INSET_RATIO = 0.5;
+assert call assertPreLoftStations(stations, r1, r2, stationSkewOpts);
+rim call return loft(shiftPatternByRimFollow(scaledPattern, shoeWidthRimBefore, shoeWidthRimAfter, 1));
