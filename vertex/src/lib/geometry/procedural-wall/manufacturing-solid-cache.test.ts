@@ -11,6 +11,7 @@ import {
     resetSampleTopGeometryCache,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { resolveViewerWallStyle } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
+import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
 import { getDesignTrimline } from "@/lib/geometry/trimline";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -158,6 +159,52 @@ describe("manufacturing solid fingerprint", () => {
         );
     });
 
+    test("patient name, addPatientName, and additional text each change the fingerprint", () => {
+        const marking = { ...defaultTextMarking("bottom"), text: "", addPatientName: true as const };
+        const base = manufacturingSolidFingerprint(
+            options({ textMarking: marking, patientDisplayName: "PATIENT A" }),
+            context(),
+        );
+        expect(
+            manufacturingSolidFingerprint(
+                options({ textMarking: marking, patientDisplayName: "PATIENT B" }),
+                context(),
+            ),
+        ).not.toBe(base);
+        expect(
+            manufacturingSolidFingerprint(
+                options({
+                    textMarking: { ...marking, addPatientName: false },
+                    patientDisplayName: "PATIENT A",
+                }),
+                context(),
+            ),
+        ).not.toBe(base);
+        expect(
+            manufacturingSolidFingerprint(
+                options({
+                    textMarking: { ...marking, text: "CLINIC" },
+                    patientDisplayName: "PATIENT A",
+                }),
+                context(),
+            ),
+        ).not.toBe(base);
+        expect(
+            manufacturingSolidFingerprint(
+                options({ textMarking: marking, patientDisplayName: "PATIENT A", side: "right" }),
+                context({ side: "right" }),
+            ),
+        ).not.toBe(base);
+        const noName = manufacturingSolidFingerprint(options({ textMarking: marking }), context());
+        expect(noName).toBe(manufacturingSolidFingerprint(options(), context()));
+        expect(
+            manufacturingSolidFingerprint(
+                options({ textMarking: { ...marking, addPatientName: false } }),
+                context(),
+            ),
+        ).not.toBe(noName);
+    });
+
     test("stock preview options and export options share one fingerprint", () => {
         const design = useDesignStore.getState().design;
         const side: Side = "left";
@@ -261,6 +308,90 @@ describe("manufacturing solid reuse", () => {
         expect(usePreviewLoftStatusStore.getState().phaseBySide).toEqual({ left: "idle", right: "idle" });
         expect(peekManufacturingSolid(fp, "left")).toBeNull();
         expect(manufacturingSolidFingerprint(options(), context({ printLoftEpoch: 3 }))).not.toBe(fp);
+    });
+
+    test("a print-cached engraved name is not engraved again, including the default patient row", async () => {
+        const marking = { ...defaultTextMarking("bottom"), text: "", addPatientName: true as const };
+        const apply = await import("@/lib/geometry/text-marking/apply");
+        const engrave = await import("@/lib/geometry/text-marking/bottom-engrave");
+        const applySpy = rs.spyOn(apply, "applyTextMarkingToPrintSolid");
+        const engraveSpy = rs.spyOn(engrave, "engraveBottomPlanar");
+        try {
+            for (const side of ["left", "right"] as const) {
+                const solid = options({
+                    side,
+                    textMarking: marking,
+                    patientDisplayName: "PATIENT A",
+                });
+                const ctx = context({ side, mirrored: side === "right" });
+                const geo = new BufferGeometry();
+                geo.userData = { textGuide: { letters: ["PATIENT A"] }, mark: `engraved-${side}` };
+                publishPreviewManufacturingSolid(solid, ctx, geo);
+                const started = performance.now();
+                const reused = await buildProceduralExportSolid(solid, ctx);
+                const warmMs = performance.now() - started;
+                expect(reused.geometry.userData.mark).toBe(`engraved-${side}`);
+                expect(reused.geometry.userData.fromManufacturingCache).toBe(true);
+                expect(warmMs).toBeLessThan(500);
+                geo.dispose();
+                reused.geometry.dispose();
+            }
+            expect(applySpy).not.toHaveBeenCalled();
+            expect(engraveSpy).not.toHaveBeenCalled();
+            const counts = manufacturingLoftStats();
+            expect(counts.built).toBe(0);
+            expect(counts.reused).toBe(2);
+            expect(counts.lastReuseMs).toBeLessThan(500);
+        } finally {
+            applySpy.mockRestore();
+            engraveSpy.mockRestore();
+        }
+    });
+
+    test("changing the patient name misses the engraved solid and starts a fresh build", async () => {
+        const marking = { ...defaultTextMarking("bottom"), text: "", addPatientName: true as const };
+        const engraved = options({ textMarking: marking, patientDisplayName: "PATIENT A" });
+        const ctx = context();
+        const geo = new BufferGeometry();
+        geo.userData = { textGuide: { letters: ["PATIENT A"] }, mark: "old-name" };
+        publishPreviewManufacturingSolid(engraved, ctx, geo);
+        const renamed = options({ textMarking: marking, patientDisplayName: "PATIENT B" });
+        const fetchSpy = rs.spyOn(globalThis, "fetch").mockRejectedValue(new Error("fresh build"));
+        try {
+            await expect(buildProceduralExportSolid(renamed, ctx)).rejects.toThrow();
+            expect(manufacturingLoftStats().reused).toBe(0);
+            expect(manufacturingLoftStats().built).toBe(1);
+            expect(
+                peekManufacturingSolid(manufacturingSolidFingerprint(engraved, ctx), "left")?.userData.mark,
+            ).toBe("old-name");
+            expect(peekManufacturingSolid(manufacturingSolidFingerprint(renamed, ctx), "left")).toBeNull();
+        } finally {
+            fetchSpy.mockRestore();
+            geo.dispose();
+        }
+    });
+
+    test("a pre-text cache still engraves once when the composed name is active", async () => {
+        const marking = { ...defaultTextMarking("bottom"), text: "", addPatientName: true as const };
+        const solid = options({ textMarking: marking, patientDisplayName: "PATIENT A" });
+        const ctx = context();
+        const geo = new BufferGeometry();
+        geo.userData = { mark: "pre-text" };
+        rememberManufacturingSolid(manufacturingSolidFingerprint(solid, ctx), "left", geo);
+        const apply = await import("@/lib/geometry/text-marking/apply");
+        const applySpy = rs
+            .spyOn(apply, "applyTextMarkingToPrintSolid")
+            .mockImplementation(async (host) => host);
+        try {
+            const out = await buildProceduralExportSolid(solid, ctx);
+            expect(applySpy).toHaveBeenCalledTimes(1);
+            expect(out.geometry.userData.fromManufacturingCache).toBe(true);
+            expect(out.geometry.userData.mark).toBe("pre-text");
+            out.geometry.dispose();
+        } finally {
+            applySpy.mockRestore();
+            geo.dispose();
+        }
     });
 
     test("publishing the preview solid is what a later export reuses", () => {

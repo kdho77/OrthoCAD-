@@ -3,6 +3,11 @@
 import type { BufferGeometry } from "three";
 import { elementGeometryKey } from "@/lib/geometry/element-geometry-key";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
+import {
+    addPatientNameEnabled,
+    composeMarkingTextForSide,
+    hasActiveComposedTextMarking,
+} from "@/lib/geometry/text-marking/compose";
 import { textMarkingHash } from "@/lib/geometry/text-marking/hash";
 import type { Side } from "@/types";
 import type { PolyPoint } from "./curves";
@@ -149,6 +154,52 @@ function fieldIdentity(field: HeightFieldParams | undefined) {
     };
 }
 
+/**
+ * Bottom engraving identity. `textMarkingHash` ignores an empty `text` field, so a
+ * default row (`text: ""`, `addPatientName: true`) used to miss the patient name.
+ * The composed line is what Print engraves and what Export must key on.
+ */
+export function composedEngravingKey(
+    marking: ProceduralPreviewOptions["textMarking"],
+    patientDisplayName: string | null | undefined,
+    side: Side,
+): string {
+    if (!marking) return "";
+    if (marking.surface === "wall" || marking.surface === "medial") return textMarkingHash(marking);
+    const composed = composeMarkingTextForSide(marking, side, patientDisplayName);
+    if (!composed) {
+        // The saved-design template stores the default bottom row (checkbox on,
+        // extra line empty). With no name and no extra line that engraves the
+        // same solid as a design that never set textMarking, so the key stays
+        // empty. Turning the checkbox off still misses.
+        if (addPatientNameEnabled(marking)) return "";
+        return "bottom:0";
+    }
+    return textMarkingHash({ ...marking, text: composed });
+}
+
+/**
+ * Print stores the solid after the worker engraves. A later Export must not
+ * run that engrave again. A cold export stores the pre-text loft (no guide),
+ * so the one engraving still happens with that call's belt frame.
+ */
+export function cachedManufacturingSolidIncludesExportText(
+    geometry: BufferGeometry,
+    options: ProceduralPreviewOptions & { mirrored?: boolean },
+): boolean {
+    const side = options.side ?? (options.mirrored ? "left" : "right");
+    if (!hasActiveComposedTextMarking(options.textMarking, options.patientDisplayName, side)) return true;
+    const ud = geometry.userData as {
+        textFitError?: string | null;
+        textGuide?: unknown;
+        bottomOutlineWorld?: unknown;
+    };
+    if (ud?.textFitError) return false;
+    // Worker copies `textGuide` after a successful engrave. The planar
+    // engrave itself leaves `bottomOutlineWorld` on the mesh.
+    return Boolean(ud?.textGuide || ud?.bottomOutlineWorld);
+}
+
 /** Canonical dependency record. `mirrored` on the options object is ignored; context wins. */
 export function manufacturingSolidIdentity(
     options: ProceduralPreviewOptions,
@@ -178,7 +229,11 @@ export function manufacturingSolidIdentity(
         pattern: hashPolyline(pattern),
         composeTrim: trims.compose,
         postingTrim: trims.posting,
-        textMarking: textMarkingHash(options.textMarking),
+        textMarking: composedEngravingKey(
+            options.textMarking,
+            options.patientDisplayName,
+            options.side ?? context.side,
+        ),
         field: fieldIdentity(options.sourceField),
         sinks: options.sinks ?? [],
         sinkStyloidThicken: options.sinkStyloidThicken === true,
