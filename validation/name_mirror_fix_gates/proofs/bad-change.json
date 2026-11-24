@@ -1,0 +1,75 @@
+{
+    "yFlipG1": false,
+    "oneFootG1": false,
+    "oneFootFailures": [
+        "right advance maps to screen x -1.000 (need > 0.5)",
+        "right physical advance -72.82 mm (need > 20)",
+        "right J hook is not lower-left in the physical camera"
+    ],
+    "depthG2": false,
+    "depthFailures": [
+        "depth 1.2 mm (need 0.6)",
+        "centroid z leaves 0.6 mm by 0.6",
+        "right depth 1.2 mm (need 0.6)",
+        "right centroid z leaves 0.6 mm by 0.6"
+    ],
+    "shiftG2": false,
+    "outsideVertices": 1,
+    "gcodeOutsidePass": false,
+    "gcodeInsideStillPasses": true,
+    "slicerScopePass": false,
+    "capPass": false,
+    "raisedSolePass": false,
+    "noTextPass": false,
+    "goodXFlip": {
+        "G1": true,
+        "G2": true,
+        "G3": true,
+        "G4": true
+    },
+    "goodMeasured": {
+        "G1": {
+            "leftA": 1,
+            "leftD": 1,
+            "leftB": 0,
+            "leftC": 0,
+            "leftDet": 1,
+            "leftAdvanceMm": 72.821,
+            "leftHookLeft": true,
+            "rightA": 1,
+            "rightD": 1,
+            "rightB": 0,
+            "rightC": 0,
+            "rightDet": 1,
+            "rightAdvanceMm": 72.821,
+            "rightHookLeft": true
+        },
+        "G2": {
+            "surface": "bottom",
+            "mode": "engrave",
+            "depthMm": 0.6,
+            "capMm": 12,
+            "placementU": 0.32,
+            "rotationDeg": 0,
+            "pivotXmm": 86.8,
+            "pivotYmm": 0,
+            "mappedWidthMm": 82.9933,
+            "centroidZAbsErrMm": 0,
+            "bold": true
+        },
+        "G3": {
+            "outsideVertices": 0,
+            "outsideMaxMm": 0,
+            "gcodeOutsideBase": 2,
+            "gcodeOutsideCandidate": 2,
+            "scopeHits": 0,
+            "skewInsetChanged": false,
+            "soleBottomMaxAbsZmm": 0
+        },
+        "G4": {
+            "sameBytes": true,
+            "baseHash": "aa",
+            "candidateHash": "aa"
+        }
+    }
+}

@@ -18,6 +18,7 @@
                 "tests/sink-proximal-shift.test.ts",
                 "tests/text-marking-right-foot.test.ts",
                 "tests/wall-banding.verify.test.ts",
+                "validation/name_mirror_fix_gates/gates.test.ts",
                 "vertex/print-bridge/installed-bridge.test.ts",
                 "vertex/server/src/auth/dogfood-design-access.test.ts",
                 "vertex/server/src/lib/design-settings.roundtrip.test.ts",
