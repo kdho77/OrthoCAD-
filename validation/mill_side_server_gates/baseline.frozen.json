@@ -1,0 +1,90 @@
+{
+  "baseSha": "4a6c76f2e8acf7b62506090b96164dc74ca4e7ba",
+  "lrGcodeSha256": "4f23cf6efcf29e358b8d730cf907fdc4d875b9db27cc0ad23949fcf5d993f4b6",
+  "lrGcodeBytes": 1643392,
+  "lrFilename": "Gate_Fixture_EVA_LR.gcode",
+  "lrIdempotencyKey": "cadop:v1:11111111-1111-4111-8111-111111111111:pair:vertex-lab-idaho-one-side:e67c91518c8a8687947c13b0e70dbb4671b8dc3e03ecf6e6b4fbaa2219aa9ef3",
+  "lrSides": [
+    "left",
+    "right"
+  ],
+  "profile": {
+    "id": "vertex-lab-idaho-one-side",
+    "strategy": "spiral",
+    "strategyContour": "spiral",
+    "fileExtension": ".gcode",
+    "toolpathCutter": {
+      "diameterMm": 10,
+      "type": "ball",
+      "rpm": 24000
+    },
+    "contourCutter": {
+      "diameterMm": 10,
+      "type": "ball",
+      "rpm": 24000
+    },
+    "topFeeds": {
+      "dip": 3500,
+      "normal": 36000,
+      "slow": 3500,
+      "contour": 2500
+    },
+    "bottomFeeds": {
+      "dip": 3500,
+      "normal": 24000,
+      "slow": 3500,
+      "contour": 2500
+    },
+    "stepoverBallMm": 1.4,
+    "stepoverFlatMm": 3,
+    "layeredEnabled": true,
+    "layeredMm": 15,
+    "sampleMm": 0.25,
+    "chordTolMm": 0.01,
+    "tableWidthMm": 368.3,
+    "tableLengthMm": 260.35,
+    "materialHeightMm": 30,
+    "pockets": [
+      {
+        "x": 0,
+        "y": 0,
+        "width": 368.3,
+        "length": 130.175
+      },
+      {
+        "x": 0,
+        "y": 130.175,
+        "width": 368.3,
+        "length": 130.175
+      }
+    ]
+  },
+  "fileSha256": {
+    "vertex/src/lib/cnc/export.ts": "1c2ebb3b56a2fcf05da536b0b06350adc31a77841afbf3b68e74902f9366f536",
+    "vertex/src/lib/cnc/spiral.ts": "e828faab476e8770883a27dfababc5294dd52d0f3ad2d563fce6a9b19e759fea",
+    "vertex/src/lib/cnc/contour.ts": "fca7d65fe15697aa961fc64d347fe4a1b0b462f314608cfcfdec29e5a46ee832",
+    "vertex/src/lib/cnc/profile.ts": "0782cf088f4fcfa6989c3e93d758bccb0417ca767fc6f6cd9c2683c1c8f270ff",
+    "vertex/src/lib/cnc/compose.ts": "d5a01f608725c75e7586615a59182a4b4aaa7de0c18c6b182c01913eb005f16a",
+    "vertex/src/lib/cnc/placement.ts": "0fcfa5f03fa04b341beb89fc8b029e7b91c15a053341a3c0bc5b8906d1539693",
+    "vertex/src/lib/kiri/slicer.ts": "3650c487c38f4b4b9aa4d0c04f795445bdca70ea9f317301e623d30f43f6edcd",
+    "vertex/src/lib/geometry/text-marking/bottom-engrave.ts": "7cdfac5ff8d8eb51839365e66384e6d582d892d2d61fec26a7e6518c6a56749c",
+    "vertex/src/lib/geometry/shape-finish-modifiers.ts": "395d1f470cf01bd924be0635df3d55ee0a6dfb2da24107dbfa4d2361a1fd789c",
+    "vertex/src/lib/geometry/base-modifier.ts": "5fb324f71e33e44ab82a23c839b5406bd5ae9845a382017f19c282615557b546",
+    "vertex/src/lib/cnc/envelope.ts": "e573d64c5ead0bd61feca94a9df92d9d0430e9387c2ceef4e12b9e07d18fa7e3"
+  },
+  "thicknessUnmarkedMm": {
+    "left": 4,
+    "right": 4
+  },
+  "thicknessMarkedMm": {
+    "left": 6,
+    "right": 6
+  },
+  "clearanceMm": 1,
+  "size15": {
+    "lengthMm": 310.323,
+    "widthMm": 113.387,
+    "xMarginMm": 45.977,
+    "yMarginMm": 4.788
+  }
+}
