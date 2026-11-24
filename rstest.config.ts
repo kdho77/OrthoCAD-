@@ -16,6 +16,8 @@ export default defineConfig({
         "**/*.optional.test.ts",
         "**/dump-*.test.ts",
         "**/pressure-map.webgl.test.ts",
+        // Independent gates. Run them with validation/mortons_shape_gates/rstest.gates.config.ts.
+        "validation/mortons_shape_gates/**",
     ],
     globals: true,
     testEnvironment: "happy-dom",

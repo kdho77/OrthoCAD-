@@ -196,6 +196,10 @@ Residuals for Kendon:
 
 Next step is Kendon's, not another construction in this PR: keep the 25 mm quintic and accept the 6 mm residual, or change the blend; and choose whether the straight edge aims at the medial border at u = 1 or at the u = 0.97 chord this gate froze.
 
+## CI
+
+The first draft-PR run failed before any test: `validate-unit-test-shards.mjs` counted 372 `*.test.ts` files and the manifest has 371. The extra file is `validation/mortons_shape_gates/gates.test.ts`. That file stays out of the product shards. `scripts/ci/list-unit-test-files.mjs` and `rstest.config.ts` exclude `validation/mortons_shape_gates/`. The frozen gate sources were not edited. Local check after the exclude: `node scripts/ci/validate-unit-test-shards.mjs` prints `OK: 371 test files partitioned across 6 shards`.
+
 ## Hard prohibition
 
 This grader did not change the outer surface, seams, layer-change placement, or surface quality. Seams and layer changes stay on the bottom (plantar) face. The only files added are under `validation/mortons_shape_gates/`. No PHI is in this file or in the gates.
