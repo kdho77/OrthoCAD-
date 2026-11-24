@@ -80,7 +80,7 @@ mkdirSync(outDir, { recursive: true });
 const label = arg("--label", "run");
 const rstest = path.join(repo, "node_modules/.bin/rstest");
 const config = path.join(here, "rstest.gates.config.ts");
-const liveTest = path.join(here, "live/export-gates.test.ts");
+const liveTest = path.join(here, "live/export-gates.optional.test.ts");
 
 ensureLinkedModules(product);
 

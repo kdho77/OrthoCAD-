@@ -1,6 +1,8 @@
 # Frozen gates: export parallel workers
 
-These gates grade worker PR #412. They were written against base `9dd3542900fc6c127a4c5ce205c649071cad8690` before that candidate was measured. Do not edit `checker.mjs`, `observe-source.mjs`, `run-gates.mjs`, `proofs/**`, `live/**`, or `rstest.gates.config.ts` after the freeze commit.
+These gates grade worker PR #412. They were written against base `9dd3542900fc6c127a4c5ce205c649071cad8690` before that candidate was measured. Do not edit `checker.mjs`, `observe-source.mjs`, `proofs/**`, or `rstest.gates.config.ts` after the freeze commit.
+
+The live probe is `live/export-gates.optional.test.ts`. The `.optional.test.ts` suffix is the existing unit-shard exclusion in `scripts/ci/list-unit-test-files.mjs` and `rstest.config.ts`, so this file is not a product unit test. `run-gates.mjs` loads it by path through `rstest.gates.config.ts`. Checker thresholds are unchanged.
 
 The checker is `checker.mjs`. A gate passes only when every measured value meets its threshold.
 

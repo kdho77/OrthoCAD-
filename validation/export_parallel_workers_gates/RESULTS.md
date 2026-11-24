@@ -81,6 +81,10 @@ npx rstest --config rstest.config.ts \
 
 A cold two-foot STL export starts the left and right solid builds together (`Promise.all` in `buildOrderPairGeometry`). Each foot checks out its own worker from a pool of size 2. The worker module calls the existing procedural loft (`reconstructProceduralPreview` / the export-solid build); it does not define a second loft. With `Worker` undefined, that path calls `buildProceduralExportSolid` on the main thread, which is what the Node STL run measured.
 
+## CI note
+
+GitHub Actions run `45302624615` on `2befc9d9` failed before any unit test: `scripts/ci/validate-unit-test-shards.mjs` reported `unit tests 372, manifest 371` and named `validation/export_parallel_workers_gates/live/export-gates.test.ts`. `test-and-deploy` then exited because that unit job failed. The probe file was renamed to `export-gates.optional.test.ts` so the existing exclusion applies. Grade numbers above are from the freeze and were not remeasured.
+
 ## Hard prohibition
 
 This branch does not change product geometry, the outer surface, seam placement, layer-change placement, or surface quality. The only files versus `main` are under `validation/export_parallel_workers_gates/`.
