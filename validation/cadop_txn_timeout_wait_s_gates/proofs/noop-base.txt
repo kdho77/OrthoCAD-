@@ -1,0 +1,172 @@
+command: node validation/cadop_txn_timeout_wait_s_gates/run-gates.mjs
+checkout: 8aced4b5042bdafc2d300006fa80802bca1b94b9
+exit: 1
+
+product_root=/agent/repos/OrthoCAD-
+gate A: FAIL (6339 ms) pair failed: left=succeeded right=failed open_during_loft=true max_interactive_elapsed_ms=6001 timed_out=1 closed=0
+{
+  "left_status": "succeeded",
+  "right_status": "failed",
+  "left_error": null,
+  "right_error": "Manufacturing timed out (right)",
+  "thrown": [],
+  "manufacturing_timed_out": [
+    "Manufacturing timed out (right)"
+  ],
+  "transaction_already_closed": [],
+  "open_during_loft": true,
+  "interactive_transactions": 5,
+  "max_interactive_elapsed_ms": 6001,
+  "interactive_timeout_ms": 5000,
+  "loft_block_ms": 6000,
+  "loft_ms": {
+    "left": 6000
+  },
+  "fixture_gcode_bytes": 19,
+  "uploaded_gcode_match": false,
+  "storage_keys": {
+    "left": "gcode/cad-operator/gate/left.gcode",
+    "right": null
+  },
+  "storage_keys_match": false,
+  "sliced_stl_keys": {
+    "left": "stl/cad-operator/gate/left.stl",
+    "right": "stl/cad-operator/gate/right.stl"
+  }
+}
+gate B: FAIL (3207 ms) wait_s minimum is undefined (threshold 0)
+{
+  "problems": [
+    "wait_s minimum is undefined (threshold 0)",
+    "wait_s maximum is undefined (threshold 300)",
+    "bundle getProductionInputSchema has no wait_s",
+    "bundle wait_s has no .min(0)",
+    "bundle wait_s has no .max(300)",
+    "bundle get_production does not call getProductionWithOptionalWait",
+    "bundle get_production is a single fetch"
+  ],
+  "advertised": {
+    "type": "number"
+  },
+  "required": [
+    "production_id"
+  ],
+  "parse": {
+    "wait_s_300": true,
+    "wait_s_301": false,
+    "wait_s_0": true,
+    "omitted": true,
+    "wait_s_neg": false
+  },
+  "omitted": {
+    "fetches": 1,
+    "elapsed_ms": 0,
+    "status": "pending"
+  },
+  "zero": {
+    "fetches": 1,
+    "elapsed_ms": 1,
+    "status": "running"
+  },
+  "long_poll": {
+    "fetches": 2,
+    "elapsed_ms": 2002,
+    "status": "succeeded",
+    "wait_s": 30
+  },
+  "deadline": {
+    "fetches": 1,
+    "elapsed_ms": 1002,
+    "status": "running",
+    "wait_s": 1
+  },
+  "cap_s": 300,
+  "bundle_schema_has_wait_s": false,
+  "bundle_handler_long_polls": false,
+  "hosted_max_duration_s": {
+    "http_function_s": 60,
+    "api_route_s": 60
+  },
+  "hosted_max_duration_note": "Informational residual. A hosted /api/mcp max duration of 60 s can cut off wait_s 300. This gate grades the handler and the advertised schema, not that platform cap."
+}
+gate C: PASS (257 ms) STL 284 bytes and G-code 16120 bytes match BASE 8aced4b5042b; SKEW_INSET_RATIO=0.5; 225 source files unchanged
+{
+  "base_sha": "8aced4b5042bdafc2d300006fa80802bca1b94b9",
+  "problems": [],
+  "fixture_stl_sha256": "3d4f6262669cc8329a338d7cae4fc34e8811bbe8d28fc79a86a205fef6d5159d",
+  "fixture_stl_bytes": 284,
+  "fixture_gcode_sha256": "e12356a66777e9e0b9815d500168606d2f64eabedb5184ebf0f77d633e96d848",
+  "fixture_gcode_bytes": 16120,
+  "coupon_stl_sha256": "973ede4ee7b6de6738881be002888e4e16e835e4dd120f87590e6b572061ef57",
+  "coupon_stl_bytes": 684,
+  "skew_inset_ratio": [
+    {
+      "path": "vertex/src/lib/geometry/procedural-wall/station-gates.ts",
+      "ratio": "0.5"
+    },
+    {
+      "path": "vertex/src/lib/geometry/procedural-wall/stations.ts",
+      "ratio": "0.5"
+    }
+  ],
+  "source_files": 225,
+  "changed_source_files": [],
+  "missing_source_files": [],
+  "added_source_files": []
+}
+gate D: PASS (378 ms) CI green on 8aced4b5042b: 8 success, 1 skipped, 0 failed
+{
+  "sha": "8aced4b5042bdafc2d300006fa80802bca1b94b9",
+  "total": 9,
+  "success": 8,
+  "pending": [],
+  "failed": [],
+  "checks": [
+    {
+      "name": "test-and-deploy",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "default-procedural-smoke",
+      "status": "completed",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "unit-tests (2)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "unit-tests (1)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "unit-tests (6)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "unit-tests (5)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "unit-tests (4)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "unit-tests (3)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "isolated-postgres-acceptance",
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ]
+}
+GATES FAIL (2)
