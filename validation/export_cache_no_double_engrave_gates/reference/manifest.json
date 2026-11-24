@@ -1,0 +1,40 @@
+{
+    "base": "9dd3542900fc6c127a4c5ce205c649071cad8690",
+    "stl": {
+        "stock-left": {
+            "sha256": "ad742f2e7e6f2ad36053de3a1713237b60fff21bf84ebad5a15d854050bbe85f",
+            "triangles": 110308,
+            "euler": 2,
+            "watertight": true,
+            "bytes": 5515484
+        },
+        "stock-right": {
+            "sha256": "9f865d8b380ad715a2ec10b208c2c5c74885737aaaa7ed7858c6334bd4f187c6",
+            "triangles": 111116,
+            "euler": 2,
+            "watertight": true,
+            "bytes": 5555884
+        },
+        "engrave-left": {
+            "sha256": "3f543a6dd8a9771e8e98e3868b41b10cf75841c004dbe64f9a9a1d446742ec5b",
+            "triangles": 148648,
+            "euler": 2,
+            "watertight": true,
+            "bytes": 7432484
+        },
+        "engrave-right": {
+            "sha256": "e8152598d74b3a390ccc4e02a904173bcc314a8ab00a47e50aded9276b9827c4",
+            "triangles": 150284,
+            "euler": 2,
+            "watertight": true,
+            "bytes": 7514284
+        },
+        "engrave-other-left": {
+            "sha256": "028fe4eeae76c2752e95ba7dc1e713b9ebd89896c059210cf1d1f7efe54ac3bc",
+            "triangles": 146112,
+            "euler": 2,
+            "watertight": true,
+            "bytes": 7305684
+        }
+    }
+}
