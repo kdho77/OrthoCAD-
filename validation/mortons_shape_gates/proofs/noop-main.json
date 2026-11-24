@@ -1,0 +1,260 @@
+{
+  "shapes": [
+    {
+      "side": "left",
+      "heightMm": 3,
+      "maxAdded": 3,
+      "g1_95": 4.411559,
+      "g1_05": 12.919208,
+      "g1_95_n": 70,
+      "g1_05_n": 89,
+      "g2_spread": 6.664153,
+      "g2_median": 9.568173,
+      "g2_min": 3.8326256113469226,
+      "g2_max": 16.23232646085808,
+      "g2_n": 70,
+      "g3_fraction": 0,
+      "g3_n": 1471,
+      "g4": [
+        {
+          "v": 0.1,
+          "fraction": 0.0003103313712203131,
+          "n": 93
+        },
+        {
+          "v": 0.2,
+          "fraction": 0.0010211268347830775,
+          "n": 93
+        },
+        {
+          "v": 0.3,
+          "fraction": 0.0000010008481561253065,
+          "n": 93
+        }
+      ],
+      "g5_rise": 1.490122,
+      "g6_slope": 0.109351,
+      "g6_n": 134,
+      "g7_start": {
+        "slopeJump": 0.000931,
+        "secondDiff": 0.000931
+      },
+      "g7_end": {
+        "slopeJump": 0,
+        "secondDiff": 0
+      },
+      "g8_peak": 0.365484,
+      "s1_angle_deg": 6.670101,
+      "s1_mid_dist_mm": 3.522322,
+      "s2_bevel_over_8": true,
+      "s4_at_line": 1.0477225263739407e-7,
+      "s4_at_blend_end": 0,
+      "arch_hits": 134,
+      "arch_queries": 201
+    },
+    {
+      "side": "left",
+      "heightMm": 6,
+      "maxAdded": 6,
+      "g1_95": 4.411559,
+      "g1_05": 12.919208,
+      "g1_95_n": 70,
+      "g1_05_n": 89,
+      "g2_spread": 6.664153,
+      "g2_median": 9.568173,
+      "g2_min": 3.8326256113469226,
+      "g2_max": 16.23232646085808,
+      "g2_n": 70,
+      "g3_fraction": 0,
+      "g3_n": 1471,
+      "g4": [
+        {
+          "v": 0.1,
+          "fraction": 0.0003103313712203131,
+          "n": 93
+        },
+        {
+          "v": 0.2,
+          "fraction": 0.0010211268347830775,
+          "n": 93
+        },
+        {
+          "v": 0.3,
+          "fraction": 0.0000010008481561253065,
+          "n": 93
+        }
+      ],
+      "g5_rise": 4.291661,
+      "g6_slope": 0.283421,
+      "g6_n": 134,
+      "g7_start": {
+        "slopeJump": 0.001862,
+        "secondDiff": 0.001862
+      },
+      "g7_end": {
+        "slopeJump": 0,
+        "secondDiff": 0
+      },
+      "g8_peak": 0.730968,
+      "s1_angle_deg": 6.670101,
+      "s1_mid_dist_mm": 3.522322,
+      "s2_bevel_over_8": true,
+      "s4_at_line": 2.0954450527478815e-7,
+      "s4_at_blend_end": 0,
+      "arch_hits": 134,
+      "arch_queries": 201
+    },
+    {
+      "side": "right",
+      "heightMm": 3,
+      "maxAdded": 3,
+      "g1_95": 4.411559,
+      "g1_05": 12.919208,
+      "g1_95_n": 70,
+      "g1_05_n": 89,
+      "g2_spread": 6.664153,
+      "g2_median": 9.568173,
+      "g2_min": 3.8326256113469226,
+      "g2_max": 16.23232646085808,
+      "g2_n": 70,
+      "g3_fraction": 0,
+      "g3_n": 1471,
+      "g4": [
+        {
+          "v": 0.1,
+          "fraction": 0.0003103313712203131,
+          "n": 93
+        },
+        {
+          "v": 0.2,
+          "fraction": 0.0010211268347830775,
+          "n": 93
+        },
+        {
+          "v": 0.3,
+          "fraction": 0.0000010008481561253065,
+          "n": 93
+        }
+      ],
+      "g5_rise": 1.490122,
+      "g6_slope": 0.109351,
+      "g6_n": 134,
+      "g7_start": {
+        "slopeJump": 0.000931,
+        "secondDiff": 0.000931
+      },
+      "g7_end": {
+        "slopeJump": 0,
+        "secondDiff": 0
+      },
+      "g8_peak": 0.365484,
+      "s1_angle_deg": 6.670101,
+      "s1_mid_dist_mm": 3.522322,
+      "s2_bevel_over_8": true,
+      "s4_at_line": 1.0477225263739407e-7,
+      "s4_at_blend_end": 0,
+      "arch_hits": 134,
+      "arch_queries": 201
+    },
+    {
+      "side": "right",
+      "heightMm": 6,
+      "maxAdded": 6,
+      "g1_95": 4.411559,
+      "g1_05": 12.919208,
+      "g1_95_n": 70,
+      "g1_05_n": 89,
+      "g2_spread": 6.664153,
+      "g2_median": 9.568173,
+      "g2_min": 3.8326256113469226,
+      "g2_max": 16.23232646085808,
+      "g2_n": 70,
+      "g3_fraction": 0,
+      "g3_n": 1471,
+      "g4": [
+        {
+          "v": 0.1,
+          "fraction": 0.0003103313712203131,
+          "n": 93
+        },
+        {
+          "v": 0.2,
+          "fraction": 0.0010211268347830775,
+          "n": 93
+        },
+        {
+          "v": 0.3,
+          "fraction": 0.0000010008481561253065,
+          "n": 93
+        }
+      ],
+      "g5_rise": 4.291661,
+      "g6_slope": 0.283421,
+      "g6_n": 134,
+      "g7_start": {
+        "slopeJump": 0.001862,
+        "secondDiff": 0.001862
+      },
+      "g7_end": {
+        "slopeJump": 0,
+        "secondDiff": 0
+      },
+      "g8_peak": 0.730968,
+      "s1_angle_deg": 6.670101,
+      "s1_mid_dist_mm": 3.522322,
+      "s2_bevel_over_8": true,
+      "s4_at_line": 2.0954450527478815e-7,
+      "s4_at_blend_end": 0,
+      "arch_hits": 134,
+      "arch_queries": 201
+    }
+  ],
+  "meshes": [
+    {
+      "side": "left",
+      "heightMm": 3,
+      "vertices": 42134,
+      "outsideDiffer": 259,
+      "planDiffer": 0,
+      "moved": 5386,
+      "g11MaxMm": 2.384185791015625e-7,
+      "g11n": 4716,
+      "g11Miss": 0
+    },
+    {
+      "side": "left",
+      "heightMm": 6,
+      "vertices": 42134,
+      "outsideDiffer": 266,
+      "planDiffer": 0,
+      "moved": 5393,
+      "g11MaxMm": 4.76837158203125e-7,
+      "g11n": 4880,
+      "g11Miss": 0
+    },
+    {
+      "side": "right",
+      "heightMm": 3,
+      "vertices": 42134,
+      "outsideDiffer": 259,
+      "planDiffer": 0,
+      "moved": 5386,
+      "g11MaxMm": 2.384185791015625e-7,
+      "g11n": 4716,
+      "g11Miss": 0
+    },
+    {
+      "side": "right",
+      "heightMm": 6,
+      "vertices": 42134,
+      "outsideDiffer": 266,
+      "planDiffer": 0,
+      "moved": 5393,
+      "g11MaxMm": 4.76837158203125e-7,
+      "g11n": 4880,
+      "g11Miss": 0
+    }
+  ],
+  "stockFixture": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+  "stockTemplate": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1"
+}
