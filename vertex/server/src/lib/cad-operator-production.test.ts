@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { resolve } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 import type { PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, test } from "@rstest/core";
@@ -29,7 +32,14 @@ import {
     toPublicProduction,
 } from "./cad-operator-production.js";
 import { PrismaCadProductionStore } from "./cad-operator-production-prisma.js";
+import { passingBeltGcode } from "./gcode-handedness-sample.js";
 import { sliceWithVertexSlice } from "./vertexslice-client.js";
+
+function handednessFixture(name: string): string {
+    return gunzipSync(
+        readFileSync(resolve(__dirname, "../../../../tests/fixtures/handedness", `${name}.gcode.gz`)),
+    ).toString("utf8");
+}
 
 const recipe: PrintRecipeV1 = {
     version: 1,
@@ -1164,8 +1174,8 @@ describe("VertexSlice job productions", () => {
         const sleep = async (ms: number) => {
             nowMs += ms;
         };
-        const leftGcode = "G1 X1 ; foot-a\n";
-        const rightGcode = "G1 X2 ; foot-b\n";
+        const leftGcode = passingBeltGcode("left");
+        const rightGcode = passingBeltGcode("right");
         const jobs: MockSliceJob[] = [
             { id: "job-left", acceptedAt: 0, queueMs: 0, sliceMs: 30_000, gcode: leftGcode },
             { id: "job-right", acceptedAt: 0, queueMs: 200_000, sliceMs: 10_000, gcode: rightGcode },
@@ -1273,7 +1283,7 @@ describe("VertexSlice job productions", () => {
     test("POST /v1/slice/jobs 404 falls back to sync /v1/slice bytes", async () => {
         process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
         process.env.VERTEXSLICE_API_KEY = "super-secret-key";
-        const syncBody = "G1 X0 \n; keep-bytes\n";
+        const syncBody = `${passingBeltGcode("left")}; keep-bytes\n`;
         const calls = installSliceJobFetch({
             nowMs: () => Date.parse("2026-11-23T16:00:00.000Z"),
             jobs: [],
@@ -1379,6 +1389,113 @@ describe("VertexSlice job productions", () => {
         expect(row?.error).toContain("server error");
         expect(row?.error).toContain("slice exceeded 260s");
         expect(row?.error).not.toContain("Manufacturing timed out");
+    });
+
+    test("a mirrored left slice fails before upload; a true left is stored unchanged", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const mirrored = handednessFixture("main_left_request_toe_first");
+        const trueLeft = handednessFixture("true_left_toe_first");
+        const now = new Date("2026-11-24T00:00:00.000Z");
+
+        async function run(side: "left" | "right", body: string, fingerprint: string, mode: "sync" | "job") {
+            if (mode === "sync") {
+                installSliceJobFetch({
+                    nowMs: () => now.getTime(),
+                    jobs: [],
+                    mode: "jobs-404",
+                    syncBody: body,
+                });
+            } else {
+                installSliceJobFetch({
+                    nowMs: () => now.getTime(),
+                    jobs: [
+                        {
+                            id: `job-${fingerprint}`,
+                            acceptedAt: 0,
+                            queueMs: 0,
+                            sliceMs: 0,
+                            gcode: body,
+                        },
+                    ],
+                    mode: "jobs",
+                });
+            }
+            const store = new MemoryCadProductionStore();
+            const claimed = await claimProduction(store, insert(side, fingerprint), now);
+            let uploads = 0;
+            let charges = 0;
+            let uploaded = "";
+            await executeCadOperatorProduction({
+                row: claimed.row,
+                store,
+                now: () => now,
+                materialize: async () => ({ stlStorageKey: `tmp/${side}.stl`, meshFingerprint: "mesh" }),
+                slice: async (stlStorageKey, sliceCtx) => {
+                    const attempt = await runCadSliceAttempt({
+                        request: sliceCtx?.checkpoint
+                            ? null
+                            : {
+                                  profileId: "apex-v2-insole-95a",
+                                  material: "apex_core",
+                                  model: foot,
+                                  filename: `${side}.stl`,
+                                  infillDensityPct: 32,
+                                  side,
+                                  sliceTimeoutMs: sliceCtx?.sliceTimeoutMs,
+                              },
+                        checkpoint: sliceCtx?.checkpoint ?? null,
+                        stlStorageKey,
+                        meshFingerprint: "mesh",
+                        credentialId: "cred",
+                        side,
+                        now: () => now,
+                        sleep: async () => undefined,
+                        budgetMs: sliceCtx?.budgetMs ?? 0,
+                        persistCheckpoint: sliceCtx?.persistCheckpoint,
+                    });
+                    if (attempt.kind === "pending") return { pending: true, checkpoint: attempt.checkpoint };
+                    return { gcode: attempt.gcode, jobId: attempt.jobId };
+                },
+                uploadGcode: async (gcode) => {
+                    uploads += 1;
+                    uploaded = gcode;
+                    return { storageKey: `gcode/${side}.gcode` };
+                },
+                charge: async () => {
+                    charges += 1;
+                    return { exportId: "exp", balance: 1, alreadyCharged: false };
+                },
+            });
+            const row = await store.findById(claimed.row.id);
+            return { row, uploads, charges, uploaded };
+        }
+
+        const failed = await run("left", mirrored, "hand-fail-sync", "sync");
+        expect(failed.row?.status).toBe("failed");
+        expect(failed.row?.error).toBe(
+            "Handedness check failed: requested left, G-code is a physical right foot. File not delivered.",
+        );
+        expect(failed.uploads).toBe(0);
+        expect(failed.charges).toBe(0);
+        expect(failed.row?.gcodeStorageKey ?? null).toBeNull();
+
+        const jobFailed = await run("left", mirrored, "hand-fail-job", "job");
+        expect(jobFailed.row?.status).toBe("failed");
+        expect(jobFailed.row?.error).toBe(failed.row?.error);
+        expect(jobFailed.uploads).toBe(0);
+        expect(jobFailed.charges).toBe(0);
+
+        const delivered = await run("left", trueLeft, "hand-ok-left", "sync");
+        expect(delivered.row?.status).toBe("succeeded");
+        expect(delivered.uploads).toBe(1);
+        expect(delivered.charges).toBe(1);
+        expect(delivered.uploaded).toBe(trueLeft);
+
+        const rightFoot = await run("right", mirrored, "hand-ok-right", "job");
+        expect(rightFoot.row?.status).toBe("succeeded");
+        expect(rightFoot.uploads).toBe(1);
+        expect(rightFoot.uploaded).toBe(mirrored);
     });
 });
 

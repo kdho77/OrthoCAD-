@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { gunzipSync } from "node:zlib";
+
 import { describe, expect, test } from "@rstest/core";
 import { TRPCError } from "@trpc/server";
 
@@ -11,6 +15,8 @@ import {
 import { HARDNESS_TO_INFILL_PCT } from "../../../shared/print-recipe/hardness-to-infill-pct.js";
 import type { PrintRecipeV1 } from "../../../shared/print-recipe/print-recipe.js";
 import { VERTEXSLICE_REGIONAL_3MF_ENV } from "../../../shared/vertexslice-regional-3mf.js";
+import { GcodeHandednessError } from "../lib/gcode-handedness.js";
+import { passingBeltGcode } from "../lib/gcode-handedness-sample.js";
 import { buildManufacturingTempStlKey } from "../lib/storage.js";
 import { sliceWithVertexSlice } from "../lib/vertexslice-client.js";
 import {
@@ -51,7 +57,7 @@ function exportIo(
         downloadStl: async () => new Uint8Array([1, 2, 3]),
         sliceWithVertexSlice: async () => {
             calls.push("slice");
-            return "G1 X0\n";
+            return passingBeltGcode("left");
         },
         callManufacture: async () => {
             throw new Error("session gcode must not call Python");
@@ -142,7 +148,7 @@ describe("session generateSolid", () => {
                 infill = request.infillDensityPct;
                 expect(request.profileId).toBe("apex-v2-insole-95a");
                 expect(request.material).toBe("apex_core");
-                return "G1 X0\n";
+                return passingBeltGcode("left");
             },
             callManufacture: async () => {
                 throw new Error("session gcode must not call Python");
@@ -333,6 +339,7 @@ describe("session generateSolid", () => {
                 regionalKey,
                 stl,
                 threeMf,
+                foot: "right",
                 onSlice: (request) => {
                     sliceRequest = {
                         filename: request.filename,
@@ -430,6 +437,78 @@ describe("session generateSolid", () => {
             delete process.env.VERTEXSLICE_API_KEY;
         }
     });
+
+    test("mirrored VertexSlice G-code fails before charge or upload; a true left is returned", async () => {
+        const mirrored = gunzipSync(
+            readFileSync(
+                resolve(
+                    __dirname,
+                    "../../../../tests/fixtures/handedness/main_left_request_toe_first.gcode.gz",
+                ),
+            ),
+        ).toString("utf8");
+        const trueLeft = gunzipSync(
+            readFileSync(
+                resolve(__dirname, "../../../../tests/fixtures/handedness/true_left_toe_first.gcode.gz"),
+            ),
+        ).toString("utf8");
+        const stlKey = buildManufacturingTempStlKey(userId, 9, "dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+        const baseIo = (): SessionManufacturingIo => ({
+            assertActiveLicense: async () => undefined,
+            verifyDesignOwner: async () => undefined,
+            getTokenBalance: async () => 9,
+            storageAvailable: () => true,
+            signedDownloadUrl: async () => "https://files.example.test/temp.stl",
+            downloadStl: async () => new Uint8Array([1, 2, 3]),
+            sliceWithVertexSlice: async () => mirrored,
+            callManufacture: async () => {
+                throw new Error("session gcode must not call Python");
+            },
+            charge: async () => {
+                throw new Error("charge must not run");
+            },
+            uploadOutput: async () => {
+                throw new Error("upload must not run");
+            },
+            signedOutputUrl: async () => "https://files.example.test/out.gcode",
+            updateExportStorage: async () => undefined,
+            updateProductionGcode: async () => undefined,
+            archiveSourceStl: async () => undefined,
+            deleteTemp: async () => undefined,
+        });
+        const input = {
+            designId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            side: "left" as const,
+            presetId: "apex-v2-insole-95a",
+            stlStorageKey: stlKey,
+            outputType: "gcode" as const,
+            beltAngleDeg: 45,
+            printRecipe: recipe,
+            material: "apex_core",
+        };
+        await expect(runSessionGenerateSolid({ userId, ip: null, input, io: baseIo() })).rejects.toThrow(
+            GcodeHandednessError,
+        );
+        await expect(runSessionGenerateSolid({ userId, ip: null, input, io: baseIo() })).rejects.toThrow(
+            "Handedness check failed: requested left, G-code is a physical right foot. File not delivered.",
+        );
+
+        let uploaded = "";
+        const okIo = baseIo();
+        okIo.sliceWithVertexSlice = async () => trueLeft;
+        okIo.charge = async (charge) => ({
+            productionId: "33333333-3333-4333-8333-333333333333",
+            exportId: "44444444-4444-4444-8444-444444444444",
+            balance: 6,
+            jobId: charge.p_job_id,
+        });
+        okIo.uploadOutput = async (_key, bytes) => {
+            uploaded = bytes.toString("utf8");
+        };
+        const result = await runSessionGenerateSolid({ userId, ip: null, input, io: okIo });
+        expect(result.ok).toBe(true);
+        expect(uploaded).toBe(trueLeft);
+    });
 });
 
 function sessionIo(args: {
@@ -437,6 +516,7 @@ function sessionIo(args: {
     regionalKey: string;
     stl: Uint8Array;
     threeMf: Uint8Array;
+    foot?: "left" | "right";
     onSlice: (request: {
         filename?: string;
         model: Uint8Array;
@@ -456,7 +536,7 @@ function sessionIo(args: {
         downloadStl: async (url) => (url.includes("regional") ? args.threeMf : args.stl),
         sliceWithVertexSlice: async (request) => {
             args.onSlice(request);
-            return "G1 X0\n";
+            return passingBeltGcode(args.foot ?? "left");
         },
         callManufacture: async () => {
             throw new Error("session gcode must not call Python");
