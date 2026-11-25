@@ -303,6 +303,11 @@ function newPending(input: CadProductionInsert, now: Date): CadProductionRow {
     };
 }
 
+function checkpointIsStoredStl(row: CadProductionRow): boolean {
+    const checkpoint = readSliceCheckpoint(row.error);
+    return checkpoint != null && checkpoint.rematerialized !== true;
+}
+
 export async function claimProduction(
     store: CadProductionStore,
     input: CadProductionInsert,
@@ -311,20 +316,29 @@ export async function claimProduction(
 ): Promise<{ row: CadProductionRow; run: boolean }> {
     const forceNewSlice = options?.forceNewSlice === true;
     let claimInput = input;
+    const canonicalForStl = await store.findByKey(input.idempotencyKey);
+    // A checkpoint that was not written after a loft in this production is a stored STL.
+    // The next generate starts a new run and lofts. The old row keeps its checkpoint.
+    const replacedStoredStl = canonicalForStl != null && checkpointIsStoredStl(canonicalForStl);
+    if (replacedStoredStl) {
+        claimInput = { ...input, idempotencyKey: freshSliceIdempotencyKey(input.idempotencyKey) };
+    }
     if (forceNewSlice) {
-        const canonical = await store.findByKey(input.idempotencyKey);
+        const canonical = await store.findByKey(claimInput.idempotencyKey);
         if (canonical && isInFlight(canonical, now)) {
             return { row: canonical, run: false };
         }
-        const inFlight = await store.findInFlightByFingerprint(
-            input.designId,
-            input.side,
-            input.presetId,
-            input.settingsFingerprint,
-            now,
-        );
-        if (inFlight) {
-            return { row: inFlight, run: false };
+        if (!replacedStoredStl) {
+            const inFlight = await store.findInFlightByFingerprint(
+                input.designId,
+                input.side,
+                input.presetId,
+                input.settingsFingerprint,
+                now,
+            );
+            if (inFlight) {
+                return { row: inFlight, run: false };
+            }
         }
         if (canonical?.status === "succeeded") {
             claimInput = { ...input, idempotencyKey: freshSliceIdempotencyKey(input.idempotencyKey) };

@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 
 import {
+    installedSavedDesign,
     manufacturingStlIdentityPayload,
     STALE_PRE52_BELT_MANUFACTURING_STL,
 } from "../../../shared/manufacturing-stl-identity.js";
@@ -34,14 +35,22 @@ function stableStringify(value: unknown): string {
  */
 export function manufacturingStlRunIdentity(input: {
     side: "left" | "right";
-    savedDesign: unknown;
+    savedDesign?: unknown;
+    /** Text the caller composed. Included even when the saved snapshot is read from the open design. */
+    composedText?: string;
     beltPrint: boolean;
     placementVersion?: number;
     orthocadVersion?: string;
     slicerVersion?: string;
 }): string {
+    const savedDesign = input.savedDesign !== undefined ? input.savedDesign : installedSavedDesign();
     return createHash("sha256")
-        .update(stableStringify(manufacturingStlIdentityPayload(input)))
+        .update(
+            stableStringify({
+                ...manufacturingStlIdentityPayload({ ...input, savedDesign }),
+                composedText: input.composedText ?? null,
+            }),
+        )
         .digest("hex");
 }
 

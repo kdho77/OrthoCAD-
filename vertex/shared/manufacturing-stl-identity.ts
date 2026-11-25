@@ -52,6 +52,17 @@ export const STALE_PRE52_BELT_MANUFACTURING_STL = {
     sizeBytes: 9045484,
 } as const;
 
+const INSTALLED_SAVED_DESIGN = "__orthocadInstalledSavedDesign";
+
+/** The design a person currently has open. Identity probes read this when no snapshot is passed. */
+export function publishInstalledSavedDesign(design: unknown): void {
+    (globalThis as Record<string, unknown>)[INSTALLED_SAVED_DESIGN] = design;
+}
+
+export function installedSavedDesign(): unknown {
+    return (globalThis as Record<string, unknown>)[INSTALLED_SAVED_DESIGN];
+}
+
 export function normalizeStorageEtag(etag: string | null | undefined): string {
     return etag?.replaceAll('"', "").trim().toLowerCase() ?? "";
 }
