@@ -211,68 +211,66 @@ function pairPoints(font: readonly Xy[], observed: readonly Xy[], pose: PoseMatc
     return { src, dst };
 }
 
-export function gradeFootGcode(
-    gcodePath: string,
-    groups: readonly TextGlyphGroup[],
-    letters: string,
-    printDirection: PrintDirection,
-): FootGrade {
-    const extracted = extractGlyphLoopsFromFile(gcodePath);
-    const failures: string[] = [];
+/**
+ * Score letter loops already in the #442 physical reading frame.
+ * Same assignment, linear map, hook, and 2.5 mm match as the G-code grader.
+ * Thresholds are not loosened.
+ */
+export function gradeObservedLoops(input: {
+    observed: readonly (readonly Xy[])[];
+    groups: readonly TextGlyphGroup[];
+    letters: string;
+    printDirection: PrintDirection;
+    heelHigh: boolean | null;
+    heelDeltaMm: number;
+    preambleFailures?: readonly string[];
+    yCutMm?: number;
+    wallSegments?: number;
+    arcMoves?: number;
+    types?: Record<string, number>;
+}): FootGrade {
+    const failures = [...(input.preambleFailures ?? [])];
     const empty: LinearMap = { a: 0, b: 0, c: 0, d: 0, det: 0 };
-    const heelHigh = extracted.heel.heelHigh;
     const base = {
-        yCutMm: extracted.yCutMm,
-        wallSegments: extracted.wallSegments,
-        arcMoves: extracted.arcMoves,
-        loopCount: extracted.loops.length,
+        yCutMm: input.yCutMm ?? 0,
+        wallSegments: input.wallSegments ?? 0,
+        arcMoves: input.arcMoves ?? 0,
+        loopCount: input.observed.length,
         sequence: "",
-        letters,
+        letters: input.letters,
         map: empty,
         advanceMm: 0,
         hookLeft: false,
         matchMm: Number.POSITIVE_INFINITY,
-        types: extracted.types,
-        printDirection,
-        heelHigh,
-        heelDeltaMm: extracted.heel.deltaMm,
+        types: input.types ?? {},
+        printDirection: input.printDirection,
+        heelHigh: input.heelHigh,
+        heelDeltaMm: input.heelDeltaMm,
     };
-    if (heelHigh === null) {
-        failures.push("heel end inconclusive (hand_classify end-fifth rule)");
-    } else if (printDirection === "heel_first" && heelHigh) {
-        failures.push("file is not heel-first (heel cup is not at the low zt end)");
-    } else if (printDirection === "toe_first" && !heelHigh) {
-        failures.push("file is not toe-first (heel cup is at the low zt end)");
-    }
-    if (groups.length !== letters.length) {
-        failures.push(`font groups ${groups.length} (need ${letters.length})`);
+    if (input.groups.length !== input.letters.length) {
+        failures.push(`font groups ${input.groups.length} (need ${input.letters.length})`);
         return { pass: false, failures, ...base };
     }
-    if (extracted.wallSegments < 50) {
-        failures.push(`wall extrusions ${extracted.wallSegments} (G-code has no ;TYPE:Wall sections)`);
-    }
-    // Glyph groups are not emitted in string order. JABBOUR is drawn toward +x,
-    // so reading order is increasing font-x.
-    const fontLoops = groups
+    const fontLoops = input.groups
         .map((group) => group.outer.map((p) => ({ x: p.x, y: p.y })))
         .sort((a, b) => centroid(a).x - centroid(b).x);
-    const observed = extracted.loops.map((loop) => loop.points);
+    const observed = input.observed;
     const assigned = assignLoops(fontLoops, observed);
     if (!assigned) {
-        failures.push(`letter walls ${observed.length} (need ${letters.length} for ${letters})`);
+        failures.push(`letter walls ${observed.length} (need ${input.letters.length} for ${input.letters})`);
         return { pass: false, failures, ...base };
     }
-    const matchMm = assigned.cost / letters.length;
+    const matchMm = assigned.cost / input.letters.length;
     const src: Xy[] = [];
     const dst: Xy[] = [];
     const sequence: string[] = assigned.index.map((loopIndex, letterIndex) => ({
-        letter: letters[letterIndex]!,
+        letter: input.letters[letterIndex]!,
         x: centroid(observed[loopIndex]!).x,
         loopIndex,
     }));
     sequence.sort((a, b) => a.x - b.x);
     const sequenceText = sequence.map((row) => row.letter).join("");
-    for (let i = 0; i < letters.length; i++) {
+    for (let i = 0; i < input.letters.length; i++) {
         const loop = observed[assigned.index[i]!]!;
         const pose = bestPose(fontLoops[i]!, loop);
         const paired = pairPoints(fontLoops[i]!, loop, pose);
@@ -281,12 +279,12 @@ export function gradeFootGcode(
     }
     const map = fitLinear(src, dst);
     const jay = centroid(observed[assigned.index[0]!]!);
-    const last = centroid(observed[assigned.index[letters.length - 1]!]!);
+    const last = centroid(observed[assigned.index[input.letters.length - 1]!]!);
     const advanceMm = last.x - jay.x;
     const hookLeft = jHookExtendsLeft(observed[assigned.index[0]!]!);
     const graded = gradeChirality({ map, advanceMm, hookLeft });
-    if (sequenceText !== letters) {
-        graded.failures.push(`glyph sequence ${sequenceText} (need ${letters} toward +reading-x)`);
+    if (sequenceText !== input.letters) {
+        graded.failures.push(`glyph sequence ${sequenceText} (need ${input.letters} toward +reading-x)`);
     }
     if (!(matchMm < 2.5)) {
         graded.failures.push(`glyph match ${matchMm.toFixed(2)} mm (wall is not the font outline)`);
@@ -301,6 +299,42 @@ export function gradeFootGcode(
         hookLeft,
         matchMm,
     };
+}
+
+export function gradeFootGcode(
+    gcodePath: string,
+    groups: readonly TextGlyphGroup[],
+    letters: string,
+    printDirection: PrintDirection,
+): FootGrade {
+    const extracted = extractGlyphLoopsFromFile(gcodePath);
+    const failures: string[] = [];
+    const heelHigh = extracted.heel.heelHigh;
+    if (heelHigh === null) {
+        failures.push("heel end inconclusive (hand_classify end-fifth rule)");
+    } else if (printDirection === "heel_first" && heelHigh) {
+        failures.push("file is not heel-first (heel cup is not at the low zt end)");
+    } else if (printDirection === "toe_first" && !heelHigh) {
+        failures.push("file is not toe-first (heel cup is at the low zt end)");
+    }
+    if (extracted.wallSegments < 50) {
+        failures.push(`wall extrusions ${extracted.wallSegments} (G-code has no ;TYPE:Wall sections)`);
+    }
+    // Glyph groups are not emitted in string order. JABBOUR is drawn toward +x,
+    // so reading order is increasing font-x.
+    return gradeObservedLoops({
+        observed: extracted.loops.map((loop) => loop.points),
+        groups,
+        letters,
+        printDirection,
+        heelHigh,
+        heelDeltaMm: extracted.heel.deltaMm,
+        preambleFailures: failures,
+        yCutMm: extracted.yCutMm,
+        wallSegments: extracted.wallSegments,
+        arcMoves: extracted.arcMoves,
+        types: extracted.types,
+    });
 }
 
 export function gradeReport(grade: FootGrade): Record<string, number | string | boolean> {

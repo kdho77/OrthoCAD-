@@ -50,6 +50,7 @@ cells=(
   "apex_light toe_first"
   "apex_light heel_first"
 )
+if [ -z "${NAME_PLANTAR_SKIP_BASE:-}" ]; then
 for cell in "${cells[@]}"; do
   material=${cell%% *}
   direction=${cell##* }
@@ -76,4 +77,33 @@ for cell in "${cells[@]}"; do
     fi
   done
 done
+fi
+# Production-path variants. apex_core toe-first only. The six #442 cells above
+# are unchanged. Absent directory skips this block.
+if [ -n "${NAME_PLANTAR_VARIANT_STL_DIR:-}" ]; then
+  for spec in 0d3db1c0 ad1e0cc5; do
+    for side in left right; do
+      stl="$NAME_PLANTAR_VARIANT_STL_DIR/${spec}_${side}.stl"
+      out="$GCODE_DIR/${spec}_apex_core_toe_first_${side}.gcode"
+      test -s "$stl"
+      t0=$(date +%s)
+      code=$(curl -sS -m 900 -w '%{http_code}' -D "$out.hdr" -o "$out" \
+        -F profile_id=apex-v2-insole-95a \
+        -F "model=@${stl}" \
+        -F wall_loops=1 \
+        -F infill_density=26 \
+        -F print_direction=toe_first \
+        -F belt_insole_place=true \
+        -F material=apex_core \
+        "http://127.0.0.1:$port/v1/slice") || code=000
+      bytes=$(stat -c %s "$out" 2>/dev/null || echo 0)
+      echo "$spec apex_core toe_first $side http=$code seconds=$(( $(date +%s) - t0 )) bytes=$bytes"
+      if [ "$code" != 200 ] || [ ! -s "$out" ]; then
+        echo "slice failed: $spec apex_core toe_first $side"
+        "${DOCKER[@]}" logs "$name" 2>&1 | tail -40
+        exit 1
+      fi
+    done
+  done
+fi
 echo SLICES_OK
