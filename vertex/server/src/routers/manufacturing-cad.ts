@@ -27,13 +27,14 @@ import {
     type CadOperatorPrincipal,
 } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
-import { buildHeadlessFinalizedFoot, buildHeadlessRegional3mf } from "../lib/finalized-mesh-runner.js";
+import { buildHeadlessRegional3mf } from "../lib/finalized-mesh-runner.js";
 import {
     envelopeWithLoftTextMarking,
     hasActiveComposedTextMarking,
     patientDisplayName,
     resolveProductionTextMarking,
 } from "../lib/integration-text-marking.js";
+import { buildHeadlessFinalizedFootOffThread } from "../lib/loft-worker-pool.js";
 import {
     assertLockedVertexSliceProfile,
     inspectManufacturingStl,
@@ -255,9 +256,11 @@ export async function materializeCadOperatorStl(args: {
     regional3mf: { bytes: Uint8Array; regionCount: number } | null;
 }> {
     // Belt and central-fab both loft the saved design. A caller storage key is not the mesh.
-    let foot: Awaited<ReturnType<typeof buildHeadlessFinalizedFoot>>;
+    // Off the request thread so a pair's other foot can loft, and so a slice poll
+    // is not stalled until this loft reaches its first await.
+    let foot: Awaited<ReturnType<typeof buildHeadlessFinalizedFootOffThread>>;
     try {
-        foot = await buildHeadlessFinalizedFoot({
+        foot = await buildHeadlessFinalizedFootOffThread({
             settingsJson: args.centralFabSolid
                 ? settingsForCentralFabSolid(args.plan.settingsJson)
                 : args.plan.settingsJson,

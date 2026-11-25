@@ -1,4 +1,4 @@
-// orthocad-mcp-http-bundle 6a2b7a0dbb5d7bc8c00d0ed9f27b9de4f45bff3147e5a6e7b1b6862b926c7ee4
+// orthocad-mcp-http-bundle f5cd11e3561e1a9ee552e98028e61f3a05b982075a283a249849079f8aa005db
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -9670,8 +9670,12 @@ __export(manufacturing_client_exports, {
 function createManufacturingClient(options) {
   const trpc = createTRPCClient({
     links: [
+      // maxItems 1: a pair is two requests. One batched request shares a
+      // Vercel instance, so the left loft blocks the right enqueue response
+      // and the client hits its timeout while both rows are already queued.
       httpBatchLink({
         url: options.trpcUrl,
+        maxItems: 1,
         transformer: dist_default,
         headers: () => ({
           authorization: `Bearer ${options.cadOperatorKey}`
