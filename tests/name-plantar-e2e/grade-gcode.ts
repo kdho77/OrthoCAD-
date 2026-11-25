@@ -7,6 +7,8 @@ import { extractGlyphLoopsFromFile } from "./gcode-glyphs";
 import { fitLinear, gradeChirality, jHookExtendsLeft, type LinearMap } from "./measure";
 import type { Xy } from "./reading-view";
 
+export type PrintDirection = "toe_first" | "heel_first";
+
 export interface FootGrade {
     pass: boolean;
     failures: string[];
@@ -21,6 +23,9 @@ export interface FootGrade {
     hookLeft: boolean;
     matchMm: number;
     types: Record<string, number>;
+    printDirection: PrintDirection;
+    heelHigh: boolean | null;
+    heelDeltaMm: number;
 }
 
 const POSES: Array<readonly [number, number]> = [
@@ -210,10 +215,12 @@ export function gradeFootGcode(
     gcodePath: string,
     groups: readonly TextGlyphGroup[],
     letters: string,
+    printDirection: PrintDirection,
 ): FootGrade {
     const extracted = extractGlyphLoopsFromFile(gcodePath);
     const failures: string[] = [];
     const empty: LinearMap = { a: 0, b: 0, c: 0, d: 0, det: 0 };
+    const heelHigh = extracted.heel.heelHigh;
     const base = {
         yCutMm: extracted.yCutMm,
         wallSegments: extracted.wallSegments,
@@ -226,7 +233,17 @@ export function gradeFootGcode(
         hookLeft: false,
         matchMm: Number.POSITIVE_INFINITY,
         types: extracted.types,
+        printDirection,
+        heelHigh,
+        heelDeltaMm: extracted.heel.deltaMm,
     };
+    if (heelHigh === null) {
+        failures.push("heel end inconclusive (hand_classify end-fifth rule)");
+    } else if (printDirection === "heel_first" && heelHigh) {
+        failures.push("file is not heel-first (heel cup is not at the low zt end)");
+    } else if (printDirection === "toe_first" && !heelHigh) {
+        failures.push("file is not toe-first (heel cup is at the low zt end)");
+    }
     if (groups.length !== letters.length) {
         failures.push(`font groups ${groups.length} (need ${letters.length})`);
         return { pass: false, failures, ...base };
@@ -301,6 +318,9 @@ export function gradeReport(grade: FootGrade): Record<string, number | string | 
         loops: grade.loopCount,
         matchMm: Number(grade.matchMm.toFixed(3)),
         wallSegments: grade.wallSegments,
+        printDirection: grade.printDirection,
+        heelHigh: grade.heelHigh === null ? "inconclusive" : grade.heelHigh,
+        heelDeltaMm: Number(grade.heelDeltaMm.toFixed(2)),
         failures: grade.failures.join("; "),
     };
 }

@@ -1,6 +1,6 @@
 # Plantar-name proofs
 
-Measured on the real path: SAMPLE_Top, both feet, default bottom text marking, engrave, `JABBOUR`, `buildPrinterFootManufacturingStl(side, true)`, then VertexSlice `POST /v1/slice` (`profile_id=apex-v2-insole-95a`, `material=apex_core`, `wall_loops=1`, `infill_density=26`, `print_direction=toe_first`, `belt_insole_place=true`). The gateway wait is the `slice_all.sh` overlay (`SLICE_GATEWAY_TIMEOUT_S` 260 → 880). That overlay does not change G-code.
+Measured on the real path: SAMPLE_Top, both feet, default bottom text marking, engrave, `JABBOUR`, `buildPrinterFootManufacturingStl(side, true)`, then VertexSlice `POST /v1/slice` (`profile_id=apex-v2-insole-95a`, `wall_loops=1`, `infill_density=26`, `belt_insole_place=true`). The six cells are `apex_core` toe-first, `apex_light` toe-first, and `apex_light` heel-first, each for both feet. `apex_core` ignores a heel-first request, so heel-first uses `apex_light`, whose chain honours `print_direction`. The gateway wait is the `slice_all.sh` overlay (`SLICE_GATEWAY_TIMEOUT_S` 260 → 880). That overlay does not change G-code.
 
 Thresholds are the #435 gate (`21b9bef3`): `a > 0.5`, `d > 0.5`, `|b| < 0.15`, `|c| < 0.15`, advance `> 20` mm, J hook lower-left (`1.5` / `0.75` mm), sequence `JABBOUR` toward `+reading-x`. They were not loosened.
 
@@ -28,6 +28,49 @@ CI rebuilds that image, so its image id can differ. The pin is the live digest p
 | right | 138790 | 138870 |
 
 Headers are `OrthoCAD single-foot left` and `OrthoCAD single-foot right`.
+
+Heel end is the `hand_classify.py` rule: the end fifth (by `zt = Z - Y`) whose max Y is larger. Heel-first requires that cup at low `zt` (`heelHigh` false). Toe-first requires it at high `zt`. The reading frame follows the detected heel, so a 180° belt turn does not change a correct name, and a mirror still fails.
+
+## Fix image, #373 placement — PASS all 6
+
+| cell | a | d | det | advance | hook | sequence | heelHigh | delta mm |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: |
+| apex_core toe_first left | 0.996253 | 0.896343 | 0.893208 | 71.756 | true | JABBOUR | true | 19.25 |
+| apex_core toe_first right | 0.990663 | 0.632140 | 0.626365 | 71.914 | true | JABBOUR | true | 19.25 |
+| apex_light toe_first left | 0.993407 | 0.880991 | 0.875459 | 71.780 | true | JABBOUR | true | 19.25 |
+| apex_light toe_first right | 0.952585 | 0.869302 | 0.828070 | 71.991 | true | JABBOUR | true | 19.25 |
+| apex_light heel_first left | 0.993032 | 0.903779 | 0.897756 | 72.038 | true | JABBOUR | false | -21.54 |
+| apex_light heel_first right | 0.965049 | 0.629986 | 0.607951 | 72.622 | true | JABBOUR | false | -21.51 |
+
+Slice seconds / bytes: core toe L 9 / 3624505, R 9 / 3662976; light toe L 170 / 3484912, R 189 / 3449999; light heel L 306 / 3572422, R 338 / 3527843.
+
+## Live image, #373 placement — FAIL all 6
+
+The print direction is real (toe-first `heelHigh` true, heel-first `heelHigh` false). The name is mirrored: cap upside down, hook not lower-left, sequence still `JABBOUR`.
+
+| cell | a | d | det | advance | hook | sequence | heelHigh | delta mm |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: |
+| apex_core toe_first left | 0.996024 | -0.919165 | -0.915944 | 71.768 | false | JABBOUR | true | 19.25 |
+| apex_core toe_first right | 0.982397 | -0.904079 | -0.888430 | 71.884 | false | JABBOUR | true | 19.28 |
+| apex_light toe_first left | 0.996274 | -0.915783 | -0.912770 | 71.770 | false | JABBOUR | true | 19.25 |
+| apex_light toe_first right | 0.990925 | -0.633111 | -0.627924 | 71.894 | false | JABBOUR | true | 19.28 |
+| apex_light heel_first left | 0.959528 | -0.910246 | -0.873645 | 72.003 | false | JABBOUR | false | -21.55 |
+| apex_light heel_first right | 0.960643 | -0.899176 | -0.863953 | 72.803 | false | JABBOUR | false | -21.54 |
+
+Slice seconds / bytes: core toe L 11 / 3667318, R 11 / 3626409; light toe L 195 / 3481269, R 202 / 3507821; light heel L 354 / 3559194, R 284 / 3558806.
+
+## #436 placement, fix image — FAIL all 6
+
+`ad2ada11` glyph-X negation applied locally in `place.ts`, then reverted. Not in this diff. Local STL counts: left 137222/137302, right 138806/138886. Five cells are a left-right mirror (sequence `RUOBBAJ`, `a < 0`). `apex_light` heel-first right found no letter holes (0 loops through `Y <= 1.6`), so it fails closed. Direction is still heel-first (`heelHigh` false, delta -21.54).
+
+| cell | a | d | det | advance | hook | sequence | heelHigh |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| apex_core toe_first left | -0.956561 | 0.615969 | -0.589597 | -71.824 | false | RUOBBAJ | true |
+| apex_core toe_first right | -0.959912 | 0.880505 | -0.845448 | -71.571 | false | RUOBBAJ | true |
+| apex_light toe_first left | -0.954275 | 0.619475 | -0.591409 | -71.787 | false | RUOBBAJ | true |
+| apex_light toe_first right | -0.957793 | 0.847076 | -0.811653 | -71.605 | false | RUOBBAJ | true |
+| apex_light heel_first left | -0.953818 | 0.602952 | -0.574938 | -72.139 | false | RUOBBAJ | false |
+| apex_light heel_first right | 0 | 0 | 0 | 0 | false | (no letters) | false |
 
 ## P1 — #373 placement, live image — FAIL both feet
 

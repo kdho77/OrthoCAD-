@@ -4,7 +4,7 @@
 // closed wall on the belt-contact layers. Infill is not part of the outline.
 
 import { readFileSync } from "node:fs";
-import { physicalReadingView, type Xy, type Xyz } from "./reading-view";
+import { type HeelEnd, heelEnd, physicalReadingView, type Xy, type Xyz } from "./reading-view";
 import { BELT_CONTACT_Y_MM, ENGRAVE_Y_MM } from "./thresholds";
 
 interface Segment {
@@ -25,6 +25,7 @@ export interface GlyphExtract {
     wallSegments: number;
     arcMoves: number;
     types: Record<string, number>;
+    heel: HeelEnd;
 }
 
 const WORD = /([XYZEFIJK])(-?\d*\.?\d+(?:e[-+]?\d+)?)/gi;
@@ -170,12 +171,14 @@ function sampleArc(start: Xyz, end: Xyz, iOff: number, jOff: number, clockwise: 
  * belt; joining neighbors along the belt leaves the letter grooves as enclosed
  * holes about one cap tall.
  */
-function letterHoles(segments: Segment[], yCut: number): Xy[][] {
+function letterHoles(segments: Segment[], yCut: number, heelHigh: boolean): Xy[][] {
     const kept = segments.filter(
         (s) => s.a.y <= yCut && s.b.y <= yCut && Math.hypot(s.a.x - s.b.x, s.a.z - s.b.z) > 0.15,
     );
     if (kept.length < 20) return [];
-    const viewed = kept.map((s) => [physicalReadingView(s.a), physicalReadingView(s.b)] as const);
+    const viewed = kept.map(
+        (s) => [physicalReadingView(s.a, heelHigh), physicalReadingView(s.b, heelHigh)] as const,
+    );
     let minX = Number.POSITIVE_INFINITY;
     let minY = Number.POSITIVE_INFINITY;
     let maxX = Number.NEGATIVE_INFINITY;
@@ -289,12 +292,14 @@ function letterHoles(segments: Segment[], yCut: number): Xy[][] {
 export function extractGlyphLoops(gcode: string): GlyphExtract {
     const parsed = parseSegments(gcode);
     const wallSegments = parsed.segments.filter((s) => s.wall).length;
+    const heel = heelEnd(parsed.segments.map((s) => s.b));
+    const heelHigh = heel.heelHigh !== false;
     const cuts = [BELT_CONTACT_Y_MM, ENGRAVE_Y_MM];
     let chosen = cuts[0]!;
     let loops: Xy[][] = [];
     for (const cut of cuts) {
         chosen = cut;
-        loops = letterHoles(parsed.segments, cut);
+        loops = letterHoles(parsed.segments, cut, heelHigh);
         if (loops.length >= 7) break;
     }
     return {
@@ -303,6 +308,7 @@ export function extractGlyphLoops(gcode: string): GlyphExtract {
         wallSegments,
         arcMoves: parsed.arcMoves,
         types: parsed.types,
+        heel,
     };
 }
 

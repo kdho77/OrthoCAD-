@@ -128,7 +128,7 @@ jobs:
           build_server .vertexslice-fix vertexslice-server:plantar-fix "$FIX_SHA" || missing
           publish vertexslice-server:plantar-fix
 
-      - name: Slice both feet
+      - name: Slice both feet in both print directions
         run: |
           mkdir -p "$RUNNER_TEMP/name-plantar/gcode"
           bash tests/name-plantar-e2e/slice-feet.sh \

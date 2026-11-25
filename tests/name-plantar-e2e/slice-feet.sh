@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Slice both manufacturing STLs through the real VertexSlice server.
 # usage: slice-feet.sh IMAGE STL_DIR GCODE_DIR
+# Writes six files: apex_core toe-first and apex_light toe-first and heel-first,
+# each for left and right. apex_core ignores a heel-first request, so heel-first
+# is sliced on apex_light, whose chain honours print_direction.
 # IMAGE is a docker ref. The gateway-timeout overlay matches
 # VertexSlice validation/seam_fuse_gates/slice_all.sh: it only lengthens the
 # wait. It does not change G-code. The repo image and production are not modified.
@@ -41,26 +44,36 @@ if [ "$ok" != 1 ]; then
   "${DOCKER[@]}" logs "$name" | tail -30
   exit 1
 fi
-for side in left right; do
-  stl="$STL_DIR/${side}.stl"
-  out="$GCODE_DIR/${side}.gcode"
-  test -s "$stl"
-  t0=$(date +%s)
-  code=$(curl -sS -m 900 -w '%{http_code}' -D "$out.hdr" -o "$out" \
-    -F profile_id=apex-v2-insole-95a \
-    -F "model=@${stl}" \
-    -F wall_loops=1 \
-    -F infill_density=26 \
-    -F print_direction=toe_first \
-    -F belt_insole_place=true \
-    -F material=apex_core \
-    "http://127.0.0.1:$port/v1/slice") || code=000
-  bytes=$(stat -c %s "$out" 2>/dev/null || echo 0)
-  echo "$side http=$code seconds=$(( $(date +%s) - t0 )) bytes=$bytes"
-  if [ "$code" != 200 ] || [ ! -s "$out" ]; then
-    echo "slice failed: $side"
-    "${DOCKER[@]}" logs "$name" 2>&1 | tail -40
-    exit 1
-  fi
+# material print_direction. apex_core is toe-first only.
+cells=(
+  "apex_core toe_first"
+  "apex_light toe_first"
+  "apex_light heel_first"
+)
+for cell in "${cells[@]}"; do
+  material=${cell%% *}
+  direction=${cell##* }
+  for side in left right; do
+    stl="$STL_DIR/${side}.stl"
+    out="$GCODE_DIR/${material}_${direction}_${side}.gcode"
+    test -s "$stl"
+    t0=$(date +%s)
+    code=$(curl -sS -m 900 -w '%{http_code}' -D "$out.hdr" -o "$out" \
+      -F profile_id=apex-v2-insole-95a \
+      -F "model=@${stl}" \
+      -F wall_loops=1 \
+      -F infill_density=26 \
+      -F "print_direction=${direction}" \
+      -F belt_insole_place=true \
+      -F "material=${material}" \
+      "http://127.0.0.1:$port/v1/slice") || code=000
+    bytes=$(stat -c %s "$out" 2>/dev/null || echo 0)
+    echo "$material $direction $side http=$code seconds=$(( $(date +%s) - t0 )) bytes=$bytes"
+    if [ "$code" != 200 ] || [ ! -s "$out" ]; then
+      echo "slice failed: $material $direction $side"
+      "${DOCKER[@]}" logs "$name" 2>&1 | tail -40
+      exit 1
+    fi
+  done
 done
 echo SLICES_OK

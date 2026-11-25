@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from "@rstest/core";
 import { fitLinear, gradeChirality, jHookExtendsLeft } from "./measure";
-import { physicalReadingView } from "./reading-view";
+import { heelEnd, physicalReadingView, type Xyz } from "./reading-view";
 import {
     BELT_CONTACT_Y_MM,
     ENGRAVE_Y_MM,
@@ -40,6 +40,43 @@ describe("plantar reading frame", () => {
         const low = physicalReadingView({ x: 140, y: 0.2, z: 40.2 });
         const high = physicalReadingView({ x: 140, y: 4, z: 44 });
         expect(low.x).toBeCloseTo(high.x, 6);
+    });
+
+    test("a 180 degree belt turn keeps the reading and a mirror flips it", () => {
+        const point = { x: 12, y: 0.2, z: 40 };
+        const upright = physicalReadingView(point, true);
+        // Heel-first turns the part 180° on the belt: X and zt both flip.
+        const zt = point.z - point.y;
+        const turned = physicalReadingView({ x: -point.x, y: point.y, z: point.y - zt }, false);
+        expect(turned.x).toBeCloseTo(upright.x, 6);
+        expect(turned.y).toBeCloseTo(upright.y, 6);
+        const mirrored = physicalReadingView({ ...point, x: -point.x }, true);
+        expect(mirrored.x).toBeCloseTo(upright.x, 6);
+        expect(mirrored.y).toBeCloseTo(-upright.y, 6);
+    });
+});
+
+describe("heel end follows hand_classify", () => {
+    function skin(heelAtHigh: boolean): Xyz[] {
+        const points: Xyz[] = [];
+        for (let z = 0; z <= 200; z += 2) {
+            for (const x of [-30, 30]) points.push({ x, y: 0.1, z });
+        }
+        const heelZ = heelAtHigh ? 190 : 10;
+        for (const x of [-20, 20]) {
+            for (let y = 1; y <= 14; y += 1) points.push({ x, y, z: heelZ });
+        }
+        return points;
+    }
+
+    test("the taller end fifth is the heel, and a 180 degree turn moves it to low zt", () => {
+        const toeFirst = heelEnd(skin(true));
+        expect(toeFirst.heelHigh).toBe(true);
+        expect(toeFirst.deltaMm).toBeGreaterThan(5);
+        const turned = skin(true).map((p) => ({ x: -p.x, y: p.y, z: p.y - (p.z - p.y) }));
+        const heelFirst = heelEnd(turned);
+        expect(heelFirst.heelHigh).toBe(false);
+        expect(heelFirst.deltaMm).toBeLessThan(-5);
     });
 });
 
