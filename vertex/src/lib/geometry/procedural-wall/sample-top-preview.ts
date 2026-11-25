@@ -168,7 +168,7 @@ function tagManufacturingSolid(geometry: BufferGeometry, fingerprint: string, fr
 }
 
 /** Leader is not applied here. Text runs once, and only when this mesh is not already engraved. */
-async function applyExportText(
+export async function applyExportText(
     geometry: BufferGeometry,
     options: ProceduralPreviewOptions & { mirrored?: boolean },
 ): Promise<BufferGeometry> {
