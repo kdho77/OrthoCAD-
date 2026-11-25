@@ -8,8 +8,11 @@ higher. This does not use the worker's glyph-loop fit, linear map, or J-hook tes
 
 Reading frame (PM, 2026-11-24): belt G-code is right-handed, X across the belt,
 Y height off the belt, Z along the belt. De-shear zt = Z - Y. From below, image
-right is -X and image up is +zt (heel), toe toward the viewer. A 90 degree turn
-puts the toe to the right and an upright cap toward +y.
+right is -X and image up is +zt when the heel cup is at high zt (toe-first).
+A 90 degree turn puts the toe to the right and an upright cap toward +y.
+Heel-first puts that cup at low zt; pass --heel-low so both axes flip together.
+Which end is the heel comes from the frozen hand_classify.py rule, not from
+this script. A left-right mirror flips only one axis, so the upright template loses.
 """
 
 from __future__ import annotations
@@ -85,23 +88,29 @@ def extrusions(path: Path) -> list[tuple[float, float, float, float, float, floa
     return segs
 
 
-def reading_xy(x: float, y: float, z: float) -> tuple[float, float]:
-    """Toe to +x, upright cap to +y."""
+def reading_xy(x: float, y: float, z: float, heel_high: bool) -> tuple[float, float]:
+    """Toe to +x, upright cap to +y.
+
+    Toe-first (heel at high zt): from below, image right is -X and image up is
+    +zt, then a 90 degree turn puts the toe to the right. Heel-first is that
+    camera after a 180 degree belt turn, so both axes flip together. A mirror
+    flips only one, and the upright template then loses.
+    """
     zt = z - y
-    image_x = -x
-    image_y = zt
-    return (-image_y, image_x)
+    if heel_high:
+        return (-zt, -x)
+    return (zt, x)
 
 
-def raster_belt(path: Path) -> tuple[np.ndarray, float, float]:
+def raster_belt(path: Path, heel_high: bool) -> tuple[np.ndarray, float, float]:
     segs = extrusions(path)
     pts: list[tuple[float, float]] = []
     kept: list[tuple[float, float, float, float]] = []
     for x0, y0, z0, x1, y1, z1 in segs:
         if min(y0, y1) > BELT_Y_MM:
             continue
-        a = reading_xy(x0, y0, z0)
-        b = reading_xy(x1, y1, z1)
+        a = reading_xy(x0, y0, z0, heel_high)
+        b = reading_xy(x1, y1, z1, heel_high)
         kept.append((a[0], a[1], b[0], b[1]))
         pts.append(a)
         pts.append(b)
@@ -256,8 +265,8 @@ def _save_peak(image: np.ndarray, template: np.ndarray, score: np.ndarray, tag: 
     img.save(out / f"{tag}.png")
 
 
-def grade_file(path: Path, upright: np.ndarray, mirrored: np.ndarray) -> dict:
-    image, ox, oy = raster_belt(path)
+def grade_file(path: Path, upright: np.ndarray, mirrored: np.ndarray, heel_high: bool) -> dict:
+    image, ox, oy = raster_belt(path, heel_high)
     up = ncc_map(image, upright)
     mir = ncc_map(image, mirrored)
     if os.environ.get("PLANTAR_DEBUG"):
@@ -272,6 +281,7 @@ def grade_file(path: Path, upright: np.ndarray, mirrored: np.ndarray) -> dict:
     reads = up_peak >= mir_peak + MARGIN and up_peak >= MIN_SCORE
     return {
         "file": path.name,
+        "heel_high": heel_high,
         "upright": round(up_peak, 4),
         "mirror": round(mir_peak, 4),
         "delta": round(up_peak - mir_peak, 4),
@@ -282,15 +292,25 @@ def grade_file(path: Path, upright: np.ndarray, mirrored: np.ndarray) -> dict:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2:
-        print("usage: plantar_raster_correlation.py LEFT.gcode RIGHT.gcode", file=sys.stderr)
+    args = argv[1:]
+    heel_high = True
+    if args and args[0] == "--heel-low":
+        heel_high = False
+        args = args[1:]
+    elif args and args[0] == "--heel-high":
+        args = args[1:]
+    if not args:
+        print(
+            "usage: plantar_raster_correlation.py [--heel-high|--heel-low] FILE.gcode ...",
+            file=sys.stderr,
+        )
         return 2
     upright = render_word(False)
     mirrored = render_word(True)
     # The two templates are not the same picture.
     if upright.shape != mirrored.shape or np.allclose(upright, mirrored):
         raise SystemExit("JABBOUR rendering is symmetric; correlation cannot judge chirality")
-    rows = [grade_file(Path(p), upright, mirrored) for p in argv[1:]]
+    rows = [grade_file(Path(p), upright, mirrored, heel_high) for p in args]
     both = all(row["reads_correctly"] for row in rows)
     print(json.dumps({"pass": both, "feet": rows}, indent=2))
     return 0 if both else 1
