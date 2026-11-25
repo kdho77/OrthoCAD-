@@ -127,17 +127,13 @@ export function parsePatientNameForExport(patientName?: string | null): {
 }
 
 /**
- * Map design internal laterality to clinic physical L/R for filenames and VO attach.
- * SAMPLE_Top is physically right while stock primary side stays internal left.
+ * Filename and VO side for a foot. The label is the requested side for every base.
+ * SAMPLE_Top is a true left mesh, so it does not swap L/R.
  */
 export function physicalSideLabel(
     internalSide: "left" | "right",
-    base?: ExportFilenameBase | null,
+    _base?: ExportFilenameBase | null,
 ): "left" | "right" {
-    const assetId = base?.assetId?.trim();
-    if (assetId === SAMPLE_TOP_TEMPLATE_ASSET_ID) {
-        return internalSide === "left" ? "right" : "left";
-    }
     return internalSide;
 }
 
