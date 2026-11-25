@@ -15,6 +15,7 @@ import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, PlacedElement, Side } from "@/types";
+import { markingWithComposedText } from "../../../../shared/bottom-text-marking";
 import { designSettingsEnvelope } from "../../../../shared/design-settings";
 import {
     assertLoftedFootMesh,
@@ -225,6 +226,78 @@ describe("design 2e781189 headless export", () => {
             expect(createHash("sha256").update(Buffer.from(head.stl)).digest("hex")).toMatch(
                 /^[a-f0-9]{64}$/,
             );
+        }
+    }, 600_000);
+});
+
+/**
+ * Production generate composes the patient line into textMarking per side
+ * (envelopeWithLoftTextMarking), then lofts. Short narrow right feet take the
+ * post-loft mirror. Both sizes must engrave. The left foot is the UI solid.
+ */
+describe("production right-foot plantar name", () => {
+    test("short narrow right feet engrave the composed name and the left foot matches UI", async () => {
+        const sampleTop = await prime();
+        const font = readFileSync(FONT);
+        const fontBytes = font.buffer.slice(font.byteOffset, font.byteOffset + font.byteLength);
+        const elementsBaseDir = resolve(process.cwd(), "vertex/public/elements");
+        for (const usMenSize of [6, 8] as const) {
+            const design = design2e781189();
+            design.usMenSize = usMenSize;
+            const layout = insoleLayoutFromDesign(design);
+            design.elements = (["left", "right"] as const).map((side) => {
+                const pose = defaultElementPose("met_pad", side, layout.lengthMm, layout.widthMm);
+                return {
+                    id: `met-${side}`,
+                    kind: "met_pad" as const,
+                    side,
+                    position: pose.position,
+                    rotationDeg: pose.rotationDeg,
+                    scale: pose.scale,
+                    heightMm: pose.heightMm,
+                };
+            });
+            const hashes: Partial<Record<Side, string>> = {};
+            for (const side of ["left", "right"] as const) {
+                const composed = markingWithComposedText(
+                    { ...defaultTextMarking("bottom"), text: "", addPatientName: true, feet: "both" },
+                    side,
+                    MARK,
+                );
+                expect(composed.text, `${usMenSize} ${side} composed`).toBe(MARK);
+                const saved = { ...design, textMarking: composed };
+                install(saved);
+                const ui = await buildExportStl(side, { exportMode: "manufacturing", beltPrint: true });
+                const head = await buildFinalizedFootFromSavedSettings({
+                    settingsJson: designSettingsEnvelope(saved as unknown as Record<string, unknown>),
+                    side,
+                    sampleTopBytes: sampleTop,
+                    includeLeader: true,
+                    fontBytes,
+                    elementsBaseDir,
+                });
+                const uiPos = stlPositions(ui);
+                const headPos = stlPositions(head.stl);
+                const uiTris = triangleCount(ui);
+                // The production STL adds the leader and the foot stamp. The solid
+                // underneath is the UI export: same triangle class, same outline.
+                expect(
+                    Math.abs(head.solidTriangles - uiTris) / uiTris,
+                    `US M${usMenSize} ${side} triangle class`,
+                ).toBeLessThan(0.02);
+                expect(
+                    meshOutlineIoU(headPos, outlineFrom(uiPos)),
+                    `US M${usMenSize} ${side} vs UI`,
+                ).toBeGreaterThanOrEqual(0.98);
+                const headHash = createHash("sha256").update(Buffer.from(head.stl)).digest("hex");
+                const fresh = await sampleTopFromArrayBuffer(sampleTop.slice(0));
+                const foot = await composedFootRim(fresh, saved, side);
+                fresh.dispose();
+                expect(plantarNameEngraved(headPos, foot), `US M${usMenSize} ${side} name`).toBe(true);
+                expect(plantarNameEngraved(uiPos, foot), `US M${usMenSize} ${side} UI name`).toBe(true);
+                hashes[side] = headHash;
+            }
+            expect(hashes.left, `US M${usMenSize} feet differ`).not.toBe(hashes.right);
         }
     }, 600_000);
 });
