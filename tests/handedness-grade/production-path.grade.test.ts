@@ -1,4 +1,4 @@
-// Independent grade of PR #439 (head c365eaf9). Run this file on that head.
+// Independent grade of PR #439 (head 34f1cb38). Run this file on that head.
 // It is not product code. It drives the production functions that upload G-code.
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -524,6 +524,26 @@ describe("independent production-path grade", () => {
         const source = readFileSync(resolve(ROOT, "vertex/src/lib/cnc/order-sides.ts"), "utf8");
         expect(source).not.toContain('=== "left" ? "right"');
         expect(source).toContain("physicalSideLabel");
+    });
+
+    test("CAD-operator material tests feed a real foot and do not stub the guard", () => {
+        const materialTest = readFileSync(
+            resolve(ROOT, "vertex/server/src/trpc-cad-operator.test.ts"),
+            "utf8",
+        );
+        expect(materialTest).not.toContain("assertGcodeHandedness");
+        expect(materialTest).not.toContain("detectGcodeFoot");
+        expect(materialTest).not.toContain("gcode-handedness");
+        expect(materialTest).not.toContain("G1 X0");
+        expect(materialTest).toContain(
+            'side === "right" ? "main_left_request_toe_first" : "true_left_toe_first"',
+        );
+        expect(materialTest).toContain("gcodeForRequestedSide(side, selected)");
+        expect(materialTest).toContain("runCadOperatorGenerateRequest");
+        const guard = readFileSync(resolve(ROOT, "vertex/server/src/lib/gcode-handedness.ts"), "utf8");
+        expect(guard).toContain('scored.foot = medialOnPlus === heelHigh ? "left" : "right"');
+        expect(guard).toContain("if (detected.foot === requestedSide) return;");
+        expect(guard).not.toContain("return requestedSide");
     });
 
     test("a 3 MB G-code is classified in under 1.5 s", () => {
