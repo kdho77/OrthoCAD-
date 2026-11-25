@@ -38,6 +38,8 @@ const PINNED_HEAVY = {
     "tests/synced-bottom-shell-field.test.ts": 6,
     // Production-path name gates loft the variant matrix (~6 min). Off the s1 shard.
     "tests/name-plantar-e2e/production-path-gates.test.ts": 1,
+    // One UI loft plus the second generate. Keep it off the production-path shard.
+    "tests/name-plantar-e2e/production-rematerialize.test.ts": 3,
 };
 
 const files = listUnitTestFiles();

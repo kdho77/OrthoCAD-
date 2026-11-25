@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 //
-// t2699u: the stored manufacturing STL, the slice checkpoint, and
-// manufacturingSolidIdentity must change when any saved-design field changes.
-// A no-op control still reuses. This does not loosen the plantar-name gates.
+// t2699u on the UI preview cache: manufacturingSolidIdentity must change when
+// any saved-design field changes. A no-op control still reuses that cache.
+// Production generate_gcode is a separate gate: it never reuses a stored STL.
+// This does not loosen the plantar-name gates.
 
 import { existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";

@@ -119,21 +119,31 @@ Named rows on BASE:
 
 The other reused paths are `productType`, `method`, the rest of `printRecipe`, `sizeSystem`, `corrections.unit`, every `corrections.right.*` field, `shapeFinish.right.*`, `shapeFinish.linked`, the unmirrored `base.*` strings, `customPrefabId`, `customPrefabName`, and the right-foot `paired.*` fields. Left-foot corrections, shell thickness, and the text-marking leaves already miss. That split is the allowlist: `manufacturingSolidIdentity` copies the active side's field and a fixed set of option keys. It does not hash the saved design. The gate stays `expect(reused).toEqual([])`. It was not loosened.
 
+## Production rematerialize (t2704u)
+
+Locked rule, quoted: "Production box should always work just like a person." (t2704u, 12:16 AM MT 11/25.) This supersedes reuse-by-identity on the production path. `generate_gcode` must rematerialize from the saved design on every call. It must not read a stored manufacturing STL or a checkpoint STL. The UI preview cache stays on the t2699u table above.
+
+```bash
+npx rstest tests/name-plantar-e2e/production-rematerialize.test.ts
+```
+
+Exit 1. Duration about 19 s. The first call lofts design `0d3db1c0` left through `buildFinalizedFootFromSavedSettings` (the UI export) and slices `ui-export-<sha256>`. The slice parks a checkpoint whose `stlStorageKey` is `stored-8f5dc451de66dbba8f8521e046a9e4af`. The second `beginCadOperatorProduction` on the same design does not call materialize. `loftHashes` length is 1, need 2. `decideClaim` returns reuse while that checkpoint is on the row (`sliceJobStillOwned`). `executeCadOperatorProduction` assigns `stlStorageKey = checkpoint.stlStorageKey` and skips materialize. The gate was not loosened.
+
 ## Worker
 
-Candidate: draft PR #449, head `929a94d26516cd69580e50d352f7e02fa5e8c396`, title "Never reuse a stale manufacturing STL for a belt slice". Not edited. The frozen tests were copied into a detached worktree of that SHA and run there. `place.ts` has no diff against BASE. The loft reconstruction is unchanged. The sample-top edit stamps `beltPrint` and `placementVersion` onto the cached solid after the existing preview rebuild.
+Candidate: draft PR #449, updated head `710ddab5a0a10bc6eb4ad7b7b83e1354953b2c84`, title "Never reuse a stale manufacturing STL for a belt slice". Not edited. The frozen tests were copied into a detached worktree of that SHA and run there. `place.ts` has no diff. The sample-top edit only stamps `beltPrint` and `placementVersion` on the cached solid after the existing preview rebuild. The engrave path is unchanged.
 
-| Gate | Grade on `929a94d2` |
+| Gate | Grade on `710ddab5` |
 | --- | --- |
-| G1 | FAIL overall, same as the BASE no-op. The engrave path and `place.ts` are unchanged, so US M 11.5 right still has no letter walls. `ad1e0cc5` and the #442 control stay the passing cells. Thresholds were not moved. |
+| G1 | FAIL overall, same as the BASE no-op. US M 11.5 right still has no letter walls. `ad1e0cc5` and the #442 control stay the passing cells. Thresholds were not moved. |
 | G2 | PASS on the prior live slices. This SHA does not change `detectGcodeFoot` or foot geometry. |
 | G3 | PASS on the prior lofts. Sole, depth 0.6, placementU 0.32, and the frozen non-text hashes are the BASE measurements. No seam or surface edit. |
 | G4 | PASS as a rejection. This SHA does not set `xSign = -1`. The frozen blanket-X assertions still reject that change. |
-| t2699u | FAIL |
+| t2699u (`manufacturingSolidIdentity`) | PASS on the stored-STL column. No-op reuses. All 121 rows miss `peekManufacturingSolid`, including hardness, shoe width, both feet's heel lift and arch, elements, sinks, text, placement, `beltPrint`, and the geometry version. The identity record now includes `savedDesignIdentity` of the stripped saved design. |
+| t2699u frozen assertion | FAIL. The table's combined `expect(reused).toEqual([])` is red: 119 rows. Those rows miss the stored STL and fail only the checkpoint probe. The probe calls `manufacturingStlRunIdentity` with `composedText` and no `savedDesign`. This SHA ignores `composedText` and hashes `savedDesign`, so that call stays constant. `beltManufacturingStlIdentity` does pass the saved design. The assertion was not edited to match the new argument. |
+| t2704u | FAIL. Two consecutive generates on the same design loft once (`loftHashes` length 1, need 2). `storedManufacturingStlReusable` still returns the checkpoint when `placementVersion` is current, and `executeCadOperatorProduction` still slices `checkpoint.stlStorageKey` without materialize. The stale eTag `8f5dc451` is refused only when `readStoredStl` returns those bytes. The reuse path is still keyed. It was not deleted. |
 
-t2699u detail. No-op on that SHA passed. The table failed: 118 of 121 rows still reuse. `manufacturingSolidIdentity` is still a hand-picked record. It now includes `beltPrint` and `placementVersion`, so the `beltPrint` row misses, and `geometryVersion` already missed. `manufacturingStlRunIdentity` / `beltManufacturingStlIdentity` hashes only `placementVersion`, `beltPrint`, `side`, and `composedText` (the saved `textMarking.text` string). That is a field allowlist.
-
-On `929a94d2` the stored STL itself is still reused for `printRecipe.defaultHardness`, `shoeWidth`, `thicknessMm`, `corrections.linked`, `corrections.right.heelLiftMm`, `corrections.right.archHeightMm`, `elements`, and `sinkStyloidThicken`. The checkpoint key still matches after `usMenSize`, `corrections.left.heelLiftMm`, `corrections.left.archHeightMm`, `textMarking.placementU`, and `sinks` even when the solid fingerprint changes. The only rows that miss both the stored STL and the checkpoint key are `textMarking.text`, `beltPrint`, and `slicerOrthoCadVersion`. A single-field mutation still reuses a stored STL. Grade is fail. Gates were not loosened to match this SHA.
+Gates were not loosened to match this SHA. The earlier grade of `929a94d2` is superseded by this head.
 
 ## Residuals
 
@@ -142,6 +152,7 @@ On `929a94d2` the stored STL itself is still reused for `printRecipe.defaultHard
 - Non-text hashes are not frozen for the five feet that have no letters.
 - Unit CI on this branch is red because the frozen G1 assert fails on BASE. That is the no-op. The plantar-name workflow's new variant step is red for the same cell. The original six-cell step is unchanged and runs first.
 - The full-design identity table is also red on BASE: 68 saved-design rows still reuse the stored STL. That is the t2699u freeze. The no-op row in that file passes.
+- t2704u is red on BASE: the second `generate_gcode` on the same design does not loft. The checkpoint STL is still the resume path.
 
 ## Rule compliance
 
@@ -207,14 +218,20 @@ PASS. Logs were filtered before they were kept. The only string engraved is `JAB
 
 **R7:** `do not change worker code. Grade only. Outer surface, seams, layer-change placement, and surface quality may NOT change. The S1-PRELOFT 0.5×inset cap may NOT change. A blanket xSign=-1 on every beltPrint path is a rejected bad change, not an acceptable fix.`
 
-PASS. The worker branch was not edited. A detached worktree of `929a94d2` was used only to run the frozen tests. No surface, seam, layer, or S1-PRELOFT edit. Blanket X flip is rejected: G1 fails on the #442 control and on `ad1e0cc5`.
+PASS. The worker branch was not edited. Detached worktrees of `929a94d2` and `710ddab5` were used only to run the frozen tests. No surface, seam, layer, or S1-PRELOFT edit. Blanket X flip is rejected: G1 fails on the #442 control and on `ad1e0cc5`.
 
 **t2699u (11:20 PM America/Denver):** `Must change if the design has any changes.`
 
 PASS for this gates branch as a freeze. `full-design-identity.test.ts` walks every persisted field of the saved design, plus `beltPrint` and the OrthoCAD geometry version. The no-op reuses the stored STL. The table fails on BASE because `manufacturingSolidIdentity` is a hand-picked field list: hardness, width, the other foot's heel lift and arch, elements, and `beltPrint` still reuse. The assertion stays empty-reuse. It was not loosened.
 
-FAIL for worker `929a94d2`. Its stored-STL identity and `manufacturingStlRunIdentity` are field allowlists. Mutating hardness, shoe width, right heel lift, right arch, elements, or `sinkStyloidThicken` still reuses the stored STL. The checkpoint key still matches after a left heel, arch, size, placement, or sink change. See the Worker section.
+The stored-STL column of that table on worker `710ddab5` misses for every field. The combined assertion stays red. See the Worker section. The assertion was not loosened.
 
-**ONE (this pass):** `Freeze the full-design identity gate (table test + no-op reuse control) and add the t2699u rule-compliance report entry, then grade the worker if a PR exists. Do not merge. Do not change product code. No attach, no order-status change, no blanket xSign=-1.`
+**t2704u (12:16 AM MT 11/25):** `Production box should always work just like a person.`
 
-PASS for the freeze, this entry, and the grade of #449. Not merged. Product code unchanged. No attach, no order-status change, no blanket `xSign=-1`.
+PASS for this gates branch as a freeze. `production-rematerialize.test.ts` runs two production `generate_gcode` calls on the same saved design. Both must loft through the UI export, and neither may slice a stored or checkpoint STL, including eTag `8f5dc451`. On BASE the second call does not loft. The assertion stays at two lofts.
+
+FAIL for worker `710ddab5`. The second call does not loft. `storedManufacturingStlReusable` still keys a current checkpoint, and `executeCadOperatorProduction` still assigns `checkpoint.stlStorageKey` and skips materialize.
+
+**ONE (this pass):** `Add to the frozen gates on #450: production generate_gcode never reads a stored manufacturing/checkpoint STL (two consecutive calls both rematerialize) and output matches the UI export path; then grade worker PR #449 against all gates.`
+
+PASS for the new gate and the grade of #449 head `710ddab5`. Not merged. Product code unchanged. No attach, no order-status change, no blanket `xSign=-1`.

@@ -49,4 +49,6 @@ NAME_PLANTAR_GCODE_DIR=/tmp/name-plantar/gcode \
 
 Non-text hashes for feet that already engrave a readable name are in `frozen-surface-hashes.ts`. A blanket X flip of every belt path fails G1 on the #442 control and on `ad1e0cc5`. Measured identity on BASE is in `validation/name_chirality_gates/RESULTS.md`.
 
-`full-design-identity.test.ts` is the t2699u gate. An unchanged saved design reuses the stored manufacturing STL. Mutating any one persisted field, `beltPrint`, or the OrthoCAD geometry version must miss that STL, the checkpoint fingerprint, and `manufacturingSolidIdentity`. The table fails on BASE where the identity is still a hand-picked field list.
+`full-design-identity.test.ts` is the t2699u gate for the UI preview cache (`manufacturingSolidIdentity`). An unchanged saved design reuses that cache. Mutating any one persisted field, `beltPrint`, or the OrthoCAD geometry version must miss it. The table fails on BASE where the identity is still a hand-picked field list.
+
+`production-rematerialize.test.ts` is t2704u. Two consecutive production `generate_gcode` calls on the same saved design both loft through the UI export, and neither call slices a stored or checkpoint STL (including eTag `8f5dc451`). The second call on BASE still resumes the checkpoint, so this gate fails closed.
