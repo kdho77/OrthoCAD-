@@ -200,6 +200,13 @@ async function applyExportText(
         return marked;
     } catch (e) {
         if (!(e instanceof TextMarkingError)) throw e;
+        // Belt manufacturing must not upload a foot whose saved marking did not engrave.
+        if (options.beltPrint) {
+            throw new Error(
+                `Manufacturing mesh is missing the plantar name (${e.message}). Refusing to upload.`,
+                { cause: e },
+            );
+        }
         geometry.userData = { ...geometry.userData, textFitError: e.message, textGuide };
         return geometry;
     }
@@ -432,6 +439,36 @@ function reflectPlanY(points: PolyPoint[], y0: number): PolyPoint[] {
 }
 
 /**
+ * mirrorGeometry reflects vertices and not the loft's plan frames. Text reads
+ * outlineRing from userData; a stale left outline makes the right sole look
+ * off z=0 and the name is dropped.
+ */
+function mirrorSolidPlanFrames(geometry: BufferGeometry): void {
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    if (!box) return;
+    const y0 = (box.min.y + box.max.y) / 2;
+    const flip = <T extends { y: number }>(p: T): T => ({ ...p, y: 2 * y0 - p.y });
+    const ud = { ...geometry.userData } as {
+        outlineRing?: Array<{ x: number; y: number; z?: number }>;
+        bottomOutlineB?: Array<{ x: number; y: number; z?: number }>;
+        filletRing?: Array<{ x: number; y: number; z?: number }>;
+        wallFrames?: Array<{ R: { x: number; y: number; z: number }; sideSign?: number }>;
+    };
+    if (ud.outlineRing) ud.outlineRing = ud.outlineRing.map(flip);
+    if (ud.bottomOutlineB) ud.bottomOutlineB = ud.bottomOutlineB.map(flip);
+    if (ud.filletRing) ud.filletRing = ud.filletRing.map(flip);
+    if (ud.wallFrames) {
+        ud.wallFrames = ud.wallFrames.map((fr) => ({
+            ...fr,
+            R: flip(fr.R),
+            sideSign: fr.sideSign == null ? fr.sideSign : -fr.sideSign,
+        }));
+    }
+    geometry.userData = ud;
+}
+
+/**
  * The right field was built on the mirrored sheet. Drop mesh closures so the
  * left-frame loft rebuilds them from the unmirrored stock, and place elements
  * on the opposite side of the centre.
@@ -623,6 +660,7 @@ export async function reconstructProceduralPreview(
                         sourceField: leftFieldFromMirroredRight(options.sourceField),
                     });
                     const geometry = mirrorGeometry(leftPreview.geometry);
+                    mirrorSolidPlanFrames(geometry);
                     leftPreview.geometry.dispose();
                     return {
                         model,

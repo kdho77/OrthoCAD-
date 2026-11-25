@@ -9,8 +9,10 @@ import {
 } from "@/lib/geometry/element-assets/element-asset";
 import { manufacturingFingerprintForActiveExport } from "@/lib/geometry/export-geometry";
 import { binaryStlTriangleCount } from "@/lib/geometry/leader-block";
+import { assertProductionFootStl } from "@/lib/geometry/procedural-wall/manufacturing-foot-guard";
 import { resetManufacturingSolidCache } from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
 import {
+    loadSampleTopGeometry,
     primeSampleTopGeometry,
     resetSampleTopGeometryCache,
     sampleTopFromArrayBuffer,
@@ -104,6 +106,17 @@ export async function buildFinalizedFootFromSavedDesign(input: {
     }
     if (includeLeader && built.uploadTriangles <= built.solidTriangles) {
         throw new SavedDesignMeshError(`Leader was not applied once on the ${input.side} foot`);
+    }
+    const reference = await loadSampleTopGeometry();
+    try {
+        await assertProductionFootStl({
+            stl: built.stl,
+            design: input.design,
+            side: input.side,
+            native: reference,
+        });
+    } finally {
+        reference.dispose();
     }
     return {
         side: input.side,
