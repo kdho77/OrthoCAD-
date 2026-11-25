@@ -1,0 +1,21 @@
+{
+    "transpiled": 100,
+    "nftFiles": 98,
+    "interesting": [
+        "server/src/routers/manufacturing-cad.js",
+        "server/src/lib/finalized-mesh-runner.js",
+        "server/src/lib/loft-worker-pool.js",
+        "server/src/lib/canonical-export-loft.js"
+    ],
+    "workerInNft": false,
+    "warnings": [
+        "Failed to resolve dependency \"@trpc/server/adapters/fetch\":\nCannot find module '@trpc/server/adapters/fetch' loaded from /tmp/grader-fn-sim/api/trpc/[[...trpc]].js",
+        "Failed to resolve dependency \"@supabase/supabase-js\":\nCannot find module '@supabase/supabase-js' loaded from /tmp/grader-fn-sim/server/src/context.js",
+        "Failed to resolve dependency \"@trpc/server\":\nCannot find module '@trpc/server' loaded from /tmp/grader-fn-sim/server/src/trpc.js",
+        "Failed to resolve dependency \"superjson\":\nCannot find module 'superjson' loaded from /tmp/grader-fn-sim/server/src/trpc.js",
+        "Failed to resolve dependency \"@prisma/client\":\nCannot find module '@prisma/client' loaded from /tmp/grader-fn-sim/server/src/lib/prisma.js",
+        "Failed to resolve dependency \"@trpc/server\":\nCannot find module '@trpc/server' loaded from /tmp/grader-fn-sim/server/src/routers/admin.js",
+        "Failed to resolve dependency \"zod\":\nCannot find module 'zod' loaded from /tmp/grader-fn-sim/server/src/routers/admin.js",
+        "Failed to resolve dependency \"@trpc/server\":\nCannot find module '@trpc/server' loaded from /tmp/grader-fn-sim/server/src/routers/ai.js"
+    ]
+}

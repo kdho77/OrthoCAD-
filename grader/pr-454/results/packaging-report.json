@@ -1,0 +1,50 @@
+{
+    "sha": "6f54ab84ff457dbcf70976cfaa14b327d1bae759",
+    "includeFiles": "{public/{fonts,elements}/**,server/src/lib/loft-off-thread.mjs}",
+    "includeFilesNamesWorker": true,
+    "workerFileExists": true,
+    "apiMaxDuration": true,
+    "memoryInRepo": false,
+    "vercelJsonSetsMemory": false,
+    "platformDefaultMb": 2048,
+    "platformDefaultNote": "Vercel Functions default is 2 GB / 1 vCPU. vercel.json cannot set memory. This repo does not set it. A dashboard override was not visible without Vercel auth.",
+    "staticGraph": {
+        "files": 100,
+        "workerInStaticGraph": false,
+        "runnerInStaticGraph": true,
+        "poolInStaticGraph": true,
+        "canonicalInStaticGraph": true
+    },
+    "nft": {
+        "error": null,
+        "fileCount": 2,
+        "workerIncluded": false,
+        "runnerIncluded": false,
+        "canonicalIncluded": false,
+        "poolIncluded": false
+    },
+    "poolHasInProcessFallback": false,
+    "cadCallsOffThread": true,
+    "cadCallsInProcess": false,
+    "changedFiles": [
+        "ci/unit-test-shards.json",
+        "packages/mcp/src/clients/manufacturing-client.ts",
+        "packages/mcp/test/production-poll.test.ts",
+        "scripts/ci/generate-unit-test-shards.mjs",
+        "vertex/server/src/lib/cad-operator-pair-parallel.test.ts",
+        "vertex/server/src/lib/loft-off-thread.mjs",
+        "vertex/server/src/lib/loft-worker-pool.ts",
+        "vertex/server/src/lib/pair-loft-byte-identity.mjs",
+        "vertex/server/src/lib/pair-loft-byte-identity.test.ts",
+        "vertex/server/src/orthocad-mcp.bundled.mjs",
+        "vertex/server/src/routers/manufacturing-cad.ts",
+        "vertex/server/src/trpc-cad-operator.test.ts",
+        "vertex/vercel.json"
+    ],
+    "forbiddenPathHits": [],
+    "deployment": {
+        "accessible": false,
+        "status": 403,
+        "note": "deployment API refused without a token; function file list not readable"
+    }
+}
