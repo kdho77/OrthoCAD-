@@ -310,6 +310,151 @@ describe("production right-foot plantar name", () => {
     }, 600_000);
 });
 
+/**
+ * Design ffcfa6f9. US men 6.5, medium, corrections 0, no elements, thickness 2,
+ * printing_solid, apex-belt Hard. Synthetic name; counters are A, D, and R.
+ * Headless belt export runs assertExactManifold inside the planar engrave and
+ * refuses the upload when that check throws.
+ */
+const MAAR_NAME = "MANDIS KAAR";
+
+function designFfcfa6f9(): DesignState {
+    const design = createDesignWithStockPlaceholder();
+    design.method = "printing_solid";
+    design.pattern = "full_contact";
+    design.thicknessMm = 2;
+    design.sizeSystem = "us";
+    design.usMenSize = 6.5;
+    design.shoeWidth = "medium";
+    design.shoeWidthBySide = { left: "medium", right: "medium" };
+    design.elements = [];
+    design.shellThicknessMode = "zonal";
+    design.shellThicknessFfMm = 2;
+    design.shellThicknessMfMm = 2.5;
+    design.shellThicknessRfMm = 3;
+    design.shellThicknessBlendMm = 12;
+    design.corrections = {
+        ...design.corrections,
+        linked: true,
+        unit: "mm",
+        left: { ...design.corrections.left, archElongationMm: 0 },
+        right: { ...design.corrections.right, archElongationMm: 0 },
+    };
+    if (design.paired) {
+        design.paired = {
+            ...design.paired,
+            linked: false,
+            leftThicknessMm: 2,
+            rightThicknessMm: 2,
+            leftMethod: "printing_solid",
+            rightMethod: "printing_solid",
+        };
+    }
+    if (design.printRecipe) {
+        design.printRecipe = { ...design.printRecipe, defaultHardness: "Hard", profileId: "apex-belt-v2" };
+    }
+    if (design.shapeFinish) {
+        design.shapeFinish = { ...design.shapeFinish, linked: true };
+    }
+    return design;
+}
+
+/**
+ * Small closed loops in the z=0.6 floor are the open counters (A, D, R).
+ * A filled counter has no inner loop.
+ */
+function engraveCounterLoops(positions: Float64Array): number {
+    const zOf = (i: number) => positions[i * 3 + 2] ?? 0;
+    const xy = (i: number) => `${(positions[i * 3] ?? 0).toFixed(3)},${(positions[i * 3 + 1] ?? 0).toFixed(3)}`;
+    const next = new Map<string, string[]>();
+    const nTri = positions.length / 9;
+    const edgeCount = new Map<string, number>();
+    const undirected = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let t = 0; t < nTri; t++) {
+        const ids = [t * 3, t * 3 + 1, t * 3 + 2];
+        if (ids.some((i) => zOf(i) < 0.55 || zOf(i) > 0.65)) continue;
+        const keys = ids.map(xy);
+        for (let e = 0; e < 3; e++) {
+            const k = undirected(keys[e]!, keys[(e + 1) % 3]!);
+            edgeCount.set(k, (edgeCount.get(k) ?? 0) + 1);
+        }
+    }
+    for (const [k, n] of edgeCount) {
+        if (n !== 1) continue;
+        const [a, b] = k.split("|");
+        if (!a || !b) continue;
+        const list = next.get(a) ?? [];
+        list.push(b);
+        next.set(a, list);
+        const back = next.get(b) ?? [];
+        back.push(a);
+        next.set(b, back);
+    }
+    const used = new Set<string>();
+    let counters = 0;
+    for (const start of next.keys()) {
+        if (used.has(start)) continue;
+        const loop = [start];
+        used.add(start);
+        let prev = "";
+        let cur = start;
+        let guard = 0;
+        while (guard++ < next.size + 2) {
+            const opts = (next.get(cur) ?? []).filter((v) => v !== prev && !used.has(v));
+            if (!opts.length) break;
+            const nxt = opts[0]!;
+            if (nxt === start) break;
+            used.add(nxt);
+            loop.push(nxt);
+            prev = cur;
+            cur = nxt;
+        }
+        if (loop.length < 6) continue;
+        let area = 0;
+        for (let i = 0; i < loop.length; i++) {
+            const [ax, ay] = loop[i]!.split(",").map(Number);
+            const [bx, by] = loop[(i + 1) % loop.length]!.split(",").map(Number);
+            area += (ax ?? 0) * (by ?? 0) - (bx ?? 0) * (ay ?? 0);
+        }
+        const abs = Math.abs(area) * 0.5;
+        if (abs >= 0.4 && abs <= 30) counters++;
+    }
+    return counters;
+}
+
+describe("design ffcfa6f9 right plantar name", () => {
+    test("US M6.5 medium right foot engraves MANDIS KAAR as a manifold solid", async () => {
+        const sampleTop = await prime();
+        const font = readFileSync(FONT);
+        const fontBytes = font.buffer.slice(font.byteOffset, font.byteOffset + font.byteLength);
+        const elementsBaseDir = resolve(process.cwd(), "vertex/public/elements");
+        const design = designFfcfa6f9();
+        const composed = markingWithComposedText(
+            { ...defaultTextMarking("bottom"), text: "", addPatientName: true, feet: "both", capHeightUserSet: false },
+            "right",
+            MAAR_NAME,
+        );
+        expect(composed.text).toBe(MAAR_NAME);
+        const saved = { ...design, textMarking: composed };
+        install(saved);
+        const head = await buildFinalizedFootFromSavedSettings({
+            settingsJson: designSettingsEnvelope(saved as unknown as Record<string, unknown>),
+            side: "right",
+            sampleTopBytes: sampleTop,
+            includeLeader: true,
+            fontBytes,
+            elementsBaseDir,
+        });
+        const headPos = stlPositions(head.stl);
+        const fresh = await sampleTopFromArrayBuffer(sampleTop.slice(0));
+        const foot = await composedFootRim(fresh, saved, "right");
+        fresh.dispose();
+        expect(plantarNameEngraved(headPos, foot), "right plantar name").toBe(true);
+        // Three A's, one D, one R.
+        expect(engraveCounterLoops(headPos), "open counters A D R").toBeGreaterThanOrEqual(5);
+    }, 600_000);
+});
+
 function narrowestMidfoot(positions: Float64Array): number {
     let minX = Infinity;
     let maxX = -Infinity;
