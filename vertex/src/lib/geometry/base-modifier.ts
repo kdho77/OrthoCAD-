@@ -10,7 +10,7 @@ import {
     fullLengthWedgeActive,
 } from "@/lib/geometry/full-length-wedge";
 import type { SolidResult } from "@/lib/geometry/geometry-kernel";
-import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
+import { heelLiftDeltaAt, heelLiftMeshDeltaAt } from "@/lib/geometry/heel-lift";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
     forefootWidthPerSideDeltaMm,
@@ -2831,6 +2831,10 @@ export function applyBaseModifiers(
     // null and the displacement formula below is the previous expression.
     const heelLiftMm = field.corrections.heelLiftMm;
     const heelAt = heelLiftMm > 0 ? new Float32Array(count) : null;
+    // Height-field ramp is already inside `delta`. This is the extra raise that
+    // brings the composed mesh up to full H at the cup center. Zero when the
+    // linear ramp is already that amount (u = 0 and past the taper end).
+    const heelBoost = heelAt ? new Float32Array(count) : null;
     const heelTaper =
         heelAt !== null
             ? {
@@ -2864,7 +2868,11 @@ export function applyBaseModifiers(
         const widCoord = array[i * 3 + widthAxis]!;
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
-        if (heelAt) heelAt[i] = heelLiftDeltaAt(u, heelLiftMm, heelTaper);
+        if (heelAt && heelBoost) {
+            const linear = heelLiftDeltaAt(u, heelLiftMm, heelTaper);
+            heelAt[i] = linear;
+            heelBoost[i] = heelLiftMeshDeltaAt(u, heelLiftMm, heelTaper) - linear;
+        }
         let d = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
         if (wedgeActive) {
             const wD = regionalWedgeActive
@@ -3021,17 +3029,18 @@ export function applyBaseModifiers(
         // (the mute #331 documented for thickness), so corePart * w raises the rim
         // and leaves the seat — the cup deepens. Add heelLiftDeltaAt at weight 1
         // on that sheet and on the multi-mesh top range, and keep it out of
-        // corePart so a rim with w ≈ 1 is not lifted twice. heelLiftDeltaAt holds
-        // the full H through the cup center, so the seat (weight 1 here) and the
-        // rim at that station (the same function inside the height field, w ≈ 1)
-        // rise together.
+        // corePart so a rim with w ≈ 1 is not lifted twice. heelBoost is the
+        // difference between that ramp and full H through the cup center, added
+        // at the same weight, so the seat and the rim at that station rise
+        // together. The height field itself stays on the linear ramp.
         // Bottom-sheet verts stay at weight 0. heelPart === 0 keeps the previous
         // vertD expression, so heelLiftMm = 0 is byte-identical.
         let vertD: number;
         if (heelPart !== 0) {
             const heelW = isMultiMesh && topVertexCount > 0 ? (i < topVertexCount ? 1 : 0) : 1;
             const corePart = delta[i]! - wedgePart - heelPart;
-            vertD = corePart * w + wedgeScaled + heelPart * heelW;
+            const boost = heelBoost ? heelBoost[i]! : 0;
+            vertD = corePart * w + wedgeScaled + heelPart * heelW + boost * heelW;
         } else {
             const corePart = delta[i]! - wedgePart;
             vertD = corePart * w + wedgeScaled;

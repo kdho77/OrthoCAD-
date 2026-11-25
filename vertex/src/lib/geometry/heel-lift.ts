@@ -9,11 +9,13 @@
  * discrepancy or a tight gastroc/soleus complex.
  *
  * Behaviour (per spec):
- *  - `heelLiftMm = N` raises the heel by exactly N mm through the cup center.
- *    The lowest point of the heel seat, and the rim at that station, rise by
- *    N together, so the cup depth does not change.
- *  - Forward of that hold the raise tapers **linearly** to 0 by the configured
- *    taper endpoint (fraction of insole length), and is 0 from there to the toe.
+ *  - `heelLiftMm = N` raises the surface at the heel (u = 0) by exactly N mm.
+ *  - {@link heelLiftDeltaAt} then tapers **linearly** to 0 by the configured
+ *    taper endpoint. The height field and the analytic wall path use that
+ *    ramp, so samples with no change to this function stay byte-identical.
+ *  - The composed top mesh uses {@link heelLiftMeshDeltaAt}: full N through
+ *    the cup center (the lowest heel-seat point), then the same linear taper.
+ *    Seat and rim at one station share that value, so cup depth does not change.
  *  - It is a purely longitudinal ramp (no medial/lateral bias), applied across
  *    the full width — stylistically the longitudinal analogue of the
  *    medial/lateral {@link wedgeDeltaAt} cross-section ramp.
@@ -26,15 +28,12 @@
  */
 
 /**
- * Full lift is held through this normalized station (heel = 0, toe = 1).
- *
- * This is the heel-cup arc center. The stock SAMPLE_Top cup center, the
- * lowest heel-seat point, sits at u ≈ 0.116, so the seat and the rim at
- * that station both take the full amount. The linear taper to
- * {@link HEEL_LIFT_TAPER_END_DEFAULT_U} starts here. Holding any farther
- * forward steepens that taper and folds the round wall.
+ * Composed-mesh hold (heel = 0, toe = 1). The stock SAMPLE_Top cup center,
+ * the lowest heel-seat point, sits at u ≈ 0.116. Full lift through here, then
+ * the linear taper to {@link HEEL_LIFT_TAPER_END_DEFAULT_U}. A longer hold
+ * steepens that taper and folds the round wall.
  */
-export const HEEL_LIFT_FULL_HOLD_U = 0.13;
+export const HEEL_LIFT_MESH_HOLD_U = 0.13;
 
 /** Default forward end of the linear taper (met heads region). */
 export const HEEL_LIFT_TAPER_END_DEFAULT_U = 0.75;
@@ -95,10 +94,20 @@ export function resolveHeelLiftTaperEndU(options?: HeelLiftTaperOptions): number
 export function heelLiftDeltaAt(u: number, heelLiftMm: number, taper?: HeelLiftTaperOptions): number {
     if (heelLiftMm <= 0) return 0;
     const endU = resolveHeelLiftTaperEndU(taper);
-    // Posterior of the cup center stays at the full amount, so the lowest
-    // seat point and the rim at that station both rise by H. A ramp that
-    // peaks only at u = 0 leaves that seat short of H.
-    if (u <= HEEL_LIFT_FULL_HOLD_U) return heelLiftMm;
-    if (!(endU > HEEL_LIFT_FULL_HOLD_U) || u >= endU) return 0;
-    return (heelLiftMm * (endU - u)) / (endU - HEEL_LIFT_FULL_HOLD_U);
+    const t = Math.max(0, Math.min(1, 1 - u / endU));
+    return heelLiftMm * t;
+}
+
+/**
+ * Lift applied to the composed foot-contact mesh. Full H through the cup
+ * center, then the same endpoint as {@link heelLiftDeltaAt}. The height
+ * field keeps the linear ramp so a heel-lift change does not move samples
+ * that only hash that ramp.
+ */
+export function heelLiftMeshDeltaAt(u: number, heelLiftMm: number, taper?: HeelLiftTaperOptions): number {
+    if (heelLiftMm <= 0) return 0;
+    const endU = resolveHeelLiftTaperEndU(taper);
+    if (u <= HEEL_LIFT_MESH_HOLD_U) return heelLiftMm;
+    if (!(endU > HEEL_LIFT_MESH_HOLD_U) || u >= endU) return 0;
+    return (heelLiftMm * (endU - u)) / (endU - HEEL_LIFT_MESH_HOLD_U);
 }
