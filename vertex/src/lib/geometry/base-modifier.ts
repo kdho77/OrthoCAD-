@@ -10,6 +10,7 @@ import {
     fullLengthWedgeActive,
 } from "@/lib/geometry/full-length-wedge";
 import type { SolidResult } from "@/lib/geometry/geometry-kernel";
+import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
     forefootWidthPerSideDeltaMm,
@@ -2825,6 +2826,19 @@ export function applyBaseModifiers(
     //    either way (same u/vSigned → correctionDeltaAt).
     const delta = new Float32Array(count);
     const wedgeAt = wedgeActive ? new Float32Array(count) : null;
+    // Heel lift is inside correctionDeltaAt. Sample it beside the wedge so the
+    // apply pass can add heelLiftDeltaAt at full strength. Lift 0 leaves this
+    // null and the displacement formula below is the previous expression.
+    const heelLiftMm = field.corrections.heelLiftMm;
+    const heelAt = heelLiftMm > 0 ? new Float32Array(count) : null;
+    const heelTaper =
+        heelAt !== null
+            ? {
+                  preset: field.corrections.heelLiftTaperPreset,
+                  endU: field.corrections.heelLiftTaperEndU,
+                  customPctAp: field.corrections.heelLiftCustomTaperPctAp,
+              }
+            : undefined;
     const sinkTActive = sinksActive(field.sinks);
     const sinkTAt = sinkTActive ? new Float32Array(count) : null;
     const sinkMeshCtx = sinkTActive
@@ -2850,6 +2864,7 @@ export function applyBaseModifiers(
         const widCoord = array[i * 3 + widthAxis]!;
         const u = Math.max(0, Math.min(1, (lenCoord - lenMin) / lenSize));
         const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
+        if (heelAt) heelAt[i] = heelLiftDeltaAt(u, heelLiftMm, heelTaper);
         let d = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
         if (wedgeActive) {
             const wD = regionalWedgeActive
@@ -2985,7 +3000,7 @@ export function applyBaseModifiers(
             w = topFactors ? topFactors[i]! : Math.max(0, Math.min(1, (t - thickMin) / thickSize));
         }
         const wedgePart = wedgeAt ? wedgeAt[i]! : 0;
-        const corePart = delta[i]! - wedgePart;
+        const heelPart = heelAt ? heelAt[i]! : 0;
         // Wedge = smooth function of plan position only. Weight is a mesh-level
         // constant (top-only sheet → 1; multi-mesh → top range 1 / bottom 0), or
         // the continuous topFactor on closed single-mesh bases. Never the
@@ -3001,7 +3016,23 @@ export function applyBaseModifiers(
                 ? topFactors[i]!
                 : 1;
         const wedgeScaled = wedgePart > 0 ? wedgePart * wedgeW : 0;
-        const vertD = corePart * w + wedgeScaled;
+        // Heel lift uses the same split as the #186 wedge. classifyBaseTopFactors
+        // stores w ≈ 0 on the z ≈ 2 mm heel seat of the top-only SAMPLE_Top sheet
+        // (the mute #331 documented for thickness), so corePart * w raises the rim
+        // and leaves the seat — the cup deepens. Add heelLiftDeltaAt at weight 1
+        // on that sheet and on the multi-mesh top range, and keep it out of
+        // corePart so a rim with w ≈ 1 is not lifted twice. Bottom-sheet verts
+        // stay at weight 0. heelPart === 0 keeps the previous vertD expression,
+        // so heelLiftMm = 0 is byte-identical.
+        let vertD: number;
+        if (heelPart !== 0) {
+            const heelW = isMultiMesh && topVertexCount > 0 ? (i < topVertexCount ? 1 : 0) : 1;
+            const corePart = delta[i]! - wedgePart - heelPart;
+            vertD = corePart * w + wedgeScaled + heelPart * heelW;
+        } else {
+            const corePart = delta[i]! - wedgePart;
+            vertD = corePart * w + wedgeScaled;
+        }
         const foreWActive = (field.corrections.forefootWidthMm ?? 0) !== 0;
         const latD = lateralDelta[i]! * (heelCupNarrowing || foreWActive ? 1 : w);
         let dx = 0;
