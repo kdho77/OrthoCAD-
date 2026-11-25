@@ -290,3 +290,75 @@ Versus `d20ca6e9`, `heel-lift.ts`, `base-modifier.ts`, and `text-marking/place.t
 - ONE. Graded `2dc7b07f` per gate. Overall PASS.
 - No merge, no deploy, no Railway, no `generate_gcode` on a Specialist order, no attach, no order-status change. Synthetic name `JABBOUR`. Design ids only.
 - No blanket `xSign = -1`. `place.ts` blob matches `d20ca6e9`. S1-PRELOFT cap was not in the diff. No slicer, seam, or surface-quality edit in the #449 diff.
+
+## Worker `c8a06491` (independent grade of #451)
+
+Candidate: draft PR #451 head `c8a06491eb2dc309830e8979fb00490c238a918b`, title "Loft every production generate from the saved design". Not edited. Detached worktree at that SHA. `tests/name-plantar-e2e` from `2eff9d6a7e92ba2ad8ea41bcfcbfc246d30513f6` was copied over that tree before any test. 20 frozen files, 0 byte mismatches. The grader file `grader-s1-stored-stl.test.ts` was added beside them. It is not one of the frozen files, and it is not the worker's `trpc-cad-operator.test.ts`. Blobs for `thresholds.ts`, `frozen-surface-hashes.ts`, `production-path-gates.test.ts`, `full-design-identity.test.ts`, and `production-rematerialize.test.ts` match `2eff9d6a`. Thresholds stay `G1_MIN_ADVANCE_MM = 20`, `G1_AXIS_MIN = 0.5`. Synthetic string `JABBOUR`. Design id `0d3db1c0-0000-4000-8000-0000000000d3` with the `0d3db1c0` path (US M 11.5, Medium, unlinked, left heel 0).
+
+Commands, cwd `/tmp/grade-451`:
+
+```bash
+npx rstest tests/name-plantar-e2e/production-path-gates.test.ts
+npx rstest tests/name-plantar-e2e/chirality.test.ts \
+  tests/name-plantar-e2e/full-design-identity.test.ts \
+  tests/name-plantar-e2e/production-rematerialize.test.ts
+npx rstest tests/name-plantar-e2e/build-stls.test.ts
+npx rstest --config tests/name-plantar-e2e/rstest.config.ts \
+  tests/name-plantar-e2e/production-gcode.optional.test.ts \
+  tests/name-plantar-e2e/measure-gcode.optional.test.ts
+npx rstest tests/name-plantar-e2e/grader-s1-stored-stl.test.ts
+```
+
+Exits: 0 (335814 ms, 2 passed), 0 (37878 ms, 10 passed), 0 (23458 ms, 1 passed), 1 (optional G-code), 0 (50592 ms, S1 1 passed). The exit 1 is `NAME_PLANTAR_GCODE_DIR is required` in both optional files, before any glyph is read. This VM has no Docker, so `slice-feet.sh` was not run. G1–G4 are the manufacturing STL in the frozen #442 reading frame. The first S1 invocation exited 1 in 1176 ms because rstest rewrote the headless runner's `SAMPLE_Top` URL and the loft threw before any bytes existed. The stock GLB, font, and elements were then copied to the URLs the runner reports, and the same test was run again. That rerun is the S1 result below. The frozen files were not edited to make it pass.
+
+**Overall on #451: PASS. Overall on #450: FAIL.**
+
+#450 is the frozen gates at `2eff9d6a`. Its column is the no-op already recorded in this file on product BASE `d20ca6e9`. It was not executed again in this session. S1 did not exist on that tree.
+
+| Gate | #451 `c8a06491` | #450 `2eff9d6a` |
+| --- | --- | --- |
+| G1 | PASS. `production-path-gates.test.ts` 2 passed, including every listed cell. | FAIL. US M 11.5 right letter walls missing. |
+| G2 | PASS. Same STL-frame suite. Stamp and foot match the request. | PASS on the four live slices in the freeze. |
+| G3 | PASS. Floor, sole, and the 19 frozen non-text hashes are inside that suite. | PASS on the freeze lofts. |
+| G4 | PASS as a rejection. Blanket X, one-foot X, Y mirror, depth 1.2, placementU 0.55, and a lifted sole fail inside that suite. | PASS as a rejection. |
+| t2699u | PASS. No-op reuses. `any single design-field change misses the stored STL` passed. | FAIL. 68 of 121 rows still reuse. |
+| t2704u | PASS. Two generates, `loftHashes` length 2, sliced keys are the UI export hashes, stale key absent. | FAIL. Second generate does not loft. |
+| S1 | PASS. Two real `buildHeadlessFinalizedFoot` calls. Slice bytes are the prepared loft, not the 9045484-byte object. Zero downloads, signed URLs, export selects, or fetches of that object. Both new rows succeeded. The seeded checkpoint row stayed failed. | Not run. The stored-STL resume this gate targets is the t2704u failure above. |
+| Overall | PASS | FAIL |
+
+### Hand review of `c8a06491` versus main `2a0cb302`
+
+`git diff 2a0cb302 c8a06491` is four files: `cad-operator-production.ts`, `cad-operator-generate.ts`, `manufacturing-cad.ts`, `trpc-cad-operator.test.ts`. 289 insertions, 60 deletions. No file under `tests/name-plantar-e2e` or `validation/name_chirality_gates`. No `place.ts`, `heel-lift.ts`, `bottom-engrave.ts`, `sample-top-preview.ts`, slicer, seam, or surface-quality file. No `xSign` assignment.
+
+The stored-STL lookup is deleted. `materializeCadOperatorStl` no longer returns `plan.stlStorageKey` when `useSavedDesignMesh` is false. It always calls `buildHeadlessFinalizedFoot`. The `isStalePre52ManufacturingStlBytes` check and the `STALE_MANUFACTURING_STL_MESSAGE` throw are deleted from that function, not wrapped in a new condition. `beltSliceRequest` no longer calls `signedDownloadUrl` or `downloadManufacturingStl`. It sends the loft bytes. `executeCadOperatorProduction` no longer assigns `stlStorageKey = resumeCheckpoint.stlStorageKey`. On a resume it passes `""` into `slice`, and both generate callbacks ignore that argument.
+
+`rg` of the production generate path for slice input:
+
+| Site | What remains | Slice input? |
+| --- | --- | --- |
+| `manufacturing-cad.ts` `prepareCadOperatorGenerate` | When `useSavedDesignMesh` is false, the caller key is prefix-checked and stored on the plan. `cadOperatorManufacturingIdentity` hashes that string. | No. `materializeCadOperatorStl` does not download it and does not return it. |
+| `cad-operator-production.ts` `runCadSliceAttempt` | Writes `stlStorageKey: args.stlStorageKey` into the new checkpoint JSON. The value on this path is the loft key, or `""` when the request is null. | No download. A set checkpoint polls job status and does not submit a mesh. |
+| `manufacturing-stl-lifecycle.ts` `archiveManufacturingSourceStl` | `copyStorageObject` downloads the temp key this invocation just uploaded, then writes `exports.sourceStlPath`. | No. The slice already used the in-memory loft. S1 recorded zero downloads of the seeded temp key and the seeded archive key. |
+| `sourceStlPath` | Write only, in `archiveManufacturingSourceStl`. | No read on this path. S1's export `select` count was 0. |
+| `manufacturing-stl-download.ts` | The string `Refusing a stale pre-#52 manufacturing STL (eTag 8f5dc451de66dbba8f8521e046a9e4af)` is still the body of `downloadManufacturingStl`. | Not called from `cad-operator-generate.ts` (the import is gone). |
+| `manufacturing.ts` / `manufacturing-session.ts` | The browser session `generateSolid` still signs and downloads the caller `stlStorageKey` through `downloadManufacturingStl`. | Yes, on that session path. It is not the CAD-operator production module. `cad-operator-production.ts` says the human `generateSolid` path does not use it. #451 does not change those files. |
+
+No production-path read of `stlStorageKey`, `sourceStlPath`, `manufacturing-temp`, or a checkpoint object remains as slice input. The refuse outcome is deleted from the production generate path. It is not re-keyed. The helper that throws it still exists for the browser session upload.
+
+### Residuals
+
+- Live #52 G-code was not sliced. The optional tests stop on a missing directory. The STL-frame grade is the evidence for G1–G4.
+- A generate that finishes in the same invocation still archives the loft it just uploaded, which downloads that new temp object. S1 did not treat that fresh object as the pre-#52 file. The seeded 9045484-byte object, eTag `8f5dc451de66dbba8f8521e046a9e4af`, was not read.
+- The browser session path can still refuse that eTag. Production belt generate does not call it.
+- #450 was not re-run. Its overall stays the frozen no-op.
+
+### Rule compliance (this grade)
+
+- Independent grader. The #451 tree was not edited. Frozen gates were overlaid from `2eff9d6a` and left byte-for-byte. The only new test is the grader file.
+- MUST-MATCH. No gate, threshold, or frozen hash was edited. `G1_MIN_ADVANCE_MM` remains 20 and `G1_AXIS_MIN` remains 0.5. Kendon's rule is the production generate lofts the saved design and does not reuse a stored copy. S1 requires two loft calls and zero reads of the seeded file.
+- FILES. This commit is `validation/name_chirality_gates/RESULTS.md` and `tests/name-plantar-e2e/grader-s1-stored-stl.test.ts`.
+- TESTS. Every `tests/name-plantar-e2e` rstest file at `2eff9d6a` was invoked against `c8a06491`, plus S1. Thirteen frozen tests passed (2 + 10 + 1). The two optional G-code tests stopped on `NAME_PLANTAR_GCODE_DIR` because Docker is absent. S1 passed on the rerun.
+- ONE. Graded `c8a06491` per gate. Overall PASS. #450 overall remains FAIL.
+- No merge, no deploy, no Railway, no `generate_gcode` on a Specialist order, no attach, no order-status change. Synthetic name `JABBOUR`. Design ids only.
+- No blanket `xSign = -1`. No slicer, seam, surface, heel-lift, or text-geometry file is in the #451 diff. S1-PRELOFT was not in the diff.
+
