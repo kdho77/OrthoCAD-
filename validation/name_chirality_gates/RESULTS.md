@@ -235,3 +235,58 @@ FAIL for worker `710ddab5`. The second call does not loft. `storedManufacturingS
 **ONE (this pass):** `Add to the frozen gates on #450: production generate_gcode never reads a stored manufacturing/checkpoint STL (two consecutive calls both rematerialize) and output matches the UI export path; then grade worker PR #449 against all gates.`
 
 PASS for the new gate and the grade of #449 head `710ddab5`. Not merged. Product code unchanged. No attach, no order-status change, no blanket `xSign=-1`.
+
+## Worker `2dc7b07f` (independent grade)
+
+Candidate: draft PR #449 head `2dc7b07f7e47d6b8a8117219c0f000245e37cdb5`. Not edited. Detached worktree at that SHA. `tests/name-plantar-e2e` was replaced with the tree from `2eff9d6a7e92ba2ad8ea41bcfcbfc246d30513f6` before any test. 20 files, 0 byte mismatches. Blobs for `thresholds.ts`, `frozen-surface-hashes.ts`, `production-path-gates.test.ts`, `full-design-identity.test.ts`, and `production-rematerialize.test.ts` match `2eff9d6a`. Thresholds stay `G1_MIN_ADVANCE_MM = 20`, `G1_AXIS_MIN = 0.5`. Synthetic string `JABBOUR`.
+
+Commands, cwd `/tmp/grade-449`:
+
+```bash
+npx rstest tests/name-plantar-e2e/chirality.test.ts \
+  tests/name-plantar-e2e/full-design-identity.test.ts \
+  tests/name-plantar-e2e/production-rematerialize.test.ts
+npx rstest tests/name-plantar-e2e/production-path-gates.test.ts
+npx rstest tests/name-plantar-e2e/build-stls.test.ts
+npx rstest --config tests/name-plantar-e2e/rstest.config.ts \
+  tests/name-plantar-e2e/production-gcode.optional.test.ts \
+  tests/name-plantar-e2e/measure-gcode.optional.test.ts
+```
+
+Exits: 0 (38961 ms, 10 passed), 0 (335987 ms, 2 passed), 0 (24752 ms, 1 passed), 1 (375 ms). The exit 1 is `NAME_PLANTAR_GCODE_DIR is required` in both optional files, before any glyph is read. This VM has no Docker, so `slice-feet.sh` was not run. G1–G4 below are the manufacturing STL in the frozen #442 reading frame.
+
+**Overall: PASS.**
+
+| Gate | Grade on `2dc7b07f` |
+| --- | --- |
+| G1 | PASS. 24/24 cells, sequence `JABBOUR`. Every US M 11.5 right reads. `0d3db1c0` right a=0.949691 d=0.631710 advance 71.726 mm, foot right, heelHigh true, floor z 0.6, sole min z 0. `0d3db1c0-hard` right, `0d3db1c0-linked` right match that cell. `0d3db1c0-heel0` right and `ad1e0cc5-size11.5` right a=0.949691 d=0.631710 advance 71.726 mm. Control left a=0.951470 d=0.889669 advance 71.695; control right a=0.963460 d=0.610368 advance 71.666. Counts 137692/137772 and 138790/138870. |
+| G2 | PASS. Stamp and `detectGcodeFoot` match the requested side on all 24 cells. `heelHigh` true on every cell (toe-first). |
+| G3 | PASS. Floor median z 0.6 and sole min z 0 on every cell. All 19 frozen non-text hashes match. `0d3db1c0-size12` right and `ad1e0cc5-heel12` right are `7f198b4af1f45e454eae97cdbc77b4871e0617a85d562bbd283e975af4d73e3f`. |
+| G4 | PASS as a rejection. Blanket `xSign = -1` fails the #442 left, `ad1e0cc5` left, and `0d3db1c0` left. One-foot X flip: left fail, right pass, pair fail. Y mirror fails. Depth 1.2 fails (floor z 1.2 and depthMm 1.2). placementU 0.55 fails. Sole min z 4 with contact fraction 0.001 fails. |
+| t2699u | PASS. No-op reuses the preview solid and the checkpoint fingerprint. Combined assertion `reused = []`. 121 rows, 0 errors. Hardness, shoe width, thickness, linked, both feet's arch and heel lift, elements, sinks, text, placement, `beltPrint`, and the geometry version all miss. |
+| t2704u | PASS. Two `generate_gcode` calls on design `0d3db1c0` left both loft. `loftHashes` length 2, one distinct hash, sliced keys `ui-export-<hash>`. The stale key `stored-8f5dc451de66dbba8f8521e046a9e4af` is absent. The original row still holds the checkpoint. |
+
+### Hand review of `2dc7b07f` versus main `3cabc5b1` and gates BASE `d20ca6e9`
+
+`storedManufacturingStlReusable` returns false for every argument (`cad-operator-production.ts`). A checkpoint whose `rematerialized` flag is absent is a stored STL: `claimProduction` mints a new idempotency key, the old row keeps the checkpoint, and `executeCadOperatorProduction` calls `materialize()`. The frozen t2704u checkpoint is that case, and the test passed.
+
+`executeCadOperatorProduction` copies `checkpoint.stlStorageKey` and skips `materialize()` only when `resumeSubmittedSlice` is true and `checkpoint.rematerialized` is true. `continueInFlightSlice` sets that flag only for a checkpoint this production wrote after a loft. `beltSliceRequest`, which downloads the STL, runs when that resume checkpoint is absent. `runCadSliceAttempt` with a checkpoint already set polls `getVertexSliceJob(jobId)` and does not submit the mesh. The identity-keyed reuse path is gone. The remaining branch is a status poll of a job already submitted after a loft.
+
+`git diff 3cabc5b1 2dc7b07f` does not contain `production-path-gates.test.ts`, `frozen-surface-hashes.ts`, `thresholds.ts`, `full-design-identity.test.ts`, `production-rematerialize.test.ts`, `chirality.test.ts`, or `RESULTS.md`. It does edit four pre-existing `tests/name-plantar-e2e` files: `PROOFS.md`, `build-stls.test.ts` (added variant loft), `measure-gcode.optional.test.ts` (added variant grade), and `slice-feet.sh` (variant slice loop that exits 1 when no `*-left.stl` / `*-right.stl` is present). This run used the `2eff9d6a` bytes of those files.
+
+Versus `d20ca6e9`, `heel-lift.ts`, `base-modifier.ts`, and `text-marking/place.ts` are the same blobs (`82bc8524`, `9fa3e1ba`, `ae2ea1ad`). The geometry source delta is `bottom-engrave.ts` (`dropLoneOpenTriangles` before the manifold check) and `sample-top-preview.ts` (cache frame stamp). The PR diff contains no `xSign` assignment. No slicer, seam, or surface-quality file is in the diff against main. `vertexslice-build.ts` differs from `d20ca6e9` because main already has it; the #449 diff does not touch it.
+
+### Residuals
+
+- Live #52 G-code was not sliced. The two optional tests exit on a missing directory. The STL-frame grade is the evidence for G1–G4.
+- A rematerialized checkpoint still skips a second loft while that job is polled. The frozen test covers the stored checkpoint, which lofts again.
+
+### Rule compliance (this grade)
+
+- Independent grader. Worker tree was not edited. Gates were overlaid from `2eff9d6a` and left byte-for-byte.
+- MUST-MATCH. No gate, threshold, or frozen hash was edited. `G1_MIN_ADVANCE_MM` remains 20 and `G1_AXIS_MIN` remains 0.5.
+- FILES. The only commit is `validation/name_chirality_gates/RESULTS.md` on `cursor/name-chirality-gates-1124`.
+- TESTS. Every `tests/name-plantar-e2e` rstest file at `2eff9d6a` was invoked against `2dc7b07f`. Thirteen tests passed. The two optional G-code tests stopped on `NAME_PLANTAR_GCODE_DIR` because Docker is absent.
+- ONE. Graded `2dc7b07f` per gate. Overall PASS.
+- No merge, no deploy, no Railway, no `generate_gcode` on a Specialist order, no attach, no order-status change. Synthetic name `JABBOUR`. Design ids only.
+- No blanket `xSign = -1`. `place.ts` blob matches `d20ca6e9`. S1-PRELOFT cap was not in the diff. No slicer, seam, or surface-quality edit in the #449 diff.
