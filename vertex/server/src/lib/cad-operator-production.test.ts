@@ -1168,7 +1168,7 @@ describe("VertexSlice job productions", () => {
     test("a transient submit is retried inside the slice attempt and the later 202 is returned", async () => {
         process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
         process.env.VERTEXSLICE_API_KEY = "super-secret-key";
-        const gcode = "G1 X0 ; foot-retry\n";
+        const gcode = passingBeltGcode("left");
         let posts = 0;
         const nowMs = Date.parse("2026-11-24T23:05:00.000Z");
         globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
