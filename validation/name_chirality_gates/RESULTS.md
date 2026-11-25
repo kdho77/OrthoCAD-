@@ -83,9 +83,57 @@ Measured on the identity loops and on the marking / sole predicates. All rejecte
 | placementU 0.55 | fail: placementU 0.55 (need 0.32) |
 | sole lifted to min z 4, contact fraction 0.001 | fail |
 
+## Full-design identity (t2699u)
+
+Locked rule, quoted: "Must change if the design has any changes." (t2699u, 11:20 PM America/Denver.)
+
+The stored manufacturing STL identity (`manufacturingFingerprintForActiveExport`, which is the sha256 of `manufacturingSolidIdentity`), the checkpoint `meshFingerprint`, and a separate checkpoint key when one exists (`manufacturingStlRunIdentity`) must miss after any single saved-design change. The hash is of the saved design, not a hand-picked field list. `beltPrint` and the OrthoCAD geometry version are rows in the same table. A no-op control reuses when nothing changed.
+
+```bash
+npx rstest tests/name-plantar-e2e/full-design-identity.test.ts
+```
+
+Exit 1. Duration about 0.1 s. No-op passed: the same design round-trips to the same fingerprint, `peekManufacturingSolid` returns the stored solid, and the checkpoint `meshFingerprint` is that fingerprint. The table failed. 121 rows, 68 still reuse the stored left STL on BASE `d20ca6e9`. Every reused row matches on the stored STL, the checkpoint, and `manufacturingSolidIdentity` together.
+
+Named rows on BASE:
+
+| Field | Stored STL |
+| --- | --- |
+| unchanged design (no-op) | reused, as required |
+| `printRecipe.defaultHardness` (material) | reused |
+| `shoeWidth` | reused |
+| `thicknessMm` | reused |
+| `corrections.linked` | reused |
+| `corrections.right.archHeightMm` | reused |
+| `corrections.right.heelLiftMm` | reused |
+| `corrections.left.archHeightMm` | missed |
+| `corrections.left.heelLiftMm` | missed |
+| `usMenSize` | missed |
+| `elements` | reused |
+| `sinks` | missed |
+| `sinkStyloidThicken` | reused |
+| `textMarking.text` | missed |
+| `textMarking.placementU` | missed |
+| `beltPrint` | reused |
+| `slicerOrthoCadVersion` (`geometryVersion + 1`) | missed |
+
+The other reused paths are `productType`, `method`, the rest of `printRecipe`, `sizeSystem`, `corrections.unit`, every `corrections.right.*` field, `shapeFinish.right.*`, `shapeFinish.linked`, the unmirrored `base.*` strings, `customPrefabId`, `customPrefabName`, and the right-foot `paired.*` fields. Left-foot corrections, shell thickness, and the text-marking leaves already miss. That split is the allowlist: `manufacturingSolidIdentity` copies the active side's field and a fixed set of option keys. It does not hash the saved design. The gate stays `expect(reused).toEqual([])`. It was not loosened.
+
 ## Worker
 
-No open draft from this BASE implements a production-path name-chirality fix. Searched open PRs for chirality, plantar name, xSign, and production-path. Nearby drafts that were not graded and not edited: #435 (older gates, different BASE), #443 and #446 (grades of the already-merged #442 lock). No candidate SHA.
+Candidate: draft PR #449, head `929a94d26516cd69580e50d352f7e02fa5e8c396`, title "Never reuse a stale manufacturing STL for a belt slice". Not edited. The frozen tests were copied into a detached worktree of that SHA and run there. `place.ts` has no diff against BASE. The loft reconstruction is unchanged. The sample-top edit stamps `beltPrint` and `placementVersion` onto the cached solid after the existing preview rebuild.
+
+| Gate | Grade on `929a94d2` |
+| --- | --- |
+| G1 | FAIL overall, same as the BASE no-op. The engrave path and `place.ts` are unchanged, so US M 11.5 right still has no letter walls. `ad1e0cc5` and the #442 control stay the passing cells. Thresholds were not moved. |
+| G2 | PASS on the prior live slices. This SHA does not change `detectGcodeFoot` or foot geometry. |
+| G3 | PASS on the prior lofts. Sole, depth 0.6, placementU 0.32, and the frozen non-text hashes are the BASE measurements. No seam or surface edit. |
+| G4 | PASS as a rejection. This SHA does not set `xSign = -1`. The frozen blanket-X assertions still reject that change. |
+| t2699u | FAIL |
+
+t2699u detail. No-op on that SHA passed. The table failed: 118 of 121 rows still reuse. `manufacturingSolidIdentity` is still a hand-picked record. It now includes `beltPrint` and `placementVersion`, so the `beltPrint` row misses, and `geometryVersion` already missed. `manufacturingStlRunIdentity` / `beltManufacturingStlIdentity` hashes only `placementVersion`, `beltPrint`, `side`, and `composedText` (the saved `textMarking.text` string). That is a field allowlist.
+
+On `929a94d2` the stored STL itself is still reused for `printRecipe.defaultHardness`, `shoeWidth`, `thicknessMm`, `corrections.linked`, `corrections.right.heelLiftMm`, `corrections.right.archHeightMm`, `elements`, and `sinkStyloidThicken`. The checkpoint key still matches after `usMenSize`, `corrections.left.heelLiftMm`, `corrections.left.archHeightMm`, `textMarking.placementU`, and `sinks` even when the solid fingerprint changes. The only rows that miss both the stored STL and the checkpoint key are `textMarking.text`, `beltPrint`, and `slicerOrthoCadVersion`. A single-field mutation still reuses a stored STL. Grade is fail. Gates were not loosened to match this SHA.
 
 ## Residuals
 
@@ -93,6 +141,7 @@ No open draft from this BASE implements a production-path name-chirality fix. Se
 - The six existing #442 cells were not re-sliced in this session. Their test file, thresholds, and workflow image pin were not changed. `chirality.test.ts` passed.
 - Non-text hashes are not frozen for the five feet that have no letters.
 - Unit CI on this branch is red because the frozen G1 assert fails on BASE. That is the no-op. The plantar-name workflow's new variant step is red for the same cell. The original six-cell step is unchanged and runs first.
+- The full-design identity table is also red on BASE: 68 saved-design rows still reuse the stored STL. That is the t2699u freeze. The no-op row in that file passes.
 
 ## Rule compliance
 
@@ -114,7 +163,7 @@ PASS. Targeted commands are the two rstest invocations above plus `chirality.tes
 
 **ONE:** `Freeze independent production-path plantar-name chirality gates with no-op and bad-change proofs (including blanket xSign=-1 rejection), extending #442 to the variants that broke, then grade the worker if it exists. Do not merge. Do not change product code.`
 
-PASS for the freeze, the proofs, and the product-code boundary. Worker grade is N/A: no candidate PR. Not merged.
+PASS for the freeze, the proofs, and the product-code boundary. The later Worker section grades draft #449. Not merged.
 
 **GOAL:** `An independent grader whose frozen gates accept a fix only if the name reads correctly from the bottom on BOTH feet, through the production path, for designs 0d3db1c0 and ad1e0cc5 and every path variant listed, without a blanket xSign that would break the working test path, and without changing handedness, surface, or seams.`
 
@@ -126,7 +175,7 @@ PASS. No product diff. Thresholds unchanged. No merge, deploy, Railway, or order
 
 **DELIVERABLE:** `one [GATES ONLY - DO NOT MERGE] draft PR with frozen gates, no-op proof, bad-change proof that includes blanket xSign=-1 rejection, RESULTS.md, a rule-compliance report, and a handoff note. If the worker PR is up, a per-gate grade of that SHA. Never merge.`
 
-PASS when the draft PR and the handoff comment exist. Worker grade omitted because no worker PR is up. Never merged.
+PASS when the draft PR and the handoff comment exist. The t2699u grade of #449 is in the Worker section. Never merged.
 
 **HANDOFF:** `post a handoff note on the gates PR with the gates SHA, proof results, candidate SHA if graded, per-gate grades, residuals, and next step (wait for Kendon's merge-and-deploy go). Do not merge or deploy.`
 
@@ -158,4 +207,14 @@ PASS. Logs were filtered before they were kept. The only string engraved is `JAB
 
 **R7:** `do not change worker code. Grade only. Outer surface, seams, layer-change placement, and surface quality may NOT change. The S1-PRELOFT 0.5×inset cap may NOT change. A blanket xSign=-1 on every beltPrint path is a rejected bad change, not an acceptable fix.`
 
-PASS. No worker branch was checked out or edited. No surface, seam, layer, or S1-PRELOFT edit. Blanket X flip is rejected: G1 fails on the #442 control and on `ad1e0cc5`.
+PASS. The worker branch was not edited. A detached worktree of `929a94d2` was used only to run the frozen tests. No surface, seam, layer, or S1-PRELOFT edit. Blanket X flip is rejected: G1 fails on the #442 control and on `ad1e0cc5`.
+
+**t2699u (11:20 PM America/Denver):** `Must change if the design has any changes.`
+
+PASS for this gates branch as a freeze. `full-design-identity.test.ts` walks every persisted field of the saved design, plus `beltPrint` and the OrthoCAD geometry version. The no-op reuses the stored STL. The table fails on BASE because `manufacturingSolidIdentity` is a hand-picked field list: hardness, width, the other foot's heel lift and arch, elements, and `beltPrint` still reuse. The assertion stays empty-reuse. It was not loosened.
+
+FAIL for worker `929a94d2`. Its stored-STL identity and `manufacturingStlRunIdentity` are field allowlists. Mutating hardness, shoe width, right heel lift, right arch, elements, or `sinkStyloidThicken` still reuses the stored STL. The checkpoint key still matches after a left heel, arch, size, placement, or sink change. See the Worker section.
+
+**ONE (this pass):** `Freeze the full-design identity gate (table test + no-op reuse control) and add the t2699u rule-compliance report entry, then grade the worker if a PR exists. Do not merge. Do not change product code. No attach, no order-status change, no blanket xSign=-1.`
+
+PASS for the freeze, this entry, and the grade of #449. Not merged. Product code unchanged. No attach, no order-status change, no blanket `xSign=-1`.
