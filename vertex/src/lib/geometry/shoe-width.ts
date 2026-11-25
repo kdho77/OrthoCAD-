@@ -94,6 +94,22 @@ export interface ShoeWidthAffineOpts {
     heelOverrideMm?: number;
 }
 
+/**
+ * Plan X span of the points the width affine scales.
+ * Non-finite X is ignored. An empty span stays a tiny positive length so u is finite.
+ */
+export function shoeWidthExtentOfPoints(pts: readonly { x: number }[]): { minX: number; lengthMm: number } {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const p of pts) {
+        if (!Number.isFinite(p.x)) continue;
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+    }
+    if (!Number.isFinite(minX)) return { minX: 0, lengthMm: 1e-3 };
+    return { minX, lengthMm: Math.max(1e-3, maxX - minX) };
+}
+
 /** True when the width class or a heel-override actually changes Y. */
 export function shoeWidthAffineActive(width: ShoeWidthId, heelOverrideMm?: number): boolean {
     return width !== "medium" || (heelOverrideMm != null && Math.abs(heelOverrideMm) > 1e-6);
@@ -122,9 +138,16 @@ export function applyShoeWidthToPoints<T extends { x: number; y: number }>(
 ): T[] {
     if (!Array.isArray(pts) || pts.length === 0) return pts;
     if (!shoeWidthAffineActive(width, opts.heelOverrideMm)) return pts;
+    // A missing extent (BaseBounds has no minX) makes every u NaN and every Y NaN.
+    // The trimline tube then indexes an undefined Catmull-Rom point. Finite hints
+    // are used unchanged so widths that already scaled stay on the same frame.
+    const affine =
+        Number.isFinite(opts.minX) && Number.isFinite(opts.lengthMm)
+            ? opts
+            : { ...opts, ...shoeWidthExtentOfPoints(pts) };
     const yMid = pts.reduce((s, p) => s + p.y, 0) / Math.max(1, pts.length);
     return pts.map((p) => {
-        const y = shoeWidthAffineY(p.x, p.y, yMid, width, opts);
+        const y = shoeWidthAffineY(p.x, p.y, yMid, width, affine);
         const clone = (p as { clone?: () => T }).clone;
         if (typeof clone === "function") {
             const next = clone.call(p);

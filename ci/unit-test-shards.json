@@ -403,6 +403,7 @@
                 "vertex/src/lib/geometry/procedural-wall/stations.test.ts",
                 "vertex/src/lib/geometry/scan-marker-target.test.ts",
                 "vertex/src/lib/geometry/shoe-width.test.ts",
+                "vertex/src/lib/geometry/width-change.test.ts",
                 "vertex/src/lib/geometry/text-marking/fit.test.ts",
                 "vertex/src/lib/geometry/trim-presets.test.ts",
                 "vertex/src/lib/library/loaders-order.test.ts",
