@@ -120,7 +120,7 @@ describe("shipping attach_files contract", () => {
         expect(payload.vo_attach_files).not.toHaveProperty("status");
     });
 
-    test("sample-top base_asset_id swaps VO side and filename labels", () => {
+    test("sample-top base_asset_id keeps the requested VO side and filename", () => {
         const attached = buildVoAttachFilesHandoff({
             order_id: orderId,
             patient_name: "Jane Doe",
@@ -132,10 +132,10 @@ describe("shipping attach_files contract", () => {
             ],
             now,
         });
-        expect(attached.vo_attach_files.files.map((file) => file.side)).toEqual(["right", "left"]);
+        expect(attached.vo_attach_files.files.map((file) => file.side)).toEqual(["left", "right"]);
         expect(attached.vo_attach_files.files.map((file) => file.filename)).toEqual([
-            "Jane_Doe_ApexCore_R.gcode",
             "Jane_Doe_ApexCore_L.gcode",
+            "Jane_Doe_ApexCore_R.gcode",
         ]);
     });
 

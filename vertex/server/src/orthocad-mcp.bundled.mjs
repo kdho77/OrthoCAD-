@@ -1,4 +1,4 @@
-// orthocad-mcp-http-bundle 616199d9290658bf4bcbe0ac5dde380fb013ee3a83c63e8fdae0b311757641c3
+// orthocad-mcp-http-bundle 6a2b7a0dbb5d7bc8c00d0ed9f27b9de4f45bff3147e5a6e7b1b6862b926c7ee4
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -24954,7 +24954,6 @@ import { createHash as createHash2 } from "node:crypto";
 // packages/mcp/src/shared/export-filename.ts
 var EXPORT_PATIENT_FALLBACK = "Unknown_Patient";
 var DEFAULT_EXPORT_MATERIAL_ID = "ApexCore";
-var SAMPLE_TOP_TEMPLATE_ASSET_ID = "sample-top";
 var MATERIAL_ID_BY_COMPACT = /* @__PURE__ */ new Map([
   ["apexlight", "ApexLight"],
   ["apexlightfoam", "ApexLight"],
@@ -25010,11 +25009,7 @@ function parsePatientNameForExport(patientName) {
   if (tokens.length === 1) return { firstName: tokens[0] ?? "", lastName: "" };
   return { firstName: tokens[0] ?? "", lastName: tokens.slice(1).join(" ") };
 }
-function physicalSideLabel(internalSide, base) {
-  const assetId = base?.assetId?.trim();
-  if (assetId === SAMPLE_TOP_TEMPLATE_ASSET_ID) {
-    return internalSide === "left" ? "right" : "left";
-  }
+function physicalSideLabel(internalSide, _base) {
   return internalSide;
 }
 function exportSideSuffix(side, base) {
@@ -25430,7 +25425,7 @@ var generateGcodeInputObjectSchema = external_exports.object({
    * In-flight productions are still reused so concurrent calls do not duplicate work.
    */
   force_new_slice: external_exports.boolean().optional(),
-  /** When `sample-top`, G-code export filenames use physical L/R (not internal laterality). */
+  /** Optional base asset id. It does not change the L/R filename. */
   base_asset_id: external_exports.string().trim().min(1).max(80).optional()
 });
 var generateGcodeInputSchema = generateGcodeInputObjectSchema.superRefine((value, ctx) => {
@@ -25639,7 +25634,7 @@ var prepareVoAttachmentInputSchema = external_exports.object({
   order_id: external_exports.string().uuid(),
   /** CAD provenance only. Not sent; VO would check the design link. */
   design_id: external_exports.string().uuid().optional(),
-  /** When `sample-top`, attach filenames and VO `side` use physical L/R. */
+  /** Optional base asset id. It does not change the VO side or filename. */
   base_asset_id: external_exports.string().trim().min(1).max(80).optional(),
   patient_name: external_exports.string().max(200).optional(),
   material: external_exports.string().max(80).optional(),
@@ -25691,7 +25686,7 @@ var MCP_TOOL_DEFINITIONS = [
   },
   {
     name: "generate_cnc_gcode",
-    description: "Pair CNC milling G-code from a saved milled design. One file for the order (L+R when both feet are on the order, one foot when the order is single-sided), the same bytes as the web Mill export with the default Idaho machine profile and the .gcode extension. Returns one production_id and status. The server builds the toolpath after that response. Poll get_production. Download with get_export_download only after succeeded. No G-code bytes in this response. Print and belt designs are refused. Optional material is the order material used in the filename (EVA Milled and EVA 45 Shore A are EVA). The pair name is First_Last_Material_LR.gcode. Optional mill_side is LR (default), RR, or LL. Omit it or pass LR for the same pair file. RR mills two copies of the physical right foot and the filename suffix is _RR. LL mills two copies of the physical left foot and the filename suffix is _LL. SAMPLE_Top stores the physical right foot on internal left. A pair file is one production (side is empty). Auth: CAD-operator key, manufacturing:generate.",
+    description: "Pair CNC milling G-code from a saved milled design. One file for the order (L+R when both feet are on the order, one foot when the order is single-sided), the same bytes as the web Mill export with the default Idaho machine profile and the .gcode extension. Returns one production_id and status. The server builds the toolpath after that response. Poll get_production. Download with get_export_download only after succeeded. No G-code bytes in this response. Print and belt designs are refused. Optional material is the order material used in the filename (EVA Milled and EVA 45 Shore A are EVA). The pair name is First_Last_Material_LR.gcode. Optional mill_side is LR (default), RR, or LL. Omit it or pass LR for the same pair file. RR mills two copies of the physical right foot and the filename suffix is _RR. LL mills two copies of the physical left foot and the filename suffix is _LL. SAMPLE_Top internal left is the physical left foot. A pair file is one production (side is empty). Auth: CAD-operator key, manufacturing:generate.",
     inputSchema: generateCncGcodeInputSchema
   },
   {

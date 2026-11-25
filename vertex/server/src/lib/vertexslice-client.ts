@@ -826,7 +826,29 @@ export async function sliceWithVertexSlice(request: VertexSliceRequest): Promise
 /** One status or result round trip. Keeps a Vercel invocation off a multi-minute slice. */
 const SLICE_JOB_STATUS_TIMEOUT_MS = 15_000;
 const SLICE_JOB_RESULT_TIMEOUT_MS = 30_000;
-const SLICE_JOB_SUBMIT_TIMEOUT_MS = 20_000;
+/**
+ * Budget for reading POST /v1/slice/jobs only.
+ * Armed after openSliceForm returns. Mesh prep and the materials GET must not
+ * share it: a pair generate was aborting the POST once prep had used the old
+ * 20s budget, so the client never read a 202 the server had already queued.
+ * 60s is long enough to read that 202. FormData abort on Vercel has not always
+ * rejected promptly (see armSliceDeadline).
+ */
+const SLICE_JOB_SUBMIT_TIMEOUT_MS = 60_000;
+const SLICE_JOB_SUBMIT_ATTEMPTS = 3;
+/** First retry waits this long. Each later retry doubles it. */
+const SLICE_JOB_SUBMIT_BACKOFF_BASE_MS = 250;
+
+function sliceJobSubmitBackoffMs(failedAttempts: number): number {
+    return SLICE_JOB_SUBMIT_BACKOFF_BASE_MS * 2 ** (failedAttempts - 1);
+}
+
+function delaySliceSubmitRetry(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        timer.ref?.();
+    });
+}
 
 export type VertexSliceJobStatusName = "queued" | "running" | "succeeded" | "failed";
 
@@ -926,32 +948,44 @@ async function fetchSliceJob(
 
 /**
  * POST /v1/slice/jobs. Same auth and multipart fields as POST /v1/slice.
+ * The submit deadline starts here, after the form is built.
  * HTTP 404 means this server does not have the job route yet.
  * Any other 4xx is thrown immediately, the same way /v1/slice rejects it.
  */
-export async function submitVertexSliceJob(request: VertexSliceRequest): Promise<SubmitVertexSliceJobResult> {
+async function postVertexSliceJob(
+    opened: OpenedSliceForm,
+    timedOut: { timeoutSec: number; side?: string },
+): Promise<SubmitVertexSliceJobResult> {
+    const endpoint = vertexSliceUrl(opened.baseUrl, "/v1/slice/jobs");
+    console.log("[vertexslice] -> POST /v1/slice/jobs", {
+        profileId: opened.profileId,
+        material: opened.material,
+        modelBytes: opened.bytes.byteLength,
+        authenticated: true,
+    });
     const deadline = armSliceDeadline(SLICE_JOB_SUBMIT_TIMEOUT_MS);
     try {
-        const opened = await openSliceForm(request, { signal: deadline.signal });
-        const endpoint = vertexSliceUrl(opened.baseUrl, "/v1/slice/jobs");
-        console.log("[vertexslice] -> POST /v1/slice/jobs", {
-            profileId: opened.profileId,
-            material: opened.material,
-            modelBytes: opened.bytes.byteLength,
-            authenticated: true,
-        });
-        const response = await vertexSliceFetch(endpoint, {
-            method: "POST",
-            headers: authHeaders(opened.apiKey),
-            body: opened.form,
-            signal: deadline.signal,
-        });
+        const response = await vertexSliceFetch(
+            endpoint,
+            {
+                method: "POST",
+                headers: authHeaders(opened.apiKey),
+                body: opened.form,
+                signal: deadline.signal,
+            },
+            { timedOut },
+        );
         if (response.status === 404) {
             await response.text().catch(() => undefined);
             return { kind: "unsupported" };
         }
         if (!response.ok) {
-            const rawDetail = await response.text();
+            let rawDetail = "";
+            try {
+                rawDetail = await settleWithinSignal(response.text(), deadline.signal, timedOut, endpoint);
+            } catch (err) {
+                if (!isTransientSliceFetch(err)) throw err;
+            }
             throwSliceHttpError(
                 response.status,
                 rawDetail,
@@ -960,7 +994,7 @@ export async function submitVertexSliceJob(request: VertexSliceRequest): Promise
                 opened.expectedRegions,
             );
         }
-        const raw = await response.text();
+        const raw = await settleWithinSignal(response.text(), deadline.signal, timedOut, endpoint);
         let payload: unknown = null;
         try {
             payload = raw ? (JSON.parse(raw) as unknown) : null;
@@ -982,17 +1016,40 @@ export async function submitVertexSliceJob(request: VertexSliceRequest): Promise
         }
         console.log("[vertexslice] <- POST /v1/slice/jobs", { jobId: job.jobId, position });
         return { kind: "accepted", jobId: job.jobId, position };
-    } catch (err) {
-        if (isTransientSliceFetch(err)) {
-            throw new TRPCError({
-                code: "INTERNAL_SERVER_ERROR",
-                message: "VertexSlice server error: submit unavailable",
-            });
-        }
-        throw err;
     } finally {
         deadline.cancel();
     }
+}
+
+/**
+ * POST /v1/slice/jobs. Same auth and multipart fields as POST /v1/slice.
+ * HTTP 404 means this server does not have the job route yet.
+ * Any other 4xx is thrown immediately, the same way /v1/slice rejects it.
+ * Transient reachability, abort, and timeout failures retry with bounded backoff.
+ * VertexSlice mints a new job id on every accepted POST, so a retry after a lost
+ * 202 can leave the unread job queued.
+ */
+export async function submitVertexSliceJob(request: VertexSliceRequest): Promise<SubmitVertexSliceJobResult> {
+    const timedOut = {
+        timeoutSec: Math.max(1, Math.ceil(SLICE_JOB_SUBMIT_TIMEOUT_MS / 1000)),
+        side: request.side,
+    };
+    for (let attempt = 1; attempt <= SLICE_JOB_SUBMIT_ATTEMPTS; attempt++) {
+        try {
+            const opened = await openSliceForm(request);
+            return await postVertexSliceJob(opened, timedOut);
+        } catch (err) {
+            if (!isTransientSliceFetch(err)) throw err;
+            if (attempt === SLICE_JOB_SUBMIT_ATTEMPTS) break;
+            const reason = err instanceof Error ? err.message.slice(0, 200) : "transient";
+            console.log("[vertexslice] submit retry", { attempt, reason });
+            await delaySliceSubmitRetry(sliceJobSubmitBackoffMs(attempt));
+        }
+    }
+    throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "VertexSlice server error: submit unavailable",
+    });
 }
 
 export async function getVertexSliceJob(jobId: string): Promise<VertexSliceJobFetch> {

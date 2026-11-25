@@ -170,16 +170,16 @@ describe("exportPatientFilenameSegment and exportSideSuffix", () => {
 describe("physicalSideLabel and SAMPLE_Top export filenames", () => {
     const sampleTop = { assetId: SAMPLE_TOP_TEMPLATE_ASSET_ID };
 
-    test("sample-top swaps internal left/right; other bases pass through", () => {
-        expect(physicalSideLabel("left", sampleTop)).toBe("right");
-        expect(physicalSideLabel("right", sampleTop)).toBe("left");
+    test("sample-top keeps the requested side, same as every other base", () => {
+        expect(physicalSideLabel("left", sampleTop)).toBe("left");
+        expect(physicalSideLabel("right", sampleTop)).toBe("right");
         expect(physicalSideLabel("left", { assetId: "stock-default" })).toBe("left");
         expect(physicalSideLabel("right", null)).toBe("right");
     });
 
-    test("exportSideSuffix maps swapped physical sides to R and L", () => {
-        expect(exportSideSuffix("left", sampleTop)).toBe("R");
-        expect(exportSideSuffix("right", sampleTop)).toBe("L");
+    test("exportSideSuffix maps the requested side for sample-top", () => {
+        expect(exportSideSuffix("left", sampleTop)).toBe("L");
+        expect(exportSideSuffix("right", sampleTop)).toBe("R");
         expect(exportSideSuffix(["left", "right"], sampleTop)).toBe("LR");
         expect(exportSideSuffix("left", { assetId: "patient-scan" })).toBe("L");
     });
