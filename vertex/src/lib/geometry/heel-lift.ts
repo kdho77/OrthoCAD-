@@ -10,8 +10,12 @@
  *
  * Behaviour (per spec):
  *  - `heelLiftMm = N` raises the surface at the heel (u = 0) by exactly N mm.
- *  - The raise tapers **linearly** to 0 by the configured taper endpoint
- *    (fraction of insole length), and is 0 from there to the toe.
+ *  - {@link heelLiftDeltaAt} then tapers **linearly** to 0 by the configured
+ *    taper endpoint. The height field and the analytic wall path use that
+ *    ramp, so samples with no change to this function stay byte-identical.
+ *  - The composed top mesh uses {@link heelLiftMeshDeltaAt}: full N through
+ *    the cup center (the lowest heel-seat point), then the same linear taper.
+ *    Seat and rim at one station share that value, so cup depth does not change.
  *  - It is a purely longitudinal ramp (no medial/lateral bias), applied across
  *    the full width — stylistically the longitudinal analogue of the
  *    medial/lateral {@link wedgeDeltaAt} cross-section ramp.
@@ -22,6 +26,14 @@
  *    raises the top while the print/mill base stays flat — i.e. bottom-stable on
  *    solid prints by construction.
  */
+
+/**
+ * Composed-mesh hold (heel = 0, toe = 1). The stock SAMPLE_Top cup center,
+ * the lowest heel-seat point, sits at u ≈ 0.116. Full lift through here, then
+ * the linear taper to {@link HEEL_LIFT_TAPER_END_DEFAULT_U}. A longer hold
+ * steepens that taper and folds the round wall.
+ */
+export const HEEL_LIFT_MESH_HOLD_U = 0.13;
 
 /** Default forward end of the linear taper (met heads region). */
 export const HEEL_LIFT_TAPER_END_DEFAULT_U = 0.75;
@@ -84,4 +96,18 @@ export function heelLiftDeltaAt(u: number, heelLiftMm: number, taper?: HeelLiftT
     const endU = resolveHeelLiftTaperEndU(taper);
     const t = Math.max(0, Math.min(1, 1 - u / endU));
     return heelLiftMm * t;
+}
+
+/**
+ * Lift applied to the composed foot-contact mesh. Full H through the cup
+ * center, then the same endpoint as {@link heelLiftDeltaAt}. The height
+ * field keeps the linear ramp so a heel-lift change does not move samples
+ * that only hash that ramp.
+ */
+export function heelLiftMeshDeltaAt(u: number, heelLiftMm: number, taper?: HeelLiftTaperOptions): number {
+    if (heelLiftMm <= 0) return 0;
+    const endU = resolveHeelLiftTaperEndU(taper);
+    if (u <= HEEL_LIFT_MESH_HOLD_U) return heelLiftMm;
+    if (!(endU > HEEL_LIFT_MESH_HOLD_U) || u >= endU) return 0;
+    return (heelLiftMm * (endU - u)) / (endU - HEEL_LIFT_MESH_HOLD_U);
 }
