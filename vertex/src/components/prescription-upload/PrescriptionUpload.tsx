@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { parsePrescription } from "@/features/ai-prescription/parse-service";
 import { cn } from "@/lib/utils";
 import type { PrescriptionImage, PrescriptionParseResult } from "@/types";
+import { PrescriptionApplyReview } from "./PrescriptionApplyReview";
 
 interface PrescriptionUploadProps {
     open: boolean;
@@ -92,88 +93,29 @@ export function PrescriptionUpload({ open, onClose, onApply }: PrescriptionUploa
 
                     <div className="flex flex-col overflow-hidden rounded-md border border-border bg-background/50">
                         <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                            Structured result
+                            Review &amp; apply
                         </div>
                         <div className="flex-1 overflow-y-auto p-3 text-xs">
-                            {result ? (
-                                <ResultView result={result} />
+                            {result && onApply ? (
+                                <PrescriptionApplyReview
+                                    result={result}
+                                    onApply={(edited) => {
+                                        onApply(edited);
+                                        onClose();
+                                    }}
+                                    onCancel={() => setResult(null)}
+                                />
+                            ) : result ? (
+                                <p className="text-muted-foreground">Apply wiring is not available in this context.</p>
                             ) : (
                                 <p className="text-muted-foreground">
-                                    Run a parse to see structured corrections and elements.
+                                    Run a parse to review corrections, edit values, then apply to the model.
                                 </p>
                             )}
                         </div>
-                        {result ? (
-                            <div className="border-t border-border p-2">
-                                <Button
-                                    className="w-full"
-                                    disabled={!onApply}
-                                    title={
-                                        onApply
-                                            ? "Apply corrections to the 3D model"
-                                            : "Auto-apply arrives in Phase 2"
-                                    }
-                                    onClick={() => onApply?.(result)}
-                                >
-                                    {onApply ? "Apply corrections" : "Apply to model (Phase 2)"}
-                                </Button>
-                            </div>
-                        ) : null}
                     </div>
                 </div>
             </div>
         </div>
     );
-}
-
-function ResultView({ result }: { result: PrescriptionParseResult }) {
-    return (
-        <div className="space-y-3">
-            <div className="flex flex-wrap gap-2 text-[11px]">
-                <Badge label={`provider: ${result.provider}`} />
-                <Badge label={`confidence: ${(result.confidence * 100).toFixed(0)}%`} />
-                {result.tokenCost ? <Badge label={`-${result.tokenCost} tokens`} /> : null}
-                {result.pattern ? <Badge label={`pattern: ${result.pattern}`} /> : null}
-                {result.method ? <Badge label={`method: ${result.method}`} /> : null}
-            </div>
-
-            {(["left", "right"] as const).map((side) => {
-                const patch = result.corrections[side];
-                if (!patch || Object.keys(patch).length === 0) return null;
-                return (
-                    <div key={side}>
-                        <div className="mb-1 text-[10px] uppercase text-primary/80">{side} corrections</div>
-                        <div className="space-y-0.5">
-                            {Object.entries(patch).map(([k, v]) => (
-                                <div key={k} className="flex justify-between">
-                                    <span className="text-muted-foreground">{k}</span>
-                                    <span className="tabular-nums">{v}</span>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                );
-            })}
-
-            {result.elements.length > 0 ? (
-                <div>
-                    <div className="mb-1 text-[10px] uppercase text-primary/80">Suggested elements</div>
-                    <p className="mb-1 text-muted-foreground">
-                        Add these explicitly from the Elements library.
-                    </p>
-                    <div className="flex flex-wrap gap-1">
-                        {result.elements.map((e, i) => (
-                            <Badge key={`${e.kind}-${e.side}-${i}`} label={`${e.kind} (${e.side})`} />
-                        ))}
-                    </div>
-                </div>
-            ) : null}
-
-            {result.notes ? <p className="text-muted-foreground">{result.notes}</p> : null}
-        </div>
-    );
-}
-
-function Badge({ label }: { label: string }) {
-    return <span className={cn("rounded bg-muted px-1.5 py-0.5 text-[11px]")}>{label}</span>;
 }
