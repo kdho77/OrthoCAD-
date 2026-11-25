@@ -1,6 +1,8 @@
 import { describe, expect, test } from "@rstest/core";
 
-import type { ManufacturingClient } from "../src/clients/manufacturing-client.js";
+import superjson from "superjson";
+
+import { createManufacturingClient, type ManufacturingClient } from "../src/clients/manufacturing-client.js";
 import type { OrthocadMcpConfig } from "../src/config.js";
 import { handleOrthocadTool } from "../src/tools/handlers.js";
 
@@ -334,5 +336,58 @@ describe("CAD-operator production tools", () => {
         expect(fetches).toBeGreaterThanOrEqual(2);
         expect(Date.now() - started).toBeGreaterThanOrEqual(2500);
         expect(Date.now() - started).toBeLessThan(8000);
+    });
+
+    test("generate_gcode returns as soon as both feet are queued, on two requests", async () => {
+        const bodies: string[] = [];
+        const fetchImpl: typeof fetch = async (input, init) => {
+            let body = "";
+            if (typeof init?.body === "string") body = init.body;
+            else if (input instanceof Request) body = await input.clone().text();
+            bodies.push(body);
+            await new Promise<void>((resolve) => {
+                setTimeout(resolve, 80);
+            });
+            const side = body.includes('"right"') ? "right" : "left";
+            const data = superjson.serialize({
+                ok: true,
+                outputType: "gcode",
+                productionId: side === "left" ? leftId : rightId,
+                status: "pending",
+                side,
+            });
+            return new Response(JSON.stringify([{ result: { data } }]), {
+                status: 200,
+                headers: { "content-type": "application/json" },
+            });
+        };
+        const manufacturing = createManufacturingClient({
+            trpcUrl: "http://127.0.0.1:9/trpc",
+            cadOperatorKey: "ocad_test",
+            fetchImpl,
+        });
+        const started = Date.now();
+        const result = await handleOrthocadTool(
+            "generate_gcode",
+            {
+                preset_id: "apex-v2-insole-95a",
+                use_saved_design: true,
+                design_id: designId,
+                force_new_slice: true,
+            },
+            { config, manufacturing },
+        );
+        expect(Date.now() - started).toBeLessThan(200);
+        expect(bodies).toHaveLength(2);
+        expect(bodies.filter((body) => body.includes('"left"'))).toHaveLength(1);
+        expect(bodies.filter((body) => body.includes('"right"'))).toHaveLength(1);
+        expect(result.isError).toBeUndefined();
+        const payload = toolJson(result) as {
+            files: Array<{ side: string; production_id: string; status: string }>;
+        };
+        expect(payload.files).toEqual([
+            { side: "left", production_id: leftId, status: "pending" },
+            { side: "right", production_id: rightId, status: "pending" },
+        ]);
     });
 });

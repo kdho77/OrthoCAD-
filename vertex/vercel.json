@@ -7,7 +7,7 @@
     "functions": {
         "api/trpc/[[...trpc]].ts": {
             "maxDuration": 300,
-            "includeFiles": "public/{fonts,elements}/**"
+            "includeFiles": "{public/{fonts,elements}/**,server/src/lib/loft-off-thread.mjs}"
         }
     },
     "rewrites": [
