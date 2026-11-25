@@ -180,6 +180,7 @@ describe("PR #456 grader G2 — edited values land in design store", () => {
         expect(right?.side).toBe("medial");
         expect(right?.value).toBe(4.5);
         expect(right?.unit).toBe("deg");
+        expect(useDesignStore.getState().design.corrections.left.fullLengthWedge).toBeUndefined();
     });
 
     test("G2: 4.5° medial full-length wedge right only", () => {
