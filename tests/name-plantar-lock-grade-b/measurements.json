@@ -1,0 +1,109 @@
+{
+    "gradedHead": "1235f5e35846f7240bd85cc839b1be779c72269d",
+    "headMoved": false,
+    "ciRun": {
+        "id": 45532907790,
+        "headSha": "4d4feba0a8c2640978c5f1c3ce752d18d4f0a5fe",
+        "conclusion": "success",
+        "jobId": 138932379412,
+        "fixSha": "9fe936425ad4449ee6a6d932b636a432c8dd2ea2",
+        "preprocessSha256": "6b7ce3fb9917e2cc85ef13a0a2fc1ced2d5ccfb174e299f4c4744756ea16ec25",
+        "imageId": "sha256:aa55befa26e437f42be9c6706bdba506b927a30b6ab3a15f1730264d3550648e",
+        "bytes": {
+            "apex_core_toe_first_left": 3625198,
+            "apex_core_toe_first_right": 3662132,
+            "apex_light_toe_first_left": 3488839,
+            "apex_light_toe_first_right": 3454996,
+            "apex_light_heel_first_left": 3572414,
+            "apex_light_heel_first_right": 3527132
+        }
+    },
+    "reproduction": {
+        "preprocessSha256": "6b7ce3fb9917e2cc85ef13a0a2fc1ced2d5ccfb174e299f4c4744756ea16ec25",
+        "stl": {
+            "leftSolid": 137692,
+            "leftUpload": 137772,
+            "rightSolid": 138790,
+            "rightUpload": 138870
+        },
+        "gcodeBytesMatchCi": true,
+        "workerRetestMatchesCiLines": true
+    },
+    "independentFix": [
+        {
+            "file": "apex_core_toe_first_left.gcode",
+            "pass": true,
+            "winner": "upright",
+            "upright": 0.3231,
+            "mirror_x": 0.0091,
+            "mirror_y": 0.2744,
+            "rot180": 0.0121,
+            "heelHigh": true,
+            "deltaMm": 19.25
+        },
+        {
+            "file": "apex_core_toe_first_right.gcode",
+            "pass": true,
+            "winner": "upright",
+            "upright": 0.2987,
+            "mirror_x": -0.0004,
+            "mirror_y": 0.256,
+            "rot180": 0.006,
+            "heelHigh": true,
+            "deltaMm": 19.25
+        },
+        {
+            "file": "apex_light_toe_first_left.gcode",
+            "pass": true,
+            "winner": "upright",
+            "upright": 0.3682,
+            "mirror_x": 0.0345,
+            "mirror_y": 0.2958,
+            "rot180": 0.0476,
+            "heelHigh": true,
+            "deltaMm": 19.25
+        },
+        {
+            "file": "apex_light_toe_first_right.gcode",
+            "pass": true,
+            "winner": "upright",
+            "upright": 0.3646,
+            "mirror_x": 0.0373,
+            "mirror_y": 0.3049,
+            "rot180": 0.0492,
+            "heelHigh": true,
+            "deltaMm": 19.25
+        },
+        {
+            "file": "apex_light_heel_first_left.gcode",
+            "pass": true,
+            "winner": "upright",
+            "upright": 0.2992,
+            "mirror_x": 0.0399,
+            "mirror_y": 0.2386,
+            "rot180": 0.0574,
+            "heelHigh": false,
+            "deltaMm": -21.54
+        },
+        {
+            "file": "apex_light_heel_first_right.gcode",
+            "pass": true,
+            "winner": "upright",
+            "upright": 0.2631,
+            "mirror_x": 0.0108,
+            "mirror_y": 0.2098,
+            "rot180": 0.0305,
+            "heelHigh": false,
+            "deltaMm": -21.51
+        }
+    ],
+    "xMirrorWorkerFailsAll6": true,
+    "xMirrorIndependentWinner": "mirror_y",
+    "placement436": {
+        "stl": { "leftSolid": 137222, "leftUpload": 137302, "rightSolid": 138806, "rightUpload": 138886 },
+        "workerTestExit": 1,
+        "workerSequence": ["RUOBBAJ", "RUOBBAJ", "RUOBBAJ", "RUOBBAJ", "RUOBBAJ", ""],
+        "independentWinner": "mirror_x",
+        "independentAllFail": true
+    }
+}
