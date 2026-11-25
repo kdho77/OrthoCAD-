@@ -1991,15 +1991,16 @@ export function densifyPolyline(col: XYZ[], nDense = SPLINE_W_DENSE): XYZ[] {
     const L = acc[acc.length - 1] ?? 0;
     const n = Math.max(1, nDense);
     const out: XYZ[] = [];
+    // Targets increase with k, so the segment index only moves forward.
+    let seg = 1;
     for (let k = 0; k <= n; k++) {
         const target = L > 1e-16 ? (k / n) * L : 0;
-        let i = 1;
-        while (i < acc.length && (acc[i] ?? 0) < target) i++;
-        const a = acc[i - 1] ?? 0;
-        const b = acc[i] ?? a;
+        while (seg < acc.length && (acc[seg] ?? 0) < target) seg++;
+        const a = acc[seg - 1] ?? 0;
+        const b = acc[seg] ?? a;
         const t = b > a ? (target - a) / (b - a) : 0;
-        const p0 = col[i - 1] ?? col[0]!;
-        const p1 = col[i] ?? p0;
+        const p0 = col[seg - 1] ?? col[0]!;
+        const p1 = col[seg] ?? p0;
         out.push(lerp(p0, p1, t));
     }
     out[0] = { ...col[0]! };

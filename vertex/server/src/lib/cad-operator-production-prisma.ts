@@ -11,7 +11,7 @@ import type {
     CadProductionStatus,
     CadProductionStore,
 } from "./cad-operator-production.js";
-import { isLeaseExpired, UniqueIdempotencyError } from "./cad-operator-production.js";
+import { isLeaseExpired, readSliceCheckpoint, UniqueIdempotencyError } from "./cad-operator-production.js";
 
 type ProductionRecord = {
     id: string;
@@ -146,7 +146,7 @@ export class PrismaCadProductionStore implements CadProductionStore {
         });
         for (const row of rows) {
             const mapped = mapRow(row as ProductionRecord);
-            if (!isLeaseExpired(mapped, now)) return mapped;
+            if (readSliceCheckpoint(mapped.error) || !isLeaseExpired(mapped, now)) return mapped;
         }
         return null;
     }
@@ -156,15 +156,28 @@ export class PrismaCadProductionStore implements CadProductionStore {
         predicate: (row: CadProductionRow) => boolean,
         patch: CadProductionPatch,
     ): Promise<CadProductionRow | null> {
-        return this.prisma.$transaction(async (tx) => {
-            const locked = await tx.$queryRaw<Array<{ id: string }>>`
-                SELECT id FROM productions WHERE id = ${id}::uuid FOR UPDATE
-            `;
-            if (!locked.length) return null;
-            const row = await tx.production.findUnique({ where: { id } });
-            if (!row || !predicate(mapRow(row as ProductionRecord))) return null;
-            const updated = await tx.production.update({
-                where: { id },
+        // One statement, then the connection is released. An interactive
+        // $transaction (default 5s) stays open across its round trips. On a
+        // both-feet run the other foot's loft blocks the event loop while that
+        // transaction is still open, and Prisma then throws
+        // "Transaction already closed" (P2028). publicProductionError maps that
+        // to "Manufacturing timed out (right|left)". Loft and slice stay outside
+        // this method. The compare-and-swap where rechecks the row the predicate
+        // saw, so two claims on one id still serialize without holding a lock
+        // across the other foot's loft.
+        for (let attempt = 0; attempt < 8; attempt++) {
+            const existing = await this.prisma.production.findUnique({ where: { id } });
+            if (!existing || !predicate(mapRow(existing as ProductionRecord))) return null;
+            const written = await this.prisma.production.updateMany({
+                where: {
+                    id,
+                    status: existing.status,
+                    updatedAt: existing.updatedAt,
+                    error: existing.error,
+                    gcodeStorageKey: existing.gcodeStorageKey,
+                    leaseExpiresAt: existing.leaseExpiresAt,
+                    chargedAt: existing.chargedAt,
+                },
                 data: {
                     status: patch.status,
                     error: patch.error,
@@ -176,8 +189,11 @@ export class PrismaCadProductionStore implements CadProductionStore {
                     exportId: patch.exportId,
                 },
             });
-            return mapRow(updated as ProductionRecord);
-        });
+            if (written.count !== 1) continue;
+            const updated = await this.prisma.production.findUnique({ where: { id } });
+            return updated ? mapRow(updated as ProductionRecord) : null;
+        }
+        return null;
     }
 
     async listByDesign(

@@ -1,5 +1,9 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { gunzipSync } from "node:zlib";
+
 import type { PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, test } from "@rstest/core";
 import { TRPCError } from "@trpc/server";
@@ -8,11 +12,14 @@ import { gyroidInfillPctForHardness } from "../../shared/print-recipe/print-reci
 import {
     CAD_OPERATOR_BELT_MATERIAL,
     type CadOperatorPrincipal,
+    cadOperatorTempPrefix,
     DOGFOOD_TENANT_ID,
 } from "./auth/cad-operator.js";
 import type { Context } from "./context.js";
 import * as contextMod from "./context.js";
 import * as meshRunner from "./lib/finalized-mesh-runner.js";
+import * as stlDownload from "./lib/manufacturing-stl-download.js";
+import { STALE_MANUFACTURING_STL_MESSAGE } from "./lib/manufacturing-stl-download.js";
 import { runCadOperatorGenerateRequest } from "./routers/cad-operator-generate.js";
 import { protectedProcedure, router, sessionOrCadOperatorProcedure } from "./trpc.js";
 
@@ -145,8 +152,34 @@ function memoryPrisma() {
             }
             return { ...row };
         },
-        async findMany() {
-            return [...productions.values()];
+        async updateMany({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) {
+            const row = productions.get(String(where.id));
+            if (!row) return { count: 0 };
+            const matches = Object.entries(where).every(([key, value]) => {
+                const actual = row[key];
+                if (actual instanceof Date && value instanceof Date)
+                    return actual.getTime() === value.getTime();
+                return actual === value;
+            });
+            if (!matches) return { count: 0 };
+            for (const [key, value] of Object.entries(data)) {
+                if (value !== undefined) row[key] = value;
+            }
+            return { count: 1 };
+        },
+        async findMany({ where }: { where?: Record<string, unknown> } = {}) {
+            return [...productions.values()].filter((row) => {
+                if (!where) return true;
+                if (where.designId && row.designId !== where.designId) return false;
+                if (where.side && row.side !== where.side) return false;
+                if (where.presetId && row.presetId !== where.presetId) return false;
+                if (where.settingsFingerprint && row.settingsFingerprint !== where.settingsFingerprint) {
+                    return false;
+                }
+                const status = where.status as { in?: string[] } | undefined;
+                if (status?.in && !status.in.includes(String(row.status))) return false;
+                return true;
+            });
         },
     };
     const prisma = {
@@ -220,6 +253,338 @@ describe("CAD-operator generate honors the caller material", () => {
         expect(sliced.uploadedGcode).toContain("filament_type = apex_forge");
     });
 
+    test("two consecutive generate_gcode calls both loft the UI export and do not read a stored STL", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "unit-test-key";
+        const loftBytes = new Uint8Array([9, 8, 7, 6]);
+        const adminSpy = rs.spyOn(contextMod, "getSupabaseAdmin").mockReturnValue({
+            rpc: async () => ({ data: null, error: null }),
+            from: () => ({
+                select: () => ({
+                    eq: () => ({
+                        single: async () => ({ data: { tokenBalance: 50 }, error: null }),
+                    }),
+                }),
+                update: () => ({
+                    eq: async () => ({ error: null }),
+                }),
+            }),
+            storage: {
+                from: () => ({
+                    upload: async () => ({ error: null }),
+                    createSignedUrl: async (key: string) => ({
+                        data: { signedUrl: `http://127.0.0.1/${key}` },
+                        error: null,
+                    }),
+                    download: async () => ({ data: null, error: { message: "archive skipped" } }),
+                    remove: async () => ({ error: null }),
+                }),
+            },
+        } as never);
+        const meshSpy = rs.spyOn(meshRunner, "buildHeadlessFinalizedFoot").mockResolvedValue({
+            side: "left",
+            stl: loftBytes.buffer,
+            solidTriangles: 1,
+            uploadTriangles: 1,
+            fingerprint: "mesh-fp",
+        });
+        const models: Uint8Array[] = [];
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice/jobs")) {
+                return new Response("job route is not deployed", { status: 404 });
+            }
+            if (url.endsWith("/v1/slice")) {
+                const model = (init?.body as FormData).get("model");
+                if (model instanceof Blob) models.push(new Uint8Array(await model.arrayBuffer()));
+                return new Response(gcodeForRequestedSide("left", "apex_core"), { status: 200 });
+            }
+            if (url.includes("127.0.0.1")) {
+                return new Response(loftBytes, { status: 200 });
+            }
+            return new Response("unexpected", { status: 500 });
+        }) as typeof fetch;
+        const { prisma } = memoryPrisma();
+        const input = {
+            designId: DESIGN_ID,
+            side: "left" as const,
+            presetId: "apex-v2-insole-95a",
+            stlStorageKey: "saved-design-internal",
+            outputType: "gcode" as const,
+            beltAngleDeg: 45,
+            useSavedDesignMesh: true,
+            patientName: "Ada Lovelace",
+            hardness: "Hard",
+            material: "apex_core",
+            forceNewSlice: true,
+        };
+        try {
+            for (let i = 0; i < 2; i++) {
+                let scheduled: Promise<void> | null = null;
+                await runCadOperatorGenerateRequest({
+                    prisma,
+                    principal,
+                    ip: null,
+                    now: () => new Date("2026-11-10T16:00:00.000Z"),
+                    schedule: (work) => {
+                        scheduled = work;
+                    },
+                    input,
+                });
+                if (!scheduled) throw new Error("slice was not scheduled");
+                await scheduled;
+            }
+            expect(meshSpy).toHaveBeenCalledTimes(2);
+            expect(models).toHaveLength(2);
+            expect(Array.from(models[0] ?? [])).toEqual(Array.from(loftBytes));
+            expect(Array.from(models[1] ?? [])).toEqual(Array.from(loftBytes));
+        } finally {
+            adminSpy.mockRestore();
+            meshSpy.mockRestore();
+        }
+    });
+
+    test("a left generate lofts when temp and archive already hold the pre-#52 STL", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "unit-test-key";
+        const loftBytes = new Uint8Array([9, 8, 7, 6, 5]);
+        const staleTemp = `${cadOperatorTempPrefix(principal.credentialId)}1795583578275-7278a0ac-1111-4111-8111-111111111111.stl`;
+        const staleArchive =
+            "manufacturing-archive/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/6590a003-2222-4222-8222-222222222222.stl";
+        const signedKeys: string[] = [];
+        const uploaded = new Map<string, Buffer>();
+        const adminSpy = rs.spyOn(contextMod, "getSupabaseAdmin").mockReturnValue({
+            rpc: async () => ({ data: null, error: null }),
+            from: (table: string) => ({
+                select: () => ({
+                    eq: () => ({
+                        single: async () =>
+                            table === "exports"
+                                ? { data: { sourceStlPath: staleArchive }, error: null }
+                                : { data: { tokenBalance: 50 }, error: null },
+                    }),
+                }),
+                update: () => ({
+                    eq: async () => ({ error: null }),
+                }),
+            }),
+            storage: {
+                from: () => ({
+                    upload: async (key: string, data: Buffer) => {
+                        uploaded.set(key, Buffer.from(data));
+                        return { error: null };
+                    },
+                    createSignedUrl: async (key: string) => {
+                        signedKeys.push(key);
+                        return { data: { signedUrl: `http://127.0.0.1/${key}` }, error: null };
+                    },
+                    download: async (key: string) => {
+                        if (key === staleTemp || key === staleArchive) {
+                            throw new Error(STALE_MANUFACTURING_STL_MESSAGE);
+                        }
+                        return { data: null, error: { message: "archive skipped" } };
+                    },
+                    list: async () => ({
+                        data: [
+                            {
+                                name: "1795583578275-7278a0ac-1111-4111-8111-111111111111.stl",
+                                id: "temp",
+                                created_at: "2026-11-24T19:13:17.000Z",
+                            },
+                            {
+                                name: "6590a003-2222-4222-8222-222222222222.stl",
+                                id: "archive",
+                                created_at: "2026-11-24T19:13:17.000Z",
+                            },
+                        ],
+                        error: null,
+                    }),
+                    remove: async () => ({ error: null }),
+                }),
+            },
+        } as never);
+        const meshSpy = rs.spyOn(meshRunner, "buildHeadlessFinalizedFoot").mockResolvedValue({
+            side: "left",
+            stl: loftBytes.buffer,
+            solidTriangles: 1,
+            uploadTriangles: 1,
+            fingerprint: "fresh-loft",
+        });
+        const downloadSpy = rs.spyOn(stlDownload, "downloadManufacturingStl").mockImplementation(async () => {
+            throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: STALE_MANUFACTURING_STL_MESSAGE,
+            });
+        });
+        const models: Uint8Array[] = [];
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            if (url.includes("1795583578275") || url.includes("6590a003") || url.includes("8f5dc451")) {
+                throw new Error(STALE_MANUFACTURING_STL_MESSAGE);
+            }
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice/jobs")) {
+                return new Response("job route is not deployed", { status: 404 });
+            }
+            if (url.endsWith("/v1/slice")) {
+                const model = (init?.body as FormData).get("model");
+                if (model instanceof Blob) models.push(new Uint8Array(await model.arrayBuffer()));
+                return new Response(gcodeForRequestedSide("left", "apex_core"), { status: 200 });
+            }
+            return new Response("unexpected", { status: 500 });
+        }) as typeof fetch;
+        const { prisma, productions } = memoryPrisma();
+        const input = {
+            designId: "0d3db1c0-0000-4000-8000-0000000000d3",
+            side: "left" as const,
+            presetId: "apex-v2-insole-95a",
+            stlStorageKey: staleTemp,
+            outputType: "gcode" as const,
+            beltAngleDeg: 45,
+            useSavedDesignMesh: true,
+            patientName: "Ada Lovelace",
+            hardness: "Hard",
+            material: "apex_core",
+            forceNewSlice: true,
+        };
+        try {
+            for (let i = 0; i < 2; i++) {
+                let scheduled: Promise<void> | null = null;
+                await runCadOperatorGenerateRequest({
+                    prisma,
+                    principal,
+                    ip: null,
+                    now: () => new Date("2026-11-25T14:24:00.000Z"),
+                    schedule: (work) => {
+                        scheduled = work;
+                    },
+                    input,
+                });
+                if (!scheduled) throw new Error("slice was not scheduled");
+                await scheduled;
+            }
+            expect(meshSpy).toHaveBeenCalledTimes(2);
+            expect(downloadSpy).not.toHaveBeenCalled();
+            expect(signedKeys).toEqual([]);
+            expect(models).toHaveLength(2);
+            expect(Array.from(models[0] ?? [])).toEqual(Array.from(loftBytes));
+            expect(Array.from(models[1] ?? [])).toEqual(Array.from(loftBytes));
+            expect([...uploaded.keys()].some((key) => key === staleTemp || key === staleArchive)).toBe(false);
+            for (const row of productions.values()) {
+                expect(row.status).toBe("succeeded");
+                expect(String(row.error ?? "")).not.toContain("Refusing a stale");
+                expect(String(row.error ?? "")).not.toContain("8f5dc451");
+            }
+            expect(productions.size).toBe(2);
+        } finally {
+            adminSpy.mockRestore();
+            meshSpy.mockRestore();
+            downloadSpy.mockRestore();
+        }
+    });
+
+    test("a caller-supplied pre-#52 temp key is not the mesh", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "unit-test-key";
+        const loftBytes = new Uint8Array([4, 5, 6, 7]);
+        const staleTemp = `${cadOperatorTempPrefix(principal.credentialId)}1795583578275-7278a0ac-1111-4111-8111-111111111111.stl`;
+        const adminSpy = rs.spyOn(contextMod, "getSupabaseAdmin").mockReturnValue({
+            rpc: async () => ({ data: null, error: null }),
+            from: () => ({
+                select: () => ({
+                    eq: () => ({
+                        single: async () => ({ data: { tokenBalance: 50 }, error: null }),
+                    }),
+                }),
+                update: () => ({
+                    eq: async () => ({ error: null }),
+                }),
+            }),
+            storage: {
+                from: () => ({
+                    upload: async () => ({ error: null }),
+                    createSignedUrl: async () => {
+                        throw new Error(STALE_MANUFACTURING_STL_MESSAGE);
+                    },
+                    download: async () => {
+                        throw new Error(STALE_MANUFACTURING_STL_MESSAGE);
+                    },
+                    list: async () => ({ data: [], error: null }),
+                    remove: async () => ({ error: null }),
+                }),
+            },
+        } as never);
+        const meshSpy = rs.spyOn(meshRunner, "buildHeadlessFinalizedFoot").mockResolvedValue({
+            side: "left",
+            stl: loftBytes.buffer,
+            solidTriangles: 1,
+            uploadTriangles: 1,
+            fingerprint: "fresh-loft",
+        });
+        const downloadSpy = rs.spyOn(stlDownload, "downloadManufacturingStl").mockImplementation(async () => {
+            throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: STALE_MANUFACTURING_STL_MESSAGE,
+            });
+        });
+        const models: Uint8Array[] = [];
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice/jobs")) {
+                return new Response("job route is not deployed", { status: 404 });
+            }
+            if (url.endsWith("/v1/slice")) {
+                const model = (init?.body as FormData).get("model");
+                if (model instanceof Blob) models.push(new Uint8Array(await model.arrayBuffer()));
+                return new Response(gcodeForRequestedSide("left", "apex_core"), { status: 200 });
+            }
+            return new Response("unexpected", { status: 500 });
+        }) as typeof fetch;
+        const { prisma, productions } = memoryPrisma();
+        try {
+            let scheduled: Promise<void> | null = null;
+            await runCadOperatorGenerateRequest({
+                prisma,
+                principal,
+                ip: null,
+                now: () => new Date("2026-11-25T14:27:00.000Z"),
+                schedule: (work) => {
+                    scheduled = work;
+                },
+                input: {
+                    designId: "0d3db1c0-0000-4000-8000-0000000000d3",
+                    side: "left",
+                    presetId: "apex-v2-insole-95a",
+                    stlStorageKey: staleTemp,
+                    outputType: "gcode",
+                    beltAngleDeg: 45,
+                    useSavedDesignMesh: false,
+                    material: "apex_core",
+                },
+            });
+            if (!scheduled) throw new Error("slice was not scheduled");
+            await scheduled;
+            expect(meshSpy).toHaveBeenCalledTimes(1);
+            expect(downloadSpy).not.toHaveBeenCalled();
+            expect(Array.from(models[0] ?? [])).toEqual(Array.from(loftBytes));
+            const row = [...productions.values()][0];
+            expect(row?.status).toBe("succeeded");
+            expect(String(row?.error ?? "")).not.toContain("Refusing a stale");
+        } finally {
+            adminSpy.mockRestore();
+            meshSpy.mockRestore();
+            downloadSpy.mockRestore();
+        }
+    });
+
     test("unknown material and an unlocked preset are rejected before slicing", async () => {
         await expect(sliceCallerMaterial({ material: "TPU 95A" })).rejects.toThrow(/Unknown print material/);
         await expect(
@@ -228,7 +593,17 @@ describe("CAD-operator generate honors the caller material", () => {
     });
 });
 
-async function sliceCallerMaterial(input: { material?: string; presetId?: string }) {
+/** Left uses true_left_toe_first. Right uses main_left_request_toe_first, a physical right. */
+function gcodeForRequestedSide(side: "left" | "right", material: string): string {
+    const fixture = side === "right" ? "main_left_request_toe_first" : "true_left_toe_first";
+    const body = gunzipSync(
+        readFileSync(resolve(__dirname, "../../../tests/fixtures/handedness", `${fixture}.gcode.gz`)),
+    ).toString("utf8");
+    return `; filament_type = ${material}\n${body}`;
+}
+
+async function sliceCallerMaterial(input: { material?: string; presetId?: string; side?: "left" | "right" }) {
+    const side = input.side ?? "left";
     process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
     process.env.VERTEXSLICE_API_KEY = "unit-test-key";
     const uploads: Buffer[] = [];
@@ -275,11 +650,14 @@ async function sliceCallerMaterial(input: { material?: string; presetId?: string
                 status: 200,
             });
         }
+        if (url.endsWith("/v1/slice/jobs")) {
+            return new Response("job route is not deployed", { status: 404 });
+        }
         if (url.endsWith("/v1/slice")) {
             sliceCalls += 1;
             forms.push(init?.body as FormData);
-            const selected = (init?.body as FormData).get("material");
-            return new Response(`; filament_type = ${selected}\nG1 X0\n`, { status: 200 });
+            const selected = String((init?.body as FormData).get("material") ?? "");
+            return new Response(gcodeForRequestedSide(side, selected), { status: 200 });
         }
         if (url.includes("model.stl")) {
             return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
@@ -299,7 +677,7 @@ async function sliceCallerMaterial(input: { material?: string; presetId?: string
             },
             input: {
                 designId: DESIGN_ID,
-                side: "left",
+                side,
                 presetId: input.presetId,
                 stlStorageKey: "saved-design-internal",
                 outputType: "gcode",

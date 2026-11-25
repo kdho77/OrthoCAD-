@@ -5,15 +5,58 @@ import { minDistToLoopXY, pointInPoly } from "@/lib/geometry/procedural-wall/cdt
 import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
 import { reconstructionManifold, windingReport } from "@/lib/geometry/procedural-wall/metrics";
 import { binaryStlToGeometry, geometryToBinarySTL } from "@/lib/geometry/stl";
-import { TEXT_BOOLEAN_EPS_MM, TEXT_REMAINING_MIN_MM, TEXT_WELD_MM } from "./constants";
+import { TEXT_BOOLEAN_EPS_MM, TEXT_HOST_SI_PAD_MM, TEXT_REMAINING_MIN_MM, TEXT_WELD_MM } from "./constants";
 import { TextMarkingError, textTooThinRemaining } from "./errors";
-import { countSoupSelfIntersections } from "./soup-intersect";
+import { countSoupSelfIntersections, type SoupHitPair } from "./soup-intersect";
 import type { TextApplyMeta, TextSurface } from "./types";
 
 const Z0_TOL = 0.08;
 
 /** Opposite-edge winding on the index graph (not a 1e-4 position weld). */
+/** Vertex indices stay below this so a*STRIDE+b does not collide. */
+const INDEX_EDGE_STRIDE = 2_097_152;
+
 function indexOppositeMismatch(geo: BufferGeometry): number {
+    const index = geo.getIndex();
+    if (!index) return 1;
+    const src = index.array as ArrayLike<number>;
+    let maxIndex = 0;
+    for (let i = 0; i < src.length; i++) {
+        const v = src[i] ?? 0;
+        if (v > maxIndex) maxIndex = v;
+    }
+    if (maxIndex >= INDEX_EDGE_STRIDE) return indexOppositeMismatchStrings(geo);
+    const dir = new Map<number, number>();
+    const add = (a: number, b: number) => {
+        const k = a * INDEX_EDGE_STRIDE + b;
+        dir.set(k, (dir.get(k) ?? 0) + 1);
+    };
+    for (let t = 0; t + 2 < index.count; t += 3) {
+        const a = src[t] ?? 0;
+        const b = src[t + 1] ?? 0;
+        const c = src[t + 2] ?? 0;
+        add(a, b);
+        add(b, c);
+        add(c, a);
+    }
+    let mismatch = 0;
+    const seen = new Set<number>();
+    for (const key of dir.keys()) {
+        const a = Math.floor(key / INDEX_EDGE_STRIDE);
+        const b = key - a * INDEX_EDGE_STRIDE;
+        const lo = a < b ? a : b;
+        const hi = a < b ? b : a;
+        const undirected = lo * INDEX_EDGE_STRIDE + hi;
+        if (seen.has(undirected)) continue;
+        seen.add(undirected);
+        const fwd = dir.get(a * INDEX_EDGE_STRIDE + b) ?? 0;
+        const rev = dir.get(b * INDEX_EDGE_STRIDE + a) ?? 0;
+        if (fwd !== 1 || rev !== 1) mismatch++;
+    }
+    return mismatch;
+}
+
+function indexOppositeMismatchStrings(geo: BufferGeometry): number {
     const index = geo.getIndex();
     if (!index) return 1;
     const src = index.array as ArrayLike<number>;
@@ -148,6 +191,35 @@ function assertBottomZ0OutsideRecess(
     }
 }
 
+/**
+ * Bottom letters only cut the sole pocket. Count a hit when it is low enough
+ * to meet that floor and it sits in the glyph footprint. Intersections above
+ * the pocket are already on the host (a Morton's extension can cross itself
+ * on the top) and must not drop the name. Wall text still checks the whole soup.
+ */
+function pairEntersBottomPocket(pair: SoupHitPair, meta: TextApplyMeta): boolean {
+    const zHi = meta.depthMm + 0.35;
+    let low = false;
+    for (const v of pair.a) {
+        if (v.z <= zHi) low = true;
+    }
+    for (const v of pair.b) {
+        if (v.z <= zHi) low = true;
+    }
+    if (!low) return false;
+    const glyphs = meta.outlineWorld ?? [];
+    if (glyphs.length === 0) return true;
+    const c = pair.centroid;
+    for (const g of glyphs) {
+        const outer = g.outer as PolyPoint[];
+        if (outer.length < 3) continue;
+        if (pointInPoly(c.x, c.y, outer) || minDistToLoopXY(c.x, c.y, outer) <= TEXT_HOST_SI_PAD_MM) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /** Hard STL gates after the text boolean. Failures throw — no broken STL. */
 export function assertTextPrintGates(
     geo: BufferGeometry,
@@ -167,8 +239,10 @@ export function assertTextPrintGates(
     const soup = binaryStlToGeometry(stl);
     const si = countSoupSelfIntersections(soup, TEXT_WELD_MM);
     soup.dispose();
-    if (si.real > 0) {
-        const sample = si.pairs.slice(0, 8).map((p) => ({
+    const blamed =
+        meta.surface === "bottom" ? si.pairs.filter((p) => pairEntersBottomPocket(p, meta)) : si.pairs;
+    if (blamed.length > 0) {
+        const sample = blamed.slice(0, 8).map((p) => ({
             triA: p.triA,
             triB: p.triB,
             c: p.centroid,
@@ -177,7 +251,7 @@ export function assertTextPrintGates(
         }));
         throw new TextMarkingError(
             "stl-gate",
-            `text boolean has ${si.real} self-intersections on the exported STL ` +
+            `text boolean has ${blamed.length} self-intersections on the exported STL ` +
                 `(pairs=${JSON.stringify(sample)})`,
         );
     }
@@ -214,7 +288,7 @@ export function assertTextPrintGates(
         textMarking: meta,
         textGates: {
             watertight: true,
-            selfIntersections: si.real,
+            selfIntersections: blamed.length,
             gWind,
             gFace,
             gCol,
@@ -224,7 +298,7 @@ export function assertTextPrintGates(
     };
     return {
         watertight: true,
-        selfIntersections: si.real,
+        selfIntersections: blamed.length,
         gWind,
         gFace,
         gCol,

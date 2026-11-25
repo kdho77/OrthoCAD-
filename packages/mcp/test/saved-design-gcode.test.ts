@@ -123,7 +123,7 @@ describe("saved-design belt G-code tool", () => {
             { config, manufacturing },
         );
         expect(result.isError).toBeUndefined();
-        expect(calls).toBe(1);
+        expect(calls).toBe(2);
         const payload = JSON.parse(result.content[0]?.text ?? "{}") as {
             ask?: string;
             relay?: string;

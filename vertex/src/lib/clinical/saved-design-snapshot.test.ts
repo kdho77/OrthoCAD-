@@ -353,7 +353,22 @@ describe("SAMPLE_Top saved-design snapshot", () => {
         });
         expect(split.design.corrections.left).toMatchObject({ medialFlangeMm: 4, lateralFlangeMm: 5 });
         expect(split.design.corrections.right.medialFlangeMm).toBe(3);
-        expect(split.design.corrections.right.lateralFlangeMm).toBe(3);
+        expect(split.design.corrections.right.lateralFlangeMm).toBe(0);
+
+        const medialOnly = build({ flange: { left: { medial_mm: 3 } } });
+        expect(medialOnly.design.corrections.left.medialFlangeMm).toBe(3);
+        expect(medialOnly.design.corrections.left.lateralFlangeMm).toBe(0);
+        expect(medialOnly.design.corrections.right.medialFlangeMm).toBe(0);
+        expect(medialOnly.design.corrections.right.lateralFlangeMm).toBe(0);
+        expect(medialOnly.paths).toContain("settings.corrections.left.medialFlangeMm");
+        expect(medialOnly.paths).not.toContain("settings.corrections.left.lateralFlangeMm");
+
+        const explicitZeroLateral = build({ flange: { left: { medial_mm: 3, lateral_mm: 0 } } });
+        expect(explicitZeroLateral.design.corrections.left).toMatchObject({
+            medialFlangeMm: 3,
+            lateralFlangeMm: 0,
+        });
+        expect(explicitZeroLateral.design.corrections.right.medialFlangeMm).toBe(0);
 
         const overridesLevel = build({ flange: { left: { level: "high", medial_mm: 3 } } });
         expect(overridesLevel.design.corrections.left.medialFlangeMm).toBe(3);

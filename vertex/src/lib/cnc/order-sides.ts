@@ -17,8 +17,8 @@ function filenameBase(design: DesignState): { assetId?: string | null } {
 }
 
 /**
- * Internal laterality of a physical foot. SAMPLE_Top stores the physical right
- * foot on internal left ({@link physicalSideLabel}).
+ * Internal laterality of a physical foot. The label is the requested side for
+ * every base, including SAMPLE_Top ({@link physicalSideLabel}).
  */
 export function internalSideForPhysicalFoot(design: DesignState, physical: "left" | "right"): Side {
     const base = filenameBase(design);

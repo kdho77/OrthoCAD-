@@ -249,15 +249,12 @@ export async function materializeCadOperatorStl(args: {
     centralFabSolid?: { designId: string };
 }): Promise<{
     stlStorageKey: string;
+    /** Loft bytes. The slicer uses these. It does not read the uploaded object back. */
+    stlBytes: Uint8Array;
     meshFingerprint: string | null;
     regional3mf: { bytes: Uint8Array; regionCount: number } | null;
 }> {
-    if (!args.plan.useSavedDesignMesh) {
-        if (!args.plan.stlStorageKey) {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid manufacturing STL storage key" });
-        }
-        return { stlStorageKey: args.plan.stlStorageKey, meshFingerprint: null, regional3mf: null };
-    }
+    // Belt and central-fab both loft the saved design. A caller storage key is not the mesh.
     let foot: Awaited<ReturnType<typeof buildHeadlessFinalizedFoot>>;
     try {
         foot = await buildHeadlessFinalizedFoot({
@@ -274,14 +271,15 @@ export async function materializeCadOperatorStl(args: {
             message,
         });
     }
-    const mesh = inspectManufacturingStl(new Uint8Array(foot.stl));
+    const stlBytes = new Uint8Array(foot.stl);
+    const mesh = inspectManufacturingStl(stlBytes);
     if (mesh.problem) {
         throw new TRPCError({ code: "BAD_REQUEST", message: mesh.problem });
     }
     const stlStorageKey = args.centralFabSolid
         ? buildCadOperatorCentralFabStlKey(args.credentialId, args.centralFabSolid.designId, args.side)
         : buildCadOperatorTempStlKey(args.credentialId);
-    await args.uploadStl(stlStorageKey, Buffer.from(foot.stl));
+    await args.uploadStl(stlStorageKey, Buffer.from(stlBytes));
     const regional3mf = vertexSliceRegional3mfEnabled()
         ? await buildHeadlessRegional3mf({
               settingsJson: args.plan.settingsJson,
@@ -289,5 +287,5 @@ export async function materializeCadOperatorStl(args: {
               manufacturingStl: foot.stl,
           })
         : null;
-    return { stlStorageKey, meshFingerprint: foot.fingerprint, regional3mf };
+    return { stlStorageKey, stlBytes, meshFingerprint: foot.fingerprint, regional3mf };
 }

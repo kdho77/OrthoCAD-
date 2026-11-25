@@ -2,7 +2,11 @@
 
 import { TRPCError } from "@trpc/server";
 
+import { isStalePre52ManufacturingStlBytes } from "./manufacturing-stl-identity.js";
 import { readUpstreamErrorText } from "./upstream-error.js";
+
+export const STALE_MANUFACTURING_STL_MESSAGE =
+    "Refusing a stale pre-#52 manufacturing STL (eTag 8f5dc451de66dbba8f8521e046a9e4af). Rematerialize the belt loft before slicing.";
 
 export async function downloadManufacturingStl(url: string): Promise<Uint8Array> {
     let response: Response;
@@ -22,5 +26,12 @@ export async function downloadManufacturingStl(url: string): Promise<Uint8Array>
             message: `Could not download manufacturing STL (${response.status}): ${detail}`,
         });
     }
-    return new Uint8Array(await response.arrayBuffer());
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (isStalePre52ManufacturingStlBytes(bytes)) {
+        throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: STALE_MANUFACTURING_STL_MESSAGE,
+        });
+    }
+    return bytes;
 }

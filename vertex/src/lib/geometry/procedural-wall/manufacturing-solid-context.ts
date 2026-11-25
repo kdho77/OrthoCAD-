@@ -7,8 +7,11 @@ import {
 } from "@/features/exports/apex-print-material";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import type { DesignState, ProductionMethod, Side } from "@/types";
+import { stripMeshBlobs } from "../../../../shared/design-settings";
+import { ORTHOCAD_MANUFACTURING_VERSION } from "../../../../shared/manufacturing-stl-identity";
 import {
     MANUFACTURING_SOLID_GEOMETRY_VERSION,
+    MANUFACTURING_STL_PLACEMENT_VERSION,
     type ManufacturingSolidContext,
 } from "./manufacturing-solid-cache";
 
@@ -52,6 +55,7 @@ export function manufacturingCacheContext(input: {
     baseAssetId: string;
     mirrored: boolean;
     printLoftEpoch?: number;
+    slicerVersion?: string;
 }): ManufacturingSolidContext {
     const target = manufacturingSliceTarget();
     return {
@@ -62,5 +66,9 @@ export function manufacturingCacheContext(input: {
         productId: target.productId,
         machineId: target.machineId,
         geometryVersion: MANUFACTURING_SOLID_GEOMETRY_VERSION,
+        placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+        savedDesign: stripMeshBlobs(input.design),
+        orthocadVersion: ORTHOCAD_MANUFACTURING_VERSION,
+        slicerVersion: input.slicerVersion ?? ORTHOCAD_MANUFACTURING_VERSION,
     };
 }

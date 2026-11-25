@@ -9,13 +9,16 @@ import { describe, expect, test } from "@rstest/core";
 import { Cache } from "three";
 import { designStateFromDocument } from "@/features/clients/design-document";
 import { buildMillCncGcode, PRINT_ORDER_CNC_REFUSAL } from "@/lib/cnc/mill-job";
-import { cncSidesForOrder } from "@/lib/cnc/order-sides";
+import { cncSidesForOrder, internalSideForPhysicalFoot, millExportSides } from "@/lib/cnc/order-sides";
 import { cloneProfile, IDAHO_PROFILE } from "@/lib/cnc/profile";
 import { orderDownloadSides } from "@/lib/geometry/export-geometry";
 import { createDesignWithStockPlaceholder } from "@/stores/design-store";
 import { useMillingProfileStore } from "@/stores/milling-profile-store";
 import type { DesignState } from "@/types";
 import { designSettingsEnvelope } from "../../../shared/design-settings";
+import { cncPairGcodeFilename } from "../../../shared/export-filename.js";
+import { CNC_GCODE_PRESET_ID } from "../auth/cad-operator.js";
+import { cadOperatorManufacturingIdentity } from "./cad-operator-production.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VERTEX_CWD = resolve(HERE, "../../..");
@@ -49,16 +52,29 @@ function ensureCncBundle(): Promise<void> {
 }
 
 /** Node load of the mill bundle. Rstest's bundler breaks that file's exports. */
-function serverMill(mode: "prepare" | "gcode", doc: unknown): ServerMillResult {
+function serverMill(
+    mode: "prepare" | "gcode",
+    doc: unknown,
+    millSide?: "LR" | "RR" | "LL",
+): ServerMillResult {
     const dir = mkdtempSync(join(tmpdir(), "cnc-mill-"));
     const inPath = join(dir, "in.json");
     const outPath = join(dir, "out.json");
     writeFileSync(inPath, JSON.stringify(doc));
-    execFileSync(process.execPath, ["--experimental-strip-types", PARITY_CHECK, mode, inPath, outPath], {
+    const args = ["--experimental-strip-types", PARITY_CHECK, mode, inPath, outPath];
+    if (millSide) args.push(millSide);
+    execFileSync(process.execPath, args, {
         cwd: VERTEX_CWD,
         stdio: "inherit",
     });
     return JSON.parse(readFileSync(outPath, "utf8")) as ServerMillResult;
+}
+
+const DESIGN_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+function cncIdempotencyKey(designId: string, sides: Array<"left" | "right">, fingerprint: string): string {
+    const sideKey = sides.length === 1 ? sides[0] : "pair";
+    return `cadop:v1:${designId}:${sideKey}:${CNC_GCODE_PRESET_ID}:${fingerprint}`;
 }
 
 function installSampleTopFetch(bytes: Uint8Array): void {
@@ -163,5 +179,150 @@ describe("server pair CNC G-code", () => {
         expect(server.fileExtension).toBe(".gcode");
         expect(server.gcode).toContain("; foot: left+right");
         expect(serverBytes.equals(browserBytes)).toBe(true);
+    }, 300_000);
+});
+
+describe("generateCncGcode millSide on the server path", () => {
+    test("RR and LL sides, filenames, idempotency keys, and G-code match the browser export", async () => {
+        await ensureCncBundle();
+        useMillingProfileStore.setState({ profile: cloneProfile(IDAHO_PROFILE), placements: [] });
+        const design = pairedMillDesign();
+        const doc = savedDocument(design);
+        const hydrated = designStateFromDocument(doc);
+        installSampleTopFetch(new Uint8Array(readFileSync(SAMPLE_TOP)));
+        Cache.clear();
+
+        const internalRight = internalSideForPhysicalFoot(hydrated, "right");
+        const internalLeft = internalSideForPhysicalFoot(hydrated, "left");
+        const rrSides = millExportSides(hydrated, undefined, "RR");
+        const llSides = millExportSides(hydrated, undefined, "LL");
+        expect(rrSides).toEqual([internalRight, internalRight]);
+        expect(llSides).toEqual([internalLeft, internalLeft]);
+
+        const preparedRr = serverMill("prepare", doc, "RR");
+        expect(preparedRr.sides).toEqual(rrSides);
+
+        const settingsJson = doc.settingsJson;
+        const printRecipe = {
+            version: 1 as const,
+            pattern: "gyroid" as const,
+            profileId: "apex-v2-insole-95a",
+            defaultHardness: "Hard" as const,
+            zones: [],
+        };
+        const lrSides = ["left", "right"] as const;
+        const lrIdentity = cadOperatorManufacturingIdentity({
+            designId: DESIGN_ID,
+            side: "left",
+            presetId: CNC_GCODE_PRESET_ID,
+            useSavedDesignMesh: true,
+            material: "EVA",
+            beltAngleDeg: 0,
+            layerHeightMm: null,
+            printRecipe,
+            settingsJson,
+            stlStorageKey: null,
+            deliverable: "cnc_gcode",
+            millSides: [...lrSides],
+        });
+        const rrIdentity = cadOperatorManufacturingIdentity({
+            designId: DESIGN_ID,
+            side: "left",
+            presetId: CNC_GCODE_PRESET_ID,
+            useSavedDesignMesh: true,
+            material: "EVA",
+            beltAngleDeg: 0,
+            layerHeightMm: null,
+            printRecipe,
+            settingsJson,
+            stlStorageKey: null,
+            deliverable: "cnc_gcode",
+            millSides: rrSides,
+        });
+        const lrKey = cncIdempotencyKey(DESIGN_ID, [...lrSides], lrIdentity.fingerprint);
+        const rrKey = cncIdempotencyKey(DESIGN_ID, rrSides, rrIdentity.fingerprint);
+        expect(rrKey).not.toBe(lrKey);
+
+        expect(
+            cncPairGcodeFilename({
+                firstName: "Ada",
+                lastName: "Lovelace",
+                material: "EVA Milled",
+                sides: rrSides,
+                millSide: "RR",
+            }),
+        ).toBe("Ada_Lovelace_EVA_RR.gcode");
+        expect(
+            cncPairGcodeFilename({
+                firstName: "Ada",
+                lastName: "Lovelace",
+                material: "EVA Milled",
+                sides: llSides,
+                millSide: "LL",
+            }),
+        ).toBe("Ada_Lovelace_EVA_LL.gcode");
+
+        const browserRr = await buildMillCncGcode({
+            design: hydrated,
+            profile: cloneProfile(IDAHO_PROFILE),
+            placements: useMillingProfileStore.getState().placements,
+            millSide: "RR",
+        });
+        const serverRr = serverMill("gcode", doc, "RR");
+        expect(serverRr.ok).toBe(true);
+        expect(serverRr.sides).toEqual(rrSides);
+        expect(Buffer.from(serverRr.gcode ?? "", "utf8").equals(Buffer.from(browserRr.gcode, "utf8"))).toBe(
+            true,
+        );
+
+        const browserLl = await buildMillCncGcode({
+            design: hydrated,
+            profile: cloneProfile(IDAHO_PROFILE),
+            placements: useMillingProfileStore.getState().placements,
+            millSide: "LL",
+        });
+        const serverLl = serverMill("gcode", doc, "LL");
+        expect(serverLl.ok).toBe(true);
+        expect(serverLl.sides).toEqual(llSides);
+        expect(Buffer.from(serverLl.gcode ?? "", "utf8").equals(Buffer.from(browserLl.gcode, "utf8"))).toBe(
+            true,
+        );
+    }, 300_000);
+
+    test("omitted and LR millSide stay byte-identical to the default pair export", async () => {
+        await ensureCncBundle();
+        useMillingProfileStore.setState({ profile: cloneProfile(IDAHO_PROFILE), placements: [] });
+        const design = pairedMillDesign();
+        const doc = savedDocument(design);
+        const hydrated = designStateFromDocument(doc);
+        installSampleTopFetch(new Uint8Array(readFileSync(SAMPLE_TOP)));
+        Cache.clear();
+
+        const browserDefault = await buildMillCncGcode({
+            design: hydrated,
+            profile: cloneProfile(IDAHO_PROFILE),
+            placements: useMillingProfileStore.getState().placements,
+            requestedSides: orderDownloadSides(hydrated),
+        });
+        const browserLr = await buildMillCncGcode({
+            design: hydrated,
+            profile: cloneProfile(IDAHO_PROFILE),
+            placements: useMillingProfileStore.getState().placements,
+            requestedSides: orderDownloadSides(hydrated),
+            millSide: "LR",
+        });
+
+        const serverDefault = serverMill("gcode", doc);
+        const serverLr = serverMill("gcode", doc, "LR");
+        for (const server of [serverDefault, serverLr]) {
+            expect(server.ok).toBe(true);
+            expect(server.sides).toEqual(["left", "right"]);
+            expect(
+                Buffer.from(server.gcode ?? "", "utf8").equals(Buffer.from(browserDefault.gcode, "utf8")),
+            ).toBe(true);
+        }
+        expect(Buffer.from(browserLr.gcode, "utf8").equals(Buffer.from(browserDefault.gcode, "utf8"))).toBe(
+            true,
+        );
     }, 300_000);
 });

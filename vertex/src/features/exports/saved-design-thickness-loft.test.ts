@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "@rstest/core";
@@ -141,7 +142,9 @@ describe("saved-design shell thickness loft", () => {
             sampleTopBytes: sampleTop,
             includeLeader: false,
         });
-        expect(integrationMesh.fingerprint).toBe(uiMesh.fingerprint);
+        const stlHash = (stl: ArrayBuffer) => createHash("sha256").update(Buffer.from(stl)).digest("hex");
+        expect(stlHash(integrationMesh.stl)).toBe(stlHash(uiMesh.stl));
+        expect(integrationMesh.solidTriangles).toBe(uiMesh.solidTriangles);
     }, 180_000);
 
     test("3 mm raises forefoot top height by ~1.0 mm between 80–90% length", async () => {

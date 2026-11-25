@@ -292,6 +292,56 @@ export function assertBoundarySlivers(
     return aspect;
 }
 
+function nudgeClosePair(
+    points: PolyPoint[],
+    i: number,
+    j: number,
+    loop: PolyPoint[] | undefined,
+    keep: number,
+    tol: number,
+): void {
+    const a = points[i]!;
+    const b = points[j]!;
+    const d = Math.hypot(b.x - a.x, b.y - a.y);
+    if (d >= tol) return;
+    let nx: number;
+    let ny: number;
+    if (loop) {
+        const hit = nearestOnLoopXY(b.x, b.y, loop);
+        let vx = b.x - hit.x;
+        let vy = b.y - hit.y;
+        let vlen = Math.hypot(vx, vy);
+        if (vlen < 1e-12) {
+            const e = loop[(hit.i + 1) % loop.length]!;
+            const dx = e.x - loop[hit.i]!.x;
+            const dy = e.y - loop[hit.i]!.y;
+            const elen = Math.hypot(dx, dy) || 1;
+            vx = -dy / elen;
+            vy = dx / elen;
+            vlen = 1;
+        }
+        const ux = vx / vlen;
+        const uy = vy / vlen;
+        const side = j % 2 === 0 ? 1 : -1;
+        nx = b.x + ux * tol + side * -uy * tol * 0.5;
+        ny = b.y + uy * tol + side * ux * tol * 0.5;
+    } else {
+        const ang = (j * 2.399963) % (Math.PI * 2);
+        nx = b.x + Math.cos(ang) * tol;
+        ny = b.y + Math.sin(ang) * tol;
+    }
+    if (loop && keep > 0) {
+        if (!pointInPoly(nx, ny, loop) || minDistToLoopXY(nx, ny, loop) < keep) return;
+    }
+    b.x = nx;
+    b.y = ny;
+}
+
+/**
+ * Same pair order and the same hypot test as the all-pairs scan.
+ * A point within `tol` lies in the 3×3 block of cells of size `tol`, so the
+ * grid only skips pairs the hypot test would reject.
+ */
 function nudgeInteriorDuplicates(
     points: PolyPoint[],
     nOuter: number,
@@ -299,43 +349,69 @@ function nudgeInteriorDuplicates(
     keep = 0,
     tol = 0.045,
 ): void {
-    for (let i = 0; i < points.length; i++) {
-        for (let j = Math.max(i + 1, nOuter); j < points.length; j++) {
-            const a = points[i]!;
-            const b = points[j]!;
-            const d = Math.hypot(b.x - a.x, b.y - a.y);
-            if (d >= tol) continue;
-            let nx: number;
-            let ny: number;
-            if (loop) {
-                const hit = nearestOnLoopXY(b.x, b.y, loop);
-                let vx = b.x - hit.x;
-                let vy = b.y - hit.y;
-                let vlen = Math.hypot(vx, vy);
-                if (vlen < 1e-12) {
-                    const e = loop[(hit.i + 1) % loop.length]!;
-                    const dx = e.x - loop[hit.i]!.x;
-                    const dy = e.y - loop[hit.i]!.y;
-                    const elen = Math.hypot(dx, dy) || 1;
-                    vx = -dy / elen;
-                    vy = dx / elen;
-                    vlen = 1;
-                }
-                const ux = vx / vlen;
-                const uy = vy / vlen;
-                const side = j % 2 === 0 ? 1 : -1;
-                nx = b.x + ux * tol + side * -uy * tol * 0.5;
-                ny = b.y + uy * tol + side * ux * tol * 0.5;
-            } else {
-                const ang = (j * 2.399963) % (Math.PI * 2);
-                nx = b.x + Math.cos(ang) * tol;
-                ny = b.y + Math.sin(ang) * tol;
+    const n = points.length;
+    if (n < 2 || !(tol > 0) || !Number.isFinite(tol)) {
+        for (let i = 0; i < n; i++) {
+            for (let j = Math.max(i + 1, nOuter); j < n; j++) nudgeClosePair(points, i, j, loop, keep, tol);
+        }
+        return;
+    }
+    const off = 65536;
+    const stride = 131072;
+    const cellOf = (v: number) => Math.floor(v / tol);
+    const keyOf = (ix: number, iy: number) => (ix + off) * stride + (iy + off);
+    const buckets = new Map<number, number[]>();
+    const home = new Int32Array(n);
+    const homeY = new Int32Array(n);
+    const addAt = (index: number, ix: number, iy: number) => {
+        const key = keyOf(ix, iy);
+        let bucket = buckets.get(key);
+        if (!bucket) {
+            bucket = [];
+            buckets.set(key, bucket);
+        }
+        bucket.push(index);
+        home[index] = ix;
+        homeY[index] = iy;
+    };
+    for (let index = 0; index < n; index++) {
+        const p = points[index]!;
+        addAt(index, cellOf(p.x), cellOf(p.y));
+    }
+    const candidates: number[] = [];
+    for (let i = 0; i < n; i++) {
+        const a = points[i]!;
+        const ix = cellOf(a.x);
+        const iy = cellOf(a.y);
+        const jMin = Math.max(i + 1, nOuter);
+        candidates.length = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                const bucket = buckets.get(keyOf(ix + dx, iy + dy));
+                if (!bucket) continue;
+                for (const j of bucket) if (j >= jMin) candidates.push(j);
             }
-            if (loop && keep > 0) {
-                if (!pointInPoly(nx, ny, loop) || minDistToLoopXY(nx, ny, loop) < keep) continue;
+        }
+        if (candidates.length > 1) {
+            candidates.sort((p, q) => p - q);
+            let write = 1;
+            for (let read = 1; read < candidates.length; read++) {
+                if (candidates[read] !== candidates[write - 1]) candidates[write++] = candidates[read]!;
             }
-            b.x = nx;
-            b.y = ny;
+            candidates.length = write;
+        }
+        for (const j of candidates) {
+            nudgeClosePair(points, i, j, loop, keep, tol);
+            const moved = points[j]!;
+            const mx = cellOf(moved.x);
+            const my = cellOf(moved.y);
+            if (mx === home[j] && my === homeY[j]) continue;
+            const previous = buckets.get(keyOf(home[j]!, homeY[j]!));
+            if (previous) {
+                const at = previous.indexOf(j);
+                if (at >= 0) previous.splice(at, 1);
+            }
+            addAt(j, mx, my);
         }
     }
 }

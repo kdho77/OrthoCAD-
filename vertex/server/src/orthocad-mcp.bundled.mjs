@@ -1,4 +1,4 @@
-// orthocad-mcp-http-bundle 461737026ce7fe22786e27defd4975236a3109bba47d34ff6f43fab6b2096140
+// orthocad-mcp-http-bundle 6a2b7a0dbb5d7bc8c00d0ed9f27b9de4f45bff3147e5a6e7b1b6862b926c7ee4
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -24954,7 +24954,6 @@ import { createHash as createHash2 } from "node:crypto";
 // packages/mcp/src/shared/export-filename.ts
 var EXPORT_PATIENT_FALLBACK = "Unknown_Patient";
 var DEFAULT_EXPORT_MATERIAL_ID = "ApexCore";
-var SAMPLE_TOP_TEMPLATE_ASSET_ID = "sample-top";
 var MATERIAL_ID_BY_COMPACT = /* @__PURE__ */ new Map([
   ["apexlight", "ApexLight"],
   ["apexlightfoam", "ApexLight"],
@@ -25010,11 +25009,7 @@ function parsePatientNameForExport(patientName) {
   if (tokens.length === 1) return { firstName: tokens[0] ?? "", lastName: "" };
   return { firstName: tokens[0] ?? "", lastName: tokens.slice(1).join(" ") };
 }
-function physicalSideLabel(internalSide, base) {
-  const assetId = base?.assetId?.trim();
-  if (assetId === SAMPLE_TOP_TEMPLATE_ASSET_ID) {
-    return internalSide === "left" ? "right" : "left";
-  }
+function physicalSideLabel(internalSide, _base) {
   return internalSide;
 }
 function exportSideSuffix(side, base) {
@@ -25430,7 +25425,7 @@ var generateGcodeInputObjectSchema = external_exports.object({
    * In-flight productions are still reused so concurrent calls do not duplicate work.
    */
   force_new_slice: external_exports.boolean().optional(),
-  /** When `sample-top`, G-code export filenames use physical L/R (not internal laterality). */
+  /** Optional base asset id. It does not change the L/R filename. */
   base_asset_id: external_exports.string().trim().min(1).max(80).optional()
 });
 var generateGcodeInputSchema = generateGcodeInputObjectSchema.superRefine((value, ctx) => {
@@ -25478,7 +25473,13 @@ var generateCncGcodeInputSchema = external_exports.object({
   mill_side: external_exports.enum(["LR", "RR", "LL"]).default("LR")
 }).strict();
 var getProductionInputSchema = external_exports.object({
-  production_id: external_exports.string().uuid()
+  production_id: external_exports.string().uuid(),
+  /**
+   * Optional in-process wait (seconds). Omitted or 0 performs one fetch.
+   * When greater than 0, polls every ~2 s until status is succeeded or failed,
+   * or until the deadline, then returns the latest public status.
+   */
+  wait_s: external_exports.number().min(0).max(300).optional()
 });
 var listProductionsByDesignInputSchema = external_exports.object({
   design_id: external_exports.string().uuid(),
@@ -25633,7 +25634,7 @@ var prepareVoAttachmentInputSchema = external_exports.object({
   order_id: external_exports.string().uuid(),
   /** CAD provenance only. Not sent; VO would check the design link. */
   design_id: external_exports.string().uuid().optional(),
-  /** When `sample-top`, attach filenames and VO `side` use physical L/R. */
+  /** Optional base asset id. It does not change the VO side or filename. */
   base_asset_id: external_exports.string().trim().min(1).max(80).optional(),
   patient_name: external_exports.string().max(200).optional(),
   material: external_exports.string().max(80).optional(),
@@ -25685,12 +25686,12 @@ var MCP_TOOL_DEFINITIONS = [
   },
   {
     name: "generate_cnc_gcode",
-    description: "Pair CNC milling G-code from a saved milled design. One file for the order (L+R when both feet are on the order, one foot when the order is single-sided), the same bytes as the web Mill export with the default Idaho machine profile and the .gcode extension. Returns one production_id and status. The server builds the toolpath after that response. Poll get_production. Download with get_export_download only after succeeded. No G-code bytes in this response. Print and belt designs are refused. Optional material is the order material used in the filename (EVA Milled and EVA 45 Shore A are EVA). The pair name is First_Last_Material_LR.gcode. Optional mill_side is LR (default), RR, or LL. Omit it or pass LR for the same pair file. RR mills two copies of the physical right foot and the filename suffix is _RR. LL mills two copies of the physical left foot and the filename suffix is _LL. SAMPLE_Top stores the physical right foot on internal left. A pair file is one production (side is empty). Auth: CAD-operator key, manufacturing:generate.",
+    description: "Pair CNC milling G-code from a saved milled design. One file for the order (L+R when both feet are on the order, one foot when the order is single-sided), the same bytes as the web Mill export with the default Idaho machine profile and the .gcode extension. Returns one production_id and status. The server builds the toolpath after that response. Poll get_production. Download with get_export_download only after succeeded. No G-code bytes in this response. Print and belt designs are refused. Optional material is the order material used in the filename (EVA Milled and EVA 45 Shore A are EVA). The pair name is First_Last_Material_LR.gcode. Optional mill_side is LR (default), RR, or LL. Omit it or pass LR for the same pair file. RR mills two copies of the physical right foot and the filename suffix is _RR. LL mills two copies of the physical left foot and the filename suffix is _LL. SAMPLE_Top internal left is the physical left foot. A pair file is one production (side is empty). Auth: CAD-operator key, manufacturing:generate.",
     inputSchema: generateCncGcodeInputSchema
   },
   {
     name: "get_production",
-    description: "CAD-operator production status by production_id. Returns id, design, side, preset, status, timestamps, G-code storage key, a non-PHI error, and a get_export_download hint when succeeded. No G-code bytes and no PHI.",
+    description: "CAD-operator production status by production_id. Returns id, design, side, preset, status, timestamps, G-code storage key, a non-PHI error, and a get_export_download hint when succeeded. No G-code bytes and no PHI. Optional wait_s (0\u2013300, default 0) long-polls in-process about every 2 s until succeeded, failed, or the deadline.",
     inputSchema: getProductionInputSchema
   },
   {
@@ -25781,6 +25782,26 @@ function assertToolNotHeld(value) {
   }
 }
 var PRODUCTION_STATUSES = /* @__PURE__ */ new Set(["pending", "running", "succeeded", "failed"]);
+var PRODUCTION_TERMINAL_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed"]);
+var GET_PRODUCTION_POLL_INTERVAL_MS = 2e3;
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function getProductionWithOptionalWait(manufacturing, productionId, waitS) {
+  let result = await manufacturing.getProduction(productionId);
+  let payload = publicProductionFromResult(result);
+  if (waitS <= 0) return payload;
+  const deadline = Date.now() + waitS * 1e3;
+  while (!PRODUCTION_TERMINAL_STATUSES.has(payload.status ?? "")) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await sleepMs(Math.min(GET_PRODUCTION_POLL_INTERVAL_MS, remaining));
+    if (Date.now() >= deadline) break;
+    result = await manufacturing.getProduction(productionId);
+    payload = publicProductionFromResult(result);
+  }
+  return payload;
+}
 function textField(result, ...keys) {
   for (const key of keys) {
     const value = result[key];
@@ -25896,50 +25917,69 @@ async function dispatchTool(name, args, deps) {
         cadOperatorKey: requireCadOperatorKey(deps.config)
       });
       if (input.use_saved_design) {
-        if (!input.design_id) throw new Error("design_id is required");
-        assertToolNotHeld(input.design_id);
+        const designId = input.design_id;
+        if (!designId) throw new Error("design_id is required");
+        assertToolNotHeld(designId);
         if (input.output_type === "stl") {
           throw new Error("Saved-design manufacturing returns G-code only");
         }
         const sides = input.side ? [input.side] : ["left", "right"];
         const exportBase = input.base_asset_id?.trim() ? { assetId: input.base_asset_id.trim() } : null;
-        const files = [];
-        for (const side of sides) {
-          const exportFileName = mcpGcodeExportFilename(
-            side,
-            input.patient_name,
-            material,
-            input.file_name,
-            exportBase
-          );
-          try {
-            const result = await manufacturing.generateFromSavedDesign({
-              designId: input.design_id,
+        const pairEnqueue = sides.length > 1;
+        const sideOutcomes = await Promise.all(
+          sides.map(async (side) => {
+            const exportFileName = mcpGcodeExportFilename(
               side,
-              presetId,
+              input.patient_name,
               material,
-              fileName: exportFileName,
-              patientName: input.patient_name,
-              hardness: input.hardness,
-              forceNewSlice: input.force_new_slice === true
-            });
-            if (isUserQuestion(result)) {
-              if (files.length > 0) {
-                throw new Error(
-                  `Belt pair failed on the ${side} foot. No partial pair is returned.`
-                );
-              }
-              return result;
+              input.file_name,
+              exportBase
+            );
+            try {
+              const result = await manufacturing.generateFromSavedDesign({
+                designId,
+                side,
+                presetId,
+                material,
+                fileName: exportFileName,
+                patientName: input.patient_name,
+                hardness: input.hardness,
+                forceNewSlice: input.force_new_slice === true
+              });
+              return { side, exportFileName, result, error: null };
+            } catch (error2) {
+              return {
+                side,
+                exportFileName,
+                result: null,
+                error: error2 instanceof Error ? error2 : new Error(String(error2))
+              };
             }
-            files.push(gcodeFileFromResult(side, result, exportFileName));
-          } catch (error2) {
-            if (sides.length > 1) {
+          })
+        );
+        const files = [];
+        for (const entry of sideOutcomes) {
+          if (entry.error) {
+            if (pairEnqueue) {
               throw new Error(
-                `Belt pair failed on the ${side} foot. No partial pair is returned. ${error2 instanceof Error ? error2.message : String(error2)}`
+                `Belt pair failed on the ${entry.side} foot. No partial pair is returned. ${entry.error.message}`
               );
             }
-            throw error2;
+            throw entry.error;
           }
+          const result = entry.result;
+          if (isUserQuestion(result)) {
+            const partialSuccess = sideOutcomes.some(
+              (other) => other !== entry && other.result && !isUserQuestion(other.result) && !other.error
+            );
+            if (files.length > 0 || partialSuccess) {
+              throw new Error(
+                `Belt pair failed on the ${entry.side} foot. No partial pair is returned.`
+              );
+            }
+            return result;
+          }
+          files.push(gcodeFileFromResult(entry.side, result, entry.exportFileName));
         }
         if (files.length !== sides.length) {
           throw new Error("Belt pair did not produce both feet");
@@ -26059,7 +26099,7 @@ async function dispatchTool(name, args, deps) {
         trpcUrl: deps.config.trpcUrl,
         cadOperatorKey: requireCadOperatorKey(deps.config)
       });
-      return publicProductionFromResult(await manufacturing.getProduction(input.production_id));
+      return getProductionWithOptionalWait(manufacturing, input.production_id, input.wait_s ?? 0);
     }
     case "list_productions_by_design": {
       const input = listProductionsByDesignInputSchema.parse(args);

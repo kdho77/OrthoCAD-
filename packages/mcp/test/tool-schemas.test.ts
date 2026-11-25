@@ -2,6 +2,7 @@ import { describe, expect, test } from "@rstest/core";
 
 import {
     generateGcodeInputObjectSchema,
+    getProductionInputSchema,
     MCP_TOOL_DEFINITIONS,
     zodToJsonSchema,
 } from "../src/tools/schemas.js";
@@ -57,6 +58,29 @@ describe("OrthoCAD MCP tool schemas", () => {
         expect(material.description).toMatch(/ApexLight Foam/);
         expect(material.description).toMatch(/apex_forge/);
         expect(preset.description).toMatch(/apex-v2-insole-95a/);
+    });
+
+    test("get_production accepts optional wait_s between 0 and 300", () => {
+        const id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        expect(getProductionInputSchema.safeParse({ production_id: id }).success).toBe(true);
+        expect(getProductionInputSchema.safeParse({ production_id: id, wait_s: 0 }).success).toBe(true);
+        expect(getProductionInputSchema.safeParse({ production_id: id, wait_s: 300 }).success).toBe(true);
+        expect(getProductionInputSchema.safeParse({ production_id: id, wait_s: -1 }).success).toBe(false);
+        expect(getProductionInputSchema.safeParse({ production_id: id, wait_s: 301 }).success).toBe(false);
+        const tool = MCP_TOOL_DEFINITIONS.find((t) => t.name === "get_production");
+        const jsonSchema = zodToJsonSchema(tool!.inputSchema);
+        const wait = (jsonSchema.properties as Record<string, unknown>).wait_s as {
+            type?: string;
+            minimum?: number;
+            maximum?: number;
+        };
+        expect(wait.type).toBe("number");
+        expect(wait.minimum).toBe(0);
+        expect(wait.maximum).toBe(300);
+        expect(jsonSchema.required ?? []).not.toContain("wait_s");
+        expect((jsonSchema.properties as Record<string, unknown>).production_id).toBeTruthy();
+        expect(tool?.description).toMatch(/wait_s/i);
+        expect(tool?.description).toMatch(/0–300|0-300/);
     });
 
     test("each tool schema accepts a minimal valid payload", () => {

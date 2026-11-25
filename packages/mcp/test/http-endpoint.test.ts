@@ -355,6 +355,18 @@ describe("hosted OrthoCAD MCP tools match stdio", () => {
             expect(hosted?.description).toBe(tool.description);
             expect(hosted?.inputSchema).toEqual(tool.inputSchema);
         }
+        const advertised = fromHttp.tools.find((tool) => tool.name === "get_production");
+        const wait = (
+            advertised?.inputSchema as {
+                properties?: Record<string, { type?: string; minimum?: number; maximum?: number }>;
+                required?: string[];
+            }
+        )?.properties?.wait_s;
+        expect(wait?.type).toBe("number");
+        expect(wait?.minimum).toBe(0);
+        expect(wait?.maximum).toBe(300);
+        expect(advertised?.inputSchema.required ?? []).not.toContain("wait_s");
+        expect(advertised?.description).toMatch(/wait_s/);
 
         await http.close();
         await stdio.close();
@@ -560,6 +572,14 @@ describe("hosted route artifact", () => {
         const bundle = readFileSync(bundlePath, "utf8");
         const route = readFileSync(routePath, "utf8");
         expect(bundle.split("\n")[0]).toBe(`// orthocad-mcp-http-bundle ${orthocadMcpHttpSourceHash()}`);
+        const schemaStart = bundle.indexOf("var getProductionInputSchema = ");
+        expect(schemaStart).toBeGreaterThan(-1);
+        const schemaEnd = bundle.indexOf("var listProductionsByDesignInputSchema", schemaStart);
+        const productionSchema = bundle.slice(schemaStart, schemaEnd);
+        expect(productionSchema).toContain("wait_s");
+        expect(productionSchema).toContain(".min(0)");
+        expect(productionSchema).toContain(".max(300)");
+        expect(bundle).toContain("getProductionWithOptionalWait");
         expect(route).toContain("export const maxDuration = 60");
         expect(route).toContain("maxDuration: 60");
         expect(route).not.toMatch(/maxDuration:\s*[A-Za-z_]/);

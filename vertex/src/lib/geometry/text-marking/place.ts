@@ -2,7 +2,7 @@
 
 import { BufferAttribute, BufferGeometry, DoubleSide, Ray, Vector3 } from "three";
 import { MeshBVH } from "three-mesh-bvh";
-import { minDistToLoopXY, pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
+import { pointInPoly } from "@/lib/geometry/procedural-wall/cdt-band";
 import type { PolyPoint } from "@/lib/geometry/procedural-wall/curves";
 import type { Side } from "@/types";
 import {
@@ -312,11 +312,66 @@ export function stationsForSurface(ctx: HostTextContext, surface: TextSurface): 
     return surface === "medial" ? medialStations(ctx) : lateralStations(ctx);
 }
 
-function fitsInside(flat: FlattenedText, outline: PolyPoint[], insetMm: number): boolean {
+function loopCloserThan(loop: PolyPoint[], inset: number): (x: number, y: number) => boolean {
+    const cell = Math.max(inset, 1e-6);
+    const off = 65536;
+    const stride = 131072;
+    const keyOf = (ix: number, iy: number) => (ix + off) * stride + (iy + off);
+    const cellOf = (v: number) => Math.floor(v / cell);
+    const buckets = new Map<number, number[]>();
+    const add = (ix: number, iy: number, seg: number) => {
+        const key = keyOf(ix, iy);
+        let bucket = buckets.get(key);
+        if (!bucket) {
+            bucket = [];
+            buckets.set(key, bucket);
+        }
+        bucket.push(seg);
+    };
+    for (let i = 0; i < loop.length; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % loop.length]!;
+        const ix0 = cellOf(Math.min(a.x, b.x));
+        const ix1 = cellOf(Math.max(a.x, b.x));
+        const iy0 = cellOf(Math.min(a.y, b.y));
+        const iy1 = cellOf(Math.max(a.y, b.y));
+        for (let iy = iy0; iy <= iy1; iy++) for (let ix = ix0; ix <= ix1; ix++) add(ix, iy, i);
+    }
+    return (x, y) => {
+        const ix = cellOf(x);
+        const iy = cellOf(y);
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                const bucket = buckets.get(keyOf(ix + dx, iy + dy));
+                if (!bucket) continue;
+                for (const i of bucket) {
+                    const a = loop[i]!;
+                    const b = loop[(i + 1) % loop.length]!;
+                    const ex = b.x - a.x;
+                    const ey = b.y - a.y;
+                    const len2 = ex * ex + ey * ey;
+                    const t =
+                        len2 > 1e-12 ? Math.max(0, Math.min(1, ((x - a.x) * ex + (y - a.y) * ey) / len2)) : 0;
+                    const dxp = x - (a.x + ex * t);
+                    const dyp = y - (a.y + ey * t);
+                    if (Math.sqrt(dxp * dxp + dyp * dyp) < inset) return true;
+                }
+            }
+        }
+        return false;
+    };
+}
+
+function fitsInside(
+    flat: FlattenedText,
+    outline: PolyPoint[],
+    insetMm: number,
+    closerThan: (x: number, y: number) => boolean = loopCloserThan(outline, insetMm),
+): boolean {
     for (const g of flat.groups) {
         for (const p of g.outer) {
             if (!pointInPoly(p.x, p.y, outline)) return false;
-            if (minDistToLoopXY(p.x, p.y, outline) < insetMm) return false;
+            if (closerThan(p.x, p.y)) return false;
         }
     }
     return true;
@@ -348,7 +403,131 @@ interface FlatBottomTrace {
  * interior stays on the left. The returned loop is the one with the largest
  * absolute area, not the longest vertex chain.
  */
+const TRACE_EDGE_STRIDE = 2_097_152;
+
 function traceFlatBottomBoundary(geo: BufferGeometry): FlatBottomTrace {
+    const pos = geo.getAttribute("position");
+    const index = geo.getIndex();
+    if (!pos || !index) return { loop: null, untraced: false };
+    const src = index.array as ArrayLike<number>;
+    let maxV = 0;
+    for (let i = 0; i < src.length; i++) {
+        const v = src[i] ?? 0;
+        if (v > maxV) maxV = v;
+    }
+    if (maxV >= TRACE_EDGE_STRIDE) return traceFlatBottomBoundaryStrings(geo);
+    const undirected = new Map<number, number>();
+    const directed: Array<[number, number]> = [];
+    const edgeKey = (a: number, b: number) => (a < b ? a * TRACE_EDGE_STRIDE + b : b * TRACE_EDGE_STRIDE + a);
+    let flatFaces = 0;
+    for (let t = 0; t + 2 < index.count; t += 3) {
+        const i0 = src[t] ?? 0;
+        const i1 = src[t + 1] ?? 0;
+        const i2 = src[t + 2] ?? 0;
+        const ax = pos.getX(i0);
+        const ay = pos.getY(i0);
+        const az = pos.getZ(i0);
+        const bx = pos.getX(i1);
+        const by = pos.getY(i1);
+        const bz = pos.getZ(i1);
+        const cx = pos.getX(i2);
+        const cy = pos.getY(i2);
+        const cz = pos.getZ(i2);
+        const nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
+        const ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+        const nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        const z = (az + bz + cz) / 3;
+        const nl = Math.hypot(nx, ny, nz) || 1;
+        if (Math.abs(nz / nl) <= 0.85 || z >= 0.35) continue;
+        flatFaces++;
+        // Orient the XY projection CCW so mirrored winding still traces the
+        // interior on the left of each directed boundary edge.
+        const area2 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        const u0 = i0;
+        const u1 = area2 >= 0 ? i1 : i2;
+        const u2 = area2 >= 0 ? i2 : i1;
+        for (const [u, v] of [
+            [u0, u1],
+            [u1, u2],
+            [u2, u0],
+        ] as const) {
+            const k = edgeKey(u, v);
+            undirected.set(k, (undirected.get(k) ?? 0) + 1);
+            directed.push([u, v]);
+        }
+    }
+    const next = new Map<number, number[]>();
+    let edgeCount = 0;
+    for (const [u, v] of directed) {
+        if ((undirected.get(edgeKey(u, v)) ?? 0) !== 1) continue;
+        edgeCount++;
+        const list = next.get(u);
+        if (list) list.push(v);
+        else next.set(u, [v]);
+    }
+    if (flatFaces === 0 || edgeCount === 0) return { loop: null, untraced: false };
+    if (next.size < 4) return { loop: null, untraced: true };
+    const used = new Set<number>();
+    let best: number[] = [];
+    let bestAbs = -1;
+    const limit = edgeCount + 2;
+    for (const [start, tos] of next) {
+        for (const first of tos) {
+            const startKey = start * TRACE_EDGE_STRIDE + first;
+            if (used.has(startKey)) continue;
+            const path: number[] = [start];
+            let prev = start;
+            let cur = first;
+            used.add(startKey);
+            let closed = false;
+            for (let step = 0; step < limit; step++) {
+                if (cur === start) {
+                    closed = true;
+                    break;
+                }
+                path.push(cur);
+                const cands = next.get(cur) ?? [];
+                let nxt = -1;
+                let bestAng = -Infinity;
+                const ix = pos.getX(cur) - pos.getX(prev);
+                const iy = pos.getY(cur) - pos.getY(prev);
+                for (const v of cands) {
+                    const k = cur * TRACE_EDGE_STRIDE + v;
+                    if (used.has(k)) continue;
+                    const ox = pos.getX(v) - pos.getX(cur);
+                    const oy = pos.getY(v) - pos.getY(cur);
+                    const ang = Math.atan2(ix * oy - iy * ox, ix * ox + iy * oy);
+                    if (nxt < 0 || ang > bestAng) {
+                        bestAng = ang;
+                        nxt = v;
+                    }
+                }
+                if (nxt < 0) break;
+                used.add(cur * TRACE_EDGE_STRIDE + nxt);
+                prev = cur;
+                cur = nxt;
+            }
+            if (!closed || path.length < 4) continue;
+            let area = 0;
+            for (let i = 0; i < path.length; i++) {
+                const a = path[i]!;
+                const b = path[(i + 1) % path.length]!;
+                area += pos.getX(a) * pos.getY(b) - pos.getX(b) * pos.getY(a);
+            }
+            const abs = Math.abs(area) * 0.5;
+            if (abs > bestAbs) {
+                bestAbs = abs;
+                best = area < 0 ? path.slice().reverse() : path.slice();
+            }
+        }
+    }
+    if (best.length < 4) return { loop: null, untraced: true };
+    const loop: PolyPoint[] = best.map((i) => ({ x: pos.getX(i), y: pos.getY(i), z: pos.getZ(i) }));
+    return { loop, untraced: false };
+}
+
+/** String edge keys. Same trace as the numeric path when an index does not fit in TRACE_EDGE_STRIDE. */
+function traceFlatBottomBoundaryStrings(geo: BufferGeometry): FlatBottomTrace {
     const pos = geo.getAttribute("position");
     const index = geo.getIndex();
     if (!pos || !index) return { loop: null, untraced: false };
@@ -377,8 +556,6 @@ function traceFlatBottomBoundary(geo: BufferGeometry): FlatBottomTrace {
         const nl = Math.hypot(nx, ny, nz) || 1;
         if (Math.abs(nz / nl) <= 0.85 || z >= 0.35) continue;
         flatFaces++;
-        // Orient the XY projection CCW so mirrored winding still traces the
-        // interior on the left of each directed boundary edge.
         const area2 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
         const u0 = i0;
         const u1 = area2 >= 0 ? i1 : i2;
@@ -625,9 +802,11 @@ export function placeBottomText(
         );
         flatBound = null;
     }
+    const outlineCloser = loopCloserThan(ctx.outline, TEXT_BOTTOM_INSET_MM);
+    const flatCloser = flatBound ? loopCloserThan(flatBound, TEXT_BOTTOM_INSET_MM) : null;
     const fitsBoth = (src: FlattenedText) =>
-        fitsInside(src, ctx.outline, TEXT_BOTTOM_INSET_MM) &&
-        (!flatBound || fitsInside(src, flatBound, TEXT_BOTTOM_INSET_MM));
+        fitsInside(src, ctx.outline, TEXT_BOTTOM_INSET_MM, outlineCloser) &&
+        (!flatBound || !flatCloser || fitsInside(src, flatBound, TEXT_BOTTOM_INSET_MM, flatCloser));
     while (!fitsBoth(placed) && scale > minScale + 1e-4) {
         scale = Math.max(minScale, scale * 0.92);
         placed = applyAt(flat, scale);

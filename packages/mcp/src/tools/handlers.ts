@@ -123,6 +123,33 @@ function assertToolNotHeld(value: string): void {
 }
 
 const PRODUCTION_STATUSES = new Set(["pending", "running", "succeeded", "failed"]);
+const PRODUCTION_TERMINAL_STATUSES = new Set(["succeeded", "failed"]);
+/** In-process get_production polling interval when wait_s > 0. */
+const GET_PRODUCTION_POLL_INTERVAL_MS = 2000;
+
+function sleepMs(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getProductionWithOptionalWait(
+    manufacturing: ManufacturingClient,
+    productionId: string,
+    waitS: number,
+): Promise<ReturnType<typeof publicProductionFromResult>> {
+    let result = await manufacturing.getProduction(productionId);
+    let payload = publicProductionFromResult(result);
+    if (waitS <= 0) return payload;
+    const deadline = Date.now() + waitS * 1000;
+    while (!PRODUCTION_TERMINAL_STATUSES.has(payload.status ?? "")) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        await sleepMs(Math.min(GET_PRODUCTION_POLL_INTERVAL_MS, remaining));
+        if (Date.now() >= deadline) break;
+        result = await manufacturing.getProduction(productionId);
+        payload = publicProductionFromResult(result);
+    }
+    return payload;
+}
 
 function textField(result: Record<string, unknown>, ...keys: string[]): string | null {
     for (const key of keys) {
@@ -306,8 +333,9 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                     cadOperatorKey: requireCadOperatorKey(deps.config),
                 });
             if (input.use_saved_design) {
-                if (!input.design_id) throw new Error("design_id is required");
-                assertToolNotHeld(input.design_id);
+                const designId = input.design_id;
+                if (!designId) throw new Error("design_id is required");
+                assertToolNotHeld(designId);
                 if (input.output_type === "stl") {
                     throw new Error("Saved-design manufacturing returns G-code only");
                 }
@@ -315,45 +343,65 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                 const exportBase: ExportFilenameBase | null = input.base_asset_id?.trim()
                     ? { assetId: input.base_asset_id.trim() }
                     : null;
-                const files: Array<ReturnType<typeof gcodeFileFromResult>> = [];
-                for (const side of sides) {
-                    const exportFileName = mcpGcodeExportFilename(
-                        side,
-                        input.patient_name,
-                        material,
-                        input.file_name,
-                        exportBase,
-                    );
-                    try {
-                        const result = await manufacturing.generateFromSavedDesign({
-                            designId: input.design_id,
+                const pairEnqueue = sides.length > 1;
+                const sideOutcomes = await Promise.all(
+                    sides.map(async (side) => {
+                        const exportFileName = mcpGcodeExportFilename(
                             side,
-                            presetId,
+                            input.patient_name,
                             material,
-                            fileName: exportFileName,
-                            patientName: input.patient_name,
-                            hardness: input.hardness,
-                            forceNewSlice: input.force_new_slice === true,
-                        });
-                        if (isUserQuestion(result)) {
-                            if (files.length > 0) {
-                                throw new Error(
-                                    `Belt pair failed on the ${side} foot. No partial pair is returned.`,
-                                );
-                            }
-                            return result;
+                            input.file_name,
+                            exportBase,
+                        );
+                        try {
+                            const result = await manufacturing.generateFromSavedDesign({
+                                designId,
+                                side,
+                                presetId,
+                                material,
+                                fileName: exportFileName,
+                                patientName: input.patient_name,
+                                hardness: input.hardness,
+                                forceNewSlice: input.force_new_slice === true,
+                            });
+                            return { side, exportFileName, result, error: null as Error | null };
+                        } catch (error) {
+                            return {
+                                side,
+                                exportFileName,
+                                result: null,
+                                error: error instanceof Error ? error : new Error(String(error)),
+                            };
                         }
-                        files.push(gcodeFileFromResult(side, result, exportFileName));
-                    } catch (error) {
-                        if (sides.length > 1) {
+                    }),
+                );
+                const files: Array<ReturnType<typeof gcodeFileFromResult>> = [];
+                for (const entry of sideOutcomes) {
+                    if (entry.error) {
+                        if (pairEnqueue) {
                             throw new Error(
-                                `Belt pair failed on the ${side} foot. No partial pair is returned. ${
-                                    error instanceof Error ? error.message : String(error)
-                                }`,
+                                `Belt pair failed on the ${entry.side} foot. No partial pair is returned. ${entry.error.message}`,
                             );
                         }
-                        throw error;
+                        throw entry.error;
                     }
+                    const result = entry.result!;
+                    if (isUserQuestion(result)) {
+                        const partialSuccess = sideOutcomes.some(
+                            (other) =>
+                                other !== entry &&
+                                other.result &&
+                                !isUserQuestion(other.result) &&
+                                !other.error,
+                        );
+                        if (files.length > 0 || partialSuccess) {
+                            throw new Error(
+                                `Belt pair failed on the ${entry.side} foot. No partial pair is returned.`,
+                            );
+                        }
+                        return result;
+                    }
+                    files.push(gcodeFileFromResult(entry.side, result, entry.exportFileName));
                 }
                 if (files.length !== sides.length) {
                     throw new Error("Belt pair did not produce both feet");
@@ -459,7 +507,9 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
             const result = await manufacturing.generateCncGcode({
                 designId: input.design_id,
                 ...(input.material ? { material: input.material } : {}),
-                ...(input.mill_side === "RR" || input.mill_side === "LL" ? { millSide: input.mill_side } : {}),
+                ...(input.mill_side === "RR" || input.mill_side === "LL"
+                    ? { millSide: input.mill_side }
+                    : {}),
             });
             const status =
                 typeof result.status === "string" && PRODUCTION_STATUSES.has(result.status)
@@ -494,7 +544,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                     trpcUrl: deps.config.trpcUrl,
                     cadOperatorKey: requireCadOperatorKey(deps.config),
                 });
-            return publicProductionFromResult(await manufacturing.getProduction(input.production_id));
+            return getProductionWithOptionalWait(manufacturing, input.production_id, input.wait_s ?? 0);
         }
         case "list_productions_by_design": {
             const input = listProductionsByDesignInputSchema.parse(args);

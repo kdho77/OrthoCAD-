@@ -181,12 +181,93 @@ function trianglesIntersect(a: Tri, b: Tri): boolean {
     return false;
 }
 
+const WELD_PACK_OFF = 65536;
+const WELD_PACK_STRIDE = 131072;
+
+function weldCellKey(ix: number, iy: number, iz: number): number {
+    return (
+        ix +
+        WELD_PACK_OFF +
+        (iy + WELD_PACK_OFF) * WELD_PACK_STRIDE +
+        (iz + WELD_PACK_OFF) * WELD_PACK_STRIDE * WELD_PACK_STRIDE
+    );
+}
+
+function weldCellPacked(ix: number, iy: number, iz: number): boolean {
+    return (
+        ix > -WELD_PACK_OFF &&
+        ix < WELD_PACK_OFF &&
+        iy > -WELD_PACK_OFF &&
+        iy < WELD_PACK_OFF &&
+        iz > -WELD_PACK_OFF &&
+        iz < WELD_PACK_OFF
+    );
+}
+
+/**
+ * Open-addressed buckets for packed weld cells. Same lists and insertion order
+ * as a Map, without hashing a new object per empty-neighbor miss.
+ */
+function weldBucketTable(expected: number): {
+    get(key: number): number[] | undefined;
+    getOrCreate(key: number): number[];
+} {
+    let cap = 1024;
+    const need = Math.max(16, expected) * 2;
+    while (cap < need) cap <<= 1;
+    const mask = cap - 1;
+    const keys = new Float64Array(cap);
+    const used = new Uint8Array(cap);
+    const lists = new Array<number[] | undefined>(cap);
+    const slot = (key: number): number => {
+        let h = key | 0;
+        h = Math.imul(h ^ (h >>> 16), 0x7feb352d);
+        h ^= (key / 4294967296) | 0;
+        h = Math.imul(h ^ (h >>> 15), 0x846ca68b);
+        h = (h ^ (h >>> 16)) >>> 0;
+        let i = h & mask;
+        while (used[i]) {
+            if (keys[i] === key) return i;
+            i = (i + 1) & mask;
+        }
+        return i;
+    };
+    return {
+        get(key: number): number[] | undefined {
+            const i = slot(key);
+            return used[i] ? lists[i] : undefined;
+        },
+        getOrCreate(key: number): number[] {
+            const i = slot(key);
+            const existing = lists[i];
+            if (used[i] && existing) return existing;
+            used[i] = 1;
+            keys[i] = key;
+            const list: number[] = [];
+            lists[i] = list;
+            return list;
+        },
+    };
+}
+
 function weldIndex(pos: Float32Array, tol: number): Int32Array {
     const n = pos.length / 3;
     const map = new Int32Array(n);
     const cell = Math.max(tol, 1e-6);
-    const hash = new Map<string, number[]>();
-    const keyOf = (ix: number, iy: number, iz: number) => `${ix},${iy},${iz}`;
+    const numeric = weldBucketTable(n);
+    const spilled = new Map<string, number[]>();
+    const bucketAt = (ix: number, iy: number, iz: number): number[] | undefined =>
+        weldCellPacked(ix, iy, iz) ? numeric.get(weldCellKey(ix, iy, iz)) : spilled.get(`${ix},${iy},${iz}`);
+    const bucketForInsert = (ix: number, iy: number, iz: number): number[] => {
+        if (weldCellPacked(ix, iy, iz)) return numeric.getOrCreate(weldCellKey(ix, iy, iz));
+        const key = `${ix},${iy},${iz}`;
+        let bucket = spilled.get(key);
+        if (!bucket) {
+            bucket = [];
+            spilled.set(key, bucket);
+        }
+        return bucket;
+    };
     for (let i = 0; i < n; i++) {
         const x = pos[i * 3]!;
         const y = pos[i * 3 + 1]!;
@@ -199,7 +280,7 @@ function weldIndex(pos: Float32Array, tol: number): Int32Array {
         for (let dx = -1; dx <= 1 && canon === i; dx++) {
             for (let dy = -1; dy <= 1 && canon === i; dy++) {
                 for (let dz = -1; dz <= 1; dz++) {
-                    const bucket = hash.get(keyOf(ix + dx, iy + dy, iz + dz));
+                    const bucket = bucketAt(ix + dx, iy + dy, iz + dz);
                     if (!bucket) continue;
                     for (const j of bucket) {
                         const d = Math.hypot(x - pos[j * 3]!, y - pos[j * 3 + 1]!, z - pos[j * 3 + 2]!);
@@ -214,13 +295,7 @@ function weldIndex(pos: Float32Array, tol: number): Int32Array {
             }
         }
         map[i] = canon;
-        const home = keyOf(ix, iy, iz);
-        let bucket = hash.get(home);
-        if (!bucket) {
-            bucket = [];
-            hash.set(home, bucket);
-        }
-        if (canon === i) bucket.push(i);
+        if (canon === i) bucketForInsert(ix, iy, iz).push(i);
     }
     return map;
 }

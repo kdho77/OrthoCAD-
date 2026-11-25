@@ -554,6 +554,13 @@ export function evenSplitSourceEdges(
     bounds: { minX: number; maxX: number },
     rimLoop?: PolyPoint[],
     targetMm?: number,
+    /**
+     * Morton's extension lifts neighbouring rim vertices by different amounts.
+     * Measuring that step in 3D inserts plantar stations on the toe, which
+     * slides the outline's max X and the bottom engraved name. Plan length
+     * keeps the station set of the unlifted sheet.
+     */
+    rimLength: "xyz" | "xy" = "xyz",
 ): number {
     if (stations.length < 3) return 0;
     let added = 0;
@@ -564,7 +571,8 @@ export function evenSplitSourceEdges(
         for (let i = 0; i < n0; i++) {
             const a = stations[i]!.rim;
             const b = stations[(i + 1) % n0]!.rim;
-            edgeLen.push(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+            const dz = rimLength === "xy" ? 0 : b.z - a.z;
+            edgeLen.push(Math.hypot(b.x - a.x, b.y - a.y, dz));
             const ba = stations[i]!.outline;
             const bb = stations[(i + 1) % n0]!.outline;
             bLen.push(Math.hypot(bb.x - ba.x, bb.y - ba.y));

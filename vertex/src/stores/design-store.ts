@@ -88,6 +88,7 @@ import type {
     Unit,
     WedgeCorrection,
 } from "@/types";
+import { publishInstalledSavedDesign } from "../../shared/manufacturing-stl-identity";
 import type { NamedHardnessClass } from "../../shared/print-recipe/hardness-class-table";
 import { type HardnessName, migratePrintRecipe } from "../../shared/print-recipe/print-recipe";
 
@@ -1730,3 +1731,8 @@ export const useDesignStore = create<DesignStore>()(
         },
     ),
 );
+
+publishInstalledSavedDesign(useDesignStore.getState().design);
+useDesignStore.subscribe((state) => {
+    publishInstalledSavedDesign(state.design);
+});

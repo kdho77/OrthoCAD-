@@ -8,6 +8,7 @@ import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
 import { perfMark } from "@/lib/geometry/perf/load-export-perf";
 import { scaleSourceShapeToFootprint } from "@/lib/geometry/shoe-size";
+import { shoeWidthAffineActive } from "@/lib/geometry/shoe-width";
 import { effectiveInsoleThicknessMm } from "@/lib/geometry/sink";
 import { hasActiveComposedTextMarking } from "@/lib/geometry/text-marking/compose";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
@@ -23,12 +24,16 @@ import type { PolyPoint } from "./curves";
 import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
 import {
     awaitManufacturingLoftInflight,
+    cachedManufacturingSolidIncludesExportText,
+    cachedManufacturingSolidMatchesFrame,
+    dropManufacturingSolid,
     type ManufacturingSolidContext,
     manufacturingSolidFingerprint,
     noteManufacturingSolidBuilt,
     noteManufacturingSolidReused,
     peekManufacturingSolid,
     rememberManufacturingSolid,
+    stampManufacturingSolidFrame,
 } from "./manufacturing-solid-cache";
 import { FOREFOOT_SHIFT_U_HOLD, forefootFeatureBoxes, offsetPlanLoopForefootWidthMm } from "./modifiers";
 import {
@@ -162,7 +167,7 @@ function tagManufacturingSolid(geometry: BufferGeometry, fingerprint: string, fr
     };
 }
 
-/** Leader is not applied here. Text runs once on a hit or a fresh loft. */
+/** Leader is not applied here. Text runs once, and only when this mesh is not already engraved. */
 export async function applyExportText(
     geometry: BufferGeometry,
     options: ProceduralPreviewOptions & { mirrored?: boolean },
@@ -202,8 +207,9 @@ export async function applyExportText(
 
 /**
  * Print / STL: loft the approved solid. Same reconstruct math as the frozen STLs.
- * A cache hit skips reconstruct only. Text still runs once. The caller still
- * closes and validates the mesh, then the G-code path adds the leader once.
+ * A cache hit skips reconstruct. Print already engraved the composed patient
+ * name, so that hit is returned as-is. Text runs only for a pre-text loft.
+ * The caller still closes and validates the mesh, then the G-code path adds the leader once.
  */
 export async function buildProceduralExportSolid(
     options: ProceduralPreviewOptions & { mirrored?: boolean } = {},
@@ -215,9 +221,14 @@ export async function buildProceduralExportSolid(
         await awaitManufacturingLoftInflight(fingerprint, side);
         const started = performance.now();
         const cached = peekManufacturingSolid(fingerprint, side);
-        if (cached) {
+        if (cached && !cachedManufacturingSolidMatchesFrame(cached, options, cache)) {
+            cached.dispose();
+            dropManufacturingSolid(side);
+        } else if (cached) {
             perfMark("export:loft", { side, warm: true });
-            const geometry = await applyExportText(cached, options);
+            const geometry = cachedManufacturingSolidIncludesExportText(cached, options)
+                ? cached
+                : await applyExportText(cached, options);
             tagManufacturingSolid(geometry, fingerprint, true);
             noteManufacturingSolidReused(side, performance.now() - started);
             return { model: cacheHitModel(), pattern: [], geometry };
@@ -235,6 +246,7 @@ export async function buildProceduralExportSolid(
     try {
         const preview = await reconstructProceduralPreview(raw, options);
         if (cache && fingerprint) {
+            stampManufacturingSolidFrame(preview.geometry, options, cache);
             rememberManufacturingSolid(fingerprint, side, preview.geometry);
         }
         const geometry = await applyExportText(preview.geometry, options);
@@ -381,6 +393,65 @@ async function withDefaultPrintCompose(options: ProceduralPreviewOptions): Promi
     };
 }
 
+function heelCupWidthMmOf(options: ProceduralPreviewOptions): number {
+    return options.corrections?.heelCupWidthMm ?? options.sourceField?.corrections?.heelCupWidthMm ?? 0;
+}
+
+/**
+ * Men's 9 fair, then a uniform size scale, does not include the shoe-width
+ * move the top sheet gets next. On a short narrow foot the rim moves in and
+ * the station ray hits the far side of that pattern (S1-PRELOFT skew).
+ * Heel-cup width already follows the rim, and that path already exports, so
+ * it is left alone.
+ */
+function patternNeedsShoeWidthFollow(options: ProceduralPreviewOptions): boolean {
+    const sw = options.shoeWidth;
+    if (!sw || !shoeWidthAffineActive(sw.width, sw.heelOverrideMm)) return false;
+    return Math.abs(heelCupWidthMmOf(options)) < 1e-6;
+}
+
+function rimPlanOf(model: StockWallModel): PolyPoint[] | null {
+    const pos = model.top.meshPositions;
+    const rim = model.top.rimLocal;
+    if (!pos || !rim || rim.length < 3) return null;
+    return rim.map((i) => ({
+        x: pos[i * 3] ?? 0,
+        y: pos[i * 3 + 1] ?? 0,
+        z: 0,
+    }));
+}
+
+function isPreloftSkewError(error: unknown): boolean {
+    return (
+        error instanceof Error && error.message.includes("[S1-PRELOFT]") && error.message.includes("skew[")
+    );
+}
+
+function reflectPlanY(points: PolyPoint[], y0: number): PolyPoint[] {
+    return points.map((p) => ({ x: p.x, y: 2 * y0 - p.y, z: p.z ?? 0 }));
+}
+
+/**
+ * The right field was built on the mirrored sheet. Drop mesh closures so the
+ * left-frame loft rebuilds them from the unmirrored stock, and place elements
+ * on the opposite side of the centre.
+ */
+function leftFieldFromMirroredRight(field: HeightFieldParams): HeightFieldParams {
+    const copy: HeightFieldParams = {
+        ...field,
+        side: "left",
+        elements: field.elements?.map((el) => ({
+            ...el,
+            side: "left",
+            position: { x: el.position.x, y: -el.position.y },
+            rotationDeg: -el.rotationDeg,
+        })),
+    };
+    delete copy.topEdgeAvProfile;
+    delete copy.fullLengthRim;
+    return copy;
+}
+
 export async function reconstructProceduralPreview(
     topGeo: BufferGeometry,
     options: ProceduralPreviewOptions = {},
@@ -393,10 +464,13 @@ export async function reconstructProceduralPreview(
     let working = topGeo;
     let footprintClone: BufferGeometry | null = null;
     let scaledPattern: PolyPoint[] | null = null;
+    let nativeFairScaled = false;
+    let fairCenter: { x: number; y: number } | null = null;
     if (footprintScale != null && Number.isFinite(footprintScale) && Math.abs(footprintScale - 1) > 1e-9) {
         if (!topGeo.boundingBox) topGeo.computeBoundingBox();
         const box = topGeo.boundingBox;
         const center = box ? { x: (box.min.x + box.max.x) / 2, y: (box.min.y + box.max.y) / 2 } : null;
+        fairCenter = center;
         if (center && options.bottomPattern?.length) {
             // Live / edited pattern is in the pre-scale frame. Use a fresh
             // bbox so the center matches scaleSourceShapeToFootprint.
@@ -410,6 +484,7 @@ export async function reconstructProceduralPreview(
                 );
             }
         } else if (center && insetsForScanPattern(options.scanPattern) == null) {
+            nativeFairScaled = true;
             const native = topGeo.clone();
             try {
                 const nativeModel = extractTopOnlyModel(native, {
@@ -428,6 +503,19 @@ export async function reconstructProceduralPreview(
         footprintClone = topGeo.clone();
         scaleSourceShapeToFootprint(footprintClone, footprintScale, BASE_REFERENCE_THICKNESS_MM);
         working = footprintClone;
+    }
+    // Rim before the shoe-width affine. Captured from the sized sheet, before
+    // compose moves it. Used only if the unmoved pattern fails the skew gate.
+    let shoeWidthRimBefore: PolyPoint[] | null = null;
+    if (nativeFairScaled && scaledPattern && patternNeedsShoeWidthFollow(options)) {
+        const sized = working.clone();
+        try {
+            shoeWidthRimBefore = rimPlanOf(
+                extractTopOnlyModel(sized, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME }),
+            );
+        } finally {
+            sized.dispose();
+        }
     }
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
     let source = working;
@@ -518,6 +606,35 @@ export async function reconstructProceduralPreview(
     try {
         return loft(requested);
     } catch (e) {
+        // Designs that already clear the skew gate keep the unaligned pattern,
+        // so their mesh stays byte-for-byte. Only a failed gate is rebuilt.
+        const shoeWidthRimAfter = shoeWidthRimBefore ? rimPlanOf(model) : null;
+        if (shoeWidthRimBefore && shoeWidthRimAfter && scaledPattern && isPreloftSkewError(e)) {
+            // The rim-follow map is already the mirror of the left map, but the
+            // station loft is not mirror-symmetric and still misses the 0.5×inset
+            // cap. Run that same left loft on the unmirrored stock and mirror the
+            // solid back. Z is not flipped, so the seam stays on the bottom.
+            if (options.side === "right" && options.sourceField && fairCenter) {
+                const leftTop = mirrorGeometry(topGeo);
+                try {
+                    const leftPreview = await reconstructProceduralPreview(leftTop, {
+                        ...options,
+                        side: "left",
+                        sourceField: leftFieldFromMirroredRight(options.sourceField),
+                    });
+                    const geometry = mirrorGeometry(leftPreview.geometry);
+                    leftPreview.geometry.dispose();
+                    return {
+                        model,
+                        pattern: reflectPlanY(leftPreview.pattern, fairCenter.y),
+                        geometry,
+                    };
+                } finally {
+                    leftTop.dispose();
+                }
+            }
+            return loft(shiftPatternByRimFollow(scaledPattern, shoeWidthRimBefore, shoeWidthRimAfter, 1));
+        }
         if (options.bottomPattern?.length || !options.scanPattern || options.scanPattern === "full_contact") {
             throw e;
         }

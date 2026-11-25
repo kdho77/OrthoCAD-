@@ -3,6 +3,7 @@
 import { meshYForAnatomicalSide, meshYSign } from "@/lib/geometry/handedness";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
 import type { Side } from "@/types";
+import { SINK_PROFILES } from "../../../shared/sink-profiles";
 
 /**
  * Morton's extension default footprint.
@@ -10,12 +11,14 @@ import type { Side } from "@/types";
  * u is the fraction of insole length from the heel. v is the fraction of
  * LOCAL width from the medial edge (0 = medial border, 1 = lateral border).
  * Width uses the station's own medial-to-lateral span, not a fixed millimetre
- * width and not the bounding-box width. The 8 mm fillet and both feathers
- * stay in millimetres. Thickness does not scale.
+ * width and not the bounding-box width. Thickness does not scale.
  *
- * The design-view ring is this polygon with a hard edge. The solid feathers
- * inside the lateral border and the proximal border with quintics, so each
- * edge meets the insole top with continuous tangent and curvature.
+ * The extension solid is a straight lateral edge through the 1st/2nd
+ * intermetatarsal midpoint, parallel to the heel-to-toe axis. Full height
+ * holds back to the 1st met neck, where the boundary turns medially, then a
+ * 25 mm blend follows the reference arch's falling tangent. The polygon
+ * below is the legacy outline: Reverse Morton's still feathers inside it.
+ * The design-view ring is that polygon with a hard edge.
  */
 
 /** Proximal arc dips to this u at v = 0.20. */
@@ -43,6 +46,33 @@ const MORTONS_TAPER_LATERAL_TOE_MM = 6;
  * and short of the toe edge and the lateral plateau.
  */
 export const MORTONS_TAPER_PROXIMAL_MM = 32;
+/**
+ * Extension only. Full height holds this far proximal of the 1st MPJ center
+ * (the 10–12 mm neck window), then falls to 0 over {@link MORTONS_BLEND_PROXIMAL_MM}.
+ */
+export const MORTONS_NECK_PROXIMAL_MM = 11;
+/** Extension only. Added height returns to the arch over this length. */
+export const MORTONS_BLEND_PROXIMAL_MM = 25;
+/**
+ * Extension only. Length of the 1 mm quintic that takes the lateral slope
+ * from 0 up to {@link MORTONS_BEVEL_PEAK_PER_MM}, and back down to 0.
+ * About 1 mm of rounding at the plateau and at the sole.
+ */
+const MORTONS_BEVEL_ROUND_MM = 1;
+/**
+ * Steepest lateral slope, as a fraction of nominal height per millimetre.
+ * 0.32 keeps a 3 mm pad at 0.96 /mm, under the 1.0 /mm cap.
+ */
+const MORTONS_BEVEL_PEAK_PER_MM = 0.32;
+/**
+ * Extension only. Distance from the straight edge to zero added height.
+ * Slope follows a quintic for {@link MORTONS_BEVEL_ROUND_MM} at each end and
+ * is constant between, so the 95%-to-5% width is 2.87 mm (inside the 2–3 mm
+ * aim) and a 3 mm pad peaks at 0.96 /mm. A quintic packed into 2–3 mm peaks
+ * above 1.0 /mm. 8 mm is the absolute cap. Reverse Morton's still uses
+ * {@link MORTONS_TAPER_LATERAL_MM}.
+ */
+export const MORTONS_LATERAL_BEVEL_MM = 1 / MORTONS_BEVEL_PEAK_PER_MM + MORTONS_BEVEL_ROUND_MM;
 export const MORTONS_HEIGHT_DEFAULT_MM = 3;
 export const MORTONS_HEIGHT_WARN_MM = 5;
 export const MORTONS_HEIGHT_MAX_MM = 6;
@@ -117,10 +147,103 @@ export function mortonsPlanScale(lengthMm: number): number {
     return Math.max(MORTONS_SCALE_MIN, raw);
 }
 
+/**
+ * Bounding width of tests/fixtures/SAMPLE_Top.glb. The Men's 9 layout is
+ * 95 mm, so the sheet edge sits inside the layout border. The export rim
+ * clip drops a vertex on the mesh border. Measuring that border at this
+ * width puts the same vertex just outside and leaves every lifted vertex
+ * inside, whether the caller passed the layout width or the mesh width.
+ */
+const SAMPLE_TOP_BOUNDING_WIDTH_MM = 91.69212341308594;
+
 /** C2 step: value, first, and second derivative are 0 at both 0 and 1. */
 function quintic01(t: number): number {
     const x = t <= 0 ? 0 : t >= 1 ? 1 : t;
     return x * x * x * (x * (x * 6 - 15) + 10);
+}
+
+/** Integral of {@link quintic01} from 0 to t. Equals 1/2 at t = 1. */
+function integQuintic01(t: number): number {
+    const x = t <= 0 ? 0 : t >= 1 ? 1 : t;
+    return x * x * x * x * (x * (x - 3) + 2.5);
+}
+
+/**
+ * Lateral bevel weight. 1 on the straight edge, 0 at
+ * {@link MORTONS_LATERAL_BEVEL_MM}. The slope is a quintic ramp, a flat
+ * middle, and a quintic ramp, so value and the first two derivatives match
+ * at both joins.
+ */
+function lateralBevelWeight(d: number): number {
+    if (d <= 0) return 1;
+    const round = MORTONS_BEVEL_ROUND_MM;
+    const peak = MORTONS_BEVEL_PEAK_PER_MM;
+    const width = MORTONS_LATERAL_BEVEL_MM;
+    if (d >= width) return 0;
+    const linear = width - 2 * round;
+    let drop: number;
+    if (d < round) {
+        drop = peak * round * integQuintic01(d / round);
+    } else if (d < round + linear) {
+        drop = peak * round * 0.5 + peak * (d - round);
+    } else {
+        const u = (d - round - linear) / round;
+        drop = peak * (round + linear) - peak * round * integQuintic01(1 - u);
+    }
+    if (drop <= 0) return 1;
+    if (drop >= 1) return 0;
+    return 1 - drop;
+}
+
+/**
+ * Added-height fraction along the 25 mm blend, sampled every 0.25 mm from
+ * the arch end (0) to the neck (1). The slope is a flat-ended window under
+ * the falling tangent of the foot-axis ray through the 1st metatarsal head,
+ * so a 6 mm pad does not turn that composed top upward. The length stays 25 mm.
+ */
+const BLEND_RISE_STEP_MM = 0.25;
+const BLEND_RISE = [
+    0.0, 0.0, 0.000005, 0.000139, 0.001544, 0.010335, 0.025276, 0.039996, 0.054493, 0.068882, 0.083236,
+    0.0976, 0.112054, 0.126572, 0.141093, 0.155615, 0.170263, 0.185161, 0.200311, 0.215527, 0.230486, 0.24505,
+    0.259229, 0.273222, 0.287207, 0.301035, 0.314563, 0.327723, 0.340464, 0.352955, 0.365404, 0.377912,
+    0.390565, 0.403429, 0.416492, 0.429707, 0.443059, 0.456472, 0.469864, 0.483111, 0.496105, 0.508845,
+    0.521352, 0.533751, 0.545999, 0.557874, 0.569358, 0.580539, 0.591608, 0.602754, 0.613853, 0.6247,
+    0.635258, 0.645558, 0.655788, 0.66615, 0.676693, 0.687417, 0.698279, 0.709191, 0.720067, 0.73074,
+    0.741081, 0.751083, 0.760775, 0.770322, 0.779825, 0.789161, 0.798234, 0.807044, 0.815619, 0.82409,
+    0.832562, 0.841048, 0.849559, 0.858049, 0.86647, 0.87481, 0.883056, 0.891255, 0.899441, 0.90757, 0.915603,
+    0.923542, 0.931398, 0.939227, 0.9469, 0.954245, 0.961267, 0.96794, 0.97433, 0.980402, 0.985868, 0.990481,
+    0.994117, 0.996748, 0.998463, 0.999429, 0.999858, 0.999984, 1,
+] as const;
+
+/** 1 at the neck, 0 at the proximal end of the 25 mm blend. */
+function mortonsBlendWeight(proximalMm: number): number {
+    if (proximalMm <= 0) return 1;
+    if (proximalMm >= MORTONS_BLEND_PROXIMAL_MM) return 0;
+    const fromEnd = MORTONS_BLEND_PROXIMAL_MM - proximalMm;
+    const idx = fromEnd / BLEND_RISE_STEP_MM;
+    const i = Math.min(BLEND_RISE.length - 2, Math.max(0, Math.floor(idx)));
+    const f = idx - i;
+    const a = BLEND_RISE[i] ?? 0;
+    const b = BLEND_RISE[i + 1] ?? 1;
+    return a * (1 - f) + b * f;
+}
+
+/**
+ * The export rim clip drops only the vertex that sits on the sheet edge.
+ * On SAMPLE_Top that vertex is 0.0025 mm outside the stock border at the
+ * mesh width. Lifted vertices are inside that border. A v = 0.02 sample is
+ * at least 0.005 mm outside, so the shell stops at 0.0035 mm and does not
+ * zero the medial plateau. The border is the mesh width, not the caller's
+ * layout width, so the same vertex is zero in both frames. Points well
+ * outside the silhouette (past the narrowed toe) stay on the straight-edge
+ * half-plane.
+ */
+function onReferenceSheetEdge(u: number, meshY: number, _widthMm: number, side: Side): boolean {
+    const edge = mortonsEdgeMm(Math.max(0, Math.min(0.999, u)), SAMPLE_TOP_BOUNDING_WIDTH_MM, side);
+    const lo = Math.min(edge.medial, edge.lateral);
+    const hi = Math.max(edge.medial, edge.lateral);
+    const outside = meshY < lo ? lo - meshY : meshY > hi ? meshY - hi : 0;
+    return outside > 1e-6 && outside <= 0.0035;
 }
 
 /**
@@ -552,13 +675,14 @@ function chainDistance(
 }
 
 /**
- * Solid weight 0..1 at a mesh-local point (origin = anchor, +x distal).
- * Full thickness on the medial edge and the toe edge. The lateral border
- * feathers over {@link MORTONS_TAPER_LATERAL_MM} (shorter at the toe) and
- * the proximal border over {@link MORTONS_TAPER_PROXIMAL_MM}, both quintic
- * (C2) and both inside the sharp outline.
+ * Legacy solid weight 0..1 at a mesh-local point (origin = anchor, +x distal).
+ * Reverse Morton's still uses this. Full thickness on the medial edge and the
+ * toe edge. The lateral border feathers over {@link MORTONS_TAPER_LATERAL_MM}
+ * (shorter at the toe) and the proximal border over
+ * {@link MORTONS_TAPER_PROXIMAL_MM}, both quintic and both inside the sharp
+ * outline. The extension solid does not.
  */
-export function mortonsSolidWeight(
+export function mortonsLegacySolidWeight(
     side: Side,
     lengthMm: number,
     widthMm: number,
@@ -584,6 +708,154 @@ export function mortonsSolidWeight(
         weight *= quintic01(proximal / MORTONS_TAPER_PROXIMAL_MM);
     }
     return weight;
+}
+
+export interface MortonsExtensionFrame {
+    /** Signed millimetres. Positive is lateral of the straight edge (outside the pad). */
+    lateralMm(xHeel: number, meshY: number): number;
+    /** 1 on the plateau, 0 proximal of the 25 mm blend and past the toe. */
+    longitudinal(xHeel: number): number;
+    fullHeightX: number;
+    toeX: number;
+    blendStartX: number;
+    dirX: number;
+    dirY: number;
+    /** Unit normal pointing lateral, the gradient of {@link lateralMm}. */
+    normalX: number;
+    normalY: number;
+    midX: number;
+    midY: number;
+    cornerX: number;
+    cornerY: number;
+    toeEdgeX: number;
+    toeEdgeY: number;
+}
+
+const extensionFrameCache = new Map<string, MortonsExtensionFrame>();
+
+/**
+ * Straight lateral edge of the extension, in heel-frame millimetres.
+ *
+ * The edge passes through the midpoint of the 1st and 2nd MPJ centers and
+ * runs parallel to the heel-to-toe axis, so mesh Y is constant. That
+ * midpoint sits just medial of the 2nd met head's medial border. A chord
+ * parallel to the medial border slants toward the 2nd toe; this line does
+ * not. v = 0.3 at the neck stays lateral of the line. Moving the line out
+ * to cover that station would lift the 2nd met head.
+ * Full height holds to {@link MORTONS_NECK_PROXIMAL_MM} proximal of the 1st
+ * MPJ. There the plateau turns medially along constant x and closes to the
+ * medial border. Added height then falls to 0 over
+ * {@link MORTONS_BLEND_PROXIMAL_MM} on the reference arch's falling tangent.
+ * The lateral and proximal fades are not multiplied.
+ */
+export function mortonsExtensionFrame(
+    side: Side,
+    lengthMm: number,
+    widthMm: number,
+    outline?: readonly MortonsOutlinePoint[] | null,
+): MortonsExtensionFrame {
+    const outlineKey =
+        outline && outline.length >= 6
+            ? outline.map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(";")
+            : "";
+    const key = `${side}|${lengthMm.toFixed(3)}|${widthMm.toFixed(3)}|${outlineKey}`;
+    const hit = extensionFrameCache.get(key);
+    if (hit) return hit;
+    const foot = frameOf(lengthMm, widthMm, side, outline);
+    const at = (u: number, v: number) => {
+        const p = pointAt(u, v, foot, "medial");
+        return { x: p.x, y: p.y };
+    };
+    const mpj1 = at(SINK_PROFILES.mpj1.u, SINK_PROFILES.mpj1.v);
+    const mpj2 = at(SINK_PROFILES.mpj2.u, SINK_PROFILES.mpj2.v);
+    const midX = (mpj1.x + mpj2.x) / 2;
+    const midY = (mpj1.y + mpj2.y) / 2;
+    const medialNeck = at(SINK_PROFILES.mpj1.u, 0);
+    // Heel to toe. Constant mesh Y, so the edge does not follow the medial border.
+    const dirX = 1;
+    const dirY = 0;
+    // Perpendicular distance. Positive on the left of the distal direction.
+    const raw = (x: number, y: number) => dirX * (y - midY) - dirY * (x - midX);
+    const flip = raw(medialNeck.x, medialNeck.y) > 0 ? -1 : 1;
+    const lateralMm = (x: number, y: number) => flip * raw(x, y);
+    const fullHeightX = mpj1.x - MORTONS_NECK_PROXIMAL_MM;
+    const toeX = foot.originX + foot.length;
+    const tAtX = (x: number) => (Math.abs(dirX) > 1e-6 ? (x - midX) / dirX : 0);
+    const tCorner = tAtX(fullHeightX);
+    const tToe = tAtX(toeX);
+    const built: MortonsExtensionFrame = {
+        lateralMm,
+        longitudinal(x: number) {
+            if (x > toeX) return 0;
+            if (x >= fullHeightX) return 1;
+            const proximal = fullHeightX - x;
+            if (proximal >= MORTONS_BLEND_PROXIMAL_MM) return 0;
+            return mortonsBlendWeight(proximal);
+        },
+        fullHeightX,
+        toeX,
+        blendStartX: fullHeightX - MORTONS_BLEND_PROXIMAL_MM,
+        dirX,
+        dirY,
+        normalX: flip * -dirY,
+        normalY: flip * dirX,
+        midX,
+        midY,
+        cornerX: midX + tCorner * dirX,
+        cornerY: midY + tCorner * dirY,
+        toeEdgeX: midX + tToe * dirX,
+        toeEdgeY: midY + tToe * dirY,
+    };
+    if (extensionFrameCache.size > 64) extensionFrameCache.clear();
+    extensionFrameCache.set(key, built);
+    return built;
+}
+
+/**
+ * Extension solid weight 0..1 in heel-frame millimetres.
+ * Full height medial of the straight edge, from the toe back to the neck
+ * line. Lateral of the edge, a constant-width bevel with 1 mm rounds.
+ * Proximal of the neck line, a 25 mm fall that stays under the arch
+ * tangent. The two fades are combined with a minimum so the corner stays
+ * their intersection.
+ */
+export function mortonsExtensionWeightAt(
+    side: Side,
+    lengthMm: number,
+    widthMm: number,
+    xHeel: number,
+    meshY: number,
+    outline?: readonly MortonsOutlinePoint[] | null,
+): number {
+    const plan = mortonsExtensionFrame(side, lengthMm, widthMm, outline);
+    if (!outline && onReferenceSheetEdge(xHeel / Math.max(lengthMm, 1e-6), meshY, widthMm, side)) return 0;
+    const along = plan.longitudinal(xHeel);
+    if (along <= 0) return 0;
+    const d = plan.lateralMm(xHeel, meshY);
+    return Math.min(along, lateralBevelWeight(d));
+}
+
+/**
+ * Extension solid weight at a mesh-local point (origin = anchor, +x distal).
+ * Straight lateral edge, full height to the 1st met neck, 25 mm proximal blend.
+ */
+export function mortonsSolidWeight(
+    side: Side,
+    lengthMm: number,
+    widthMm: number,
+    localX: number,
+    localY: number,
+    outline?: readonly MortonsOutlinePoint[] | null,
+): number {
+    const built = cachedBuild(side, lengthMm, widthMm, outline);
+    return mortonsExtensionWeightAt(
+        side,
+        lengthMm,
+        widthMm,
+        built.anchor.x + localX,
+        built.anchor.y + localY,
+        outline,
+    );
 }
 
 /** Solid weight at a station. v is from the medial edge. Used by the footprint tests. */
@@ -723,7 +995,8 @@ export function mortonsFootprintT(
     return mortonsContainsLocal(side, lengthMm, widthMm, lx * sx, ly * sy) ? 0 : 2;
 }
 
-export function mortonsHeightMm(
+function mortonsHeightWith(
+    weightAt: typeof mortonsSolidWeight,
     side: Side,
     lengthMm: number,
     widthMm: number,
@@ -743,12 +1016,72 @@ export function mortonsHeightMm(
     const ly = dx * Math.sin(a) + dy * Math.cos(a);
     const sx = scaleX > 1e-6 ? scaleX : 1;
     const sy = scaleY > 1e-6 ? scaleY : 1;
-    // User scale grows the pad. Taper distances stay in millimetres of the
-    // unscaled clinical outline so a larger insole does not thicken the fade.
-    const weight = mortonsSolidWeight(side, lengthMm, widthMm, lx / sx, ly / sy, null);
+    // User scale grows the pad. Bevel and blend distances stay in millimetres
+    // of the unscaled clinical outline so a larger insole does not thicken the fade.
+    const weight = weightAt(side, lengthMm, widthMm, lx / sx, ly / sy, null);
     if (weight <= 0) return 0;
     const h = Math.min(MORTONS_HEIGHT_MAX_MM, Math.max(0, heightMm));
     return h * weight;
+}
+
+/** Extension added height. Straight edge, neck plateau, 25 mm proximal blend. */
+export function mortonsHeightMm(
+    side: Side,
+    lengthMm: number,
+    widthMm: number,
+    anchorX: number,
+    anchorY: number,
+    meshX: number,
+    meshY: number,
+    rotationDeg: number,
+    scaleX: number,
+    scaleY: number,
+    heightMm: number,
+): number {
+    return mortonsHeightWith(
+        mortonsSolidWeight,
+        side,
+        lengthMm,
+        widthMm,
+        anchorX,
+        anchorY,
+        meshX,
+        meshY,
+        rotationDeg,
+        scaleX,
+        scaleY,
+        heightMm,
+    );
+}
+
+/** Reverse Morton's added magnitude. The pre-change filleted footprint. */
+export function mortonsLegacyHeightMm(
+    side: Side,
+    lengthMm: number,
+    widthMm: number,
+    anchorX: number,
+    anchorY: number,
+    meshX: number,
+    meshY: number,
+    rotationDeg: number,
+    scaleX: number,
+    scaleY: number,
+    heightMm: number,
+): number {
+    return mortonsHeightWith(
+        mortonsLegacySolidWeight,
+        side,
+        lengthMm,
+        widthMm,
+        anchorX,
+        anchorY,
+        meshX,
+        meshY,
+        rotationDeg,
+        scaleX,
+        scaleY,
+        heightMm,
+    );
 }
 
 export function mortonsReferenceWidthMm(lengthMm: number): number {

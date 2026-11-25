@@ -10,7 +10,11 @@ import {
     cncPairGcodeFilename,
     exportSideSuffix,
 } from "../../../shared/export-filename.js";
-import { migratePrintRecipe, printRecipeV1Schema } from "../../../shared/print-recipe/print-recipe.js";
+import {
+    bindPrintRecipeProfile,
+    migratePrintRecipe,
+    printRecipeV1Schema,
+} from "../../../shared/print-recipe/print-recipe.js";
 import {
     selectVertexSliceUpload,
     vertexSliceRegional3mfEnabled,
@@ -26,6 +30,7 @@ import { getSupabaseAdmin } from "../context.js";
 import {
     beginCadOperatorProduction,
     type CadFootSide,
+    type CadProductionRow,
     type CadProductionStatus,
     CENTRAL_FAB_STL_COST,
     CNC_GCODE_COST,
@@ -36,21 +41,32 @@ import {
     HYBRID_GCODE_COST,
     infillPctForCadSlice,
     type PublicProduction,
+    readSliceCheckpoint,
+    runCadSliceAttempt,
+    SLICE_JOB_POLL_BUDGET_MS,
     scheduleCadProduction,
+    sleepMs,
     toPublicProduction,
 } from "../lib/cad-operator-production.js";
 import { chargeExistingProduction, PrismaCadProductionStore } from "../lib/cad-operator-production-prisma.js";
 import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
 import { buildHeadlessMillCncGcode, prepareHeadlessMillDesign } from "../lib/cnc-mill-runner.js";
-import { downloadManufacturingStl } from "../lib/manufacturing-stl-download.js";
+import {
+    envelopeWithLoftTextMarking,
+    patientDisplayName,
+    resolveProductionTextMarking,
+} from "../lib/integration-text-marking.js";
+import { manufacturingStlRunIdentity } from "../lib/manufacturing-stl-identity.js";
 import {
     archiveManufacturingSourceStl,
     deleteManufacturingTempBestEffort,
 } from "../lib/manufacturing-stl-lifecycle.js";
-import { deleteAsset, MANUFACTURING_BUCKET, signedDownloadUrl, uploadAsset } from "../lib/storage.js";
+import { deleteAsset, MANUFACTURING_BUCKET, uploadAsset } from "../lib/storage.js";
 import { assertActiveLicense, getUserTokenBalance, requireSupabaseAdmin } from "../lib/supabase-db.js";
-import { sliceWithVertexSlice } from "../lib/vertexslice-client.js";
+import { getVertexSliceBuild, UNKNOWN_SLICER_BUILD } from "../lib/vertexslice-build.js";
+import type { VertexSliceRequest } from "../lib/vertexslice-client.js";
 import {
+    type CadGeneratePlan,
     loadDogfoodDesign,
     materializeCadOperatorStl,
     prepareCadOperatorGenerate,
@@ -87,6 +103,210 @@ export interface CadGenerateRequestInput {
     hardness?: string;
     material?: string;
     forceNewSlice?: boolean;
+}
+
+/**
+ * Saved-design belt STL identity. The hash is the full saved design plus the
+ * belt frame, placement version, and slicer version. Any design change misses.
+ */
+export function beltManufacturingStlIdentity(
+    settingsJson: unknown,
+    side: CadFootSide,
+    slicerVersion?: string | null,
+): string {
+    return manufacturingStlRunIdentity({
+        side,
+        savedDesign: readStoredDesignSettings(settingsJson) ?? settingsJson,
+        beltPrint: true,
+        slicerVersion: slicerVersion ?? undefined,
+    });
+}
+
+async function beltSliceRequest(args: {
+    stlBytes: Uint8Array;
+    side: CadFootSide;
+    plan: Awaited<ReturnType<typeof prepareCadOperatorGenerate>>;
+    regional3mf: { bytes: Uint8Array; regionCount: number } | null;
+    sliceTimeoutMs: number | undefined;
+}): Promise<VertexSliceRequest> {
+    const upload = selectVertexSliceUpload({
+        stl: args.stlBytes,
+        stlFilename: `${args.side}.stl`,
+        regional3mf: args.regional3mf,
+        regional3mfEnabled: vertexSliceRegional3mfEnabled(),
+    });
+    return {
+        profileId: args.plan.presetId,
+        material: args.plan.material,
+        model: upload.bytes,
+        filename: upload.filename,
+        infillDensityPct: infillPctForCadSlice(args.plan.presetId, args.plan.printRecipe),
+        expectedRegionCount: upload.expectedRegionCount,
+        sliceTimeoutMs: args.sliceTimeoutMs,
+        side: args.side,
+    };
+}
+
+async function continueInFlightSlice(args: {
+    prisma: PrismaClient;
+    store: PrismaCadProductionStore;
+    row: CadProductionRow;
+    now: Date;
+}): Promise<void> {
+    const stored = readSliceCheckpoint(args.row.error);
+    if (!stored) return;
+    if (args.row.status !== "pending" && args.row.status !== "running") return;
+    const side = args.row.side;
+    const design = await args.prisma.design.findUnique({
+        where: { id: args.row.designId },
+        select: {
+            ownerId: true,
+            settingsJson: true,
+            client: { select: { firstName: true, lastName: true } },
+        },
+    });
+    const fileName = `${side ?? "pair"}-${args.row.id}.gcode`;
+    const canRematerialize = Boolean(design?.ownerId) && (side === "left" || side === "right");
+    let settingsJson: unknown = design?.settingsJson;
+    let stlIdentity: string | null = null;
+    let plan: CadGeneratePlan | null = null;
+    if (canRematerialize && design && (side === "left" || side === "right")) {
+        const clientName = patientDisplayName(design.client?.firstName ?? "", design.client?.lastName ?? "");
+        const resolved = resolveProductionTextMarking({
+            settingsJson: design.settingsJson,
+            clientDisplayName: clientName,
+        });
+        settingsJson = envelopeWithLoftTextMarking(resolved.envelope, resolved.patientDisplayName, side);
+        const slicerBuild = await getVertexSliceBuild();
+        stlIdentity = beltManufacturingStlIdentity(settingsJson, side, slicerBuild ?? UNKNOWN_SLICER_BUILD);
+        const parsedRecipe = printRecipeV1Schema.safeParse(
+            readStoredDesignSettings(settingsJson)?.printRecipe,
+        );
+        plan = {
+            stlStorageKey: null,
+            presetId: args.row.presetId,
+            printRecipe: bindPrintRecipeProfile(
+                parsedRecipe.success ? parsedRecipe.data : undefined,
+                args.row.presetId,
+            ),
+            material: args.row.material,
+            beltAngleDeg: args.row.beltAngleDeg,
+            ownerId: design.ownerId,
+            useSavedDesignMesh: true,
+            settingsJson,
+            clientFirstName: design.client?.firstName ?? "",
+            clientLastName: design.client?.lastName ?? "",
+        };
+    }
+    let regional3mf: { bytes: Uint8Array; regionCount: number } | null = null;
+    let loftBytes: Uint8Array | null = null;
+    let loftKey: string | null = null;
+    await executeCadOperatorProduction({
+        row: args.row,
+        store: args.store,
+        now: () => args.now,
+        sliceBudgetMs: 0,
+        stlIdentity,
+        resumeSubmittedSlice: stored.rematerialized === true,
+        materialize: async () => {
+            if (!plan || (side !== "left" && side !== "right")) {
+                throw new Error("Stale slice checkpoint cannot be rematerialized");
+            }
+            const materialized = await materializeCadOperatorStl({
+                plan,
+                credentialId: stored.credentialId,
+                side,
+                uploadStl: async (key, bytes) => {
+                    await uploadAsset(requireStorage(), key, bytes, "model/stl", MANUFACTURING_BUCKET);
+                },
+            });
+            regional3mf = materialized.regional3mf;
+            loftBytes = materialized.stlBytes;
+            loftKey = materialized.stlStorageKey;
+            return {
+                stlStorageKey: materialized.stlStorageKey,
+                meshFingerprint: materialized.meshFingerprint,
+            };
+        },
+        slice: async (_storedKey, sliceCtx) => {
+            const resume = sliceCtx?.checkpoint ?? null;
+            const bytes = loftBytes;
+            const attempt = await runCadSliceAttempt({
+                request:
+                    resume || !bytes || !plan || (side !== "left" && side !== "right")
+                        ? null
+                        : await beltSliceRequest({
+                              stlBytes: bytes,
+                              side,
+                              plan,
+                              regional3mf,
+                              sliceTimeoutMs: sliceCtx?.invocationStartedAt
+                                  ? cadVertexSliceSliceTimeoutMs(sliceCtx.invocationStartedAt, args.now)
+                                  : sliceCtx?.sliceTimeoutMs,
+                          }),
+                checkpoint: resume,
+                stlStorageKey: loftKey ?? "",
+                meshFingerprint: sliceCtx?.meshFingerprint ?? stored.meshFingerprint,
+                stlIdentity,
+                credentialId: stored.credentialId,
+                side: args.row.side,
+                now: sliceCtx?.now ?? (() => args.now),
+                sleep: sliceCtx?.sleep ?? sleepMs,
+                budgetMs: sliceCtx?.budgetMs ?? 0,
+                persistCheckpoint: sliceCtx?.persistCheckpoint,
+            });
+            if (attempt.kind === "pending") return { pending: true, checkpoint: attempt.checkpoint };
+            return { gcode: attempt.gcode, jobId: attempt.jobId };
+        },
+        uploadGcode: async (gcode) => {
+            const storageKey = buildCadOperatorGcodeKey(stored.credentialId, args.row.designId, fileName);
+            await uploadAsset(
+                requireStorage(),
+                storageKey,
+                Buffer.from(gcode, "utf-8"),
+                "text/plain",
+                MANUFACTURING_BUCKET,
+            );
+            return { storageKey };
+        },
+        charge: async ({ storageKey, jobId, meshFingerprint }) => {
+            if (!design?.ownerId) throw new Error("Manufacturing charge failed");
+            try {
+                return await chargeExistingProduction(args.prisma, {
+                    userId: design.ownerId,
+                    cost: HYBRID_GCODE_COST,
+                    productionId: args.row.id,
+                    designId: args.row.designId,
+                    exportFormat: "gcode",
+                    side: args.row.side,
+                    fileName,
+                    presetId: args.row.presetId,
+                    beltAngleDeg: args.row.beltAngleDeg,
+                    layerHeightMm: args.row.layerHeightMm,
+                    isGcode: true,
+                    storageKey,
+                    jobId,
+                    ip: null,
+                    metadata: {
+                        kind: "manufacturing_hybrid",
+                        outputType: "gcode",
+                        presetId: args.row.presetId,
+                        beltAngleDeg: args.row.beltAngleDeg,
+                        material: args.row.material,
+                        manufacturingFingerprint: meshFingerprint,
+                        slicer: "vertexslice",
+                        side: args.row.side,
+                        source: "cad_operator_slice_job",
+                    },
+                });
+            } catch (error) {
+                mapChargeFailure(error);
+            }
+        },
+        deleteTemp: async (stlStorageKey) => {
+            deleteManufacturingTempBestEffort(getSupabaseAdmin(), stlStorageKey);
+        },
+    });
 }
 
 function requireStorage() {
@@ -137,6 +357,8 @@ export async function runCadOperatorGenerateRequest(args: {
         material: input.material,
     });
     const userExportFileName = cadOperatorUserExportFilename(input, plan);
+    // Cached G-code is reused only when the same slicer build made it. Unknown build: never reuse.
+    const slicerBuild = await getVertexSliceBuild();
     const identity = cadOperatorManufacturingIdentity({
         designId: input.designId,
         side: input.side,
@@ -149,14 +371,18 @@ export async function runCadOperatorGenerateRequest(args: {
         settingsJson: plan.settingsJson,
         stlStorageKey: plan.stlStorageKey,
         regional3mf: vertexSliceRegional3mfEnabled(),
+        slicerBuild: slicerBuild ?? UNKNOWN_SLICER_BUILD,
     });
+    const stlIdentity = plan.useSavedDesignMesh
+        ? beltManufacturingStlIdentity(plan.settingsJson, input.side, slicerBuild ?? UNKNOWN_SLICER_BUILD)
+        : null;
     const store = new PrismaCadProductionStore(args.prisma);
     const now = args.now ?? (() => new Date());
     const started = await beginCadOperatorProduction({
         store,
         now: now(),
         schedule: args.schedule ?? scheduleCadProduction,
-        forceNewSlice: input.forceNewSlice === true && input.useSavedDesignMesh === true,
+        forceNewSlice: input.useSavedDesignMesh === true || slicerBuild === null,
         insert: {
             designId: input.designId,
             side: input.side,
@@ -177,10 +403,13 @@ export async function runCadOperatorGenerateRequest(args: {
         },
         execute: (row) => {
             let regional3mf: { bytes: Uint8Array; regionCount: number } | null = null;
+            let loftBytes: Uint8Array | null = null;
+            let loftKey: string | null = null;
             return executeCadOperatorProduction({
                 row,
                 store,
                 now,
+                stlIdentity,
                 materialize: async () => {
                     const materialized = await materializeCadOperatorStl({
                         plan,
@@ -197,42 +426,41 @@ export async function runCadOperatorGenerateRequest(args: {
                         },
                     });
                     regional3mf = materialized.regional3mf;
+                    loftBytes = materialized.stlBytes;
+                    loftKey = materialized.stlStorageKey;
                     return {
                         stlStorageKey: materialized.stlStorageKey,
                         meshFingerprint: materialized.meshFingerprint,
                     };
                 },
-                slice: async (stlStorageKey, sliceCtx) => {
-                    const supabase = requireStorage();
-                    const stlUrl = await signedDownloadUrl(
-                        supabase,
-                        stlStorageKey,
-                        3600,
-                        MANUFACTURING_BUCKET,
-                    );
-                    const stlBytes = await downloadManufacturingStl(stlUrl);
-                    const infillDensityPct = infillPctForCadSlice(plan.presetId, plan.printRecipe);
-                    const sliceTimeoutMs = sliceCtx?.invocationStartedAt
-                        ? cadVertexSliceSliceTimeoutMs(sliceCtx.invocationStartedAt, now())
-                        : sliceCtx?.sliceTimeoutMs;
-                    const upload = selectVertexSliceUpload({
-                        stl: stlBytes,
-                        stlFilename: `${input.side}.stl`,
-                        regional3mf,
-                        regional3mfEnabled: vertexSliceRegional3mfEnabled(),
-                    });
-                    const gcode = await sliceWithVertexSlice({
-                        profileId: plan.presetId,
-                        material: plan.material,
-                        model: upload.bytes,
-                        filename: upload.filename,
-                        infillDensityPct,
-                        expectedRegionCount: upload.expectedRegionCount,
-                        sliceTimeoutMs,
+                slice: async (_storedKey, sliceCtx) => {
+                    const bytes = loftBytes;
+                    const attempt = await runCadSliceAttempt({
+                        request:
+                            sliceCtx?.checkpoint || !bytes
+                                ? null
+                                : await beltSliceRequest({
+                                      stlBytes: bytes,
+                                      side: input.side,
+                                      plan,
+                                      regional3mf,
+                                      sliceTimeoutMs: sliceCtx?.invocationStartedAt
+                                          ? cadVertexSliceSliceTimeoutMs(sliceCtx.invocationStartedAt, now())
+                                          : sliceCtx?.sliceTimeoutMs,
+                                  }),
+                        checkpoint: sliceCtx?.checkpoint ?? null,
+                        stlStorageKey: loftKey ?? "",
+                        meshFingerprint: sliceCtx?.meshFingerprint ?? null,
+                        stlIdentity,
+                        credentialId: sliceCtx?.checkpoint?.credentialId ?? args.principal.credentialId,
                         side: input.side,
+                        now: sliceCtx?.now ?? now,
+                        sleep: sliceCtx?.sleep ?? sleepMs,
+                        budgetMs: sliceCtx?.budgetMs ?? SLICE_JOB_POLL_BUDGET_MS,
+                        persistCheckpoint: sliceCtx?.persistCheckpoint,
                     });
-                    const jobStamp = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-                    return { gcode, jobId: `vs_${jobStamp}` };
+                    if (attempt.kind === "pending") return { pending: true, checkpoint: attempt.checkpoint };
+                    return { gcode: attempt.gcode, jobId: attempt.jobId };
                 },
                 uploadGcode: async (gcode) => {
                     const safeName = userExportFileName.replace(/[^a-zA-Z0-9_.-]/g, "_");
@@ -492,7 +720,7 @@ export async function runCadOperatorCncGcodeRequest(args: {
     prisma: PrismaClient;
     principal: CadOperatorPrincipal;
     ip: string | null;
-    input: { designId: string; material?: string };
+    input: { designId: string; material?: string; millSide?: "LR" | "RR" | "LL" };
     schedule?: (work: Promise<void>) => void;
     now?: () => Date;
 }): Promise<{
@@ -515,17 +743,20 @@ export async function runCadOperatorCncGcodeRequest(args: {
         design.updatedAt instanceof Date ? design.updatedAt.toISOString() : String(design.updatedAt);
     let prepared: Awaited<ReturnType<typeof prepareHeadlessMillDesign>>;
     try {
-        prepared = await prepareHeadlessMillDesign({
-            id: design.id,
-            pattern: design.pattern,
-            method: design.method,
-            thicknessMm: design.thicknessMm,
-            linked: design.linked,
-            unit: design.unit,
-            createdAt: updatedAt,
-            updatedAt,
-            settingsJson: design.settingsJson,
-        });
+        prepared = await prepareHeadlessMillDesign(
+            {
+                id: design.id,
+                pattern: design.pattern,
+                method: design.method,
+                thicknessMm: design.thicknessMm,
+                linked: design.linked,
+                unit: design.unit,
+                createdAt: updatedAt,
+                updatedAt,
+                settingsJson: design.settingsJson,
+            },
+            { millSide: args.input.millSide },
+        );
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const refused =
@@ -543,6 +774,7 @@ export async function runCadOperatorCncGcodeRequest(args: {
         lastName: row.client.lastName ?? "",
         material: args.input.material,
         sides,
+        millSide: args.input.millSide,
     });
     const exportMaterial = canonicalExportMaterialName(args.input.material);
     const identity = cadOperatorManufacturingIdentity({
@@ -591,7 +823,9 @@ export async function runCadOperatorCncGcodeRequest(args: {
                 now,
                 materialize: async () => ({ stlStorageKey: "memory", meshFingerprint: null }),
                 slice: async () => {
-                    const milled = await buildHeadlessMillCncGcode(prepared.design);
+                    const milled = await buildHeadlessMillCncGcode(prepared.design, {
+                        millSide: args.input.millSide,
+                    });
                     if (milled.fileExtension !== CNC_FILE_EXTENSION) {
                         throw new Error("CNC profile extension is not .gcode");
                     }
@@ -719,7 +953,12 @@ export async function readCadOperatorProduction(args: {
     if (hiddenFromOperator(args.principal, row.gcodeStorageKey)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Production not found or access denied" });
     }
-    const visible = (await expireStaleProduction(store, row.id, args.now ?? new Date())) ?? row;
+    const now = args.now ?? new Date();
+    if (readSliceCheckpoint(row.error)) {
+        await continueInFlightSlice({ prisma: args.prisma, store, row, now });
+    }
+    const refreshed = (await store.findById(row.id)) ?? row;
+    const visible = (await expireStaleProduction(store, refreshed.id, now)) ?? refreshed;
     return toPublicProduction(visible);
 }
 
@@ -739,7 +978,11 @@ export async function listCadOperatorProductions(args: {
     const productions: PublicProduction[] = [];
     for (const row of rows) {
         if (hiddenFromOperator(args.principal, row.gcodeStorageKey)) continue;
-        const visible = (await expireStaleProduction(store, row.id, now)) ?? row;
+        if (readSliceCheckpoint(row.error)) {
+            await continueInFlightSlice({ prisma: args.prisma, store, row, now });
+        }
+        const refreshed = (await store.findById(row.id)) ?? row;
+        const visible = (await expireStaleProduction(store, refreshed.id, now)) ?? refreshed;
         productions.push(toPublicProduction(visible));
     }
     return { productions };

@@ -1,7 +1,17 @@
+import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { resolve } from "node:path";
+import { gunzipSync } from "node:zlib";
 
-import { describe, expect, test } from "@rstest/core";
-
+import type { PrismaClient } from "@prisma/client";
+import { afterEach, describe, expect, test } from "@rstest/core";
+import {
+    isStalePre52ManufacturingEtag,
+    MANUFACTURING_SLICER_VERSION,
+    MANUFACTURING_STL_PLACEMENT_VERSION,
+    ORTHOCAD_MANUFACTURING_VERSION,
+    STALE_PRE52_BELT_MANUFACTURING_STL,
+} from "../../../shared/manufacturing-stl-identity.js";
 import { HARDNESS_TO_INFILL_PCT } from "../../../shared/print-recipe/hardness-to-infill-pct.js";
 import type { PrintRecipeV1 } from "../../../shared/print-recipe/print-recipe.js";
 import {
@@ -15,14 +25,33 @@ import {
     cadOperatorManufacturingIdentity,
     cadVertexSliceSliceTimeoutMs,
     claimProduction,
+    encodeSliceCheckpoint,
     executeCadOperatorProduction,
     expireStaleProduction,
     infillPctForCadSlice,
     MemoryCadProductionStore,
     publicProductionError,
+    readSliceCheckpoint,
+    runCadSliceAttempt,
+    SLICE_JOB_POLL_BUDGET_MS,
+    SLICE_JOB_QUEUE_WAIT_CAP_MS,
+    SLICE_JOB_SLICE_CAP_MS,
+    storedManufacturingStlReusable,
     toPublicProduction,
 } from "./cad-operator-production.js";
+import { PrismaCadProductionStore } from "./cad-operator-production-prisma.js";
+import { passingBeltGcode } from "./gcode-handedness-sample.js";
+import {
+    isStalePre52ManufacturingStlBytes,
+    manufacturingStlRunIdentity,
+} from "./manufacturing-stl-identity.js";
 import { sliceWithVertexSlice } from "./vertexslice-client.js";
+
+function handednessFixture(name: string): string {
+    return gunzipSync(
+        readFileSync(resolve(__dirname, "../../../../tests/fixtures/handedness", `${name}.gcode.gz`)),
+    ).toString("utf8");
+}
 
 const recipe: PrintRecipeV1 = {
     version: 1,
@@ -254,6 +283,69 @@ describe("CAD-operator production claim", () => {
         } finally {
             AbortSignal.timeout = originalTimeout;
         }
+    });
+
+    test("begin returns pending before execute starts on the next event-loop turn", async () => {
+        const store = new MemoryCadProductionStore();
+        let executeStarted = false;
+        let returnedBeforeExecute = false;
+        const pending = beginCadOperatorProduction({
+            store,
+            insert: insert("left"),
+            now: new Date("2026-11-09T00:00:00.000Z"),
+            schedule: (work) => {
+                void work;
+            },
+            execute: () => {
+                executeStarted = true;
+                return Promise.resolve();
+            },
+        });
+        returnedBeforeExecute = await Promise.race([
+            pending.then(() => true),
+            new Promise<boolean>((resolve) => {
+                setImmediate(() => resolve(false));
+            }),
+        ]);
+        expect(returnedBeforeExecute).toBe(true);
+        expect(executeStarted).toBe(false);
+        await pending;
+        await new Promise<void>((resolve) => {
+            setImmediate(() => resolve());
+        });
+        expect(executeStarted).toBe(true);
+    });
+
+    test("begin returns before synchronous execute work would block the turn", async () => {
+        const store = new MemoryCadProductionStore();
+        let scheduled: Promise<void> | null = null;
+        let executeEntered = false;
+        const pending = beginCadOperatorProduction({
+            store,
+            insert: insert("left"),
+            now: new Date("2026-11-09T00:00:00.000Z"),
+            schedule: (work) => {
+                scheduled = work;
+            },
+            execute: () => {
+                executeEntered = true;
+                const deadline = Date.now() + 200;
+                while (Date.now() < deadline) {
+                    /* spin synchronously */
+                }
+                return Promise.resolve();
+            },
+        });
+        const started = await Promise.race([
+            pending,
+            new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error("begin blocked on synchronous execute")), 100);
+            }),
+        ]);
+        expect(started.status).toBe("pending");
+        expect(executeEntered).toBe(false);
+        await scheduled;
+        expect(executeEntered).toBe(true);
     });
 
     test("begin returns before slicing finishes", async () => {
@@ -535,6 +627,9 @@ describe("CAD-operator production claim", () => {
             });
         const [first, second] = await Promise.all([claim(), claim()]);
         expect(first.productionId).toBe(second.productionId);
+        await new Promise<void>((resolve) => {
+            setImmediate(() => resolve());
+        });
         expect(runs).toBe(1);
         expect([first.status, second.status].sort()).toEqual(["pending", "pending"]);
 
@@ -582,6 +677,76 @@ describe("CAD-operator production claim", () => {
         expect(
             assetLoadCauseForLog(new Error("Canonical Export mesh is not available headless (Jane Doe)")),
         ).toBeNull();
+    });
+
+    test("execute logs loft_s and slice_s for a finished foot and a loft failure", async () => {
+        const store = new MemoryCadProductionStore();
+        const lines: string[] = [];
+        const original = console.log;
+        console.log = (...args: unknown[]) => {
+            lines.push(args.map((arg) => String(arg)).join(" "));
+        };
+        try {
+            const claimed = await claimProduction(
+                store,
+                insert("left", "timing"),
+                new Date("2026-11-09T00:00:00.000Z"),
+            );
+            await executeCadOperatorProduction({
+                row: claimed.row,
+                store,
+                now: () => new Date("2026-11-09T00:00:01.000Z"),
+                materialize: async () => {
+                    await new Promise((resolve) => setTimeout(resolve, 5));
+                    return { stlStorageKey: "tmp/left.stl", meshFingerprint: "abc" };
+                },
+                slice: async () => {
+                    await new Promise((resolve) => setTimeout(resolve, 5));
+                    return { gcode: "G1\n", jobId: "job-1" };
+                },
+                uploadGcode: async () => ({ storageKey: "gcode/cad-operator/t/c/d/left.gcode" }),
+                charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+            });
+            const failed = await claimProduction(
+                store,
+                insert("right", "timing-fail"),
+                new Date("2026-11-09T00:00:02.000Z"),
+            );
+            await executeCadOperatorProduction({
+                row: failed.row,
+                store,
+                now: () => new Date("2026-11-09T00:00:03.000Z"),
+                materialize: async () => {
+                    throw new Error("loft failed");
+                },
+                slice: async () => ({ gcode: "G1\n", jobId: "job-2" }),
+                uploadGcode: async () => ({ storageKey: "gcode/cad-operator/t/c/d/right.gcode" }),
+                charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+            });
+        } finally {
+            console.log = original;
+        }
+        const parsed = lines
+            .map((line) => {
+                try {
+                    return JSON.parse(line) as {
+                        msg?: string;
+                        loft_s?: number;
+                        slice_s?: number;
+                        side?: string;
+                    };
+                } catch {
+                    return null;
+                }
+            })
+            .filter((row) => row?.msg === "cad-operator-timing");
+        expect(parsed).toHaveLength(2);
+        expect(parsed[0]).toMatchObject({ side: "left" });
+        expect(parsed[0]?.loft_s).toBeGreaterThan(0);
+        expect(parsed[0]?.slice_s).toBeGreaterThan(0);
+        expect(parsed[1]).toMatchObject({ side: "right", slice_s: 0 });
+        expect(parsed[1]?.loft_s).toBeGreaterThanOrEqual(0);
+        expect(JSON.stringify(parsed)).not.toMatch(/patient|settingsJson|api_key|token|bearer/i);
     });
 
     test("a failed loft logs the font or element cause and keeps the public row error", async () => {
@@ -824,3 +989,1203 @@ describe("publicProductionError operational messages", () => {
         expect(email.length).toBeLessThanOrEqual(200);
     });
 });
+
+interface MockSliceJob {
+    id: string;
+    acceptedAt: number;
+    queueMs: number;
+    sliceMs: number;
+    gcode: string;
+    failedError?: string;
+}
+
+function iso(ms: number): string {
+    return new Date(ms).toISOString();
+}
+
+function mockJobView(job: MockSliceJob, nowMs: number) {
+    const start = job.acceptedAt + job.queueMs;
+    const finish = start + job.sliceMs;
+    const queuedAt = iso(job.acceptedAt);
+    if (job.failedError && nowMs >= start) {
+        return {
+            job_id: job.id,
+            status: "failed",
+            position: null,
+            queued_at: queuedAt,
+            started_at: iso(start),
+            finished_at: iso(start),
+            elapsed_s: 0,
+            error: job.failedError,
+        };
+    }
+    if (nowMs < start) {
+        return {
+            job_id: job.id,
+            status: "queued",
+            position: 1,
+            queued_at: queuedAt,
+            started_at: null,
+            finished_at: null,
+            elapsed_s: null,
+            error: null,
+        };
+    }
+    if (nowMs < finish) {
+        return {
+            job_id: job.id,
+            status: "running",
+            position: null,
+            queued_at: queuedAt,
+            started_at: iso(start),
+            finished_at: null,
+            elapsed_s: (nowMs - start) / 1000,
+            error: null,
+        };
+    }
+    return {
+        job_id: job.id,
+        status: "succeeded",
+        position: null,
+        queued_at: queuedAt,
+        started_at: iso(start),
+        finished_at: iso(finish),
+        elapsed_s: job.sliceMs / 1000,
+        error: null,
+    };
+}
+
+function installSliceJobFetch(args: {
+    nowMs: () => number;
+    jobs: MockSliceJob[];
+    mode: "jobs" | "jobs-404" | "lose";
+    syncBody?: string;
+}): string[] {
+    const calls: string[] = [];
+    let posted = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        calls.push(`${method} ${url}`);
+        if (url.endsWith("/v1/materials")) {
+            return new Response(JSON.stringify(["apex_core"]), {
+                status: 200,
+                headers: { "content-type": "application/json" },
+            });
+        }
+        if (method === "POST" && url.endsWith("/v1/slice/jobs")) {
+            if (args.mode === "jobs-404") return new Response("not deployed", { status: 404 });
+            const job = args.jobs[posted];
+            posted += 1;
+            if (!job) return new Response("unexpected job", { status: 500 });
+            job.acceptedAt = args.nowMs();
+            return new Response(JSON.stringify({ job_id: job.id, status: "queued", position: posted }), {
+                status: 202,
+                headers: { "content-type": "application/json" },
+            });
+        }
+        if (args.mode === "lose" && url.includes("/v1/slice/jobs/")) {
+            return new Response("restarted", { status: 404 });
+        }
+        const result = url.match(/\/v1\/slice\/jobs\/([^/]+)\/result$/);
+        if (result) {
+            const job = args.jobs.find((item) => item.id === decodeURIComponent(result[1] ?? ""));
+            if (!job) return new Response("missing", { status: 404 });
+            if (mockJobView(job, args.nowMs()).status !== "succeeded")
+                return new Response("busy", { status: 409 });
+            return new Response(job.gcode, { status: 200, headers: { "content-type": "text/plain" } });
+        }
+        const status = url.match(/\/v1\/slice\/jobs\/([^/]+)$/);
+        if (status && method === "GET") {
+            const job = args.jobs.find((item) => item.id === decodeURIComponent(status[1] ?? ""));
+            if (!job) return new Response("missing", { status: 404 });
+            return new Response(JSON.stringify(mockJobView(job, args.nowMs())), {
+                status: 200,
+                headers: { "content-type": "application/json" },
+            });
+        }
+        if (method === "POST" && url.endsWith("/v1/slice")) {
+            return new Response(args.syncBody ?? "", {
+                status: 200,
+                headers: { "content-type": "text/plain" },
+            });
+        }
+        return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+    return calls;
+}
+
+describe("VertexSlice job productions", () => {
+    const originalFetch = globalThis.fetch;
+    const foot = triangleStl([0, 0, 0, 120, 0, 0, 0, 40, 8]);
+
+    async function drive(args: {
+        store: MemoryCadProductionStore;
+        rowId: string;
+        side: "left" | "right";
+        budgetMs: number;
+        now: () => Date;
+        sleep: (ms: number) => Promise<void>;
+        saved: Map<string, string>;
+    }): Promise<void> {
+        const row = await args.store.findById(args.rowId);
+        if (!row) throw new Error("missing production");
+        await executeCadOperatorProduction({
+            row,
+            store: args.store,
+            now: args.now,
+            sliceBudgetMs: args.budgetMs,
+            sleep: args.sleep,
+            resumeSubmittedSlice: true,
+            materialize: async () => ({ stlStorageKey: `tmp/${args.side}.stl`, meshFingerprint: "mesh" }),
+            slice: async (stlStorageKey, sliceCtx) => {
+                const attempt = await runCadSliceAttempt({
+                    request: sliceCtx?.checkpoint
+                        ? null
+                        : {
+                              profileId: "apex-v2-insole-95a",
+                              material: "apex_core",
+                              model: foot,
+                              filename: `${args.side}.stl`,
+                              infillDensityPct: 32,
+                              side: args.side,
+                              sliceTimeoutMs: sliceCtx?.sliceTimeoutMs,
+                          },
+                    checkpoint: sliceCtx?.checkpoint ?? null,
+                    stlStorageKey,
+                    meshFingerprint: sliceCtx?.meshFingerprint ?? "mesh",
+                    credentialId: "cred",
+                    side: args.side,
+                    now: sliceCtx?.now ?? args.now,
+                    sleep: sliceCtx?.sleep ?? args.sleep,
+                    budgetMs: sliceCtx?.budgetMs ?? args.budgetMs,
+                    persistCheckpoint: sliceCtx?.persistCheckpoint,
+                });
+                if (attempt.kind === "pending") return { pending: true, checkpoint: attempt.checkpoint };
+                return { gcode: attempt.gcode, jobId: attempt.jobId };
+            },
+            uploadGcode: async (gcode) => {
+                args.saved.set(args.side, gcode);
+                return { storageKey: `gcode/${args.side}.gcode` };
+            },
+            charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+        });
+    }
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch;
+        delete process.env.VERTEXSLICE_SLICER_URL;
+        delete process.env.VERTEXSLICE_API_KEY;
+    });
+
+    test("a transient submit is retried inside the slice attempt and the later 202 is returned", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const gcode = passingBeltGcode("left");
+        let posts = 0;
+        const nowMs = Date.parse("2026-11-24T23:05:00.000Z");
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            const method = (init?.method ?? "GET").toUpperCase();
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (method === "POST" && url.endsWith("/v1/slice/jobs")) {
+                posts += 1;
+                if (posts === 1) throw new TypeError("ECONNRESET");
+                return new Response(JSON.stringify({ job_id: "job-retry", status: "queued", position: 0 }), {
+                    status: 202,
+                    headers: { "content-type": "application/json" },
+                });
+            }
+            if (url.endsWith("/v1/slice/jobs/job-retry/result")) {
+                return new Response(gcode, { status: 200, headers: { "content-type": "text/plain" } });
+            }
+            if (method === "GET" && url.endsWith("/v1/slice/jobs/job-retry")) {
+                return new Response(
+                    JSON.stringify({
+                        job_id: "job-retry",
+                        status: "succeeded",
+                        position: null,
+                        queued_at: new Date(nowMs).toISOString(),
+                        started_at: new Date(nowMs).toISOString(),
+                        finished_at: new Date(nowMs).toISOString(),
+                        elapsed_s: 1,
+                        error: null,
+                    }),
+                    { status: 200, headers: { "content-type": "application/json" } },
+                );
+            }
+            return new Response("unexpected", { status: 500 });
+        }) as typeof fetch;
+        const attempt = await runCadSliceAttempt({
+            request: {
+                profileId: "apex-v2-insole-95a",
+                material: "apex_core",
+                model: foot,
+                filename: "left.stl",
+                infillDensityPct: 32,
+                side: "left",
+            },
+            checkpoint: null,
+            stlStorageKey: "tmp/left.stl",
+            meshFingerprint: "mesh",
+            credentialId: "cred",
+            side: "left",
+            now: () => new Date(nowMs),
+            sleep: async () => undefined,
+            budgetMs: 1_000,
+        });
+        expect(posts).toBe(2);
+        expect(attempt).toEqual({ kind: "gcode", gcode, jobId: "vs_job-retry" });
+    });
+
+    test("two overlapping productions succeed when the second waits 200s in queue", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const t0 = Date.parse("2026-11-23T16:00:00.000Z");
+        let nowMs = t0;
+        const now = () => new Date(nowMs);
+        const sleep = async (ms: number) => {
+            nowMs += ms;
+        };
+        const leftGcode = passingBeltGcode("left");
+        const rightGcode = passingBeltGcode("right");
+        const jobs: MockSliceJob[] = [
+            { id: "job-left", acceptedAt: 0, queueMs: 0, sliceMs: 30_000, gcode: leftGcode },
+            { id: "job-right", acceptedAt: 0, queueMs: 200_000, sliceMs: 10_000, gcode: rightGcode },
+        ];
+        installSliceJobFetch({ nowMs: () => nowMs, jobs, mode: "jobs" });
+        const store = new MemoryCadProductionStore();
+        const left = await claimProduction(store, insert("left", "overlap-left"), now());
+        const right = await claimProduction(store, insert("right", "overlap-right"), now());
+        const saved = new Map<string, string>();
+        await drive({ store, rowId: left.row.id, side: "left", budgetMs: 1, now, sleep, saved });
+        await drive({ store, rowId: right.row.id, side: "right", budgetMs: 1, now, sleep, saved });
+        const queued = await store.findById(right.row.id);
+        expect(queued?.status).toBe("running");
+        expect(readSliceCheckpoint(queued?.error)?.jobId).toBe("job-right");
+        expect(toPublicProduction(queued ?? right.row).error).toBeNull();
+        expect(toPublicProduction(queued ?? right.row).status).toBe("running");
+
+        const before = nowMs;
+        await drive({
+            store,
+            rowId: right.row.id,
+            side: "right",
+            budgetMs: SLICE_JOB_POLL_BUDGET_MS,
+            now,
+            sleep,
+            saved,
+        });
+        expect(nowMs - before).toBeLessThanOrEqual(SLICE_JOB_POLL_BUDGET_MS);
+        const stillQueued = await store.findById(right.row.id);
+        expect(stillQueued?.status).toBe("running");
+        expect(stillQueued?.error).not.toContain("Manufacturing timed out");
+        expect(toPublicProduction(stillQueued ?? right.row).error).toBeNull();
+
+        nowMs = t0 + 210_000;
+        await drive({ store, rowId: right.row.id, side: "right", budgetMs: 0, now, sleep, saved });
+        await drive({ store, rowId: left.row.id, side: "left", budgetMs: 0, now, sleep, saved });
+        const doneLeft = await store.findById(left.row.id);
+        const doneRight = await store.findById(right.row.id);
+        expect(doneLeft?.status).toBe("succeeded");
+        expect(doneRight?.status).toBe("succeeded");
+        expect(saved.get("left")).toBe(leftGcode);
+        expect(saved.get("right")).toBe(rightGcode);
+        expect(doneRight?.error).toBeNull();
+    });
+
+    test("a stuck slice fails at 260s from started_at and names the slice hop", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const t0 = Date.parse("2026-11-23T16:00:00.000Z");
+        let nowMs = t0;
+        const jobs: MockSliceJob[] = [
+            { id: "job-stuck", acceptedAt: 0, queueMs: 0, sliceMs: 86_400_000, gcode: "G1 SHOULD-NOT\n" },
+        ];
+        installSliceJobFetch({ nowMs: () => nowMs, jobs, mode: "jobs" });
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(store, insert("left", "stuck-slice"), new Date(nowMs));
+        const saved = new Map<string, string>();
+        const now = () => new Date(nowMs);
+        const sleep = async (ms: number) => {
+            nowMs += ms;
+        };
+        await drive({ store, rowId: claimed.row.id, side: "left", budgetMs: 1, now, sleep, saved });
+        nowMs = t0 + SLICE_JOB_SLICE_CAP_MS - 1;
+        await drive({ store, rowId: claimed.row.id, side: "left", budgetMs: 0, now, sleep, saved });
+        expect((await store.findById(claimed.row.id))?.status).toBe("running");
+        nowMs = t0 + SLICE_JOB_SLICE_CAP_MS;
+        await drive({ store, rowId: claimed.row.id, side: "left", budgetMs: 0, now, sleep, saved });
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toBe("VertexSlice slice exceeded 260s (left)");
+        expect(row?.error).not.toContain("Manufacturing timed out");
+        expect(saved.has("left")).toBe(false);
+    });
+
+    test("a 404 on a known job is failed and retryable", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const t0 = Date.parse("2026-11-23T16:00:00.000Z");
+        const jobs: MockSliceJob[] = [
+            { id: "job-lost", acceptedAt: 0, queueMs: 0, sliceMs: 10_000, gcode: "G1\n" },
+        ];
+        installSliceJobFetch({ nowMs: () => t0, jobs, mode: "lose" });
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(store, insert("right", "lost-job"), new Date(t0));
+        await drive({
+            store,
+            rowId: claimed.row.id,
+            side: "right",
+            budgetMs: 1,
+            now: () => new Date(t0),
+            sleep: async () => undefined,
+            saved: new Map(),
+        });
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toContain("404");
+        expect(row?.error).toContain("retryable");
+        expect(row?.error).not.toContain("Manufacturing timed out");
+        const again = await claimProduction(store, insert("right", "lost-job"), new Date(t0 + 1_000));
+        expect(again.run).toBe(true);
+        expect(again.row.status).toBe("pending");
+        expect(again.row.error).toBeNull();
+    });
+
+    test("POST /v1/slice/jobs 404 falls back to sync /v1/slice bytes", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const syncBody = `${passingBeltGcode("left")}; keep-bytes\n`;
+        const calls = installSliceJobFetch({
+            nowMs: () => Date.parse("2026-11-23T16:00:00.000Z"),
+            jobs: [],
+            mode: "jobs-404",
+            syncBody,
+        });
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(
+            store,
+            insert("left", "fallback-sync"),
+            new Date("2026-11-23T16:00:00.000Z"),
+        );
+        const saved = new Map<string, string>();
+        await drive({
+            store,
+            rowId: claimed.row.id,
+            side: "left",
+            budgetMs: SLICE_JOB_POLL_BUDGET_MS,
+            now: () => new Date("2026-11-23T16:00:00.000Z"),
+            sleep: async () => undefined,
+            saved,
+        });
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("succeeded");
+        expect(saved.get("left")).toBe(syncBody);
+        expect(calls.some((call) => call.startsWith("POST") && call.endsWith("/v1/slice/jobs"))).toBe(true);
+        expect(calls.some((call) => call.startsWith("POST") && call.endsWith("/v1/slice"))).toBe(true);
+        expect(readSliceCheckpoint(row?.error)).toBeNull();
+    });
+
+    test("queue wait over 20 minutes names the queue hop", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const t0 = Date.parse("2026-11-23T16:00:00.000Z");
+        let nowMs = t0;
+        const jobs: MockSliceJob[] = [
+            {
+                id: "job-queue",
+                acceptedAt: 0,
+                queueMs: SLICE_JOB_QUEUE_WAIT_CAP_MS + 60_000,
+                sliceMs: 1_000,
+                gcode: "G1\n",
+            },
+        ];
+        installSliceJobFetch({ nowMs: () => nowMs, jobs, mode: "jobs" });
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(store, insert("right", "queue-cap"), new Date(t0));
+        const now = () => new Date(nowMs);
+        await drive({
+            store,
+            rowId: claimed.row.id,
+            side: "right",
+            budgetMs: 1,
+            now,
+            sleep: async () => undefined,
+            saved: new Map(),
+        });
+        nowMs = t0 + SLICE_JOB_QUEUE_WAIT_CAP_MS;
+        await drive({
+            store,
+            rowId: claimed.row.id,
+            side: "right",
+            budgetMs: 0,
+            now,
+            sleep: async () => undefined,
+            saved: new Map(),
+        });
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toContain("queue wait");
+        expect(row?.error).not.toContain("Manufacturing timed out");
+        expect(row?.error).not.toContain("slice exceeded");
+    });
+
+    test("a failed job records the server hop", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const t0 = Date.parse("2026-11-23T16:00:00.000Z");
+        const jobs: MockSliceJob[] = [
+            {
+                id: "job-fail",
+                acceptedAt: 0,
+                queueMs: 0,
+                sliceMs: 1_000,
+                gcode: "G1\n",
+                failedError: "slice exceeded 260s",
+            },
+        ];
+        installSliceJobFetch({ nowMs: () => t0 + 1_000, jobs, mode: "jobs" });
+        const store = new MemoryCadProductionStore();
+        const claimed = await claimProduction(store, insert("left", "server-fail"), new Date(t0));
+        await drive({
+            store,
+            rowId: claimed.row.id,
+            side: "left",
+            budgetMs: 1,
+            now: () => new Date(t0 + 1_000),
+            sleep: async () => undefined,
+            saved: new Map(),
+        });
+        const row = await store.findById(claimed.row.id);
+        expect(row?.status).toBe("failed");
+        expect(row?.error).toContain("server error");
+        expect(row?.error).toContain("slice exceeded 260s");
+        expect(row?.error).not.toContain("Manufacturing timed out");
+    });
+
+    test("a mirrored left slice fails before upload; a true left is stored unchanged", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const mirrored = handednessFixture("main_left_request_toe_first");
+        const trueLeft = handednessFixture("true_left_toe_first");
+        const now = new Date("2026-11-24T00:00:00.000Z");
+
+        async function run(side: "left" | "right", body: string, fingerprint: string, mode: "sync" | "job") {
+            if (mode === "sync") {
+                installSliceJobFetch({
+                    nowMs: () => now.getTime(),
+                    jobs: [],
+                    mode: "jobs-404",
+                    syncBody: body,
+                });
+            } else {
+                installSliceJobFetch({
+                    nowMs: () => now.getTime(),
+                    jobs: [
+                        {
+                            id: `job-${fingerprint}`,
+                            acceptedAt: 0,
+                            queueMs: 0,
+                            sliceMs: 0,
+                            gcode: body,
+                        },
+                    ],
+                    mode: "jobs",
+                });
+            }
+            const store = new MemoryCadProductionStore();
+            const claimed = await claimProduction(store, insert(side, fingerprint), now);
+            let uploads = 0;
+            let charges = 0;
+            let uploaded = "";
+            await executeCadOperatorProduction({
+                row: claimed.row,
+                store,
+                now: () => now,
+                materialize: async () => ({ stlStorageKey: `tmp/${side}.stl`, meshFingerprint: "mesh" }),
+                slice: async (stlStorageKey, sliceCtx) => {
+                    const attempt = await runCadSliceAttempt({
+                        request: sliceCtx?.checkpoint
+                            ? null
+                            : {
+                                  profileId: "apex-v2-insole-95a",
+                                  material: "apex_core",
+                                  model: foot,
+                                  filename: `${side}.stl`,
+                                  infillDensityPct: 32,
+                                  side,
+                                  sliceTimeoutMs: sliceCtx?.sliceTimeoutMs,
+                              },
+                        checkpoint: sliceCtx?.checkpoint ?? null,
+                        stlStorageKey,
+                        meshFingerprint: "mesh",
+                        credentialId: "cred",
+                        side,
+                        now: () => now,
+                        sleep: async () => undefined,
+                        budgetMs: sliceCtx?.budgetMs ?? 0,
+                        persistCheckpoint: sliceCtx?.persistCheckpoint,
+                    });
+                    if (attempt.kind === "pending") return { pending: true, checkpoint: attempt.checkpoint };
+                    return { gcode: attempt.gcode, jobId: attempt.jobId };
+                },
+                uploadGcode: async (gcode) => {
+                    uploads += 1;
+                    uploaded = gcode;
+                    return { storageKey: `gcode/${side}.gcode` };
+                },
+                charge: async () => {
+                    charges += 1;
+                    return { exportId: "exp", balance: 1, alreadyCharged: false };
+                },
+            });
+            const row = await store.findById(claimed.row.id);
+            return { row, uploads, charges, uploaded };
+        }
+
+        const failed = await run("left", mirrored, "hand-fail-sync", "sync");
+        expect(failed.row?.status).toBe("failed");
+        expect(failed.row?.error).toBe(
+            "Handedness check failed: requested left, G-code is a physical right foot. File not delivered.",
+        );
+        expect(failed.uploads).toBe(0);
+        expect(failed.charges).toBe(0);
+        expect(failed.row?.gcodeStorageKey ?? null).toBeNull();
+
+        const jobFailed = await run("left", mirrored, "hand-fail-job", "job");
+        expect(jobFailed.row?.status).toBe("failed");
+        expect(jobFailed.row?.error).toBe(failed.row?.error);
+        expect(jobFailed.uploads).toBe(0);
+        expect(jobFailed.charges).toBe(0);
+
+        const delivered = await run("left", trueLeft, "hand-ok-left", "sync");
+        expect(delivered.row?.status).toBe("succeeded");
+        expect(delivered.uploads).toBe(1);
+        expect(delivered.charges).toBe(1);
+        expect(delivered.uploaded).toBe(trueLeft);
+
+        const rightFoot = await run("right", mirrored, "hand-ok-right", "job");
+        expect(rightFoot.row?.status).toBe("succeeded");
+        expect(rightFoot.uploads).toBe(1);
+        expect(rightFoot.uploaded).toBe(mirrored);
+    });
+});
+
+const PAIR_FIXTURE_GCODE = "G90\nG1 X10 Y0 Z0.2\n";
+const PAIR_FIXTURE_STL = {
+    left: "stl/cad-operator/fixture/left.stl",
+    right: "stl/cad-operator/fixture/right.stl",
+} as const;
+
+/**
+ * Interactive transactions yield between statements. A sibling foot's
+ * CPU-bound loft can then run before COMMIT. Prisma's default timeout is 5s.
+ */
+function blockEventLoop(ms: number): void {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+        // Matches a long synchronous loft on the other foot.
+    }
+}
+
+function pairRow(side: "left" | "right", now: Date) {
+    return {
+        id: side === "left" ? "11111111-1111-4111-8111-111111111111" : "22222222-2222-4222-8222-222222222222",
+        designId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        side,
+        presetId: "apex-v2-insole-95a",
+        status: "pending" as const,
+        idempotencyKey: `cadop:v1:pair:${side}`,
+        settingsFingerprint: "fp-pair",
+        gcodeStorageKey: null,
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+        leaseExpiresAt: new Date(now.getTime() + 60_000),
+        chargedAt: null,
+        exportId: null,
+        method: "printing_solid" as const,
+        beltAngleDeg: 45,
+        layerHeightMm: null,
+        material: "apex_core",
+    };
+}
+
+function sameStoredValue(actual: unknown, expected: unknown): boolean {
+    if (actual instanceof Date && expected instanceof Date) return actual.getTime() === expected.getTime();
+    return actual === expected;
+}
+
+function createPairPrisma(): {
+    prisma: PrismaClient;
+    transactions: () => number;
+    openTransactions: () => number;
+} {
+    type Stored = Record<string, unknown>;
+    const rows = new Map<string, Stored>();
+    let transactions = 0;
+    let openTransactions = 0;
+
+    function read(where: { id?: string }): Stored | null {
+        if (!where.id) return null;
+        const row = rows.get(where.id);
+        return row ? { ...row } : null;
+    }
+
+    const production = {
+        async create({ data }: { data: Stored }) {
+            const row: Stored = {
+                id: data.id,
+                designId: data.designId,
+                side: data.side ?? null,
+                presetId: data.presetId,
+                status: data.status,
+                idempotencyKey: data.idempotencyKey ?? null,
+                settingsFingerprint: data.settingsFingerprint ?? null,
+                gcodeStorageKey: data.gcodeStorageKey ?? null,
+                error: data.error ?? null,
+                createdAt: data.createdAt,
+                updatedAt: data.updatedAt,
+                leaseExpiresAt: data.leaseExpiresAt ?? null,
+                chargedAt: data.chargedAt ?? null,
+                exportId: data.exportId ?? null,
+                method: data.method,
+                beltAngleDeg: data.beltAngleDeg ?? null,
+                layerHeightMm: data.layerHeightMm ?? null,
+                material: data.material ?? null,
+            };
+            rows.set(String(row.id), row);
+            return { ...row };
+        },
+        async findUnique({ where }: { where: { id?: string } }) {
+            return read(where);
+        },
+        async updateMany({ where, data }: { where: Stored; data: Stored }) {
+            const current = rows.get(String(where.id));
+            if (!current) return { count: 0 };
+            const matches = Object.entries(where).every(([key, value]) =>
+                sameStoredValue(current[key], value),
+            );
+            if (!matches) return { count: 0 };
+            for (const [key, value] of Object.entries(data)) {
+                if (value !== undefined) current[key] = value;
+            }
+            return { count: 1 };
+        },
+        async update({ where, data }: { where: { id: string }; data: Stored }) {
+            const current = rows.get(where.id);
+            if (!current) throw new Error("missing production");
+            for (const [key, value] of Object.entries(data)) {
+                if (value !== undefined) current[key] = value;
+            }
+            return { ...current };
+        },
+    };
+
+    const prisma = {
+        production,
+        async $transaction(fn: (tx: unknown) => Promise<unknown>) {
+            transactions += 1;
+            openTransactions += 1;
+            const started = Date.now();
+            const assertWithinTimeout = () => {
+                const elapsed = Date.now() - started;
+                if (elapsed > 5_000) {
+                    throw new Error(
+                        `Transaction already closed: The timeout for this transaction was 5000 ms, however ${elapsed} ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction.`,
+                    );
+                }
+            };
+            const tx = {
+                async $queryRaw() {
+                    await new Promise((resolve) => setImmediate(resolve));
+                    assertWithinTimeout();
+                    return [{ id: "locked" }];
+                },
+                production: {
+                    async findUnique(args: { where: { id?: string } }) {
+                        await new Promise((resolve) => setImmediate(resolve));
+                        assertWithinTimeout();
+                        return production.findUnique(args);
+                    },
+                    async update(args: { where: { id: string }; data: Stored }) {
+                        await new Promise((resolve) => setImmediate(resolve));
+                        assertWithinTimeout();
+                        return production.update(args);
+                    },
+                },
+            };
+            try {
+                const result = await fn(tx);
+                assertWithinTimeout();
+                return result;
+            } finally {
+                openTransactions -= 1;
+            }
+        },
+    };
+
+    return {
+        prisma: prisma as unknown as PrismaClient,
+        transactions: () => transactions,
+        openTransactions: () => openTransactions,
+    };
+}
+
+describe("CAD-operator pair production transactions", () => {
+    test("updateIf commits one matching status change without an interactive transaction", async () => {
+        const handle = createPairPrisma();
+        const store = new PrismaCadProductionStore(handle.prisma);
+        const now = new Date("2026-11-24T17:00:00.000Z");
+        const row = await store.insert(pairRow("right", now));
+        const updated = await store.updateIf(row.id, (current) => current.status === "pending", {
+            status: "running",
+            updatedAt: new Date("2026-11-24T17:00:01.000Z"),
+        });
+        expect(updated?.status).toBe("running");
+        expect(handle.transactions()).toBe(0);
+        const lost = await store.updateIf(row.id, (current) => current.status === "pending", {
+            status: "failed",
+            error: "nope",
+            updatedAt: new Date("2026-11-24T17:00:02.000Z"),
+        });
+        expect(lost).toBeNull();
+        expect((await store.findById(row.id))?.status).toBe("running");
+        expect((await store.findById(row.id))?.error).toBeNull();
+    });
+
+    test("a both-feet run with a loft longer than 5s does not fail with a Prisma interactive-transaction timeout", async () => {
+        const handle = createPairPrisma();
+        const store = new PrismaCadProductionStore(handle.prisma);
+        const created = new Date("2026-11-24T17:16:00.000Z");
+        const uploaded = new Map<"left" | "right", string>();
+        const sliced: string[] = [];
+        let openDuringLoft = false;
+
+        await store.insert(pairRow("left", created));
+        await store.insert(pairRow("right", created));
+        const left = await store.findById(pairRow("left", created).id);
+        const right = await store.findById(pairRow("right", created).id);
+        if (!left || !right) throw new Error("pair rows missing");
+
+        const run = (row: typeof left) =>
+            executeCadOperatorProduction({
+                row,
+                store,
+                now: () => new Date(),
+                materialize: async () => {
+                    if (handle.openTransactions() > 0) openDuringLoft = true;
+                    blockEventLoop(6_000);
+                    return {
+                        stlStorageKey: PAIR_FIXTURE_STL[row.side ?? "left"],
+                        meshFingerprint: "fixture-mesh",
+                    };
+                },
+                slice: async (stlStorageKey) => {
+                    sliced.push(stlStorageKey);
+                    return { gcode: PAIR_FIXTURE_GCODE, jobId: `job-${row.side}` };
+                },
+                uploadGcode: async (gcode) => {
+                    if (row.side) uploaded.set(row.side, gcode);
+                    return { storageKey: `gcode/cad-operator/fixture/${row.side}.gcode` };
+                },
+                charge: async () => ({ exportId: `exp-${row.side}`, balance: 1, alreadyCharged: false }),
+            });
+
+        await Promise.all([run(left), run(right)]);
+
+        expect(openDuringLoft).toBe(false);
+        expect(handle.transactions()).toBe(0);
+        for (const side of ["left", "right"] as const) {
+            const row = await store.findById(pairRow(side, created).id);
+            expect(row?.status).toBe("succeeded");
+            expect(row?.error ?? "").not.toContain("Manufacturing timed out");
+            expect(row?.error ?? "").not.toMatch(/Transaction already closed/);
+            expect(uploaded.get(side)).toBe(PAIR_FIXTURE_GCODE);
+        }
+        expect(sliced.slice().sort()).toEqual([PAIR_FIXTURE_STL.left, PAIR_FIXTURE_STL.right].slice().sort());
+    });
+});
+
+describe("stored manufacturing STL reuse", () => {
+    const savedDesign = { textMarking: { text: "JABBOUR", surface: "bottom" } };
+    const identity = manufacturingStlRunIdentity({
+        side: "left",
+        savedDesign,
+        beltPrint: true,
+    });
+
+    test("identity changes with composed text, beltPrint, side, and placement version", () => {
+        expect(
+            manufacturingStlRunIdentity({
+                side: "left",
+                savedDesign: { textMarking: { text: "OTHER", surface: "bottom" } },
+                beltPrint: true,
+            }),
+        ).not.toBe(identity);
+        expect(manufacturingStlRunIdentity({ side: "left", savedDesign, beltPrint: false })).not.toBe(
+            identity,
+        );
+        expect(manufacturingStlRunIdentity({ side: "right", savedDesign, beltPrint: true })).not.toBe(
+            identity,
+        );
+        expect(
+            manufacturingStlRunIdentity({
+                side: "left",
+                savedDesign,
+                beltPrint: true,
+                placementVersion: 1,
+            }),
+        ).not.toBe(identity);
+        expect(identity).toBe(manufacturingStlRunIdentity({ side: "left", savedDesign, beltPrint: true }));
+    });
+
+    test("the pre-#52 left archive eTag and size are stale", () => {
+        expect(STALE_PRE52_BELT_MANUFACTURING_STL.etag).toBe("8f5dc451de66dbba8f8521e046a9e4af");
+        expect(STALE_PRE52_BELT_MANUFACTURING_STL.sizeBytes).toBe(9045484);
+        expect(isStalePre52ManufacturingEtag("8f5dc451de66dbba8f8521e046a9e4af", 9045484)).toBe(true);
+        expect(isStalePre52ManufacturingEtag('"8f5dc451de66dbba8f8521e046a9e4af"', 9045484)).toBe(true);
+        expect(isStalePre52ManufacturingEtag("8f5dc451de66dbba8f8521e046a9e4af", 7973784)).toBe(false);
+        expect(isStalePre52ManufacturingEtag("18bd05067bc3c41ab4c95bc10b5754a2", 7587884)).toBe(false);
+        expect(isStalePre52ManufacturingStlBytes(new Uint8Array([1, 2, 3]))).toBe(false);
+    });
+
+    test("a pre-#52 checkpoint is not reusable", () => {
+        const stale = {
+            v: 1 as const,
+            jobId: "pre52",
+            acceptedAt: "2026-11-24T19:13:17.000Z",
+            stlStorageKey: "manufacturing-temp/cad-operator/stale/left.stl",
+            meshFingerprint: "old",
+            expectedRegionCount: 0,
+            credentialId: "cred",
+            serverStartedAt: null,
+        };
+        expect(storedManufacturingStlReusable(stale, { stlIdentity: identity })).toBe(false);
+        expect(
+            storedManufacturingStlReusable(
+                {
+                    ...stale,
+                    placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+                    stlIdentity: identity,
+                    rematerialized: true,
+                },
+                { stlIdentity: identity },
+            ),
+        ).toBe(false);
+    });
+
+    test("force_new_slice does not slice a leftover pre-#52 checkpoint STL", async () => {
+        const store = new MemoryCadProductionStore();
+        const now = new Date("2026-11-25T05:12:00.000Z");
+        const claimed = await claimProduction(store, insert("left", "fresh-slice"), now, {
+            forceNewSlice: true,
+        });
+        const staleKey = "manufacturing-temp/cad-operator/54b6a960/92d4c89a/1795583578275-pre52.stl";
+        await store.updateIf(claimed.row.id, () => true, {
+            status: "running",
+            error: encodeSliceCheckpoint({
+                v: 1,
+                jobId: "pre52-job",
+                acceptedAt: "2026-11-24T19:13:17.000Z",
+                stlStorageKey: staleKey,
+                meshFingerprint: "old",
+                expectedRegionCount: 0,
+                credentialId: "cred",
+                serverStartedAt: null,
+            }),
+        });
+        const row = await store.findById(claimed.row.id);
+        let materialized = 0;
+        let slicedKey = "";
+        let resumed = false;
+        await executeCadOperatorProduction({
+            row: row ?? claimed.row,
+            store,
+            now: () => now,
+            stlIdentity: identity,
+            materialize: async () => {
+                materialized += 1;
+                return { stlStorageKey: "tmp/fresh-left.stl", meshFingerprint: "fresh" };
+            },
+            slice: async (key, ctx) => {
+                slicedKey = key;
+                resumed = Boolean(ctx?.checkpoint);
+                return { gcode: "G1 X1\n", jobId: "fresh-job" };
+            },
+            uploadGcode: async () => ({ storageKey: "gcode/left.gcode" }),
+            charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+        });
+        expect(materialized).toBe(1);
+        expect(slicedKey).toBe("tmp/fresh-left.stl");
+        expect(slicedKey).not.toBe(staleKey);
+        expect(resumed).toBe(false);
+        const saved = await store.findById(claimed.row.id);
+        expect(saved?.status).toBe("succeeded");
+        expect(saved?.error ?? "").not.toContain(staleKey);
+    });
+
+    test("t2704u: two consecutive generate executions both rematerialize and do not read a stored STL", async () => {
+        const store = new MemoryCadProductionStore();
+        const now = new Date("2026-11-25T05:20:00.000Z");
+        const claimed = await claimProduction(store, insert("left", "always-loft"), now);
+        const storedKey = "manufacturing-temp/cad-operator/stored/left.stl";
+        await store.updateIf(claimed.row.id, () => true, {
+            status: "running",
+            error: encodeSliceCheckpoint({
+                v: 1,
+                jobId: "stored-job",
+                acceptedAt: now.toISOString(),
+                stlStorageKey: storedKey,
+                meshFingerprint: "mesh",
+                expectedRegionCount: 0,
+                credentialId: "cred",
+                serverStartedAt: null,
+                placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+                stlIdentity: identity,
+                rematerialized: true,
+            }),
+        });
+        const keys: string[] = [];
+        const runOnce = async (freshKey: string) => {
+            const row = await store.findById(claimed.row.id);
+            await executeCadOperatorProduction({
+                row: row ?? claimed.row,
+                store,
+                now: () => now,
+                stlIdentity: identity,
+                materialize: async () => {
+                    keys.push(freshKey);
+                    return { stlStorageKey: freshKey, meshFingerprint: "fresh" };
+                },
+                slice: async (key, ctx) => {
+                    expect(ctx?.checkpoint ?? null).toBeNull();
+                    expect(key).toBe(freshKey);
+                    expect(key).not.toBe(storedKey);
+                    return { gcode: `G1 ; ${freshKey}\n`, jobId: freshKey };
+                },
+                uploadGcode: async () => ({ storageKey: `gcode/${freshKey}` }),
+                charge: async () => ({ exportId: freshKey, balance: 1, alreadyCharged: false }),
+            });
+        };
+        await runOnce("tmp/loft-1.stl");
+        await store.updateIf(claimed.row.id, () => true, {
+            status: "running",
+            chargedAt: null,
+            gcodeStorageKey: null,
+            error: encodeSliceCheckpoint({
+                v: 1,
+                jobId: "stored-job",
+                acceptedAt: now.toISOString(),
+                stlStorageKey: storedKey,
+                meshFingerprint: "mesh",
+                expectedRegionCount: 0,
+                credentialId: "cred",
+                serverStartedAt: null,
+                placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+                stlIdentity: identity,
+                rematerialized: true,
+            }),
+        });
+        await runOnce("tmp/loft-2.stl");
+        expect(keys).toEqual(["tmp/loft-1.stl", "tmp/loft-2.stl"]);
+        const saved = await store.findById(claimed.row.id);
+        expect(saved?.gcodeStorageKey).toBe("gcode/tmp/loft-2.stl");
+        expect(saved?.error ?? "").not.toContain(storedKey);
+    });
+
+    test("t2699u: any saved-design change misses the solid identity; production still does not reuse an unchanged STL", () => {
+        const design = fullSavedDesign();
+        const axes = { side: "left" as const, beltPrint: true };
+        const baseline = manufacturingStlRunIdentity({ ...axes, savedDesign: design });
+        const checkpoint = {
+            v: 1 as const,
+            jobId: "stored",
+            acceptedAt: "2026-11-24T19:13:17.000Z",
+            stlStorageKey: "manufacturing-temp/cad-operator/stored/left.stl",
+            meshFingerprint: "mesh",
+            expectedRegionCount: 0,
+            credentialId: "cred",
+            serverStartedAt: null,
+            placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+            stlIdentity: baseline,
+        };
+        const unchanged = manufacturingStlRunIdentity({
+            ...axes,
+            savedDesign: reverseKeys(design),
+        });
+        expect(unchanged).toBe(baseline);
+        expect(storedManufacturingStlReusable(checkpoint, { stlIdentity: unchanged })).toBe(false);
+
+        const leaves = collectLeaves(design);
+        const required = [
+            "thicknessMm",
+            "usMenSize",
+            "shoeWidth",
+            "material",
+            "corrections.left.archHeightMm",
+            "corrections.right.heelLiftMm",
+            "elements[0].type",
+            "sinks.left[0].depthMm",
+            "textMarking.text",
+        ];
+        for (const path of required) {
+            expect(
+                leaves.some((leaf) => leaf.path === path),
+                path,
+            ).toBe(true);
+        }
+        expect(leaves.length).toBeGreaterThan(required.length);
+
+        for (const leaf of leaves) {
+            const mutated = cloneJson(design);
+            setLeaf(mutated, leaf.path, changedValue(leaf.value));
+            const next = manufacturingStlRunIdentity({ ...axes, savedDesign: mutated });
+            expect(next, leaf.path).not.toBe(baseline);
+            expect(storedManufacturingStlReusable(checkpoint, { stlIdentity: next }), leaf.path).toBe(false);
+            expect(storedManufacturingStlReusable(checkpoint, { stlIdentity: baseline }), leaf.path).toBe(
+                false,
+            );
+        }
+
+        const axisChanges: Array<{ label: string; identity: string }> = [
+            {
+                label: "beltPrint",
+                identity: manufacturingStlRunIdentity({
+                    side: "left",
+                    beltPrint: false,
+                    savedDesign: design,
+                }),
+            },
+            {
+                label: "placementVersion",
+                identity: manufacturingStlRunIdentity({
+                    ...axes,
+                    savedDesign: design,
+                    placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION + 1,
+                }),
+            },
+            {
+                label: "orthocadVersion",
+                identity: manufacturingStlRunIdentity({
+                    ...axes,
+                    savedDesign: design,
+                    orthocadVersion: `${ORTHOCAD_MANUFACTURING_VERSION}-next`,
+                }),
+            },
+            {
+                label: "slicerVersion",
+                identity: manufacturingStlRunIdentity({
+                    ...axes,
+                    savedDesign: design,
+                    slicerVersion: `${MANUFACTURING_SLICER_VERSION}-other`,
+                }),
+            },
+        ];
+        for (const change of axisChanges) {
+            expect(change.identity, change.label).not.toBe(baseline);
+            expect(
+                storedManufacturingStlReusable(checkpoint, { stlIdentity: change.identity }),
+                change.label,
+            ).toBe(false);
+        }
+    });
+});
+
+/** Synthetic saved design. The table walks every leaf, so a new field is covered. */
+function fullSavedDesign(): Record<string, unknown> {
+    return {
+        method: "printing_solid",
+        thicknessMm: 3,
+        usMenSize: 11.5,
+        shoeWidth: "medium",
+        sizeSystem: "us",
+        material: "apex_core",
+        archGrindDepthMm: 0,
+        shellThicknessMode: "zonal",
+        corrections: {
+            linked: false,
+            unit: "mm",
+            left: { heelLiftMm: 0, archHeightMm: 1, archElongationMm: 0 },
+            right: { heelLiftMm: 12, archHeightMm: 2, archElongationMm: 1 },
+        },
+        elements: [{ id: "e1", type: "metatarsalPad", side: "left", xMm: 10, yMm: -4, depthMm: 2 }],
+        sinks: { left: [{ kind: "mpj", depthMm: 1 }], right: [{ kind: "styloid", depthMm: 0.5 }] },
+        textMarking: {
+            text: "JABBOUR",
+            addPatientName: true,
+            surface: "bottom",
+            mode: "engrave",
+            depthMm: 0.6,
+            capHeightMm: 12,
+        },
+        printRecipe: {
+            version: 1,
+            pattern: "gyroid",
+            profileId: "apex-v2-insole-95a",
+            defaultHardness: "Medium",
+        },
+        shapeFinish: { topCover: false },
+    };
+}
+
+function cloneJson<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function reverseKeys(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map((entry) => reverseKeys(entry));
+    if (!value || typeof value !== "object") return value;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).reverse()) {
+        out[key] = reverseKeys((value as Record<string, unknown>)[key]);
+    }
+    return out;
+}
+
+function collectLeaves(value: unknown, path = ""): Array<{ path: string; value: unknown }> {
+    if (Array.isArray(value)) {
+        if (value.length === 0) return [{ path, value }];
+        return value.flatMap((entry, index) => collectLeaves(entry, `${path}[${index}]`));
+    }
+    if (value && typeof value === "object") {
+        const keys = Object.keys(value as Record<string, unknown>);
+        if (keys.length === 0) return [{ path, value }];
+        return keys.flatMap((key) =>
+            collectLeaves((value as Record<string, unknown>)[key], path ? `${path}.${key}` : key),
+        );
+    }
+    return [{ path, value }];
+}
+
+function setLeaf(root: Record<string, unknown>, path: string, next: unknown): void {
+    const tokens = path.split(".").flatMap((part) => {
+        const found: string[] = [];
+        const matcher = /([^[\]]+)|\[(\d+)\]/g;
+        let match = matcher.exec(part);
+        while (match) {
+            found.push(match[1] ?? match[2]);
+            match = matcher.exec(part);
+        }
+        return found;
+    });
+    let cursor: unknown = root;
+    for (let i = 0; i < tokens.length - 1; i++) {
+        const token = tokens[i];
+        cursor = Array.isArray(cursor) ? cursor[Number(token)] : (cursor as Record<string, unknown>)[token];
+    }
+    const last = tokens[tokens.length - 1];
+    if (Array.isArray(cursor)) cursor[Number(last)] = next;
+    else (cursor as Record<string, unknown>)[last] = next;
+}
+
+function changedValue(value: unknown): unknown {
+    if (typeof value === "number") return value + 1;
+    if (typeof value === "boolean") return !value;
+    if (typeof value === "string") return `${value}~`;
+    if (value == null) return "changed";
+    return { changed: true };
+}

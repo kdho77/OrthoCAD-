@@ -120,9 +120,17 @@ function buildEdgeUsage(geometry: BufferGeometry): {
     const edgeCount = new Map<string, number>();
     const edgeVerts = new Map<string, [string, string]>();
     const triN = triangleCount(geometry);
+    const vkeys = new Array<string | undefined>(geometry.getAttribute("position").count);
+    const keyAt = (vi: number): string => {
+        const cached = vkeys[vi];
+        if (cached !== undefined) return cached;
+        const key = vertexKeyAt(geometry, vi);
+        vkeys[vi] = key;
+        return key;
+    };
 
     for (let t = 0; t < triN; t++) {
-        const keys = [0, 1, 2].map((k) => vertexKeyAt(geometry, idx(geometry, t, k)));
+        const keys = [0, 1, 2].map((k) => keyAt(idx(geometry, t, k)));
         for (let i = 0; i < 3; i++) {
             const a = keys[i]!;
             const b = keys[(i + 1) % 3]!;
@@ -688,6 +696,18 @@ function vertexIndexForQuantKey(geometry: BufferGeometry, key: string): number {
     return -1;
 }
 
+/** First vertex index for each quant key. Same winner as a forward linear scan. */
+function quantKeyFirstIndex(geometry: BufferGeometry): Map<string, number> {
+    const pos = geometry.getAttribute("position");
+    const map = new Map<string, number>();
+    if (!pos) return map;
+    for (let i = 0; i < pos.count; i++) {
+        const key = quantKey(pos.getX(i), pos.getY(i), pos.getZ(i));
+        if (!map.has(key)) map.set(key, i);
+    }
+    return map;
+}
+
 /** Quant-key lookup restricted to a half-open vertex index range [rangeStart, rangeEnd). */
 function vertexIndexForQuantKeyInRange(
     geometry: BufferGeometry,
@@ -800,7 +820,8 @@ export function extractOrderedBoundaryLoopWithIndices(geometry: BufferGeometry):
         }
     }
 
-    const indices = best.map((p) => vertexIndexForQuantKey(geometry, quantKey(p.x, p.y, p.z)));
+    const indexByKey = quantKeyFirstIndex(geometry);
+    const indices = best.map((p) => indexByKey.get(quantKey(p.x, p.y, p.z)) ?? -1);
     return { positions: best, indices };
 }
 

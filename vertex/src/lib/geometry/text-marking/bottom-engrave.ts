@@ -275,6 +275,48 @@ function emitCdt(
     return emitCap(buf, cap, z, boundary, wantNegZ, cls);
 }
 
+/**
+ * A counter cap can miss the boundary weld on a narrow outline and land as a
+ * single triangle with three open edges. The rest of the sole is already
+ * closed. That lone triangle is not part of the shell; leaving it makes
+ * manifold-3d reject the engrave and the name is omitted.
+ */
+function dropLoneOpenTriangles(geo: BufferGeometry): void {
+    const indexAttr = geo.getIndex();
+    if (!indexAttr) return;
+    const faceClass = (geo.userData as { faceClass?: number[] }).faceClass;
+    const tris: Array<[number, number, number]> = [];
+    const edgeCount = new Map<string, number>();
+    const edgeKey = (a: number, b: number) => (a < b ? `${a}:${b}` : `${b}:${a}`);
+    for (let i = 0; i < indexAttr.count; i += 3) {
+        const tri: [number, number, number] = [
+            indexAttr.getX(i),
+            indexAttr.getX(i + 1),
+            indexAttr.getX(i + 2),
+        ];
+        tris.push(tri);
+        for (let e = 0; e < 3; e++) {
+            const key = edgeKey(tri[e], tri[(e + 1) % 3]);
+            edgeCount.set(key, (edgeCount.get(key) ?? 0) + 1);
+        }
+    }
+    const keep: number[] = [];
+    const keepClass: number[] = [];
+    for (let t = 0; t < tris.length; t++) {
+        const tri = tris[t]!;
+        let open = 0;
+        for (let e = 0; e < 3; e++) {
+            if (edgeCount.get(edgeKey(tri[e], tri[(e + 1) % 3])) === 1) open++;
+        }
+        if (open === 3) continue;
+        keep.push(tri[0], tri[1], tri[2]);
+        if (faceClass) keepClass.push(faceClass[t] ?? 0);
+    }
+    if (keep.length === indexAttr.count) return;
+    geo.setIndex(keep);
+    if (faceClass) (geo.userData as { faceClass: number[] }).faceClass = keepClass;
+}
+
 function wallStrip(buf: MeshBuf, top: number[], bot: number[]): void {
     const n = top.length;
     if (n < 2 || bot.length !== n) return;
@@ -371,10 +413,23 @@ function collectSole(geo: BufferGeometry): { tris: SoleTri[]; wantNegZ: boolean 
     return { tris, wantNegZ: nzSum < 0 };
 }
 
+function glyphSamplesOf(glyphs: TextGlyphGroup[]): TextXy[] {
+    const samples: TextXy[] = [];
+    for (const g of glyphs) {
+        for (const p of g.outer) samples.push(p);
+        for (const hole of g.holes) for (const p of hole) samples.push(p);
+    }
+    return samples;
+}
+
 function glyphHitsTri(
     pos: BufferGeometry["attributes"]["position"],
     tri: SoleTri,
-    glyphs: TextGlyphGroup[],
+    samples: TextXy[],
+    minX: number,
+    minY: number,
+    maxX: number,
+    maxY: number,
 ): boolean {
     const ax = pos.getX(tri.a);
     const ay = pos.getY(tri.a);
@@ -382,11 +437,19 @@ function glyphHitsTri(
     const by = pos.getY(tri.b);
     const cx = pos.getX(tri.c);
     const cy = pos.getY(tri.c);
-    const samples: TextXy[] = [];
-    for (const g of glyphs) {
-        samples.push(...g.outer);
-        for (const h of g.holes) samples.push(...h);
-    }
+    let tMinX = ax;
+    let tMaxX = ax;
+    let tMinY = ay;
+    let tMaxY = ay;
+    if (bx < tMinX) tMinX = bx;
+    else if (bx > tMaxX) tMaxX = bx;
+    if (cx < tMinX) tMinX = cx;
+    else if (cx > tMaxX) tMaxX = cx;
+    if (by < tMinY) tMinY = by;
+    else if (by > tMaxY) tMaxY = by;
+    if (cy < tMinY) tMinY = cy;
+    else if (cy > tMaxY) tMaxY = cy;
+    if (tMaxX < minX || tMinX > maxX || tMaxY < minY || tMinY > maxY) return false;
     for (const p of samples) {
         if (inTri(p.x, p.y, ax, ay, bx, by, cx, cy)) return true;
         if (Math.hypot(p.x - ax, p.y - ay) <= 2) return true;
@@ -740,12 +803,25 @@ export async function engraveBottomPlanar(
     const clipped = resampleGroups(inset ? clipGlyphs(groups, inset) : groups);
     const { tris: sole, wantNegZ } = collectSole(host);
     const posAttr = host.getAttribute("position");
+    const samples = glyphSamplesOf(clipped);
+    let sMinX = Infinity;
+    let sMinY = Infinity;
+    let sMaxX = -Infinity;
+    let sMaxY = -Infinity;
+    for (const p of samples) {
+        if (p.x < sMinX) sMinX = p.x;
+        if (p.y < sMinY) sMinY = p.y;
+        if (p.x > sMaxX) sMaxX = p.x;
+        if (p.y > sMaxY) sMaxY = p.y;
+    }
     const near = absorbPinches(
         sole,
         absorbEnclosed(
             posAttr,
             sole,
-            sole.filter((tri) => glyphHitsTri(posAttr, tri, clipped)),
+            sole.filter((tri) =>
+                glyphHitsTri(posAttr, tri, samples, sMinX - 2, sMinY - 2, sMaxX + 2, sMaxY + 2),
+            ),
         ),
     );
     if (!near.length) throw new TextMarkingError("boolean", "glyphs missed the sole faces");
@@ -880,6 +956,7 @@ export async function engraveBottomPlanar(
     geo.computeVertexNormals();
     geo.computeBoundingBox();
     geo.userData = { ...host.userData, bottomOutlineWorld: outlineWorld, faceClass: buf.faceClass };
+    dropLoneOpenTriangles(geo);
     await assertExactManifold(geo);
     return geo;
 }
