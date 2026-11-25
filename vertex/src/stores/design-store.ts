@@ -1330,17 +1330,33 @@ export const useDesignStore = create<DesignStore>()(
             applyPrescription: (result) => {
                 usePerformanceStore.getState().setInteracting(true, "ai");
                 set((s) => {
+                    const leftPatch = result.corrections.left ?? {};
+                    const rightPatch = result.corrections.right ?? {};
+                    const patchKeys = new Set([...Object.keys(leftPatch), ...Object.keys(rightPatch)]);
+                    let linked = s.design.corrections.linked;
+                    if (linked && patchKeys.size > 0) {
+                        for (const key of patchKeys) {
+                            const leftVal = (leftPatch as Record<string, unknown>)[key];
+                            const rightVal = (rightPatch as Record<string, unknown>)[key];
+                            if (JSON.stringify(leftVal) !== JSON.stringify(rightVal)) {
+                                linked = false;
+                                break;
+                            }
+                        }
+                    }
+
                     const baseThickness = result.thicknessMm ?? s.design.thicknessMm;
-                    const baseLeft = { ...s.design.corrections.left, ...(result.corrections.left ?? {}) };
-                    const baseRight = { ...s.design.corrections.right, ...(result.corrections.right ?? {}) };
+                    const baseLeft = { ...s.design.corrections.left, ...leftPatch };
+                    const baseRight = { ...s.design.corrections.right, ...rightPatch };
                     // Clamp AI output immediately — parsed prescriptions can be aggressive.
                     const r1 = constrainSideCorrections(baseLeft, baseThickness);
                     const r2 = constrainSideCorrections(baseRight, r1.thicknessMm);
                     const corrections: Corrections = {
                         ...s.design.corrections,
+                        linked,
                         unit: result.unit ?? s.design.corrections.unit,
                         left: r1.constrained,
-                        right: s.design.corrections.linked ? r1.constrained : r2.constrained,
+                        right: linked ? r1.constrained : r2.constrained,
                     };
                     return {
                         design: {
