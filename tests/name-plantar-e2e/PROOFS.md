@@ -14,7 +14,7 @@ Fix image used for these numbers. Legacy builder image id (not a registry manife
 
 `sha256:a7c3007e8e5a74dabd2a73c6b4f90da39f090650d38bc46a6c7578b29a7e0f1c`
 
-Built `FROM` the live digest, `COPY validation/stl_preprocess.py` from VertexSlice `cursor/lr-swap-belt-mirror-1124` @ `0415b656d42d7ae0828e435b98f6fdae4f6f0486`. File sha256:
+Built `FROM` the live digest, `COPY validation/stl_preprocess.py` from the deploying VertexSlice #52 head `9fe936425ad4449ee6a6d932b636a432c8dd2ea2` (Y-negate before Rz270). File sha256:
 
 `2f0cc241026e97fa1c517ee25fa7f9f742c17a3f75a2efa9064bebe97eccee40`
 
@@ -32,6 +32,8 @@ Headers are `OrthoCAD single-foot left` and `OrthoCAD single-foot right`.
 Heel end is the `hand_classify.py` rule: the end fifth (by `zt = Z - Y`) whose max Y is larger. Heel-first requires that cup at low `zt` (`heelHigh` false). Toe-first requires it at high `zt`. The reading frame follows the detected heel, so a 180° belt turn does not change a correct name, and a mirror still fails.
 
 ## Fix image, #373 placement — PASS all 6
+
+These six rows are the `0415b656` measurement. The `9fe936425ad4449ee6a6d932b636a432c8dd2ea2` run replaces them.
 
 | cell | a | d | det | advance | hook | sequence | heelHigh | delta mm |
 | --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: |
