@@ -111,9 +111,12 @@ function proceduralExportRequest(design: DesignState, side: Side, beltPrint = fa
     };
 }
 
-/** Freshness key for the active Export solid. Throws when the canonical loft is not the path. */
-export function manufacturingFingerprintForActiveExport(side: Side): string {
-    const request = proceduralExportRequest(useDesignStore.getState().design, side);
+/**
+ * Freshness key for the active Export solid. Throws when the canonical loft is not the path.
+ * Belt manufacturing passes `beltPrint` so a viewer solid is a different key.
+ */
+export function manufacturingFingerprintForActiveExport(side: Side, beltPrint = false): string {
+    const request = proceduralExportRequest(useDesignStore.getState().design, side, beltPrint);
     if (!request) {
         throw new Error("Manufacturing fingerprint requires the canonical procedural export solid");
     }

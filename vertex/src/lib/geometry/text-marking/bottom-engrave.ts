@@ -275,6 +275,48 @@ function emitCdt(
     return emitCap(buf, cap, z, boundary, wantNegZ, cls);
 }
 
+/**
+ * A counter cap can miss the boundary weld on a narrow outline and land as a
+ * single triangle with three open edges. The rest of the sole is already
+ * closed. That lone triangle is not part of the shell; leaving it makes
+ * manifold-3d reject the engrave and the name is omitted.
+ */
+function dropLoneOpenTriangles(geo: BufferGeometry): void {
+    const indexAttr = geo.getIndex();
+    if (!indexAttr) return;
+    const faceClass = (geo.userData as { faceClass?: number[] }).faceClass;
+    const tris: Array<[number, number, number]> = [];
+    const edgeCount = new Map<string, number>();
+    const edgeKey = (a: number, b: number) => (a < b ? `${a}:${b}` : `${b}:${a}`);
+    for (let i = 0; i < indexAttr.count; i += 3) {
+        const tri: [number, number, number] = [
+            indexAttr.getX(i),
+            indexAttr.getX(i + 1),
+            indexAttr.getX(i + 2),
+        ];
+        tris.push(tri);
+        for (let e = 0; e < 3; e++) {
+            const key = edgeKey(tri[e], tri[(e + 1) % 3]);
+            edgeCount.set(key, (edgeCount.get(key) ?? 0) + 1);
+        }
+    }
+    const keep: number[] = [];
+    const keepClass: number[] = [];
+    for (let t = 0; t < tris.length; t++) {
+        const tri = tris[t]!;
+        let open = 0;
+        for (let e = 0; e < 3; e++) {
+            if (edgeCount.get(edgeKey(tri[e], tri[(e + 1) % 3])) === 1) open++;
+        }
+        if (open === 3) continue;
+        keep.push(tri[0], tri[1], tri[2]);
+        if (faceClass) keepClass.push(faceClass[t] ?? 0);
+    }
+    if (keep.length === indexAttr.count) return;
+    geo.setIndex(keep);
+    if (faceClass) (geo.userData as { faceClass: number[] }).faceClass = keepClass;
+}
+
 function wallStrip(buf: MeshBuf, top: number[], bot: number[]): void {
     const n = top.length;
     if (n < 2 || bot.length !== n) return;
@@ -914,6 +956,7 @@ export async function engraveBottomPlanar(
     geo.computeVertexNormals();
     geo.computeBoundingBox();
     geo.userData = { ...host.userData, bottomOutlineWorld: outlineWorld, faceClass: buf.faceClass };
+    dropLoneOpenTriangles(geo);
     await assertExactManifold(geo);
     return geo;
 }

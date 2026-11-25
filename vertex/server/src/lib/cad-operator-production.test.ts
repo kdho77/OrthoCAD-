@@ -5,7 +5,13 @@ import { gunzipSync } from "node:zlib";
 
 import type { PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, test } from "@rstest/core";
-
+import {
+    isStalePre52ManufacturingEtag,
+    MANUFACTURING_SLICER_VERSION,
+    MANUFACTURING_STL_PLACEMENT_VERSION,
+    ORTHOCAD_MANUFACTURING_VERSION,
+    STALE_PRE52_BELT_MANUFACTURING_STL,
+} from "../../../shared/manufacturing-stl-identity.js";
 import { HARDNESS_TO_INFILL_PCT } from "../../../shared/print-recipe/hardness-to-infill-pct.js";
 import type { PrintRecipeV1 } from "../../../shared/print-recipe/print-recipe.js";
 import {
@@ -19,6 +25,7 @@ import {
     cadOperatorManufacturingIdentity,
     cadVertexSliceSliceTimeoutMs,
     claimProduction,
+    encodeSliceCheckpoint,
     executeCadOperatorProduction,
     expireStaleProduction,
     infillPctForCadSlice,
@@ -29,10 +36,15 @@ import {
     SLICE_JOB_POLL_BUDGET_MS,
     SLICE_JOB_QUEUE_WAIT_CAP_MS,
     SLICE_JOB_SLICE_CAP_MS,
+    storedManufacturingStlReusable,
     toPublicProduction,
 } from "./cad-operator-production.js";
 import { PrismaCadProductionStore } from "./cad-operator-production-prisma.js";
 import { passingBeltGcode } from "./gcode-handedness-sample.js";
+import {
+    isStalePre52ManufacturingStlBytes,
+    manufacturingStlRunIdentity,
+} from "./manufacturing-stl-identity.js";
 import { sliceWithVertexSlice } from "./vertexslice-client.js";
 
 function handednessFixture(name: string): string {
@@ -1124,6 +1136,7 @@ describe("VertexSlice job productions", () => {
             now: args.now,
             sliceBudgetMs: args.budgetMs,
             sleep: args.sleep,
+            resumeSubmittedSlice: true,
             materialize: async () => ({ stlStorageKey: `tmp/${args.side}.stl`, meshFingerprint: "mesh" }),
             slice: async (stlStorageKey, sliceCtx) => {
                 const attempt = await runCadSliceAttempt({
@@ -1796,3 +1809,383 @@ describe("CAD-operator pair production transactions", () => {
         expect(sliced.slice().sort()).toEqual([PAIR_FIXTURE_STL.left, PAIR_FIXTURE_STL.right].slice().sort());
     });
 });
+
+describe("stored manufacturing STL reuse", () => {
+    const savedDesign = { textMarking: { text: "JABBOUR", surface: "bottom" } };
+    const identity = manufacturingStlRunIdentity({
+        side: "left",
+        savedDesign,
+        beltPrint: true,
+    });
+
+    test("identity changes with composed text, beltPrint, side, and placement version", () => {
+        expect(
+            manufacturingStlRunIdentity({
+                side: "left",
+                savedDesign: { textMarking: { text: "OTHER", surface: "bottom" } },
+                beltPrint: true,
+            }),
+        ).not.toBe(identity);
+        expect(manufacturingStlRunIdentity({ side: "left", savedDesign, beltPrint: false })).not.toBe(
+            identity,
+        );
+        expect(manufacturingStlRunIdentity({ side: "right", savedDesign, beltPrint: true })).not.toBe(
+            identity,
+        );
+        expect(
+            manufacturingStlRunIdentity({
+                side: "left",
+                savedDesign,
+                beltPrint: true,
+                placementVersion: 1,
+            }),
+        ).not.toBe(identity);
+        expect(identity).toBe(manufacturingStlRunIdentity({ side: "left", savedDesign, beltPrint: true }));
+    });
+
+    test("the pre-#52 left archive eTag and size are stale", () => {
+        expect(STALE_PRE52_BELT_MANUFACTURING_STL.etag).toBe("8f5dc451de66dbba8f8521e046a9e4af");
+        expect(STALE_PRE52_BELT_MANUFACTURING_STL.sizeBytes).toBe(9045484);
+        expect(isStalePre52ManufacturingEtag("8f5dc451de66dbba8f8521e046a9e4af", 9045484)).toBe(true);
+        expect(isStalePre52ManufacturingEtag('"8f5dc451de66dbba8f8521e046a9e4af"', 9045484)).toBe(true);
+        expect(isStalePre52ManufacturingEtag("8f5dc451de66dbba8f8521e046a9e4af", 7973784)).toBe(false);
+        expect(isStalePre52ManufacturingEtag("18bd05067bc3c41ab4c95bc10b5754a2", 7587884)).toBe(false);
+        expect(isStalePre52ManufacturingStlBytes(new Uint8Array([1, 2, 3]))).toBe(false);
+    });
+
+    test("a pre-#52 checkpoint is not reusable", () => {
+        const stale = {
+            v: 1 as const,
+            jobId: "pre52",
+            acceptedAt: "2026-11-24T19:13:17.000Z",
+            stlStorageKey: "manufacturing-temp/cad-operator/stale/left.stl",
+            meshFingerprint: "old",
+            expectedRegionCount: 0,
+            credentialId: "cred",
+            serverStartedAt: null,
+        };
+        expect(storedManufacturingStlReusable(stale, { stlIdentity: identity })).toBe(false);
+        expect(
+            storedManufacturingStlReusable(
+                {
+                    ...stale,
+                    placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+                    stlIdentity: identity,
+                    rematerialized: true,
+                },
+                { stlIdentity: identity },
+            ),
+        ).toBe(false);
+    });
+
+    test("force_new_slice does not slice a leftover pre-#52 checkpoint STL", async () => {
+        const store = new MemoryCadProductionStore();
+        const now = new Date("2026-11-25T05:12:00.000Z");
+        const claimed = await claimProduction(store, insert("left", "fresh-slice"), now, {
+            forceNewSlice: true,
+        });
+        const staleKey = "manufacturing-temp/cad-operator/54b6a960/92d4c89a/1795583578275-pre52.stl";
+        await store.updateIf(claimed.row.id, () => true, {
+            status: "running",
+            error: encodeSliceCheckpoint({
+                v: 1,
+                jobId: "pre52-job",
+                acceptedAt: "2026-11-24T19:13:17.000Z",
+                stlStorageKey: staleKey,
+                meshFingerprint: "old",
+                expectedRegionCount: 0,
+                credentialId: "cred",
+                serverStartedAt: null,
+            }),
+        });
+        const row = await store.findById(claimed.row.id);
+        let materialized = 0;
+        let slicedKey = "";
+        let resumed = false;
+        await executeCadOperatorProduction({
+            row: row ?? claimed.row,
+            store,
+            now: () => now,
+            stlIdentity: identity,
+            materialize: async () => {
+                materialized += 1;
+                return { stlStorageKey: "tmp/fresh-left.stl", meshFingerprint: "fresh" };
+            },
+            slice: async (key, ctx) => {
+                slicedKey = key;
+                resumed = Boolean(ctx?.checkpoint);
+                return { gcode: "G1 X1\n", jobId: "fresh-job" };
+            },
+            uploadGcode: async () => ({ storageKey: "gcode/left.gcode" }),
+            charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+        });
+        expect(materialized).toBe(1);
+        expect(slicedKey).toBe("tmp/fresh-left.stl");
+        expect(slicedKey).not.toBe(staleKey);
+        expect(resumed).toBe(false);
+        const saved = await store.findById(claimed.row.id);
+        expect(saved?.status).toBe("succeeded");
+        expect(saved?.error ?? "").not.toContain(staleKey);
+    });
+
+    test("t2704u: two consecutive generate executions both rematerialize and do not read a stored STL", async () => {
+        const store = new MemoryCadProductionStore();
+        const now = new Date("2026-11-25T05:20:00.000Z");
+        const claimed = await claimProduction(store, insert("left", "always-loft"), now);
+        const storedKey = "manufacturing-temp/cad-operator/stored/left.stl";
+        await store.updateIf(claimed.row.id, () => true, {
+            status: "running",
+            error: encodeSliceCheckpoint({
+                v: 1,
+                jobId: "stored-job",
+                acceptedAt: now.toISOString(),
+                stlStorageKey: storedKey,
+                meshFingerprint: "mesh",
+                expectedRegionCount: 0,
+                credentialId: "cred",
+                serverStartedAt: null,
+                placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+                stlIdentity: identity,
+                rematerialized: true,
+            }),
+        });
+        const keys: string[] = [];
+        const runOnce = async (freshKey: string) => {
+            const row = await store.findById(claimed.row.id);
+            await executeCadOperatorProduction({
+                row: row ?? claimed.row,
+                store,
+                now: () => now,
+                stlIdentity: identity,
+                materialize: async () => {
+                    keys.push(freshKey);
+                    return { stlStorageKey: freshKey, meshFingerprint: "fresh" };
+                },
+                slice: async (key, ctx) => {
+                    expect(ctx?.checkpoint ?? null).toBeNull();
+                    expect(key).toBe(freshKey);
+                    expect(key).not.toBe(storedKey);
+                    return { gcode: `G1 ; ${freshKey}\n`, jobId: freshKey };
+                },
+                uploadGcode: async () => ({ storageKey: `gcode/${freshKey}` }),
+                charge: async () => ({ exportId: freshKey, balance: 1, alreadyCharged: false }),
+            });
+        };
+        await runOnce("tmp/loft-1.stl");
+        await store.updateIf(claimed.row.id, () => true, {
+            status: "running",
+            chargedAt: null,
+            gcodeStorageKey: null,
+            error: encodeSliceCheckpoint({
+                v: 1,
+                jobId: "stored-job",
+                acceptedAt: now.toISOString(),
+                stlStorageKey: storedKey,
+                meshFingerprint: "mesh",
+                expectedRegionCount: 0,
+                credentialId: "cred",
+                serverStartedAt: null,
+                placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+                stlIdentity: identity,
+                rematerialized: true,
+            }),
+        });
+        await runOnce("tmp/loft-2.stl");
+        expect(keys).toEqual(["tmp/loft-1.stl", "tmp/loft-2.stl"]);
+        const saved = await store.findById(claimed.row.id);
+        expect(saved?.gcodeStorageKey).toBe("gcode/tmp/loft-2.stl");
+        expect(saved?.error ?? "").not.toContain(storedKey);
+    });
+
+    test("t2699u: any saved-design change misses the solid identity; production still does not reuse an unchanged STL", () => {
+        const design = fullSavedDesign();
+        const axes = { side: "left" as const, beltPrint: true };
+        const baseline = manufacturingStlRunIdentity({ ...axes, savedDesign: design });
+        const checkpoint = {
+            v: 1 as const,
+            jobId: "stored",
+            acceptedAt: "2026-11-24T19:13:17.000Z",
+            stlStorageKey: "manufacturing-temp/cad-operator/stored/left.stl",
+            meshFingerprint: "mesh",
+            expectedRegionCount: 0,
+            credentialId: "cred",
+            serverStartedAt: null,
+            placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+            stlIdentity: baseline,
+        };
+        const unchanged = manufacturingStlRunIdentity({
+            ...axes,
+            savedDesign: reverseKeys(design),
+        });
+        expect(unchanged).toBe(baseline);
+        expect(storedManufacturingStlReusable(checkpoint, { stlIdentity: unchanged })).toBe(false);
+
+        const leaves = collectLeaves(design);
+        const required = [
+            "thicknessMm",
+            "usMenSize",
+            "shoeWidth",
+            "material",
+            "corrections.left.archHeightMm",
+            "corrections.right.heelLiftMm",
+            "elements[0].type",
+            "sinks.left[0].depthMm",
+            "textMarking.text",
+        ];
+        for (const path of required) {
+            expect(
+                leaves.some((leaf) => leaf.path === path),
+                path,
+            ).toBe(true);
+        }
+        expect(leaves.length).toBeGreaterThan(required.length);
+
+        for (const leaf of leaves) {
+            const mutated = cloneJson(design);
+            setLeaf(mutated, leaf.path, changedValue(leaf.value));
+            const next = manufacturingStlRunIdentity({ ...axes, savedDesign: mutated });
+            expect(next, leaf.path).not.toBe(baseline);
+            expect(storedManufacturingStlReusable(checkpoint, { stlIdentity: next }), leaf.path).toBe(false);
+            expect(storedManufacturingStlReusable(checkpoint, { stlIdentity: baseline }), leaf.path).toBe(
+                false,
+            );
+        }
+
+        const axisChanges: Array<{ label: string; identity: string }> = [
+            {
+                label: "beltPrint",
+                identity: manufacturingStlRunIdentity({
+                    side: "left",
+                    beltPrint: false,
+                    savedDesign: design,
+                }),
+            },
+            {
+                label: "placementVersion",
+                identity: manufacturingStlRunIdentity({
+                    ...axes,
+                    savedDesign: design,
+                    placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION + 1,
+                }),
+            },
+            {
+                label: "orthocadVersion",
+                identity: manufacturingStlRunIdentity({
+                    ...axes,
+                    savedDesign: design,
+                    orthocadVersion: `${ORTHOCAD_MANUFACTURING_VERSION}-next`,
+                }),
+            },
+            {
+                label: "slicerVersion",
+                identity: manufacturingStlRunIdentity({
+                    ...axes,
+                    savedDesign: design,
+                    slicerVersion: `${MANUFACTURING_SLICER_VERSION}-other`,
+                }),
+            },
+        ];
+        for (const change of axisChanges) {
+            expect(change.identity, change.label).not.toBe(baseline);
+            expect(
+                storedManufacturingStlReusable(checkpoint, { stlIdentity: change.identity }),
+                change.label,
+            ).toBe(false);
+        }
+    });
+});
+
+/** Synthetic saved design. The table walks every leaf, so a new field is covered. */
+function fullSavedDesign(): Record<string, unknown> {
+    return {
+        method: "printing_solid",
+        thicknessMm: 3,
+        usMenSize: 11.5,
+        shoeWidth: "medium",
+        sizeSystem: "us",
+        material: "apex_core",
+        archGrindDepthMm: 0,
+        shellThicknessMode: "zonal",
+        corrections: {
+            linked: false,
+            unit: "mm",
+            left: { heelLiftMm: 0, archHeightMm: 1, archElongationMm: 0 },
+            right: { heelLiftMm: 12, archHeightMm: 2, archElongationMm: 1 },
+        },
+        elements: [{ id: "e1", type: "metatarsalPad", side: "left", xMm: 10, yMm: -4, depthMm: 2 }],
+        sinks: { left: [{ kind: "mpj", depthMm: 1 }], right: [{ kind: "styloid", depthMm: 0.5 }] },
+        textMarking: {
+            text: "JABBOUR",
+            addPatientName: true,
+            surface: "bottom",
+            mode: "engrave",
+            depthMm: 0.6,
+            capHeightMm: 12,
+        },
+        printRecipe: {
+            version: 1,
+            pattern: "gyroid",
+            profileId: "apex-v2-insole-95a",
+            defaultHardness: "Medium",
+        },
+        shapeFinish: { topCover: false },
+    };
+}
+
+function cloneJson<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function reverseKeys(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map((entry) => reverseKeys(entry));
+    if (!value || typeof value !== "object") return value;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).reverse()) {
+        out[key] = reverseKeys((value as Record<string, unknown>)[key]);
+    }
+    return out;
+}
+
+function collectLeaves(value: unknown, path = ""): Array<{ path: string; value: unknown }> {
+    if (Array.isArray(value)) {
+        if (value.length === 0) return [{ path, value }];
+        return value.flatMap((entry, index) => collectLeaves(entry, `${path}[${index}]`));
+    }
+    if (value && typeof value === "object") {
+        const keys = Object.keys(value as Record<string, unknown>);
+        if (keys.length === 0) return [{ path, value }];
+        return keys.flatMap((key) =>
+            collectLeaves((value as Record<string, unknown>)[key], path ? `${path}.${key}` : key),
+        );
+    }
+    return [{ path, value }];
+}
+
+function setLeaf(root: Record<string, unknown>, path: string, next: unknown): void {
+    const tokens = path.split(".").flatMap((part) => {
+        const found: string[] = [];
+        const matcher = /([^[\]]+)|\[(\d+)\]/g;
+        let match = matcher.exec(part);
+        while (match) {
+            found.push(match[1] ?? match[2]);
+            match = matcher.exec(part);
+        }
+        return found;
+    });
+    let cursor: unknown = root;
+    for (let i = 0; i < tokens.length - 1; i++) {
+        const token = tokens[i];
+        cursor = Array.isArray(cursor) ? cursor[Number(token)] : (cursor as Record<string, unknown>)[token];
+    }
+    const last = tokens[tokens.length - 1];
+    if (Array.isArray(cursor)) cursor[Number(last)] = next;
+    else (cursor as Record<string, unknown>)[last] = next;
+}
+
+function changedValue(value: unknown): unknown {
+    if (typeof value === "number") return value + 1;
+    if (typeof value === "boolean") return !value;
+    if (typeof value === "string") return `${value}~`;
+    if (value == null) return "changed";
+    return { changed: true };
+}

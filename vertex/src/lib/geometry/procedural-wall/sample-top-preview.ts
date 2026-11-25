@@ -25,12 +25,15 @@ import { extractTopOnlyModel, isCombinedStockGeometry } from "./extract";
 import {
     awaitManufacturingLoftInflight,
     cachedManufacturingSolidIncludesExportText,
+    cachedManufacturingSolidMatchesFrame,
+    dropManufacturingSolid,
     type ManufacturingSolidContext,
     manufacturingSolidFingerprint,
     noteManufacturingSolidBuilt,
     noteManufacturingSolidReused,
     peekManufacturingSolid,
     rememberManufacturingSolid,
+    stampManufacturingSolidFrame,
 } from "./manufacturing-solid-cache";
 import { FOREFOOT_SHIFT_U_HOLD, forefootFeatureBoxes, offsetPlanLoopForefootWidthMm } from "./modifiers";
 import {
@@ -218,7 +221,10 @@ export async function buildProceduralExportSolid(
         await awaitManufacturingLoftInflight(fingerprint, side);
         const started = performance.now();
         const cached = peekManufacturingSolid(fingerprint, side);
-        if (cached) {
+        if (cached && !cachedManufacturingSolidMatchesFrame(cached, options, cache)) {
+            cached.dispose();
+            dropManufacturingSolid(side);
+        } else if (cached) {
             perfMark("export:loft", { side, warm: true });
             const geometry = cachedManufacturingSolidIncludesExportText(cached, options)
                 ? cached
@@ -240,6 +246,7 @@ export async function buildProceduralExportSolid(
     try {
         const preview = await reconstructProceduralPreview(raw, options);
         if (cache && fingerprint) {
+            stampManufacturingSolidFrame(preview.geometry, options, cache);
             rememberManufacturingSolid(fingerprint, side, preview.geometry);
         }
         const geometry = await applyExportText(preview.geometry, options);

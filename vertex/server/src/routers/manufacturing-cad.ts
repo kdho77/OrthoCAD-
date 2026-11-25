@@ -34,6 +34,8 @@ import {
     patientDisplayName,
     resolveProductionTextMarking,
 } from "../lib/integration-text-marking.js";
+import { STALE_MANUFACTURING_STL_MESSAGE } from "../lib/manufacturing-stl-download.js";
+import { isStalePre52ManufacturingStlBytes } from "../lib/manufacturing-stl-identity.js";
 import {
     assertLockedVertexSliceProfile,
     inspectManufacturingStl,
@@ -258,20 +260,33 @@ export async function materializeCadOperatorStl(args: {
         }
         return { stlStorageKey: args.plan.stlStorageKey, meshFingerprint: null, regional3mf: null };
     }
-    let foot: Awaited<ReturnType<typeof buildHeadlessFinalizedFoot>>;
-    try {
-        foot = await buildHeadlessFinalizedFoot({
+    const loft = () =>
+        buildHeadlessFinalizedFoot({
             settingsJson: args.centralFabSolid
                 ? settingsForCentralFabSolid(args.plan.settingsJson)
                 : args.plan.settingsJson,
             side: args.side,
             includeLeader: !args.centralFabSolid,
         });
+    let foot: Awaited<ReturnType<typeof buildHeadlessFinalizedFoot>>;
+    try {
+        foot = await loft();
+        // A warm solid or a copied pre-#52 temp can come back as these exact bytes.
+        // The saved-design installer clears the in-memory slot; loft once more, then refuse.
+        if (isStalePre52ManufacturingStlBytes(new Uint8Array(foot.stl))) {
+            foot = await loft();
+        }
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
             message,
+        });
+    }
+    if (isStalePre52ManufacturingStlBytes(new Uint8Array(foot.stl))) {
+        throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: STALE_MANUFACTURING_STL_MESSAGE,
         });
     }
     const mesh = inspectManufacturingStl(new Uint8Array(foot.stl));

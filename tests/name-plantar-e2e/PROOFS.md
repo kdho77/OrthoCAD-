@@ -123,3 +123,49 @@ Slice: left HTTP 200 in 10 s, 3662921 bytes. Right HTTP 200 in 10 s, 3653481 byt
 ## What turns the job red
 
 A slicer-mirror flip (P1 versus P2) flips the sign of `d` and fails the hook. A placement X negation (P3 versus P2) flips the sign of `a`, reverses the sequence, and fails the hook. Either one fails both feet.
+
+## Stored manufacturing STL reuse (this change)
+
+BASE `3cabc5b1a0bed7f1fc63028d97c3d8b0821cba63` on current `origin/main` (pin was `3932a6448befbe9c8f07e587be6570fcde3d3352`; #447 and #448 are already on main and are not edited here). The frozen non-text hashes were taken on `d20ca6e9`, before #445 held heel lift at full H through the cup center. That hold moves heel triangles outside the letter box, so the composed mesh is back on the `d20ca6e9` linear ramp. `place.ts` is unchanged. No blanket `xSign = -1`.
+
+`executeCadOperatorProduction` used to slice `checkpoint.stlStorageKey` and skip the loft. `continueInFlightSlice` resumed that job. Rule t2704u deletes that path. Saved-design `generate_gcode` calls `materialize()` on every run, which is `buildHeadlessFinalizedFoot` → `buildFinalizedFootFromSavedSettings`, the UI Export loft. A checkpoint is not a reuse key: `storedManufacturingStlReusable` is false even when the design is unchanged. A status poll may only continue a job this production submitted after that loft (`rematerialized`). It does not download a temp or archive. Download and materialize still refuse eTag `8f5dc451de66dbba8f8521e046a9e4af` at 9045484 bytes.
+
+Local production-path lofts (`buildFinalizedFootFromSavedSettings`, synthetic `JABBOUR`, SAMPLE_Top). None is the pre-#52 left archive. Pair and single matched on each side. `ad-pair` and `ad-name` matched because both compose to `JABBOUR` with the same linked Medium settings.
+
+| file | bytes | md5 |
+| --- | ---: | --- |
+| d0-pair-left.stl / d0-single-left.stl | 7973784 | 185018a1f8fd04e8b6ad0bebda937ae0 |
+| d0-pair-right.stl / d0-single-right.stl | 5868684 | 0326101141d80d49146d5df799afcf3d |
+| ad-pair-left.stl / ad-name-left.stl | 6888684 | bfd4976ef391030b3d1ec512074d0ab9 |
+| ad-pair-right.stl / ad-name-right.stl | 6943584 | 7f4b4cc0d178dcdcabf1e8307607923d |
+
+Docker is not available on this machine, so the variant G-code grade was not run here. CI `name-plantar-e2e` slices `*-left.stl` and `*-right.stl` on `apex_core` toe-first and grades them with the frozen #435 thresholds. The six-cell matrix on `left.stl` / `right.stl` is unchanged.
+
+## 0d3db1c0 right had no letters
+
+CI run [45563201516](https://github.com/kdho77/OrthoCAD-/actions/runs/45563201516) on `929a94d2` passed the six #442 cells and `d0-pair-left` (a=0.961, d=0.872, sequence `JABBOUR`). `d0-pair-right` had letter walls 0. The engrave threw `manifold status Not manifold` and the catch kept the unengraved solid. The mesh was watertight except for one unconnected triangle (three open edges) from a counter cap that missed the boundary weld. That triangle is dropped before the manifold check. It is not part of the shell. The #442 baseline counts stay left 137692/137772 and right 138790/138870. Local variant lofts then engrave on every foot, including that right foot. Thresholds were not loosened.
+
+## t2704u — production works like a person
+
+Locked rule, 12:16 AM America/Denver on 11/25. Supersedes using a design hash as a stored-STL reuse key. The production box lofts from the saved design on every `generate_gcode`, including a second call on the same design. It does not read a temp, archive, or checkpoint STL. The sliced bytes are the bytes the UI export function returned.
+
+A row that still holds a checkpoint from before that loft does not block the next generate. The claim starts a new production row and lofts. The old row keeps the checkpoint. A status poll of a job this production submitted after a loft still joins that in-flight row.
+
+## t2699u — must change if the design has any changes
+
+Locked rule, 11:20 PM America/Denver. `manufacturingSolidIdentity` (the UI preview cache) hashes the full saved design (mesh blobs stripped) plus side, `beltPrint`, placement version, OrthoCAD version, and slicer version. That is not a picked field list. The table test walks every leaf of a synthetic design that includes parameters, corrections, elements, sinks, text, size, width, arch, heel lift, and material, and it also flips `beltPrint`, placement version, OrthoCAD version, and slicer version. Each mutation misses the cached solid. Key order of an unchanged design still matches, and that preview cache reuses. Production does not: an unchanged design still lofts again.
+
+`manufacturingStlRunIdentity` uses the same full saved design. When the caller passes only side, composed text, and `beltPrint`, the hash reads the design currently installed in the design store and includes that composed text. A leaf change in the open design changes the hash. An explicit saved-design argument still wins, and omitting composed text does not change hashes that never passed it.
+
+## Frozen gates at 2eff9d6a
+
+Local run of the frozen files (not committed) against this tree:
+
+| Gate | Result |
+| --- | --- |
+| G1 | PASS. 24 feet, sequence `JABBOUR`, including every US M 11.5 right. |
+| G2 | PASS. Stamp and detected foot match the requested side. Heel-high on every cell. |
+| G3 | PASS. Engrave floor 0.6, sole min z 0. Every frozen non-text hash matches, including the size-12 right foot with 12 mm heel lift (`7f198b4a`). Before the ramp restore those two cells were `08db20ea`. |
+| G4 | PASS as a rejection. Blanket `xSign = -1` fails on the #442 control, ad1e0cc5 left, and 0d3db1c0 left. One-foot X flip fails the pair. Y mirror, depth 1.2, placementU 0.55, and a lifted sole fail. |
+| t2699u | PASS. No-op reuses the preview solid. Every walked leaf misses. |
+| t2704u | PASS. Two `generate_gcode` calls both loft. Neither slices `stored-8f5dc451…`. The original row still records the checkpoint. |

@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { TRPCError } from "@trpc/server";
 import { waitUntil } from "@vercel/functions";
+import { MANUFACTURING_STL_PLACEMENT_VERSION } from "../../../shared/manufacturing-stl-identity.js";
 import {
     gyroidInfillPctForHardness,
     PrintRecipeProfileRequiredError,
@@ -58,6 +59,18 @@ export interface SliceCheckpointV1 {
     expectedRegionCount: number;
     credentialId: string;
     serverStartedAt: string | null;
+    /**
+     * Belt placement generation of the stored STL. Absent on pre-#52 checkpoints.
+     * A checkpoint never supplies the mesh that gets sliced.
+     */
+    placementVersion?: number;
+    /** manufacturingStlRunIdentity. Not a reuse key. */
+    stlIdentity?: string | null;
+    /**
+     * True only after this production lofted and submitted the slice job.
+     * A checkpoint without it is a stored STL and is not resumed.
+     */
+    rematerialized?: boolean;
 }
 
 export function encodeSliceCheckpoint(checkpoint: SliceCheckpointV1): string {
@@ -72,6 +85,9 @@ export function encodeSliceCheckpoint(checkpoint: SliceCheckpointV1): string {
             expectedRegionCount: checkpoint.expectedRegionCount,
             credentialId: checkpoint.credentialId,
             serverStartedAt: checkpoint.serverStartedAt,
+            ...(checkpoint.placementVersion != null ? { placementVersion: checkpoint.placementVersion } : {}),
+            ...(checkpoint.stlIdentity ? { stlIdentity: checkpoint.stlIdentity } : {}),
+            ...(checkpoint.rematerialized === true ? { rematerialized: true } : {}),
         })
     );
 }
@@ -95,10 +111,26 @@ export function readSliceCheckpoint(error: string | null | undefined): SliceChec
                     : 0,
             credentialId: parsed.credentialId,
             serverStartedAt: typeof parsed.serverStartedAt === "string" ? parsed.serverStartedAt : null,
+            placementVersion:
+                typeof parsed.placementVersion === "number" ? parsed.placementVersion : undefined,
+            stlIdentity: typeof parsed.stlIdentity === "string" ? parsed.stlIdentity : null,
+            rematerialized: parsed.rematerialized === true ? true : undefined,
         };
     } catch {
         return null;
     }
+}
+
+/**
+ * Production generate_gcode never slices a stored or checkpoint STL.
+ * The UI preview cache is separate. This stays false so a matching identity
+ * cannot put a temp or archive back on the belt.
+ */
+export function storedManufacturingStlReusable(
+    _checkpoint?: SliceCheckpointV1 | null,
+    _expected?: { stlIdentity?: string | null } | null,
+): boolean {
+    return false;
 }
 
 export function sleepMs(ms: number): Promise<void> {
@@ -271,6 +303,11 @@ function newPending(input: CadProductionInsert, now: Date): CadProductionRow {
     };
 }
 
+function checkpointIsStoredStl(row: CadProductionRow): boolean {
+    const checkpoint = readSliceCheckpoint(row.error);
+    return checkpoint != null && checkpoint.rematerialized !== true;
+}
+
 export async function claimProduction(
     store: CadProductionStore,
     input: CadProductionInsert,
@@ -279,20 +316,29 @@ export async function claimProduction(
 ): Promise<{ row: CadProductionRow; run: boolean }> {
     const forceNewSlice = options?.forceNewSlice === true;
     let claimInput = input;
+    const canonicalForStl = await store.findByKey(input.idempotencyKey);
+    // A checkpoint that was not written after a loft in this production is a stored STL.
+    // The next generate starts a new run and lofts. The old row keeps its checkpoint.
+    const replacedStoredStl = canonicalForStl != null && checkpointIsStoredStl(canonicalForStl);
+    if (replacedStoredStl) {
+        claimInput = { ...input, idempotencyKey: freshSliceIdempotencyKey(input.idempotencyKey) };
+    }
     if (forceNewSlice) {
-        const canonical = await store.findByKey(input.idempotencyKey);
+        const canonical = await store.findByKey(claimInput.idempotencyKey);
         if (canonical && isInFlight(canonical, now)) {
             return { row: canonical, run: false };
         }
-        const inFlight = await store.findInFlightByFingerprint(
-            input.designId,
-            input.side,
-            input.presetId,
-            input.settingsFingerprint,
-            now,
-        );
-        if (inFlight) {
-            return { row: inFlight, run: false };
+        if (!replacedStoredStl) {
+            const inFlight = await store.findInFlightByFingerprint(
+                input.designId,
+                input.side,
+                input.presetId,
+                input.settingsFingerprint,
+                now,
+            );
+            if (inFlight) {
+                return { row: inFlight, run: false };
+            }
         }
         if (canonical?.status === "succeeded") {
             claimInput = { ...input, idempotencyKey: freshSliceIdempotencyKey(input.idempotencyKey) };
@@ -669,6 +715,8 @@ export function cadOperatorManufacturingIdentity(input: {
                 printRecipe: input.printRecipe,
                 settingsJson: input.settingsJson,
                 stlStorageKey: input.useSavedDesignMesh ? null : input.stlStorageKey,
+                stlPlacementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+                ...(input.useSavedDesignMesh && !input.deliverable ? { beltPrint: true } : {}),
                 ...(input.deliverable ? { deliverable: input.deliverable } : {}),
                 ...(input.millSides ? { millSides: input.millSides } : {}),
                 ...(input.regional3mf ? { regional3mf: true } : {}),
@@ -713,6 +761,8 @@ export interface CadProductionSliceContext {
     invocationStartedAt: Date;
     checkpoint: SliceCheckpointV1 | null;
     meshFingerprint: string | null;
+    /** Identity the next checkpoint must store so a later resume can match text and belt frame. */
+    stlIdentity?: string | null;
     budgetMs: number;
     now: () => Date;
     sleep: (ms: number) => Promise<void>;
@@ -739,6 +789,15 @@ export interface ExecuteCadProductionArgs {
     }) => Promise<CadChargeResult>;
     archiveTemp?: (args: { stlStorageKey: string; exportId: string }) => Promise<void>;
     deleteTemp?: (stlStorageKey: string) => Promise<void>;
+    /**
+     * Recorded on a new slice checkpoint. It is not a key that reuses a stored STL.
+     */
+    stlIdentity?: string | null;
+    /**
+     * Status poll of a job this production already submitted after a loft.
+     * A checkpoint that was not written that way is ignored and the foot is lofted.
+     */
+    resumeSubmittedSlice?: boolean;
     /**
      * The materialized STL is the deliverable. Slice and G-code upload are not called.
      * Belt productions leave this unset.
@@ -791,9 +850,15 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
         logCadOperatorTiming(args.row, loftS, sliceS);
     };
     try {
-        const checkpoint = readSliceCheckpoint(
+        const storedCheckpoint = readSliceCheckpoint(
             (await args.store.findById(args.row.id))?.error ?? args.row.error,
         );
+        // A stored STL is never the mesh. Only a job submitted after a loft in
+        // this production may be polled, and that poll does not read the file.
+        const resumeCheckpoint =
+            args.resumeSubmittedSlice === true && storedCheckpoint?.rematerialized === true
+                ? storedCheckpoint
+                : null;
         const running = await args.store.updateIf(
             args.row.id,
             (row) => row.status === "pending" || row.status === "running",
@@ -801,7 +866,7 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
                 status: "running",
                 leaseExpiresAt: leaseDeadline(started),
                 updatedAt: started,
-                ...(checkpoint ? {} : { error: null }),
+                ...(resumeCheckpoint ? {} : { error: null }),
             },
         );
         if (!running) return;
@@ -818,10 +883,10 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
             return;
         }
 
-        let meshFingerprint: string | null = checkpoint?.meshFingerprint ?? null;
+        let meshFingerprint: string | null = resumeCheckpoint?.meshFingerprint ?? null;
         timingStarted = true;
-        if (checkpoint && !args.deliverMaterializedStl) {
-            stlStorageKey = checkpoint.stlStorageKey;
+        if (resumeCheckpoint) {
+            stlStorageKey = resumeCheckpoint.stlStorageKey;
         } else {
             const loftStarted = performance.now();
             try {
@@ -832,7 +897,7 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
                 loftS = (performance.now() - loftStarted) / 1000;
             }
         }
-        if (!checkpoint && args.deliverMaterializedStl) {
+        if (!resumeCheckpoint && args.deliverMaterializedStl) {
             if (!stlStorageKey) throw new Error("Manufacturing service returned empty output");
             const charged = await args.charge({
                 storageKey: stlStorageKey,
@@ -865,8 +930,9 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
                 sliceTimeoutMs,
                 sliceTimeoutSec,
                 invocationStartedAt: started,
-                checkpoint,
+                checkpoint: resumeCheckpoint,
                 meshFingerprint,
+                stlIdentity: args.stlIdentity ?? null,
                 budgetMs: args.sliceBudgetMs ?? SLICE_JOB_POLL_BUDGET_MS,
                 now: args.now,
                 sleep: args.sleep ?? sleepMs,
@@ -1045,6 +1111,7 @@ export async function runCadSliceAttempt(args: {
     checkpoint: SliceCheckpointV1 | null;
     stlStorageKey: string;
     meshFingerprint: string | null;
+    stlIdentity?: string | null;
     credentialId: string;
     side: CadFootSide | null;
     now: () => Date;
@@ -1073,6 +1140,9 @@ export async function runCadSliceAttempt(args: {
             expectedRegionCount: args.request.expectedRegionCount ?? 0,
             credentialId: args.credentialId,
             serverStartedAt: null,
+            placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+            stlIdentity: args.stlIdentity ?? null,
+            rematerialized: true,
         };
         await args.persistCheckpoint?.(checkpoint);
     }

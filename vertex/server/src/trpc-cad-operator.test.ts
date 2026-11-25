@@ -163,8 +163,22 @@ function memoryPrisma() {
             }
             return { count: 1 };
         },
-        async findMany() {
-            return [...productions.values()];
+        async findMany({ where }: { where?: Record<string, unknown> } = {}) {
+            return [...productions.values()].filter((row) => {
+                if (!where) return true;
+                if (where.designId && row.designId !== where.designId) return false;
+                if (where.side && row.side !== where.side) return false;
+                if (where.presetId && row.presetId !== where.presetId) return false;
+                if (
+                    where.settingsFingerprint &&
+                    row.settingsFingerprint !== where.settingsFingerprint
+                ) {
+                    return false;
+                }
+                const status = where.status as { in?: string[] } | undefined;
+                if (status?.in && !status.in.includes(String(row.status))) return false;
+                return true;
+            });
         },
     };
     const prisma = {
@@ -236,6 +250,100 @@ describe("CAD-operator generate honors the caller material", () => {
         expect(sliced.form.get("nozzle_temp")).toBeNull();
         expect(sliced.productionMaterial).toBe("apex_forge");
         expect(sliced.uploadedGcode).toContain("filament_type = apex_forge");
+    });
+
+    test("two consecutive generate_gcode calls both loft the UI export and do not read a stored STL", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "unit-test-key";
+        const loftBytes = new Uint8Array([9, 8, 7, 6]);
+        const adminSpy = rs.spyOn(contextMod, "getSupabaseAdmin").mockReturnValue({
+            rpc: async () => ({ data: null, error: null }),
+            from: () => ({
+                select: () => ({
+                    eq: () => ({
+                        single: async () => ({ data: { tokenBalance: 50 }, error: null }),
+                    }),
+                }),
+                update: () => ({
+                    eq: async () => ({ error: null }),
+                }),
+            }),
+            storage: {
+                from: () => ({
+                    upload: async () => ({ error: null }),
+                    createSignedUrl: async (key: string) => ({
+                        data: { signedUrl: `http://127.0.0.1/${key}` },
+                        error: null,
+                    }),
+                    download: async () => ({ data: null, error: { message: "archive skipped" } }),
+                    remove: async () => ({ error: null }),
+                }),
+            },
+        } as never);
+        const meshSpy = rs.spyOn(meshRunner, "buildHeadlessFinalizedFoot").mockResolvedValue({
+            side: "left",
+            stl: loftBytes.buffer,
+            solidTriangles: 1,
+            uploadTriangles: 1,
+            fingerprint: "mesh-fp",
+        });
+        const models: Uint8Array[] = [];
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (url.endsWith("/v1/slice/jobs")) {
+                return new Response("job route is not deployed", { status: 404 });
+            }
+            if (url.endsWith("/v1/slice")) {
+                const model = (init?.body as FormData).get("model");
+                if (model instanceof Blob) models.push(new Uint8Array(await model.arrayBuffer()));
+                return new Response(gcodeForRequestedSide("left", "apex_core"), { status: 200 });
+            }
+            if (url.includes("127.0.0.1")) {
+                return new Response(loftBytes, { status: 200 });
+            }
+            return new Response("unexpected", { status: 500 });
+        }) as typeof fetch;
+        const { prisma } = memoryPrisma();
+        const input = {
+            designId: DESIGN_ID,
+            side: "left" as const,
+            presetId: "apex-v2-insole-95a",
+            stlStorageKey: "saved-design-internal",
+            outputType: "gcode" as const,
+            beltAngleDeg: 45,
+            useSavedDesignMesh: true,
+            patientName: "Ada Lovelace",
+            hardness: "Hard",
+            material: "apex_core",
+            forceNewSlice: true,
+        };
+        try {
+            for (let i = 0; i < 2; i++) {
+                let scheduled: Promise<void> | null = null;
+                await runCadOperatorGenerateRequest({
+                    prisma,
+                    principal,
+                    ip: null,
+                    now: () => new Date("2026-11-10T16:00:00.000Z"),
+                    schedule: (work) => {
+                        scheduled = work;
+                    },
+                    input,
+                });
+                if (!scheduled) throw new Error("slice was not scheduled");
+                await scheduled;
+            }
+            expect(meshSpy).toHaveBeenCalledTimes(2);
+            expect(models).toHaveLength(2);
+            expect(Array.from(models[0] ?? [])).toEqual(Array.from(loftBytes));
+            expect(Array.from(models[1] ?? [])).toEqual(Array.from(loftBytes));
+        } finally {
+            adminSpy.mockRestore();
+            meshSpy.mockRestore();
+        }
     });
 
     test("unknown material and an unlocked preset are rejected before slicing", async () => {
