@@ -92,6 +92,36 @@ export interface ShoeWidthAffineOpts {
     minX: number;
     lengthMm: number;
     heelOverrideMm?: number;
+    /**
+     * Pivot the affine uses. Omit it and the pivot is the mean Y of the points
+     * being scaled. The top mesh passes its own vertex mean so a second outline
+     * does not scale about a different centre.
+     */
+    yMid?: number;
+}
+
+/** X span and Y pivot of the vertices {@link applyShoeWidthToGeometry} scales. */
+export interface ShoeWidthFrame {
+    minX: number;
+    lengthMm: number;
+    yMid: number;
+}
+
+/** Same minX / length / vertex-mean Y that {@link applyShoeWidthToGeometry} uses. */
+export function shoeWidthFrameOfGeometry(geometry: BufferGeometry): ShoeWidthFrame {
+    const pos = geometry.getAttribute("position");
+    if (!pos || pos.count === 0) return { minX: 0, lengthMm: 1e-3, yMid: 0 };
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let ySum = 0;
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        ySum += pos.getY(i);
+    }
+    if (!Number.isFinite(minX)) return { minX: 0, lengthMm: 1e-3, yMid: 0 };
+    return { minX, lengthMm: Math.max(1e-3, maxX - minX), yMid: ySum / pos.count };
 }
 
 /**
@@ -145,7 +175,13 @@ export function applyShoeWidthToPoints<T extends { x: number; y: number }>(
         Number.isFinite(opts.minX) && Number.isFinite(opts.lengthMm)
             ? opts
             : { ...opts, ...shoeWidthExtentOfPoints(pts) };
-    const yMid = pts.reduce((s, p) => s + p.y, 0) / Math.max(1, pts.length);
+    // A caller-supplied pivot is the mesh vertex mean. Falling back to the
+    // loop's own mean is the pre-#459 outline behaviour and stays in place
+    // for callers that do not have the mesh.
+    const yMid =
+        opts.yMid != null && Number.isFinite(opts.yMid)
+            ? opts.yMid
+            : pts.reduce((s, p) => s + p.y, 0) / Math.max(1, pts.length);
     return pts.map((p) => {
         const y = shoeWidthAffineY(p.x, p.y, yMid, width, affine);
         const clone = (p as { clone?: () => T }).clone;
@@ -156,6 +192,31 @@ export function applyShoeWidthToPoints<T extends { x: number; y: number }>(
         }
         return { ...p, y };
     });
+}
+
+/**
+ * Bbox width centre after the shoe-width affine, matching `getBaseExtents`
+ * on the geometry {@link applyShoeWidthToGeometry} returns. Heel-cup width
+ * scales about that centre.
+ */
+export function shoeWidthPlanformCenterY(
+    geometry: BufferGeometry,
+    width: ShoeWidthId,
+    opts: ShoeWidthAffineOpts & { yMid: number },
+): number {
+    const pos = geometry.getAttribute("position");
+    if (!pos || pos.count === 0 || !Number.isFinite(opts.yMid)) return opts.yMid ?? 0;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+        const y = shoeWidthAffineActive(width, opts.heelOverrideMm)
+            ? shoeWidthAffineY(pos.getX(i), pos.getY(i), opts.yMid, width, opts)
+            : pos.getY(i);
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+    }
+    if (!Number.isFinite(minY)) return opts.yMid;
+    return (minY + maxY) / 2;
 }
 
 /**
@@ -177,27 +238,16 @@ export function applyShoeWidthToGeometry(
     if (!pos) return geometry.clone();
     if (!shoeWidthAffineActive(width, opts.heelOverrideMm)) return geometry.clone();
     const count = pos.count;
-    let minX = opts.minX;
-    let lengthMm = opts.lengthMm;
-    if (minX == null || lengthMm == null || !Number.isFinite(lengthMm)) {
-        let lo = Infinity;
-        let hi = -Infinity;
-        for (let i = 0; i < count; i++) {
-            const x = pos.getX(i);
-            lo = Math.min(lo, x);
-            hi = Math.max(hi, x);
-        }
-        minX = lo;
-        lengthMm = Math.max(1e-3, hi - lo);
-    }
-    let ySum = 0;
-    for (let i = 0; i < count; i++) ySum += pos.getY(i);
-    const yMid = ySum / Math.max(1, count);
+    const frame = shoeWidthFrameOfGeometry(geometry);
+    const minX = opts.minX != null && Number.isFinite(opts.minX) ? opts.minX : frame.minX;
+    const lengthMm = opts.lengthMm != null && Number.isFinite(opts.lengthMm) ? opts.lengthMm : frame.lengthMm;
+    const yMid = frame.yMid;
     const affine: ShoeWidthAffineOpts = {
         ballWidthMm: opts.ballWidthMm,
         heelWidthMm: opts.heelWidthMm,
         minX,
         lengthMm,
+        yMid,
         heelOverrideMm: opts.heelOverrideMm,
     };
     const out = geometry.clone();
