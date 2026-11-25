@@ -56,13 +56,12 @@ import {
     patientDisplayName,
     resolveProductionTextMarking,
 } from "../lib/integration-text-marking.js";
-import { downloadManufacturingStl } from "../lib/manufacturing-stl-download.js";
 import { manufacturingStlRunIdentity } from "../lib/manufacturing-stl-identity.js";
 import {
     archiveManufacturingSourceStl,
     deleteManufacturingTempBestEffort,
 } from "../lib/manufacturing-stl-lifecycle.js";
-import { deleteAsset, MANUFACTURING_BUCKET, signedDownloadUrl, uploadAsset } from "../lib/storage.js";
+import { deleteAsset, MANUFACTURING_BUCKET, uploadAsset } from "../lib/storage.js";
 import { assertActiveLicense, getUserTokenBalance, requireSupabaseAdmin } from "../lib/supabase-db.js";
 import { getVertexSliceBuild, UNKNOWN_SLICER_BUILD } from "../lib/vertexslice-build.js";
 import type { VertexSliceRequest } from "../lib/vertexslice-client.js";
@@ -124,17 +123,14 @@ export function beltManufacturingStlIdentity(
 }
 
 async function beltSliceRequest(args: {
-    stlStorageKey: string;
+    stlBytes: Uint8Array;
     side: CadFootSide;
     plan: Awaited<ReturnType<typeof prepareCadOperatorGenerate>>;
     regional3mf: { bytes: Uint8Array; regionCount: number } | null;
     sliceTimeoutMs: number | undefined;
 }): Promise<VertexSliceRequest> {
-    const supabase = requireStorage();
-    const stlUrl = await signedDownloadUrl(supabase, args.stlStorageKey, 3600, MANUFACTURING_BUCKET);
-    const stlBytes = await downloadManufacturingStl(stlUrl);
     const upload = selectVertexSliceUpload({
-        stl: stlBytes,
+        stl: args.stlBytes,
         stlFilename: `${args.side}.stl`,
         regional3mf: args.regional3mf,
         regional3mfEnabled: vertexSliceRegional3mfEnabled(),
@@ -203,6 +199,8 @@ async function continueInFlightSlice(args: {
         };
     }
     let regional3mf: { bytes: Uint8Array; regionCount: number } | null = null;
+    let loftBytes: Uint8Array | null = null;
+    let loftKey: string | null = null;
     await executeCadOperatorProduction({
         row: args.row,
         store: args.store,
@@ -223,19 +221,22 @@ async function continueInFlightSlice(args: {
                 },
             });
             regional3mf = materialized.regional3mf;
+            loftBytes = materialized.stlBytes;
+            loftKey = materialized.stlStorageKey;
             return {
                 stlStorageKey: materialized.stlStorageKey,
                 meshFingerprint: materialized.meshFingerprint,
             };
         },
-        slice: async (stlStorageKey, sliceCtx) => {
+        slice: async (_storedKey, sliceCtx) => {
             const resume = sliceCtx?.checkpoint ?? null;
+            const bytes = loftBytes;
             const attempt = await runCadSliceAttempt({
                 request:
-                    resume || !plan || (side !== "left" && side !== "right")
+                    resume || !bytes || !plan || (side !== "left" && side !== "right")
                         ? null
                         : await beltSliceRequest({
-                              stlStorageKey,
+                              stlBytes: bytes,
                               side,
                               plan,
                               regional3mf,
@@ -244,7 +245,7 @@ async function continueInFlightSlice(args: {
                                   : sliceCtx?.sliceTimeoutMs,
                           }),
                 checkpoint: resume,
-                stlStorageKey,
+                stlStorageKey: loftKey ?? "",
                 meshFingerprint: sliceCtx?.meshFingerprint ?? stored.meshFingerprint,
                 stlIdentity,
                 credentialId: stored.credentialId,
@@ -402,6 +403,8 @@ export async function runCadOperatorGenerateRequest(args: {
         },
         execute: (row) => {
             let regional3mf: { bytes: Uint8Array; regionCount: number } | null = null;
+            let loftBytes: Uint8Array | null = null;
+            let loftKey: string | null = null;
             return executeCadOperatorProduction({
                 row,
                 store,
@@ -423,26 +426,30 @@ export async function runCadOperatorGenerateRequest(args: {
                         },
                     });
                     regional3mf = materialized.regional3mf;
+                    loftBytes = materialized.stlBytes;
+                    loftKey = materialized.stlStorageKey;
                     return {
                         stlStorageKey: materialized.stlStorageKey,
                         meshFingerprint: materialized.meshFingerprint,
                     };
                 },
-                slice: async (stlStorageKey, sliceCtx) => {
+                slice: async (_storedKey, sliceCtx) => {
+                    const bytes = loftBytes;
                     const attempt = await runCadSliceAttempt({
-                        request: sliceCtx?.checkpoint
-                            ? null
-                            : await beltSliceRequest({
-                                  stlStorageKey,
-                                  side: input.side,
-                                  plan,
-                                  regional3mf,
-                                  sliceTimeoutMs: sliceCtx?.invocationStartedAt
-                                      ? cadVertexSliceSliceTimeoutMs(sliceCtx.invocationStartedAt, now())
-                                      : sliceCtx?.sliceTimeoutMs,
-                              }),
+                        request:
+                            sliceCtx?.checkpoint || !bytes
+                                ? null
+                                : await beltSliceRequest({
+                                      stlBytes: bytes,
+                                      side: input.side,
+                                      plan,
+                                      regional3mf,
+                                      sliceTimeoutMs: sliceCtx?.invocationStartedAt
+                                          ? cadVertexSliceSliceTimeoutMs(sliceCtx.invocationStartedAt, now())
+                                          : sliceCtx?.sliceTimeoutMs,
+                                  }),
                         checkpoint: sliceCtx?.checkpoint ?? null,
-                        stlStorageKey,
+                        stlStorageKey: loftKey ?? "",
                         meshFingerprint: sliceCtx?.meshFingerprint ?? null,
                         stlIdentity,
                         credentialId: sliceCtx?.checkpoint?.credentialId ?? args.principal.credentialId,

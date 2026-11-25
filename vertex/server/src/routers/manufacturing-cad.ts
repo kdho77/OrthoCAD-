@@ -34,8 +34,6 @@ import {
     patientDisplayName,
     resolveProductionTextMarking,
 } from "../lib/integration-text-marking.js";
-import { STALE_MANUFACTURING_STL_MESSAGE } from "../lib/manufacturing-stl-download.js";
-import { isStalePre52ManufacturingStlBytes } from "../lib/manufacturing-stl-identity.js";
 import {
     assertLockedVertexSliceProfile,
     inspectManufacturingStl,
@@ -251,31 +249,21 @@ export async function materializeCadOperatorStl(args: {
     centralFabSolid?: { designId: string };
 }): Promise<{
     stlStorageKey: string;
+    /** Loft bytes. The slicer uses these. It does not read the uploaded object back. */
+    stlBytes: Uint8Array;
     meshFingerprint: string | null;
     regional3mf: { bytes: Uint8Array; regionCount: number } | null;
 }> {
-    if (!args.plan.useSavedDesignMesh) {
-        if (!args.plan.stlStorageKey) {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid manufacturing STL storage key" });
-        }
-        return { stlStorageKey: args.plan.stlStorageKey, meshFingerprint: null, regional3mf: null };
-    }
-    const loft = () =>
-        buildHeadlessFinalizedFoot({
+    // Belt and central-fab both loft the saved design. A caller storage key is not the mesh.
+    let foot: Awaited<ReturnType<typeof buildHeadlessFinalizedFoot>>;
+    try {
+        foot = await buildHeadlessFinalizedFoot({
             settingsJson: args.centralFabSolid
                 ? settingsForCentralFabSolid(args.plan.settingsJson)
                 : args.plan.settingsJson,
             side: args.side,
             includeLeader: !args.centralFabSolid,
         });
-    let foot: Awaited<ReturnType<typeof buildHeadlessFinalizedFoot>>;
-    try {
-        foot = await loft();
-        // A warm solid or a copied pre-#52 temp can come back as these exact bytes.
-        // The saved-design installer clears the in-memory slot; loft once more, then refuse.
-        if (isStalePre52ManufacturingStlBytes(new Uint8Array(foot.stl))) {
-            foot = await loft();
-        }
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new TRPCError({
@@ -283,20 +271,15 @@ export async function materializeCadOperatorStl(args: {
             message,
         });
     }
-    if (isStalePre52ManufacturingStlBytes(new Uint8Array(foot.stl))) {
-        throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: STALE_MANUFACTURING_STL_MESSAGE,
-        });
-    }
-    const mesh = inspectManufacturingStl(new Uint8Array(foot.stl));
+    const stlBytes = new Uint8Array(foot.stl);
+    const mesh = inspectManufacturingStl(stlBytes);
     if (mesh.problem) {
         throw new TRPCError({ code: "BAD_REQUEST", message: mesh.problem });
     }
     const stlStorageKey = args.centralFabSolid
         ? buildCadOperatorCentralFabStlKey(args.credentialId, args.centralFabSolid.designId, args.side)
         : buildCadOperatorTempStlKey(args.credentialId);
-    await args.uploadStl(stlStorageKey, Buffer.from(foot.stl));
+    await args.uploadStl(stlStorageKey, Buffer.from(stlBytes));
     const regional3mf = vertexSliceRegional3mfEnabled()
         ? await buildHeadlessRegional3mf({
               settingsJson: args.plan.settingsJson,
@@ -304,5 +287,5 @@ export async function materializeCadOperatorStl(args: {
               manufacturingStl: foot.stl,
           })
         : null;
-    return { stlStorageKey, meshFingerprint: foot.fingerprint, regional3mf };
+    return { stlStorageKey, stlBytes, meshFingerprint: foot.fingerprint, regional3mf };
 }

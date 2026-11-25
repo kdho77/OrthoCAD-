@@ -885,9 +885,7 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
 
         let meshFingerprint: string | null = resumeCheckpoint?.meshFingerprint ?? null;
         timingStarted = true;
-        if (resumeCheckpoint) {
-            stlStorageKey = resumeCheckpoint.stlStorageKey;
-        } else {
+        if (!resumeCheckpoint) {
             const loftStarted = performance.now();
             try {
                 const materialized = await args.materialize();
@@ -897,6 +895,8 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
                 loftS = (performance.now() - loftStarted) / 1000;
             }
         }
+        // A status poll may finish a job this production already submitted.
+        // That poll does not pass the checkpoint storage key in as the mesh.
         if (!resumeCheckpoint && args.deliverMaterializedStl) {
             if (!stlStorageKey) throw new Error("Manufacturing service returned empty output");
             const charged = await args.charge({
@@ -926,7 +926,7 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
         const sliceStarted = performance.now();
         let sliced: Awaited<ReturnType<ExecuteCadProductionArgs["slice"]>>;
         try {
-            sliced = await args.slice(stlStorageKey ?? "", {
+            sliced = await args.slice(resumeCheckpoint ? "" : (stlStorageKey ?? ""), {
                 sliceTimeoutMs,
                 sliceTimeoutSec,
                 invocationStartedAt: started,
