@@ -90,7 +90,7 @@ export async function buildFinalizedFootFromSavedDesign(input: {
     const native = await sampleTopFromArrayBuffer(input.sampleTopBytes);
     primeSampleTopGeometry(native);
     installSavedDesign(input.design, input.printLoftEpoch ?? 0);
-    const fingerprint = manufacturingFingerprintForActiveExport(input.side);
+    const fingerprint = manufacturingFingerprintForActiveExport(input.side, true);
     if (input.fontBytes) primeTextFont(input.fontBytes);
     if (input.elementsBaseDir != null || input.elementAssetReader) {
         injectElementAssetSource({

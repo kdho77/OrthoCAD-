@@ -10,16 +10,20 @@ import {
 } from "@/lib/geometry/text-marking/compose";
 import { textMarkingHash } from "@/lib/geometry/text-marking/hash";
 import type { Side } from "@/types";
+import { MANUFACTURING_STL_PLACEMENT_VERSION } from "../../../../shared/manufacturing-stl-identity";
 import type { PolyPoint } from "./curves";
 import type { ProceduralPreviewOptions } from "./sample-top-preview";
 import { sha256Hex } from "./sha256";
+
+export { MANUFACTURING_STL_PLACEMENT_VERSION };
 
 /**
  * Bump when the loft algorithm changes so an in-memory solid cannot outlive
  * the math that produced it. Saved designs stay parameter-only; this cache
  * is process memory.
+ * 2 — beltPrint and placement version are part of the identity.
  */
-export const MANUFACTURING_SOLID_GEOMETRY_VERSION = 1;
+export const MANUFACTURING_SOLID_GEOMETRY_VERSION = 2;
 
 export interface ManufacturingSolidContext {
     side: Side;
@@ -32,6 +36,8 @@ export interface ManufacturingSolidContext {
     /** Production method plus the locked machine profile id. */
     machineId: string;
     geometryVersion: number;
+    /** Belt-frame generation. A solid from an older value is not a cache hit. */
+    placementVersion: number;
 }
 
 export interface ManufacturingLoftStats {
@@ -200,6 +206,38 @@ export function cachedManufacturingSolidIncludesExportText(
     return Boolean(ud?.textGuide || ud?.bottomOutlineWorld);
 }
 
+/**
+ * A belt export must not adopt a viewer solid or a pre-#52 engraving.
+ * Non-belt callers still accept an unstamped slot. A slot stamped for the
+ * belt is not a plain STL hit, and a placement-version mismatch misses.
+ */
+export function cachedManufacturingSolidMatchesFrame(
+    geometry: BufferGeometry,
+    options: { beltPrint?: boolean },
+    context: ManufacturingSolidContext,
+): boolean {
+    const ud = geometry.userData as { beltPrint?: boolean; placementVersion?: number };
+    const wantsBelt = options.beltPrint === true;
+    if (wantsBelt) {
+        return ud.beltPrint === true && ud.placementVersion === context.placementVersion;
+    }
+    if (ud.beltPrint === true) return false;
+    if (ud.placementVersion != null && ud.placementVersion !== context.placementVersion) return false;
+    return true;
+}
+
+export function stampManufacturingSolidFrame(
+    geometry: BufferGeometry,
+    options: { beltPrint?: boolean },
+    context: ManufacturingSolidContext,
+): void {
+    geometry.userData = {
+        ...geometry.userData,
+        beltPrint: options.beltPrint === true,
+        placementVersion: context.placementVersion,
+    };
+}
+
 /** Canonical dependency record. `mirrored` on the options object is ignored; context wins. */
 export function manufacturingSolidIdentity(
     options: ProceduralPreviewOptions,
@@ -234,6 +272,8 @@ export function manufacturingSolidIdentity(
             options.patientDisplayName,
             options.side ?? context.side,
         ),
+        beltPrint: options.beltPrint === true,
+        placementVersion: context.placementVersion,
         field: fieldIdentity(options.sourceField),
         sinks: options.sinks ?? [],
         sinkStyloidThicken: options.sinkStyloidThicken === true,
@@ -275,6 +315,7 @@ export function publishPreviewManufacturingSolid(
 ): void {
     if (context.side !== (options.side ?? context.side)) return;
     stats.published += 1;
+    stampManufacturingSolidFrame(geometry, options, context);
     rememberManufacturingSolid(manufacturingSolidFingerprint(options, context), context.side, geometry);
 }
 

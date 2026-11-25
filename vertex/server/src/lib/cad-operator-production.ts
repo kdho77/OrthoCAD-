@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { TRPCError } from "@trpc/server";
 import { waitUntil } from "@vercel/functions";
+import { MANUFACTURING_STL_PLACEMENT_VERSION } from "../../../shared/manufacturing-stl-identity.js";
 import {
     gyroidInfillPctForHardness,
     PrintRecipeProfileRequiredError,
@@ -13,6 +14,7 @@ import {
     resolveGyroidManufacturingPrintRecipe,
 } from "../../../shared/print-recipe/print-recipe.js";
 import { assertGcodeHandedness, GcodeHandednessError } from "./gcode-handedness.js";
+import { isStalePre52ManufacturingStlBytes } from "./manufacturing-stl-identity.js";
 import {
     downloadVertexSliceJobResult,
     getVertexSliceJob,
@@ -58,6 +60,13 @@ export interface SliceCheckpointV1 {
     expectedRegionCount: number;
     credentialId: string;
     serverStartedAt: string | null;
+    /**
+     * Belt placement generation of the stored STL. Absent on pre-#52 checkpoints.
+     * Those checkpoints must not supply stlStorageKey.
+     */
+    placementVersion?: number;
+    /** manufacturingStlRunIdentity. Absent means the stored STL's text and belt frame are unknown. */
+    stlIdentity?: string | null;
 }
 
 export function encodeSliceCheckpoint(checkpoint: SliceCheckpointV1): string {
@@ -72,6 +81,8 @@ export function encodeSliceCheckpoint(checkpoint: SliceCheckpointV1): string {
             expectedRegionCount: checkpoint.expectedRegionCount,
             credentialId: checkpoint.credentialId,
             serverStartedAt: checkpoint.serverStartedAt,
+            ...(checkpoint.placementVersion != null ? { placementVersion: checkpoint.placementVersion } : {}),
+            ...(checkpoint.stlIdentity ? { stlIdentity: checkpoint.stlIdentity } : {}),
         })
     );
 }
@@ -95,10 +106,29 @@ export function readSliceCheckpoint(error: string | null | undefined): SliceChec
                     : 0,
             credentialId: parsed.credentialId,
             serverStartedAt: typeof parsed.serverStartedAt === "string" ? parsed.serverStartedAt : null,
+            placementVersion:
+                typeof parsed.placementVersion === "number" ? parsed.placementVersion : undefined,
+            stlIdentity: typeof parsed.stlIdentity === "string" ? parsed.stlIdentity : null,
         };
     } catch {
         return null;
     }
+}
+
+/**
+ * A checkpoint may supply its STL only when that file was materialized under the
+ * current placement version and, when the caller has one, the same text/belt identity.
+ * Pre-#52 checkpoints omit placementVersion and are not reused. force_new_slice
+ * still rematerializes when this returns false.
+ */
+export function storedManufacturingStlReusable(
+    checkpoint: SliceCheckpointV1 | null,
+    expected?: { stlIdentity?: string | null } | null,
+): boolean {
+    if (!checkpoint) return false;
+    if (checkpoint.placementVersion !== MANUFACTURING_STL_PLACEMENT_VERSION) return false;
+    if (expected?.stlIdentity && checkpoint.stlIdentity !== expected.stlIdentity) return false;
+    return true;
 }
 
 export function sleepMs(ms: number): Promise<void> {
@@ -669,6 +699,8 @@ export function cadOperatorManufacturingIdentity(input: {
                 printRecipe: input.printRecipe,
                 settingsJson: input.settingsJson,
                 stlStorageKey: input.useSavedDesignMesh ? null : input.stlStorageKey,
+                stlPlacementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+                ...(input.useSavedDesignMesh && !input.deliverable ? { beltPrint: true } : {}),
                 ...(input.deliverable ? { deliverable: input.deliverable } : {}),
                 ...(input.millSides ? { millSides: input.millSides } : {}),
                 ...(input.regional3mf ? { regional3mf: true } : {}),
@@ -713,6 +745,8 @@ export interface CadProductionSliceContext {
     invocationStartedAt: Date;
     checkpoint: SliceCheckpointV1 | null;
     meshFingerprint: string | null;
+    /** Identity the next checkpoint must store so a later resume can match text and belt frame. */
+    stlIdentity?: string | null;
     budgetMs: number;
     now: () => Date;
     sleep: (ms: number) => Promise<void>;
@@ -739,6 +773,16 @@ export interface ExecuteCadProductionArgs {
     }) => Promise<CadChargeResult>;
     archiveTemp?: (args: { stlStorageKey: string; exportId: string }) => Promise<void>;
     deleteTemp?: (stlStorageKey: string) => Promise<void>;
+    /**
+     * Saved-design belt run. When set, a checkpoint STL is reused only if its
+     * placement version and this identity match. A leftover pre-#52 temp does not.
+     */
+    stlIdentity?: string | null;
+    /**
+     * Read a checkpoint STL before reuse. Stale pre-#52 bytes, or a missing object,
+     * drop the checkpoint and rematerialize. Tests omit this.
+     */
+    readStoredStl?: (stlStorageKey: string) => Promise<Uint8Array>;
     /**
      * The materialized STL is the deliverable. Slice and G-code upload are not called.
      * Belt productions leave this unset.
@@ -791,9 +835,22 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
         logCadOperatorTiming(args.row, loftS, sliceS);
     };
     try {
-        const checkpoint = readSliceCheckpoint(
+        const storedCheckpoint = readSliceCheckpoint(
             (await args.store.findById(args.row.id))?.error ?? args.row.error,
         );
+        let checkpoint = storedManufacturingStlReusable(storedCheckpoint, {
+            stlIdentity: args.stlIdentity,
+        })
+            ? storedCheckpoint
+            : null;
+        if (checkpoint && args.readStoredStl) {
+            try {
+                const storedBytes = await args.readStoredStl(checkpoint.stlStorageKey);
+                if (isStalePre52ManufacturingStlBytes(storedBytes)) checkpoint = null;
+            } catch {
+                checkpoint = null;
+            }
+        }
         const running = await args.store.updateIf(
             args.row.id,
             (row) => row.status === "pending" || row.status === "running",
@@ -867,6 +924,7 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
                 invocationStartedAt: started,
                 checkpoint,
                 meshFingerprint,
+                stlIdentity: args.stlIdentity ?? null,
                 budgetMs: args.sliceBudgetMs ?? SLICE_JOB_POLL_BUDGET_MS,
                 now: args.now,
                 sleep: args.sleep ?? sleepMs,
@@ -1045,6 +1103,7 @@ export async function runCadSliceAttempt(args: {
     checkpoint: SliceCheckpointV1 | null;
     stlStorageKey: string;
     meshFingerprint: string | null;
+    stlIdentity?: string | null;
     credentialId: string;
     side: CadFootSide | null;
     now: () => Date;
@@ -1073,6 +1132,8 @@ export async function runCadSliceAttempt(args: {
             expectedRegionCount: args.request.expectedRegionCount ?? 0,
             credentialId: args.credentialId,
             serverStartedAt: null,
+            placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+            stlIdentity: args.stlIdentity ?? null,
         };
         await args.persistCheckpoint?.(checkpoint);
     }

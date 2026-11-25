@@ -9,6 +9,7 @@ import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import type { DesignState, ProductionMethod, Side } from "@/types";
 import {
     MANUFACTURING_SOLID_GEOMETRY_VERSION,
+    MANUFACTURING_STL_PLACEMENT_VERSION,
     type ManufacturingSolidContext,
 } from "./manufacturing-solid-cache";
 
@@ -62,5 +63,6 @@ export function manufacturingCacheContext(input: {
         productId: target.productId,
         machineId: target.machineId,
         geometryVersion: MANUFACTURING_SOLID_GEOMETRY_VERSION,
+        placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
     };
 }
