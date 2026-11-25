@@ -1,5 +1,9 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { gunzipSync } from "node:zlib";
+
 import type { PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, test } from "@rstest/core";
 import { TRPCError } from "@trpc/server";
@@ -242,7 +246,17 @@ describe("CAD-operator generate honors the caller material", () => {
     });
 });
 
-async function sliceCallerMaterial(input: { material?: string; presetId?: string }) {
+/** Left uses true_left_toe_first. Right uses main_left_request_toe_first, a physical right. */
+function gcodeForRequestedSide(side: "left" | "right", material: string): string {
+    const fixture = side === "right" ? "main_left_request_toe_first" : "true_left_toe_first";
+    const body = gunzipSync(
+        readFileSync(resolve(__dirname, "../../../tests/fixtures/handedness", `${fixture}.gcode.gz`)),
+    ).toString("utf8");
+    return `; filament_type = ${material}\n${body}`;
+}
+
+async function sliceCallerMaterial(input: { material?: string; presetId?: string; side?: "left" | "right" }) {
+    const side = input.side ?? "left";
     process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
     process.env.VERTEXSLICE_API_KEY = "unit-test-key";
     const uploads: Buffer[] = [];
@@ -295,8 +309,8 @@ async function sliceCallerMaterial(input: { material?: string; presetId?: string
         if (url.endsWith("/v1/slice")) {
             sliceCalls += 1;
             forms.push(init?.body as FormData);
-            const selected = (init?.body as FormData).get("material");
-            return new Response(`; filament_type = ${selected}\nG1 X0\n`, { status: 200 });
+            const selected = String((init?.body as FormData).get("material") ?? "");
+            return new Response(gcodeForRequestedSide(side, selected), { status: 200 });
         }
         if (url.includes("model.stl")) {
             return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
@@ -316,7 +330,7 @@ async function sliceCallerMaterial(input: { material?: string; presetId?: string
             },
             input: {
                 designId: DESIGN_ID,
-                side: "left",
+                side,
                 presetId: input.presetId,
                 stlStorageKey: "saved-design-internal",
                 outputType: "gcode",
