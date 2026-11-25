@@ -42,3 +42,9 @@ NAME_PLANTAR_GCODE_DIR=/tmp/name-plantar/gcode \
 ```
 
 `chirality.test.ts` locks the frame and the #435 numbers without a slicer. `build-stls.test.ts` is the unit-shard STL builder. Measured numbers for the live image, the fix image, and the local `#436` placement are in `PROOFS.md`.
+
+## Production-path gates
+
+`production-path-gates.test.ts` extends this lock. It does not replace the six cells or their thresholds. It lofts design paths `0d3db1c0` and `ad1e0cc5`, plus one-factor variants, through `buildFinalizedFootFromSavedDesign` / `buildFinalizedBeltPairFromSavedSettings` with `beltPrint` on. The reading frame is the same #442 frame after the live #52 Y-negate (`production-frame.ts`). `bottomimg.py` is not used. Synthetic string remains `JABBOUR`.
+
+Non-text hashes for feet that already engrave a readable name are in `frozen-surface-hashes.ts`. A blanket X flip of every belt path fails G1 on the #442 control and on `ad1e0cc5`. Measured identity on BASE is in `validation/name_chirality_gates/RESULTS.md`.

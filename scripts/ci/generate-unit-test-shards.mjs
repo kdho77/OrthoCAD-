@@ -36,6 +36,8 @@ const PINNED_HEAVY = {
     "tests/toprim-extraction.test.ts": 4,
     "tests/two-pointer-walk-steering.phase3.test.ts": 5,
     "tests/synced-bottom-shell-field.test.ts": 6,
+    // Production-path name gates loft the variant matrix (~6 min). Off the s1 shard.
+    "tests/name-plantar-e2e/production-path-gates.test.ts": 1,
 };
 
 const files = listUnitTestFiles();

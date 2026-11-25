@@ -143,3 +143,25 @@ jobs:
             tests/name-plantar-e2e/measure-gcode.optional.test.ts
           echo "image=${{ steps.image.outputs.ref }}"
           echo "image_id=$(cat "$RUNNER_TEMP/name-plantar/image-id.txt")"
+
+      - name: Build production-path variant STLs
+        run: |
+          mkdir -p "$RUNNER_TEMP/name-plantar/variant-stl"
+          NAME_PLANTAR_VARIANT_STL_DIR="$RUNNER_TEMP/name-plantar/variant-stl" \
+            npx rstest tests/name-plantar-e2e/production-path-gates.test.ts \
+            --testNamePattern "write canonical production STLs"
+
+      - name: Slice production-path variants
+        run: |
+          NAME_PLANTAR_SKIP_BASE=1 \
+          NAME_PLANTAR_VARIANT_STL_DIR="$RUNNER_TEMP/name-plantar/variant-stl" \
+            bash tests/name-plantar-e2e/slice-feet.sh \
+            "${{ steps.image.outputs.ref }}" \
+            "$RUNNER_TEMP/name-plantar/stl" \
+            "$RUNNER_TEMP/name-plantar/gcode"
+
+      - name: Measure production-path plantar name
+        run: |
+          NAME_PLANTAR_GCODE_DIR="$RUNNER_TEMP/name-plantar/gcode" \
+            npx rstest --config tests/name-plantar-e2e/rstest.config.ts \
+            tests/name-plantar-e2e/production-gcode.optional.test.ts
