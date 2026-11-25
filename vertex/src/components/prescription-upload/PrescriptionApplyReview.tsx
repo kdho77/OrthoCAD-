@@ -47,73 +47,7 @@ function wedgeMax(meta: (typeof WEDGE_FIELD_META)[number], unit: WedgeUnit): num
     return unit === "deg" ? meta.maxDeg : meta.maxMm;
 }
 
-function WedgeCell({
-    wedgeKey,
-    wedge,
-    onChange,
-}: {
-    wedgeKey: WedgeFieldKey;
-    wedge: WedgeCorrection | { side: WedgeEdge; value?: number; unit?: WedgeUnit } | undefined;
-    onChange: (next: WedgeCorrection | undefined) => void;
-}) {
-    const meta = WEDGE_FIELD_META.find((w) => w.key === wedgeKey)!;
-    const activeEdge = wedge?.side ?? "lateral";
-    const activeUnit = wedge?.unit ?? "deg";
-    const activeValue = wedge?.value ?? 0;
-    const max = wedgeMax(meta, activeUnit);
-
-    const commit = (
-        edge: WedgeEdge,
-        value: number,
-        unit: WedgeUnit,
-    ) => {
-        if (value <= 0) {
-            onChange(undefined);
-            return;
-        }
-        onChange(clampWedge({ side: edge, value, unit }, meta.maxDeg, meta.maxMm));
-    };
-
-    return (
-        <div className="space-y-1">
-            <motionTogglePair
-                ariaLabel={`${meta.label} edge`}
-                options={[
-                    { value: "lateral", label: "Lat high" },
-                    { value: "medial", label: "Med high" },
-                ]}
-                value={activeEdge}
-                onChange={(edge) => commit(edge, activeValue, activeUnit)}
-            />
-            <input
-                type="number"
-                className="w-full rounded border border-input bg-background px-1.5 py-0.5 text-xs tabular-nums"
-                min={0}
-                max={max}
-                step={0.5}
-                value={activeValue}
-                onChange={(e) => {
-                    const parsed = Number(e.target.value);
-                    if (!Number.isFinite(parsed)) return;
-                    commit(activeEdge, parsed, activeUnit);
-                }}
-            />
-            <motionTogglePair
-                ariaLabel={`${meta.label} unit`}
-                options={[
-                    { value: "deg", label: "deg" },
-                    { value: "mm", label: "mm" },
-                ]}
-                value={activeUnit}
-                onChange={(unit) =>
-                    commit(activeEdge, Math.min(activeValue, wedgeMax(meta, unit)), unit)
-                }
-            />
-        </div>
-    );
-}
-
-function motionTogglePair<T extends string>({
+function MotionTogglePair<T extends string>({
     options,
     value,
     onChange,
@@ -143,6 +77,72 @@ function motionTogglePair<T extends string>({
                 </button>
             ))}
         </fieldset>
+    );
+}
+
+function WedgeCell({
+    wedgeKey,
+    wedge,
+    onChange,
+}: {
+    wedgeKey: WedgeFieldKey;
+    wedge: WedgeCorrection | { side: WedgeEdge; value?: number; unit?: WedgeUnit } | undefined;
+    onChange: (next: WedgeCorrection | undefined) => void;
+}) {
+    const meta = WEDGE_FIELD_META.find((w) => w.key === wedgeKey)!;
+    const activeEdge = wedge?.side ?? "lateral";
+    const activeUnit = wedge?.unit ?? "deg";
+    const activeValue = wedge?.value ?? 0;
+    const max = wedgeMax(meta, activeUnit);
+
+    const commit = (
+        edge: WedgeEdge,
+        value: number,
+        unit: WedgeUnit,
+    ) => {
+        if (value <= 0) {
+            onChange(undefined);
+            return;
+        }
+        onChange(clampWedge({ side: edge, value, unit }, meta.maxDeg, meta.maxMm));
+    };
+
+    return (
+        <div className="space-y-1">
+            <MotionTogglePair
+                ariaLabel={`${meta.label} edge`}
+                options={[
+                    { value: "lateral", label: "Lat high" },
+                    { value: "medial", label: "Med high" },
+                ]}
+                value={activeEdge}
+                onChange={(edge) => commit(edge, activeValue, activeUnit)}
+            />
+            <input
+                type="number"
+                className="w-full rounded border border-input bg-background px-1.5 py-0.5 text-xs tabular-nums"
+                min={0}
+                max={max}
+                step={0.5}
+                value={activeValue}
+                onChange={(e) => {
+                    const parsed = Number(e.target.value);
+                    if (!Number.isFinite(parsed)) return;
+                    commit(activeEdge, parsed, activeUnit);
+                }}
+            />
+            <MotionTogglePair
+                ariaLabel={`${meta.label} unit`}
+                options={[
+                    { value: "deg", label: "deg" },
+                    { value: "mm", label: "mm" },
+                ]}
+                value={activeUnit}
+                onChange={(unit) =>
+                    commit(activeEdge, Math.min(activeValue, wedgeMax(meta, unit)), unit)
+                }
+            />
+        </div>
     );
 }
 

@@ -160,4 +160,55 @@ describe("PrescriptionApplyReview", () => {
         expect(useDesignStore.getState().design.corrections.left.heelLiftMm).toBe(6.35);
         expect(useDesignStore.getState().design.corrections.right.heelLiftMm).toBe(0);
     });
+
+    test("full-length posting right only medial 4.5 deg lands in store", async () => {
+        const base = useDesignStore.getState().design;
+        useDesignStore.setState({
+            design: {
+                ...base,
+                corrections: {
+                    ...base.corrections,
+                    linked: false,
+                    left: { ...base.corrections.left, fullLengthWedge: undefined },
+                    right: { ...base.corrections.right, fullLengthWedge: undefined },
+                },
+            },
+        });
+        const result = baseResult({
+            corrections: {
+                right: { fullLengthWedge: { side: "lateral", value: 2, unit: "deg" } },
+            },
+        });
+        await act(async () =>
+            root.render(
+                createElement(PrescriptionApplyReview, {
+                    result,
+                    onApply: (edited) => {
+                        useDesignStore.getState().applyPrescription(edited);
+                    },
+                    onCancel: () => {},
+                }),
+            ),
+        );
+        const wedgeRow = [...container.querySelectorAll("tr")].find((tr) =>
+            tr.textContent?.includes("Full-length"),
+        );
+        expect(wedgeRow).toBeTruthy();
+        const rightCell = wedgeRow!.querySelectorAll("td")[3];
+        const medHigh = [...rightCell.querySelectorAll("button")].find((b) =>
+            b.textContent?.includes("Med high"),
+        );
+        await act(async () => {
+            medHigh?.click();
+        });
+        const wedgeInput = rightCell.querySelector('input[type="number"]') as HTMLInputElement;
+        setInputValue(wedgeInput, "4.5");
+        const applyAll = [...container.querySelectorAll("button")].find((b) =>
+            b.textContent?.includes("Apply all"),
+        );
+        await act(async () => applyAll?.click());
+        const rightWedge = useDesignStore.getState().design.corrections.right.fullLengthWedge;
+        expect(rightWedge).toEqual({ side: "medial", value: 4.5, unit: "deg" });
+        expect(useDesignStore.getState().design.corrections.left.fullLengthWedge).toBeUndefined();
+    });
 });
