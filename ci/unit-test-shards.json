@@ -67,7 +67,8 @@
                 "vertex/src/lib/library/loaders.test.ts",
                 "vertex/src/stores/bottom-pattern-store.test.ts",
                 "vertex/src/stores/clinical-workflow-store.test.ts",
-                "vertex/tests/occt-dormant.test.ts"
+                "vertex/tests/occt-dormant.test.ts",
+                "vertex/tests/pr459-width.grader.test.ts"
             ]
         },
         {
