@@ -9,10 +9,9 @@
  * discrepancy or a tight gastroc/soleus complex.
  *
  * Behaviour (per spec):
- *  - `heelLiftMm = N` raises the heel cup by exactly N mm. The full amount is
- *    held from the posterior edge through the cup (seat, walls, and rim), so
- *    the lowest point of the heel seat — the cup center — rises by N and the
- *    cup depth does not change.
+ *  - `heelLiftMm = N` raises the heel by exactly N mm through the cup center.
+ *    The lowest point of the heel seat, and the rim at that station, rise by
+ *    N together, so the cup depth does not change.
  *  - Forward of that hold the raise tapers **linearly** to 0 by the configured
  *    taper endpoint (fraction of insole length), and is 0 from there to the toe.
  *  - It is a purely longitudinal ramp (no medial/lateral bias), applied across
@@ -29,13 +28,13 @@
 /**
  * Full lift is held through this normalized station (heel = 0, toe = 1).
  *
- * 0.28 is the anterior edge of the existing heel-cup longitudinal mask
- * (`bump(u, 0.10, 0.18)`). The stock SAMPLE_Top cup center, the lowest
- * heel-seat point, sits near u = 0.12, inside the hold. Seat, cup walls,
- * and rim in that zone therefore move by the same amount. The linear taper
- * to {@link HEEL_LIFT_TAPER_END_DEFAULT_U} starts at this station.
+ * This is the heel-cup arc center. The stock SAMPLE_Top cup center, the
+ * lowest heel-seat point, sits at u ≈ 0.116, so the seat and the rim at
+ * that station both take the full amount. The linear taper to
+ * {@link HEEL_LIFT_TAPER_END_DEFAULT_U} starts here. Holding any farther
+ * forward steepens that taper and folds the round wall.
  */
-export const HEEL_LIFT_FULL_HOLD_U = 0.28;
+export const HEEL_LIFT_FULL_HOLD_U = 0.13;
 
 /** Default forward end of the linear taper (met heads region). */
 export const HEEL_LIFT_TAPER_END_DEFAULT_U = 0.75;
@@ -96,9 +95,9 @@ export function resolveHeelLiftTaperEndU(options?: HeelLiftTaperOptions): number
 export function heelLiftDeltaAt(u: number, heelLiftMm: number, taper?: HeelLiftTaperOptions): number {
     if (heelLiftMm <= 0) return 0;
     const endU = resolveHeelLiftTaperEndU(taper);
-    // Posterior of the cup center, and the rest of the heel cup, stay at the
-    // full amount. A ramp that peaks only at u = 0 leaves the lowest seat
-    // point short of H and lets a more anterior rim rise less than the seat.
+    // Posterior of the cup center stays at the full amount, so the lowest
+    // seat point and the rim at that station both rise by H. A ramp that
+    // peaks only at u = 0 leaves that seat short of H.
     if (u <= HEEL_LIFT_FULL_HOLD_U) return heelLiftMm;
     if (!(endU > HEEL_LIFT_FULL_HOLD_U) || u >= endU) return 0;
     return (heelLiftMm * (endU - u)) / (endU - HEEL_LIFT_FULL_HOLD_U);

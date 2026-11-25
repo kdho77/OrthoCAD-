@@ -3022,8 +3022,9 @@ export function applyBaseModifiers(
         // and leaves the seat — the cup deepens. Add heelLiftDeltaAt at weight 1
         // on that sheet and on the multi-mesh top range, and keep it out of
         // corePart so a rim with w ≈ 1 is not lifted twice. heelLiftDeltaAt holds
-        // the full H through the heel cup, so the seat (weight 1 here) and the
-        // rim (the same function inside the height field, w ≈ 1) rise together.
+        // the full H through the cup center, so the seat (weight 1 here) and the
+        // rim at that station (the same function inside the height field, w ≈ 1)
+        // rise together.
         // Bottom-sheet verts stay at weight 0. heelPart === 0 keeps the previous
         // vertD expression, so heelLiftMm = 0 is byte-identical.
         let vertD: number;

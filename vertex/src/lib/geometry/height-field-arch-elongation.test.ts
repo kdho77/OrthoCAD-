@@ -5,8 +5,12 @@ import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import type { Side, SideCorrections } from "@/types";
 import { type HeightFieldParams, heightAt } from "./height-field";
 
-/** Height-field hash on main b18be414 with arch ease 0 (no elongation key). */
-const MAIN_EASE_ZERO_HASH = 3677847511;
+/**
+ * Height-field hash with arch ease 0 (no elongation key).
+ * Includes a heelLiftMm: 3 sample, so it moves when the heel-lift ramp changes.
+ * Pin is the full-H hold through the cup center (u ≤ 0.13), then the linear taper.
+ */
+const MAIN_EASE_ZERO_HASH = 3752724195;
 
 function zeros(patch: Partial<SideCorrections> = {}): SideCorrections {
     return {
