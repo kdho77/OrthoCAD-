@@ -1,0 +1,105 @@
+
+===== frozen exit 0 =====
+PASS frozen: validation/heel_lift_rigid_cup_gates/README.md 18be822c17f522f5d68dc9fa2e23243b6dafcc1e846324efeddbce33cef299ff
+PASS frozen: validation/heel_lift_rigid_cup_gates/thresholds.ts a79dbdc7bff4df3e6c98f80e6566f1a123aab3b05c0f9e837aab2868f5f5bec5
+PASS frozen: validation/heel_lift_rigid_cup_gates/measure.ts f26600fbc4029fedaab527b972a7c7bc1320ac9a8602bbb28ce2be7d6f61cfea
+PASS frozen: validation/heel_lift_rigid_cup_gates/build-solid.ts 72fc960c7e13f535e0750bb68d3c562cf3d8be76df426b35f31b45925126be2f
+PASS frozen: validation/heel_lift_rigid_cup_gates/heel-lift-rigid-cup.optional.test.ts b412a62026d414bdd2460e5112902c652c03c2154c8e92f74cc6800f4d3494fe
+PASS frozen: validation/heel_lift_rigid_cup_gates/bad-change.optional.test.ts c9d989218b511d558178cc5445d5e5389a77cc85b283642f1ceeffd3004a743e
+PASS frozen: validation/heel_lift_rigid_cup_gates/rstest.gates.config.ts 7d4921d64100c89a68dab9ad98cc28a448f354f80ce2d68ceb08422fbc57345b
+PASS frozen: validation/heel_lift_rigid_cup_gates/lib.mjs 4cb58ae668bc231de4fbfe8ad4efba91db10b6c3659fcc6857d2967af88669ed
+PASS frozen: validation/heel_lift_rigid_cup_gates/check-surface.mjs a2e2edbc929df6adb262ef633ec0abb93881bff3d66fbf26c806aecf2668a236
+PASS frozen: validation/heel_lift_rigid_cup_gates/check-cap.mjs 01ef5e2056c947e379daa96c14b298ab91245a9bb486e799076ef49b6cfe5f32
+PASS frozen: validation/heel_lift_rigid_cup_gates/check-tolerances.mjs e2c2a6c095036b032680a74300298c0ae71a7510b942c4fa68fe75fdb12eadec
+PASS frozen: validation/heel_lift_rigid_cup_gates/check-seat-rule.mjs 9e0b8e181ba016f34bf334610cf8e732a73c0c08dfbb1798822cb6ee7f71d948
+PASS frozen: validation/heel_lift_rigid_cup_gates/check-product-diff.mjs 321589400271eb74dea8f8eded77cc8ca2c5d108e552c3ad3c9b4c86f0bd9584
+PASS frozen: validation/heel_lift_rigid_cup_gates/check-frozen.mjs 27ef06bf51c83bed28a71dd72f78474e31f11e4d498505e466a5c88c688536a6
+PASS frozen: validation/heel_lift_rigid_cup_gates/prove-noop.mjs 6eecdf912fb141c673663f982e309224b02ee1089d00a10c681010b7195a58b0
+PASS frozen: validation/heel_lift_rigid_cup_gates/prove-bad-change.mjs 4f9b3ba10ec6865b961e7f2642bead044447755737e60d639f3f2203d9be2a36
+PASS frozen: validation/heel_lift_rigid_cup_gates/grade-candidate.mjs bc25c1440d407e89cb88f533b8b33157087e7472fdd619fcdf97f29fe5291fb5
+PASS frozen: validation/heel_lift_rigid_cup_gates/frozen/BASE.txt ba9f052cfebeddbcbb86e62be26bb649da84f73ce0b4ec415142e7320434665d
+PASS frozen: validation/heel_lift_rigid_cup_gates/frozen/FROZEN 8835c5537781b44db9bd36cae3cd72578676e51945dfa30df4f3ebb18419a787
+PASS frozen: validation/heel_lift_rigid_cup_gates/frozen/surface-files.txt f9d7816891bdb3b90709a459c7182c341b3f2d560e292bf5687f279736e4088a
+PASS frozen: validation/heel_lift_rigid_cup_gates/frozen/surface-files.sha256 dcfdf9981baf4679eebdf6b6536bd2c7cf6c47d1977c9f5e367b8bb9b7e379aa
+PASS frozen: validation/heel_lift_rigid_cup_gates/frozen/assert-preloft-stations.txt e9cf1eb5d86fbf6c854bbd758a4b26c7901c0fa6b62f69321321120893fd848a
+PASS frozen: validation/heel_lift_rigid_cup_gates/frozen/stl-sha256.json 8207bc2bf750b4a97ca98af909fecd82062daf57ab12ebe7217f0426f29c8770
+PASS frozen: gate logic matches the freeze manifest
+
+
+
+===== surface exit 0 =====
+PASS surface: vertex/src/lib/kiri/slicer.ts 3650c487c38f4b4b9aa4d0c04f795445bdca70ea9f317301e623d30f43f6edcd
+PASS surface: vertex/src/lib/kiri/engine.ts f6f611b1e4808e42a203f99bd3933d739ff1f0d8319e69a94e0f4e39e14f0d25
+PASS surface: vertex/src/lib/kiri/gcode.ts d3b2a3d2ef5ff4f379530327360bf5b4cefd2e4579981ae3e2357d5341963dba
+PASS surface: vertex/src/lib/kiri/presets.ts 07564936650fb5908dcdaabdfc1b4ee1aed902bbfe3c28d145897814874c39fe
+PASS surface: python-service/app/services/slicer.py 222b011b17643ddbebac6edbf688479c80be6019864c1726e8e0db43ed3f6f4c
+PASS surface: vertex/src/lib/geometry/procedural-wall/ring-seam.ts 11175c73c6534a03f9e0ac0ebf8c835e64757c0efb4baa5b24e5d84b389bc3bd
+PASS surface: vertex/src/lib/geometry/procedural-wall/curves.ts cb386075ee529140635bed74cab45800b5bcef5a400294682983c479528a5d35
+PASS surface: vertex/src/lib/geometry/procedural-wall/wall-spline.ts 348fe24de887f1c987efc3c01caff92fe076a8cedc6acb6b982ffe9488282dcb
+PASS surface: vertex/src/lib/geometry/procedural-wall/bezier-column.ts c27feb57048bea16729bc914542a5403aff691a334371eaec90056929ae04350
+PASS surface: vertex/src/lib/geometry/text-marking/bottom-engrave.ts 3ee88f1a77076357d03c77657a4e8a1a267980abd7b99bc47f462410744ab991
+PASS surface: outer-surface, seam, layer-change, wall-builder, and slicer files match BASE
+
+
+
+===== cap exit 0 =====
+PASS cap: assertPreLoftStations SHA-256 822d85299ff2e2ad26e43af621da49e09d30391e8169f7eb9eb10428eb28781f matches frozen BASE
+PASS cap: SKEW_INSET_RATIO stays 0.5 and the 0.5×inset cap formulas are unchanged
+
+
+
+===== clinical exit 0 =====
+---
+tool: "@rstest/core@0.10.0"
+timestamp: "2026-11-25T05:11:27.824Z"
+runtime: {"node":"v22.23.4","platform":"linux","cwd":"/tmp/heel-lift-rigid-grade-ef85af5a2094"}
+---
+
+# Rstest Test Execution Report
+
+## Summary
+
+```json
+{
+  "status": "pass",
+  "counts": {
+    "testFiles": 1,
+    "failedFiles": 0,
+    "tests": 1,
+    "failedTests": 0,
+    "passedTests": 1,
+    "skippedTests": 0,
+    "todoTests": 0
+  },
+  "durationMs": {
+    "total": 63746,
+    "build": 310,
+    "tests": 63436
+  },
+  "snapshot": {
+    "added": 0,
+    "updated": 0,
+    "unmatched": 0,
+    "removed": 0,
+    "unchecked": 0
+  }
+}
+```
+
+## Tests
+
+### Passed
+
+- validation/heel_lift_rigid_cup_gates/heel-lift-rigid-cup.optional.test.ts :: rigid heel-lift cup-depth gates (SAMPLE_Top US M11 medium, compose path) > seat, cup, taper, belt, and zero-lift identity at H=6, 10, and 12
+
+### Skipped
+
+None.
+
+## Failures
+
+No test failures reported.
+
+
+PASS candidate ef85af5a2094056f7e467aceac4945c35226ca78
+EXIT:0
