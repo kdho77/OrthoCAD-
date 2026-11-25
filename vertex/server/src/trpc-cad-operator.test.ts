@@ -17,7 +17,7 @@ import {
 } from "./auth/cad-operator.js";
 import type { Context } from "./context.js";
 import * as contextMod from "./context.js";
-import * as meshRunner from "./lib/finalized-mesh-runner.js";
+import * as loftPool from "./lib/loft-worker-pool.js";
 import * as stlDownload from "./lib/manufacturing-stl-download.js";
 import { STALE_MANUFACTURING_STL_MESSAGE } from "./lib/manufacturing-stl-download.js";
 import { runCadOperatorGenerateRequest } from "./routers/cad-operator-generate.js";
@@ -281,7 +281,7 @@ describe("CAD-operator generate honors the caller material", () => {
                 }),
             },
         } as never);
-        const meshSpy = rs.spyOn(meshRunner, "buildHeadlessFinalizedFoot").mockResolvedValue({
+        const meshSpy = rs.spyOn(loftPool, "buildHeadlessFinalizedFootOffThread").mockResolvedValue({
             side: "left",
             stl: loftBytes.buffer,
             solidTriangles: 1,
@@ -406,7 +406,7 @@ describe("CAD-operator generate honors the caller material", () => {
                 }),
             },
         } as never);
-        const meshSpy = rs.spyOn(meshRunner, "buildHeadlessFinalizedFoot").mockResolvedValue({
+        const meshSpy = rs.spyOn(loftPool, "buildHeadlessFinalizedFootOffThread").mockResolvedValue({
             side: "left",
             stl: loftBytes.buffer,
             solidTriangles: 1,
@@ -519,7 +519,7 @@ describe("CAD-operator generate honors the caller material", () => {
                 }),
             },
         } as never);
-        const meshSpy = rs.spyOn(meshRunner, "buildHeadlessFinalizedFoot").mockResolvedValue({
+        const meshSpy = rs.spyOn(loftPool, "buildHeadlessFinalizedFootOffThread").mockResolvedValue({
             side: "left",
             stl: loftBytes.buffer,
             solidTriangles: 1,
@@ -634,7 +634,7 @@ async function sliceCallerMaterial(input: { material?: string; presetId?: string
             }),
         },
     } as never);
-    const meshSpy = rs.spyOn(meshRunner, "buildHeadlessFinalizedFoot").mockResolvedValue({
+    const meshSpy = rs.spyOn(loftPool, "buildHeadlessFinalizedFootOffThread").mockResolvedValue({
         side: "left",
         stl: new Uint8Array([1, 2, 3, 4]).buffer,
         solidTriangles: 1,
