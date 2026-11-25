@@ -21,6 +21,7 @@ import {
     classifyBaseTopFactors,
     getBaseFootprintFrame,
 } from "@/lib/geometry/base-modifier";
+import { bottomPatternWidthCenter, viewerBottomPatternPlanform } from "@/lib/geometry/bottom-planform-width";
 import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
 import { elementGeometryKey } from "@/lib/geometry/element-geometry-key";
 import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
@@ -74,7 +75,12 @@ import {
 import { resolveViewerWallStyle } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
-import { applyShoeWidthToPoints, shoeWidthExtentOfPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
+import {
+    applyShoeWidthToPoints,
+    shoeWidthExtentOfPoints,
+    shoeWidthForSide,
+    shoeWidthFrameOfGeometry,
+} from "@/lib/geometry/shoe-width";
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { patientDisplayNameFromParts } from "@/lib/geometry/text-marking/compose";
@@ -676,11 +682,26 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         if (session.cancelled) return;
                         const patternTrim = resolveActiveTrimline(side);
                         let patternTop = raw;
+                        // Fair the pattern on the pre-width sheet (the Medium
+                        // outline). The top mesh is width-scaled once; scaling
+                        // a pattern that was already faired on that widened
+                        // sheet applies the affine again and wings the forefoot.
+                        const patternOnNativeSheet = widthId !== "medium";
+                        const patternField =
+                            patternOnNativeSheet && heelW !== 0
+                                ? {
+                                      ...zeroField,
+                                      corrections: { ...zeroField.corrections, heelCupWidthMm: 0 },
+                                  }
+                                : zeroField;
+                        const patternShoe = patternOnNativeSheet
+                            ? { ...shoeWidthOpt, width: "medium" as const, heelOverrideMm: 0 }
+                            : shoeWidthOpt;
                         try {
                             patternTop = await composeViewerPrintSolidTop({
                                 raw,
-                                sourceField: zeroField,
-                                shoeWidth: shoeWidthOpt,
+                                sourceField: patternField,
+                                shoeWidth: patternShoe,
                                 trimline: patternTrim,
                             });
                         } catch (composeErr) {
@@ -693,25 +714,45 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         const rawPattern = await buildProceduralViewerPatternInWorker(
                             patternTop,
                             design.pattern,
-                            { ...field.corrections, forefootWidthMm: 0 },
+                            patternOnNativeSheet
+                                ? { ...field.corrections, forefootWidthMm: 0, heelCupWidthMm: 0 }
+                                : { ...field.corrections, forefootWidthMm: 0 },
                         );
                         if (patternTop !== raw) patternTop.dispose();
                         if (session.cancelled) return;
                         await yieldToMain();
                         if (session.cancelled) return;
-                        let minX = Infinity;
-                        let maxX = -Infinity;
-                        for (const p of rawPattern) {
-                            minX = Math.min(minX, p.x);
-                            maxX = Math.max(maxX, p.x);
+                        let sizedPattern: typeof rawPattern;
+                        if (patternOnNativeSheet) {
+                            const frame = shoeWidthFrameOfGeometry(raw);
+                            const widthOpts = {
+                                ballWidthMm: layout.widthMm,
+                                heelWidthMm: layout.widthMm * 0.62,
+                                heelCupWidthMm: heelW,
+                            };
+                            const center = bottomPatternWidthCenter(raw, widthId, frame, widthOpts);
+                            sizedPattern = viewerBottomPatternPlanform(
+                                rawPattern,
+                                widthId,
+                                frame,
+                                widthOpts,
+                                center,
+                            );
+                        } else {
+                            let minX = Infinity;
+                            let maxX = -Infinity;
+                            for (const p of rawPattern) {
+                                minX = Math.min(minX, p.x);
+                                maxX = Math.max(maxX, p.x);
+                            }
+                            sizedPattern = applyShoeWidthToPoints(rawPattern, widthId, {
+                                ballWidthMm: layout.widthMm,
+                                heelWidthMm: layout.widthMm * 0.62,
+                                minX,
+                                lengthMm: Math.max(1e-3, maxX - minX),
+                                heelOverrideMm: heelW,
+                            });
                         }
-                        const sizedPattern = applyShoeWidthToPoints(rawPattern, widthId, {
-                            ballWidthMm: layout.widthMm,
-                            heelWidthMm: layout.widthMm * 0.62,
-                            minX,
-                            lengthMm: Math.max(1e-3, maxX - minX),
-                            heelOverrideMm: heelW,
-                        });
                         useBottomPatternStore.getState().ensureGenerated(side, patternKey, sizedPattern);
                         perfMark("load:pattern-done", { side });
                         if (showCorrectionsSheet && forefootBaseRef.current?.key === cacheKey) {
