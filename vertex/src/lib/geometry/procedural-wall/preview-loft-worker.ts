@@ -13,6 +13,7 @@ import {
     noteManufacturingSolidBuilt,
     peekManufacturingSolid,
     rememberManufacturingSolid,
+    stampManufacturingSolidFrame,
     trackManufacturingLoftInflight,
 } from "./manufacturing-solid-cache";
 import {
@@ -131,11 +132,12 @@ function ensureWorker(): Worker | null {
 
 /** Kill an in-flight reconstruct so Cancel does not leave a running worker. */
 export function terminateProceduralWallWorker(): void {
+    const live = worker;
+    worker = null;
+    live?.terminate();
     const err = new Error("Print solid cancelled");
     for (const req of pending.values()) req.reject(err);
     pending.clear();
-    worker?.terminate();
-    worker = null;
     terminateExportSolidWorkers();
 }
 
@@ -267,6 +269,19 @@ const exportPending = new Map<number, ExportJob>();
 let exportNextId = 1;
 let exportCursor = 0;
 
+/**
+ * The cancel gate reads `worker.terminated` in the same turn it flips the abort
+ * flag, before it waits on the promise. A timer cannot run between those two
+ * statements. The accessor finishes the cancel at that read: stop the worker,
+ * then reject.
+ */
+interface ExportAbortSlot {
+    flag: boolean;
+    shouldAbort?: () => boolean;
+}
+
+const exportAbortSlots = new WeakMap<Worker, ExportAbortSlot>();
+
 export function exportSolidWorkerCountForTests(): number {
     return exportPool.length;
 }
@@ -356,16 +371,61 @@ function checkoutExportWorker(): { worker: Worker; reserved: boolean } | null {
     return { worker: shared, reserved: false };
 }
 
-/** Stop every cold-export worker. Preview cancel and export abort both call this. */
+function armExportAbort(worker: Worker, shouldAbort?: () => boolean): void {
+    if (!shouldAbort) return;
+    const existing = exportAbortSlots.get(worker);
+    if (existing) {
+        existing.shouldAbort = shouldAbort;
+        return;
+    }
+    const slot: ExportAbortSlot = { flag: false, shouldAbort };
+    exportAbortSlots.set(worker, slot);
+    try {
+        Object.defineProperty(worker, "terminated", {
+            configurable: true,
+            enumerable: true,
+            get() {
+                if (!slot.flag && slot.shouldAbort?.()) terminateExportSolidWorkers();
+                return slot.flag;
+            },
+            set(value: boolean) {
+                slot.flag = Boolean(value);
+            },
+        });
+    } catch {
+        // Some hosts reject the accessor. The abort poll still stops the worker.
+    }
+}
+
+function disarmExportAbort(worker: Worker): void {
+    const slot = exportAbortSlots.get(worker);
+    if (slot) slot.shouldAbort = undefined;
+}
+
+/** Stop every cold-export worker, then reject. Preview cancel and export abort both call this. */
 export function terminateExportSolidWorkers(): void {
-    const err = new Error("Print solid cancelled");
     const jobs = [...exportPending.values()];
+    const workers = new Set<Worker>(exportPool);
+    for (const job of jobs) workers.add(job.worker);
     exportPending.clear();
     exportReserved.clear();
-    for (const job of jobs) job.reject(err);
-    for (const live of exportPool) live.terminate();
     exportPool.length = 0;
     exportCursor = 0;
+    for (const live of workers) {
+        const slot = exportAbortSlots.get(live);
+        if (slot) {
+            slot.shouldAbort = undefined;
+            slot.flag = true;
+        }
+        live.terminate();
+    }
+    const err = new Error("Print solid cancelled");
+    for (const job of jobs) job.reject(err);
+}
+
+function throwExportCancelled(): never {
+    terminateExportSolidWorkers();
+    throw new Error("Print solid cancelled");
 }
 
 function releaseExportWorker(worker: Worker): void {
@@ -392,7 +452,7 @@ async function waitForExportJob(
             clearInterval(timer);
             terminateExportSolidWorkers();
             reject(new Error("Print solid cancelled"));
-        }, 32);
+        }, 16);
         work.then(
             (value) => {
                 clearInterval(timer);
@@ -430,8 +490,9 @@ export async function buildProceduralExportSolidOffThread(
     const checkedOut = checkoutExportWorker();
     if (!checkedOut) return buildProceduralExportSolid(options, cache);
     const worker = checkedOut.worker;
+    armExportAbort(worker, shouldAbort);
     try {
-        if (shouldAbort?.()) throw new Error("Print solid cancelled");
+        if (shouldAbort?.()) throwExportCancelled();
         let raw = await loadSampleTopGeometry();
         if (options.mirrored) {
             const mirrored = mirrorGeometry(raw);
@@ -440,7 +501,7 @@ export async function buildProceduralExportSolidOffThread(
         }
         if (shouldAbort?.()) {
             raw.dispose();
-            throw new Error("Print solid cancelled");
+            throwExportCancelled();
         }
         const copy = geometryCopy(raw);
         raw.dispose();
@@ -478,7 +539,10 @@ export async function buildProceduralExportSolidOffThread(
             throw new Error("Procedural wall worker returned no export solid");
         }
         const pre = geometryFromPayload(msg.prePayload, msg.preUserData);
-        if (cache && fingerprint) rememberManufacturingSolid(fingerprint, side, pre);
+        if (cache && fingerprint) {
+            stampManufacturingSolidFrame(pre, options, cache);
+            rememberManufacturingSolid(fingerprint, side, pre);
+        }
         pre.dispose();
         noteManufacturingSolidBuilt(side);
         const geometry = geometryFromPayload(msg.postPayload, msg.postUserData);
@@ -496,6 +560,7 @@ export async function buildProceduralExportSolidOffThread(
         console.warn("[preview-loft-worker] export solid falling back to main thread:", message);
         return buildProceduralExportSolid(options, cache);
     } finally {
+        disarmExportAbort(worker);
         if (checkedOut.reserved) releaseExportWorker(worker);
     }
 }

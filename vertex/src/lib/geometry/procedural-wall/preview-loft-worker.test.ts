@@ -222,15 +222,15 @@ describe("cold export solids in parallel workers", () => {
         );
         await new Promise((resolve) => setTimeout(resolve, 20));
         abort = true;
-        await expect(pending).rejects.toThrow(/cancelled/i);
         expect(HungWorker.last?.terminated).toBe(true);
+        await expect(pending).rejects.toThrow(/cancelled/i);
         expect(exportSolidWorkerCountForTests()).toBe(0);
 
         const pendingUnmount = buildProceduralExportSolidOffThread({ side: "right", thicknessMm: 2.2 }, null);
         await new Promise((resolve) => setTimeout(resolve, 20));
         terminateProceduralWallWorker();
-        await expect(pendingUnmount).rejects.toThrow(/cancelled/i);
         expect(HungWorker.last?.terminated).toBe(true);
+        await expect(pendingUnmount).rejects.toThrow(/cancelled/i);
         expect(exportSolidWorkerCountForTests()).toBe(0);
     });
 
