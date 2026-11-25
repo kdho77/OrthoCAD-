@@ -16,6 +16,7 @@ import {
 } from "@/features/exports/export-service";
 import { exportMachineFamily, pairExportLayout } from "@/features/exports/machine-export-layout";
 import { orderDownloadSides } from "@/lib/geometry/export-geometry";
+import { terminateExportSolidWorkers } from "@/lib/geometry/procedural-wall/preview-loft-worker";
 import { resolveViewerWallStyle } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { type CamOverrides, type PrinterPreset, presetsForMethod } from "@/lib/kiri";
 import type { ViewerSettings } from "@/stores/design-store";
@@ -164,6 +165,7 @@ export async function exportClinicalPrinterGcode(input: {
     }
     const many = feet.length > 1;
     if (input.shouldAbort?.()) {
+        terminateExportSolidWorkers();
         return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
     }
     const built: { side: Side; filename: string; blob: Blob }[] = [];
@@ -182,6 +184,7 @@ export async function exportClinicalPrinterGcode(input: {
             const res = await generateHybridGcode(foot, preset, grindingStyle, overrides, options);
             footOutcomes.push({ foot, res });
             if (res.cancelled || input.shouldAbort?.()) {
+                terminateExportSolidWorkers();
                 return;
             }
             if (res.ok && res.blob && res.filename) {
@@ -194,6 +197,7 @@ export async function exportClinicalPrinterGcode(input: {
     footOutcomes.sort((a, b) => feet.indexOf(a.foot) - feet.indexOf(b.foot));
 
     if (footOutcomes.some(({ res }) => res.cancelled) || input.shouldAbort?.()) {
+        terminateExportSolidWorkers();
         return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
     }
 

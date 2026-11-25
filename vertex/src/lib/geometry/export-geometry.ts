@@ -22,8 +22,8 @@ import {
 } from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
 import { manufacturingCacheContext } from "@/lib/geometry/procedural-wall/manufacturing-solid-context";
 import { wantsProceduralExportSolid } from "@/lib/geometry/procedural-wall/preview-loft-ui";
+import { buildProceduralExportSolidOffThread } from "@/lib/geometry/procedural-wall/preview-loft-worker";
 import { printSolidOptions } from "@/lib/geometry/procedural-wall/print-solid-options";
-import { buildProceduralExportSolid } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { assertShapeFinishExportAllowed } from "@/lib/geometry/shape-finish-gates";
 import {
     insoleLayoutFromDesign,
@@ -53,6 +53,8 @@ export interface BuildExportStlOptions {
      * prints the name upright from the plantar face. Plain STL leaves this off.
      */
     beltPrint?: boolean;
+    /** When this returns true, in-flight cold lofts are cancelled. */
+    shouldAbort?: () => boolean;
 }
 
 /**
@@ -128,10 +130,15 @@ async function buildModifiedBaseGeometry(
     side: Side,
     smoothingIterations = 2,
     beltPrint = false,
+    shouldAbort?: () => boolean,
 ): Promise<BufferGeometry | null> {
     const request = proceduralExportRequest(design, side, beltPrint);
     if (request) {
-        const preview = await buildProceduralExportSolid(request.solidOptions, request.cache);
+        const preview = await buildProceduralExportSolidOffThread(
+            request.solidOptions,
+            request.cache,
+            shouldAbort,
+        );
         return preview.geometry;
     }
     const base = getDesignBase(design, side);
@@ -234,7 +241,11 @@ function solidCameFromManufacturingCache(geometry: BufferGeometry | undefined): 
 }
 
 /** Close, watertight-check, and scale one foot. A bad cache entry is dropped and lofted once. */
-async function closeAndValidateExportGeometry(side: Side, beltPrint = false): Promise<BufferGeometry> {
+async function closeAndValidateExportGeometry(
+    side: Side,
+    beltPrint = false,
+    shouldAbort?: () => boolean,
+): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
     if (design.productType === "afo") {
         const shell = useAfoStore.getState().shellMesh;
@@ -246,7 +257,7 @@ async function closeAndValidateExportGeometry(side: Side, beltPrint = false): Pr
         return geometry;
     }
     assertShapeFinishExportAllowed(design, side);
-    const geometry = await buildModifiedBaseGeometry(design, side, 0, beltPrint);
+    const geometry = await buildModifiedBaseGeometry(design, side, 0, beltPrint, shouldAbort);
     if (!geometry) {
         throw new Error(
             "[EXPORT] No GLB base geometry available. Load a stock base before exporting. Parametric export is not supported.",
@@ -291,13 +302,18 @@ async function closeAndValidateExportGeometry(side: Side, beltPrint = false): Pr
 }
 
 /** Build and validate the actual manufacturing mesh. Caller owns the geometry. */
-async function buildClosedExportGeometry(side: Side, beltPrint = false): Promise<BufferGeometry> {
+async function buildClosedExportGeometry(
+    side: Side,
+    beltPrint = false,
+    shouldAbort?: () => boolean,
+): Promise<BufferGeometry> {
     try {
-        return await closeAndValidateExportGeometry(side, beltPrint);
+        return await closeAndValidateExportGeometry(side, beltPrint, shouldAbort);
     } catch (error) {
         // A fresh loft that fails validation stays failed. printLoftEpoch is not bumped.
+        if (error instanceof Error && /cancelled/i.test(error.message)) throw error;
         if (!(error as { fromManufacturingCache?: boolean } | null)?.fromManufacturingCache) throw error;
-        return closeAndValidateExportGeometry(side, beltPrint);
+        return closeAndValidateExportGeometry(side, beltPrint, shouldAbort);
     }
 }
 
@@ -311,32 +327,44 @@ export async function buildValidatedExportGeometry(side: Side): Promise<BufferGe
  * The right foot is shifted in +Y by the shoe width plus the viewer gap so the
  * shells do not occupy the same origin. Each foot is still the order solid.
  */
-export async function buildOrderPairGeometry(): Promise<BufferGeometry> {
+export async function buildOrderPairGeometry(shouldAbort?: () => boolean): Promise<BufferGeometry> {
     const { design } = useDesignStore.getState();
     const sides = orderDownloadSides(design);
     const layout = insoleLayoutFromDesign(design);
     const gap = layout.widthMm + 30;
+    const held: BufferGeometry[] = [];
     const parts: BufferGeometry[] = [];
     try {
-        for (const side of sides) {
-            const solid = await buildClosedExportGeometry(side);
+        // Start every foot before awaiting the next so cold lofts share the worker pool.
+        const built = await Promise.all(
+            sides.map(async (side) => {
+                const solid = await buildClosedExportGeometry(side, false, shouldAbort);
+                held.push(solid);
+                return { side, solid };
+            }),
+        );
+        for (const { side, solid } of built) {
             const dy = side === "right" && sides.length > 1 ? gap : 0;
             const placed = dy === 0 ? solid : offsetGeometryY(solid, dy);
             if (placed !== solid) solid.dispose();
             parts.push(placed);
         }
-        if (parts.length === 1) return parts[0]!;
-        const merged = mergeGeometries(parts);
-        return merged;
+        const only = parts[0];
+        if (parts.length === 1 && only) return only;
+        return mergeGeometries(parts);
     } finally {
         // mergeGeometries copies vertices. A single part is returned as-is.
-        if (parts.length > 1) for (const p of parts) p.dispose();
+        if (parts.length > 1) {
+            for (const p of parts) p.dispose();
+        } else if (parts.length === 0) {
+            for (const solid of held) solid.dispose();
+        }
     }
 }
 
 /** Export STL bytes for one foot. Pair downloads use {@link buildOrderPairGeometry}. */
 export async function buildExportStl(side: Side, options: BuildExportStlOptions = {}): Promise<ArrayBuffer> {
-    const solid = await buildClosedExportGeometry(side, options.beltPrint === true);
+    const solid = await buildClosedExportGeometry(side, options.beltPrint === true, options.shouldAbort);
     try {
         perfMark("export:stl", { side });
         return geometryToBinarySTL(solid);
@@ -346,8 +374,8 @@ export async function buildExportStl(side: Side, options: BuildExportStlOptions 
 }
 
 /** STL bytes for every foot on the order, one file. */
-export async function buildOrderPairStl(): Promise<ArrayBuffer> {
-    const solid = await buildOrderPairGeometry();
+export async function buildOrderPairStl(shouldAbort?: () => boolean): Promise<ArrayBuffer> {
+    const solid = await buildOrderPairGeometry(shouldAbort);
     try {
         return geometryToBinarySTL(solid);
     } finally {

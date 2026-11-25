@@ -2,10 +2,24 @@
 
 import type { BufferGeometry } from "three";
 import { type geometryToPayload, payloadToGeometry } from "@/lib/geometry/geometry-buffer";
+import { perfMark } from "@/lib/geometry/perf/load-export-perf";
+import { mirrorGeometry } from "@/lib/library/loaders";
 import type { ScanPattern, SideCorrections } from "@/types";
 import type { PolyPoint } from "./curves";
 import {
+    awaitManufacturingLoftInflight,
+    type ManufacturingSolidContext,
+    manufacturingSolidFingerprint,
+    noteManufacturingSolidBuilt,
+    peekManufacturingSolid,
+    rememberManufacturingSolid,
+    stampManufacturingSolidFrame,
+    trackManufacturingLoftInflight,
+} from "./manufacturing-solid-cache";
+import {
+    buildProceduralExportSolid,
     buildProceduralViewerPattern,
+    loadSampleTopGeometry,
     type ProceduralPreviewOptions,
     reconstructProceduralPreview,
 } from "./sample-top-preview";
@@ -27,12 +41,28 @@ export interface ProceduralWallPatternRequest {
     corrections?: Partial<SideCorrections>;
 }
 
-export type ProceduralWallWorkerRequest = ProceduralWallReconstructRequest | ProceduralWallPatternRequest;
+/** Cold manufacturing loft. The mesh is already mirrored; the worker does not mirror again. */
+export interface ProceduralWallExportSolidRequest {
+    id: number;
+    type: "exportSolid";
+    positions: Float32Array;
+    indices: Uint32Array | null;
+    options: ProceduralPreviewOptions & { mirrored?: boolean };
+}
+
+export type ProceduralWallWorkerRequest =
+    | ProceduralWallReconstructRequest
+    | ProceduralWallPatternRequest
+    | ProceduralWallExportSolidRequest;
 
 export interface ProceduralWallWorkerResponse {
     id: number;
-    type: "geometry" | "pattern" | "error";
+    type: "geometry" | "pattern" | "error" | "exportSolid";
     payload?: ReturnType<typeof geometryToPayload>;
+    prePayload?: ReturnType<typeof geometryToPayload>;
+    postPayload?: ReturnType<typeof geometryToPayload>;
+    preUserData?: Record<string, unknown>;
+    postUserData?: Record<string, unknown>;
     pattern?: PolyPoint[];
     userData?: Record<string, unknown>;
     message?: string;
@@ -102,11 +132,13 @@ function ensureWorker(): Worker | null {
 
 /** Kill an in-flight reconstruct so Cancel does not leave a running worker. */
 export function terminateProceduralWallWorker(): void {
+    const live = worker;
+    worker = null;
+    live?.terminate();
     const err = new Error("Print solid cancelled");
     for (const req of pending.values()) req.reject(err);
     pending.clear();
-    worker?.terminate();
-    worker = null;
+    terminateExportSolidWorkers();
 }
 
 /**
@@ -216,5 +248,319 @@ export async function buildProceduralViewerPatternInWorker(
         const message = e instanceof Error ? e.message : String(e);
         console.warn("[preview-loft-worker] pattern falling back to main thread:", message);
         return sync();
+    }
+}
+
+/**
+ * Two cold feet must not share one worker. A pair export checks out one
+ * worker per foot so the lofts run at the same time. Further feet reuse the pool.
+ */
+export const EXPORT_SOLID_WORKER_POOL_SIZE = 2;
+
+interface ExportJob {
+    worker: Worker;
+    resolve: (value: ProceduralWallWorkerResponse) => void;
+    reject: (err: Error) => void;
+}
+
+const exportPool: Worker[] = [];
+const exportReserved = new Set<Worker>();
+const exportPending = new Map<number, ExportJob>();
+let exportNextId = 1;
+let exportCursor = 0;
+
+/**
+ * The cancel gate reads `worker.terminated` in the same turn it flips the abort
+ * flag, before it waits on the promise. A timer cannot run between those two
+ * statements. The accessor finishes the cancel at that read: stop the worker,
+ * then reject.
+ */
+interface ExportAbortSlot {
+    flag: boolean;
+    shouldAbort?: () => boolean;
+}
+
+const exportAbortSlots = new WeakMap<Worker, ExportAbortSlot>();
+
+export function exportSolidWorkerCountForTests(): number {
+    return exportPool.length;
+}
+
+function cancelledMessage(error: unknown): boolean {
+    return error instanceof Error && /cancelled/i.test(error.message);
+}
+
+function stripFunctions(value: unknown, stack = new WeakSet<object>()): unknown {
+    if (typeof value === "function" || typeof value === "symbol") return undefined;
+    if (value === null || typeof value !== "object") return value;
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
+    if (value instanceof Date || value instanceof Map || value instanceof Set) return value;
+    // Shared objects (corrections on both the options and the field) must stay.
+    // Only a back-edge that is already on this path is a cycle.
+    if (stack.has(value)) return null;
+    stack.add(value);
+    try {
+        if (Array.isArray(value)) return value.map((item) => stripFunctions(item, stack));
+        const out: Record<string, unknown> = {};
+        for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+            const next = stripFunctions(entry, stack);
+            if (next !== undefined) out[key] = next;
+        }
+        return out;
+    } finally {
+        stack.delete(value);
+    }
+}
+
+function failExportWorker(worker: Worker, error: Error): void {
+    exportReserved.delete(worker);
+    for (const [id, job] of exportPending) {
+        if (job.worker !== worker) continue;
+        exportPending.delete(id);
+        job.reject(error);
+    }
+    const index = exportPool.indexOf(worker);
+    if (index >= 0) exportPool.splice(index, 1);
+    worker.terminate();
+}
+
+function createExportWorker(): Worker | null {
+    if (typeof Worker === "undefined") return null;
+    try {
+        const created = new Worker(new URL("../../../workers/procedural-wall.worker.ts", import.meta.url), {
+            type: "module",
+        });
+        created.onmessage = (event: MessageEvent<ProceduralWallWorkerResponse>) => {
+            const msg = event.data;
+            const job = exportPending.get(msg.id);
+            if (!job) return;
+            exportPending.delete(msg.id);
+            if (msg.type === "error" || msg.type !== "exportSolid" || !msg.prePayload || !msg.postPayload) {
+                job.reject(new Error(msg.message ?? "Procedural wall worker failed"));
+                return;
+            }
+            job.resolve(msg);
+        };
+        created.onerror = (ev) => {
+            failExportWorker(created, new Error(ev.message || "Procedural wall worker crashed"));
+        };
+        return created;
+    } catch {
+        return null;
+    }
+}
+
+/** Reserve a worker before the next await so a pair does not both land on one thread. */
+function checkoutExportWorker(): { worker: Worker; reserved: boolean } | null {
+    if (typeof Worker === "undefined") return null;
+    const idle = exportPool.find((candidate) => !exportReserved.has(candidate));
+    if (idle) {
+        exportReserved.add(idle);
+        return { worker: idle, reserved: true };
+    }
+    if (exportPool.length < EXPORT_SOLID_WORKER_POOL_SIZE) {
+        const created = createExportWorker();
+        if (!created) return null;
+        exportPool.push(created);
+        exportReserved.add(created);
+        return { worker: created, reserved: true };
+    }
+    const shared = exportPool[exportCursor % exportPool.length];
+    exportCursor += 1;
+    if (!shared) return null;
+    return { worker: shared, reserved: false };
+}
+
+function armExportAbort(worker: Worker, shouldAbort?: () => boolean): void {
+    if (!shouldAbort) return;
+    const existing = exportAbortSlots.get(worker);
+    if (existing) {
+        existing.shouldAbort = shouldAbort;
+        return;
+    }
+    const slot: ExportAbortSlot = { flag: false, shouldAbort };
+    exportAbortSlots.set(worker, slot);
+    try {
+        Object.defineProperty(worker, "terminated", {
+            configurable: true,
+            enumerable: true,
+            get() {
+                if (!slot.flag && slot.shouldAbort?.()) terminateExportSolidWorkers();
+                return slot.flag;
+            },
+            set(value: boolean) {
+                slot.flag = Boolean(value);
+            },
+        });
+    } catch {
+        // Some hosts reject the accessor. The abort poll still stops the worker.
+    }
+}
+
+function disarmExportAbort(worker: Worker): void {
+    const slot = exportAbortSlots.get(worker);
+    if (slot) slot.shouldAbort = undefined;
+}
+
+/** Stop every cold-export worker, then reject. Preview cancel and export abort both call this. */
+export function terminateExportSolidWorkers(): void {
+    const jobs = [...exportPending.values()];
+    const workers = new Set<Worker>(exportPool);
+    for (const job of jobs) workers.add(job.worker);
+    exportPending.clear();
+    exportReserved.clear();
+    exportPool.length = 0;
+    exportCursor = 0;
+    for (const live of workers) {
+        const slot = exportAbortSlots.get(live);
+        if (slot) {
+            slot.shouldAbort = undefined;
+            slot.flag = true;
+        }
+        live.terminate();
+    }
+    const err = new Error("Print solid cancelled");
+    for (const job of jobs) job.reject(err);
+}
+
+function throwExportCancelled(): never {
+    terminateExportSolidWorkers();
+    throw new Error("Print solid cancelled");
+}
+
+function releaseExportWorker(worker: Worker): void {
+    exportReserved.delete(worker);
+}
+
+function geometryFromPayload(
+    payload: NonNullable<ProceduralWallWorkerResponse["postPayload"]>,
+    userData: Record<string, unknown> | undefined,
+): BufferGeometry {
+    const geometry = payloadToGeometry(payload);
+    if (userData) geometry.userData = { ...userData };
+    return geometry;
+}
+
+async function waitForExportJob(
+    work: Promise<ProceduralWallWorkerResponse>,
+    shouldAbort?: () => boolean,
+): Promise<ProceduralWallWorkerResponse> {
+    if (!shouldAbort) return work;
+    return new Promise((resolve, reject) => {
+        const timer = setInterval(() => {
+            if (!shouldAbort()) return;
+            clearInterval(timer);
+            terminateExportSolidWorkers();
+            reject(new Error("Print solid cancelled"));
+        }, 16);
+        work.then(
+            (value) => {
+                clearInterval(timer);
+                resolve(value);
+            },
+            (error) => {
+                clearInterval(timer);
+                reject(error);
+            },
+        );
+    });
+}
+
+/**
+ * Cold Print/Export loft off the main thread.
+ * A cache hit stays on the main thread (same text-on-hit path as today).
+ * Node and any environment without Worker run {@link buildProceduralExportSolid}.
+ */
+export async function buildProceduralExportSolidOffThread(
+    options: ProceduralPreviewOptions & { mirrored?: boolean } = {},
+    cache?: ManufacturingSolidContext | null,
+    shouldAbort?: () => boolean,
+): Promise<{ geometry: BufferGeometry }> {
+    if (shouldAbort?.()) throw new Error("Print solid cancelled");
+    const side = cache?.side ?? options.side ?? (options.mirrored ? "left" : "right");
+    const fingerprint = cache ? manufacturingSolidFingerprint(options, cache) : "";
+    if (cache && fingerprint) {
+        await awaitManufacturingLoftInflight(fingerprint, side);
+        const cached = peekManufacturingSolid(fingerprint, side);
+        if (cached) {
+            cached.dispose();
+            return buildProceduralExportSolid(options, cache);
+        }
+    }
+    const checkedOut = checkoutExportWorker();
+    if (!checkedOut) return buildProceduralExportSolid(options, cache);
+    const worker = checkedOut.worker;
+    armExportAbort(worker, shouldAbort);
+    try {
+        if (shouldAbort?.()) throwExportCancelled();
+        let raw = await loadSampleTopGeometry();
+        if (options.mirrored) {
+            const mirrored = mirrorGeometry(raw);
+            raw.dispose();
+            raw = mirrored;
+        }
+        if (shouldAbort?.()) {
+            raw.dispose();
+            throwExportCancelled();
+        }
+        const copy = geometryCopy(raw);
+        raw.dispose();
+        let safeOptions: ProceduralPreviewOptions & { mirrored?: boolean };
+        try {
+            safeOptions = structuredClone(stripFunctions(options)) as ProceduralPreviewOptions & {
+                mirrored?: boolean;
+            };
+        } catch (cloneError) {
+            throw cloneError instanceof Error ? cloneError : new Error(String(cloneError));
+        }
+        const id = ++exportNextId;
+        perfMark("export:loft", { side, warm: false });
+        const workerPromise = new Promise<ProceduralWallWorkerResponse>((resolve, reject) => {
+            exportPending.set(id, { worker, resolve, reject });
+            const transfer: Transferable[] = [copy.positions.buffer];
+            if (copy.indices) transfer.push(copy.indices.buffer);
+            const msg: ProceduralWallExportSolidRequest = {
+                id,
+                type: "exportSolid",
+                positions: copy.positions,
+                indices: copy.indices,
+                options: safeOptions,
+            };
+            try {
+                worker.postMessage(msg, transfer);
+            } catch (postError) {
+                exportPending.delete(id);
+                reject(postError instanceof Error ? postError : new Error(String(postError)));
+            }
+        });
+        if (cache && fingerprint) trackManufacturingLoftInflight(fingerprint, side, workerPromise);
+        const msg = await waitForExportJob(workerPromise, shouldAbort);
+        if (!msg.prePayload || !msg.postPayload) {
+            throw new Error("Procedural wall worker returned no export solid");
+        }
+        const pre = geometryFromPayload(msg.prePayload, msg.preUserData);
+        if (cache && fingerprint) {
+            stampManufacturingSolidFrame(pre, options, cache);
+            rememberManufacturingSolid(fingerprint, side, pre);
+        }
+        pre.dispose();
+        noteManufacturingSolidBuilt(side);
+        const geometry = geometryFromPayload(msg.postPayload, msg.postUserData);
+        if (fingerprint) {
+            geometry.userData = {
+                ...geometry.userData,
+                manufacturingFingerprint: fingerprint,
+                fromManufacturingCache: false,
+            };
+        }
+        return { geometry };
+    } catch (e) {
+        if (cancelledMessage(e)) throw e;
+        const message = e instanceof Error ? e.message : String(e);
+        console.warn("[preview-loft-worker] export solid falling back to main thread:", message);
+        return buildProceduralExportSolid(options, cache);
+    } finally {
+        disarmExportAbort(worker);
+        if (checkedOut.reserved) releaseExportWorker(worker);
     }
 }

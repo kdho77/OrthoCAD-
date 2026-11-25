@@ -34,6 +34,7 @@ import {
 } from "@/lib/geometry/export-geometry";
 import { binaryStlTriangleCount, manufacturingStlForExportKind } from "@/lib/geometry/leader-block";
 import { perfMark } from "@/lib/geometry/perf/load-export-perf";
+import { terminateExportSolidWorkers } from "@/lib/geometry/procedural-wall/preview-loft-worker";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { effectiveHardnessRegions } from "@/lib/hardness/collect";
 import { packHardness3mf } from "@/lib/hardness/export-3mf";
@@ -178,9 +179,9 @@ async function uploadManufacturingStlDirect(
 }
 
 /** Export the finalized viewer solid as binary STL (mesh-close primary export path). */
-async function buildManufacturingStl(side: Side): Promise<ArrayBuffer> {
+async function buildManufacturingStl(side: Side, shouldAbort?: () => boolean): Promise<ArrayBuffer> {
     const { design } = useDesignStore.getState();
-    return buildExportStl(side, { exportMode: exportModeFromMethod(design.method) });
+    return buildExportStl(side, { exportMode: exportModeFromMethod(design.method), shouldAbort });
 }
 
 async function authorize(
@@ -303,9 +304,12 @@ export async function packOrder3mf(
         requested: ReturnType<typeof buildRawModifiers>["requested"];
     }> = [];
     const t0 = Date.now();
-    for (const foot of sides) {
-        assertHardnessMapped(design, foot);
-        const stl = await buildExportStl(foot);
+    for (const foot of sides) assertHardnessMapped(design, foot);
+    const stls = await Promise.all(sides.map((foot) => buildExportStl(foot)));
+    for (let index = 0; index < sides.length; index++) {
+        const foot = sides[index];
+        const stl = stls[index];
+        if (!foot || !stl) throw new Error("3MF export failed: missing solid");
         let shell = parseBinaryStl(stl);
         const { requested, raw } = buildRawModifiers(design, foot);
         let modifiers = await resolveModifiers(raw);
@@ -517,10 +521,12 @@ export function resolveHybridSlice(
 export async function buildPrinterFootManufacturingStl(
     side: Side,
     includeLeader: boolean,
+    shouldAbort?: () => boolean,
 ): Promise<{ stl: ArrayBuffer; solidTriangles: number; uploadTriangles: number }> {
     const solid = await buildExportStl(side, {
         exportMode: exportModeFromMethod(useDesignStore.getState().design.method),
         beltPrint: true,
+        shouldAbort,
     });
     const solidTriangles = binaryStlTriangleCount(solid);
     const withLeader = manufacturingStlForExportKind(solid, includeLeader ? "gcode" : "stl");
@@ -618,7 +624,11 @@ export async function generateHybridGcode(
         const blocked = refuseMilledPrint(useDesignStore.getState().design);
         if (blocked) return blocked;
         const report = options.onProgress;
-        const abort = (): ExportOutcome | null => (options.shouldAbort?.() ? exportCancelled() : null);
+        const abort = (): ExportOutcome | null => {
+            if (!options.shouldAbort?.()) return null;
+            terminateExportSolidWorkers();
+            return exportCancelled();
+        };
         report?.(GCODE_EXPORT_STEPS.prepare);
         await yieldToPaint();
         const aborted = abort();
@@ -658,13 +668,13 @@ export async function generateHybridGcode(
             try {
                 const includeLeader = separateFiles && options.includeLeaderBlock !== false;
                 const stlBuffer = separateFiles
-                    ? (await buildPrinterFootManufacturingStl(side, includeLeader)).stl
+                    ? (await buildPrinterFootManufacturingStl(side, includeLeader, options.shouldAbort)).stl
                     : await (async () => {
                           const designForStl = useDesignStore.getState().design;
                           const stlSides = orderDownloadSides(designForStl);
                           return stlSides.length > 1
-                              ? await buildOrderPairStl()
-                              : await buildManufacturingStl(side);
+                              ? await buildOrderPairStl(options.shouldAbort)
+                              : await buildManufacturingStl(side, options.shouldAbort);
                       })();
                 const stopped = abort();
                 if (stopped) return stopped;
@@ -758,6 +768,10 @@ export async function generateHybridGcode(
 
                 return { ok: true, filename, blob, productionId: res.productionId ?? undefined };
             } catch (e) {
+                if ((e instanceof Error && /cancelled/i.test(e.message)) || options.shouldAbort?.()) {
+                    terminateExportSolidWorkers();
+                    return exportCancelled();
+                }
                 const raw = e instanceof Error ? e.message : "Hybrid manufacturing failed (server)";
                 return {
                     ok: false,
