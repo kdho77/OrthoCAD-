@@ -59,4 +59,37 @@ describe("plantar name on final belt G-code", () => {
             if (grade.printDirection === "toe_first") expect(grade.heelHigh, key).toBe(true);
         }
     }, 180_000);
+
+    test("0d3db1c0 and ad1e0cc5 path variants read JABBOUR from the plantar face", async () => {
+        if (!gcodeDir) throw new Error("NAME_PLANTAR_GCODE_DIR is required");
+        const font = await loadTextFont();
+        const marking = defaultTextMarking("bottom");
+        const flat = flattenText(font, SYNTHETIC_NAME, marking.capHeightMm, marking.letterSpacingMm, true);
+        const variants = [
+            "d0-pair-left",
+            "d0-pair-right",
+            "d0-single-left",
+            "d0-single-right",
+            "ad-pair-left",
+            "ad-pair-right",
+            "ad-name-left",
+            "ad-name-right",
+        ];
+        for (const name of variants) {
+            const key = `apex_core_toe_first_${name}`;
+            const grade = gradeFootGcode(
+                resolve(gcodeDir, `${key}.gcode`),
+                flat.groups,
+                SYNTHETIC_NAME,
+                "toe_first",
+            );
+            process.stderr.write(`NAME_PLANTAR ${key} ${JSON.stringify(gradeReport(grade))}\n`);
+            expect(grade.failures, `${key} ${grade.failures.join("; ")}`).toEqual([]);
+            expect(grade.pass, key).toBe(true);
+            expect(grade.sequence, key).toBe(SYNTHETIC_NAME);
+            expect(grade.hookLeft, key).toBe(true);
+            expect(grade.advanceMm, key).toBeGreaterThan(20);
+            expect(grade.heelHigh, key).toBe(true);
+        }
+    }, 180_000);
 });

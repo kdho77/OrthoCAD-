@@ -22,6 +22,7 @@ import {
 import type { Side } from "@/types";
 import {
     MANUFACTURING_SOLID_GEOMETRY_VERSION,
+    MANUFACTURING_STL_PLACEMENT_VERSION,
     type ManufacturingSolidContext,
     manufacturingLoftStats,
     manufacturingSolidFingerprint,
@@ -41,6 +42,7 @@ function context(patch: Partial<ManufacturingSolidContext> = {}): ManufacturingS
         productId: "ApexCore",
         machineId: "printing_solid:apex-v2-insole-95a",
         geometryVersion: MANUFACTURING_SOLID_GEOMETRY_VERSION,
+        placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
         ...patch,
     };
 }
@@ -127,8 +129,16 @@ describe("manufacturing solid fingerprint", () => {
                     context({ machineId: "printing_solid:other-profile" }),
                 ),
             ],
-            ["geometry version", manufacturingSolidFingerprint(options(), context({ geometryVersion: 2 }))],
+            ["geometry version", manufacturingSolidFingerprint(options(), context({ geometryVersion: 3 }))],
             ["printLoftEpoch", manufacturingSolidFingerprint(options(), context({ printLoftEpoch: 5 }))],
+            ["beltPrint", manufacturingSolidFingerprint(options({ beltPrint: true }), context())],
+            [
+                "placement version",
+                manufacturingSolidFingerprint(
+                    options({ beltPrint: true }),
+                    context({ placementVersion: 99 }),
+                ),
+            ],
         ];
         for (const [label, next] of changed) {
             expect(next, label).not.toBe(base);
@@ -390,6 +400,40 @@ describe("manufacturing solid reuse", () => {
             out.geometry.dispose();
         } finally {
             applySpy.mockRestore();
+            geo.dispose();
+        }
+    });
+
+    test("beltPrint and placement version are in the identity", () => {
+        const plain = manufacturingSolidIdentity(options(), context());
+        const belt = manufacturingSolidIdentity(options({ beltPrint: true }), context());
+        expect(plain.beltPrint).toBe(false);
+        expect(belt.beltPrint).toBe(true);
+        expect(belt.placementVersion).toBe(MANUFACTURING_STL_PLACEMENT_VERSION);
+        expect(manufacturingSolidFingerprint(options({ beltPrint: true }), context())).not.toBe(
+            manufacturingSolidFingerprint(options(), context()),
+        );
+        expect(
+            manufacturingSolidFingerprint(options({ beltPrint: true }), context({ placementVersion: 1 })),
+        ).not.toBe(manufacturingSolidFingerprint(options({ beltPrint: true }), context()));
+    });
+
+    test("a pre-#52 engraved solid is not reused for a belt export", async () => {
+        const marking = { ...defaultTextMarking("bottom"), text: "JABBOUR", addPatientName: false as const };
+        resetSampleTopGeometryCache();
+        resetManufacturingSolidCache();
+        const belt = options({ beltPrint: true, textMarking: marking });
+        const ctx = context();
+        const geo = new BufferGeometry();
+        geo.userData = { textGuide: { letters: ["JABBOUR"] }, mark: "pre52", beltPrint: false };
+        rememberManufacturingSolid(manufacturingSolidFingerprint(belt, ctx), "left", geo);
+        const fetchSpy = rs.spyOn(globalThis, "fetch").mockRejectedValue(new Error("fresh loft"));
+        try {
+            await expect(buildProceduralExportSolid(belt, ctx)).rejects.toThrow(/fresh loft/);
+            expect(manufacturingLoftStats().reused).toBe(0);
+            expect(manufacturingLoftStats().built).toBe(1);
+        } finally {
+            fetchSpy.mockRestore();
             geo.dispose();
         }
     });

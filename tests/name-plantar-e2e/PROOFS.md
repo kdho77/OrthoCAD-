@@ -123,3 +123,22 @@ Slice: left HTTP 200 in 10 s, 3662921 bytes. Right HTTP 200 in 10 s, 3653481 byt
 ## What turns the job red
 
 A slicer-mirror flip (P1 versus P2) flips the sign of `d` and fails the hook. A placement X negation (P3 versus P2) flips the sign of `a`, reverses the sequence, and fails the hook. Either one fails both feet.
+
+## Stored manufacturing STL reuse (this change)
+
+BASE `9ccfa69faece1eb6d0f49c84404f2affbf9eb2d4` (`origin/main` after the pin `3932a6448befbe9c8f07e587be6570fcde3d3352`; #447 and #448 are already on main and are not edited here). `place.ts` is unchanged. No blanket `xSign = -1`.
+
+The leftover stored-key line is `executeCadOperatorProduction`: a slice checkpoint's `stlStorageKey` was sliced again, and `continueInFlightSlice` resumed that job with `sliceCtx?.checkpoint ?? checkpoint` even after the checkpoint was rejected. A succeeded row then clears `error`, so the checkpoint is gone after the fact. In-memory `manufacturingSolidIdentity` also omitted `beltPrint` and the placement version, so a Print solid could be exported as a belt loft.
+
+A checkpoint is reused only when `placementVersion` is `MANUFACTURING_STL_PLACEMENT_VERSION` (2) and `stlIdentity` matches composed text, `beltPrint`, and that version. `force_new_slice` does not fall back to the stored checkpoint. Download and materialize refuse eTag `8f5dc451de66dbba8f8521e046a9e4af` at 9045484 bytes.
+
+Local production-path lofts (`buildFinalizedFootFromSavedSettings`, synthetic `JABBOUR`, SAMPLE_Top). None is the pre-#52 left archive. Pair and single matched on each side. `ad-pair` and `ad-name` matched because both compose to `JABBOUR` with the same linked Medium settings.
+
+| file | bytes | md5 |
+| --- | ---: | --- |
+| d0-pair-left.stl / d0-single-left.stl | 7973784 | 185018a1f8fd04e8b6ad0bebda937ae0 |
+| d0-pair-right.stl / d0-single-right.stl | 5868684 | 0326101141d80d49146d5df799afcf3d |
+| ad-pair-left.stl / ad-name-left.stl | 6888684 | bfd4976ef391030b3d1ec512074d0ab9 |
+| ad-pair-right.stl / ad-name-right.stl | 6943584 | 7f4b4cc0d178dcdcabf1e8307607923d |
+
+Docker is not available on this machine, so the variant G-code grade was not run here. CI `name-plantar-e2e` slices `*-left.stl` and `*-right.stl` on `apex_core` toe-first and grades them with the frozen #435 thresholds. The six-cell matrix on `left.stl` / `right.stl` is unchanged.

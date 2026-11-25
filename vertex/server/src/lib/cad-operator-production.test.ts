@@ -5,7 +5,11 @@ import { gunzipSync } from "node:zlib";
 
 import type { PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, test } from "@rstest/core";
-
+import {
+    isStalePre52ManufacturingEtag,
+    MANUFACTURING_STL_PLACEMENT_VERSION,
+    STALE_PRE52_BELT_MANUFACTURING_STL,
+} from "../../../shared/manufacturing-stl-identity.js";
 import { HARDNESS_TO_INFILL_PCT } from "../../../shared/print-recipe/hardness-to-infill-pct.js";
 import type { PrintRecipeV1 } from "../../../shared/print-recipe/print-recipe.js";
 import {
@@ -19,6 +23,7 @@ import {
     cadOperatorManufacturingIdentity,
     cadVertexSliceSliceTimeoutMs,
     claimProduction,
+    encodeSliceCheckpoint,
     executeCadOperatorProduction,
     expireStaleProduction,
     infillPctForCadSlice,
@@ -29,10 +34,15 @@ import {
     SLICE_JOB_POLL_BUDGET_MS,
     SLICE_JOB_QUEUE_WAIT_CAP_MS,
     SLICE_JOB_SLICE_CAP_MS,
+    storedManufacturingStlReusable,
     toPublicProduction,
 } from "./cad-operator-production.js";
 import { PrismaCadProductionStore } from "./cad-operator-production-prisma.js";
 import { passingBeltGcode } from "./gcode-handedness-sample.js";
+import {
+    isStalePre52ManufacturingStlBytes,
+    manufacturingStlRunIdentity,
+} from "./manufacturing-stl-identity.js";
 import { sliceWithVertexSlice } from "./vertexslice-client.js";
 
 function handednessFixture(name: string): string {
@@ -1794,5 +1804,219 @@ describe("CAD-operator pair production transactions", () => {
             expect(uploaded.get(side)).toBe(PAIR_FIXTURE_GCODE);
         }
         expect(sliced.slice().sort()).toEqual([PAIR_FIXTURE_STL.left, PAIR_FIXTURE_STL.right].slice().sort());
+    });
+});
+
+describe("stored manufacturing STL reuse", () => {
+    const identity = manufacturingStlRunIdentity({
+        side: "left",
+        composedText: "JABBOUR",
+        beltPrint: true,
+    });
+
+    test("identity changes with composed text, beltPrint, side, and placement version", () => {
+        expect(
+            manufacturingStlRunIdentity({ side: "left", composedText: "OTHER", beltPrint: true }),
+        ).not.toBe(identity);
+        expect(
+            manufacturingStlRunIdentity({ side: "left", composedText: "JABBOUR", beltPrint: false }),
+        ).not.toBe(identity);
+        expect(
+            manufacturingStlRunIdentity({ side: "right", composedText: "JABBOUR", beltPrint: true }),
+        ).not.toBe(identity);
+        expect(
+            manufacturingStlRunIdentity({
+                side: "left",
+                composedText: "JABBOUR",
+                beltPrint: true,
+                placementVersion: 1,
+            }),
+        ).not.toBe(identity);
+        expect(identity).toBe(
+            manufacturingStlRunIdentity({ side: "left", composedText: "JABBOUR", beltPrint: true }),
+        );
+    });
+
+    test("the pre-#52 left archive eTag and size are stale", () => {
+        expect(STALE_PRE52_BELT_MANUFACTURING_STL.etag).toBe("8f5dc451de66dbba8f8521e046a9e4af");
+        expect(STALE_PRE52_BELT_MANUFACTURING_STL.sizeBytes).toBe(9045484);
+        expect(isStalePre52ManufacturingEtag("8f5dc451de66dbba8f8521e046a9e4af", 9045484)).toBe(true);
+        expect(isStalePre52ManufacturingEtag('"8f5dc451de66dbba8f8521e046a9e4af"', 9045484)).toBe(true);
+        expect(isStalePre52ManufacturingEtag("8f5dc451de66dbba8f8521e046a9e4af", 7973784)).toBe(false);
+        expect(isStalePre52ManufacturingEtag("18bd05067bc3c41ab4c95bc10b5754a2", 7587884)).toBe(false);
+        expect(isStalePre52ManufacturingStlBytes(new Uint8Array([1, 2, 3]))).toBe(false);
+    });
+
+    test("a pre-#52 checkpoint is not reusable", () => {
+        const stale = {
+            v: 1 as const,
+            jobId: "pre52",
+            acceptedAt: "2026-11-24T19:13:17.000Z",
+            stlStorageKey: "manufacturing-temp/cad-operator/stale/left.stl",
+            meshFingerprint: "old",
+            expectedRegionCount: 0,
+            credentialId: "cred",
+            serverStartedAt: null,
+        };
+        expect(storedManufacturingStlReusable(stale, { stlIdentity: identity })).toBe(false);
+        expect(
+            storedManufacturingStlReusable(
+                {
+                    ...stale,
+                    placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+                    stlIdentity: manufacturingStlRunIdentity({
+                        side: "left",
+                        composedText: "OTHER",
+                        beltPrint: true,
+                    }),
+                },
+                { stlIdentity: identity },
+            ),
+        ).toBe(false);
+        expect(
+            storedManufacturingStlReusable(
+                {
+                    ...stale,
+                    placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+                    stlIdentity: identity,
+                },
+                { stlIdentity: identity },
+            ),
+        ).toBe(true);
+    });
+
+    test("force_new_slice does not slice a leftover pre-#52 checkpoint STL", async () => {
+        const store = new MemoryCadProductionStore();
+        const now = new Date("2026-11-25T05:12:00.000Z");
+        const claimed = await claimProduction(store, insert("left", "fresh-slice"), now, {
+            forceNewSlice: true,
+        });
+        const staleKey = "manufacturing-temp/cad-operator/54b6a960/92d4c89a/1795583578275-pre52.stl";
+        await store.updateIf(claimed.row.id, () => true, {
+            status: "running",
+            error: encodeSliceCheckpoint({
+                v: 1,
+                jobId: "pre52-job",
+                acceptedAt: "2026-11-24T19:13:17.000Z",
+                stlStorageKey: staleKey,
+                meshFingerprint: "old",
+                expectedRegionCount: 0,
+                credentialId: "cred",
+                serverStartedAt: null,
+            }),
+        });
+        const row = await store.findById(claimed.row.id);
+        let materialized = 0;
+        let slicedKey = "";
+        let resumed = false;
+        await executeCadOperatorProduction({
+            row: row ?? claimed.row,
+            store,
+            now: () => now,
+            stlIdentity: identity,
+            materialize: async () => {
+                materialized += 1;
+                return { stlStorageKey: "tmp/fresh-left.stl", meshFingerprint: "fresh" };
+            },
+            slice: async (key, ctx) => {
+                slicedKey = key;
+                resumed = Boolean(ctx?.checkpoint);
+                return { gcode: "G1 X1\n", jobId: "fresh-job" };
+            },
+            uploadGcode: async () => ({ storageKey: "gcode/left.gcode" }),
+            charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+        });
+        expect(materialized).toBe(1);
+        expect(slicedKey).toBe("tmp/fresh-left.stl");
+        expect(slicedKey).not.toBe(staleKey);
+        expect(resumed).toBe(false);
+        const saved = await store.findById(claimed.row.id);
+        expect(saved?.status).toBe("succeeded");
+        expect(saved?.error ?? "").not.toContain(staleKey);
+    });
+
+    test("a current checkpoint resumes, and an unreadable stored STL is lofted again", async () => {
+        const store = new MemoryCadProductionStore();
+        const now = new Date("2026-11-25T05:20:00.000Z");
+        const claimed = await claimProduction(store, insert("left", "current-slice"), now);
+        const currentKey = "manufacturing-temp/cad-operator/current/left.stl";
+        await store.updateIf(claimed.row.id, () => true, {
+            status: "running",
+            error: encodeSliceCheckpoint({
+                v: 1,
+                jobId: "current-job",
+                acceptedAt: now.toISOString(),
+                stlStorageKey: currentKey,
+                meshFingerprint: "mesh",
+                expectedRegionCount: 0,
+                credentialId: "cred",
+                serverStartedAt: null,
+                placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+                stlIdentity: identity,
+            }),
+        });
+        const row = await store.findById(claimed.row.id);
+        let materialized = 0;
+        await executeCadOperatorProduction({
+            row: row ?? claimed.row,
+            store,
+            now: () => now,
+            stlIdentity: identity,
+            readStoredStl: async () => new Uint8Array([0, 1, 2, 3]),
+            materialize: async () => {
+                materialized += 1;
+                return { stlStorageKey: "tmp/should-not-loft.stl", meshFingerprint: "fresh" };
+            },
+            slice: async (key, ctx) => {
+                expect(key).toBe(currentKey);
+                expect(ctx?.checkpoint?.stlStorageKey).toBe(currentKey);
+                return { gcode: "G1 X1\n", jobId: "current-job" };
+            },
+            uploadGcode: async () => ({ storageKey: "gcode/left.gcode" }),
+            charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
+        });
+        expect(materialized).toBe(0);
+
+        const again = await store.findById(claimed.row.id);
+        await store.updateIf(claimed.row.id, () => true, {
+            status: "running",
+            error: encodeSliceCheckpoint({
+                v: 1,
+                jobId: "current-job",
+                acceptedAt: now.toISOString(),
+                stlStorageKey: currentKey,
+                meshFingerprint: "mesh",
+                expectedRegionCount: 0,
+                credentialId: "cred",
+                serverStartedAt: null,
+                placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+                stlIdentity: identity,
+            }),
+            gcodeStorageKey: null,
+            chargedAt: null,
+        });
+        const rerun = await store.findById(claimed.row.id);
+        let loftedKey = "";
+        await executeCadOperatorProduction({
+            row: rerun ?? again ?? claimed.row,
+            store,
+            now: () => now,
+            stlIdentity: identity,
+            readStoredStl: async () => {
+                throw new Error("temp expired");
+            },
+            materialize: async () => {
+                loftedKey = "tmp/rematerialized.stl";
+                return { stlStorageKey: loftedKey, meshFingerprint: "fresh" };
+            },
+            slice: async (key, ctx) => {
+                expect(ctx?.checkpoint ?? null).toBeNull();
+                expect(key).toBe("tmp/rematerialized.stl");
+                return { gcode: "G1 X2\n", jobId: "new-job" };
+            },
+            uploadGcode: async () => ({ storageKey: "gcode/left-2.gcode" }),
+            charge: async () => ({ exportId: "exp2", balance: 1, alreadyCharged: false }),
+        });
+        expect(loftedKey).toBe("tmp/rematerialized.stl");
     });
 });
