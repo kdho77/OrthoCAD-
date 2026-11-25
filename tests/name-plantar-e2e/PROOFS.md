@@ -10,13 +10,13 @@ Live VertexSlice (`origin/main` `d935197976b7cdd2fa89ced4ff43930b0212959f`):
 
 `ghcr.io/kdho77/vertexslice-server@sha256:8cac1d54c5e1a12f4693412c32fe40dd9c5682b9279e2b1d38f1225760aca579`
 
-Fix image used for these numbers. Legacy builder image id (not a registry manifest digest):
+Fix image used for these numbers. CI image id from run [45532907790](https://github.com/kdho77/OrthoCAD-/actions/runs/45532907790) (not a registry manifest digest):
 
-`sha256:a7c3007e8e5a74dabd2a73c6b4f90da39f090650d38bc46a6c7578b29a7e0f1c`
+`sha256:aa55befa26e437f42be9c6706bdba506b927a30b6ab3a15f1730264d3550648e`
 
 Built `FROM` the live digest, `COPY validation/stl_preprocess.py` from the deploying VertexSlice #52 head `9fe936425ad4449ee6a6d932b636a432c8dd2ea2` (Y-negate before Rz270). File sha256:
 
-`2f0cc241026e97fa1c517ee25fa7f9f742c17a3f75a2efa9064bebe97eccee40`
+`6b7ce3fb9917e2cc85ef13a0a2fc1ced2d5ccfb174e299f4c4744756ea16ec25`
 
 CI rebuilds that image, so its image id can differ. The pin is the live digest plus that file.
 
@@ -33,7 +33,7 @@ Heel end is the `hand_classify.py` rule: the end fifth (by `zt = Z - Y`) whose m
 
 ## Fix image, #373 placement — PASS all 6
 
-These six rows are the `0415b656` measurement. The `9fe936425ad4449ee6a6d932b636a432c8dd2ea2` run replaces them.
+Run [45532907790](https://github.com/kdho77/OrthoCAD-/actions/runs/45532907790) on `9fe936425ad4449ee6a6d932b636a432c8dd2ea2`. All six `NAME_PLANTAR` lines passed.
 
 | cell | a | d | det | advance | hook | sequence | heelHigh | delta mm |
 | --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: |
@@ -44,7 +44,7 @@ These six rows are the `0415b656` measurement. The `9fe936425ad4449ee6a6d932b636
 | apex_light heel_first left | 0.993032 | 0.903779 | 0.897756 | 72.038 | true | JABBOUR | false | -21.54 |
 | apex_light heel_first right | 0.965049 | 0.629986 | 0.607951 | 72.622 | true | JABBOUR | false | -21.51 |
 
-Slice seconds / bytes: core toe L 9 / 3624505, R 9 / 3662976; light toe L 170 / 3484912, R 189 / 3449999; light heel L 306 / 3572422, R 338 / 3527843.
+CI seconds / bytes: core toe L 14 / 3625198, R 15 / 3662132; light toe L 285 / 3488839, R 285 / 3454996; light heel L 448 / 3572414, R 483 / 3527132.
 
 ## Live image, #373 placement — FAIL all 6
 
