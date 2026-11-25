@@ -1,0 +1,145 @@
+# Permanent lock: the bottom name on the physical plantar face of the final belt
+# G-code. A slicer-mirror flip or a placement flip turns this job red.
+# Default image is the VertexSlice belt-mirror fix (live server image plus
+# validation/stl_preprocess.py from the pinned fix SHA). Pass vertexslice_image
+# to grade a different image, including live origin/main.
+name: Plantar name lock
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      vertexslice_image:
+        description: "VertexSlice server image. Empty builds the fix image from the pinned SHA."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.vertexslice_image || 'fix' }}
+  cancel-in-progress: true
+
+env:
+  LIVE_IMAGE: ghcr.io/kdho77/vertexslice-server@sha256:8cac1d54c5e1a12f4693412c32fe40dd9c5682b9279e2b1d38f1225760aca579
+  LIVE_SHA: d935197976b7cdd2fa89ced4ff43930b0212959f
+  FIX_SHA: 9fe936425ad4449ee6a6d932b636a432c8dd2ea2
+
+jobs:
+  plantar-name:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout OrthoCAD
+        uses: actions/checkout@v4
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: |
+          npm install
+          npm install --prefix vertex
+
+      - name: Build the manufacturing STLs the bot sends
+        run: |
+          mkdir -p "$RUNNER_TEMP/name-plantar/stl"
+          NAME_PLANTAR_STL_DIR="$RUNNER_TEMP/name-plantar/stl" \
+            npx rstest tests/name-plantar-e2e/build-stls.test.ts
+
+      - name: Checkout VertexSlice fix
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.vertexslice_image == '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: kdho77/VertexSlice
+          ref: ${{ env.FIX_SHA }}
+          path: .vertexslice-fix
+
+      - name: Log in to GHCR
+        continue-on-error: true
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve VertexSlice image
+        id: image
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/name-plantar"
+          publish() {
+            echo "ref=$1" >> "$GITHUB_OUTPUT"
+            docker image inspect "$1" --format '{{.Id}}' | tee "$RUNNER_TEMP/name-plantar/image-id.txt"
+          }
+          # Full Orca compile from kdho77/VertexSlice. Used only when the
+          # published image cannot be pulled. Not a modelled slicer.
+          build_server() {
+            local src="$1" tag="$2" sha="$3"
+            echo "docker pull failed. Building Dockerfile.server from kdho77/VertexSlice@${sha}."
+            if [ ! -f "$src/Dockerfile.server" ]; then
+              rm -rf "$src"
+              git init "$src"
+              git -C "$src" remote add origin https://github.com/kdho77/VertexSlice.git
+              if ! git -C "$src" fetch --depth 1 origin "$sha"; then
+                git -C "$src" -c "http.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" fetch --depth 1 origin "$sha"
+              fi
+              git -C "$src" checkout FETCH_HEAD
+            fi
+            docker build --build-arg SKIP_DOCKER_SLICE_PROOF=1 \
+              -f "$src/Dockerfile.server" -t "$tag" "$src"
+          }
+          missing() {
+            echo "Missing access: cannot pull ghcr.io/kdho77/vertexslice-server (packages:read) and cannot build Dockerfile.server from kdho77/VertexSlice (contents:read on that repo, plus a runner that can compile it)."
+            echo "Not substituting a modelled slicer."
+            exit 1
+          }
+          requested="${{ inputs.vertexslice_image }}"
+          if [ -n "$requested" ]; then
+            if docker pull "$requested"; then
+              publish "$requested"
+              exit 0
+            fi
+            echo "Cannot pull $requested."
+            if [ "$requested" = "$LIVE_IMAGE" ]; then
+              build_server "$RUNNER_TEMP/vertexslice-live" vertexslice-server:plantar-live "$LIVE_SHA" || missing
+              publish vertexslice-server:plantar-live
+              exit 0
+            fi
+            missing
+          fi
+          if docker pull "$LIVE_IMAGE"; then
+            test -f .vertexslice-fix/validation/stl_preprocess.py
+            docker build -t vertexslice-server:plantar-fix -f - .vertexslice-fix <<'EOF'
+          FROM ghcr.io/kdho77/vertexslice-server@sha256:8cac1d54c5e1a12f4693412c32fe40dd9c5682b9279e2b1d38f1225760aca579
+          COPY validation/stl_preprocess.py /app/validation/stl_preprocess.py
+          EOF
+            publish vertexslice-server:plantar-fix
+            sha256sum .vertexslice-fix/validation/stl_preprocess.py
+            exit 0
+          fi
+          echo "Cannot pull $LIVE_IMAGE."
+          build_server .vertexslice-fix vertexslice-server:plantar-fix "$FIX_SHA" || missing
+          publish vertexslice-server:plantar-fix
+
+      - name: Slice both feet in both print directions
+        run: |
+          mkdir -p "$RUNNER_TEMP/name-plantar/gcode"
+          bash tests/name-plantar-e2e/slice-feet.sh \
+            "${{ steps.image.outputs.ref }}" \
+            "$RUNNER_TEMP/name-plantar/stl" \
+            "$RUNNER_TEMP/name-plantar/gcode"
+
+      - name: Measure the plantar name
+        run: |
+          NAME_PLANTAR_GCODE_DIR="$RUNNER_TEMP/name-plantar/gcode" \
+            npx rstest --config tests/name-plantar-e2e/rstest.config.ts \
+            tests/name-plantar-e2e/measure-gcode.optional.test.ts
+          echo "image=${{ steps.image.outputs.ref }}"
+          echo "image_id=$(cat "$RUNNER_TEMP/name-plantar/image-id.txt")"
