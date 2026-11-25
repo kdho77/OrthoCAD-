@@ -649,6 +649,11 @@ export function cadOperatorManufacturingIdentity(input: {
     millSides?: readonly CadFootSide[];
     /** Included only when true, so an off gate keeps today's fingerprint. */
     regional3mf?: boolean;
+    /**
+     * VertexSlice build that slices this belt G-code (vertexslice-build.ts). Part of the cache key, so a
+     * production sliced by any other slicer build is never reused. Omitted for non-VertexSlice deliverables.
+     */
+    slicerBuild?: string;
 }): { fingerprint: string; idempotencyKey: string } {
     const fingerprint = createHash("sha256")
         .update(
@@ -667,6 +672,7 @@ export function cadOperatorManufacturingIdentity(input: {
                 ...(input.deliverable ? { deliverable: input.deliverable } : {}),
                 ...(input.millSides ? { millSides: input.millSides } : {}),
                 ...(input.regional3mf ? { regional3mf: true } : {}),
+                ...(input.slicerBuild !== undefined ? { slicerBuild: input.slicerBuild } : {}),
             }),
         )
         .digest("hex");
