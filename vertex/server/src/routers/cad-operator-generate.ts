@@ -123,12 +123,6 @@ export function beltManufacturingStlIdentity(
     });
 }
 
-async function downloadStoredManufacturingStl(stlStorageKey: string): Promise<Uint8Array> {
-    const supabase = requireStorage();
-    const stlUrl = await signedDownloadUrl(supabase, stlStorageKey, 3600, MANUFACTURING_BUCKET);
-    return downloadManufacturingStl(stlUrl);
-}
-
 async function beltSliceRequest(args: {
     stlStorageKey: string;
     side: CadFootSide;
@@ -215,7 +209,7 @@ async function continueInFlightSlice(args: {
         now: () => args.now,
         sliceBudgetMs: 0,
         stlIdentity,
-        readStoredStl: canRematerialize ? downloadStoredManufacturingStl : undefined,
+        resumeSubmittedSlice: stored.rematerialized === true,
         materialize: async () => {
             if (!plan || (side !== "left" && side !== "right")) {
                 throw new Error("Stale slice checkpoint cannot be rematerialized");
@@ -387,8 +381,7 @@ export async function runCadOperatorGenerateRequest(args: {
         store,
         now: now(),
         schedule: args.schedule ?? scheduleCadProduction,
-        forceNewSlice:
-            (input.forceNewSlice === true && input.useSavedDesignMesh === true) || slicerBuild === null,
+        forceNewSlice: input.useSavedDesignMesh === true || slicerBuild === null,
         insert: {
             designId: input.designId,
             side: input.side,
@@ -414,7 +407,6 @@ export async function runCadOperatorGenerateRequest(args: {
                 store,
                 now,
                 stlIdentity,
-                readStoredStl: plan.useSavedDesignMesh ? downloadStoredManufacturingStl : undefined,
                 materialize: async () => {
                     const materialized = await materializeCadOperatorStl({
                         plan,

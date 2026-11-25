@@ -126,11 +126,9 @@ A slicer-mirror flip (P1 versus P2) flips the sign of `d` and fails the hook. A 
 
 ## Stored manufacturing STL reuse (this change)
 
-BASE `9ccfa69faece1eb6d0f49c84404f2affbf9eb2d4` (`origin/main` after the pin `3932a6448befbe9c8f07e587be6570fcde3d3352`; #447 and #448 are already on main and are not edited here). `place.ts` is unchanged. No blanket `xSign = -1`.
+BASE `3cabc5b1a0bed7f1fc63028d97c3d8b0821cba63` on current `origin/main` (pin was `3932a6448befbe9c8f07e587be6570fcde3d3352`; #447 and #448 are already on main and are not edited here). `place.ts` is unchanged. No blanket `xSign = -1`.
 
-The leftover stored-key line is `executeCadOperatorProduction`: a slice checkpoint's `stlStorageKey` was sliced again, and `continueInFlightSlice` resumed that job with `sliceCtx?.checkpoint ?? checkpoint` even after the checkpoint was rejected. A succeeded row then clears `error`, so the checkpoint is gone after the fact. In-memory `manufacturingSolidIdentity` also omitted `beltPrint` and the placement version, so a Print solid could be exported as a belt loft.
-
-A checkpoint is reused only when `placementVersion` is `MANUFACTURING_STL_PLACEMENT_VERSION` (2) and `stlIdentity` matches composed text, `beltPrint`, and that version. `force_new_slice` does not fall back to the stored checkpoint. Download and materialize refuse eTag `8f5dc451de66dbba8f8521e046a9e4af` at 9045484 bytes.
+`executeCadOperatorProduction` used to slice `checkpoint.stlStorageKey` and skip the loft. `continueInFlightSlice` resumed that job. Rule t2704u deletes that path. Saved-design `generate_gcode` calls `materialize()` on every run, which is `buildHeadlessFinalizedFoot` → `buildFinalizedFootFromSavedSettings`, the UI Export loft. A checkpoint is not a reuse key: `storedManufacturingStlReusable` is false even when the design is unchanged. A status poll may only continue a job this production submitted after that loft (`rematerialized`). It does not download a temp or archive. Download and materialize still refuse eTag `8f5dc451de66dbba8f8521e046a9e4af` at 9045484 bytes.
 
 Local production-path lofts (`buildFinalizedFootFromSavedSettings`, synthetic `JABBOUR`, SAMPLE_Top). None is the pre-#52 left archive. Pair and single matched on each side. `ad-pair` and `ad-name` matched because both compose to `JABBOUR` with the same linked Medium settings.
 
@@ -147,6 +145,10 @@ Docker is not available on this machine, so the variant G-code grade was not run
 
 CI run [45563201516](https://github.com/kdho77/OrthoCAD-/actions/runs/45563201516) on `929a94d2` passed the six #442 cells and `d0-pair-left` (a=0.961, d=0.872, sequence `JABBOUR`). `d0-pair-right` had letter walls 0. The engrave threw `manifold status Not manifold` and the catch kept the unengraved solid. The mesh was watertight except for one unconnected triangle (three open edges) from a counter cap that missed the boundary weld. That triangle is dropped before the manifold check. It is not part of the shell. The #442 baseline counts stay left 137692/137772 and right 138790/138870. Local variant lofts then engrave on every foot, including that right foot. Thresholds were not loosened.
 
+## t2704u — production works like a person
+
+Locked rule, 12:16 AM America/Denver on 11/25. Supersedes using a design hash as a stored-STL reuse key. The production box lofts from the saved design on every `generate_gcode`, including a second call on the same design. It does not read a temp, archive, or checkpoint STL. The sliced bytes are the bytes the UI export function returned.
+
 ## t2699u — must change if the design has any changes
 
-Locked rule, 11:20 PM America/Denver. The stored manufacturing STL identity, the slice-checkpoint identity, and `manufacturingSolidIdentity` hash the full saved design (mesh blobs stripped) plus side, `beltPrint`, placement version, OrthoCAD version, and slicer version. That is not a picked field list. The table test walks every leaf of a synthetic design that includes parameters, corrections, elements, sinks, text, size, width, arch, heel lift, and material, and it also flips `beltPrint`, placement version, OrthoCAD version, and slicer version. Each mutation must miss the stored checkpoint. Key order of an unchanged design still matches and is reusable.
+Locked rule, 11:20 PM America/Denver. `manufacturingSolidIdentity` (the UI preview cache) hashes the full saved design (mesh blobs stripped) plus side, `beltPrint`, placement version, OrthoCAD version, and slicer version. That is not a picked field list. The table test walks every leaf of a synthetic design that includes parameters, corrections, elements, sinks, text, size, width, arch, heel lift, and material, and it also flips `beltPrint`, placement version, OrthoCAD version, and slicer version. Each mutation misses the cached solid. Key order of an unchanged design still matches, and that preview cache reuses. Production does not: an unchanged design still lofts again.

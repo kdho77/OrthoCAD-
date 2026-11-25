@@ -1136,6 +1136,7 @@ describe("VertexSlice job productions", () => {
             now: args.now,
             sliceBudgetMs: args.budgetMs,
             sleep: args.sleep,
+            resumeSubmittedSlice: true,
             materialize: async () => ({ stlStorageKey: `tmp/${args.side}.stl`, meshFingerprint: "mesh" }),
             slice: async (stlStorageKey, sliceCtx) => {
                 const attempt = await runCadSliceAttempt({
@@ -1869,25 +1870,12 @@ describe("stored manufacturing STL reuse", () => {
                 {
                     ...stale,
                     placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
-                    stlIdentity: manufacturingStlRunIdentity({
-                        side: "left",
-                        savedDesign: { textMarking: { text: "OTHER" } },
-                        beltPrint: true,
-                    }),
+                    stlIdentity: identity,
+                    rematerialized: true,
                 },
                 { stlIdentity: identity },
             ),
         ).toBe(false);
-        expect(
-            storedManufacturingStlReusable(
-                {
-                    ...stale,
-                    placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
-                    stlIdentity: identity,
-                },
-                { stlIdentity: identity },
-            ),
-        ).toBe(true);
     });
 
     test("force_new_slice does not slice a leftover pre-#52 checkpoint STL", async () => {
@@ -1940,92 +1928,76 @@ describe("stored manufacturing STL reuse", () => {
         expect(saved?.error ?? "").not.toContain(staleKey);
     });
 
-    test("a current checkpoint resumes, and an unreadable stored STL is lofted again", async () => {
+    test("t2704u: two consecutive generate executions both rematerialize and do not read a stored STL", async () => {
         const store = new MemoryCadProductionStore();
         const now = new Date("2026-11-25T05:20:00.000Z");
-        const claimed = await claimProduction(store, insert("left", "current-slice"), now);
-        const currentKey = "manufacturing-temp/cad-operator/current/left.stl";
+        const claimed = await claimProduction(store, insert("left", "always-loft"), now);
+        const storedKey = "manufacturing-temp/cad-operator/stored/left.stl";
         await store.updateIf(claimed.row.id, () => true, {
             status: "running",
             error: encodeSliceCheckpoint({
                 v: 1,
-                jobId: "current-job",
+                jobId: "stored-job",
                 acceptedAt: now.toISOString(),
-                stlStorageKey: currentKey,
+                stlStorageKey: storedKey,
                 meshFingerprint: "mesh",
                 expectedRegionCount: 0,
                 credentialId: "cred",
                 serverStartedAt: null,
                 placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
                 stlIdentity: identity,
+                rematerialized: true,
             }),
         });
-        const row = await store.findById(claimed.row.id);
-        let materialized = 0;
-        await executeCadOperatorProduction({
-            row: row ?? claimed.row,
-            store,
-            now: () => now,
-            stlIdentity: identity,
-            readStoredStl: async () => new Uint8Array([0, 1, 2, 3]),
-            materialize: async () => {
-                materialized += 1;
-                return { stlStorageKey: "tmp/should-not-loft.stl", meshFingerprint: "fresh" };
-            },
-            slice: async (key, ctx) => {
-                expect(key).toBe(currentKey);
-                expect(ctx?.checkpoint?.stlStorageKey).toBe(currentKey);
-                return { gcode: "G1 X1\n", jobId: "current-job" };
-            },
-            uploadGcode: async () => ({ storageKey: "gcode/left.gcode" }),
-            charge: async () => ({ exportId: "exp", balance: 1, alreadyCharged: false }),
-        });
-        expect(materialized).toBe(0);
-
-        const again = await store.findById(claimed.row.id);
+        const keys: string[] = [];
+        const runOnce = async (freshKey: string) => {
+            const row = await store.findById(claimed.row.id);
+            await executeCadOperatorProduction({
+                row: row ?? claimed.row,
+                store,
+                now: () => now,
+                stlIdentity: identity,
+                materialize: async () => {
+                    keys.push(freshKey);
+                    return { stlStorageKey: freshKey, meshFingerprint: "fresh" };
+                },
+                slice: async (key, ctx) => {
+                    expect(ctx?.checkpoint ?? null).toBeNull();
+                    expect(key).toBe(freshKey);
+                    expect(key).not.toBe(storedKey);
+                    return { gcode: `G1 ; ${freshKey}\n`, jobId: freshKey };
+                },
+                uploadGcode: async () => ({ storageKey: `gcode/${freshKey}` }),
+                charge: async () => ({ exportId: freshKey, balance: 1, alreadyCharged: false }),
+            });
+        };
+        await runOnce("tmp/loft-1.stl");
         await store.updateIf(claimed.row.id, () => true, {
             status: "running",
-            error: encodeSliceCheckpoint({
-                v: 1,
-                jobId: "current-job",
-                acceptedAt: now.toISOString(),
-                stlStorageKey: currentKey,
-                meshFingerprint: "mesh",
-                expectedRegionCount: 0,
-                credentialId: "cred",
-                serverStartedAt: null,
-                placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
-                stlIdentity: identity,
-            }),
-            gcodeStorageKey: null,
             chargedAt: null,
+            gcodeStorageKey: null,
+            error: encodeSliceCheckpoint({
+                v: 1,
+                jobId: "stored-job",
+                acceptedAt: now.toISOString(),
+                stlStorageKey: storedKey,
+                meshFingerprint: "mesh",
+                expectedRegionCount: 0,
+                credentialId: "cred",
+                serverStartedAt: null,
+                placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+                stlIdentity: identity,
+                rematerialized: true,
+            }),
         });
-        const rerun = await store.findById(claimed.row.id);
-        let loftedKey = "";
-        await executeCadOperatorProduction({
-            row: rerun ?? again ?? claimed.row,
-            store,
-            now: () => now,
-            stlIdentity: identity,
-            readStoredStl: async () => {
-                throw new Error("temp expired");
-            },
-            materialize: async () => {
-                loftedKey = "tmp/rematerialized.stl";
-                return { stlStorageKey: loftedKey, meshFingerprint: "fresh" };
-            },
-            slice: async (key, ctx) => {
-                expect(ctx?.checkpoint ?? null).toBeNull();
-                expect(key).toBe("tmp/rematerialized.stl");
-                return { gcode: "G1 X2\n", jobId: "new-job" };
-            },
-            uploadGcode: async () => ({ storageKey: "gcode/left-2.gcode" }),
-            charge: async () => ({ exportId: "exp2", balance: 1, alreadyCharged: false }),
-        });
-        expect(loftedKey).toBe("tmp/rematerialized.stl");
+        await runOnce("tmp/loft-2.stl");
+        expect(keys).toEqual(["tmp/loft-1.stl", "tmp/loft-2.stl"]);
+        const saved = await store.findById(claimed.row.id);
+        expect(saved?.gcodeStorageKey).toBe("gcode/tmp/loft-2.stl");
+        expect(saved?.error ?? "").not.toContain(storedKey);
     });
 
-    test("t2699u: any saved-design change misses the stored STL; an unchanged design reuses it", () => {
+    test("t2699u: any saved-design change misses the solid identity; production still does not reuse an unchanged STL", () => {
         const design = fullSavedDesign();
         const axes = { side: "left" as const, beltPrint: true };
         const baseline = manufacturingStlRunIdentity({ ...axes, savedDesign: design });
@@ -2046,7 +2018,7 @@ describe("stored manufacturing STL reuse", () => {
             savedDesign: reverseKeys(design),
         });
         expect(unchanged).toBe(baseline);
-        expect(storedManufacturingStlReusable(checkpoint, { stlIdentity: unchanged })).toBe(true);
+        expect(storedManufacturingStlReusable(checkpoint, { stlIdentity: unchanged })).toBe(false);
 
         const leaves = collectLeaves(design);
         const required = [
@@ -2074,6 +2046,9 @@ describe("stored manufacturing STL reuse", () => {
             const next = manufacturingStlRunIdentity({ ...axes, savedDesign: mutated });
             expect(next, leaf.path).not.toBe(baseline);
             expect(storedManufacturingStlReusable(checkpoint, { stlIdentity: next }), leaf.path).toBe(false);
+            expect(storedManufacturingStlReusable(checkpoint, { stlIdentity: baseline }), leaf.path).toBe(
+                false,
+            );
         }
 
         const axisChanges: Array<{ label: string; identity: string }> = [

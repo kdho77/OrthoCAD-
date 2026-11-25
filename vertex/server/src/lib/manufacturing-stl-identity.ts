@@ -29,7 +29,8 @@ function stableStringify(value: unknown): string {
 /**
  * Identity of one saved-design manufacturing STL. The hash is the full saved
  * design plus side, belt frame, placement version, and the OrthoCAD/slicer
- * version. A checkpoint or temp from any other design is not reused.
+ * version. The UI manufacturing-solid cache uses this hash. Production
+ * generate_gcode does not: it lofts on every call.
  */
 export function manufacturingStlRunIdentity(input: {
     side: "left" | "right";
