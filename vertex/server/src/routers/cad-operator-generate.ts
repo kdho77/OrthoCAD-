@@ -44,6 +44,7 @@ import {
     sleepMs,
     toPublicProduction,
 } from "../lib/cad-operator-production.js";
+import { getVertexSliceBuild, UNKNOWN_SLICER_BUILD } from "../lib/vertexslice-build.js";
 import { chargeExistingProduction, PrismaCadProductionStore } from "../lib/cad-operator-production-prisma.js";
 import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
 import { buildHeadlessMillCncGcode, prepareHeadlessMillDesign } from "../lib/cnc-mill-runner.js";
@@ -259,6 +260,8 @@ export async function runCadOperatorGenerateRequest(args: {
         material: input.material,
     });
     const userExportFileName = cadOperatorUserExportFilename(input, plan);
+    // Cached G-code is reused only when the same slicer build made it. Unknown build: never reuse.
+    const slicerBuild = await getVertexSliceBuild();
     const identity = cadOperatorManufacturingIdentity({
         designId: input.designId,
         side: input.side,
@@ -271,6 +274,7 @@ export async function runCadOperatorGenerateRequest(args: {
         settingsJson: plan.settingsJson,
         stlStorageKey: plan.stlStorageKey,
         regional3mf: vertexSliceRegional3mfEnabled(),
+        slicerBuild: slicerBuild ?? UNKNOWN_SLICER_BUILD,
     });
     const store = new PrismaCadProductionStore(args.prisma);
     const now = args.now ?? (() => new Date());
@@ -278,7 +282,8 @@ export async function runCadOperatorGenerateRequest(args: {
         store,
         now: now(),
         schedule: args.schedule ?? scheduleCadProduction,
-        forceNewSlice: input.forceNewSlice === true && input.useSavedDesignMesh === true,
+        forceNewSlice:
+            (input.forceNewSlice === true && input.useSavedDesignMesh === true) || slicerBuild === null,
         insert: {
             designId: input.designId,
             side: input.side,
