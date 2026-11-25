@@ -74,7 +74,7 @@ import {
 import { resolveViewerWallStyle } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
-import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
+import { applyShoeWidthToPoints, shoeWidthExtentOfPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { patientDisplayNameFromParts } from "@/lib/geometry/text-marking/compose";
@@ -461,11 +461,15 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         if (outline) {
             const widthId = shoeWidthForSide(design, side);
             const heelW = layout.widthMm * 0.62;
+            // BaseBounds stores axis lengths, not a footprint origin. Reading
+            // minX/maxX off it is undefined, so a non-medium width wrote NaN Y
+            // onto every outline point and the trimline tube crashed.
+            const extent = shoeWidthExtentOfPoints(outline.points);
             const scaledPts = applyShoeWidthToPoints(outline.points, widthId, {
                 ballWidthMm: layout.widthMm,
                 heelWidthMm: heelW,
-                minX: b.minX,
-                lengthMm: Math.max(1e-3, b.maxX - b.minX),
+                minX: extent.minX,
+                lengthMm: extent.lengthMm,
                 heelOverrideMm: design.corrections[side]?.heelCupWidthMm,
             });
             useBaseOutlineStore.getState().setOutline(lookupKey, { points: scaledPts });
