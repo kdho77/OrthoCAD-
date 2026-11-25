@@ -75,8 +75,12 @@ export interface ManufacturingClientOptions {
 export function createManufacturingClient(options: ManufacturingClientOptions) {
     const trpc = createTRPCClient({
         links: [
+            // maxItems 1: a pair is two requests. One batched request shares a
+            // Vercel instance, so the left loft blocks the right enqueue response
+            // and the client hits its timeout while both rows are already queued.
             httpBatchLink({
                 url: options.trpcUrl,
+                maxItems: 1,
                 transformer: superjson,
                 headers: () => ({
                     authorization: `Bearer ${options.cadOperatorKey}`,
