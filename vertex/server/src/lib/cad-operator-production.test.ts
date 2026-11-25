@@ -1155,6 +1155,68 @@ describe("VertexSlice job productions", () => {
         delete process.env.VERTEXSLICE_API_KEY;
     });
 
+    test("a transient submit is retried inside the slice attempt and the later 202 is returned", async () => {
+        process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
+        process.env.VERTEXSLICE_API_KEY = "super-secret-key";
+        const gcode = "G1 X0 ; foot-retry\n";
+        let posts = 0;
+        const nowMs = Date.parse("2026-11-24T23:05:00.000Z");
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            const method = (init?.method ?? "GET").toUpperCase();
+            if (url.endsWith("/v1/materials")) {
+                return new Response(JSON.stringify(["apex_core"]), { status: 200 });
+            }
+            if (method === "POST" && url.endsWith("/v1/slice/jobs")) {
+                posts += 1;
+                if (posts === 1) throw new TypeError("ECONNRESET");
+                return new Response(JSON.stringify({ job_id: "job-retry", status: "queued", position: 0 }), {
+                    status: 202,
+                    headers: { "content-type": "application/json" },
+                });
+            }
+            if (url.endsWith("/v1/slice/jobs/job-retry/result")) {
+                return new Response(gcode, { status: 200, headers: { "content-type": "text/plain" } });
+            }
+            if (method === "GET" && url.endsWith("/v1/slice/jobs/job-retry")) {
+                return new Response(
+                    JSON.stringify({
+                        job_id: "job-retry",
+                        status: "succeeded",
+                        position: null,
+                        queued_at: new Date(nowMs).toISOString(),
+                        started_at: new Date(nowMs).toISOString(),
+                        finished_at: new Date(nowMs).toISOString(),
+                        elapsed_s: 1,
+                        error: null,
+                    }),
+                    { status: 200, headers: { "content-type": "application/json" } },
+                );
+            }
+            return new Response("unexpected", { status: 500 });
+        }) as typeof fetch;
+        const attempt = await runCadSliceAttempt({
+            request: {
+                profileId: "apex-v2-insole-95a",
+                material: "apex_core",
+                model: foot,
+                filename: "left.stl",
+                infillDensityPct: 32,
+                side: "left",
+            },
+            checkpoint: null,
+            stlStorageKey: "tmp/left.stl",
+            meshFingerprint: "mesh",
+            credentialId: "cred",
+            side: "left",
+            now: () => new Date(nowMs),
+            sleep: async () => undefined,
+            budgetMs: 1_000,
+        });
+        expect(posts).toBe(2);
+        expect(attempt).toEqual({ kind: "gcode", gcode, jobId: "vs_job-retry" });
+    });
+
     test("two overlapping productions succeed when the second waits 200s in queue", async () => {
         process.env.VERTEXSLICE_SLICER_URL = "https://slicer.example";
         process.env.VERTEXSLICE_API_KEY = "super-secret-key";
