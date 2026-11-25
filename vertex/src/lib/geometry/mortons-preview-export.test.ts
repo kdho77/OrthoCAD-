@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import { getBaseFootprintFrame } from "@/lib/geometry/base-modifier";
 import { applyElementsToTopMeshLast } from "@/lib/geometry/element-assets/apply-elements";
-import { type HeightFieldParams, heightAt } from "@/lib/geometry/height-field";
+import { heightAt, type HeightFieldParams } from "@/lib/geometry/height-field";
 import { sampleTopFromArrayBuffer } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import type { PlacedElement, SideCorrections } from "@/types";

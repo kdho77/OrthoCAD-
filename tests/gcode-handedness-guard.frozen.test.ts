@@ -53,9 +53,7 @@ describe("H4 G-code handedness guard (frozen)", () => {
     }
 
     test("current main output for a LEFT request fails the left production (the 2026-11-23/24 bug)", () => {
-        expect(() => assertGcodeHandedness(fx("main_left_request_toe_first"), "left")).toThrow(
-            GcodeHandednessError,
-        );
+        expect(() => assertGcodeHandedness(fx("main_left_request_toe_first"), "left")).toThrow(GcodeHandednessError);
     });
 
     test("inconclusive G-code fails for both sides", () => {

@@ -142,7 +142,8 @@ describe("saved-design shell thickness loft", () => {
             sampleTopBytes: sampleTop,
             includeLeader: false,
         });
-        const stlHash = (stl: ArrayBuffer) => createHash("sha256").update(Buffer.from(stl)).digest("hex");
+        const stlHash = (stl: ArrayBuffer) =>
+            createHash("sha256").update(Buffer.from(stl)).digest("hex");
         expect(stlHash(integrationMesh.stl)).toBe(stlHash(uiMesh.stl));
         expect(integrationMesh.solidTriangles).toBe(uiMesh.solidTriangles);
     }, 180_000);

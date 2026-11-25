@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "@rstest/core";
 
 import {
-    type CadProductionInsert,
     cadOperatorManufacturingIdentity,
     claimProduction,
     MemoryCadProductionStore,
+    type CadProductionInsert,
 } from "./cad-operator-production.js";
 import {
     getVertexSliceBuild,
@@ -122,9 +122,9 @@ describe("belt G-code cache is keyed by the VertexSlice build", () => {
             expect(String(url)).toBe("https://slicer.example/health");
             return new Response(JSON.stringify({ status: "ok", build: BUILD_POST_52 }), { status: 200 });
         }) as typeof fetch;
-        expect(
-            await getVertexSliceBuild({ fetchImpl: ok, nowMs: 0, baseUrl: "https://slicer.example/" }),
-        ).toBe(BUILD_POST_52);
+        expect(await getVertexSliceBuild({ fetchImpl: ok, nowMs: 0, baseUrl: "https://slicer.example/" })).toBe(
+            BUILD_POST_52,
+        );
         // Cached for a minute, then re-read so a slicer redeploy is picked up.
         await getVertexSliceBuild({ fetchImpl: ok, nowMs: 30_000, baseUrl: "https://slicer.example" });
         expect(calls).toBe(1);
@@ -132,17 +132,12 @@ describe("belt G-code cache is keyed by the VertexSlice build", () => {
         expect(calls).toBe(2);
 
         resetVertexSliceBuildCache();
-        const old = (async () =>
-            new Response(JSON.stringify({ status: "ok" }), { status: 200 })) as typeof fetch;
-        expect(
-            await getVertexSliceBuild({ fetchImpl: old, nowMs: 0, baseUrl: "https://slicer.example" }),
-        ).toBeNull();
+        const old = (async () => new Response(JSON.stringify({ status: "ok" }), { status: 200 })) as typeof fetch;
+        expect(await getVertexSliceBuild({ fetchImpl: old, nowMs: 0, baseUrl: "https://slicer.example" })).toBeNull();
         resetVertexSliceBuildCache();
         const down = (async () => {
             throw new TypeError("ECONNREFUSED");
         }) as typeof fetch;
-        expect(
-            await getVertexSliceBuild({ fetchImpl: down, nowMs: 0, baseUrl: "https://slicer.example" }),
-        ).toBeNull();
+        expect(await getVertexSliceBuild({ fetchImpl: down, nowMs: 0, baseUrl: "https://slicer.example" })).toBeNull();
     });
 });
