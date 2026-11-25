@@ -143,6 +143,10 @@ Local production-path lofts (`buildFinalizedFootFromSavedSettings`, synthetic `J
 
 Docker is not available on this machine, so the variant G-code grade was not run here. CI `name-plantar-e2e` slices `*-left.stl` and `*-right.stl` on `apex_core` toe-first and grades them with the frozen #435 thresholds. The six-cell matrix on `left.stl` / `right.stl` is unchanged.
 
+## 0d3db1c0 right had no letters
+
+CI run [45563201516](https://github.com/kdho77/OrthoCAD-/actions/runs/45563201516) on `929a94d2` passed the six #442 cells and `d0-pair-left` (a=0.961, d=0.872, sequence `JABBOUR`). `d0-pair-right` had letter walls 0. The engrave threw `manifold status Not manifold` and the catch kept the unengraved solid. The mesh was watertight except for one unconnected triangle (three open edges) from a counter cap that missed the boundary weld. That triangle is dropped before the manifold check. It is not part of the shell. The #442 baseline counts stay left 137692/137772 and right 138790/138870. Local variant lofts then engrave on every foot, including that right foot. Thresholds were not loosened.
+
 ## t2699u — must change if the design has any changes
 
 Locked rule, 11:20 PM America/Denver. The stored manufacturing STL identity, the slice-checkpoint identity, and `manufacturingSolidIdentity` hash the full saved design (mesh blobs stripped) plus side, `beltPrint`, placement version, OrthoCAD version, and slicer version. That is not a picked field list. The table test walks every leaf of a synthetic design that includes parameters, corrections, elements, sinks, text, size, width, arch, heel lift, and material, and it also flips `beltPrint`, placement version, OrthoCAD version, and slicer version. Each mutation must miss the stored checkpoint. Key order of an unchanged design still matches and is reusable.
