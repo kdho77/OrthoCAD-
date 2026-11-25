@@ -312,11 +312,12 @@ describe("production right-foot plantar name", () => {
 
 /**
  * Design ffcfa6f9. US men 6.5, medium, corrections 0, no elements, thickness 2,
- * printing_solid, apex-belt Hard. Synthetic name; counters are A, D, and R.
- * Headless belt export runs assertExactManifold inside the planar engrave and
- * refuses the upload when that check throws.
+ * printing_solid, apex-belt Hard. KANDIS MAAR is the two-word line that left
+ * the letter floor open. MANDIS KAAR is the same letters in the other order.
+ * Counters are A, D, and R. The headless belt export runs assertExactManifold
+ * and refuses the upload when that check throws.
  */
-const MAAR_NAME = "MANDIS KAAR";
+const MAAR_NAMES = ["MANDIS KAAR", "KANDIS MAAR"] as const;
 
 function designFfcfa6f9(): DesignState {
     const design = createDesignWithStockPlaceholder();
@@ -422,36 +423,46 @@ function engraveCounterLoops(positions: Float64Array): number {
     return counters;
 }
 
-describe("design ffcfa6f9 right plantar name", () => {
-    test("US M6.5 medium right foot engraves MANDIS KAAR as a manifold solid", async () => {
+describe("design ffcfa6f9 plantar name", () => {
+    test("US M6.5 medium engraves MANDIS KAAR and KANDIS MAAR on both feet", async () => {
         const sampleTop = await prime();
         const font = readFileSync(FONT);
         const fontBytes = font.buffer.slice(font.byteOffset, font.byteOffset + font.byteLength);
         const elementsBaseDir = resolve(process.cwd(), "vertex/public/elements");
-        const design = designFfcfa6f9();
-        const composed = markingWithComposedText(
-            { ...defaultTextMarking("bottom"), text: "", addPatientName: true, feet: "both", capHeightUserSet: false },
-            "right",
-            MAAR_NAME,
-        );
-        expect(composed.text).toBe(MAAR_NAME);
-        const saved = { ...design, textMarking: composed };
-        install(saved);
-        const head = await buildFinalizedFootFromSavedSettings({
-            settingsJson: designSettingsEnvelope(saved as unknown as Record<string, unknown>),
-            side: "right",
-            sampleTopBytes: sampleTop,
-            includeLeader: true,
-            fontBytes,
-            elementsBaseDir,
-        });
-        const headPos = stlPositions(head.stl);
-        const fresh = await sampleTopFromArrayBuffer(sampleTop.slice(0));
-        const foot = await composedFootRim(fresh, saved, "right");
-        fresh.dispose();
-        expect(plantarNameEngraved(headPos, foot), "right plantar name").toBe(true);
-        // Three A's, one D, one R.
-        expect(engraveCounterLoops(headPos), "open counters A D R").toBeGreaterThanOrEqual(5);
+        for (const name of MAAR_NAMES) {
+            for (const side of ["left", "right"] as const) {
+                const design = designFfcfa6f9();
+                const composed = markingWithComposedText(
+                    {
+                        ...defaultTextMarking("bottom"),
+                        text: "",
+                        addPatientName: true,
+                        feet: "both",
+                        capHeightUserSet: false,
+                    },
+                    side,
+                    name,
+                );
+                expect(composed.text).toBe(name);
+                const saved = { ...design, textMarking: composed };
+                install(saved);
+                const head = await buildFinalizedFootFromSavedSettings({
+                    settingsJson: designSettingsEnvelope(saved as unknown as Record<string, unknown>),
+                    side,
+                    sampleTopBytes: sampleTop,
+                    includeLeader: true,
+                    fontBytes,
+                    elementsBaseDir,
+                });
+                const headPos = stlPositions(head.stl);
+                const fresh = await sampleTopFromArrayBuffer(sampleTop.slice(0));
+                const foot = await composedFootRim(fresh, saved, side);
+                fresh.dispose();
+                expect(plantarNameEngraved(headPos, foot), `${side} ${name}`).toBe(true);
+                // Three A's, one D, one R. A filled counter has no inner loop.
+                expect(engraveCounterLoops(headPos), `${side} ${name} counters`).toBeGreaterThanOrEqual(5);
+            }
+        }
     }, 600_000);
 });
 

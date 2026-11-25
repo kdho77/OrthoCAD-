@@ -957,6 +957,230 @@ export async function engraveBottomPlanar(
     geo.computeBoundingBox();
     geo.userData = { ...host.userData, bottomOutlineWorld: outlineWorld, faceClass: buf.faceClass };
     dropLoneOpenTriangles(geo);
-    await assertExactManifold(geo);
+    try {
+        await assertExactManifold(geo);
+    } catch (error) {
+        // A glyph whose floor was refined after the wall was cut leaves the
+        // floor edge open. Stitch that seam. A mesh that already passed is
+        // returned above, unchanged.
+        if (!stitchOpenEngraveSeam(geo)) throw error;
+        dropLoneOpenTriangles(geo);
+        await assertExactManifold(geo);
+    }
     return geo;
+}
+
+const SEAM_WELD_MM = 0.02;
+
+/**
+ * Close an open letter seam without moving a vertex that is already welded.
+ * Only open-edge endpoints within 0.02 mm are merged, then a vertex that lies
+ * on an open edge is inserted into that edge. The outer shell is not retiled.
+ */
+function stitchOpenEngraveSeam(geo: BufferGeometry): boolean {
+    const pos = geo.getAttribute("position");
+    const indexAttr = geo.getIndex();
+    if (!pos || !indexAttr) return false;
+    const srcClass = (geo.userData as { faceClass?: number[] }).faceClass;
+    const tris: Array<[number, number, number]> = [];
+    const classes: number[] = [];
+    for (let i = 0; i + 2 < indexAttr.count; i += 3) {
+        tris.push([indexAttr.getX(i), indexAttr.getX(i + 1), indexAttr.getX(i + 2)]);
+        classes.push(srcClass?.[i / 3] ?? 0);
+    }
+    const flat = tris.flat();
+    const remap = weldOpenEndpoints(pos, flat);
+    if (remap) {
+        for (const tri of tris) {
+            tri[0] = remap[tri[0]] ?? tri[0];
+            tri[1] = remap[tri[1]] ?? tri[1];
+            tri[2] = remap[tri[2]] ?? tri[2];
+        }
+    }
+    const index: number[] = [];
+    const faceClass: number[] = [];
+    for (let i = 0; i < tris.length; i++) {
+        const [a, b, c] = tris[i]!;
+        if (a === b || b === c || c === a) continue;
+        index.push(a, b, c);
+        faceClass.push(classes[i] ?? 0);
+    }
+    const stitched = splitOpenTJunctions(pos, index, faceClass, geo);
+    if (!remap && !stitched) return false;
+    geo.setIndex(stitched ?? index);
+    if (!stitched) (geo.userData as { faceClass: number[] }).faceClass = faceClass;
+    return true;
+}
+
+function weldOpenEndpoints(
+    pos: BufferGeometry["attributes"]["position"],
+    index: number[],
+): Int32Array | null {
+    const edge = new Map<string, number>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let i = 0; i + 2 < index.length; i += 3) {
+        const ids = [index[i]!, index[i + 1]!, index[i + 2]!];
+        for (let e = 0; e < 3; e++) {
+            const k = key(ids[e]!, ids[(e + 1) % 3]!);
+            edge.set(k, (edge.get(k) ?? 0) + 1);
+        }
+    }
+    const open: number[] = [];
+    const seen = new Set<number>();
+    for (const [k, n] of edge) {
+        if (n !== 1) continue;
+        const [as, bs] = k.split("|");
+        for (const id of [Number(as), Number(bs)]) {
+            if (seen.has(id)) continue;
+            seen.add(id);
+            open.push(id);
+        }
+    }
+    if (open.length < 2) return null;
+    const parent = new Int32Array(pos.count);
+    for (let i = 0; i < parent.length; i++) parent[i] = i;
+    const find = (i: number): number => {
+        let x = i;
+        while (parent[x] !== x) x = parent[x]!;
+        parent[i] = x;
+        return x;
+    };
+    const weld2 = SEAM_WELD_MM * SEAM_WELD_MM;
+    let merged = false;
+    for (let i = 0; i < open.length; i++) {
+        const a = open[i]!;
+        const ax = pos.getX(a);
+        const ay = pos.getY(a);
+        const az = pos.getZ(a);
+        for (let j = i + 1; j < open.length; j++) {
+            const b = open[j]!;
+            const dx = pos.getX(b) - ax;
+            const dy = pos.getY(b) - ay;
+            const dz = pos.getZ(b) - az;
+            if (dx * dx + dy * dy + dz * dz > weld2) continue;
+            const ra = find(a);
+            const rb = find(b);
+            if (ra === rb) continue;
+            parent[rb] = ra;
+            merged = true;
+        }
+    }
+    if (!merged) return null;
+    for (let i = 0; i < parent.length; i++) parent[i] = find(i);
+    return parent;
+}
+
+function splitOpenTJunctions(
+    pos: BufferGeometry["attributes"]["position"],
+    index: number[],
+    faceClass: number[] | undefined,
+    geo: BufferGeometry,
+): number[] | null {
+    const edge = new Map<string, number>();
+    const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let i = 0; i + 2 < index.length; i += 3) {
+        const ids = [index[i]!, index[i + 1]!, index[i + 2]!];
+        for (let e = 0; e < 3; e++) {
+            const k = key(ids[e]!, ids[(e + 1) % 3]!);
+            edge.set(k, (edge.get(k) ?? 0) + 1);
+        }
+    }
+    const openVerts: number[] = [];
+    const seen = new Set<number>();
+    const openEdges: Array<[number, number]> = [];
+    for (const [k, n] of edge) {
+        if (n !== 1) continue;
+        const [as, bs] = k.split("|");
+        const a = Number(as);
+        const b = Number(bs);
+        openEdges.push([a, b]);
+        for (const id of [a, b]) {
+            if (seen.has(id)) continue;
+            seen.add(id);
+            openVerts.push(id);
+        }
+    }
+    if (!openEdges.length) return null;
+    const hits = new Map<string, Array<{ m: number; t: number }>>();
+    const tol = SEAM_WELD_MM;
+    for (const [a, b] of openEdges) {
+        const ax = pos.getX(a);
+        const ay = pos.getY(a);
+        const az = pos.getZ(a);
+        const bx = pos.getX(b);
+        const by = pos.getY(b);
+        const bz = pos.getZ(b);
+        const abx = bx - ax;
+        const aby = by - ay;
+        const abz = bz - az;
+        const ab2 = abx * abx + aby * aby + abz * abz;
+        if (ab2 < 1e-12) continue;
+        for (const m of openVerts) {
+            if (m === a || m === b) continue;
+            const mx = pos.getX(m) - ax;
+            const my = pos.getY(m) - ay;
+            const mz = pos.getZ(m) - az;
+            const t = (mx * abx + my * aby + mz * abz) / ab2;
+            if (t <= 1e-4 || t >= 1 - 1e-4) continue;
+            const dist = Math.hypot(mx - abx * t, my - aby * t, mz - abz * t);
+            if (dist > tol) continue;
+            const k = key(a, b);
+            const list = hits.get(k) ?? [];
+            list.push({ m, t });
+            hits.set(k, list);
+        }
+    }
+    if (!hits.size) return null;
+    const out: number[] = [];
+    const outClass: number[] = [];
+    const owner = new Map<string, number>();
+    for (let t = 0; t + 2 < index.length; t += 3) {
+        const a = index[t]!;
+        const b = index[t + 1]!;
+        const c = index[t + 2]!;
+        for (const [u, v] of [
+            [a, b],
+            [b, c],
+            [c, a],
+        ] as const) {
+            const k = key(u, v);
+            if (!owner.has(k)) owner.set(k, t / 3);
+        }
+    }
+    const consumed = new Set<number>();
+    for (const [k, mids] of hits) {
+        const tri = owner.get(k);
+        if (tri == null || consumed.has(tri)) continue;
+        const a = index[tri * 3]!;
+        const b = index[tri * 3 + 1]!;
+        const c = index[tri * 3 + 2]!;
+        const [us, vs] = k.split("|");
+        const u = Number(us);
+        const v = Number(vs);
+        const third = a !== u && a !== v ? a : b !== u && b !== v ? b : c;
+        const order = [a, b, c];
+        const iu = order.indexOf(u);
+        const iv = order.indexOf(v);
+        if (iu < 0 || iv < 0) continue;
+        const fwd = iv === (iu + 1) % 3;
+        const unique = mids.filter((p, i) => mids.findIndex((q) => q.m === p.m) === i);
+        unique.sort((p, q) => p.t - q.t);
+        const chain = fwd ? [u, ...unique.map((s) => s.m), v] : [v, ...unique.map((s) => s.m).reverse(), u];
+        consumed.add(tri);
+        const cls = faceClass?.[tri] ?? 0;
+        for (let i = 0; i < chain.length - 1; i++) {
+            out.push(chain[i]!, chain[i + 1]!, third);
+            outClass.push(cls);
+        }
+    }
+    if (!consumed.size) return null;
+    const kept: number[] = [];
+    const keptClass: number[] = [];
+    for (let t = 0; t + 2 < index.length; t += 3) {
+        if (consumed.has(t / 3)) continue;
+        kept.push(index[t]!, index[t + 1]!, index[t + 2]!);
+        if (faceClass) keptClass.push(faceClass[t / 3] ?? 0);
+    }
+    if (faceClass) (geo.userData as { faceClass: number[] }).faceClass = keptClass.concat(outClass);
+    return kept.concat(out);
 }
