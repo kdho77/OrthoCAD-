@@ -12,6 +12,7 @@ import {
     type PrintRecipeV1,
     resolveGyroidManufacturingPrintRecipe,
 } from "../../../shared/print-recipe/print-recipe.js";
+import { assertGcodeHandedness, GcodeHandednessError } from "./gcode-handedness.js";
 import {
     downloadVertexSliceJobResult,
     getVertexSliceJob,
@@ -468,6 +469,9 @@ function innerCauseForPublicError(error: unknown): string | null {
 
 export function publicProductionError(error: unknown, side?: CadFootSide | null): string {
     const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof GcodeHandednessError || message.startsWith("Handedness check failed:")) {
+        return capPublicProductionMessage(message);
+    }
     if (message.startsWith(CANONICAL_EXPORT_PREFIX)) {
         const detail = innerCauseForPublicError(error);
         return detail ? `${CANONICAL_EXPORT_REFUSAL} (${detail})` : CANONICAL_EXPORT_REFUSAL;
@@ -1015,6 +1019,21 @@ function assertSliceCaps(
     }
 }
 
+/** Final VertexSlice bytes. Mismatch or inconclusive fails before any upload. */
+function acceptCheckedGcode(
+    gcode: string,
+    side: CadFootSide | null,
+    jobId: string,
+): { kind: "gcode"; gcode: string; jobId: string } {
+    if (side !== "left" && side !== "right") {
+        throw new GcodeHandednessError(
+            "Handedness check failed: requested side is missing, G-code is inconclusive. File not delivered.",
+        );
+    }
+    assertGcodeHandedness(gcode, side);
+    return { kind: "gcode", gcode, jobId };
+}
+
 export async function runCadSliceAttempt(args: {
     request: VertexSliceRequest | null;
     checkpoint: SliceCheckpointV1 | null;
@@ -1037,7 +1056,7 @@ export async function runCadSliceAttempt(args: {
         if (submitted.kind === "unsupported") {
             const gcode = await sliceWithVertexSlice(args.request);
             const stamp = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-            return { kind: "gcode", gcode, jobId: `vs_${stamp}` };
+            return acceptCheckedGcode(gcode, args.side, `vs_${stamp}`);
         }
         checkpoint = {
             v: 1,
@@ -1074,7 +1093,7 @@ export async function runCadSliceAttempt(args: {
                 );
                 if (result.kind === "missing") throw jobLostError(args.side);
                 if (result.kind === "gcode") {
-                    return { kind: "gcode", gcode: result.gcode, jobId: `vs_${checkpoint.jobId}` };
+                    return acceptCheckedGcode(result.gcode, args.side, `vs_${checkpoint.jobId}`);
                 }
             }
         }

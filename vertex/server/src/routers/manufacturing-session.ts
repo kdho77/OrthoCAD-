@@ -30,6 +30,7 @@ import {
     vertexSliceRegional3mfEnabled,
 } from "../../../shared/vertexslice-regional-3mf.js";
 import { HYBRID_GCODE_COST } from "../lib/cad-operator-production.js";
+import { assertGcodeHandedness, GcodeHandednessError } from "../lib/gcode-handedness.js";
 import type { ManufacturePayload, ManufactureResult } from "../lib/manufacturing-client.js";
 import { assertManufacturingTempKeyForUser } from "../lib/storage.js";
 import { manufacturingBackendForOutput, type VertexSliceRequest } from "../lib/vertexslice-client.js";
@@ -323,6 +324,12 @@ export async function runSessionGenerateSolid(args: {
                 infillDensityPct,
                 expectedRegionCount: upload.expectedRegionCount,
             });
+            if (input.side !== "left" && input.side !== "right") {
+                throw new GcodeHandednessError(
+                    "Handedness check failed: requested side is missing, G-code is inconclusive. File not delivered.",
+                );
+            }
+            assertGcodeHandedness(gcode, input.side);
             outputBytes = Buffer.from(gcode, "utf-8");
             outputType = "gcode";
             jobId = `vs_${jobStamp}`;
