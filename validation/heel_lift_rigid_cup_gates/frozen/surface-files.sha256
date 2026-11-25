@@ -1,0 +1,10 @@
+3650c487c38f4b4b9aa4d0c04f795445bdca70ea9f317301e623d30f43f6edcd  vertex/src/lib/kiri/slicer.ts
+f6f611b1e4808e42a203f99bd3933d739ff1f0d8319e69a94e0f4e39e14f0d25  vertex/src/lib/kiri/engine.ts
+d3b2a3d2ef5ff4f379530327360bf5b4cefd2e4579981ae3e2357d5341963dba  vertex/src/lib/kiri/gcode.ts
+07564936650fb5908dcdaabdfc1b4ee1aed902bbfe3c28d145897814874c39fe  vertex/src/lib/kiri/presets.ts
+222b011b17643ddbebac6edbf688479c80be6019864c1726e8e0db43ed3f6f4c  python-service/app/services/slicer.py
+11175c73c6534a03f9e0ac0ebf8c835e64757c0efb4baa5b24e5d84b389bc3bd  vertex/src/lib/geometry/procedural-wall/ring-seam.ts
+cb386075ee529140635bed74cab45800b5bcef5a400294682983c479528a5d35  vertex/src/lib/geometry/procedural-wall/curves.ts
+348fe24de887f1c987efc3c01caff92fe076a8cedc6acb6b982ffe9488282dcb  vertex/src/lib/geometry/procedural-wall/wall-spline.ts
+c27feb57048bea16729bc914542a5403aff691a334371eaec90056929ae04350  vertex/src/lib/geometry/procedural-wall/bezier-column.ts
+3ee88f1a77076357d03c77657a4e8a1a267980abd7b99bc47f462410744ab991  vertex/src/lib/geometry/text-marking/bottom-engrave.ts
