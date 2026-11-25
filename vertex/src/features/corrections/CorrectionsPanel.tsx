@@ -4,6 +4,7 @@ import { AlertTriangle, ChevronRight, Link2, Lock, Unlink, Unlock } from "lucide
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { SliderField } from "@/components/ui/slider-field";
 import { useProductionMethodForActiveFoot } from "@/lib/clinical/active-foot-side";
+import { CORRECTION_SCALAR_FIELDS } from "@/features/corrections/correction-field-meta";
 import {
     CLINICAL_LIMITS,
     constrainDesignCorrections,
@@ -58,63 +59,10 @@ import { skiveDerivedDisplayText } from "./skive-derived-display";
  *  - **Heel** holds heel cup depth, heel cup width and the new heel lift.
  *  - **Skive** is a dedicated Kirby control (depth + angle/location solver).
  */
-const FIELDS: {
-    key: keyof SideCorrections;
-    label: string;
-    min: number;
-    max: number;
-    group: string;
-    unit?: string;
-    hint?: string;
-}[] = [
-    {
-        key: "archHeightMm",
-        label: "Arch height",
-        min: CLINICAL_LIMITS.archHeightMm.min,
-        max: CLINICAL_LIMITS.archHeightMm.max,
-        group: "Arch",
-    },
-    {
-        key: "archElongationMm",
-        label: "Arch elongation",
-        min: CLINICAL_LIMITS.archElongationMm.min,
-        max: CLINICAL_LIMITS.archElongationMm.max,
-        group: "Arch",
-    },
-    { key: "apexMoveMm", label: "Apex shift (distal / posterior)", min: -12, max: 12, group: "Arch" },
-    // Heel cup depth: slider 0 = off; commit clamps positive values to 12–18 mm (see constrainSideCorrections).
-    {
-        key: "heelCupDepthMm",
-        label: "Heel cup depth",
-        min: 0,
-        max: CLINICAL_LIMITS.heelCupDepthMm.max,
-        group: "Heel",
-    },
-    {
-        key: "heelCupWidthMm",
-        label: "Heel cup width",
-        min: CLINICAL_LIMITS.heelCupWidthMm.min,
-        max: CLINICAL_LIMITS.heelCupWidthMm.max,
-        group: "Heel",
-    },
-    {
-        key: "forefootWidthMm",
-        label: "Forefoot width",
-        min: CLINICAL_LIMITS.forefootWidthMm.min,
-        max: CLINICAL_LIMITS.forefootWidthMm.max,
-        group: "Forefoot",
-        hint: "per side (total width change = 2x)",
-    },
-    {
-        key: "heelLiftMm",
-        label: "Heel lift",
-        min: CLINICAL_LIMITS.heelLiftMm.min,
-        max: CLINICAL_LIMITS.heelLiftMm.max,
-        group: "Heel",
-    },
-    { key: "medialFlangeMm", label: "Medial flange", min: 0, max: 8, group: "Flanges" },
-    { key: "lateralFlangeMm", label: "Lateral flange", min: 0, max: 8, group: "Flanges" },
-];
+/** Panel scalar fields (subset of shared prescription metadata — no skive/posting legacy keys). */
+const FIELDS = CORRECTION_SCALAR_FIELDS.filter(
+    (f) => f.group !== "Skive" && !f.key.endsWith("PostingDeg") && f.key !== "archFillMm" && f.key !== "heelCupHeightMm",
+);
 
 const GROUPS = ["Arch", "Heel", "Forefoot", "Flanges", "Posting"];
 

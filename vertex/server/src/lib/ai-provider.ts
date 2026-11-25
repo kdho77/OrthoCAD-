@@ -1,4 +1,4 @@
-import { prescriptionParseSchema, type PrescriptionParse } from "./prescription-schema.js";
+import { type PrescriptionParse, prescriptionParseSchema } from "./prescription-schema.js";
 
 // Server-side AI provider abstraction. Calls Anthropic (Claude) or xAI (Grok)
 // to parse a free-text / image orthotic prescription into structured
@@ -13,11 +13,11 @@ export interface AiConfig {
 }
 
 export function getAiConfig(): AiConfig | null {
-    const provider = (process.env.AI_PROVIDER as AiProvider | undefined) ?? "anthropic";
+    const provider = (process.env.AI_PROVIDER as AiProvider | undefined) ?? "xai";
     const apiKey = process.env.AI_API_KEY;
     if (!apiKey) return null;
     const model =
-        process.env.AI_MODEL ?? (provider === "xai" ? "grok-2-vision-1212" : "claude-3-5-sonnet-latest");
+        process.env.AI_MODEL ?? (provider === "xai" ? "grok-2-vision-latest" : "claude-3-5-sonnet-latest");
     return { provider, apiKey, model };
 }
 
@@ -86,7 +86,9 @@ async function callAnthropic(cfg: AiConfig, input: CallInput): Promise<string> {
 }
 
 async function callXai(cfg: AiConfig, input: CallInput): Promise<string> {
-    const userContent: unknown[] = [{ type: "text", text: input.text || "Parse the attached prescription image." }];
+    const userContent: unknown[] = [
+        { type: "text", text: input.text || "Parse the attached prescription image." },
+    ];
     if (input.image) {
         userContent.push({
             type: "image_url",
