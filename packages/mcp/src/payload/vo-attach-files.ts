@@ -55,7 +55,7 @@ export interface VoAttachFilesInput {
     order_id: string;
     /** Kept on the CAD result only. Sending it makes VO check the design link. */
     design_id?: string;
-    /** When `sample-top`, internal left/right labels swap to physical L/R on filenames and VO side. */
+    /** Provenance only. Filenames and VO side follow the requested foot, including sample-top. */
     base_asset_id?: string;
     patient_name?: string;
     material?: string;

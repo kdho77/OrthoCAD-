@@ -64,7 +64,7 @@ export const generateGcodeInputObjectSchema = z.object({
      * In-flight productions are still reused so concurrent calls do not duplicate work.
      */
     force_new_slice: z.boolean().optional(),
-    /** When `sample-top`, G-code export filenames use physical L/R (not internal laterality). */
+    /** Optional base asset id. It does not change the L/R filename. */
     base_asset_id: z.string().trim().min(1).max(80).optional(),
 });
 
@@ -339,7 +339,7 @@ export const prepareVoAttachmentInputSchema = z
         order_id: z.string().uuid(),
         /** CAD provenance only. Not sent; VO would check the design link. */
         design_id: z.string().uuid().optional(),
-        /** When `sample-top`, attach filenames and VO `side` use physical L/R. */
+        /** Optional base asset id. It does not change the VO side or filename. */
         base_asset_id: z.string().trim().min(1).max(80).optional(),
         patient_name: z.string().max(200).optional(),
         material: z.string().max(80).optional(),
@@ -439,7 +439,7 @@ export const MCP_TOOL_DEFINITIONS = [
             "Optional mill_side is LR (default), RR, or LL. Omit it or pass LR for the same pair file. " +
             "RR mills two copies of the physical right foot and the filename suffix is _RR. " +
             "LL mills two copies of the physical left foot and the filename suffix is _LL. " +
-            "SAMPLE_Top stores the physical right foot on internal left. " +
+            "SAMPLE_Top internal left is the physical left foot. " +
             "A pair file is one production (side is empty). Auth: CAD-operator key, manufacturing:generate.",
         inputSchema: generateCncGcodeInputSchema,
     },
