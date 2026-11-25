@@ -34,8 +34,8 @@ import {
 const SAMPLE_TOP = resolve(process.cwd(), "vertex/public/Templates/SAMPLE_Top.glb");
 const FONT = resolve(process.cwd(), "vertex/public/fonts/Inter-Bold.ttf");
 
-/** Synthetic marking only. No patient string. */
-const MARK = "TEST";
+/** Synthetic marking only. No patient string. Counters (A, B, O, R) stay open. */
+const MARK = "JABBOUR";
 
 function design2e781189(): DesignState {
     const design = createDesignWithStockPlaceholder();
@@ -217,6 +217,13 @@ describe("design 2e781189 headless export", () => {
             expect(uiIou, `${side} UI vs SAMPLE_Top`).toBeGreaterThanOrEqual(0.97);
             expect(headIou, `${side} headless vs SAMPLE_Top`).toBeGreaterThanOrEqual(0.97);
             expect(cross, `${side} headless vs UI`).toBeGreaterThanOrEqual(0.98);
+            const uiMid = narrowestMidfoot(uiPos);
+            const headMid = narrowestMidfoot(headPos);
+            // This US M6 narrow foot's midfoot is the composed outline (~61 mm),
+            // not the waisted parametric last (~44 mm). Headless matches UI.
+            expect(Math.abs(uiMid - headMid), `${side} midfoot UI vs headless`).toBeLessThan(1.5);
+            expect(uiMid, `${side} UI midfoot`).toBeGreaterThan(58);
+            expect(headMid, `${side} headless midfoot`).toBeGreaterThan(58);
             const uiTris = triangleCount(ui);
             expect(Math.abs(head.solidTriangles - uiTris) / uiTris, `${side} triangle class`).toBeLessThan(
                 0.02,
@@ -302,6 +309,37 @@ describe("production right-foot plantar name", () => {
         }
     }, 600_000);
 });
+
+function narrowestMidfoot(positions: Float64Array): number {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (let i = 0; i + 1 < positions.length; i += 3) {
+        const x = positions[i] ?? 0;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+    }
+    const span = Math.max(1e-6, maxX - minX);
+    const bins = 48;
+    const lo = new Array<number>(bins).fill(Infinity);
+    const hi = new Array<number>(bins).fill(-Infinity);
+    for (let i = 0; i + 1 < positions.length; i += 3) {
+        const x = positions[i] ?? 0;
+        const y = positions[i + 1] ?? 0;
+        const u = (x - minX) / span;
+        if (u < 0.35 || u > 0.65) continue;
+        let b = Math.floor(((u - 0.35) / 0.3) * (bins - 1));
+        if (b < 0) b = 0;
+        if (b >= bins) b = bins - 1;
+        if (y < lo[b]!) lo[b] = y;
+        if (y > hi[b]!) hi[b] = y;
+    }
+    let best = Infinity;
+    for (let i = 0; i < bins; i++) {
+        if (!Number.isFinite(lo[i])) continue;
+        best = Math.min(best, hi[i]! - lo[i]!);
+    }
+    return best;
+}
 
 function outlineFrom(positions: Float64Array): Array<{ x: number; y: number }> {
     const pts = [];
