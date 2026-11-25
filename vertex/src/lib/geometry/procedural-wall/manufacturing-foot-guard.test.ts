@@ -232,8 +232,9 @@ describe("design 2e781189 headless export", () => {
 
 /**
  * Production generate composes the patient line into textMarking per side
- * (envelopeWithLoftTextMarking), then lofts. Short narrow right feet take the
- * post-loft mirror. Both sizes must engrave. The left foot is the UI solid.
+ * (envelopeWithLoftTextMarking), then lofts. US M6 is design 2e781189. US M8
+ * is the same short-narrow right foot, which takes the post-loft mirror.
+ * Both must engrave. The left foot stays the UI solid.
  */
 describe("production right-foot plantar name", () => {
     test("short narrow right feet engrave the composed name and the left foot matches UI", async () => {
