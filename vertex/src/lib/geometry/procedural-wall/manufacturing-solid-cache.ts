@@ -10,12 +10,16 @@ import {
 } from "@/lib/geometry/text-marking/compose";
 import { textMarkingHash } from "@/lib/geometry/text-marking/hash";
 import type { Side } from "@/types";
-import { MANUFACTURING_STL_PLACEMENT_VERSION } from "../../../../shared/manufacturing-stl-identity";
+import {
+    MANUFACTURING_STL_PLACEMENT_VERSION,
+    manufacturingStlIdentityPayload,
+    ORTHOCAD_MANUFACTURING_VERSION,
+} from "../../../../shared/manufacturing-stl-identity";
 import type { PolyPoint } from "./curves";
 import type { ProceduralPreviewOptions } from "./sample-top-preview";
 import { sha256Hex } from "./sha256";
 
-export { MANUFACTURING_STL_PLACEMENT_VERSION };
+export { MANUFACTURING_STL_PLACEMENT_VERSION, ORTHOCAD_MANUFACTURING_VERSION };
 
 /**
  * Bump when the loft algorithm changes so an in-memory solid cannot outlive
@@ -38,6 +42,12 @@ export interface ManufacturingSolidContext {
     geometryVersion: number;
     /** Belt-frame generation. A solid from an older value is not a cache hit. */
     placementVersion: number;
+    /** Full saved design (mesh blobs stripped). Any field change misses. */
+    savedDesign: unknown;
+    /** OrthoCAD loft generation. */
+    orthocadVersion: string;
+    /** Slicer build, or the default manufacturing slicer version. */
+    slicerVersion: string;
 }
 
 export interface ManufacturingLoftStats {
@@ -274,6 +284,14 @@ export function manufacturingSolidIdentity(
         ),
         beltPrint: options.beltPrint === true,
         placementVersion: context.placementVersion,
+        savedDesignIdentity: manufacturingStlIdentityPayload({
+            savedDesign: context.savedDesign,
+            side: context.side,
+            beltPrint: options.beltPrint === true,
+            placementVersion: context.placementVersion,
+            orthocadVersion: context.orthocadVersion,
+            slicerVersion: context.slicerVersion,
+        }),
         field: fieldIdentity(options.sourceField),
         sinks: options.sinks ?? [],
         sinkStyloidThicken: options.sinkStyloidThicken === true,

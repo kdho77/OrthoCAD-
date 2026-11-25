@@ -48,7 +48,6 @@ import {
     sleepMs,
     toPublicProduction,
 } from "../lib/cad-operator-production.js";
-import { getVertexSliceBuild, UNKNOWN_SLICER_BUILD } from "../lib/vertexslice-build.js";
 import { chargeExistingProduction, PrismaCadProductionStore } from "../lib/cad-operator-production-prisma.js";
 import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
 import { buildHeadlessMillCncGcode, prepareHeadlessMillDesign } from "../lib/cnc-mill-runner.js";
@@ -65,6 +64,7 @@ import {
 } from "../lib/manufacturing-stl-lifecycle.js";
 import { deleteAsset, MANUFACTURING_BUCKET, signedDownloadUrl, uploadAsset } from "../lib/storage.js";
 import { assertActiveLicense, getUserTokenBalance, requireSupabaseAdmin } from "../lib/supabase-db.js";
+import { getVertexSliceBuild, UNKNOWN_SLICER_BUILD } from "../lib/vertexslice-build.js";
 import type { VertexSliceRequest } from "../lib/vertexslice-client.js";
 import {
     type CadGeneratePlan,
@@ -106,19 +106,20 @@ export interface CadGenerateRequestInput {
     forceNewSlice?: boolean;
 }
 
-function composedLoftText(settingsJson: unknown): string {
-    const marking = readStoredDesignSettings(settingsJson)?.textMarking;
-    if (!marking || typeof marking !== "object") return "";
-    const text = (marking as { text?: unknown }).text;
-    return typeof text === "string" ? text : "";
-}
-
-/** Saved-design belt STL identity: composed text, belt frame, placement version. */
-export function beltManufacturingStlIdentity(settingsJson: unknown, side: CadFootSide): string {
+/**
+ * Saved-design belt STL identity. The hash is the full saved design plus the
+ * belt frame, placement version, and slicer version. Any design change misses.
+ */
+export function beltManufacturingStlIdentity(
+    settingsJson: unknown,
+    side: CadFootSide,
+    slicerVersion?: string | null,
+): string {
     return manufacturingStlRunIdentity({
         side,
-        composedText: composedLoftText(settingsJson),
+        savedDesign: readStoredDesignSettings(settingsJson) ?? settingsJson,
         beltPrint: true,
+        slicerVersion: slicerVersion ?? undefined,
     });
 }
 
@@ -186,7 +187,8 @@ async function continueInFlightSlice(args: {
             clientDisplayName: clientName,
         });
         settingsJson = envelopeWithLoftTextMarking(resolved.envelope, resolved.patientDisplayName, side);
-        stlIdentity = beltManufacturingStlIdentity(settingsJson, side);
+        const slicerBuild = await getVertexSliceBuild();
+        stlIdentity = beltManufacturingStlIdentity(settingsJson, side, slicerBuild ?? UNKNOWN_SLICER_BUILD);
         const parsedRecipe = printRecipeV1Schema.safeParse(
             readStoredDesignSettings(settingsJson)?.printRecipe,
         );
@@ -377,7 +379,7 @@ export async function runCadOperatorGenerateRequest(args: {
         slicerBuild: slicerBuild ?? UNKNOWN_SLICER_BUILD,
     });
     const stlIdentity = plan.useSavedDesignMesh
-        ? beltManufacturingStlIdentity(plan.settingsJson, input.side)
+        ? beltManufacturingStlIdentity(plan.settingsJson, input.side, slicerBuild ?? UNKNOWN_SLICER_BUILD)
         : null;
     const store = new PrismaCadProductionStore(args.prisma);
     const now = args.now ?? (() => new Date());

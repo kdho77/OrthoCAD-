@@ -3,13 +3,15 @@
 import { createHash } from "node:crypto";
 
 import {
-    MANUFACTURING_STL_PLACEMENT_VERSION,
+    manufacturingStlIdentityPayload,
     STALE_PRE52_BELT_MANUFACTURING_STL,
 } from "../../../shared/manufacturing-stl-identity.js";
 
 export {
     isStalePre52ManufacturingEtag,
     MANUFACTURING_STL_PLACEMENT_VERSION,
+    manufacturingStlIdentityPayload,
+    ORTHOCAD_MANUFACTURING_VERSION,
     STALE_PRE52_BELT_MANUFACTURING_STL,
 } from "../../../shared/manufacturing-stl-identity.js";
 
@@ -25,24 +27,20 @@ function stableStringify(value: unknown): string {
 }
 
 /**
- * Identity of one saved-design manufacturing STL. Composed text, belt frame,
- * and placement version. A checkpoint or temp from a different triple is not reused.
+ * Identity of one saved-design manufacturing STL. The hash is the full saved
+ * design plus side, belt frame, placement version, and the OrthoCAD/slicer
+ * version. A checkpoint or temp from any other design is not reused.
  */
 export function manufacturingStlRunIdentity(input: {
     side: "left" | "right";
-    composedText: string;
+    savedDesign: unknown;
     beltPrint: boolean;
     placementVersion?: number;
+    orthocadVersion?: string;
+    slicerVersion?: string;
 }): string {
     return createHash("sha256")
-        .update(
-            stableStringify({
-                placementVersion: input.placementVersion ?? MANUFACTURING_STL_PLACEMENT_VERSION,
-                beltPrint: input.beltPrint === true,
-                side: input.side,
-                composedText: input.composedText,
-            }),
-        )
+        .update(stableStringify(manufacturingStlIdentityPayload(input)))
         .digest("hex");
 }
 

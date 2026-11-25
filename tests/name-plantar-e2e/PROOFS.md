@@ -142,3 +142,7 @@ Local production-path lofts (`buildFinalizedFootFromSavedSettings`, synthetic `J
 | ad-pair-right.stl / ad-name-right.stl | 6943584 | 7f4b4cc0d178dcdcabf1e8307607923d |
 
 Docker is not available on this machine, so the variant G-code grade was not run here. CI `name-plantar-e2e` slices `*-left.stl` and `*-right.stl` on `apex_core` toe-first and grades them with the frozen #435 thresholds. The six-cell matrix on `left.stl` / `right.stl` is unchanged.
+
+## t2699u — must change if the design has any changes
+
+Locked rule, 11:20 PM America/Denver. The stored manufacturing STL identity, the slice-checkpoint identity, and `manufacturingSolidIdentity` hash the full saved design (mesh blobs stripped) plus side, `beltPrint`, placement version, OrthoCAD version, and slicer version. That is not a picked field list. The table test walks every leaf of a synthetic design that includes parameters, corrections, elements, sinks, text, size, width, arch, heel lift, and material, and it also flips `beltPrint`, placement version, OrthoCAD version, and slicer version. Each mutation must miss the stored checkpoint. Key order of an unchanged design still matches and is reusable.

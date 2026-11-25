@@ -7,7 +7,9 @@ import type { PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, test } from "@rstest/core";
 import {
     isStalePre52ManufacturingEtag,
+    MANUFACTURING_SLICER_VERSION,
     MANUFACTURING_STL_PLACEMENT_VERSION,
+    ORTHOCAD_MANUFACTURING_VERSION,
     STALE_PRE52_BELT_MANUFACTURING_STL,
 } from "../../../shared/manufacturing-stl-identity.js";
 import { HARDNESS_TO_INFILL_PCT } from "../../../shared/print-recipe/hardness-to-infill-pct.js";
@@ -1808,33 +1810,36 @@ describe("CAD-operator pair production transactions", () => {
 });
 
 describe("stored manufacturing STL reuse", () => {
+    const savedDesign = { textMarking: { text: "JABBOUR", surface: "bottom" } };
     const identity = manufacturingStlRunIdentity({
         side: "left",
-        composedText: "JABBOUR",
+        savedDesign,
         beltPrint: true,
     });
 
     test("identity changes with composed text, beltPrint, side, and placement version", () => {
         expect(
-            manufacturingStlRunIdentity({ side: "left", composedText: "OTHER", beltPrint: true }),
+            manufacturingStlRunIdentity({
+                side: "left",
+                savedDesign: { textMarking: { text: "OTHER", surface: "bottom" } },
+                beltPrint: true,
+            }),
         ).not.toBe(identity);
-        expect(
-            manufacturingStlRunIdentity({ side: "left", composedText: "JABBOUR", beltPrint: false }),
-        ).not.toBe(identity);
-        expect(
-            manufacturingStlRunIdentity({ side: "right", composedText: "JABBOUR", beltPrint: true }),
-        ).not.toBe(identity);
+        expect(manufacturingStlRunIdentity({ side: "left", savedDesign, beltPrint: false })).not.toBe(
+            identity,
+        );
+        expect(manufacturingStlRunIdentity({ side: "right", savedDesign, beltPrint: true })).not.toBe(
+            identity,
+        );
         expect(
             manufacturingStlRunIdentity({
                 side: "left",
-                composedText: "JABBOUR",
+                savedDesign,
                 beltPrint: true,
                 placementVersion: 1,
             }),
         ).not.toBe(identity);
-        expect(identity).toBe(
-            manufacturingStlRunIdentity({ side: "left", composedText: "JABBOUR", beltPrint: true }),
-        );
+        expect(identity).toBe(manufacturingStlRunIdentity({ side: "left", savedDesign, beltPrint: true }));
     });
 
     test("the pre-#52 left archive eTag and size are stale", () => {
@@ -1866,7 +1871,7 @@ describe("stored manufacturing STL reuse", () => {
                     placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
                     stlIdentity: manufacturingStlRunIdentity({
                         side: "left",
-                        composedText: "OTHER",
+                        savedDesign: { textMarking: { text: "OTHER" } },
                         beltPrint: true,
                     }),
                 },
@@ -2019,4 +2024,193 @@ describe("stored manufacturing STL reuse", () => {
         });
         expect(loftedKey).toBe("tmp/rematerialized.stl");
     });
+
+    test("t2699u: any saved-design change misses the stored STL; an unchanged design reuses it", () => {
+        const design = fullSavedDesign();
+        const axes = { side: "left" as const, beltPrint: true };
+        const baseline = manufacturingStlRunIdentity({ ...axes, savedDesign: design });
+        const checkpoint = {
+            v: 1 as const,
+            jobId: "stored",
+            acceptedAt: "2026-11-24T19:13:17.000Z",
+            stlStorageKey: "manufacturing-temp/cad-operator/stored/left.stl",
+            meshFingerprint: "mesh",
+            expectedRegionCount: 0,
+            credentialId: "cred",
+            serverStartedAt: null,
+            placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION,
+            stlIdentity: baseline,
+        };
+        const unchanged = manufacturingStlRunIdentity({
+            ...axes,
+            savedDesign: reverseKeys(design),
+        });
+        expect(unchanged).toBe(baseline);
+        expect(storedManufacturingStlReusable(checkpoint, { stlIdentity: unchanged })).toBe(true);
+
+        const leaves = collectLeaves(design);
+        const required = [
+            "thicknessMm",
+            "usMenSize",
+            "shoeWidth",
+            "material",
+            "corrections.left.archHeightMm",
+            "corrections.right.heelLiftMm",
+            "elements[0].type",
+            "sinks.left[0].depthMm",
+            "textMarking.text",
+        ];
+        for (const path of required) {
+            expect(
+                leaves.some((leaf) => leaf.path === path),
+                path,
+            ).toBe(true);
+        }
+        expect(leaves.length).toBeGreaterThan(required.length);
+
+        for (const leaf of leaves) {
+            const mutated = cloneJson(design);
+            setLeaf(mutated, leaf.path, changedValue(leaf.value));
+            const next = manufacturingStlRunIdentity({ ...axes, savedDesign: mutated });
+            expect(next, leaf.path).not.toBe(baseline);
+            expect(storedManufacturingStlReusable(checkpoint, { stlIdentity: next }), leaf.path).toBe(false);
+        }
+
+        const axisChanges: Array<{ label: string; identity: string }> = [
+            {
+                label: "beltPrint",
+                identity: manufacturingStlRunIdentity({
+                    side: "left",
+                    beltPrint: false,
+                    savedDesign: design,
+                }),
+            },
+            {
+                label: "placementVersion",
+                identity: manufacturingStlRunIdentity({
+                    ...axes,
+                    savedDesign: design,
+                    placementVersion: MANUFACTURING_STL_PLACEMENT_VERSION + 1,
+                }),
+            },
+            {
+                label: "orthocadVersion",
+                identity: manufacturingStlRunIdentity({
+                    ...axes,
+                    savedDesign: design,
+                    orthocadVersion: `${ORTHOCAD_MANUFACTURING_VERSION}-next`,
+                }),
+            },
+            {
+                label: "slicerVersion",
+                identity: manufacturingStlRunIdentity({
+                    ...axes,
+                    savedDesign: design,
+                    slicerVersion: `${MANUFACTURING_SLICER_VERSION}-other`,
+                }),
+            },
+        ];
+        for (const change of axisChanges) {
+            expect(change.identity, change.label).not.toBe(baseline);
+            expect(
+                storedManufacturingStlReusable(checkpoint, { stlIdentity: change.identity }),
+                change.label,
+            ).toBe(false);
+        }
+    });
 });
+
+/** Synthetic saved design. The table walks every leaf, so a new field is covered. */
+function fullSavedDesign(): Record<string, unknown> {
+    return {
+        method: "printing_solid",
+        thicknessMm: 3,
+        usMenSize: 11.5,
+        shoeWidth: "medium",
+        sizeSystem: "us",
+        material: "apex_core",
+        archGrindDepthMm: 0,
+        shellThicknessMode: "zonal",
+        corrections: {
+            linked: false,
+            unit: "mm",
+            left: { heelLiftMm: 0, archHeightMm: 1, archElongationMm: 0 },
+            right: { heelLiftMm: 12, archHeightMm: 2, archElongationMm: 1 },
+        },
+        elements: [{ id: "e1", type: "metatarsalPad", side: "left", xMm: 10, yMm: -4, depthMm: 2 }],
+        sinks: { left: [{ kind: "mpj", depthMm: 1 }], right: [{ kind: "styloid", depthMm: 0.5 }] },
+        textMarking: {
+            text: "JABBOUR",
+            addPatientName: true,
+            surface: "bottom",
+            mode: "engrave",
+            depthMm: 0.6,
+            capHeightMm: 12,
+        },
+        printRecipe: {
+            version: 1,
+            pattern: "gyroid",
+            profileId: "apex-v2-insole-95a",
+            defaultHardness: "Medium",
+        },
+        shapeFinish: { topCover: false },
+    };
+}
+
+function cloneJson<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function reverseKeys(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map((entry) => reverseKeys(entry));
+    if (!value || typeof value !== "object") return value;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).reverse()) {
+        out[key] = reverseKeys((value as Record<string, unknown>)[key]);
+    }
+    return out;
+}
+
+function collectLeaves(value: unknown, path = ""): Array<{ path: string; value: unknown }> {
+    if (Array.isArray(value)) {
+        if (value.length === 0) return [{ path, value }];
+        return value.flatMap((entry, index) => collectLeaves(entry, `${path}[${index}]`));
+    }
+    if (value && typeof value === "object") {
+        const keys = Object.keys(value as Record<string, unknown>);
+        if (keys.length === 0) return [{ path, value }];
+        return keys.flatMap((key) =>
+            collectLeaves((value as Record<string, unknown>)[key], path ? `${path}.${key}` : key),
+        );
+    }
+    return [{ path, value }];
+}
+
+function setLeaf(root: Record<string, unknown>, path: string, next: unknown): void {
+    const tokens = path.split(".").flatMap((part) => {
+        const found: string[] = [];
+        const matcher = /([^[\]]+)|\[(\d+)\]/g;
+        let match = matcher.exec(part);
+        while (match) {
+            found.push(match[1] ?? match[2]);
+            match = matcher.exec(part);
+        }
+        return found;
+    });
+    let cursor: unknown = root;
+    for (let i = 0; i < tokens.length - 1; i++) {
+        const token = tokens[i];
+        cursor = Array.isArray(cursor) ? cursor[Number(token)] : (cursor as Record<string, unknown>)[token];
+    }
+    const last = tokens[tokens.length - 1];
+    if (Array.isArray(cursor)) cursor[Number(last)] = next;
+    else (cursor as Record<string, unknown>)[last] = next;
+}
+
+function changedValue(value: unknown): unknown {
+    if (typeof value === "number") return value + 1;
+    if (typeof value === "boolean") return !value;
+    if (typeof value === "string") return `${value}~`;
+    if (value == null) return "changed";
+    return { changed: true };
+}
