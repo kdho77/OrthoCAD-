@@ -144,11 +144,11 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      */
     repairUpwardBottom?: boolean;
     /**
-     * `bottomPattern` already has the shoe-width taper. Refit it to the
-     * composed rim in width mode. The uniform {@link insoleWidthScale} path
-     * is a different scale and stays off.
+     * `bottomPattern` already has the shoe-width taper. `true` refits it with
+     * the extra heel inset. `"rim"` tracks the composed silhouette without
+     * that inset.
      */
-    widthPatternFair?: boolean;
+    widthPatternFair?: boolean | "rim";
 }
 
 function zeroCorrections(): SideCorrections {
@@ -1411,8 +1411,9 @@ export function reconstructProceduralWalls(
     const forefootFollowRim = foreW !== 0 && !forefootOnComposed;
     const wholeScale = options.insoleWidthScale ?? 1;
     const wholeWidth = Number.isFinite(wholeScale) && Math.abs(wholeScale - 1) > 1e-12;
-    const widthFair = options.widthPatternFair === true;
-    const patternFairMode = wholeWidth ? "width" : widthFair ? "shoe" : "heel";
+    const widthFair = options.widthPatternFair === true || options.widthPatternFair === "rim";
+    const patternFairMode =
+        wholeWidth || options.widthPatternFair === "rim" ? "width" : widthFair ? "shoe" : "heel";
     const followFactor = wholeWidth
         ? 0
         : heelWiden || forefootFollowRim

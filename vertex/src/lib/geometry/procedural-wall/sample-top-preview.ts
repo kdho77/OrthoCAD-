@@ -423,6 +423,40 @@ function reflectPlanY(points: PolyPoint[], y0: number): PolyPoint[] {
 }
 
 /**
+ * Men's 9 never builds the scaled taper loop. Fair the unscaled sheet and
+ * apply the same 1D width the top mesh uses, so a preloft miss can refit
+ * that pattern instead of the already-narrowed outline.
+ */
+function taperedFairFromSheet(
+    sheet: BufferGeometry,
+    options: ProceduralPreviewOptions,
+): PolyPoint[] | null {
+    const sw = options.shoeWidth;
+    if (!sw || options.bottomPattern?.length || insetsForScanPattern(options.scanPattern) != null) {
+        return null;
+    }
+    const native = sheet.clone();
+    try {
+        const nativeModel = extractTopOnlyModel(native, {
+            id: SAMPLE_TOP_ASSET_ID,
+            name: SAMPLE_TOP_NAME,
+        });
+        const fair = buildFairedPatternFromTop(nativeModel, options.scanPattern);
+        const ref = shoeWidthReferenceOfGeometry(sheet);
+        return applyShoeWidthToPoints(fair, sw.width, {
+            ballWidthMm: ref.ballWidthMm,
+            heelWidthMm: ref.heelWidthMm,
+            minX: ref.frame.minX,
+            lengthMm: ref.frame.lengthMm,
+            yMid: ref.frame.yMid,
+            heelOverrideMm: sw.heelOverrideMm,
+        });
+    } finally {
+        native.dispose();
+    }
+}
+
+/**
  * mirrorGeometry reflects vertices and not the loft's plan frames. Text reads
  * outlineRing from userData; a stale left outline makes the right sole look
  * off z=0 and the name is dropped.
@@ -620,7 +654,7 @@ export async function reconstructProceduralPreview(
         (options.bottomPattern?.length
             ? options.bottomPattern
             : buildFairedPatternFromTop(model, options.scanPattern));
-    const loft = (pattern: PolyPoint[], fair: boolean) => {
+    const loft = (pattern: PolyPoint[], fair: boolean | "rim") => {
         const thicknessMm =
             options.thicknessMm ?? options.sourceField?.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
         const stockThicknessMm = options.stockThicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
@@ -651,12 +685,24 @@ export async function reconstructProceduralPreview(
             // Scaled outlines only. Native posting and the US 9 reference
             // stay on the triangulation those baselines already froze.
             ...(footprintClone ? { repairUpwardBottom: true } : {}),
-            ...(fair ? { widthPatternFair: true } : {}),
+            ...(fair ? { widthPatternFair: fair === true ? true : "rim" } : {}),
         });
         return { model, pattern, geometry };
     };
+    // Men's 9 is scale 1, so the footprint branch never stores a centre.
+    // The width affine is still on, and the station loft is still not a mirror.
+    if (!fairCenter && shoeWidthTaperActive(options)) {
+        if (!topGeo.boundingBox) topGeo.computeBoundingBox();
+        const box = topGeo.boundingBox;
+        if (box) {
+            fairCenter = {
+                x: (box.min.x + box.max.x) / 2,
+                y: (box.min.y + box.max.y) / 2,
+            };
+        }
+    }
     // A right foot that lofts on its own is still not the mirror of the left.
-    // Reflect the left solid whenever the width affine is on.
+    // Reflect the left solid whenever the width affine is on, including scale 1.
     if (options.side === "right" && options.sourceField && fairCenter && shoeWidthTaperActive(options)) {
         const mirrored = await loftRightAsMirroredLeft(topGeo, options, fairCenter.y);
         return { model, pattern: mirrored.pattern, geometry: mirrored.geometry };
@@ -664,13 +710,25 @@ export async function reconstructProceduralPreview(
     try {
         return loft(requested, false);
     } catch (e) {
-        if (
-            taperedPattern &&
-            e instanceof Error &&
-            e.message.includes("[S1-PRELOFT]") &&
-            e.message.includes("skew[")
-        ) {
-            return loft(taperedPattern, true);
+        const preloft = e instanceof Error && e.message.includes("[S1-PRELOFT]");
+        // Scaled sizes already hold the tapered fair. Men's 9 builds it here
+        // from the unscaled sheet. A first loft that clears the gate is
+        // unchanged, so the pinned narrow meshes stay put.
+        if (preloft && shoeWidthTaperActive(options)) {
+            const pattern = taperedPattern ?? taperedFairFromSheet(topGeo, options);
+            if (pattern) {
+                try {
+                    // Narrow misses already clear on this refit. Those pins stay.
+                    return loft(pattern, true);
+                } catch (e2) {
+                    // 2X Wide at a scaled size still misses. Fair the composed
+                    // sheet, which is the loop Men's 9 already lofts directly.
+                    if (e2 instanceof Error && e2.message.includes("[S1-PRELOFT]")) {
+                        return loft(buildFairedPatternFromTop(model, options.scanPattern), "rim");
+                    }
+                    throw e2;
+                }
+            }
         }
         if (options.bottomPattern?.length || !options.scanPattern || options.scanPattern === "full_contact") {
             throw e;

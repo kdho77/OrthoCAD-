@@ -170,6 +170,33 @@ describe("narrow width + 9 mm heel cup preloft", () => {
         }
     }, 720_000);
 
+    test("right foot matches the mirrored left at Men's 9 and on Wide / 2X Wide", async () => {
+        await loadTemplate();
+        // Men's 9 is footprint scale 1. Wide and 2X Wide there, and US M10
+        // 2X Wide, still have to match the mirrored left within 0.05 mm.
+        const cases: Array<{ size: number; width: ShoeWidthId }> = [
+            { size: 9, width: "narrow" },
+            { size: 9, width: "wide" },
+            { size: 9, width: "xx_wide" },
+            { size: 10, width: "xx_wide" },
+        ];
+        for (const { size, width } of cases) {
+            const label = `US M${size} ${width}`;
+            const left = await exportLeft(
+                designFor({ width, size, heelCupHeightMm: 9, metPad: true }),
+            );
+            const right = await exportRight(
+                designFor({ width, size, heelCupHeightMm: 9, metPad: true, side: "right" }),
+            );
+            const mirroredLeft = mirrorGeometry(left.geometry);
+            const gap = hausdorffReport(mirroredLeft, right.geometry);
+            expect(gap.maxMm, label).toBeLessThanOrEqual(0.05);
+            mirroredLeft.dispose();
+            left.geometry.dispose();
+            right.geometry.dispose();
+        }
+    }, 900_000);
+
     test("US M6 narrow, heel cup height 9 mm, default met pad exports without S1-PRELOFT skew", async () => {
         await loadTemplate();
         // US M6 is the order: skew[45]=50.577>29.076; skew[46]=76.058>25.756.
