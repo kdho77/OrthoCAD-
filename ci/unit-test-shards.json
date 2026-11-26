@@ -11,6 +11,7 @@
                 "tests/cnc/band.test.ts",
                 "tests/cnc/drop-cutter.test.ts",
                 "tests/cnc/placement.test.ts",
+                "tests/cnc/single-foot-envelope.test.ts",
                 "tests/export-preview-parity.test.ts",
                 "tests/heel-cup-composition-qa-console.test.ts",
                 "tests/min-chord-bridge.test.ts",
