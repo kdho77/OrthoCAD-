@@ -65,6 +65,9 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
     const [dir, setDir] = useState<"asc" | "desc">("desc");
     const [toast, setToast] = useState<{ name: string; id: string } | null>(null);
     const [pendingDelete, setPendingDelete] = useState<DesignRecord | null>(null);
+    const [selectedDesignIds, setSelectedDesignIds] = useState<Set<string>>(() => new Set());
+    const [pendingBulkDelete, setPendingBulkDelete] = useState(false);
+    const [bulkDeleteErrors, setBulkDeleteErrors] = useState<string[]>([]);
     const [storePhi, setStorePhi] = useState(storePhiEnabled);
     const [flow, setFlow] = useState<"choice" | "scan" | null>(() =>
         new URLSearchParams(window.location.search).get("start") === "insole" ? "choice" : null,
@@ -92,6 +95,35 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
         );
         return sortDesigns(rows, sort, dir);
     }, [designs, showArchived, sort, dir]);
+    const visibleIds = useMemo(() => visible.map((design) => design.id), [visible]);
+    const selectedCount = useMemo(
+        () => visibleIds.filter((id) => selectedDesignIds.has(id)).length,
+        [visibleIds, selectedDesignIds],
+    );
+    const allVisibleSelected = visible.length > 0 && selectedCount === visible.length;
+    const someVisibleSelected = selectedCount > 0 && !allVisibleSelected;
+    const selectedForBulk = useMemo(
+        () => visible.filter((design) => selectedDesignIds.has(design.id)),
+        [visible, selectedDesignIds],
+    );
+    const toggleDesignSelected = (designId: string, checked: boolean) => {
+        setSelectedDesignIds((current) => {
+            const next = new Set(current);
+            if (checked) next.add(designId);
+            else next.delete(designId);
+            return next;
+        });
+    };
+    const toggleSelectAllVisible = (checked: boolean) => {
+        setSelectedDesignIds((current) => {
+            const next = new Set(current);
+            for (const id of visibleIds) {
+                if (checked) next.add(id);
+                else next.delete(id);
+            }
+            return next;
+        });
+    };
     const deleted = designs.filter((design) => design.deletedAt);
     const archivedCount = designs.filter((design) => design.archivedAt && !design.deletedAt).length;
 
@@ -255,6 +287,19 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                                         {showArchived ? "Show active" : `Archived (${archivedCount})`}
                                     </button>
                                 ) : null}
+                                <Button
+                                    type="button"
+                                    variant="destructive"
+                                    className="min-h-11"
+                                    data-testid="delete-selected"
+                                    disabled={selectedCount === 0}
+                                    onClick={() => {
+                                        setBulkDeleteErrors([]);
+                                        setPendingBulkDelete(true);
+                                    }}
+                                >
+                                    Delete selected ({selectedCount})
+                                </Button>
                                 <Button type="button" className="min-h-11" onClick={() => setPicker(true)}>
                                     <Plus className="h-4 w-4" /> New design
                                 </Button>
@@ -280,12 +325,27 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                             </div>
                         ) : (
                             <div className="flex flex-col gap-2">
+                                {bulkDeleteErrors.length > 0 ? (
+                                    <p
+                                        className="text-sm text-destructive"
+                                        data-testid="bulk-delete-errors"
+                                        role="alert"
+                                    >
+                                        Could not delete: {bulkDeleteErrors.join(", ")}
+                                    </p>
+                                ) : null}
                                 <div
                                     className={cn(
-                                        "hidden text-xs text-muted-foreground md:grid md:px-2",
+                                        "hidden text-xs text-muted-foreground md:grid md:items-center md:px-2",
                                         designGridClass(storePhi),
                                     )}
                                 >
+                                    <DesignSelectAllCheckbox
+                                        checked={allVisibleSelected}
+                                        indeterminate={someVisibleSelected}
+                                        disabled={visible.length === 0}
+                                        onChange={toggleSelectAllVisible}
+                                    />
                                     <SortButton
                                         label="Type"
                                         sortKey="kind"
@@ -335,6 +395,10 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                                     <DesignRowView
                                         key={design.id}
                                         design={design}
+                                        selected={selectedDesignIds.has(design.id)}
+                                        onSelectedChange={(checked) =>
+                                            toggleDesignSelected(design.id, checked)
+                                        }
                                         onOpen={() => navigate(designPath(client.id, design.id))}
                                         onDelete={() => setPendingDelete(design)}
                                         onDuplicate={() => {
@@ -431,6 +495,27 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                     setPendingDelete(null);
                 }}
             />
+            <BulkDeleteDesignsDialog
+                open={pendingBulkDelete}
+                designs={selectedForBulk}
+                onClose={() => setPendingBulkDelete(false)}
+                onConfirm={() => {
+                    const ids = selectedForBulk.map((design) => design.id);
+                    const { failedIds } = useClientStore.getState().softDeleteDesigns(ids);
+                    const failedNames = selectedForBulk
+                        .filter((design) => failedIds.includes(design.id))
+                        .map((design) => design.name);
+                    setPendingBulkDelete(false);
+                    setSelectedDesignIds((current) => {
+                        const next = new Set(current);
+                        for (const id of ids) {
+                            if (!failedIds.includes(id)) next.delete(id);
+                        }
+                        return next;
+                    });
+                    setBulkDeleteErrors(failedNames);
+                }}
+            />
         </div>
     );
 }
@@ -501,12 +586,44 @@ function SortButton({
 
 function designGridClass(storePhi: boolean): string {
     return storePhi
-        ? "md:grid-cols-[88px_minmax(0,1.3fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_44px] xl:grid-cols-[88px_minmax(0,1.2fr)_110px_minmax(0,0.8fr)_minmax(0,1fr)_44px]"
-        : "md:grid-cols-[88px_minmax(0,1.4fr)_minmax(0,0.9fr)_44px] xl:grid-cols-[88px_minmax(0,1.3fr)_110px_minmax(0,0.8fr)_44px]";
+        ? "md:grid-cols-[36px_88px_minmax(0,1.3fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_44px] xl:grid-cols-[36px_88px_minmax(0,1.2fr)_110px_minmax(0,0.8fr)_minmax(0,1fr)_44px]"
+        : "md:grid-cols-[36px_88px_minmax(0,1.4fr)_minmax(0,0.9fr)_44px] xl:grid-cols-[36px_88px_minmax(0,1.3fr)_110px_minmax(0,0.8fr)_44px]";
+}
+
+function DesignSelectAllCheckbox({
+    checked,
+    indeterminate,
+    disabled,
+    onChange,
+}: {
+    checked: boolean;
+    indeterminate: boolean;
+    disabled: boolean;
+    onChange: (checked: boolean) => void;
+}) {
+    const setRef = (element: HTMLInputElement | null) => {
+        if (element) element.indeterminate = indeterminate;
+    };
+    return (
+        <label className="flex min-h-11 items-center justify-center">
+            <input
+                ref={setRef}
+                type="checkbox"
+                data-testid="designs-select-all"
+                className="h-4 w-4"
+                checked={checked}
+                disabled={disabled}
+                aria-label="Select all designs"
+                onChange={(event) => onChange(event.target.checked)}
+            />
+        </label>
+    );
 }
 
 function DesignRowView({
     design,
+    selected,
+    onSelectedChange,
     onOpen,
     onDelete,
     onDuplicate,
@@ -514,6 +631,8 @@ function DesignRowView({
     onNotes,
 }: {
     design: DesignRecord;
+    selected: boolean;
+    onSelectedChange: (checked: boolean) => void;
     onOpen: () => void;
     onDelete: () => void;
     onDuplicate: () => void;
@@ -529,6 +648,20 @@ function DesignRowView({
                 designGridClass(storePhi),
             )}
         >
+            <label className="flex min-h-11 items-center justify-center md:justify-start">
+                <input
+                    type="checkbox"
+                    data-testid={`design-select-${design.id}`}
+                    className="h-4 w-4"
+                    checked={selected}
+                    aria-label={`Select ${design.name}`}
+                    onChange={(event) => {
+                        event.stopPropagation();
+                        onSelectedChange(event.target.checked);
+                    }}
+                    onClick={(event) => event.stopPropagation()}
+                />
+            </label>
             <button type="button" className="min-h-11 text-left" onClick={onOpen}>
                 <span
                     className={cn(
@@ -603,6 +736,70 @@ function DesignRowView({
                 ]}
             />
         </div>
+    );
+}
+
+function BulkDeleteDesignsDialog({
+    open,
+    designs,
+    onClose,
+    onConfirm,
+}: {
+    open: boolean;
+    designs: DesignRecord[];
+    onClose: () => void;
+    onConfirm: () => void;
+}) {
+    const [phrase, setPhrase] = useState("");
+    const designKey = designs.map((design) => design.id).join(",");
+    const [phraseFor, setPhraseFor] = useState(designKey);
+    if (phraseFor !== designKey) {
+        setPhraseFor(designKey);
+        setPhrase("");
+    }
+    const needsPhrase = designs.some((design) => design.hasExport);
+    const enabled = designs.length > 0 && (!needsPhrase || phrase === "DELETE");
+    return (
+        <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+            <DialogContent className="max-w-sm">
+                <DialogHeader>
+                    <DialogTitle>
+                        Delete {designs.length} design{designs.length === 1 ? "" : "s"}?
+                    </DialogTitle>
+                    <p className="text-xs text-muted-foreground">This can't be undone.</p>
+                </DialogHeader>
+                {needsPhrase ? (
+                    <Input
+                        aria-label="Type DELETE to confirm"
+                        placeholder="Type DELETE"
+                        value={phrase}
+                        onChange={(event) => setPhrase(event.target.value)}
+                        className="min-h-11"
+                    />
+                ) : null}
+                <div className="flex justify-end gap-2">
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        className="min-h-11"
+                        data-testid="bulk-delete-cancel"
+                        onClick={onClose}
+                    >
+                        Cancel
+                    </Button>
+                    <Button
+                        type="button"
+                        variant="destructive"
+                        className="min-h-11"
+                        data-testid="bulk-delete-confirm"
+                        disabled={!enabled}
+                        onClick={onConfirm}
+                    >
+                        Delete {designs.length}
+                    </Button>
+                </div>
+            </DialogContent>
+        </Dialog>
     );
 }
 
