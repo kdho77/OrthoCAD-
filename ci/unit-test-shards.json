@@ -8,6 +8,7 @@
                 "packages/mcp/test/central-fab-stl.test.ts",
                 "packages/mcp/test/persist-saved-design-snapshot.test.ts",
                 "packages/mcp/test/design-macros.test.ts",
+                "packages/mcp/test/grader-pr-467-independent.test.ts",
                 "tests/arch-heel-blend.verify.test.ts",
                 "tests/cnc/band.test.ts",
                 "tests/cnc/drop-cutter.test.ts",
