@@ -960,13 +960,33 @@ export async function engraveBottomPlanar(
     try {
         await assertExactManifold(geo);
     } catch (error) {
-        // A glyph floor can leave a T-junction, or the sole CDT can leave a
-        // tiny patch that shares no edge with the shell. Repair only after
-        // the exact check fails. A mesh that already passed is returned above,
-        // unchanged.
-        const stitched = stitchOpenEngraveSeam(geo);
-        const dropped = dropOpenSoleFlaps(geo);
-        if (!stitched && !dropped) throw error;
+        // The sole CDT can leave a patch that shares no edge with the shell,
+        // and a refined letter floor can leave a vertex sitting on a wall
+        // edge. Both are repaired only after the exact check throws. A mesh
+        // that already passed is returned above, unchanged. The 0.02 mm
+        // stitch runs first and returns immediately when it is enough, so a
+        // name that already passes that stitch keeps the same triangles.
+        if (stitchOpenEngraveSeam(geo)) {
+            dropLoneOpenTriangles(geo);
+            try {
+                await assertExactManifold(geo);
+                return geo;
+            } catch {
+                /* The 0.02 mm stitch did not close this solid. */
+            }
+        }
+        let changed = dropDisconnectedSolePatches(geo);
+        if (changed) {
+            dropLoneOpenTriangles(geo);
+            try {
+                await assertExactManifold(geo);
+                return geo;
+            } catch {
+                /* A sole speck was not the whole crack. */
+            }
+        }
+        changed = splitLooseFloorSeam(geo);
+        if (!changed) throw error;
         dropLoneOpenTriangles(geo);
         await assertExactManifold(geo);
     }
@@ -976,28 +996,26 @@ export async function engraveBottomPlanar(
 const SEAM_WELD_MM = 0.02;
 
 const FLAP_Z_MM = 0.05;
-const FLAP_TRIS = 4;
+const FLAP_TRIS = 8;
+const LOOSE_SEAM_MM = 0.15;
 
 /**
- * Drop a tiny sole patch that shares no edge with the shell. A two-triangle
- * diamond from the sole CDT can sit on the plane with every outer edge open.
- * Letter walls leave the sole plane, so they stay.
+ * Drop a sole-plane component that shares no edge with the shell. Letter
+ * walls leave z = 0, so a counter or a wall is not a candidate.
  */
-function dropOpenSoleFlaps(geo: BufferGeometry): boolean {
+function dropDisconnectedSolePatches(geo: BufferGeometry): boolean {
     const pos = geo.getAttribute("position");
     const indexAttr = geo.getIndex();
     if (!pos || !indexAttr) return false;
-    const ukey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
     const tris: Array<[number, number, number]> = [];
-    const edgeCount = new Map<string, number>();
     const edgeTris = new Map<string, number[]>();
+    const ukey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
     for (let t = 0; t + 2 < indexAttr.count; t += 3) {
         const tri: [number, number, number] = [indexAttr.getX(t), indexAttr.getX(t + 1), indexAttr.getX(t + 2)];
         const ti = tris.length;
         tris.push(tri);
         for (let e = 0; e < 3; e++) {
             const k = ukey(tri[e], tri[(e + 1) % 3]);
-            edgeCount.set(k, (edgeCount.get(k) ?? 0) + 1);
             const users = edgeTris.get(k) ?? [];
             users.push(ti);
             edgeTris.set(k, users);
@@ -1005,15 +1023,6 @@ function dropOpenSoleFlaps(geo: BufferGeometry): boolean {
     }
     const onSole = (tri: [number, number, number]) =>
         tri.every((i) => Math.abs(pos.getZ(i)) <= FLAP_Z_MM);
-    const openCount = (ti: number) => {
-        const tri = tris[ti]!;
-        let n = 0;
-        for (let e = 0; e < 3; e++) {
-            if (edgeCount.get(ukey(tri[e], tri[(e + 1) % 3])) === 1) n++;
-        }
-        return n;
-    };
-    const candidate = tris.map((tri, ti) => onSole(tri) && openCount(ti) >= 2);
     const parent = tris.map((_, i) => i);
     const find = (i: number): number => {
         let x = i;
@@ -1022,38 +1031,29 @@ function dropOpenSoleFlaps(geo: BufferGeometry): boolean {
         return x;
     };
     for (const users of edgeTris.values()) {
-        const inside = users.filter((ti) => candidate[ti]);
-        for (let i = 1; i < inside.length; i++) {
-            const a = find(inside[0]!);
-            const b = find(inside[i]!);
+        for (let i = 1; i < users.length; i++) {
+            const a = find(users[0]!);
+            const b = find(users[i]!);
             if (a !== b) parent[b] = a;
         }
     }
     const groups = new Map<number, number[]>();
+    let shell = 0;
+    let shellN = 0;
     for (let ti = 0; ti < tris.length; ti++) {
-        if (!candidate[ti]) continue;
         const root = find(ti);
         const list = groups.get(root) ?? [];
         list.push(ti);
         groups.set(root, list);
+        if (list.length > shellN) {
+            shellN = list.length;
+            shell = root;
+        }
     }
     const drop = new Set<number>();
-    for (const group of groups.values()) {
-        if (group.length < 1 || group.length > FLAP_TRIS) continue;
-        const members = new Set(group);
-        let touchesShell = false;
-        const seen = new Set<string>();
-        for (const ti of group) {
-            const tri = tris[ti]!;
-            for (let e = 0; e < 3; e++) {
-                const k = ukey(tri[e], tri[(e + 1) % 3]);
-                if (seen.has(k)) continue;
-                seen.add(k);
-                const users = edgeTris.get(k) ?? [];
-                if (users.some((u) => !members.has(u))) touchesShell = true;
-            }
-        }
-        if (touchesShell) continue;
+    for (const [root, group] of groups) {
+        if (root === shell || group.length > FLAP_TRIS) continue;
+        if (!group.every((ti) => onSole(tris[ti]!))) continue;
         let area = 0;
         for (const ti of group) {
             const [a, b, c] = tris[ti]!;
@@ -1114,7 +1114,7 @@ function stitchOpenEngraveSeam(geo: BufferGeometry): boolean {
         index.push(a, b, c);
         faceClass.push(classes[i] ?? 0);
     }
-    const stitched = splitOpenTJunctions(pos, index, faceClass, geo);
+    const stitched = splitOpenTJunctions(pos, index, faceClass, geo, SEAM_WELD_MM, false);
     if (!remap && !stitched) return false;
     geo.setIndex(stitched ?? index);
     if (!stitched) (geo.userData as { faceClass: number[] }).faceClass = faceClass;
@@ -1179,11 +1179,36 @@ function weldOpenEndpoints(
     return parent;
 }
 
+/**
+ * Insert a vertex that lies on an open edge but was not a corner of that edge.
+ * Used only after the 0.02 mm stitch still leaves the solid open. The vertex
+ * is not moved. `useAllVerts` catches a floor vertex whose own edges are
+ * already shared, so it is not an endpoint of an open edge.
+ */
+function splitLooseFloorSeam(geo: BufferGeometry): boolean {
+    const pos = geo.getAttribute("position");
+    const indexAttr = geo.getIndex();
+    if (!pos || !indexAttr) return false;
+    const srcClass = (geo.userData as { faceClass?: number[] }).faceClass;
+    const index: number[] = [];
+    const faceClass: number[] = [];
+    for (let i = 0; i + 2 < indexAttr.count; i += 3) {
+        index.push(indexAttr.getX(i), indexAttr.getX(i + 1), indexAttr.getX(i + 2));
+        faceClass.push(srcClass?.[i / 3] ?? 0);
+    }
+    const stitched = splitOpenTJunctions(pos, index, faceClass, geo, LOOSE_SEAM_MM, true);
+    if (!stitched) return false;
+    geo.setIndex(stitched);
+    return true;
+}
+
 function splitOpenTJunctions(
     pos: BufferGeometry["attributes"]["position"],
     index: number[],
     faceClass: number[] | undefined,
     geo: BufferGeometry,
+    tolMm: number,
+    useAllVerts: boolean,
 ): number[] | null {
     const edge = new Map<string, number>();
     const key = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -1211,7 +1236,13 @@ function splitOpenTJunctions(
     }
     if (!openEdges.length) return null;
     const hits = new Map<string, Array<{ m: number; t: number }>>();
-    const tol = SEAM_WELD_MM;
+    const tol = tolMm;
+    const pool: number[] = [];
+    if (useAllVerts) {
+        for (let i = 0; i < pos.count; i++) pool.push(i);
+    } else {
+        pool.push(...openVerts);
+    }
     for (const [a, b] of openEdges) {
         const ax = pos.getX(a);
         const ay = pos.getY(a);
@@ -1224,7 +1255,7 @@ function splitOpenTJunctions(
         const abz = bz - az;
         const ab2 = abx * abx + aby * aby + abz * abz;
         if (ab2 < 1e-12) continue;
-        for (const m of openVerts) {
+        for (const m of pool) {
             if (m === a || m === b) continue;
             const mx = pos.getX(m) - ax;
             const my = pos.getY(m) - ay;
