@@ -37,6 +37,24 @@ export interface StorageUploadResult {
     sizeBytes: number;
 }
 
+/** Transient storage failures. A duplicate key or an auth error is not retried. */
+export const STORAGE_UPLOAD_ATTEMPTS = 3;
+
+const STORAGE_UPLOAD_BACKOFF_MS = 200;
+
+export function isTransientStorageUploadMessage(message: string): boolean {
+    return /fetch failed|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|UND_ERR_|network error/i.test(
+        message,
+    );
+}
+
+function storageUploadBackoff(attempt: number): Promise<void> {
+    return new Promise((resolve) => {
+        const timer = setTimeout(resolve, STORAGE_UPLOAD_BACKOFF_MS * attempt);
+        timer.unref?.();
+    });
+}
+
 /**
  * Upload a binary asset.
  * @param bucket - optional override (defaults to MAIN_BUCKET). Use STOCK_BUCKET for stock bases.
@@ -48,14 +66,24 @@ export async function uploadAsset(
     contentType: string,
     bucket = MAIN_BUCKET,
 ): Promise<StorageUploadResult> {
-    const { error } = await supabase.storage.from(bucket).upload(key, data, {
-        contentType,
-        upsert: false,
-    });
-    if (error) {
-        throw new Error(`Storage upload failed: ${error.message}`);
+    let last = "unknown";
+    for (let attempt = 1; attempt <= STORAGE_UPLOAD_ATTEMPTS; attempt++) {
+        try {
+            const { error } = await supabase.storage.from(bucket).upload(key, data, {
+                contentType,
+                upsert: false,
+            });
+            if (!error) return { key, sizeBytes: data.length };
+            last = error.message;
+        } catch (err) {
+            last = err instanceof Error ? err.message : String(err);
+        }
+        if (!isTransientStorageUploadMessage(last) || attempt === STORAGE_UPLOAD_ATTEMPTS) {
+            throw new Error(`Storage upload failed: ${last}`);
+        }
+        await storageUploadBackoff(attempt);
     }
-    return { key, sizeBytes: data.length };
+    throw new Error(`Storage upload failed: ${last}`);
 }
 
 /** Create a one-shot signed upload URL so the browser can PUT bytes directly to Storage. */

@@ -29,6 +29,7 @@ import {
 import { getSupabaseAdmin } from "../context.js";
 import {
     beginCadOperatorProduction,
+    CAD_PRODUCTION_LEASE_MS,
     type CadFootSide,
     type CadProductionRow,
     type CadProductionStatus,
@@ -154,6 +155,8 @@ async function continueInFlightSlice(args: {
     now: Date;
 }): Promise<void> {
     const stored = readSliceCheckpoint(args.row.error);
+    // No checkpoint means this read has nothing to resume. A fresh loft is
+    // started by generate_gcode, which still has the caller credential.
     if (!stored) return;
     if (args.row.status !== "pending" && args.row.status !== "running") return;
     const side = args.row.side;
@@ -207,6 +210,8 @@ async function continueInFlightSlice(args: {
         now: () => args.now,
         sliceBudgetMs: 0,
         stlIdentity,
+        // A checkpoint that was not written after a loft is a stored STL.
+        // Do not poll that job and do not download its file. materialize lofts.
         resumeSubmittedSlice: stored.rematerialized === true,
         materialize: async () => {
             if (!plan || (side !== "left" && side !== "right")) {
@@ -932,6 +937,47 @@ function hiddenFromOperator(principal: CadOperatorPrincipal | null, storageKey: 
     }
 }
 
+/**
+ * A job this production submitted after loft is polled here.
+ * A checkpoint that still names a stored STL is not downloaded. The loft is
+ * scheduled and this call returns the production id without waiting for it.
+ */
+async function followProduction(args: {
+    prisma: PrismaClient;
+    store: PrismaCadProductionStore;
+    row: CadProductionRow;
+    now: Date;
+}): Promise<CadProductionRow> {
+    const checkpoint = readSliceCheckpoint(args.row.error);
+    if (checkpoint?.rematerialized === true) {
+        await continueInFlightSlice(args);
+    } else if (checkpoint) {
+        const dropped = await args.store.updateIf(
+            args.row.id,
+            (current) => {
+                const saved = readSliceCheckpoint(current.error);
+                return saved != null && saved.rematerialized !== true;
+            },
+            {
+                status: "pending",
+                error: null,
+                leaseExpiresAt: new Date(args.now.getTime() + CAD_PRODUCTION_LEASE_MS),
+                updatedAt: args.now,
+            },
+        );
+        if (dropped) {
+            scheduleCadProduction(
+                continueInFlightSlice({
+                    ...args,
+                    row: { ...args.row, status: "pending" },
+                }),
+            );
+        }
+    }
+    const refreshed = (await args.store.findById(args.row.id)) ?? args.row;
+    return (await expireStaleProduction(args.store, refreshed.id, args.now)) ?? refreshed;
+}
+
 export async function readCadOperatorProduction(args: {
     prisma: PrismaClient;
     principal: CadOperatorPrincipal | null;
@@ -954,11 +1000,7 @@ export async function readCadOperatorProduction(args: {
         throw new TRPCError({ code: "FORBIDDEN", message: "Production not found or access denied" });
     }
     const now = args.now ?? new Date();
-    if (readSliceCheckpoint(row.error)) {
-        await continueInFlightSlice({ prisma: args.prisma, store, row, now });
-    }
-    const refreshed = (await store.findById(row.id)) ?? row;
-    const visible = (await expireStaleProduction(store, refreshed.id, now)) ?? refreshed;
+    const visible = await followProduction({ prisma: args.prisma, store, row, now });
     return toPublicProduction(visible);
 }
 
@@ -978,11 +1020,7 @@ export async function listCadOperatorProductions(args: {
     const productions: PublicProduction[] = [];
     for (const row of rows) {
         if (hiddenFromOperator(args.principal, row.gcodeStorageKey)) continue;
-        if (readSliceCheckpoint(row.error)) {
-            await continueInFlightSlice({ prisma: args.prisma, store, row, now });
-        }
-        const refreshed = (await store.findById(row.id)) ?? row;
-        const visible = (await expireStaleProduction(store, refreshed.id, now)) ?? refreshed;
+        const visible = await followProduction({ prisma: args.prisma, store, row, now });
         productions.push(toPublicProduction(visible));
     }
     return { productions };

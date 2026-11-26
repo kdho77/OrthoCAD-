@@ -1,4 +1,4 @@
-// orthocad-mcp-http-bundle f5cd11e3561e1a9ee552e98028e61f3a05b982075a283a249849079f8aa005db
+// orthocad-mcp-http-bundle f8111db31d7d09be41ae78295a0aa8b4f4df0092463d17dcb32145d647fb4f4e
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -25680,7 +25680,7 @@ var MCP_TOOL_DEFINITIONS = [
   },
   {
     name: "generate_gcode",
-    description: 'Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. The server lofts and slices after that response. Poll get_production. Download with get_export_download only after succeeded. A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset. Set force_new_slice to true (saved-design only) after a slicer fix or design change to enqueue a fresh slice without reusing a succeeded production; in-flight work is still reused. No STL deliverable and no G-code bytes. Omitting side enqueues both feet. Legacy mode still calls manufacturing.generateSolid \u2192 Python /manufacture with stl_storage_key. PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck. material: omit for apex_core, or pass apex_light, apex_core, apex_bounce, apex_forge, or a list_materials alias ("ApexLight Foam" is apex_light). Unknown materials are rejected and not substituted. preset_id: omit or pass apex-v2-insole-95a. Any other preset_id is rejected and not substituted. Every enabled insole material keeps that locked profile.',
+    description: 'Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. The server lofts and slices after that response. Poll get_production. Download with get_export_download only after succeeded. A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset, and runs a failed production again. A pair retries submit unavailable, fetch failed, and lease expiry; any other failure names that foot and does not return one foot. Set force_new_slice to true (saved-design only) after a slicer fix or design change to enqueue a fresh slice without reusing a succeeded production; in-flight work is still reused. No STL deliverable and no G-code bytes. Omitting side enqueues both feet. Legacy mode still calls manufacturing.generateSolid \u2192 Python /manufacture with stl_storage_key. PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck. material: omit for apex_core, or pass apex_light, apex_core, apex_bounce, apex_forge, or a list_materials alias ("ApexLight Foam" is apex_light). Unknown materials are rejected and not substituted. preset_id: omit or pass apex-v2-insole-95a. Any other preset_id is rejected and not substituted. Every enabled insole material keeps that locked profile.',
     inputSchema: generateGcodeInputObjectSchema
   },
   {
@@ -25788,6 +25788,29 @@ function assertToolNotHeld(value) {
 var PRODUCTION_STATUSES = /* @__PURE__ */ new Set(["pending", "running", "succeeded", "failed"]);
 var PRODUCTION_TERMINAL_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed"]);
 var GET_PRODUCTION_POLL_INTERVAL_MS = 2e3;
+var GENERATE_ENQUEUE_ATTEMPT_MS = 12e3;
+var GENERATE_ENQUEUE_ATTEMPTS = 3;
+function isTransientGenerateFailure(message) {
+  if (/VertexSlice (?:slice exceeded|queue wait exceeded|timed out after)/.test(message)) return false;
+  return /submit unavailable|fetch failed|Production lease expired|Manufacturing timed out \(|generate enqueue timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up/i.test(
+    message
+  );
+}
+function withEnqueueDeadline(work, ms = GENERATE_ENQUEUE_ATTEMPT_MS) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("generate enqueue timed out")), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error2) => {
+        clearTimeout(timer);
+        reject(error2);
+      }
+    );
+  });
+}
 function sleepMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -25939,26 +25962,42 @@ async function dispatchTool(name, args, deps) {
               input.file_name,
               exportBase
             );
-            try {
-              const result = await manufacturing.generateFromSavedDesign({
-                designId,
-                side,
-                presetId,
-                material,
-                fileName: exportFileName,
-                patientName: input.patient_name,
-                hardness: input.hardness,
-                forceNewSlice: input.force_new_slice === true
-              });
-              return { side, exportFileName, result, error: null };
-            } catch (error2) {
-              return {
-                side,
-                exportFileName,
-                result: null,
-                error: error2 instanceof Error ? error2 : new Error(String(error2))
-              };
+            let lastError = null;
+            for (let attempt = 1; attempt <= GENERATE_ENQUEUE_ATTEMPTS; attempt++) {
+              try {
+                const result = await withEnqueueDeadline(
+                  manufacturing.generateFromSavedDesign({
+                    designId,
+                    side,
+                    presetId,
+                    material,
+                    fileName: exportFileName,
+                    patientName: input.patient_name,
+                    hardness: input.hardness,
+                    forceNewSlice: input.force_new_slice === true
+                  })
+                );
+                const fields = result;
+                const failed = typeof result.status === "string" && result.status === "failed" && isTransientGenerateFailure(textField(fields, "error") ?? "");
+                if (failed && attempt < GENERATE_ENQUEUE_ATTEMPTS) {
+                  lastError = new Error(textField(fields, "error") ?? "transient");
+                  continue;
+                }
+                return { side, exportFileName, result, error: null };
+              } catch (error2) {
+                lastError = error2 instanceof Error ? error2 : new Error(String(error2));
+                if (attempt < GENERATE_ENQUEUE_ATTEMPTS && isTransientGenerateFailure(lastError.message)) {
+                  continue;
+                }
+                return { side, exportFileName, result: null, error: lastError };
+              }
             }
+            return {
+              side,
+              exportFileName,
+              result: null,
+              error: lastError ?? new Error("generate enqueue timed out")
+            };
           })
         );
         const files = [];
@@ -25972,6 +26011,11 @@ async function dispatchTool(name, args, deps) {
             throw entry.error;
           }
           const result = entry.result;
+          if (pairEnqueue && typeof result.status === "string" && result.status === "failed") {
+            throw new Error(
+              `Belt pair failed on the ${entry.side} foot. No partial pair is returned. ${textField(result, "error") ?? "Manufacturing failed"}`
+            );
+          }
           if (isUserQuestion(result)) {
             const partialSuccess = sideOutcomes.some(
               (other) => other !== entry && other.result && !isUserQuestion(other.result) && !other.error

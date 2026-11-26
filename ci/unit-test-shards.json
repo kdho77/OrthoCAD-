@@ -300,6 +300,7 @@
                 "vertex/server/src/lib/cad-operator-production.test.ts",
                 "vertex/server/src/lib/dogfood-order-owner-wire.test.ts",
                 "vertex/server/src/lib/gcode-handedness.test.ts",
+                "vertex/server/src/lib/generate-reliability.test.ts",
                 "vertex/server/src/lib/grant-admin-tokens.test.ts",
                 "vertex/server/src/lib/production-jobs.test.ts",
                 "vertex/server/src/print-bridge-function.test.ts",
