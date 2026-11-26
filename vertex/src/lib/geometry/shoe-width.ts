@@ -107,6 +107,74 @@ export interface ShoeWidthFrame {
     yMid: number;
 }
 
+/**
+ * Stations where the affine is a constant scale, so a chord measured here
+ * grows by exactly the width delta. u=0.70 is full ball scale (the forefoot).
+ * u=0.05 is still the heel cap, before the taper begins at u=0.08.
+ */
+export const SHOE_WIDTH_FOREFOOT_U = 0.7;
+export const SHOE_WIDTH_HEEL_U = 0.05;
+
+/** Default-mesh widths the shared 1D scale is taken from. */
+export interface ShoeWidthReference {
+    ballWidthMm: number;
+    heelWidthMm: number;
+    frame: ShoeWidthFrame;
+    forefootU: number;
+    heelU: number;
+}
+
+/**
+ * Lateral chord (max Y − min Y) of vertices near `u`. X is the length axis.
+ * The window stays inside a constant-scale region so the chord is the width
+ * the affine multiplies.
+ */
+function planformChordAtU(geometry: BufferGeometry, frame: ShoeWidthFrame, u: number): number {
+    const pos = geometry.getAttribute("position");
+    if (!pos || pos.count === 0) return 1e-3;
+    const x0 = frame.minX + u * frame.lengthMm;
+    let half = Math.max(1, frame.lengthMm * 0.012);
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let n = 0;
+    const take = (windowMm: number) => {
+        minY = Infinity;
+        maxY = -Infinity;
+        n = 0;
+        for (let i = 0; i < pos.count; i++) {
+            if (Math.abs(pos.getX(i) - x0) > windowMm) continue;
+            const y = pos.getY(i);
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+            n++;
+        }
+    };
+    take(half);
+    if (n < 2) {
+        half = Math.max(half * 3, frame.lengthMm * 0.04);
+        take(half);
+    }
+    if (n < 2 || !(maxY > minY)) return 1e-3;
+    return maxY - minY;
+}
+
+/**
+ * The 1D width scale of this mesh's own Medium planform.
+ * Forefoot chord + the width-class delta, divided by that chord, is the full
+ * forefoot scale. The heel chord is the other end of the taper. Top and bottom
+ * both pass this reference so they share one scale.
+ */
+export function shoeWidthReferenceOfGeometry(geometry: BufferGeometry): ShoeWidthReference {
+    const frame = shoeWidthFrameOfGeometry(geometry);
+    return {
+        ballWidthMm: planformChordAtU(geometry, frame, SHOE_WIDTH_FOREFOOT_U),
+        heelWidthMm: planformChordAtU(geometry, frame, SHOE_WIDTH_HEEL_U),
+        frame,
+        forefootU: SHOE_WIDTH_FOREFOOT_U,
+        heelU: SHOE_WIDTH_HEEL_U,
+    };
+}
+
 /** Same minX / length / vertex-mean Y that {@link applyShoeWidthToGeometry} uses. */
 export function shoeWidthFrameOfGeometry(geometry: BufferGeometry): ShoeWidthFrame {
     const pos = geometry.getAttribute("position");
@@ -192,31 +260,6 @@ export function applyShoeWidthToPoints<T extends { x: number; y: number }>(
         }
         return { ...p, y };
     });
-}
-
-/**
- * Bbox width centre after the shoe-width affine, matching `getBaseExtents`
- * on the geometry {@link applyShoeWidthToGeometry} returns. Heel-cup width
- * scales about that centre.
- */
-export function shoeWidthPlanformCenterY(
-    geometry: BufferGeometry,
-    width: ShoeWidthId,
-    opts: ShoeWidthAffineOpts & { yMid: number },
-): number {
-    const pos = geometry.getAttribute("position");
-    if (!pos || pos.count === 0 || !Number.isFinite(opts.yMid)) return opts.yMid ?? 0;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    for (let i = 0; i < pos.count; i++) {
-        const y = shoeWidthAffineActive(width, opts.heelOverrideMm)
-            ? shoeWidthAffineY(pos.getX(i), pos.getY(i), opts.yMid, width, opts)
-            : pos.getY(i);
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-    }
-    if (!Number.isFinite(minY)) return opts.yMid;
-    return (minY + maxY) / 2;
 }
 
 /**

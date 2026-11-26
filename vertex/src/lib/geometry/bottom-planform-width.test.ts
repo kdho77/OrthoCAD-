@@ -7,14 +7,12 @@ import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import {
     applyShoeWidthToGeometry,
     applyShoeWidthToPoints,
+    SHOE_WIDTH_BALL_DELTA_MM,
     type ShoeWidthId,
-    shoeWidthFrameOfGeometry,
+    shoeWidthReferenceOfGeometry,
+    shoeWidthScaleAtU,
 } from "@/lib/geometry/shoe-width";
 import { extractMeshOutline } from "@/lib/geometry/trimline";
-import { defaultDesign } from "@/stores/design-store";
-import { baseModifierField } from "./base-asset";
-import { bottomPatternWidthCenter, viewerBottomPatternPlanform } from "./bottom-planform-width";
-import { composePrintSolidTop } from "./procedural-wall/print-solid-compose";
 import {
     buildProceduralViewerPattern,
     loadSampleTopGeometry,
@@ -26,7 +24,6 @@ import {
 const SAMPLE_TOP_PATH = resolve(process.cwd(), "vertex/public/Templates/SAMPLE_Top.glb");
 const WIDTHS: ShoeWidthId[] = ["narrow", "wide", "extra_wide", "xx_wide"];
 const SIZES = [6, 10];
-const HEELS = [0, 2, -2];
 
 function edgesAt(
     points: readonly { x: number; y: number }[],
@@ -57,213 +54,205 @@ function edgesAt(
     return { lo, hi, width: hi - lo };
 }
 
-describe("bottom pattern planform matches the width-scaled top mesh", () => {
-    test("Medium planform is the unscaled pattern (byte-identical width step)", async () => {
-        resetSampleTopGeometryCache();
-        const bytes = readFileSync(SAMPLE_TOP_PATH);
-        primeSampleTopGeometry(
-            await sampleTopFromArrayBuffer(
-                bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-            ),
-        );
-        const raw = await loadSampleTopGeometry();
+async function loadRaw() {
+    resetSampleTopGeometryCache();
+    const bytes = readFileSync(SAMPLE_TOP_PATH);
+    primeSampleTopGeometry(
+        await sampleTopFromArrayBuffer(
+            bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+        ),
+    );
+    return loadSampleTopGeometry();
+}
+
+describe("shared 1D shoe-width scale", () => {
+    test("Medium width leaves the top mesh and the bottom pattern byte-identical", async () => {
+        const raw = await loadRaw();
+        const ref = shoeWidthReferenceOfGeometry(raw);
         const pattern = buildProceduralViewerPattern(raw, "full_contact", {
             heelCupWidthMm: 0,
             forefootWidthMm: 0,
         });
-        const frame = shoeWidthFrameOfGeometry(raw);
-        for (const size of SIZES) {
-            const layout = insoleLayoutForUsMenSize(size);
-            const opts = {
-                ballWidthMm: layout.widthMm,
-                heelWidthMm: layout.widthMm * 0.62,
-                heelCupWidthMm: 0,
-            };
-            const center = bottomPatternWidthCenter(raw, "medium", frame, opts);
-            const out = viewerBottomPatternPlanform(pattern, "medium", frame, opts, center);
-            expect(out).toBe(pattern);
-            const legacy = applyShoeWidthToPoints(pattern, "medium", {
-                ballWidthMm: opts.ballWidthMm,
-                heelWidthMm: opts.heelWidthMm,
-                minX: frame.minX,
-                lengthMm: frame.lengthMm,
-            });
-            expect(legacy).toBe(pattern);
-        }
+        const opts = {
+            ballWidthMm: ref.ballWidthMm,
+            heelWidthMm: ref.heelWidthMm,
+            minX: ref.frame.minX,
+            lengthMm: ref.frame.lengthMm,
+            yMid: ref.frame.yMid,
+        };
+        expect(applyShoeWidthToPoints(pattern, "medium", opts)).toBe(pattern);
+        const medium = applyShoeWidthToGeometry(raw, "medium", opts);
+        const src = raw.getAttribute("position");
+        const dst = medium.getAttribute("position");
+        if (!src || !dst) throw new Error("medium mesh has no position");
+        expect(dst.count).toBe(src.count);
+        const a = src.array as Float32Array;
+        const b = dst.array as Float32Array;
+        expect(b.length).toBe(a.length);
+        for (let i = 0; i < a.length; i++) expect(b[i]).toBe(a[i]);
+        medium.dispose();
         raw.dispose();
     }, 120_000);
 
-    test("Narrow through 2X Wide stay inside the top mesh at M6 and M10, including heel ±2 mm", async () => {
-        resetSampleTopGeometryCache();
-        const bytes = readFileSync(SAMPLE_TOP_PATH);
-        primeSampleTopGeometry(
-            await sampleTopFromArrayBuffer(
-                bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-            ),
-        );
-        const raw = await loadSampleTopGeometry();
-        const fromRaw = buildProceduralViewerPattern(raw, "full_contact", {
+    test("M6 and M10 share one forefoot delta, a heel taper, and a bottom that stays on the top", async () => {
+        const raw = await loadRaw();
+        const ref = shoeWidthReferenceOfGeometry(raw);
+        const pattern = buildProceduralViewerPattern(raw, "full_contact", {
             heelCupWidthMm: 0,
             forefootWidthMm: 0,
         });
-        const mediumDesign = defaultDesign();
-        const mediumField = baseModifierField(mediumDesign, "left", mediumDesign.thicknessMm);
-        const mediumLayout = insoleLayoutForUsMenSize(mediumDesign.usMenSize);
-        const mediumTop = await composePrintSolidTop(raw.clone(), {
-            sourceField: mediumField,
-            shoeWidth: {
-                width: "medium",
-                ballWidthMm: mediumLayout.widthMm,
-                heelWidthMm: mediumLayout.widthMm * 0.62,
-                heelOverrideMm: 0,
-            },
-        });
-        const fromCompose = buildProceduralViewerPattern(mediumTop, "full_contact", {
-            heelCupWidthMm: 0,
-            forefootWidthMm: 0,
-        });
-        if (mediumTop !== raw) mediumTop.dispose();
-        expect(fromCompose.length).toBe(fromRaw.length);
-        let patternDrift = 0;
-        for (let i = 0; i < fromRaw.length; i++) {
-            const a = fromCompose[i];
-            const b = fromRaw[i];
-            if (!a || !b) continue;
-            patternDrift = Math.max(patternDrift, Math.hypot(a.x - b.x, a.y - b.y));
-        }
-        expect(patternDrift).toBeLessThan(0.05);
-        const native = fromCompose;
-        const frame = shoeWidthFrameOfGeometry(raw);
-        const failures: string[] = [];
-        const neutralLayout = insoleLayoutForUsMenSize(9);
-        const mediumOpts = {
-            ballWidthMm: neutralLayout.widthMm,
-            heelWidthMm: neutralLayout.widthMm * 0.62,
-            heelCupWidthMm: 0,
+        const outline = extractMeshOutline(raw, 80);
+        if (!outline) throw new Error("default top has no outline");
+        const opts = {
+            ballWidthMm: ref.ballWidthMm,
+            heelWidthMm: ref.heelWidthMm,
+            minX: ref.frame.minX,
+            lengthMm: ref.frame.lengthMm,
+            yMid: ref.frame.yMid,
         };
-        const mediumCenter = bottomPatternWidthCenter(raw, "medium", frame, mediumOpts);
-        const mediumPattern = viewerBottomPatternPlanform(native, "medium", frame, mediumOpts, mediumCenter);
-        const mediumMesh = extractMeshOutline(raw, 80);
-        expect(mediumMesh).toBeTruthy();
+        const failures: string[] = [];
+        const stations: number[] = [];
+        for (let i = 1; i < 20; i++) stations.push(i / 20);
 
         for (const size of SIZES) {
+            // Shoe size must not change the scale. The denominator is the
+            // default mesh width, so M6 and M10 add the same millimetres.
+            const layout = insoleLayoutForUsMenSize(size);
+            expect(Math.abs(layout.widthMm - ref.ballWidthMm)).toBeGreaterThan(1);
+
             for (const width of WIDTHS) {
-                for (const heel of HEELS) {
-                    const layout = insoleLayoutForUsMenSize(size);
-                    const opts = {
-                        ballWidthMm: layout.widthMm,
-                        heelWidthMm: layout.widthMm * 0.62,
-                        heelCupWidthMm: heel,
-                    };
-                    const center = bottomPatternWidthCenter(raw, width, frame, opts);
-                    const bottom = viewerBottomPatternPlanform(native, width, frame, opts, center);
-                    const design = defaultDesign();
-                    design.usMenSize = size;
-                    design.shoeWidth = width;
-                    design.corrections.left.heelCupWidthMm = heel;
-                    design.corrections.right.heelCupWidthMm = heel;
-                    const field = baseModifierField(design, "left", design.thicknessMm);
-                    const shoe = {
-                        width,
-                        ballWidthMm: layout.widthMm,
-                        heelWidthMm: layout.widthMm * 0.62,
-                        heelOverrideMm: heel,
-                    };
-                    const topGeo =
-                        heel === 0
-                            ? applyShoeWidthToGeometry(raw, width, shoe)
-                            : await composePrintSolidTop(raw.clone(), {
-                                  sourceField: field,
-                                  shoeWidth: shoe,
-                              });
-                    const top = extractMeshOutline(topGeo, 80);
-                    if (topGeo !== raw) topGeo.dispose();
-                    if (!top) {
-                        failures.push(`M${size} ${width} heel ${heel}: no top outline`);
-                        continue;
-                    }
-                    const label = `M${size} ${width} heel ${heel}`;
-                    const stations: number[] = [];
-                    for (let i = 1; i < 20; i++) stations.push(i / 20);
-                    let foreU = 0.68;
-                    let foreTopW = -1;
-                    let foreBotW = -1;
-                    for (const u of stations) {
-                        const x = frame.minX + u * frame.lengthMm;
-                        const meshEdge = edgesAt(top.points, x);
-                        const botEdge = edgesAt(bottom, x);
-                        const medMesh = mediumMesh ? edgesAt(mediumMesh.points, x) : null;
-                        const medBot = edgesAt(mediumPattern, x);
-                        if (!meshEdge || !botEdge || !medMesh || !medBot) continue;
-                        const outsideLo = Math.max(0, meshEdge.lo - botEdge.lo);
-                        const outsideHi = Math.max(0, botEdge.hi - meshEdge.hi);
-                        if (outsideLo > 1 || outsideHi > 1) {
-                            failures.push(
-                                `${label} u=${u.toFixed(2)} outside lo=${outsideLo.toFixed(2)} hi=${outsideHi.toFixed(2)}`,
-                            );
-                        }
-                        const dLo = Math.abs(botEdge.lo - medBot.lo - (meshEdge.lo - medMesh.lo));
-                        const dHi = Math.abs(botEdge.hi - medBot.hi - (meshEdge.hi - medMesh.hi));
-                        if (u >= 0.62 && u <= 0.75 && (dLo > 1 || dHi > 1)) {
-                            failures.push(
-                                `${label} u=${u.toFixed(2)} edge drift lo=${dLo.toFixed(2)} hi=${dHi.toFixed(2)}`,
-                            );
-                        }
-                        if (u >= 0.62 && u <= 0.75 && meshEdge.width > foreTopW) {
-                            foreTopW = meshEdge.width;
-                            foreBotW = botEdge.width;
-                            foreU = u;
-                        }
-                    }
-                    if (foreTopW < 0) {
-                        failures.push(`${label}: no forefoot station`);
-                        continue;
-                    }
-                    const widthGap = foreBotW - foreTopW;
-                    if (widthGap > 1) {
-                        failures.push(
-                            `${label} forefoot u=${foreU.toFixed(2)} bottom wider by ${widthGap.toFixed(2)} mm`,
-                        );
-                    }
-                    const medX = frame.minX + foreU * frame.lengthMm;
-                    const medTop = mediumMesh ? edgesAt(mediumMesh.points, medX) : null;
-                    const medBot = edgesAt(mediumPattern, medX);
-                    if (medTop && medBot) {
-                        const deltaTop = foreTopW - medTop.width;
-                        const deltaBot = foreBotW - medBot.width;
-                        if (Math.abs(deltaBot - deltaTop) > 1) {
-                            failures.push(
-                                `${label} forefoot width delta bot=${deltaBot.toFixed(2)} top=${deltaTop.toFixed(2)}`,
-                            );
-                        }
+                const delta = SHOE_WIDTH_BALL_DELTA_MM[width];
+                const top = applyShoeWidthToGeometry(raw, width, opts);
+                const bottom = applyShoeWidthToPoints(pattern, width, opts);
+                const scaledOutline = applyShoeWidthToPoints(outline.points, width, opts);
+                const topOutline = extractMeshOutline(top, 80);
+                const label = `M${size} ${width}`;
+                if (!topOutline) {
+                    failures.push(`${label}: no top outline`);
+                    if (top !== raw) top.dispose();
+                    continue;
+                }
+
+                const srcPos = raw.getAttribute("position");
+                const dstPos = top.getAttribute("position");
+                if (!srcPos || !dstPos) throw new Error(`${label}: missing position`);
+                for (let i = 0; i < Math.min(srcPos.count, 40); i++) {
+                    if (dstPos.getX(i) !== srcPos.getX(i) || dstPos.getZ(i) !== srcPos.getZ(i)) {
+                        failures.push(`${label}: vertex ${i} changed X or Z`);
+                        break;
                     }
                 }
+
+                const foreX = ref.frame.minX + ref.forefootU * ref.frame.lengthMm;
+                const heelX = ref.frame.minX + ref.heelU * ref.frame.lengthMm;
+                const midX = ref.frame.minX + 0.28 * ref.frame.lengthMm;
+                const foreTop = edgesAt(topOutline.points, foreX);
+                const foreMed = edgesAt(outline.points, foreX);
+                const heelTop = edgesAt(topOutline.points, heelX);
+                const heelMed = edgesAt(outline.points, heelX);
+                const midTop = edgesAt(topOutline.points, midX);
+                const midMed = edgesAt(outline.points, midX);
+                const foreBot = edgesAt(bottom, foreX);
+                const foreBotMed = edgesAt(pattern, foreX);
+                if (
+                    !foreTop ||
+                    !foreMed ||
+                    !heelTop ||
+                    !heelMed ||
+                    !midTop ||
+                    !midMed ||
+                    !foreBot ||
+                    !foreBotMed
+                ) {
+                    failures.push(`${label}: missing station chord`);
+                } else {
+                    const foreChange = foreTop.width - foreMed.width;
+                    const heelChange = heelTop.width - heelMed.width;
+                    const midChange = midTop.width - midMed.width;
+                    const botChange = foreBot.width - foreBotMed.width;
+                    if (Math.abs(foreChange - delta) > 0.35) {
+                        failures.push(`${label}: forefoot change ${foreChange.toFixed(2)} vs delta ${delta}`);
+                    }
+                    if (Math.abs(botChange - delta) > 1) {
+                        failures.push(
+                            `${label}: bottom forefoot change ${botChange.toFixed(2)} vs delta ${delta}`,
+                        );
+                    }
+                    if (Math.abs(heelChange) >= Math.abs(foreChange) - 0.5) {
+                        failures.push(
+                            `${label}: heel change ${heelChange.toFixed(2)} does not taper under forefoot ${foreChange.toFixed(2)}`,
+                        );
+                    }
+                    const towardFore =
+                        delta > 0
+                            ? midChange > heelChange && midChange < foreChange
+                            : midChange < heelChange && midChange > foreChange;
+                    if (!towardFore) {
+                        failures.push(
+                            `${label}: taper heel ${heelChange.toFixed(2)} mid ${midChange.toFixed(2)} fore ${foreChange.toFixed(2)}`,
+                        );
+                    }
+                    const ballScale = shoeWidthScaleAtU(
+                        ref.forefootU,
+                        ref.ballWidthMm,
+                        ref.heelWidthMm,
+                        width,
+                    );
+                    const heelScale = shoeWidthScaleAtU(ref.heelU, ref.ballWidthMm, ref.heelWidthMm, width);
+                    if (Math.abs(ballScale - (ref.ballWidthMm + delta) / ref.ballWidthMm) > 1e-6) {
+                        failures.push(`${label}: forefoot scale is not the default-width scale`);
+                    }
+                    if (Math.abs(heelScale - ballScale) < 1e-4) {
+                        failures.push(`${label}: heel scale equals the forefoot scale`);
+                    }
+                }
+
+                let prev = shoeWidthScaleAtU(0, ref.ballWidthMm, ref.heelWidthMm, width);
+                for (let u = 0.02; u <= 1; u += 0.02) {
+                    const s = shoeWidthScaleAtU(u, ref.ballWidthMm, ref.heelWidthMm, width);
+                    if (delta > 0 ? s + 1e-9 < prev : s - 1e-9 > prev) {
+                        failures.push(`${label}: scale not monotonic at u=${u.toFixed(2)}`);
+                        break;
+                    }
+                    prev = s;
+                }
+
+                for (const u of stations) {
+                    const x = ref.frame.minX + u * ref.frame.lengthMm;
+                    const meshEdge = edgesAt(topOutline.points, x);
+                    const ringEdge = edgesAt(scaledOutline, x);
+                    const botEdge = edgesAt(bottom, x);
+                    if (!meshEdge || !ringEdge || !botEdge) continue;
+                    if (Math.abs(ringEdge.lo - meshEdge.lo) > 1 || Math.abs(ringEdge.hi - meshEdge.hi) > 1) {
+                        failures.push(
+                            `${label} u=${u.toFixed(2)} outline off top lo=${(ringEdge.lo - meshEdge.lo).toFixed(2)} hi=${(ringEdge.hi - meshEdge.hi).toFixed(2)}`,
+                        );
+                    }
+                    const outsideLo = Math.max(0, meshEdge.lo - botEdge.lo);
+                    const outsideHi = Math.max(0, botEdge.hi - meshEdge.hi);
+                    if (outsideLo > 1 || outsideHi > 1) {
+                        failures.push(
+                            `${label} u=${u.toFixed(2)} bottom outside lo=${outsideLo.toFixed(2)} hi=${outsideHi.toFixed(2)}`,
+                        );
+                    }
+                }
+
+                const sampleIndex = pattern.findIndex((p) => Math.abs(p.y - ref.frame.yMid) > 5);
+                const sample = sampleIndex >= 0 ? pattern[sampleIndex] : undefined;
+                const scaledSample = sampleIndex >= 0 ? bottom[sampleIndex] : undefined;
+                if (sample && scaledSample) {
+                    const u = (sample.x - ref.frame.minX) / ref.frame.lengthMm;
+                    const s = shoeWidthScaleAtU(u, ref.ballWidthMm, ref.heelWidthMm, width);
+                    const expected = ref.frame.yMid + (sample.y - ref.frame.yMid) * s;
+                    if (Math.abs(scaledSample.y - expected) > 1e-4) {
+                        failures.push(`${label}: bottom point did not use the top scale`);
+                    }
+                }
+
+                if (top !== raw) top.dispose();
             }
         }
         raw.dispose();
         expect(failures).toEqual([]);
     }, 180_000);
-
-    test("a second affine on the already-scaled pattern is the wing this fix removes", () => {
-        const pts = [
-            { x: 0, y: -40 },
-            { x: 180, y: -48 },
-            { x: 270, y: -10 },
-            { x: 180, y: 48 },
-            { x: 0, y: 40 },
-        ];
-        const frame = { minX: 0, lengthMm: 270, yMid: 0 };
-        const opts = { ballWidthMm: 86, heelWidthMm: 86 * 0.62, heelCupWidthMm: 0 };
-        const once = viewerBottomPatternPlanform(pts, "xx_wide", frame, opts, 0);
-        const twice = applyShoeWidthToPoints(once, "xx_wide", {
-            ballWidthMm: opts.ballWidthMm,
-            heelWidthMm: opts.heelWidthMm,
-            minX: frame.minX,
-            lengthMm: frame.lengthMm,
-            yMid: frame.yMid,
-        });
-        const ball = edgesAt(once, 180);
-        const winged = edgesAt(twice, 180);
-        expect(ball && winged && winged.width > ball.width + 5).toBe(true);
-    });
 });

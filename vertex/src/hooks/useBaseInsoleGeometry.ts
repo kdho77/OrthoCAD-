@@ -21,7 +21,6 @@ import {
     classifyBaseTopFactors,
     getBaseFootprintFrame,
 } from "@/lib/geometry/base-modifier";
-import { bottomPatternWidthCenter, viewerBottomPatternPlanform } from "@/lib/geometry/bottom-planform-width";
 import { elementsForSurface } from "@/lib/geometry/element-assets/display-mesh";
 import { elementGeometryKey } from "@/lib/geometry/element-geometry-key";
 import { fullLengthWedgeActive } from "@/lib/geometry/full-length-wedge";
@@ -77,9 +76,8 @@ import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
 import {
     applyShoeWidthToPoints,
-    shoeWidthExtentOfPoints,
     shoeWidthForSide,
-    shoeWidthFrameOfGeometry,
+    shoeWidthReferenceOfGeometry,
 } from "@/lib/geometry/shoe-width";
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
@@ -466,16 +464,15 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         const outline = extractMeshOutline(sized);
         if (outline) {
             const widthId = shoeWidthForSide(design, side);
-            const heelW = layout.widthMm * 0.62;
-            // BaseBounds stores axis lengths, not a footprint origin. Reading
-            // minX/maxX off it is undefined, so a non-medium width wrote NaN Y
-            // onto every outline point and the trimline tube crashed.
-            const extent = shoeWidthExtentOfPoints(outline.points);
+            // Same 1D scale as the top mesh: this mesh's own forefoot and heel
+            // chords, about the mesh vertex frame. Medium returns the same points.
+            const ref = shoeWidthReferenceOfGeometry(sized);
             const scaledPts = applyShoeWidthToPoints(outline.points, widthId, {
-                ballWidthMm: layout.widthMm,
-                heelWidthMm: heelW,
-                minX: extent.minX,
-                lengthMm: extent.lengthMm,
+                ballWidthMm: ref.ballWidthMm,
+                heelWidthMm: ref.heelWidthMm,
+                minX: ref.frame.minX,
+                lengthMm: ref.frame.lengthMm,
+                yMid: ref.frame.yMid,
                 heelOverrideMm: design.corrections[side]?.heelCupWidthMm,
             });
             useBaseOutlineStore.getState().setOutline(lookupKey, { points: scaledPts });
@@ -597,10 +594,11 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 lengthMm: field.lengthMm,
                 widthMm: field.widthMm,
             });
+            const widthRef = shoeWidthReferenceOfGeometry(raw);
             const shoeWidthOpt = {
                 width: widthId,
-                ballWidthMm: layout.widthMm,
-                heelWidthMm: layout.widthMm * 0.62,
+                ballWidthMm: widthRef.ballWidthMm,
+                heelWidthMm: widthRef.heelWidthMm,
                 heelOverrideMm: heelW,
             };
             const paintForefootDisplay = (baseGeo: BufferGeometry) => {
@@ -682,25 +680,17 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         if (session.cancelled) return;
                         const patternTrim = resolveActiveTrimline(side);
                         let patternTop = raw;
-                        // Fair the pattern on the pre-width sheet (the Medium
-                        // outline). The top mesh is width-scaled once; scaling
-                        // a pattern that was already faired on that widened
-                        // sheet applies the affine again and wings the forefoot.
+                        // Fair on the pre-width sheet, then apply the same 1D
+                        // scale the top mesh uses. A pattern faired on an
+                        // already-widened sheet would be scaled twice.
                         const patternOnNativeSheet = widthId !== "medium";
-                        const patternField =
-                            patternOnNativeSheet && heelW !== 0
-                                ? {
-                                      ...zeroField,
-                                      corrections: { ...zeroField.corrections, heelCupWidthMm: 0 },
-                                  }
-                                : zeroField;
                         const patternShoe = patternOnNativeSheet
                             ? { ...shoeWidthOpt, width: "medium" as const, heelOverrideMm: 0 }
                             : shoeWidthOpt;
                         try {
                             patternTop = await composeViewerPrintSolidTop({
                                 raw,
-                                sourceField: patternField,
+                                sourceField: zeroField,
                                 shoeWidth: patternShoe,
                                 trimline: patternTrim,
                             });
@@ -714,9 +704,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         const rawPattern = await buildProceduralViewerPatternInWorker(
                             patternTop,
                             design.pattern,
-                            patternOnNativeSheet
-                                ? { ...field.corrections, forefootWidthMm: 0, heelCupWidthMm: 0 }
-                                : { ...field.corrections, forefootWidthMm: 0 },
+                            { ...field.corrections, forefootWidthMm: 0 },
                         );
                         if (patternTop !== raw) patternTop.dispose();
                         if (session.cancelled) return;
@@ -724,20 +712,14 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         if (session.cancelled) return;
                         let sizedPattern: typeof rawPattern;
                         if (patternOnNativeSheet) {
-                            const frame = shoeWidthFrameOfGeometry(raw);
-                            const widthOpts = {
-                                ballWidthMm: layout.widthMm,
-                                heelWidthMm: layout.widthMm * 0.62,
-                                heelCupWidthMm: heelW,
-                            };
-                            const center = bottomPatternWidthCenter(raw, widthId, frame, widthOpts);
-                            sizedPattern = viewerBottomPatternPlanform(
-                                rawPattern,
-                                widthId,
-                                frame,
-                                widthOpts,
-                                center,
-                            );
+                            sizedPattern = applyShoeWidthToPoints(rawPattern, widthId, {
+                                ballWidthMm: widthRef.ballWidthMm,
+                                heelWidthMm: widthRef.heelWidthMm,
+                                minX: widthRef.frame.minX,
+                                lengthMm: widthRef.frame.lengthMm,
+                                yMid: widthRef.frame.yMid,
+                                heelOverrideMm: heelW,
+                            });
                         } else {
                             let minX = Infinity;
                             let maxX = -Infinity;
@@ -746,8 +728,8 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                 maxX = Math.max(maxX, p.x);
                             }
                             sizedPattern = applyShoeWidthToPoints(rawPattern, widthId, {
-                                ballWidthMm: layout.widthMm,
-                                heelWidthMm: layout.widthMm * 0.62,
+                                ballWidthMm: widthRef.ballWidthMm,
+                                heelWidthMm: widthRef.heelWidthMm,
                                 minX,
                                 lengthMm: Math.max(1e-3, maxX - minX),
                                 heelOverrideMm: heelW,
