@@ -1,8 +1,8 @@
 # Permanent lock: the bottom name on the physical plantar face of the final belt
-# G-code. A placement flip or a slicer Y-negate turns this job red.
-# Default image is live VertexSlice (Rz only, no pre-rotation Y negate). That is
-# the slicer that printed the upside-down sole. Pass vertexslice_image to grade
-# a different image. Do not overlay stl_preprocess.py from 9fe93642.
+# G-code. A placement flip turns this job red.
+# Default image is live VertexSlice #52 (sha256:979e31bd, Y-negate then Rz).
+# Pass vertexslice_image to grade a different image. Do not overlay another
+# stl_preprocess.py on top of that image.
 name: Plantar name lock
 
 on:
@@ -24,7 +24,7 @@ concurrency:
 
 env:
   LIVE_IMAGE: ghcr.io/kdho77/vertexslice-server@sha256:979e31bdf64b2eab4559717b8cc4e862a030fc35e235be2482c253cb2fd3b782
-  LIVE_SHA: d935197976b7cdd2fa89ced4ff43930b0212959f
+  LIVE_SHA: 2bfc6f43a68c773fe4fee33acc881ea76f7f9c5b
 
 jobs:
   plantar-name:

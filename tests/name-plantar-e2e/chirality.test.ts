@@ -27,13 +27,13 @@ function uprightJay(): Array<{ x: number; y: number }> {
 }
 
 describe("plantar reading frame", () => {
-    test("toe is to the right and image-right (-X) becomes up", () => {
+    test("toe is to the right and +X is the cap", () => {
         const heel = physicalReadingView({ x: 0, y: 0, z: 80 });
         const toe = physicalReadingView({ x: 0, y: 0, z: 10 });
         expect(toe.x).toBeGreaterThan(heel.x);
-        const imageRight = physicalReadingView({ x: -5, y: 0, z: 0 });
-        const imageLeft = physicalReadingView({ x: 5, y: 0, z: 0 });
-        expect(imageRight.y).toBeGreaterThan(imageLeft.y);
+        const capSide = physicalReadingView({ x: 5, y: 0, z: 0 });
+        const footSide = physicalReadingView({ x: -5, y: 0, z: 0 });
+        expect(capSide.y).toBeGreaterThan(footSide.y);
     });
 
     test("de-shear leaves height out of the along axis", () => {

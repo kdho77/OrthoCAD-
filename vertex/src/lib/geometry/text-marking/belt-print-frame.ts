@@ -41,23 +41,21 @@ export function beltPrintedPoint(p: { x: number; y: number; z: number }): {
 /**
  * Machine point the belt deposits. G-code is this frame: X across, Y height
  * off the belt, Z along. Inverse of `BeltTransform::inverse_transform_point`
- * (Y_mach = √2·Z_model, Z_mach = Y_model). Live preprocess is Rz only — the
- * rejected Y-negate overlay is not applied.
+ * (Y_mach = √2·Z_model, Z_mach = Y_model). Live preprocess (VertexSlice #52)
+ * negates model Y, then rotates Z.
  */
 export function beltMachinePoint(
     p: { x: number; y: number; z: number },
     rotateDeg = BELT_PREPROCESS_Z_DEG,
 ): { x: number; y: number; z: number } {
-    const spun = rotateZ(p, rotateDeg);
-    const model = { x: spun.x, y: spun.y, z: p.z };
-    return { x: model.x, y: Math.SQRT2 * model.z, z: model.y };
+    const spun = rotateZ({ x: p.x, y: -p.y }, rotateDeg);
+    return { x: spun.x, y: Math.SQRT2 * p.z, z: spun.y };
 }
 
 /**
- * Sole, from below. Look direction is +height toward the belt contact (Z = 0
- * in the part frame). Toe (+mesh X) is screen-right and screen-up is −mesh Y,
- * the same camera as the flat bed. Matches `physicalReadingView` on the
- * machine point (toe-first: screen (−zt, −X)).
+ * Sole, from below, after the live Y-negate. Toe (+mesh X) is screen-right.
+ * Screen-up is +Y on the deposited plastic, which is −Y on the uploaded STL.
+ * Matches `physicalReadingView` on `beltMachinePoint`.
  */
 export function printedPlantarView(
     p: TextXy & { z?: number },
@@ -67,12 +65,12 @@ export function printedPlantarView(
     const mach = beltMachinePoint({ x: p.x, y: p.y, z: p.z ?? 0 }, heelFirst ? 90 : BELT_PREPROCESS_Z_DEG);
     const zt = mach.z - mach.y;
     const sign = heelFirst ? 1 : -1;
-    return { x: sign * zt, y: sign * mach.x };
+    return { x: sign * zt, y: -sign * mach.x };
 }
 
-/** Flat-bed sole. No belt rotation. Same from-below camera: screen (X, −Y). */
+/** Flat-bed sole. No belt rotation and no Y-negate. Screen (X, +Y). */
 export function flatBedSoleView(p: TextXy): TextXy {
-    return { x: p.x, y: -p.y };
+    return { x: p.x, y: p.y };
 }
 
 /** Linear det of model → printed part. −1 is the mirror. */

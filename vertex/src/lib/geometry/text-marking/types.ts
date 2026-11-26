@@ -34,7 +34,11 @@ export interface FlattenedText {
 
 export interface TextApplyContext {
     side: Side;
-    /** Belt manufacturing STL. Glyph chirality matches the flat-bed sole. */
+    /**
+     * Belt manufacturing STL. Live VertexSlice negates Y before the belt
+     * rotation, so this path places the cap on −Y. A flat bed places it on +Y.
+     * Both plastics then read forward from below the sole.
+     */
     beltPrint?: boolean;
 }
 
