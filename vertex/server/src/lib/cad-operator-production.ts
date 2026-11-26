@@ -787,7 +787,7 @@ export interface ExecuteCadProductionArgs {
         jobId: string;
         meshFingerprint: string | null;
     }) => Promise<CadChargeResult>;
-    archiveTemp?: (args: { stlStorageKey: string; exportId: string }) => Promise<void>;
+    /** Temp STL only. Called after slice success and failure. Not an archive copy. */
     deleteTemp?: (stlStorageKey: string) => Promise<void>;
     /**
      * Recorded on a new slice checkpoint. It is not a key that reuses a stored STL.
@@ -840,6 +840,7 @@ async function markFailed(
 export async function executeCadOperatorProduction(args: ExecuteCadProductionArgs): Promise<void> {
     const started = args.now();
     let stlStorageKey: string | null = null;
+    let sliceTempKey: string | null = null;
     let loftS = 0;
     let sliceS = 0;
     let timingStarted = false;
@@ -890,10 +891,13 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
             try {
                 const materialized = await args.materialize();
                 stlStorageKey = materialized.stlStorageKey;
+                sliceTempKey = materialized.stlStorageKey;
                 meshFingerprint = materialized.meshFingerprint;
             } finally {
                 loftS = (performance.now() - loftStarted) / 1000;
             }
+        } else if (resumeCheckpoint.stlStorageKey) {
+            sliceTempKey = resumeCheckpoint.stlStorageKey;
         }
         // A status poll may finish a job this production already submitted.
         // That poll does not pass the checkpoint storage key in as the mesh.
@@ -981,15 +985,6 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
             gcodeStorageKey: uploaded.storageKey,
             updatedAt: args.now(),
         });
-        if (args.archiveTemp && stlStorageKey) {
-            try {
-                await args.archiveTemp({ stlStorageKey, exportId: charged.exportId });
-            } catch (error) {
-                console.error("[manufacturing] archive after charge failed", {
-                    message: publicProductionError(error),
-                });
-            }
-        }
         await args.store.updateIf(args.row.id, (row) => row.status !== "succeeded", {
             status: "succeeded",
             gcodeStorageKey: uploaded.storageKey,
@@ -998,15 +993,10 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
             leaseExpiresAt: null,
         });
         logTiming();
+        await discardSliceTemp(args.deleteTemp, sliceTempKey);
     } catch (error) {
         logTiming();
-        if (stlStorageKey && args.deleteTemp) {
-            try {
-                await args.deleteTemp(stlStorageKey);
-            } catch {
-                // Temp STL expires by the existing TTL job.
-            }
-        }
+        await discardSliceTemp(args.deleteTemp, sliceTempKey);
         await markFailed(args.store, args.row.id, error, args.now(), args.row.side);
         console.error("[manufacturing] cad production failed", {
             productionId: args.row.id,
@@ -1015,6 +1005,18 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
         });
         const assetCause = assetLoadCauseForLog(error);
         if (assetCause) console.error(assetCause);
+    }
+}
+
+async function discardSliceTemp(
+    deleteTemp: ((stlStorageKey: string) => Promise<void>) | undefined,
+    sliceTempKey: string | null,
+): Promise<void> {
+    if (!sliceTempKey || !deleteTemp) return;
+    try {
+        await deleteTemp(sliceTempKey);
+    } catch {
+        // Temp STL expires by the 24h sweep.
     }
 }
 
