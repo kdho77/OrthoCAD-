@@ -5,10 +5,9 @@ import type { PrismaClient } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 import { readStoredDesignSettings } from "../../../shared/design-settings.js";
 import {
-    buildExportFilename,
     canonicalExportMaterialName,
     cncPairGcodeFilename,
-    exportSideSuffix,
+    productionFootExportFilename,
 } from "../../../shared/export-filename.js";
 import {
     bindPrintRecipeProfile,
@@ -80,12 +79,13 @@ function cadOperatorUserExportFilename(
     input: CadGenerateRequestInput,
     plan: Awaited<ReturnType<typeof prepareCadOperatorGenerate>>,
 ): string {
-    if (input.fileName?.trim()) return input.fileName.trim();
-    return buildExportFilename({
+    return productionFootExportFilename({
+        fileName: input.fileName,
+        patientName: input.patientName,
         firstName: plan.clientFirstName,
         lastName: plan.clientLastName,
-        material: canonicalExportMaterialName(plan.material),
-        side: exportSideSuffix(input.side),
+        material: plan.material,
+        side: input.side,
         ext: "gcode",
     });
 }
