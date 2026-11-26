@@ -4,7 +4,12 @@ import superjson from "superjson";
 
 import { createManufacturingClient, type ManufacturingClient } from "../src/clients/manufacturing-client.js";
 import type { OrthocadMcpConfig } from "../src/config.js";
-import { handleOrthocadTool } from "../src/tools/handlers.js";
+import {
+    GENERATE_ENQUEUE_ATTEMPT_MS,
+    GENERATE_ENQUEUE_ATTEMPTS,
+    handleOrthocadTool,
+    withEnqueueDeadline,
+} from "../src/tools/handlers.js";
 
 const config = {
     apiBase: "http://127.0.0.1:9",
@@ -389,5 +394,122 @@ describe("CAD-operator production tools", () => {
             { side: "left", production_id: leftId, status: "pending" },
             { side: "right", production_id: rightId, status: "pending" },
         ]);
+    });
+
+    test("enqueue stays inside the MCP request timeout", async () => {
+        expect(GENERATE_ENQUEUE_ATTEMPT_MS * GENERATE_ENQUEUE_ATTEMPTS).toBeLessThan(60_000);
+        const started = Date.now();
+        await expect(withEnqueueDeadline(new Promise(() => {}), 40)).rejects.toThrow(
+            /generate enqueue timed out/,
+        );
+        expect(Date.now() - started).toBeLessThan(500);
+    });
+
+    test("a pair retries fetch failed and lease expiry, then returns both feet", async () => {
+        const leftErrors = ["Storage upload failed: fetch failed", "Production lease expired"];
+        let leftCalls = 0;
+        const manufacturing = {
+            generateFromSavedDesign: async (input: { side: "left" | "right" }) => {
+                if (input.side === "left") {
+                    const error = leftErrors[leftCalls];
+                    leftCalls += 1;
+                    if (error) throw new Error(error);
+                }
+                return {
+                    productionId: input.side === "left" ? leftId : rightId,
+                    status: "pending",
+                    side: input.side,
+                };
+            },
+        } as unknown as ManufacturingClient;
+        const result = await handleOrthocadTool(
+            "generate_gcode",
+            {
+                preset_id: "apex-v2-insole-95a",
+                use_saved_design: true,
+                design_id: designId,
+            },
+            { config, manufacturing },
+        );
+        expect(result.isError).toBeUndefined();
+        expect(leftCalls).toBe(3);
+        const payload = toolJson(result) as {
+            files: Array<{ side: string; production_id: string; status: string }>;
+        };
+        expect(payload.files).toEqual([
+            { side: "left", production_id: leftId, status: "pending" },
+            { side: "right", production_id: rightId, status: "pending" },
+        ]);
+    });
+
+    test("a pair retries a failed submit-unavailable status and does not return one foot", async () => {
+        let leftCalls = 0;
+        const manufacturing = {
+            generateFromSavedDesign: async (input: { side: "left" | "right" }) => {
+                if (input.side === "left") {
+                    leftCalls += 1;
+                    if (leftCalls === 1) {
+                        return {
+                            productionId: leftId,
+                            status: "failed",
+                            side: "left",
+                            error: "VertexSlice server error: submit unavailable",
+                        };
+                    }
+                }
+                return {
+                    productionId: input.side === "left" ? leftId : rightId,
+                    status: "pending",
+                    side: input.side,
+                };
+            },
+        } as unknown as ManufacturingClient;
+        const result = await handleOrthocadTool(
+            "generate_gcode",
+            {
+                preset_id: "apex-v2-insole-95a",
+                use_saved_design: true,
+                design_id: designId,
+            },
+            { config, manufacturing },
+        );
+        expect(result.isError).toBeUndefined();
+        expect(leftCalls).toBe(2);
+        const payload = toolJson(result) as { files: Array<{ production_id: string; status: string }> };
+        expect(payload.files.map((file) => file.production_id)).toEqual([leftId, rightId]);
+        expect(payload.files.every((file) => file.status === "pending")).toBe(true);
+    });
+
+    test("a lasting pair failure names the foot and does not return the other foot", async () => {
+        let leftCalls = 0;
+        let rightCalls = 0;
+        const manufacturing = {
+            generateFromSavedDesign: async (input: { side: "left" | "right" }) => {
+                if (input.side === "left") {
+                    leftCalls += 1;
+                    throw new Error("Manufacturing mesh is not sliceable: open rim");
+                }
+                rightCalls += 1;
+                return { productionId: rightId, status: "pending", side: "right" };
+            },
+        } as unknown as ManufacturingClient;
+        const result = await handleOrthocadTool(
+            "generate_gcode",
+            {
+                preset_id: "apex-v2-insole-95a",
+                use_saved_design: true,
+                design_id: designId,
+            },
+            { config, manufacturing },
+        );
+        expect(result.isError).toBe(true);
+        expect(leftCalls).toBe(1);
+        expect(rightCalls).toBe(1);
+        const text = result.content[0]?.text ?? "";
+        expect(text).toContain("left");
+        expect(text).toContain("No partial pair");
+        expect(text).toContain("Manufacturing mesh is not sliceable");
+        expect(text).not.toContain(rightId);
+        expect(text).not.toContain('"files"');
     });
 });

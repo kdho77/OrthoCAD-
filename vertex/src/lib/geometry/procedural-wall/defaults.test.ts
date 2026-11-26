@@ -7,7 +7,9 @@ import {
     CUP_BOWL,
     FILLET_BOUNDS,
     FLARE_BOUNDS,
+    LATERAL_FLANGE_BOUNDS,
     resolveWallDefaults,
+    snapToStep,
     wallHeightScale,
 } from "./defaults";
 import { evaluateHeelCupGate } from "./hermite";
@@ -78,6 +80,21 @@ describe("biomechanics wall defaults", () => {
         expect(Math.abs(a - b)).toBeLessThan(4);
         expect(wallHeightScale(0.1)).toBeGreaterThan(0.95);
         expect(wallHeightScale(0.95)).toBeLessThan(0.05);
+    });
+
+    test("explicit lateral flange height 0 stays 0 and is not a 3 mm stand-in", () => {
+        expect(LATERAL_FLANGE_BOUNDS.heightMm).toEqual({ recommended: 0, min: 0, max: 10, step: 1 });
+        expect(snapToStep(0, LATERAL_FLANGE_BOUNDS.heightMm)).toBe(0);
+        const resolved = resolveWallDefaults({
+            flareDeg: {
+                heelPosterior: 23.9,
+                heelMedial: 27.7,
+                heelLateral: 27.8,
+                medialArch: 23.0,
+                lateralMidfoot: 41.0,
+            },
+        });
+        expect(resolved.lateralFlangeHeightMm).toBe(0);
     });
 
     test("heel cup 12/15/18: no vertical run > 3 mm and no curvature break", () => {

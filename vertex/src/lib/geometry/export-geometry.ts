@@ -83,7 +83,13 @@ function proceduralExportRequest(design: DesignState, side: Side, beltPrint = fa
             ? design.paired.leftThicknessMm
             : design.paired.rightThicknessMm
         : design.thicknessMm;
-    const field = baseModifierFieldAuthoritative(design, side, effThickness);
+    const trimline = resolveActiveTrimline(side, design);
+    let field = baseModifierFieldAuthoritative(design, side, effThickness);
+    // Saved Met-head / Sulcus has the preset id and no baked polyline.
+    // Posting and the compose clip must see the same #364 curve the UI confirm stores.
+    if (trimline && (!field.trimline || field.trimline.points.length < 4)) {
+        field = { ...field, trimline };
+    }
     const edits = useMeshEditStore.getState();
     const mirrored = Boolean(base.mirrored);
     const solidOptions = {
@@ -92,11 +98,11 @@ function proceduralExportRequest(design: DesignState, side: Side, beltPrint = fa
             side,
             field,
             viewer: viewer ?? {},
-            trimline: resolveActiveTrimline(side),
+            trimline,
             bottomPattern: resolveLiveBottomPattern({
                 draft: edits.getActiveDraftBottomPattern(side),
                 stored: useBottomPatternStore.getState().getPattern(side),
-                trim: resolveActiveTrimline(side),
+                trim: trimline,
             }),
         }),
         mirrored,
@@ -338,9 +344,15 @@ export async function buildOrderPairGeometry(shouldAbort?: () => boolean): Promi
         // Start every foot before awaiting the next so cold lofts share the worker pool.
         const built = await Promise.all(
             sides.map(async (side) => {
-                const solid = await buildClosedExportGeometry(side, false, shouldAbort);
-                held.push(solid);
-                return { side, solid };
+                try {
+                    const solid = await buildClosedExportGeometry(side, false, shouldAbort);
+                    held.push(solid);
+                    return { side, solid };
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    const label = side === "right" ? "Right" : "Left";
+                    throw new Error(`${label} foot failed. ${message}`, { cause: error });
+                }
             }),
         );
         for (const { side, solid } of built) {
