@@ -315,6 +315,11 @@ export const createSavedDesignInputSchema = z
         given_name: z.string().trim().min(1).max(100).optional(),
         /** Chart label for a new client after the server verifier. Not sent to VertexOrders. */
         family_name: z.string().trim().min(1).max(100).optional(),
+        /**
+         * Explicit per-design opt-in. Omitted and false keep SAMPLE_Top and do not
+         * read scans. True builds arch height from the order client's stored scans.
+         */
+        use_order_scans: z.boolean().optional(),
     })
     .strict();
 
@@ -355,6 +360,11 @@ export const persistSavedDesignSnapshotInputSchema = z
         /** Accepted and dropped. Clinical values are not read from free text. */
         rx_text: z.string().max(8000).optional(),
         notes: z.string().max(8000).optional(),
+        /**
+         * Explicit per-design opt-in. Omitted and false keep SAMPLE_Top and do not
+         * read scans. True builds arch height from the design client's stored scans.
+         */
+        use_order_scans: z.boolean().optional(),
     })
     .strict();
 
@@ -508,7 +518,15 @@ export const MCP_TOOL_DEFINITIONS = [
             "hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. " +
             "Absent width is Medium and recorded as defaulted, not prescribed. " +
             "422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, " +
-            "or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
+            "or a catalog field is unrecognized. Does not write File Ready, In Production, or STL. " +
+            "Omitted use_order_scans does not read scans and does not write scan geometry (scans_used stays false). " +
+            "use_order_scans true is the explicit per-design option: import the design client's stored left and right " +
+            "scans with the Scan step's cleanup, measure arch height the way Generate Orthotic does, and set that " +
+            "arch-height slider on each scanned foot. A side with no stored scan keeps its catalog correction. " +
+            "The mesh stays SAMPLE_Top. Left and right are not linked. " +
+            "catalog.arch, when present, replaces the scan class. Other catalog corrections, elements, and sinks stay. " +
+            "The newest stored file is used when one side has more than one. A missing scan or a failed measurement " +
+            "is 422 and does not write the template. Shoe size is not taken from the scan.",
         inputSchema: persistSavedDesignSnapshotInputSchema,
     },
     {
@@ -535,7 +553,15 @@ export const MCP_TOOL_DEFINITIONS = [
             "or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. " +
             "elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. " +
             "Medium width is used only when width is absent and is recorded as defaulted, not prescribed. " +
-            "Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
+            "Missing shoe size or an unknown hardness returns a question for the user and does not guess. " +
+            "Omitted use_order_scans keeps that template and does not read scans (scans_used stays false). " +
+            "use_order_scans true is the explicit per-design option: import the order client's stored scans with the " +
+            "Scan step's cleanup and set each scanned foot's arch-height slider the way Generate Orthotic does. " +
+            "A side with no stored scan keeps its catalog correction. " +
+            "The mesh stays SAMPLE_Top. Left and right are not linked, so a left foot can differ from the right. " +
+            "catalog.arch, when present, replaces the scan class. Other catalog corrections, elements, and sinks stay. " +
+            "The newest stored file is used when one side has more than one. A missing scan or a failed measurement " +
+            "is 422 and does not substitute the template. Shoe size is not taken from the scan.",
         inputSchema: createSavedDesignInputSchema,
     },
     {

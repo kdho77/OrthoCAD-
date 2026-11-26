@@ -110,6 +110,8 @@
                 "vertex/src/features/exports/vertexslice-regional-model.test.ts",
                 "vertex/src/features/production/printer-state-badge.test.tsx",
                 "vertex/src/lib/clinical/arch-class.test.ts",
+                "vertex/src/lib/clinical/design-from-order-scans.test.ts",
+                "vertex/src/lib/clinical/grade-pr-468-independent.test.ts",
                 "vertex/src/lib/clinical/one-click-adapter.test.ts",
                 "vertex/src/lib/cnc/placement.test.ts",
                 "vertex/src/lib/geometry/afo/afo-heel-toe-axis.test.ts",
