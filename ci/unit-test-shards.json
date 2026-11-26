@@ -6,6 +6,7 @@
             "index": 1,
             "files": [
                 "packages/mcp/test/central-fab-stl.test.ts",
+                "packages/mcp/test/grade-pr-466-mcp.grader.test.ts",
                 "packages/mcp/test/persist-saved-design-snapshot.test.ts",
                 "tests/arch-heel-blend.verify.test.ts",
                 "tests/cnc/band.test.ts",
@@ -42,6 +43,8 @@
                 "vertex/src/features/production/installer-download.test.ts",
                 "vertex/src/lib/app-version.test.ts",
                 "vertex/src/lib/clinical/medial-sign.test.ts",
+                "vertex/src/lib/clinical/grade-pr-466-per-foot-wedge.grader.test.ts",
+                "vertex/src/lib/clinical/per-foot-wedge.test.ts",
                 "vertex/src/lib/clinical/saved-design-snapshot.test.ts",
                 "vertex/src/lib/geometry/afo/afo-flat-review.test.ts",
                 "vertex/src/lib/geometry/afo/afo-scan-pick.test.ts",
