@@ -528,6 +528,8 @@ export const MCP_TOOL_DEFINITIONS = [
             "milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. " +
             "It is not inferred from material, hardness, or thickness. " +
             "Optional catalog.thickness_mm sets shell thickness in mm (1.5–8, default 2 when omitted). " +
+            "When set, settings store that clearance and uniform shell mode so the loft uses the shell-thickness slider. " +
+            "When omitted, thickness stays 2 mm and the zonal shell is unchanged. " +
             "Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. " +
             "depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). " +
             "Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. " +
