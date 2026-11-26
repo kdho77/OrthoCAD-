@@ -529,12 +529,14 @@ export function fairMovedPattern(input: {
     bounds?: { minX: number; maxX: number };
     medialYSign?: 1 | -1;
     /** `width` tracks the scaled silhouette more tightly so pairing stays. */
-    mode?: "heel" | "width";
+    mode?: "heel" | "width" | "shoe";
 }): PolyPoint[] {
     const rim = startAtLowCurvature(ensureCcw(input.rim.map((p) => ({ ...p, z: 0 }))));
     const moved = startAtLowCurvature(ensureCcw(input.pattern.map((p) => ({ ...p, z: 0 }))));
     if (moved.length < 3 || rim.length < 3) return moved;
-    const floorInset = minInsetForLeanMm(input.r1, input.r2, 0);
+    // A shallow refit of the tapered scale still crosses wall triangles.
+    // Eight millimetres of extra inset clears the skew cap and the heel bridge.
+    const floorInset = minInsetForLeanMm(input.r1, input.r2, 0) + (input.mode === "shoe" ? 8 : 0);
     const sign = input.medialYSign ?? 1;
     const yMid = moved.reduce((s, p) => s + p.y, 0) / moved.length;
     const length = input.bounds ? Math.max(1e-3, input.bounds.maxX - input.bounds.minX) : 1;
@@ -550,7 +552,7 @@ export function fairMovedPattern(input: {
         if ((p.y - yMid) * sign > 0 && u >= PATTERN_ARCH_U0 && u <= PATTERN_ARCH_U1) arch.push(p);
     }
     const sOf = (p: PolyPoint) => nearestClosedArc01(moved, p);
-    const widthMode = input.mode === "width";
+    const widthMode = input.mode === "width" || input.mode === "shoe";
     const targets = widthMode
         ? [
               ...resamplePolyline(moved, 64).map((p) => ({ point: p, weight: 1.6, s01: sOf(p) })),
@@ -812,6 +814,141 @@ export function clampStationHeadings(stations: HermiteStation[], loop: PolyPoint
             const nl = Math.hypot(dx, dy);
             if (nl > 1e-6) b.n = { x: dx / nl, y: dy / nl };
             b.tB = nearestS01(b.outline, loop);
+            moved++;
+        }
+        if (!moved) break;
+    }
+}
+
+function columnPlanDir(
+    rim: PolyPoint,
+    outline: PolyPoint,
+    n: { x: number; y: number },
+): { x: number; y: number } {
+    const dx = outline.x - rim.x;
+    const dy = outline.y - rim.y;
+    const plan = Math.hypot(dx, dy);
+    if (plan < 1e-4) {
+        const nl = Math.hypot(n.x, n.y) || 1;
+        return { x: n.x / nl, y: n.y / nl };
+    }
+    return { x: dx / plan, y: dy / plan };
+}
+
+function headingWithinCap(a: { x: number; y: number }, b: { x: number; y: number }): boolean {
+    const d = Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y));
+    return (Math.acos(d) * 180) / Math.PI <= PRELOFT_HEADING_MAX_DEG + 1e-3;
+}
+
+/**
+ * Stations that finish limitStationSkew and the heading clamp a fraction of a
+ * millimetre over the existing cap. Slide only those stations along the
+ * pattern to the nearest sample the preloft gate already accepts. The cap is
+ * not raised. A station already inside the cap is not written, so a mesh that
+ * clears the gate stays byte-identical.
+ */
+export function snapStationsInsidePreLoftCap(
+    stations: HermiteStation[],
+    loop: PolyPoint[],
+    r1: number,
+    r2: number,
+    opts?: ForefootSkewExempt & { minX?: number; lengthMm?: number },
+): void {
+    if (stations.length < 3 || loop.length < 3) return;
+    const rim = stations.map((s) => s.rim);
+    const c = centroidOf(rim);
+    const fore = opts?.forefootWidthMm ?? 0;
+    const minX = opts?.minX ?? opts?.bounds?.minX ?? 0;
+    const lengthMm = opts?.lengthMm ?? (opts?.bounds ? opts.bounds.maxX - opts.bounds.minX : 0);
+    const { cum, total } = polylineArcLengths(loop);
+    if (total < 1e-6) return;
+    const at = (s01: number): PolyPoint => {
+        const t = (((s01 % 1) + 1) % 1) * total;
+        let lo = 0;
+        let hi = loop.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (cum[mid + 1]! < t) lo = mid + 1;
+            else hi = mid;
+        }
+        const a = loop[lo]!;
+        const b = loop[(lo + 1) % loop.length]!;
+        const seg = cum[lo + 1]! - cum[lo]!;
+        const f = seg > 1e-12 ? (t - cum[lo]!) / seg : 0;
+        return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, z: 0 };
+    };
+    const windowMm = 16;
+    const coarseMm = 0.2;
+    const coarseSteps = Math.ceil(windowMm / coarseMm);
+    for (let pass = 0; pass < 3; pass++) {
+        let moved = 0;
+        for (let i = 0; i < stations.length; i++) {
+            const st = stations[i]!;
+            const u = lengthMm > 1e-3 ? Math.max(0, Math.min(1, (st.rim.x - minX) / lengthMm)) : 0;
+            if (fore !== 0 && forefootWidthLongitudinalEnvelope(u) > 1e-3) continue;
+            const out = outwardNormal(rim, i, c);
+            const now = columnInsetSkew(st.rim, st.outline, out);
+            const skewCap = SKEW_INSET_RATIO * Math.max(now.insetMm, 0);
+            const need = minInsetAtStationMm(now.insetMm, r1, r2);
+            if (now.skewMm <= skewCap + 1e-3 && now.insetMm + 1e-3 >= need) continue;
+            const prev = stations[(i + stations.length - 1) % stations.length]!;
+            const next = stations[(i + 1) % stations.length]!;
+            const prevH = columnPlanDir(prev.rim, prev.outline, prev.n);
+            const nextH = columnPlanDir(next.rim, next.outline, next.n);
+            const s0 = nearestS01(st.outline, loop);
+            const legal = (p: PolyPoint): boolean => {
+                const hit = columnInsetSkew(st.rim, p, out);
+                const cap = SKEW_INSET_RATIO * Math.max(hit.insetMm, 0);
+                const hitNeed = minInsetAtStationMm(hit.insetMm, r1, r2);
+                return hit.skewMm <= cap + 1e-3 && hit.insetMm + 1e-3 >= hitNeed;
+            };
+            const headingOk = (p: PolyPoint): boolean => {
+                const dir = columnPlanDir(st.rim, p, st.n);
+                return headingWithinCap(prevH, dir) && headingWithinCap(dir, nextH);
+            };
+            let bestArc: number | null = null;
+            let bestD = Infinity;
+            let bestHeading = false;
+            for (let k = -coarseSteps; k <= coarseSteps; k++) {
+                if (k === 0) continue;
+                const arc = (k * coarseMm) / total;
+                const p = at(s0 + arc);
+                if (!legal(p)) continue;
+                const okHead = headingOk(p);
+                if (bestHeading && !okHead) continue;
+                const d = Math.hypot(p.x - st.outline.x, p.y - st.outline.y);
+                if (!bestHeading && okHead) {
+                    bestHeading = true;
+                    bestD = d;
+                    bestArc = arc;
+                    continue;
+                }
+                if (d < bestD) {
+                    bestD = d;
+                    bestArc = arc;
+                }
+            }
+            if (bestArc == null) continue;
+            let loA = bestArc > 0 ? bestArc - coarseMm / total : bestArc;
+            let hiA = bestArc > 0 ? bestArc : bestArc + coarseMm / total;
+            for (let iter = 0; iter < 14; iter++) {
+                const mid = (loA + hiA) / 2;
+                const p = at(s0 + mid);
+                const keep = legal(p) && (!bestHeading || headingOk(p));
+                if (bestArc > 0) {
+                    if (keep) hiA = mid;
+                    else loA = mid;
+                } else if (keep) loA = mid;
+                else hiA = mid;
+            }
+            const best = at(s0 + (bestArc > 0 ? hiA : loA));
+            if (!legal(best)) continue;
+            st.outline = best;
+            const dx = best.x - st.rim.x;
+            const dy = best.y - st.rim.y;
+            const hl = Math.hypot(dx, dy);
+            if (hl > 1e-6) st.n = { x: dx / hl, y: dy / hl };
+            st.tB = nearestS01(best, loop);
             moved++;
         }
         if (!moved) break;

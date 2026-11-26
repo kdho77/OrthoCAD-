@@ -17,6 +17,7 @@ import {
     buildSavedDesignSnapshot,
     type SavedDesignSnapshotBuild,
 } from "../../../shared/saved-design-snapshot.js";
+import type { OrderScanFile } from "../../../src/lib/clinical/order-scan-file.js";
 
 /** Explicit order method. Omitted means the caller did not choose one. */
 export const SAVED_DESIGN_MANUFACTURING_METHODS = ["printing_solid", "milling_3axis"] as const;
@@ -70,7 +71,7 @@ interface SnapshotRow {
     settingsJson: unknown;
     updatedAt: Date | string;
     deletedAt: Date | string | null;
-    client: { tenantId: string | null } | null;
+    client: { id: string; tenantId: string | null } | null;
     integrationLink: SnapshotLink | null;
 }
 
@@ -82,7 +83,10 @@ export interface PersistSavedDesignSnapshotResult {
     paths: string[];
     settingsJson: unknown;
     template: "SAMPLE_Top";
-    scans_used: false;
+    /** False unless this call opted into order scans. */
+    scans_used: boolean;
+    /** Present only when the scan option reported a review note. */
+    scan_review?: string[];
     shoe_width: string;
     shoe_width_source: "prescribed" | "defaulted";
     hardness: string | null;
@@ -275,6 +279,34 @@ function mergeStoredClinicalIntoSnapshot(
 }
 
 /**
+ * No-op unless `useOrderScans` is exactly true. The default snapshot is not read
+ * against client scans and is not passed through the scan importer.
+ */
+export async function applyRequestedOrderScans(args: {
+    useOrderScans?: boolean;
+    clientId: string | null;
+    loadOrderScans?: (clientId: string) => Promise<OrderScanFile[]>;
+    built: SavedDesignSnapshotBuild;
+    catalog: SavedDesignCatalog;
+}): Promise<string[]> {
+    if (args.useOrderScans !== true) return [];
+    if (!args.clientId || !args.loadOrderScans) {
+        throw new SavedDesignSnapshotError(
+            "use_order_scans needs the foot scans stored on this order's client. Refusing to substitute the template.",
+        );
+    }
+    const files = await args.loadOrderScans(args.clientId);
+    const { applyOrderScansToSavedDesign } = await import(
+        "../../../src/lib/clinical/design-from-order-scans.js"
+    );
+    return applyOrderScansToSavedDesign({
+        built: args.built,
+        catalog: args.catalog,
+        files,
+    });
+}
+
+/**
  * Replace settingsJson on the given design. Does not create a design, touch
  * production status, or read rx text / notes from the integration link.
  */
@@ -288,6 +320,13 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
      * Omitted leaves the column alone and keeps the snapshot's print method.
      */
     manufacturingMethod?: SavedDesignManufacturingMethod;
+    /**
+     * Explicit per-design opt-in. Omitted and false keep the template snapshot
+     * and do not read scans.
+     */
+    useOrderScans?: boolean;
+    /** Required when useOrderScans is true. Not called otherwise. */
+    loadOrderScans?: (clientId: string) => Promise<OrderScanFile[]>;
     /** Test seam. Production uses {@link buildSavedDesignSnapshot} from shared. */
     buildSnapshot?: SnapshotBuilder;
 }): Promise<PersistSavedDesignSnapshotResult> {
@@ -306,7 +345,7 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
             settingsJson: true,
             updatedAt: true,
             deletedAt: true,
-            client: { select: { tenantId: true } },
+            client: { select: { id: true, tenantId: true } },
             integrationLink: {
                 select: {
                     tenantId: true,
@@ -366,6 +405,13 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
     if (args.manufacturingMethod) {
         applySavedDesignManufacturingMethod(built.design, args.manufacturingMethod);
     }
+    const scanReview = await applyRequestedOrderScans({
+        useOrderScans: args.useOrderScans,
+        clientId: row?.client?.id ?? null,
+        loadOrderScans: args.loadOrderScans,
+        built,
+        catalog,
+    });
 
     let settingsJson: unknown;
     try {
@@ -406,7 +452,8 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
         paths: built.paths,
         settingsJson,
         template: "SAMPLE_Top",
-        scans_used: false,
+        scans_used: built.design.dogfoodManufacturing?.scansUsed === true,
+        ...(scanReview.length > 0 ? { scan_review: scanReview } : {}),
         shoe_width: built.shoeWidth,
         shoe_width_source: built.shoeWidthSource,
         hardness: built.hardness,

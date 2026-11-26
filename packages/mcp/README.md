@@ -1,6 +1,6 @@
 # OrthoCAD MCP (Phase A)
 
-Installable MCP server for the **Vertex Orthotic CAD Production Specialist** bot (`e11f63f7`). Wraps existing OrthoCAD **integration REST** and **documented manufacturing tRPC → Python `/manufacture`** path on `main`. **No headless CAD** from scan.
+Installable MCP server for the **Vertex Orthotic CAD Production Specialist** bot (`e11f63f7`). Wraps existing OrthoCAD **integration REST** and **documented manufacturing tRPC → Python `/manufacture`** path on `main`. Headless designs stay on stock SAMPLE_Top (`scans_used` false). `use_order_scans: true` on `create_saved_design` or `persist_saved_design_snapshot` is the explicit per-design option that sets arch height from the order client's stored scans the same way the UI Scan import and Generate Orthotic button do. The mesh stays SAMPLE_Top. The option is off unless that flag is sent.
 
 This package is **original `@vertex/orthocad-mcp`**. Do not revive the deleted Chili3D `packages/mcp` tree referenced in `docs/license-classification.md`.
 
@@ -116,7 +116,7 @@ node vertex/scripts/bundle-orthocad-mcp-http.mjs
 | `get_export_download` | tRPC `manufacturing.getGcodeDownloadUrl` |
 | `build_design_exported_payload` | VO handoff object (below) — **no VO order status writes** |
 | `persist_saved_design_snapshot` | tRPC `manufacturing.persistSavedDesignSnapshot` — writes `settingsJson` on an existing design |
-| `create_saved_design` | tRPC `manufacturing.createSavedDesign` — refresh the dogfood SAMPLE_Top already bound to a vo2 order. Optional `client_id` only confirms that binding. No clinic tenant, no client create, no integration upsert |
+| `create_saved_design` | tRPC `manufacturing.createSavedDesign` — refresh the dogfood SAMPLE_Top already bound to a vo2 order. Optional `client_id` only confirms that binding. No clinic tenant, no client create, no integration upsert. Optional `use_order_scans: true` sets each foot's arch height from that client's stored scans. Omitted stays the template |
 | `prepare_vo_attachment` | Live `attach_files` arguments (`orderId`, `external_order_id`, `source: vo2`, L/R G-code, or central-fab STL when `storage_key` is `stl/cad-operator/…`). Storage key stays CAD provenance. Does not call VO |
 
 Saved-design belt flow: `generate_gcode` with `use_saved_design: true` and `design_id`. The call returns one `{production_id, status}` per foot before loft and slice finish. Poll `get_production`. When `status` is `succeeded`, call `get_export_download` with that id. No STL file and no G-code bytes are returned. Omitting `side` enqueues both feet. The legacy STL upload path (`prepare_manufacturing_stl_upload` → `stl_storage_key`) uses the same production id when the server accepts it.
@@ -184,8 +184,10 @@ Dogfood tenant `54b6a960-aa40-4988-b116-adf5ed6c72f8` only. CAD-operator Bearer 
 
 `persist_saved_design_snapshot` writes that parameter snapshot onto an existing design (`design_id`). It copies the stored integration-link shoe size and width, maps only structured catalog fields, and returns 422 instead of inventing a prescription. `rx_text` and notes are ignored. It does not change File Ready or In Production.
 
+`catalog.length` is Full, 3/4, or Sulcus. 3/4 selects the existing Met-head trim and Sulcus selects the existing Sulcus trim. Full and omitted leave the outline uncut. `create_saved_design` stores that preset on the saved design and the headless export rebuilds it with the same preset the UI uses.
+
 Residuals:
 
 - Reference design `cc357f83-3391-4c93-90b0-e18b6bce1a1d` was not compared. No production credential is available. Mesh parity tests use a sanitized SAMPLE_Top design against `buildPrinterFootManufacturingStl`.
 - Headless loft needs the same Node loader as the Export modules (`@/` alias, SAMPLE_Top bytes, DOMParser for the GLB). If that load fails, generateSolid errors and does not substitute a mesh.
-- No headless CAD from a scan. No VO order upload. Belt `generate_gcode` still has no STL deliverable. Central-fab STL is `generate_central_fab_stl` only.
+- Default headless designs do not read scans. `use_order_scans: true` is optional and per design: it imports the order client's stored STL/OBJ with the Scan step's cleanup and writes the Generate Orthotic arch-height slider. It does not replace SAMPLE_Top with the scan mesh. A missing scan is refused. No VO order upload. Belt `generate_gcode` still has no STL deliverable. Central-fab STL is `generate_central_fab_stl` only. A design-settings change, including this option, changes the production idempotency key (`settingsJson` is in the fingerprint), so a previous STL or G-code is not reused.
