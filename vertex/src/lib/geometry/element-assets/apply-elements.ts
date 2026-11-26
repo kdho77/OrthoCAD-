@@ -18,6 +18,7 @@ import {
     type HeightFieldParams,
     quinticSmoothstep,
 } from "@/lib/geometry/height-field";
+import { N_TOP_PATCH_MM } from "@/lib/geometry/procedural-wall/bezier-column";
 import { applySinkCutToGeometry, sinksActive } from "@/lib/geometry/sink";
 import type { PlacedElement } from "@/types";
 import { loadTransformedAssetPositions, resolvePlacedAssetContexts } from "./element-asset";
@@ -230,6 +231,201 @@ async function applyAssetContext(
     }
 }
 
+/** Vertices on a once-used edge. The loft uses this loop as the wall rim. */
+function boundaryVertexIndices(geometry: BufferGeometry): Set<number> {
+    const index = geometry.getIndex();
+    const out = new Set<number>();
+    if (!index) return out;
+    const uses = new Map<string, number>();
+    const ends = new Map<string, [number, number]>();
+    for (let t = 0; t < index.count; t += 3) {
+        const tri = [index.getX(t), index.getX(t + 1), index.getX(t + 2)];
+        for (let k = 0; k < 3; k++) {
+            const a = tri[k] ?? 0;
+            const b = tri[(k + 1) % 3] ?? 0;
+            const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+            uses.set(key, (uses.get(key) ?? 0) + 1);
+            ends.set(key, a < b ? [a, b] : [b, a]);
+        }
+    }
+    for (const [key, count] of uses) {
+        if (count !== 1) continue;
+        const pair = ends.get(key);
+        if (!pair) continue;
+        out.add(pair[0]);
+        out.add(pair[1]);
+    }
+    return out;
+}
+
+/**
+ * Rim vertices plus every vertex of a face the wall start tangent can see.
+ * rimJunctions samples faces of vertices within N_TOP_PATCH_MM of the rim.
+ */
+function wallTangentHoldIndices(geometry: BufferGeometry): Set<number> {
+    const boundary = boundaryVertexIndices(geometry);
+    const out = new Set(boundary);
+    const index = geometry.getIndex();
+    const pos = geometry.getAttribute("position");
+    if (!index || !pos || boundary.size === 0) return out;
+    const arr = pos.array as Float32Array;
+    const patch2 = N_TOP_PATCH_MM * N_TOP_PATCH_MM;
+    const rim = [...boundary];
+    const near = new Set<number>();
+    for (let i = 0; i < pos.count; i++) {
+        const x = arr[i * 3] ?? 0;
+        const y = arr[i * 3 + 1] ?? 0;
+        const z = arr[i * 3 + 2] ?? 0;
+        for (let k = 0; k < rim.length; k++) {
+            const b = rim[k] ?? 0;
+            const dx = x - (arr[b * 3] ?? 0);
+            const dy = y - (arr[b * 3 + 1] ?? 0);
+            const dz = z - (arr[b * 3 + 2] ?? 0);
+            if (dx * dx + dy * dy + dz * dz <= patch2) {
+                near.add(i);
+                break;
+            }
+        }
+    }
+    for (let t = 0; t < index.count; t += 3) {
+        const a = index.getX(t);
+        const b = index.getX(t + 1);
+        const c = index.getX(t + 2);
+        if (!near.has(a) && !near.has(b) && !near.has(c)) continue;
+        out.add(a);
+        out.add(b);
+        out.add(c);
+    }
+    return out;
+}
+
+/** Once-used edges. Splitting these would insert stations on the loft rim. */
+function boundaryEdgeKeys(geometry: BufferGeometry): Set<string> {
+    const index = geometry.getIndex();
+    const keys = new Set<string>();
+    if (!index) return keys;
+    const uses = new Map<string, number>();
+    for (let t = 0; t < index.count; t += 3) {
+        const tri = [index.getX(t), index.getX(t + 1), index.getX(t + 2)];
+        for (let k = 0; k < 3; k++) {
+            const a = tri[k] ?? 0;
+            const b = tri[(k + 1) % 3] ?? 0;
+            const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+            uses.set(key, (uses.get(key) ?? 0) + 1);
+        }
+    }
+    for (const [key, count] of uses) {
+        if (count === 1) keys.add(key);
+    }
+    return keys;
+}
+
+function pushSplitTriangle(
+    out: number[],
+    a: number,
+    b: number,
+    c: number,
+    mab: number,
+    mbc: number,
+    mca: number,
+): void {
+    const n = (mab >= 0 ? 1 : 0) + (mbc >= 0 ? 1 : 0) + (mca >= 0 ? 1 : 0);
+    if (n === 0) {
+        out.push(a, b, c);
+        return;
+    }
+    if (n === 3) {
+        out.push(a, mab, mca, b, mbc, mab, c, mca, mbc, mab, mbc, mca);
+        return;
+    }
+    if (n === 1) {
+        if (mab >= 0) out.push(a, mab, c, mab, b, c);
+        else if (mbc >= 0) out.push(b, mbc, a, mbc, c, a);
+        else out.push(c, mca, b, mca, a, b);
+        return;
+    }
+    if (mab >= 0 && mbc >= 0) out.push(a, mab, c, mab, b, mbc, mab, mbc, c);
+    else if (mbc >= 0 && mca >= 0) out.push(b, mbc, a, mbc, c, mca, mbc, mca, a);
+    else out.push(c, mca, b, mca, a, mab, mca, mab, b);
+}
+
+/**
+ * Split interior edges under reverse Morton's down to the element edge
+ * length. Boundary edges stay whole, so the loft rim and its stations do
+ * not move. The wall tangent then sees a one-face uncut band instead of a
+ * cliff across a coarse rim triangle.
+ */
+function subdivideReverseMortonsInterior(
+    geometry: BufferGeometry,
+    base: BufferGeometry,
+    field: HeightFieldParams,
+    elements: PlacedElement[],
+): void {
+    const cuts = elements.filter((el) => el.side === field.side && el.kind === "reverse_mortons");
+    if (cuts.length === 0) return;
+    const index = geometry.getIndex();
+    const pos = geometry.getAttribute("position") as BufferAttribute | undefined;
+    if (!index || !pos) return;
+    const boundary = boundaryEdgeKeys(geometry);
+    if (boundary.size === 0) return;
+    const frame = getBaseFootprintFrame(base, field.side);
+    const cutAt = (x: number, y: number, z: number): number => {
+        const coords = [x, y, z];
+        const len = coords[frame.lengthAxis] ?? 0;
+        const wid = coords[frame.widthAxis] ?? 0;
+        const xFromHeel = ((len - frame.lenMin) / frame.lenSize) * field.lengthMm;
+        const yMm = heightFieldYFromMeshY(wid - frame.widCenter);
+        return elementHeightAt(cuts, xFromHeel, yMm, field.lengthMm, field.widthMm);
+    };
+    const maxIter = 8;
+    for (let iter = 0; iter < maxIter; iter++) {
+        const current = geometry.getIndex();
+        if (!current) break;
+        const arr = pos.array as Float32Array;
+        const idx = Array.from(current.array as ArrayLike<number>);
+        const mids = new Map<string, number>();
+        const extra: number[] = [];
+        const take = (a: number, b: number): number => {
+            const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+            if (boundary.has(key)) return -1;
+            const hit = mids.get(key);
+            if (hit !== undefined) return hit;
+            const ax = arr[a * 3] ?? 0;
+            const ay = arr[a * 3 + 1] ?? 0;
+            const az = arr[a * 3 + 2] ?? 0;
+            const bx = arr[b * 3] ?? 0;
+            const by = arr[b * 3 + 1] ?? 0;
+            const bz = arr[b * 3 + 2] ?? 0;
+            if (Math.hypot(ax - bx, ay - by, az - bz) <= ELEMENT_SUBDIVIDE_EDGE_MM) return -1;
+            const mx = (ax + bx) / 2;
+            const my = (ay + by) / 2;
+            const mz = (az + bz) / 2;
+            if (cutAt(ax, ay, az) > -0.05 && cutAt(bx, by, bz) > -0.05 && cutAt(mx, my, mz) > -0.05) {
+                return -1;
+            }
+            const vi = pos.count + extra.length / 3;
+            extra.push(mx, my, mz);
+            mids.set(key, vi);
+            return vi;
+        };
+        const next: number[] = [];
+        for (let f = 0; f < idx.length; f += 3) {
+            const a = idx[f] ?? 0;
+            const b = idx[f + 1] ?? 0;
+            const c = idx[f + 2] ?? 0;
+            pushSplitTriangle(next, a, b, c, take(a, b), take(b, c), take(c, a));
+        }
+        if (extra.length === 0) break;
+        const grown = new Float32Array(arr.length + extra.length);
+        grown.set(arr);
+        grown.set(extra, arr.length);
+        pos.array = grown;
+        pos.count = grown.length / 3;
+        geometry.setIndex(next);
+    }
+    pos.needsUpdate = true;
+}
+
 function applyProceduralElements(
     geometry: BufferGeometry,
     base: BufferGeometry,
@@ -243,19 +439,32 @@ function applyProceduralElements(
     if (procedural.length === 0) return;
     const frame = getBaseFootprintFrame(base, field.side);
     const pos = geometry.getAttribute("position") as BufferAttribute;
-    const basePos = base.getAttribute("position")!.array as Float32Array;
+    const baseAttr = base.getAttribute("position");
+    const basePos = baseAttr.array as Float32Array;
+    const baseCount = baseAttr.count;
     const arr = pos.array as Float32Array;
     const ta = frame.thickAxis;
+    // Reverse Morton's is full depth on the medial and toe borders. Clamping
+    // that rim to the 1.5 mm floor, or dropping the faces inside the wall's
+    // tangent patch, makes the round wall copy the rim onto itself. Hold those
+    // vertices; the cut stays on the interior top. Sinks already refuse to
+    // feed a sunk rim to the loft.
+    const holdRim = procedural.some((el) => el.kind === "reverse_mortons");
+    const rimHold = holdRim ? wallTangentHoldIndices(geometry) : null;
     for (let i = 0; i < pos.count; i++) {
-        const lenCoord = basePos[i * 3 + frame.lengthAxis]!;
-        const widCoord = basePos[i * 3 + frame.widthAxis]!;
+        // Original vertices keep the reference sheet. Interior splits are
+        // appended and exist only on the composed top.
+        const src = i < baseCount ? basePos : arr;
+        const lenCoord = src[i * 3 + frame.lengthAxis] ?? 0;
+        const widCoord = src[i * 3 + frame.widthAxis] ?? 0;
         // Pose Y is footprint-frame mesh millimeters. Do not rescale by the
         // local outline half-width: on the narrower forefoot that shoves a
         // medial pad out to the rim (the soft edge seen in Top view).
         const xFromHeel = ((lenCoord - frame.lenMin) / frame.lenSize) * field.lengthMm;
         const yMm = heightFieldYFromMeshY(widCoord - frame.widCenter);
-        const { u, vSigned: vs } = vertexFootprintAt(frame, basePos, i);
+        const { u, vSigned: vs } = vertexFootprintAt(frame, src, i);
         if (rimBandClipFactor(u, vs, field) < 0.5) continue;
+        if (rimHold?.has(i)) continue;
         const h = elementHeightAt(procedural, xFromHeel, yMm, field.lengthMm, field.widthMm);
         if (h === 0) continue;
         const z0 = arr[i * 3 + ta]!;
@@ -393,6 +602,11 @@ export async function applyElementsToTopMeshLast(
             );
         }
     }
+
+    // Interior splits only. The boundary loop is the loft rim; new stations
+    // there move the engraved name. Runs before the lift snapshot so new
+    // vertices are recorded with the rest of the top.
+    subdivideReverseMortonsInterior(geometry, referenceBase, field, elements);
 
     // Record the composed top immediately before placement. This is the source
     // of truth for design highlighting, including no-flow areas buried in the base.

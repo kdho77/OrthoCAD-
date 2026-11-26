@@ -25,6 +25,9 @@ export type OrthocadMcpTrpcProxy = {
                 productionId: string;
             }) => Promise<{ downloadUrl: string; productionId: string }>;
         };
+        releaseGcodeAfterVoAttach: {
+            mutate: (input: { storageKey: string }) => Promise<{ released: boolean; storageKey: string }>;
+        };
         getProduction: {
             query: (input: { productionId: string }) => Promise<Record<string, unknown>>;
         };
@@ -36,7 +39,22 @@ export type OrthocadMcpTrpcProxy = {
             }) => Promise<Record<string, unknown>>;
         };
         persistSavedDesignSnapshot: {
-            mutate: (input: { designId: string; catalog?: unknown }) => Promise<Record<string, unknown>>;
+            mutate: (input: {
+                designId: string;
+                catalog?: unknown;
+                manufacturingMethod?: "printing_solid" | "milling_3axis";
+                useOrderScans?: boolean;
+            }) => Promise<Record<string, unknown>>;
+        };
+        listDesignMacros: {
+            query: () => Promise<{ macros: Array<Record<string, unknown>> }>;
+        };
+        applyDesignMacros: {
+            mutate: (input: {
+                designId: string;
+                customerMacro?: string;
+                pathologyMacro?: string;
+            }) => Promise<Record<string, unknown>>;
         };
         generateCentralFabStl: {
             mutate: (input: { designId: string; side: "left" | "right" }) => Promise<Record<string, unknown>>;
@@ -55,6 +73,8 @@ export type OrthocadMcpTrpcProxy = {
                 givenName?: string;
                 familyName?: string;
                 catalog?: unknown;
+                manufacturingMethod?: "printing_solid" | "milling_3axis";
+                useOrderScans?: boolean;
             }) => Promise<Record<string, unknown>>;
         };
     };
@@ -172,6 +192,14 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
             return trpc.manufacturing.getGcodeDownloadUrl.query({ productionId });
         },
 
+        /**
+         * Delete cad-operator G-code after VertexOrders attach is confirmed.
+         * Call site: vertex/server/src/routers/manufacturing.ts releaseGcodeAfterVoAttach.
+         */
+        releaseGcodeAfterVoAttach(storageKey: string) {
+            return trpc.manufacturing.releaseGcodeAfterVoAttach.mutate({ storageKey });
+        },
+
         /** Status of one CAD-operator production. No G-code bytes. */
         getProduction(productionId: string) {
             return trpc.manufacturing.getProduction.query({ productionId });
@@ -187,6 +215,24 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
             return trpc.design.get.query({ id: designId });
         },
 
+        /** Corrections-panel macros. Names only. Call site: manufacturing.listDesignMacros. */
+        listDesignMacros() {
+            return trpc.manufacturing.listDesignMacros.query();
+        },
+
+        /**
+         * Merge customer then pathology onto settingsJson.
+         * Call site: vertex/server/src/routers/manufacturing.ts applyDesignMacros.
+         * Omit both names and the server does not write.
+         */
+        applyDesignMacros(input: { designId: string; customerMacro?: string; pathologyMacro?: string }) {
+            return trpc.manufacturing.applyDesignMacros.mutate({
+                designId: input.designId,
+                customerMacro: input.customerMacro,
+                pathologyMacro: input.pathologyMacro,
+            });
+        },
+
         /**
          * Replace settingsJson on an existing design with a fail-closed SAMPLE_Top snapshot.
          * Call site: vertex/server/src/routers/manufacturing.ts persistSavedDesignSnapshot.
@@ -196,11 +242,13 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
             designId: string;
             catalog?: unknown;
             manufacturingMethod?: "printing_solid" | "milling_3axis";
+            useOrderScans?: boolean;
         }) {
             return trpc.manufacturing.persistSavedDesignSnapshot.mutate({
                 designId: input.designId,
                 catalog: input.catalog,
                 ...(input.manufacturingMethod ? { manufacturingMethod: input.manufacturingMethod } : {}),
+                ...(input.useOrderScans === true ? { useOrderScans: true } : {}),
             });
         },
 
@@ -216,6 +264,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
             familyName?: string;
             catalog?: unknown;
             manufacturingMethod?: "printing_solid" | "milling_3axis";
+            useOrderScans?: boolean;
         }) {
             return trpc.manufacturing.createSavedDesign.mutate({
                 externalOrderId: input.externalOrderId,
@@ -224,6 +273,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
                 familyName: input.familyName,
                 catalog: input.catalog,
                 ...(input.manufacturingMethod ? { manufacturingMethod: input.manufacturingMethod } : {}),
+                ...(input.useOrderScans === true ? { useOrderScans: true } : {}),
             });
         },
     };

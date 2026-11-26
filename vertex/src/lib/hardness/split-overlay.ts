@@ -16,6 +16,47 @@ import {
 
 export const DEFAULT_SPLIT_HARDNESS: NamedHardnessClass = "Medium";
 
+/** Neutral insole before a device hardness is chosen (viewer material only). */
+export const INSOLE_VIEWPORT_BASE_COLOR = "#f8fafc";
+
+/** Blend hardness preview into the base gray so lighting stays readable. */
+export const INSOLE_HARDNESS_TINT_MIX = 0.42;
+
+/** Print/Export solid: near-white with a hint of hardness color. */
+export const INSOLE_PRINT_EXPORT_TINT_MIX = 0.16;
+
+function mixHexColors(base: string, accent: string, mix: number): string {
+    const parse = (hex: string) => {
+        const h = hex.replace("#", "");
+        return [
+            Number.parseInt(h.slice(0, 2), 16),
+            Number.parseInt(h.slice(2, 4), 16),
+            Number.parseInt(h.slice(4, 6), 16),
+        ] as const;
+    };
+    const [br, bg, bb] = parse(base);
+    const [ar, ag, ab] = parse(accent);
+    const t = Math.min(1, Math.max(0, mix));
+    const channel = (b: number, a: number) => Math.round(b + (a - b) * t);
+    const r = channel(br, ar);
+    const g = channel(bg, ag);
+    const b = channel(bb, ab);
+    return `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** Whole-insole viewport tint from PrintRecipe device hardness (not export geometry). */
+export function insoleViewportMaterialColor(
+    printRecipe: { defaultHardness?: RegionHardnessClass | string } | undefined | null,
+    options?: { printExport?: boolean },
+): string {
+    const raw = printRecipe?.defaultHardness;
+    if (!raw) return INSOLE_VIEWPORT_BASE_COLOR;
+    const cls = migrateRegionHardnessClass(raw);
+    const preview = CLASS_PREVIEW_COLORS[cls] ?? CLASS_PREVIEW_COLORS.Medium;
+    const mix = options?.printExport ? INSOLE_PRINT_EXPORT_TINT_MIX : INSOLE_HARDNESS_TINT_MIX;
+    return mixHexColors(INSOLE_VIEWPORT_BASE_COLOR, preview, mix);
+}
+
 /** High-contrast colors used to locate additions while designing an insole. */
 export const DESIGN_ELEMENT_COLORS = ["#a855f7"] as const;
 

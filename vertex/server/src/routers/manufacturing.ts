@@ -7,6 +7,7 @@ import { vertexSliceRegional3mfEnabled } from "../../../shared/vertexslice-regio
 import { assertCadOperatorDeliverableKey, buildCadOperatorTempStlKey } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { getSupabaseAdmin } from "../context.js";
+import { applyDesignMacrosOnDesign, listDesignMacrosForOperator } from "../lib/apply-design-macros.js";
 import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
 import { runtimeDogfoodOrderOwnerVerifier } from "../lib/dogfood-order-owner-wire.js";
 import {
@@ -18,15 +19,17 @@ import {
 import { callManufacture } from "../lib/manufacturing-client.js";
 import { downloadManufacturingStl } from "../lib/manufacturing-stl-download.js";
 import {
-    archiveManufacturingSourceStl,
-    deleteManufacturingTempBestEffort,
+    deleteCadOperatorGcodeAfterVoAttach,
+    discardManufacturingTempStl,
 } from "../lib/manufacturing-stl-lifecycle.js";
+import { loadClientFootScans } from "../lib/order-scans.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
 import { persistSavedDesignSnapshotOnDesign } from "../lib/saved-design-snapshot.js";
 import {
     buildManufacturingTempStlKey,
     createSignedUpload,
     MANUFACTURING_BUCKET,
+    MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC,
     signedDownloadUrl,
     uploadAsset,
 } from "../lib/storage.js";
@@ -134,7 +137,12 @@ function sessionManufacturingIo(user: { id: string; email: string; role: string 
             if (!supabase) {
                 throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
             }
-            return signedDownloadUrl(supabase, storageKey, 3600, MANUFACTURING_BUCKET);
+            return signedDownloadUrl(
+                supabase,
+                storageKey,
+                MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC,
+                MANUFACTURING_BUCKET,
+            );
         },
         downloadStl: downloadManufacturingStl,
         sliceWithVertexSlice,
@@ -179,7 +187,12 @@ function sessionManufacturingIo(user: { id: string; email: string; role: string 
             if (!supabase) {
                 throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
             }
-            return signedDownloadUrl(supabase, storageKey, 3600, MANUFACTURING_BUCKET);
+            return signedDownloadUrl(
+                supabase,
+                storageKey,
+                MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC,
+                MANUFACTURING_BUCKET,
+            );
         },
         async updateExportStorage(exportId, storageKey) {
             if (!supabase) return;
@@ -189,12 +202,8 @@ function sessionManufacturingIo(user: { id: string; email: string; role: string 
             if (!supabase) return;
             await supabase.from("productions").update({ gcodeStorageKey: storageKey }).eq("id", productionId);
         },
-        async archiveSourceStl(archiveArgs) {
-            if (!supabase) return;
-            await archiveManufacturingSourceStl(supabase, archiveArgs);
-        },
         async deleteTemp(storageKey) {
-            deleteManufacturingTempBestEffort(supabase, storageKey);
+            await discardManufacturingTempStl(supabase, storageKey);
         },
     };
 }
@@ -296,7 +305,12 @@ export const manufacturingRouter = router({
 
             const key = buildManufacturingTempStlKey(ctx.user.id);
             await uploadAsset(supabase, key, bytes, "model/stl", MANUFACTURING_BUCKET);
-            const stlUrl = await signedDownloadUrl(supabase, key, 3600, MANUFACTURING_BUCKET);
+            const stlUrl = await signedDownloadUrl(
+                supabase,
+                key,
+                MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC,
+                MANUFACTURING_BUCKET,
+            );
 
             return { ok: true as const, stlUrl, storageKey: key };
         }),
@@ -454,6 +468,53 @@ export const manufacturingRouter = router({
         }),
 
     /**
+     * Customer and pathology macros the Corrections panel Merge button applies.
+     * Names only. Payloads are not returned.
+     */
+    listDesignMacros: sessionOrCadOperatorProcedure("design:read").query(() => {
+        return listDesignMacrosForOperator();
+    }),
+
+    /**
+     * Merge customer then pathology onto the saved design, the same way the
+     * Corrections panel Merge button does. Omit both names and nothing is written.
+     */
+    applyDesignMacros: rateLimitedSessionOrCadProcedure(
+        RATE_LIMITS.export,
+        "manufacturing:applyDesignMacros",
+        "manufacturing:generate",
+    )
+        .input(
+            z.object({
+                designId: z.string().uuid(),
+                customerMacro: z.string().trim().min(1).max(120).optional(),
+                pathologyMacro: z.string().trim().min(1).max(120).optional(),
+            }),
+        )
+        .mutation(async ({ ctx, input }) => {
+            if (!ctx.cadOperator) {
+                throw new TRPCError({ code: "FORBIDDEN", message: "CAD-operator credential required" });
+            }
+            try {
+                return await applyDesignMacrosOnDesign({
+                    prisma: ctx.prisma,
+                    principal: ctx.cadOperator,
+                    designId: input.designId,
+                    customerMacro: input.customerMacro,
+                    pathologyMacro: input.pathologyMacro,
+                });
+            } catch (error) {
+                if (
+                    (error instanceof Error && error.name === "DesignMacroError") ||
+                    error instanceof SavedDesignSnapshotError
+                ) {
+                    throw new TRPCError({ code: "UNPROCESSABLE_CONTENT", message: error.message });
+                }
+                throw error;
+            }
+        }),
+
+    /**
      * Persist a loftable SAMPLE_Top settingsJson on an existing design.
      * Does not create a design, change production status, or read rx text.
      */
@@ -467,6 +528,8 @@ export const manufacturingRouter = router({
                 designId: z.string().uuid(),
                 catalog: z.unknown().optional(),
                 manufacturingMethod: z.enum(["printing_solid", "milling_3axis"]).optional(),
+                /** Omitted and false keep the template. True reads this design's client scans. */
+                useOrderScans: z.boolean().optional(),
             }),
         )
         .mutation(async ({ ctx, input }) => {
@@ -480,6 +543,12 @@ export const manufacturingRouter = router({
                     designId: input.designId,
                     catalog: input.catalog,
                     manufacturingMethod: input.manufacturingMethod,
+                    ...(input.useOrderScans === true
+                        ? {
+                              useOrderScans: true,
+                              loadOrderScans: (clientId: string) => loadClientFootScans(ctx.prisma, clientId),
+                          }
+                        : {}),
                 });
             } catch (error) {
                 if (error instanceof SavedDesignSnapshotError) {
@@ -507,12 +576,21 @@ export const manufacturingRouter = router({
                 familyName: z.string().trim().min(1).max(100).optional(),
                 catalog: z.unknown().optional(),
                 manufacturingMethod: z.enum(["printing_solid", "milling_3axis"]).optional(),
+                /** Omitted and false keep the template. True reads the order client's scans. */
+                useOrderScans: z.boolean().optional(),
             }),
         )
         .mutation(async ({ ctx, input }) => {
             if (!ctx.cadOperator) {
                 throw new TRPCError({ code: "FORBIDDEN", message: "CAD-operator credential required" });
             }
+            const orderScans =
+                input.useOrderScans === true
+                    ? {
+                          useOrderScans: true as const,
+                          loadOrderScans: (clientId: string) => loadClientFootScans(ctx.prisma, clientId),
+                      }
+                    : {};
             try {
                 return await createDogfoodSavedDesign({
                     principal: ctx.cadOperator,
@@ -523,6 +601,7 @@ export const manufacturingRouter = router({
                     chart: { givenName: input.givenName, familyName: input.familyName },
                     verifier: runtimeDogfoodOrderOwnerVerifier(process.env),
                     store: prismaDogfoodSavedDesignStore(ctx.prisma),
+                    ...orderScans,
                     persist: (designId) =>
                         persistSavedDesignSnapshotOnDesign({
                             prisma: ctx.prisma,
@@ -530,6 +609,7 @@ export const manufacturingRouter = router({
                             designId,
                             catalog: input.catalog,
                             manufacturingMethod: input.manufacturingMethod,
+                            ...orderScans,
                         }),
                 });
             } catch (error) {
@@ -647,7 +727,7 @@ export const manufacturingRouter = router({
                 const downloadUrl = await signedDownloadUrl(
                     storage,
                     production.gcodeStorageKey,
-                    3600,
+                    MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC,
                     MANUFACTURING_BUCKET,
                 );
                 return { downloadUrl, productionId: production.id };
@@ -678,9 +758,40 @@ export const manufacturingRouter = router({
             const downloadUrl = await signedDownloadUrl(
                 storage,
                 production.gcodeStorageKey,
-                3600,
+                MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC,
                 MANUFACTURING_BUCKET,
             );
             return { downloadUrl, productionId: production.id };
+        }),
+
+    /**
+     * Cad-operator G-code is removed once VertexOrders has accepted the file.
+     * The signed download URL is not deleted here; the 24h sweep covers UI G-code.
+     */
+    releaseGcodeAfterVoAttach: sessionOrCadOperatorProcedure("manufacturing:download")
+        .input(z.object({ storageKey: z.string().min(1).max(500) }))
+        .mutation(async ({ ctx, input }) => {
+            if (!ctx.cadOperator) {
+                throw new TRPCError({
+                    code: "FORBIDDEN",
+                    message: "CAD-operator attach release only",
+                });
+            }
+            try {
+                assertCadOperatorDeliverableKey(input.storageKey, ctx.cadOperator.credentialId);
+            } catch {
+                throw new TRPCError({
+                    code: "FORBIDDEN",
+                    message: "Production not found or access denied",
+                });
+            }
+            if (!input.storageKey.startsWith("gcode/cad-operator/")) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message: "Only cad-operator G-code is released after attach",
+                });
+            }
+            const released = await deleteCadOperatorGcodeAfterVoAttach(getSupabaseAdmin(), input.storageKey);
+            return { released, storageKey: input.storageKey };
         }),
 });

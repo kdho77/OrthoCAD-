@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 //
-// Two headless Export lofts at once, each on its own thread.
+// Headless Export lofts, each on its own thread. The cap is two pairs.
 // The request thread only waits on the worker, so a slice poll and the
 // other foot's enqueue keep running. Geometry is the in-process loft.
 
@@ -10,8 +10,14 @@ import { Worker } from "node:worker_threads";
 
 import type { HeadlessFinalizedFoot } from "./finalized-mesh-runner.js";
 
-/** One pair is two feet. A third loft waits for a free thread. */
-export const LOFT_WORKER_LIMIT = 2;
+/**
+ * In-process Export lofts on one isolate. VertexSlice accepts concurrent
+ * POST /v1/slice/jobs and queues the rest (the 202 carries position), so this
+ * is not the slicer's run cap. A limit of 2 kept a warm isolate on one pair:
+ * the next feet waited inside generate until the MCP client timed out.
+ * Four is two pairs at once, which is the overlap that job route already accepts.
+ */
+export const LOFT_WORKER_LIMIT = 4;
 
 interface BlockMessage {
     ok: true;
