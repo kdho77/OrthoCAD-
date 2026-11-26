@@ -76,6 +76,7 @@ import {
     scalePatternWidth,
     shiftPatternByRimFollow,
     smoothMovedStationOutline,
+    snapStationsInsidePreLoftCap,
 } from "./station-gates";
 import {
     applyStoredTB,
@@ -1682,6 +1683,9 @@ export function reconstructProceduralWalls(
         }
     }
     clampStationHeadings(stations, hygiened.loop);
+    // Heading clamp and the arc reparameterize can put a station a fraction
+    // of a millimetre back over the cap the limiter already enforced.
+    snapStationsInsidePreLoftCap(stations, hygiened.loop, r1, r2, stationSkewOpts);
     assertPreLoftStations(stations, r1, r2, stationSkewOpts);
     {
         let minB = Infinity;

@@ -1,4 +1,4 @@
-// orthocad-mcp-http-bundle ca68cc70a3a20440efc854b8158e87d915ac4fd240720cd761cfa7bd14026c99
+// orthocad-mcp-http-bundle 7b0ccac59f89c83059d7b325f9fe84e6c1c63b3c95208f0028b8fe81c8af1c1b
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;

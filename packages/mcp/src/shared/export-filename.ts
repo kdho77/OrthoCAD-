@@ -174,6 +174,43 @@ export function buildExportFilename(input: BuildExportFilenameInput): string {
     return `${patient}_${material}_${input.side}${extension}`;
 }
 
+/** The patient segment is the empty-name fallback, not a chosen name. */
+export function exportFilenameUsesPatientFallback(fileName: string): boolean {
+    const base = fileName.trim().replace(/\\/g, "/").split("/").pop() ?? "";
+    const noExt = base.replace(/\.[^.]+$/u, "");
+    return noExt === EXPORT_PATIENT_FALLBACK || noExt.startsWith(`${EXPORT_PATIENT_FALLBACK}_`);
+}
+
+/**
+ * Storage name for one production foot. A caller filename that already names
+ * the patient is kept. `Unknown_Patient` is what an empty name builds, so the
+ * chart or the request's patient name replaces it and both feet carry the name.
+ */
+export function productionFootExportFilename(input: {
+    fileName?: string | null;
+    patientName?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    material?: string | null;
+    side: "left" | "right";
+    ext?: string;
+}): string {
+    const side = exportSideSuffix(input.side);
+    const material = canonicalExportMaterialName(input.material ?? "");
+    const ext = input.ext ?? "gcode";
+    const named = (firstName: string, lastName: string) =>
+        buildExportFilename({ firstName, lastName, material, side, ext });
+    const parsed = parsePatientNameForExport(input.patientName);
+    const fromPatient = parsed.firstName || parsed.lastName ? named(parsed.firstName, parsed.lastName) : "";
+    const fromChart =
+        (input.firstName ?? "").trim() || (input.lastName ?? "").trim()
+            ? named(input.firstName ?? "", input.lastName ?? "")
+            : "";
+    const requested = input.fileName?.trim() ?? "";
+    if (requested && !exportFilenameUsesPatientFallback(requested)) return requested;
+    return fromPatient || fromChart || requested || named("", "");
+}
+
 /**
  * Pair CNC download name. Side `LR` is the canonical pair form from
  * {@link exportSideSuffix}. The storage object uses this name with no
