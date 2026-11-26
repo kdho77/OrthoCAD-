@@ -185,12 +185,9 @@ describe("GLB element library assets", () => {
                 const dx = b[i * 3]! - anchor.x;
                 const dy = b[i * 3 + 1]! - anchor.y;
                 const env = sampleGridBilinear(grid, dx, dy);
-                const { u, vSigned } = vertexFootprintAt(anchor.frame, a, i);
-                const fade = rimBandFadeFactor(u, vSigned, field);
-                const rim = spec.highEdge ? fade : fade > 0 ? 1 : 0;
-                if (env > 0.3 && rim > 1e-6) {
+                if (env > 0.3) {
                     const z0 = a[i * 3 + ta]!;
-                    const stamp = spec.highEdge ? z0 + (baseZ + env - z0) * rim : baseZ + env;
+                    const stamp = baseZ + env;
                     if (stamp <= z0 + 0.05) continue;
                     const expected = smoothMaxMm(z0, stamp);
                     worstZ = Math.max(worstZ, Math.abs(b[i * 3 + ta]! - expected));
@@ -338,7 +335,7 @@ describe("GLB element library assets", () => {
         rawL.dispose();
     }, 180_000);
 
-    test("cuboid and met_bar — zero lift in rim band, C1 fade, L and R", async () => {
+    test("cuboid and met_bar keep authored height through the rim band, L and R", async () => {
         for (const spec of LIBRARY.filter((s) => s.highEdge)) {
             for (const side of ["right", "left"] as Side[]) {
                 const raw = await loadSampleTop(side);
@@ -357,34 +354,23 @@ describe("GLB element library assets", () => {
                 const rawArr = raw.getAttribute("position")!.array as Float32Array;
                 const uvArr = rawArr.length === a.length ? rawArr : a;
                 const baseZ = defaultNoFlowHeightHooks.baseHeightAtAnchor(plain, anchor.x, anchor.y, ta);
-                let rimLift = 0;
                 let nRim = 0;
-                let worstFade = 0;
-                let nFade = 0;
+                let worstRim = 0;
                 for (let i = 0; i < a.length / 3; i++) {
                     const { u, vSigned } = vertexFootprintAt(anchor.frame, uvArr, i);
                     const fade = rimBandFadeFactor(u, vSigned, field);
-                    const lift = b[i * 3 + ta]! - a[i * 3 + ta]!;
-                    if (fade <= 1e-6) {
-                        nRim++;
-                        rimLift = Math.max(rimLift, Math.abs(lift));
-                    }
                     const dx = a[i * 3]! - anchor.x;
                     const dy = a[i * 3 + 1]! - anchor.y;
                     const env = sampleGridBilinear(grid, dx, dy);
-                    if (env > 0.3 && fade > 1e-6 && fade < 0.999) {
-                        const z0 = a[i * 3 + ta]!;
-                        const stamp = z0 + (baseZ + env - z0) * fade;
-                        const expected = smoothMaxMm(z0, stamp);
-                        worstFade = Math.max(worstFade, Math.abs(b[i * 3 + ta]! - expected));
-                        nFade++;
-                    }
+                    if (env <= 0.3 || fade > 1e-6) continue;
+                    nRim++;
+                    const z0 = a[i * 3 + ta]!;
+                    const expected = smoothMaxMm(z0, baseZ + env);
+                    worstRim = Math.max(worstRim, Math.abs(b[i * 3 + ta]! - expected));
                 }
-                console.log("LIB-RIM", spec.kind, side, { nRim, rimLift, nFade, worstFade });
+                console.log("LIB-RIM", spec.kind, side, { nRim, worstRim });
                 expect(nRim).toBeGreaterThan(10);
-                expect(rimLift).toBeLessThanOrEqual(0.05);
-                expect(nFade).toBeGreaterThan(10);
-                expect(worstFade).toBeLessThanOrEqual(0.05);
+                expect(worstRim).toBeLessThanOrEqual(0.05);
                 plain.dispose();
                 composed.dispose();
                 raw.dispose();
