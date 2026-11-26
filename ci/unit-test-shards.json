@@ -244,6 +244,7 @@
                 "vertex/src/features/clients/client-actions.test.ts",
                 "vertex/src/components/prescription-upload/PrescriptionUpload.test.tsx",
                 "vertex/tests/pr456-ai-rx.grader.test.tsx",
+                "vertex/tests/pr497-short-trim-preloft.grader.test.ts",
                 "vertex/src/features/clinical/SetupStepPanel.test.tsx",
                 "vertex/src/features/exports/ExportPanel.test.tsx",
                 "vertex/src/features/exports/export-panel-clinical.test.ts",
