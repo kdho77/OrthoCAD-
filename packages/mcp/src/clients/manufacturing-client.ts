@@ -36,7 +36,12 @@ export type OrthocadMcpTrpcProxy = {
             }) => Promise<Record<string, unknown>>;
         };
         persistSavedDesignSnapshot: {
-            mutate: (input: { designId: string; catalog?: unknown }) => Promise<Record<string, unknown>>;
+            mutate: (input: {
+                designId: string;
+                catalog?: unknown;
+                manufacturingMethod?: "printing_solid" | "milling_3axis";
+                useOrderScans?: boolean;
+            }) => Promise<Record<string, unknown>>;
         };
         generateCentralFabStl: {
             mutate: (input: { designId: string; side: "left" | "right" }) => Promise<Record<string, unknown>>;
@@ -55,6 +60,8 @@ export type OrthocadMcpTrpcProxy = {
                 givenName?: string;
                 familyName?: string;
                 catalog?: unknown;
+                manufacturingMethod?: "printing_solid" | "milling_3axis";
+                useOrderScans?: boolean;
             }) => Promise<Record<string, unknown>>;
         };
     };
@@ -196,11 +203,13 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
             designId: string;
             catalog?: unknown;
             manufacturingMethod?: "printing_solid" | "milling_3axis";
+            useOrderScans?: boolean;
         }) {
             return trpc.manufacturing.persistSavedDesignSnapshot.mutate({
                 designId: input.designId,
                 catalog: input.catalog,
                 ...(input.manufacturingMethod ? { manufacturingMethod: input.manufacturingMethod } : {}),
+                ...(input.useOrderScans === true ? { useOrderScans: true } : {}),
             });
         },
 
@@ -216,6 +225,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
             familyName?: string;
             catalog?: unknown;
             manufacturingMethod?: "printing_solid" | "milling_3axis";
+            useOrderScans?: boolean;
         }) {
             return trpc.manufacturing.createSavedDesign.mutate({
                 externalOrderId: input.externalOrderId,
@@ -224,6 +234,7 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
                 familyName: input.familyName,
                 catalog: input.catalog,
                 ...(input.manufacturingMethod ? { manufacturingMethod: input.manufacturingMethod } : {}),
+                ...(input.useOrderScans === true ? { useOrderScans: true } : {}),
             });
         },
     };

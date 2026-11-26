@@ -600,6 +600,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                     ...(input.manufacturing_method
                         ? { manufacturingMethod: input.manufacturing_method }
                         : {}),
+                    ...(input.use_order_scans === true ? { useOrderScans: true } : {}),
                 });
             } catch (error) {
                 const question = questionFromMessage(error instanceof Error ? error.message : String(error));
@@ -627,6 +628,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                     ...(input.manufacturing_method
                         ? { manufacturingMethod: input.manufacturing_method }
                         : {}),
+                    ...(input.use_order_scans === true ? { useOrderScans: true } : {}),
                 });
             } catch (error) {
                 const question = questionFromMessage(error instanceof Error ? error.message : String(error));

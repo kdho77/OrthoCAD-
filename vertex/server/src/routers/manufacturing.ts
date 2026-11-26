@@ -21,6 +21,7 @@ import {
     archiveManufacturingSourceStl,
     deleteManufacturingTempBestEffort,
 } from "../lib/manufacturing-stl-lifecycle.js";
+import { loadClientFootScans } from "../lib/order-scans.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
 import { persistSavedDesignSnapshotOnDesign } from "../lib/saved-design-snapshot.js";
 import {
@@ -467,6 +468,8 @@ export const manufacturingRouter = router({
                 designId: z.string().uuid(),
                 catalog: z.unknown().optional(),
                 manufacturingMethod: z.enum(["printing_solid", "milling_3axis"]).optional(),
+                /** Omitted and false keep the template. True reads this design's client scans. */
+                useOrderScans: z.boolean().optional(),
             }),
         )
         .mutation(async ({ ctx, input }) => {
@@ -480,6 +483,12 @@ export const manufacturingRouter = router({
                     designId: input.designId,
                     catalog: input.catalog,
                     manufacturingMethod: input.manufacturingMethod,
+                    ...(input.useOrderScans === true
+                        ? {
+                              useOrderScans: true,
+                              loadOrderScans: (clientId: string) => loadClientFootScans(ctx.prisma, clientId),
+                          }
+                        : {}),
                 });
             } catch (error) {
                 if (error instanceof SavedDesignSnapshotError) {
@@ -507,12 +516,21 @@ export const manufacturingRouter = router({
                 familyName: z.string().trim().min(1).max(100).optional(),
                 catalog: z.unknown().optional(),
                 manufacturingMethod: z.enum(["printing_solid", "milling_3axis"]).optional(),
+                /** Omitted and false keep the template. True reads the order client's scans. */
+                useOrderScans: z.boolean().optional(),
             }),
         )
         .mutation(async ({ ctx, input }) => {
             if (!ctx.cadOperator) {
                 throw new TRPCError({ code: "FORBIDDEN", message: "CAD-operator credential required" });
             }
+            const orderScans =
+                input.useOrderScans === true
+                    ? {
+                          useOrderScans: true as const,
+                          loadOrderScans: (clientId: string) => loadClientFootScans(ctx.prisma, clientId),
+                      }
+                    : {};
             try {
                 return await createDogfoodSavedDesign({
                     principal: ctx.cadOperator,
@@ -523,6 +541,7 @@ export const manufacturingRouter = router({
                     chart: { givenName: input.givenName, familyName: input.familyName },
                     verifier: runtimeDogfoodOrderOwnerVerifier(process.env),
                     store: prismaDogfoodSavedDesignStore(ctx.prisma),
+                    ...orderScans,
                     persist: (designId) =>
                         persistSavedDesignSnapshotOnDesign({
                             prisma: ctx.prisma,
@@ -530,6 +549,7 @@ export const manufacturingRouter = router({
                             designId,
                             catalog: input.catalog,
                             manufacturingMethod: input.manufacturingMethod,
+                            ...orderScans,
                         }),
                 });
             } catch (error) {
