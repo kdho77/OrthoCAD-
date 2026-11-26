@@ -8,7 +8,7 @@
 
 | Gate | Verdict | Evidence |
 | --- | --- | --- |
-| **ONE:** reverse Morton's builds watertight on both feet | **PASS** | Independent subprocess: `grader-pr-470-export-smoke.test.ts` L+R US M9 t3 cut 2 mm watertight euler 2 on subject worktree. Worker matrix 13/13 via subprocess on `eac20fa4`. |
+| **ONE:** reverse Morton's builds watertight on both feet | **PASS** | Independent subprocess: `grader-pr-470-export-smoke.optional.test.ts` L+R US M9 t3 cut 2 mm watertight euler 2 on subject worktree. Worker matrix 13/13 via subprocess on `eac20fa4`. |
 | Latino `2a31cd8e` / design `2be9d906` repro (2 mm L+R, t3) | **PASS-WITH-RESIDUAL** | Patient name "Alex Latino" in export path; elements match brief (2 mm both feet, t3). US size not in repo — worker and grader use **US M9** (Latino-proxy). Exact shoe size unverified. |
 | Milligan `427ddb58` same settings | **PASS-WITH-RESIDUAL** | Same element/thickness matrix as Latino-proxy; no Milligan fixture in repo (settings equivalence only). |
 | Repro on main before fix | **PASS** | `grader-pr-470-independent.test.ts` main repro: base `apply-elements` + US M9 t3 2 mm left → `MeshNotWatertightError` (`heelBridgeSelfIntersections` > 0). |
