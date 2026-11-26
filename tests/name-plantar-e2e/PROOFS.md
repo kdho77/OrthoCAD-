@@ -1,5 +1,7 @@
 # Plantar-name proofs
 
+The measurements below are the old belt placement (`ySign = +1`). On the live slicer the cap is upside down (`d < 0`, sequence still `JABBOUR`, N reads as И). CI missed that because the job overlaid `stl_preprocess.py` from `9fe93642`, which Y-negates the whole STL before Rz(270) and cancels the flip. The press does not run that overlay. Glyph Y is now negated in `placeBottomText` for the live sole, and the workflow slices `LIVE_IMAGE` with no Y-negate. Negating X still reverses the string.
+
 Measured on the real path: SAMPLE_Top, both feet, default bottom text marking, engrave, `JABBOUR`, `buildPrinterFootManufacturingStl(side, true)`, then VertexSlice `POST /v1/slice` (`profile_id=apex-v2-insole-95a`, `wall_loops=1`, `infill_density=26`, `belt_insole_place=true`). The six cells are `apex_core` toe-first, `apex_light` toe-first, and `apex_light` heel-first, each for both feet. `apex_core` ignores a heel-first request, so heel-first uses `apex_light`, whose chain honours `print_direction`. The gateway wait is the `slice_all.sh` overlay (`SLICE_GATEWAY_TIMEOUT_S` 260 → 880). That overlay does not change G-code.
 
 Thresholds are the #435 gate (`21b9bef3`): `a > 0.5`, `d > 0.5`, `|b| < 0.15`, `|c| < 0.15`, advance `> 20` mm, J hook lower-left (`1.5` / `0.75` mm), sequence `JABBOUR` toward `+reading-x`. They were not loosened.

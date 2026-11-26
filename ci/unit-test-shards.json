@@ -342,6 +342,7 @@
                 "vertex/src/lib/geometry/scan-manual-offset.test.ts",
                 "vertex/src/lib/geometry/shoe-size.test.ts",
                 "vertex/src/lib/geometry/text-marking/compose.test.ts",
+                "vertex/src/lib/geometry/text-marking/plantar-glyph-chirality.test.ts",
                 "vertex/src/lib/geometry/thickness-raise.test.ts",
                 "vertex/src/lib/hardness/resolve-bounds.test.ts",
                 "vertex/src/lib/vite-env.node.test.ts",
