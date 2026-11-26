@@ -513,7 +513,8 @@ export const MCP_TOOL_DEFINITIONS = [
         description:
             "Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. " +
             "The server lofts and slices after that response. Poll get_production. Download with get_export_download only after succeeded. " +
-            "A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset. " +
+            "A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset, and runs a failed production again. " +
+            "A pair retries submit unavailable, fetch failed, and lease expiry; any other failure names that foot and does not return one foot. " +
             "Set force_new_slice to true (saved-design only) after a slicer fix or design change to enqueue a fresh slice " +
             "without reusing a succeeded production; in-flight work is still reused. " +
             "No STL deliverable and no G-code bytes. Omitting side enqueues both feet. " +

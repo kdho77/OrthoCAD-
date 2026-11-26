@@ -143,6 +143,32 @@ export function sleepMs(ms: number): Promise<void> {
 /** Longer than maxDuration so a live invocation is not stolen before the platform stops it. */
 export const CAD_PRODUCTION_LEASE_MS = (CAD_PRODUCTION_MAX_DURATION_SEC + 60) * 1000;
 
+/** Refresh while loft or preflight is still in this process. */
+export const CAD_PRODUCTION_HEARTBEAT_MS = 20_000;
+
+/**
+ * A pending row with no slice checkpoint and no heartbeat never reached loft.
+ * A running row is left alone until its lease expires, so a live loft is not started twice.
+ */
+export const CAD_PRODUCTION_STALE_WORKER_MS = 45_000;
+
+/** submit unavailable, storage fetch failed, and lease expiry. Not a slice-cap failure. */
+export const TRANSIENT_PRODUCTION_ATTEMPTS = 3;
+
+export function isTransientProductionFailure(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/VertexSlice (?:slice exceeded|queue wait exceeded|timed out after)/.test(message)) return false;
+    return /submit unavailable|fetch failed|Production lease expired|Manufacturing timed out \(|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|UND_ERR_/i.test(
+        message,
+    );
+}
+
+export function workerLooksDead(row: CadProductionRow, now: Date): boolean {
+    if (row.status !== "pending") return false;
+    if (readSliceCheckpoint(row.error)) return false;
+    return now.getTime() - row.updatedAt.getTime() >= CAD_PRODUCTION_STALE_WORKER_MS;
+}
+
 /**
  * Remaining invocation time for VertexSlice slice, capped at CAD_VERTEX_SLICE_MAX_TIMEOUT_SEC.
  * Uses the generateSolid / executeCadOperatorProduction start timestamp.
@@ -850,161 +876,183 @@ export async function executeCadOperatorProduction(args: ExecuteCadProductionArg
         timingLogged = true;
         logCadOperatorTiming(args.row, loftS, sliceS);
     };
-    try {
-        const storedCheckpoint = readSliceCheckpoint(
-            (await args.store.findById(args.row.id))?.error ?? args.row.error,
-        );
-        // A stored STL is never the mesh. Only a job submitted after a loft in
-        // this production may be polled, and that poll does not read the file.
-        const resumeCheckpoint =
-            args.resumeSubmittedSlice === true && storedCheckpoint?.rematerialized === true
-                ? storedCheckpoint
-                : null;
-        const running = await args.store.updateIf(
-            args.row.id,
-            (row) => row.status === "pending" || row.status === "running",
-            {
-                status: "running",
-                leaseExpiresAt: leaseDeadline(started),
-                updatedAt: started,
-                ...(resumeCheckpoint ? {} : { error: null }),
-            },
-        );
-        if (!running) return;
+    for (let attempt = 1; attempt <= TRANSIENT_PRODUCTION_ATTEMPTS; attempt++) {
+        try {
+            const storedCheckpoint = readSliceCheckpoint(
+                (await args.store.findById(args.row.id))?.error ?? args.row.error,
+            );
+            // A stored STL is never the mesh. Only a job submitted after a loft in
+            // this production may be polled, and that poll does not read the file.
+            const resumeCheckpoint =
+                args.resumeSubmittedSlice === true && storedCheckpoint?.rematerialized === true
+                    ? storedCheckpoint
+                    : null;
+            const running = await args.store.updateIf(
+                args.row.id,
+                (row) =>
+                    row.status === "pending" ||
+                    row.status === "running" ||
+                    (row.status === "failed" && isTransientProductionFailure(new Error(row.error ?? ""))),
+                {
+                    status: "running",
+                    leaseExpiresAt: leaseDeadline(started),
+                    updatedAt: started,
+                    ...(resumeCheckpoint ? {} : { error: null }),
+                },
+            );
+            if (!running) return;
 
-        const current = await args.store.findById(args.row.id);
-        if (current?.chargedAt && current.gcodeStorageKey) {
-            await args.store.updateIf(args.row.id, (row) => row.status !== "succeeded", {
-                status: "succeeded",
-                gcodeStorageKey: current.gcodeStorageKey,
-                error: null,
-                updatedAt: args.now(),
-                leaseExpiresAt: null,
-            });
-            return;
-        }
-
-        let meshFingerprint: string | null = resumeCheckpoint?.meshFingerprint ?? null;
-        timingStarted = true;
-        if (!resumeCheckpoint) {
-            const loftStarted = performance.now();
-            try {
-                const materialized = await args.materialize();
-                stlStorageKey = materialized.stlStorageKey;
-                sliceTempKey = materialized.stlStorageKey;
-                meshFingerprint = materialized.meshFingerprint;
-            } finally {
-                loftS = (performance.now() - loftStarted) / 1000;
+            const current = await args.store.findById(args.row.id);
+            if (current?.chargedAt && current.gcodeStorageKey) {
+                await args.store.updateIf(args.row.id, (row) => row.status !== "succeeded", {
+                    status: "succeeded",
+                    gcodeStorageKey: current.gcodeStorageKey,
+                    error: null,
+                    updatedAt: args.now(),
+                    leaseExpiresAt: null,
+                });
+                return;
             }
-        } else if (resumeCheckpoint.stlStorageKey) {
-            sliceTempKey = resumeCheckpoint.stlStorageKey;
-        }
-        // A status poll may finish a job this production already submitted.
-        // That poll does not pass the checkpoint storage key in as the mesh.
-        if (!resumeCheckpoint && args.deliverMaterializedStl) {
-            if (!stlStorageKey) throw new Error("Manufacturing service returned empty output");
+
+            let meshFingerprint: string | null = resumeCheckpoint?.meshFingerprint ?? null;
+            timingStarted = true;
+            if (!resumeCheckpoint) {
+                const loftStarted = performance.now();
+                try {
+                    const materialized = await args.materialize();
+                    stlStorageKey = materialized.stlStorageKey;
+                    sliceTempKey = materialized.stlStorageKey;
+                    meshFingerprint = materialized.meshFingerprint;
+                } finally {
+                    loftS = (performance.now() - loftStarted) / 1000;
+                }
+            } else if (resumeCheckpoint.stlStorageKey) {
+                sliceTempKey = resumeCheckpoint.stlStorageKey;
+            }
+            // A status poll may finish a job this production already submitted.
+            // That poll does not pass the checkpoint storage key in as the mesh.
+            if (!resumeCheckpoint && args.deliverMaterializedStl) {
+                if (!stlStorageKey) throw new Error("Manufacturing service returned empty output");
+                const charged = await args.charge({
+                    storageKey: stlStorageKey,
+                    jobId: `stl_${args.row.id}`,
+                    meshFingerprint,
+                });
+                await args.store.updateIf(args.row.id, () => true, {
+                    chargedAt: args.now(),
+                    exportId: charged.exportId,
+                    gcodeStorageKey: stlStorageKey,
+                    updatedAt: args.now(),
+                });
+                await args.store.updateIf(args.row.id, (row) => row.status !== "succeeded", {
+                    status: "succeeded",
+                    gcodeStorageKey: stlStorageKey,
+                    error: null,
+                    updatedAt: args.now(),
+                    leaseExpiresAt: null,
+                });
+                logTiming();
+                return;
+            }
+            const sliceNow = args.now();
+            const sliceTimeoutMs = cadVertexSliceSliceTimeoutMs(started, sliceNow);
+            const sliceTimeoutSec = Math.max(1, Math.ceil(sliceTimeoutMs / 1000));
+            const sliceStarted = performance.now();
+            let sliced: Awaited<ReturnType<ExecuteCadProductionArgs["slice"]>>;
+            try {
+                sliced = await args.slice(resumeCheckpoint ? "" : (stlStorageKey ?? ""), {
+                    sliceTimeoutMs,
+                    sliceTimeoutSec,
+                    invocationStartedAt: started,
+                    checkpoint: resumeCheckpoint,
+                    meshFingerprint,
+                    stlIdentity: args.stlIdentity ?? null,
+                    budgetMs: args.sliceBudgetMs ?? SLICE_JOB_POLL_BUDGET_MS,
+                    now: args.now,
+                    sleep: args.sleep ?? sleepMs,
+                    persistCheckpoint: async (next) => {
+                        await args.store.updateIf(
+                            args.row.id,
+                            (row) => row.status === "pending" || row.status === "running",
+                            {
+                                status: "running",
+                                error: encodeSliceCheckpoint(next),
+                                leaseExpiresAt: leaseDeadline(args.now()),
+                                updatedAt: args.now(),
+                            },
+                        );
+                    },
+                });
+            } finally {
+                sliceS = (performance.now() - sliceStarted) / 1000;
+            }
+            if ("pending" in sliced) {
+                await args.store.updateIf(
+                    args.row.id,
+                    (row) => row.status === "pending" || row.status === "running",
+                    {
+                        status: "running",
+                        error: encodeSliceCheckpoint(sliced.checkpoint),
+                        leaseExpiresAt: leaseDeadline(args.now()),
+                        updatedAt: args.now(),
+                    },
+                );
+                logTiming();
+                return;
+            }
+            if (!sliced.gcode) {
+                throw new Error("Manufacturing service returned empty output");
+            }
+            const uploaded = await args.uploadGcode(sliced.gcode);
             const charged = await args.charge({
-                storageKey: stlStorageKey,
-                jobId: `stl_${args.row.id}`,
+                storageKey: uploaded.storageKey,
+                jobId: sliced.jobId,
                 meshFingerprint,
             });
             await args.store.updateIf(args.row.id, () => true, {
                 chargedAt: args.now(),
                 exportId: charged.exportId,
-                gcodeStorageKey: stlStorageKey,
+                gcodeStorageKey: uploaded.storageKey,
                 updatedAt: args.now(),
             });
             await args.store.updateIf(args.row.id, (row) => row.status !== "succeeded", {
                 status: "succeeded",
-                gcodeStorageKey: stlStorageKey,
+                gcodeStorageKey: uploaded.storageKey,
                 error: null,
                 updatedAt: args.now(),
                 leaseExpiresAt: null,
             });
             logTiming();
+            await discardSliceTemp(args.deleteTemp, sliceTempKey);
             return;
-        }
-        const sliceNow = args.now();
-        const sliceTimeoutMs = cadVertexSliceSliceTimeoutMs(started, sliceNow);
-        const sliceTimeoutSec = Math.max(1, Math.ceil(sliceTimeoutMs / 1000));
-        const sliceStarted = performance.now();
-        let sliced: Awaited<ReturnType<ExecuteCadProductionArgs["slice"]>>;
-        try {
-            sliced = await args.slice(resumeCheckpoint ? "" : (stlStorageKey ?? ""), {
-                sliceTimeoutMs,
-                sliceTimeoutSec,
-                invocationStartedAt: started,
-                checkpoint: resumeCheckpoint,
-                meshFingerprint,
-                stlIdentity: args.stlIdentity ?? null,
-                budgetMs: args.sliceBudgetMs ?? SLICE_JOB_POLL_BUDGET_MS,
-                now: args.now,
-                sleep: args.sleep ?? sleepMs,
-                persistCheckpoint: async (next) => {
-                    await args.store.updateIf(
-                        args.row.id,
-                        (row) => row.status === "pending" || row.status === "running",
-                        {
-                            status: "running",
-                            error: encodeSliceCheckpoint(next),
-                            leaseExpiresAt: leaseDeadline(args.now()),
-                            updatedAt: args.now(),
-                        },
-                    );
-                },
-            });
-        } finally {
-            sliceS = (performance.now() - sliceStarted) / 1000;
-        }
-        if ("pending" in sliced) {
-            await args.store.updateIf(
-                args.row.id,
-                (row) => row.status === "pending" || row.status === "running",
-                {
-                    status: "running",
-                    error: encodeSliceCheckpoint(sliced.checkpoint),
-                    leaseExpiresAt: leaseDeadline(args.now()),
-                    updatedAt: args.now(),
-                },
-            );
+        } catch (error) {
             logTiming();
+            await discardSliceTemp(args.deleteTemp, sliceTempKey);
+            sliceTempKey = null;
+            stlStorageKey = null;
+            if (attempt < TRANSIENT_PRODUCTION_ATTEMPTS && isTransientProductionFailure(error)) {
+                const message = error instanceof Error ? error.message.slice(0, 200) : "transient";
+                console.log("[manufacturing] transient production retry", {
+                    productionId: args.row.id,
+                    side: args.row.side,
+                    attempt,
+                    message,
+                });
+                timingStarted = false;
+                timingLogged = false;
+                await (args.sleep ?? sleepMs)(200 * attempt);
+                continue;
+            }
+            await markFailed(args.store, args.row.id, error, args.now(), args.row.side);
+            console.error("[manufacturing] cad production failed", {
+                productionId: args.row.id,
+                message: publicProductionError(error, args.row.side),
+                stack: productionErrorStack(error),
+            });
+            const assetCause = assetLoadCauseForLog(error);
+            if (assetCause) console.error(assetCause);
             return;
         }
-        if (!sliced.gcode) {
-            throw new Error("Manufacturing service returned empty output");
-        }
-        const uploaded = await args.uploadGcode(sliced.gcode);
-        const charged = await args.charge({
-            storageKey: uploaded.storageKey,
-            jobId: sliced.jobId,
-            meshFingerprint,
-        });
-        await args.store.updateIf(args.row.id, () => true, {
-            chargedAt: args.now(),
-            exportId: charged.exportId,
-            gcodeStorageKey: uploaded.storageKey,
-            updatedAt: args.now(),
-        });
-        await args.store.updateIf(args.row.id, (row) => row.status !== "succeeded", {
-            status: "succeeded",
-            gcodeStorageKey: uploaded.storageKey,
-            error: null,
-            updatedAt: args.now(),
-            leaseExpiresAt: null,
-        });
-        logTiming();
-        await discardSliceTemp(args.deleteTemp, sliceTempKey);
-    } catch (error) {
-        logTiming();
-        await discardSliceTemp(args.deleteTemp, sliceTempKey);
-        await markFailed(args.store, args.row.id, error, args.now(), args.row.side);
-        console.error("[manufacturing] cad production failed", {
-            productionId: args.row.id,
-            message: publicProductionError(error, args.row.side),
-            stack: productionErrorStack(error),
-        });
-        const assetCause = assetLoadCauseForLog(error);
-        if (assetCause) console.error(assetCause);
     }
 }
 
@@ -1193,25 +1241,52 @@ export async function beginCadOperatorProduction(args: {
     execute: (row: CadProductionRow) => Promise<void>;
     forceNewSlice?: boolean;
 }): Promise<{ productionId: string; status: CadProductionStatus; side: CadFootSide | null }> {
-    const claimed = await claimProduction(args.store, args.insert, args.now, {
+    let claimed = await claimProduction(args.store, args.insert, args.now, {
         forceNewSlice: args.forceNewSlice,
     });
+    if (!claimed.run) {
+        const restarted = await args.store.updateIf(claimed.row.id, (row) => workerLooksDead(row, args.now), {
+            status: "pending",
+            error: null,
+            leaseExpiresAt: leaseDeadline(args.now),
+            updatedAt: args.now,
+        });
+        if (restarted) claimed = { row: restarted, run: true };
+    }
     if (!claimed.run) {
         const visible = (await expireStaleProduction(args.store, claimed.row.id, args.now)) ?? claimed.row;
         return { productionId: visible.id, status: visible.status, side: args.insert.side };
     }
-    if (args.preflight) {
-        try {
-            await args.preflight();
-        } catch (error) {
-            await markFailed(args.store, claimed.row.id, error, args.now, args.insert.side);
-            return { productionId: claimed.row.id, status: "failed", side: args.insert.side };
-        }
-    }
     const row = claimed.row;
+    // Preflight stays off the return path. A hung license check used to hold the
+    // production id until the MCP client timed out, after the row was inserted.
     const work = new Promise<void>((resolve, reject) => {
         setImmediate(() => {
-            Promise.resolve(args.execute(row)).then(resolve, reject);
+            const beat = () => {
+                const tick = new Date();
+                void args.store
+                    .updateIf(
+                        row.id,
+                        (current) => current.status === "pending" || current.status === "running",
+                        {
+                            leaseExpiresAt: leaseDeadline(tick),
+                            updatedAt: tick,
+                        },
+                    )
+                    .catch(() => undefined);
+            };
+            const heartbeat = setInterval(beat, CAD_PRODUCTION_HEARTBEAT_MS);
+            heartbeat.unref?.();
+            void (async () => {
+                try {
+                    if (args.preflight) await args.preflight();
+                    await args.execute(row);
+                } catch (error) {
+                    await markFailed(args.store, row.id, error, args.now, args.insert.side);
+                } finally {
+                    clearInterval(heartbeat);
+                }
+            })().then(resolve, reject);
         });
     });
     args.schedule(work);

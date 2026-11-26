@@ -152,6 +152,36 @@ const PRODUCTION_STATUSES = new Set(["pending", "running", "succeeded", "failed"
 const PRODUCTION_TERMINAL_STATUSES = new Set(["succeeded", "failed"]);
 /** In-process get_production polling interval when wait_s > 0. */
 const GET_PRODUCTION_POLL_INTERVAL_MS = 2000;
+/**
+ * One enqueue attempt. Three of these stay under the MCP client's 60s
+ * request timeout, so generate_gcode returns a production id or a per-foot
+ * error instead of JSON-RPC -32001 while the server keeps the row.
+ */
+export const GENERATE_ENQUEUE_ATTEMPT_MS = 12_000;
+export const GENERATE_ENQUEUE_ATTEMPTS = 3;
+
+export function isTransientGenerateFailure(message: string): boolean {
+    if (/VertexSlice (?:slice exceeded|queue wait exceeded|timed out after)/.test(message)) return false;
+    return /submit unavailable|fetch failed|Production lease expired|Manufacturing timed out \(|generate enqueue timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up/i.test(
+        message,
+    );
+}
+
+export function withEnqueueDeadline<T>(work: Promise<T>, ms = GENERATE_ENQUEUE_ATTEMPT_MS): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("generate enqueue timed out")), ms);
+        work.then(
+            (value) => {
+                clearTimeout(timer);
+                resolve(value);
+            },
+            (error: unknown) => {
+                clearTimeout(timer);
+                reject(error);
+            },
+        );
+    });
+}
 
 function sleepMs(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -379,26 +409,48 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                             input.file_name,
                             exportBase,
                         );
-                        try {
-                            const result = await manufacturing.generateFromSavedDesign({
-                                designId,
-                                side,
-                                presetId,
-                                material,
-                                fileName: exportFileName,
-                                patientName: input.patient_name,
-                                hardness: input.hardness,
-                                forceNewSlice: input.force_new_slice === true,
-                            });
-                            return { side, exportFileName, result, error: null as Error | null };
-                        } catch (error) {
-                            return {
-                                side,
-                                exportFileName,
-                                result: null,
-                                error: error instanceof Error ? error : new Error(String(error)),
-                            };
+                        let lastError: Error | null = null;
+                        for (let attempt = 1; attempt <= GENERATE_ENQUEUE_ATTEMPTS; attempt++) {
+                            try {
+                                const result = await withEnqueueDeadline(
+                                    manufacturing.generateFromSavedDesign({
+                                        designId,
+                                        side,
+                                        presetId,
+                                        material,
+                                        fileName: exportFileName,
+                                        patientName: input.patient_name,
+                                        hardness: input.hardness,
+                                        forceNewSlice: input.force_new_slice === true,
+                                    }),
+                                );
+                                const fields = result as Record<string, unknown>;
+                                const failed =
+                                    typeof result.status === "string" &&
+                                    result.status === "failed" &&
+                                    isTransientGenerateFailure(textField(fields, "error") ?? "");
+                                if (failed && attempt < GENERATE_ENQUEUE_ATTEMPTS) {
+                                    lastError = new Error(textField(fields, "error") ?? "transient");
+                                    continue;
+                                }
+                                return { side, exportFileName, result, error: null as Error | null };
+                            } catch (error) {
+                                lastError = error instanceof Error ? error : new Error(String(error));
+                                if (
+                                    attempt < GENERATE_ENQUEUE_ATTEMPTS &&
+                                    isTransientGenerateFailure(lastError.message)
+                                ) {
+                                    continue;
+                                }
+                                return { side, exportFileName, result: null, error: lastError };
+                            }
                         }
+                        return {
+                            side,
+                            exportFileName,
+                            result: null,
+                            error: lastError ?? new Error("generate enqueue timed out"),
+                        };
                     }),
                 );
                 const files: Array<ReturnType<typeof gcodeFileFromResult>> = [];
@@ -412,6 +464,14 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                         throw entry.error;
                     }
                     const result = entry.result!;
+                    if (pairEnqueue && typeof result.status === "string" && result.status === "failed") {
+                        throw new Error(
+                            `Belt pair failed on the ${entry.side} foot. No partial pair is returned. ${
+                                textField(result as Record<string, unknown>, "error") ??
+                                "Manufacturing failed"
+                            }`,
+                        );
+                    }
                     if (isUserQuestion(result)) {
                         const partialSuccess = sideOutcomes.some(
                             (other) =>
