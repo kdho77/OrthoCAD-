@@ -1011,7 +1011,11 @@ function dropDisconnectedSolePatches(geo: BufferGeometry): boolean {
     const edgeTris = new Map<string, number[]>();
     const ukey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
     for (let t = 0; t + 2 < indexAttr.count; t += 3) {
-        const tri: [number, number, number] = [indexAttr.getX(t), indexAttr.getX(t + 1), indexAttr.getX(t + 2)];
+        const tri: [number, number, number] = [
+            indexAttr.getX(t),
+            indexAttr.getX(t + 1),
+            indexAttr.getX(t + 2),
+        ];
         const ti = tris.length;
         tris.push(tri);
         for (let e = 0; e < 3; e++) {
@@ -1021,8 +1025,7 @@ function dropDisconnectedSolePatches(geo: BufferGeometry): boolean {
             edgeTris.set(k, users);
         }
     }
-    const onSole = (tri: [number, number, number]) =>
-        tri.every((i) => Math.abs(pos.getZ(i)) <= FLAP_Z_MM);
+    const onSole = (tri: [number, number, number]) => tri.every((i) => Math.abs(pos.getZ(i)) <= FLAP_Z_MM);
     const parent = tris.map((_, i) => i);
     const find = (i: number): number => {
         let x = i;

@@ -228,6 +228,32 @@ const wedgeSchema = z
     })
     .strict();
 
+/** Same aliases as vertex/shared/saved-design-catalog.ts catalogLengthPreset. */
+function mcpCatalogLengthPreset(value: string): "full" | "met_head" | "sulcus" | null {
+    const key = value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+    if (key === "full") return "full";
+    if (key === "sulcus") return "sulcus";
+    if (
+        key === "3/4" ||
+        key === "3/4 length" ||
+        key === "met head" ||
+        key === "methead" ||
+        key === "three quarter" ||
+        key === "threequarter"
+    ) {
+        return "met_head";
+    }
+    return null;
+}
+
+const catalogLengthSchema = z.preprocess(
+    (value) => {
+        if (typeof value !== "string") return value;
+        return mcpCatalogLengthPreset(value) ?? value;
+    },
+    z.enum(["full", "met_head", "sulcus"]),
+);
+
 const wedgeFootSchema = z.enum(["left", "right", "both"]).describe(WEDGE_FOOT_FIELD);
 
 const rearfootWedgeSchema = z
@@ -322,6 +348,11 @@ export const savedDesignCatalogSchema = z
          * Omitted keeps the 2 mm default. Out of range is rejected.
          */
         thickness_mm: z.number().finite().min(1.5).max(8).optional(),
+        /**
+         * Full, 3/4, or Sulcus. 3/4 is the Met-head trim preset. Sulcus is the Sulcus preset.
+         * Full and omitted leave the outline uncut.
+         */
+        length: catalogLengthSchema.optional(),
         flange: z
             .object({
                 left: flangeSideSchema.optional(),
@@ -579,6 +610,9 @@ export const MCP_TOOL_DEFINITIONS = [
             "When set, settings store that clearance and uniform shell mode so the loft uses the shell-thickness slider. " +
             "When omitted, thickness stays 2 mm and the zonal shell is unchanged. " +
             "Out of range is 422 and is not clamped. " +
+            "length is Full, 3/4, or Sulcus. 3/4 stores the Met-head trim preset (medial landmark 66% from the heel). " +
+            "Sulcus stores the Sulcus preset (72% from the heel). Full and omitted leave the outline uncut. " +
+            "The choice is saved on settings.trimPreset for both feet. Unknown length text is 422. " +
             "Ignored and never mapped: rx_text, notes, rigidity, extra_soft. " +
             "sliders.arch_ease_mm is accepted and not applied (migrated to 0). " +
             "sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. " +
@@ -613,6 +647,8 @@ export const MCP_TOOL_DEFINITIONS = [
             "milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. " +
             "It is not inferred from material, hardness, or thickness. " +
             "Optional catalog.thickness_mm sets shell thickness in mm (1.5–8, default 2 when omitted). " +
+            "Optional catalog.length is Full, 3/4, or Sulcus. 3/4 is the Met-head preset and Sulcus is the Sulcus preset. " +
+            "Full and omitted do not cut the outline. The preset is stored for both feet. " +
             "Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. " +
             "depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). " +
             "Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. " +

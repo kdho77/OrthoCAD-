@@ -82,7 +82,7 @@ import {
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { patientDisplayNameFromParts } from "@/lib/geometry/text-marking/compose";
-import { clipGeometryToOutline, extractMeshOutline } from "@/lib/geometry/trimline";
+import { clipGeometryToOutline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured } from "@/lib/trpc";
 import { useBaseBoundsStore } from "@/stores/base-bounds-store";
@@ -91,7 +91,7 @@ import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useClientStore } from "@/stores/client-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
-import { resolveActiveTrimline, useMeshEditStore } from "@/stores/mesh-edit-store";
+import { resolveActiveTrimline, useMeshEditStore, widthAdjustedMeshOutline } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { useScanStore } from "@/stores/scan-store";
@@ -461,7 +461,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         clearBaseBoundsCache(lookupKey);
         const b = computeBaseBounds(sized, lookupKey);
         useBaseBoundsStore.getState().setBounds(lookupKey, b);
-        const outline = extractMeshOutline(sized);
+        const outline = widthAdjustedMeshOutline(sized, design, side);
         if (outline) {
             const widthId = shoeWidthForSide(design, side);
             // Same 1D scale as the top mesh: this mesh's own forefoot and heel

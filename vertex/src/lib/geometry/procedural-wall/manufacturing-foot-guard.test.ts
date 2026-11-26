@@ -366,7 +366,8 @@ function designFfcfa6f9(): DesignState {
  */
 function engraveCounterLoops(positions: Float64Array): number {
     const zOf = (i: number) => positions[i * 3 + 2] ?? 0;
-    const xy = (i: number) => `${(positions[i * 3] ?? 0).toFixed(3)},${(positions[i * 3 + 1] ?? 0).toFixed(3)}`;
+    const xy = (i: number) =>
+        `${(positions[i * 3] ?? 0).toFixed(3)},${(positions[i * 3 + 1] ?? 0).toFixed(3)}`;
     const next = new Map<string, string[]>();
     const nTri = positions.length / 9;
     const edgeCount = new Map<string, number>();
@@ -500,7 +501,9 @@ describe("design ffcfa6f9 plantar name", () => {
                 const foot = await composedFootRim(fresh, saved, side);
                 fresh.dispose();
                 expect(plantarNameEngraved(headPos, foot), `M${usMenSize} ${side}`).toBe(true);
-                expect(engraveCounterLoops(headPos), `M${usMenSize} ${side} counters`).toBeGreaterThanOrEqual(2);
+                expect(engraveCounterLoops(headPos), `M${usMenSize} ${side} counters`).toBeGreaterThanOrEqual(
+                    2,
+                );
             }
         }
     }, 600_000);
