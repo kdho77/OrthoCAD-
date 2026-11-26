@@ -79,7 +79,7 @@ function objectUrlForBlob(blob: Blob): string {
     }
 }
 
-/** Trigger browser saves for one or more files (pair belt exports call this per foot as each slice finishes). */
+/** Trigger browser saves for one or more files. A pair waits until every foot has a file. */
 export function downloadNamedBlobs(files: ReadonlyArray<{ filename: string; blob: Blob }>): void {
     const urls: string[] = [];
     for (const file of files) {
@@ -168,7 +168,6 @@ export async function exportClinicalPrinterGcode(input: {
         terminateExportSolidWorkers();
         return { ok: false, reason: "Export cancelled. No G-code was downloaded.", cancelled: true };
     }
-    const built: { side: Side; filename: string; blob: Blob }[] = [];
     const footOutcomes: { foot: Side; res: ExportOutcome }[] = [];
 
     await Promise.all(
@@ -183,14 +182,7 @@ export async function exportClinicalPrinterGcode(input: {
             };
             const res = await generateHybridGcode(foot, preset, grindingStyle, overrides, options);
             footOutcomes.push({ foot, res });
-            if (res.cancelled || input.shouldAbort?.()) {
-                terminateExportSolidWorkers();
-                return;
-            }
-            if (res.ok && res.blob && res.filename) {
-                downloadNamedBlobs([{ filename: res.filename, blob: res.blob }]);
-                built.push({ side: foot, filename: res.filename, blob: res.blob });
-            }
+            if (res.cancelled || input.shouldAbort?.()) terminateExportSolidWorkers();
         }),
     );
 
@@ -204,22 +196,25 @@ export async function exportClinicalPrinterGcode(input: {
     const failures = footOutcomes.filter(({ res }) => !res.ok || !res.blob || !res.filename);
     const firstFailure = failures[0];
     if (firstFailure) {
-        const { foot, res } = firstFailure;
-        const detail = res.reason ?? "G-code export failed";
-        if (many && built.length > 0) {
-            const downloadedSides = built.map((file) => `${SIDE_LABELS[file.side]} downloaded`).join(". ");
-            return {
-                ok: false,
-                reason: `${downloadedSides}. ${SIDE_LABELS[foot]} G-code failed. ${detail}`,
-                filename: built.map((file) => file.filename).join(", "),
-                filenames: built.map((file) => file.filename),
-                blob: built[0]?.blob,
-            };
-        }
+        const detail = failures
+            .map(
+                ({ foot, res }) =>
+                    `${SIDE_LABELS[foot]} G-code failed. ${res.reason ?? "G-code export failed"}`,
+            )
+            .join(" ");
         const reason = many
-            ? `${SIDE_LABELS[foot]} G-code failed. No files were downloaded. ${detail}`
-            : detail;
+            ? `${detail}. No files were downloaded.`
+            : (firstFailure.res.reason ?? "G-code export failed");
         return { ok: false, reason };
+    }
+
+    // Both feet are known good before any file is saved. A failed foot must
+    // not leave the other foot already downloaded.
+    const built: { side: Side; filename: string; blob: Blob }[] = [];
+    for (const { foot, res } of footOutcomes) {
+        if (!res.ok || !res.blob || !res.filename) continue;
+        downloadNamedBlobs([{ filename: res.filename, blob: res.blob }]);
+        built.push({ side: foot, filename: res.filename, blob: res.blob });
     }
     const filenames = built.map((file) => file.filename);
     return {

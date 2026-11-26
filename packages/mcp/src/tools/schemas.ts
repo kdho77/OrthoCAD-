@@ -17,6 +17,21 @@ export const getDesignParamsInputSchema = z.object({
     design_id: z.string().uuid(),
 });
 
+/** No arguments. The catalog is the Corrections panel library. */
+export const listMacrosInputSchema = z.object({}).strict();
+
+/**
+ * Names only. customer_macro is merged first, then pathology_macro.
+ * Omit both and the saved design is not written. A payload is not accepted.
+ */
+export const applyMacroInputSchema = z
+    .object({
+        design_id: z.string().uuid(),
+        customer_macro: z.string().trim().min(1).max(120).optional(),
+        pathology_macro: z.string().trim().min(1).max(120).optional(),
+    })
+    .strict();
+
 export const prepareManufacturingStlUploadInputSchema = z.object({
     side: sideSchema,
     file_name: z.string().max(200).optional(),
@@ -172,10 +187,23 @@ const archSchema = z.preprocess(
     z.enum(["low", "medium", "standard", "high"]),
 );
 
+/**
+ * Keep in lockstep with REARFOOT_POSTING_DEG_SIGN in vertex/shared/saved-design-catalog.ts.
+ * Positive matches the Corrections slider: pronation, lateral high, valgus.
+ * Negative is supination, medial high, varus.
+ */
+const REARFOOT_POSTING_DEG_SIGN =
+    "Positive is valgus (lateral high, pronation). Negative is varus (medial high, supination). " +
+    "The solid migrates a positive degree to a lateral rearfoot wedge and a negative degree to a medial rearfoot wedge, then clears the slider. Zero is no post.";
+
+/** Keep in lockstep with WEDGE_FOOT_FIELD in vertex/shared/saved-design-catalog.ts. */
+const WEDGE_FOOT_FIELD =
+    "left, right, or both. Omit or both posts both feet. left or right posts that foot only and unlinks corrections so the other foot stays at the template.";
+
 const savedDesignSliderSchema = z
     .object({
         forefoot_posting_deg: z.number().finite().optional(),
-        rearfoot_posting_deg: z.number().finite().optional(),
+        rearfoot_posting_deg: z.number().finite().optional().describe(REARFOOT_POSTING_DEG_SIGN),
         medial_skive_mm: z.number().finite().optional(),
         lateral_skive_mm: z.number().finite().optional(),
         arch_elongation_mm: z.number().finite().optional(),
@@ -197,6 +225,44 @@ const wedgeSchema = z
         value: z.number().finite(),
         unit: z.enum(["mm", "deg"]),
         degree_mode: z.enum(["local", "station"]).optional(),
+    })
+    .strict();
+
+/** Same aliases as vertex/shared/saved-design-catalog.ts catalogLengthPreset. */
+function mcpCatalogLengthPreset(value: string): "full" | "met_head" | "sulcus" | null {
+    const key = value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+    if (key === "full") return "full";
+    if (key === "sulcus") return "sulcus";
+    if (
+        key === "3/4" ||
+        key === "3/4 length" ||
+        key === "met head" ||
+        key === "methead" ||
+        key === "three quarter" ||
+        key === "threequarter"
+    ) {
+        return "met_head";
+    }
+    return null;
+}
+
+const catalogLengthSchema = z.preprocess(
+    (value) => {
+        if (typeof value !== "string") return value;
+        return mcpCatalogLengthPreset(value) ?? value;
+    },
+    z.enum(["full", "met_head", "sulcus"]),
+);
+
+const wedgeFootSchema = z.enum(["left", "right", "both"]).describe(WEDGE_FOOT_FIELD);
+
+const rearfootWedgeSchema = z
+    .object({
+        side: z.enum(["medial", "lateral"]),
+        value: z.number().finite(),
+        unit: z.enum(["mm", "deg"]),
+        degree_mode: z.enum(["local", "station"]).optional(),
+        foot: wedgeFootSchema.optional(),
     })
     .strict();
 
@@ -266,13 +332,14 @@ export const savedDesignCatalogSchema = z
             })
             .strict()
             .optional(),
-        rearfoot_wedge: wedgeSchema.optional(),
+        rearfoot_wedge: rearfootWedgeSchema.optional(),
         forefoot_wedge: wedgeSchema.optional(),
         full_length_wedge: z
             .object({
                 side: z.enum(["medial", "lateral"]),
                 value: z.number().finite(),
                 unit: z.enum(["mm", "deg"]),
+                foot: wedgeFootSchema.optional(),
             })
             .strict()
             .optional(),
@@ -281,6 +348,11 @@ export const savedDesignCatalogSchema = z
          * Omitted keeps the 2 mm default. Out of range is rejected.
          */
         thickness_mm: z.number().finite().min(1.5).max(8).optional(),
+        /**
+         * Full, 3/4, or Sulcus. 3/4 is the Met-head trim preset. Sulcus is the Sulcus preset.
+         * Full and omitted leave the outline uncut.
+         */
+        length: catalogLengthSchema.optional(),
         flange: z
             .object({
                 left: flangeSideSchema.optional(),
@@ -315,6 +387,11 @@ export const createSavedDesignInputSchema = z
         given_name: z.string().trim().min(1).max(100).optional(),
         /** Chart label for a new client after the server verifier. Not sent to VertexOrders. */
         family_name: z.string().trim().min(1).max(100).optional(),
+        /**
+         * Explicit per-design opt-in. Omitted and false keep SAMPLE_Top and do not
+         * read scans. True builds arch height from the order client's stored scans.
+         */
+        use_order_scans: z.boolean().optional(),
     })
     .strict();
 
@@ -355,6 +432,11 @@ export const persistSavedDesignSnapshotInputSchema = z
         /** Accepted and dropped. Clinical values are not read from free text. */
         rx_text: z.string().max(8000).optional(),
         notes: z.string().max(8000).optional(),
+        /**
+         * Explicit per-design opt-in. Omitted and false keep SAMPLE_Top and do not
+         * read scans. True builds arch height from the design client's stored scans.
+         */
+        use_order_scans: z.boolean().optional(),
     })
     .strict();
 
@@ -377,6 +459,28 @@ export const MCP_TOOL_DEFINITIONS = [
         description:
             "Design document / settingsJson for production via documented manufacturing tRPC wrap. Auth: CAD-operator key only.",
         inputSchema: getDesignParamsInputSchema,
+    },
+    {
+        name: "list_macros",
+        description:
+            "Customer and pathology correction macros the Corrections panel Merge button applies. " +
+            "Customer macros are clinic starting points. Pathology macros are the Vertex starters " +
+            "(Planus is also accepted as pes planus). Returns id, name, kind, description, and aliases. " +
+            "Does not return millimetre payloads and does not write a design. " +
+            "A name that is not in this list is not a macro. Auth: CAD-operator key, design:read.",
+        inputSchema: listMacrosInputSchema,
+    },
+    {
+        name: "apply_macro",
+        description:
+            "Merge saved correction macros onto one design the way the Corrections panel Merge button does. " +
+            "customer_macro is applied first, then pathology_macro. Both names are optional. " +
+            "Omit both and the saved design is not written. " +
+            "Unknown names are refused and are not guessed. Millimetre payloads are not accepted. " +
+            "Merge keeps correction keys the macro does not set. Suggested elements are not placed. " +
+            "Writes settingsJson on that design. The next generate_gcode lofts from the saved design. " +
+            "Auth: CAD-operator key, manufacturing:generate.",
+        inputSchema: applyMacroInputSchema,
     },
     {
         name: "prepare_manufacturing_stl_upload",
@@ -486,14 +590,18 @@ export const MCP_TOOL_DEFINITIONS = [
             "sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, " +
             "sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, " +
             "sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, " +
-            "sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), " +
+            "sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys). " +
+            "rearfoot_posting_deg on sliders or sliders_by_side: Positive is valgus (lateral high, pronation). Negative is varus (medial high, supination). " +
+            "The solid migrates a positive degree to a lateral rearfoot wedge and a negative degree to a medial rearfoot wedge, then clears the slider. Zero is no post. " +
             "flange.left, flange.right, flange.left.medial_mm, flange.left.lateral_mm, flange.left.level, " +
             "flange.right.medial_mm, flange.right.lateral_mm, flange.right.level " +
             "(per-foot medial/lateral flange 0–8 mm; omit medial_mm and lateral_mm for 3 mm default, mild level 2 mm, " +
             "standard/unspecified 3 mm, high 6 mm; out of range is 422, not clamped; omitted flange leaves flanges unchanged), " +
             "rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, " +
+            "rearfoot_wedge.foot (left|right|both; omit or both posts both feet; left or right posts that foot only and unlinks corrections), " +
             "forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, " +
             "full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit, " +
+            "full_length_wedge.foot (left|right|both; omit or both posts both feet; left or right posts that foot only and unlinks corrections), " +
             "manufacturing_method (printing_solid or milling_3axis). Omit it to leave the order a print " +
             "(the method column is not written). milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. " +
             "It is not inferred from material, hardness, or thickness. " +
@@ -502,13 +610,24 @@ export const MCP_TOOL_DEFINITIONS = [
             "When set, settings store that clearance and uniform shell mode so the loft uses the shell-thickness slider. " +
             "When omitted, thickness stays 2 mm and the zonal shell is unchanged. " +
             "Out of range is 422 and is not clamped. " +
+            "length is Full, 3/4, or Sulcus. 3/4 stores the Met-head trim preset (medial landmark 66% from the heel). " +
+            "Sulcus stores the Sulcus preset (72% from the heel). Full and omitted leave the outline uncut. " +
+            "The choice is saved on settings.trimPreset for both feet. Unknown length text is 422. " +
             "Ignored and never mapped: rx_text, notes, rigidity, extra_soft. " +
             "sliders.arch_ease_mm is accepted and not applied (migrated to 0). " +
             "sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. " +
             "hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. " +
             "Absent width is Medium and recorded as defaulted, not prescribed. " +
             "422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, " +
-            "or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
+            "or a catalog field is unrecognized. Does not write File Ready, In Production, or STL. " +
+            "Omitted use_order_scans does not read scans and does not write scan geometry (scans_used stays false). " +
+            "use_order_scans true is the explicit per-design option: import the design client's stored left and right " +
+            "scans with the Scan step's cleanup, measure arch height the way Generate Orthotic does, and set that " +
+            "arch-height slider on each scanned foot. A side with no stored scan keeps its catalog correction. " +
+            "The mesh stays SAMPLE_Top. Left and right are not linked. " +
+            "catalog.arch, when present, replaces the scan class. Other catalog corrections, elements, and sinks stay. " +
+            "The newest stored file is used when one side has more than one. A missing scan or a failed measurement " +
+            "is 422 and does not write the template. Shoe size is not taken from the scan.",
         inputSchema: persistSavedDesignSnapshotInputSchema,
     },
     {
@@ -528,14 +647,26 @@ export const MCP_TOOL_DEFINITIONS = [
             "milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. " +
             "It is not inferred from material, hardness, or thickness. " +
             "Optional catalog.thickness_mm sets shell thickness in mm (1.5–8, default 2 when omitted). " +
+            "Optional catalog.length is Full, 3/4, or Sulcus. 3/4 is the Met-head preset and Sulcus is the Sulcus preset. " +
+            "Full and omitted do not cut the outline. The preset is stored for both feet. " +
             "Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. " +
             "depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). " +
             "Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. " +
+            "rearfoot_wedge.foot and full_length_wedge.foot are left, right, or both; omit either to post both feet. " +
+            "rearfoot_posting_deg: Positive is valgus (lateral high, pronation). Negative is varus (medial high, supination). " +
             "flange.left / flange.right set medial_mm and lateral_mm (0–8) per foot; omit those mm for 3 mm default, " +
             "or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. " +
             "elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. " +
             "Medium width is used only when width is absent and is recorded as defaulted, not prescribed. " +
-            "Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
+            "Missing shoe size or an unknown hardness returns a question for the user and does not guess. " +
+            "Omitted use_order_scans keeps that template and does not read scans (scans_used stays false). " +
+            "use_order_scans true is the explicit per-design option: import the order client's stored scans with the " +
+            "Scan step's cleanup and set each scanned foot's arch-height slider the way Generate Orthotic does. " +
+            "A side with no stored scan keeps its catalog correction. " +
+            "The mesh stays SAMPLE_Top. Left and right are not linked, so a left foot can differ from the right. " +
+            "catalog.arch, when present, replaces the scan class. Other catalog corrections, elements, and sinks stay. " +
+            "The newest stored file is used when one side has more than one. A missing scan or a failed measurement " +
+            "is 422 and does not substitute the template. Shoe size is not taken from the scan.",
         inputSchema: createSavedDesignInputSchema,
     },
     {

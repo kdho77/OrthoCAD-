@@ -2,14 +2,19 @@ import { describe, expect, test } from "@rstest/core";
 import {
     listSavedDesignCatalogKeyPaths,
     parseSavedDesignCatalog,
+    REARFOOT_POSTING_DEG_SIGN,
+    savedDesignCatalogSchema,
+    WEDGE_FOOT_FIELD,
 } from "../../../vertex/shared/saved-design-catalog.ts";
 import { buildSavedDesignSnapshot } from "../../../vertex/shared/saved-design-snapshot.ts";
 import type { ManufacturingClient } from "../src/clients/manufacturing-client.js";
 import type { OrthocadMcpConfig } from "../src/config.js";
 import { handleOrthocadTool } from "../src/tools/handlers.js";
 import {
+    createSavedDesignInputSchema,
     listMcpSavedDesignCatalogKeyPaths,
     MCP_TOOL_DEFINITIONS,
+    savedDesignCatalogSchema as mcpCatalogSchema,
     persistSavedDesignSnapshotInputSchema,
 } from "../src/tools/schemas.js";
 
@@ -29,6 +34,51 @@ describe("persist_saved_design_snapshot tool", () => {
         expect(tool?.description).toMatch(/422/);
         for (const key of listSavedDesignCatalogKeyPaths()) {
             expect(tool?.description, key).toContain(key.split(".").pop());
+        }
+    });
+
+    test("catalog length accepts Full, 3/4, and Sulcus and rejects an unknown length", () => {
+        const tool = MCP_TOOL_DEFINITIONS.find((entry) => entry.name === "create_saved_design");
+        expect(tool?.description).toContain("length");
+        expect(tool?.description).toContain("3/4");
+        expect(tool?.description).toContain("Sulcus");
+        for (const length of ["Full", "3/4", "3/4 length", "Met-head", "Sulcus"]) {
+            const shared = parseSavedDesignCatalog({ length });
+            const mcp = mcpCatalogSchema.parse({ length });
+            expect(mcp.length).toBe(shared.length);
+        }
+        expect(parseSavedDesignCatalog({ length: "3/4" }).length).toBe("met_head");
+        expect(mcpCatalogSchema.parse({ length: "Sulcus" }).length).toBe("sulcus");
+        expect(mcpCatalogSchema.parse({ length: "Full" }).length).toBe("full");
+        expect(
+            createSavedDesignInputSchema.safeParse({
+                external_order_id: "f1939235",
+                catalog: { length: "3/4" },
+            }).success,
+        ).toBe(true);
+        expect(mcpCatalogSchema.safeParse({ length: "half" }).success).toBe(false);
+        expect(parseSavedDesignCatalog({}).length).toBeUndefined();
+    });
+
+    test("rearfoot posting sign and per-foot wedge foot are documented", () => {
+        expect(savedDesignCatalogSchema.shape.sliders.unwrap().shape.rearfoot_posting_deg.description).toBe(
+            REARFOOT_POSTING_DEG_SIGN,
+        );
+        expect(mcpCatalogSchema.shape.sliders.unwrap().shape.rearfoot_posting_deg.description).toBe(
+            REARFOOT_POSTING_DEG_SIGN,
+        );
+        expect(mcpCatalogSchema.shape.rearfoot_wedge.unwrap().shape.foot.unwrap().description).toBe(
+            WEDGE_FOOT_FIELD,
+        );
+        expect(mcpCatalogSchema.shape.full_length_wedge.unwrap().shape.foot.unwrap().description).toBe(
+            WEDGE_FOOT_FIELD,
+        );
+        for (const name of ["persist_saved_design_snapshot", "create_saved_design"] as const) {
+            const tool = MCP_TOOL_DEFINITIONS.find((entry) => entry.name === name);
+            expect(tool?.description, name).toContain("Positive is valgus (lateral high, pronation)");
+            expect(tool?.description, name).toContain("Negative is varus (medial high, supination)");
+            expect(tool?.description, name).toContain("rearfoot_wedge.foot");
+            expect(tool?.description, name).toContain("full_length_wedge.foot");
         }
     });
 

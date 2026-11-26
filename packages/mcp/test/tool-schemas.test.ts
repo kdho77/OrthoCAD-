@@ -14,6 +14,8 @@ describe("OrthoCAD MCP tool schemas", () => {
             "get_design",
             "list_designs_by_order",
             "get_design_params",
+            "list_macros",
+            "apply_macro",
             "prepare_manufacturing_stl_upload",
             "list_materials",
             "generate_gcode",
@@ -92,6 +94,12 @@ describe("OrthoCAD MCP tool schemas", () => {
                 source: "vo2",
             },
             get_design_params: { design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+            list_macros: {},
+            apply_macro: {
+                design_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                customer_macro: "Rhinebeck",
+                pathology_macro: "Pes Planus",
+            },
             prepare_manufacturing_stl_upload: { side: "left" },
             list_materials: {},
             generate_gcode: {
