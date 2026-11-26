@@ -2,6 +2,9 @@ import { describe, expect, test } from "@rstest/core";
 import {
     listSavedDesignCatalogKeyPaths,
     parseSavedDesignCatalog,
+    REARFOOT_POSTING_DEG_SIGN,
+    savedDesignCatalogSchema,
+    WEDGE_FOOT_FIELD,
 } from "../../../vertex/shared/saved-design-catalog.ts";
 import { buildSavedDesignSnapshot } from "../../../vertex/shared/saved-design-snapshot.ts";
 import type { ManufacturingClient } from "../src/clients/manufacturing-client.js";
@@ -10,6 +13,7 @@ import { handleOrthocadTool } from "../src/tools/handlers.js";
 import {
     listMcpSavedDesignCatalogKeyPaths,
     MCP_TOOL_DEFINITIONS,
+    savedDesignCatalogSchema as mcpCatalogSchema,
     persistSavedDesignSnapshotInputSchema,
 } from "../src/tools/schemas.js";
 
@@ -29,6 +33,28 @@ describe("persist_saved_design_snapshot tool", () => {
         expect(tool?.description).toMatch(/422/);
         for (const key of listSavedDesignCatalogKeyPaths()) {
             expect(tool?.description, key).toContain(key.split(".").pop());
+        }
+    });
+
+    test("rearfoot posting sign and per-foot wedge foot are documented", () => {
+        expect(savedDesignCatalogSchema.shape.sliders.unwrap().shape.rearfoot_posting_deg.description).toBe(
+            REARFOOT_POSTING_DEG_SIGN,
+        );
+        expect(mcpCatalogSchema.shape.sliders.unwrap().shape.rearfoot_posting_deg.description).toBe(
+            REARFOOT_POSTING_DEG_SIGN,
+        );
+        expect(mcpCatalogSchema.shape.rearfoot_wedge.unwrap().shape.foot.unwrap().description).toBe(
+            WEDGE_FOOT_FIELD,
+        );
+        expect(mcpCatalogSchema.shape.full_length_wedge.unwrap().shape.foot.unwrap().description).toBe(
+            WEDGE_FOOT_FIELD,
+        );
+        for (const name of ["persist_saved_design_snapshot", "create_saved_design"] as const) {
+            const tool = MCP_TOOL_DEFINITIONS.find((entry) => entry.name === name);
+            expect(tool?.description, name).toContain("Positive is valgus (lateral high, pronation)");
+            expect(tool?.description, name).toContain("Negative is varus (medial high, supination)");
+            expect(tool?.description, name).toContain("rearfoot_wedge.foot");
+            expect(tool?.description, name).toContain("full_length_wedge.foot");
         }
     });
 
