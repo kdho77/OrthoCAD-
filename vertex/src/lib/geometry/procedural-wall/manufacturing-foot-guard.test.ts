@@ -464,6 +464,46 @@ describe("design ffcfa6f9 plantar name", () => {
             }
         }
     }, 600_000);
+
+    test("US M6 and M10 engrave KATE WONG on both feet", async () => {
+        const sampleTop = await prime();
+        const font = readFileSync(FONT);
+        const fontBytes = font.buffer.slice(font.byteOffset, font.byteOffset + font.byteLength);
+        const elementsBaseDir = resolve(process.cwd(), "vertex/public/elements");
+        for (const usMenSize of [6, 10] as const) {
+            for (const side of ["left", "right"] as const) {
+                const design = designFfcfa6f9();
+                design.usMenSize = usMenSize;
+                const composed = markingWithComposedText(
+                    {
+                        ...defaultTextMarking("bottom"),
+                        text: "",
+                        addPatientName: true,
+                        feet: "both",
+                        capHeightUserSet: false,
+                    },
+                    side,
+                    "KATE WONG",
+                );
+                const saved = { ...design, textMarking: composed };
+                install(saved);
+                const head = await buildFinalizedFootFromSavedSettings({
+                    settingsJson: designSettingsEnvelope(saved as unknown as Record<string, unknown>),
+                    side,
+                    sampleTopBytes: sampleTop,
+                    includeLeader: true,
+                    fontBytes,
+                    elementsBaseDir,
+                });
+                const headPos = stlPositions(head.stl);
+                const fresh = await sampleTopFromArrayBuffer(sampleTop.slice(0));
+                const foot = await composedFootRim(fresh, saved, side);
+                fresh.dispose();
+                expect(plantarNameEngraved(headPos, foot), `M${usMenSize} ${side}`).toBe(true);
+                expect(engraveCounterLoops(headPos), `M${usMenSize} ${side} counters`).toBeGreaterThanOrEqual(2);
+            }
+        }
+    }, 600_000);
 });
 
 function narrowestMidfoot(positions: Float64Array): number {

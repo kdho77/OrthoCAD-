@@ -960,10 +960,13 @@ export async function engraveBottomPlanar(
     try {
         await assertExactManifold(geo);
     } catch (error) {
-        // A glyph whose floor was refined after the wall was cut leaves the
-        // floor edge open. Stitch that seam. A mesh that already passed is
-        // returned above, unchanged.
-        if (!stitchOpenEngraveSeam(geo)) throw error;
+        // A glyph floor can leave a T-junction, or the sole CDT can leave a
+        // tiny patch that shares no edge with the shell. Repair only after
+        // the exact check fails. A mesh that already passed is returned above,
+        // unchanged.
+        const stitched = stitchOpenEngraveSeam(geo);
+        const dropped = dropOpenSoleFlaps(geo);
+        if (!stitched && !dropped) throw error;
         dropLoneOpenTriangles(geo);
         await assertExactManifold(geo);
     }
@@ -971,6 +974,112 @@ export async function engraveBottomPlanar(
 }
 
 const SEAM_WELD_MM = 0.02;
+
+const FLAP_Z_MM = 0.05;
+const FLAP_TRIS = 4;
+
+/**
+ * Drop a tiny sole patch that shares no edge with the shell. A two-triangle
+ * diamond from the sole CDT can sit on the plane with every outer edge open.
+ * Letter walls leave the sole plane, so they stay.
+ */
+function dropOpenSoleFlaps(geo: BufferGeometry): boolean {
+    const pos = geo.getAttribute("position");
+    const indexAttr = geo.getIndex();
+    if (!pos || !indexAttr) return false;
+    const ukey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    const tris: Array<[number, number, number]> = [];
+    const edgeCount = new Map<string, number>();
+    const edgeTris = new Map<string, number[]>();
+    for (let t = 0; t + 2 < indexAttr.count; t += 3) {
+        const tri: [number, number, number] = [indexAttr.getX(t), indexAttr.getX(t + 1), indexAttr.getX(t + 2)];
+        const ti = tris.length;
+        tris.push(tri);
+        for (let e = 0; e < 3; e++) {
+            const k = ukey(tri[e], tri[(e + 1) % 3]);
+            edgeCount.set(k, (edgeCount.get(k) ?? 0) + 1);
+            const users = edgeTris.get(k) ?? [];
+            users.push(ti);
+            edgeTris.set(k, users);
+        }
+    }
+    const onSole = (tri: [number, number, number]) =>
+        tri.every((i) => Math.abs(pos.getZ(i)) <= FLAP_Z_MM);
+    const openCount = (ti: number) => {
+        const tri = tris[ti]!;
+        let n = 0;
+        for (let e = 0; e < 3; e++) {
+            if (edgeCount.get(ukey(tri[e], tri[(e + 1) % 3])) === 1) n++;
+        }
+        return n;
+    };
+    const candidate = tris.map((tri, ti) => onSole(tri) && openCount(ti) >= 2);
+    const parent = tris.map((_, i) => i);
+    const find = (i: number): number => {
+        let x = i;
+        while (parent[x] !== x) x = parent[x]!;
+        parent[i] = x;
+        return x;
+    };
+    for (const users of edgeTris.values()) {
+        const inside = users.filter((ti) => candidate[ti]);
+        for (let i = 1; i < inside.length; i++) {
+            const a = find(inside[0]!);
+            const b = find(inside[i]!);
+            if (a !== b) parent[b] = a;
+        }
+    }
+    const groups = new Map<number, number[]>();
+    for (let ti = 0; ti < tris.length; ti++) {
+        if (!candidate[ti]) continue;
+        const root = find(ti);
+        const list = groups.get(root) ?? [];
+        list.push(ti);
+        groups.set(root, list);
+    }
+    const drop = new Set<number>();
+    for (const group of groups.values()) {
+        if (group.length < 1 || group.length > FLAP_TRIS) continue;
+        const members = new Set(group);
+        let touchesShell = false;
+        const seen = new Set<string>();
+        for (const ti of group) {
+            const tri = tris[ti]!;
+            for (let e = 0; e < 3; e++) {
+                const k = ukey(tri[e], tri[(e + 1) % 3]);
+                if (seen.has(k)) continue;
+                seen.add(k);
+                const users = edgeTris.get(k) ?? [];
+                if (users.some((u) => !members.has(u))) touchesShell = true;
+            }
+        }
+        if (touchesShell) continue;
+        let area = 0;
+        for (const ti of group) {
+            const [a, b, c] = tris[ti]!;
+            area +=
+                Math.abs(
+                    (pos.getX(b) - pos.getX(a)) * (pos.getY(c) - pos.getY(a)) -
+                        (pos.getX(c) - pos.getX(a)) * (pos.getY(b) - pos.getY(a)),
+                ) * 0.5;
+        }
+        if (area > 6) continue;
+        for (const ti of group) drop.add(ti);
+    }
+    if (!drop.size) return false;
+    const kept: number[] = [];
+    const srcClass = (geo.userData as { faceClass?: number[] }).faceClass;
+    const keptClass: number[] = [];
+    for (let ti = 0; ti < tris.length; ti++) {
+        if (drop.has(ti)) continue;
+        const tri = tris[ti]!;
+        kept.push(tri[0], tri[1], tri[2]);
+        if (srcClass) keptClass.push(srcClass[ti] ?? 0);
+    }
+    geo.setIndex(kept);
+    if (srcClass) (geo.userData as { faceClass: number[] }).faceClass = keptClass;
+    return true;
+}
 
 /**
  * Close an open letter seam without moving a vertex that is already welded.
