@@ -31,6 +31,21 @@ describe("insole viewport hardness tint", () => {
         );
     });
 
+    test("Print/Export solid uses a lighter near-white hardness tint", () => {
+        const design = insoleViewportMaterialColor({ defaultHardness: "Soft" });
+        const print = insoleViewportMaterialColor({ defaultHardness: "Soft" }, { printExport: true });
+        expect(print).not.toBe(design);
+        expect(print).toBe(insoleViewportMaterialColor({ defaultHardness: "Soft" }, { printExport: true }));
+        const distFromBase = (hex: string) => {
+            const v = Number.parseInt(hex.slice(1), 16);
+            const r = (v >> 16) & 255;
+            const g = (v >> 8) & 255;
+            const b = v & 255;
+            return Math.abs(r - 248) + Math.abs(g - 250) + Math.abs(b - 252);
+        };
+        expect(distFromBase(print)).toBeLessThan(distFromBase(design));
+    });
+
     test("hardness tint derives from the same preview palette as split elements", () => {
         const soft = insoleViewportMaterialColor({ defaultHardness: "Soft" });
         const preview = CLASS_PREVIEW_COLORS.Soft;

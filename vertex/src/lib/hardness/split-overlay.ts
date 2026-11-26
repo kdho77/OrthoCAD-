@@ -22,6 +22,9 @@ export const INSOLE_VIEWPORT_BASE_COLOR = "#f8fafc";
 /** Blend hardness preview into the base gray so lighting stays readable. */
 export const INSOLE_HARDNESS_TINT_MIX = 0.42;
 
+/** Print/Export solid: near-white with a hint of hardness color. */
+export const INSOLE_PRINT_EXPORT_TINT_MIX = 0.16;
+
 function mixHexColors(base: string, accent: string, mix: number): string {
     const parse = (hex: string) => {
         const h = hex.replace("#", "");
@@ -44,12 +47,14 @@ function mixHexColors(base: string, accent: string, mix: number): string {
 /** Whole-insole viewport tint from PrintRecipe device hardness (not export geometry). */
 export function insoleViewportMaterialColor(
     printRecipe: { defaultHardness?: RegionHardnessClass | string } | undefined | null,
+    options?: { printExport?: boolean },
 ): string {
     const raw = printRecipe?.defaultHardness;
     if (!raw) return INSOLE_VIEWPORT_BASE_COLOR;
     const cls = migrateRegionHardnessClass(raw);
     const preview = CLASS_PREVIEW_COLORS[cls] ?? CLASS_PREVIEW_COLORS.Medium;
-    return mixHexColors(INSOLE_VIEWPORT_BASE_COLOR, preview, INSOLE_HARDNESS_TINT_MIX);
+    const mix = options?.printExport ? INSOLE_PRINT_EXPORT_TINT_MIX : INSOLE_HARDNESS_TINT_MIX;
+    return mixHexColors(INSOLE_VIEWPORT_BASE_COLOR, preview, mix);
 }
 
 /** High-contrast colors used to locate additions while designing an insole. */

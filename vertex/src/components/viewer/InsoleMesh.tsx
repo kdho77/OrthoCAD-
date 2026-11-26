@@ -15,9 +15,11 @@ interface InsoleMeshProps {
     design: DesignState;
     transparent: boolean;
     heightmap: boolean;
+    /** Lighter hardness tint for Print/Export solid view. */
+    printExportSolid?: boolean;
 }
 
-export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshProps) {
+export function InsoleMesh({ side, design, transparent, heightmap, printExportSolid = false }: InsoleMeshProps) {
     const trimLines = useMeshEditStore((s) => s.trimLines);
     const selectedElementId = useDesignStore((s) => s.selectedElementId);
     const vertexOverrides = useMeshEditStore((s) => s.vertexOverrides);
@@ -53,14 +55,14 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
         }
         return new THREE.MeshStandardMaterial({
             vertexColors: true,
-            color: insoleViewportMaterialColor(design.printRecipe),
+            color: insoleViewportMaterialColor(design.printRecipe, { printExport: printExportSolid }),
             metalness: 0.15,
             roughness: 0.7,
             transparent,
             opacity: transparent ? 0.5 : 1,
             side: THREE.DoubleSide,
         });
-    }, [heightmap, transparent, design.printRecipe?.defaultHardness]);
+    }, [heightmap, transparent, design.printRecipe?.defaultHardness, printExportSolid]);
 
     useEffect(() => () => material.dispose(), [material]);
 

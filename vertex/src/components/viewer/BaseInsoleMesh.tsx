@@ -49,10 +49,13 @@ export function BaseInsoleMesh({
     side,
     transparent,
     heightmap = false,
+    printExportSolid = false,
 }: {
     side: Side;
     transparent: boolean;
     heightmap?: boolean;
+    /** Lighter hardness tint for Print/Export solid view. */
+    printExportSolid?: boolean;
 }) {
     const design = useDesignStore((s) => s.design);
     const interacting = usePerformanceStore((s) => s.interacting);
@@ -79,14 +82,14 @@ export function BaseInsoleMesh({
         }
         return new THREE.MeshStandardMaterial({
             vertexColors: true,
-            color: insoleViewportMaterialColor(design.printRecipe),
+            color: insoleViewportMaterialColor(design.printRecipe, { printExport: printExportSolid }),
             metalness: 0.15,
             roughness: 0.7,
             transparent,
             opacity: transparent ? 0.5 : 1,
             side: THREE.DoubleSide,
         });
-    }, [heightmap, transparent, design.printRecipe?.defaultHardness]);
+    }, [heightmap, transparent, design.printRecipe?.defaultHardness, printExportSolid]);
 
     useEffect(() => () => material.dispose(), [material]);
 
@@ -173,7 +176,9 @@ export function BaseInsoleMesh({
                 <lineSegments position={[-layout.lengthMm / 2, offsetX, 0]}>
                     <edgesGeometry args={[geometry, 35]} />
                     <lineBasicMaterial
-                        color={insoleViewportMaterialColor(design.printRecipe)}
+                        color={insoleViewportMaterialColor(design.printRecipe, {
+                            printExport: printExportSolid,
+                        })}
                         transparent
                         opacity={0.35}
                     />
