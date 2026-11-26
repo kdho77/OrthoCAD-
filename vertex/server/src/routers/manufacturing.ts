@@ -19,8 +19,8 @@ import {
 import { callManufacture } from "../lib/manufacturing-client.js";
 import { downloadManufacturingStl } from "../lib/manufacturing-stl-download.js";
 import {
-    archiveManufacturingSourceStl,
-    deleteManufacturingTempBestEffort,
+    deleteCadOperatorGcodeAfterVoAttach,
+    discardManufacturingTempStl,
 } from "../lib/manufacturing-stl-lifecycle.js";
 import { loadClientFootScans } from "../lib/order-scans.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
@@ -29,6 +29,7 @@ import {
     buildManufacturingTempStlKey,
     createSignedUpload,
     MANUFACTURING_BUCKET,
+    MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC,
     signedDownloadUrl,
     uploadAsset,
 } from "../lib/storage.js";
@@ -136,7 +137,12 @@ function sessionManufacturingIo(user: { id: string; email: string; role: string 
             if (!supabase) {
                 throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
             }
-            return signedDownloadUrl(supabase, storageKey, 3600, MANUFACTURING_BUCKET);
+            return signedDownloadUrl(
+                supabase,
+                storageKey,
+                MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC,
+                MANUFACTURING_BUCKET,
+            );
         },
         downloadStl: downloadManufacturingStl,
         sliceWithVertexSlice,
@@ -181,7 +187,12 @@ function sessionManufacturingIo(user: { id: string; email: string; role: string 
             if (!supabase) {
                 throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage not available" });
             }
-            return signedDownloadUrl(supabase, storageKey, 3600, MANUFACTURING_BUCKET);
+            return signedDownloadUrl(
+                supabase,
+                storageKey,
+                MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC,
+                MANUFACTURING_BUCKET,
+            );
         },
         async updateExportStorage(exportId, storageKey) {
             if (!supabase) return;
@@ -191,12 +202,8 @@ function sessionManufacturingIo(user: { id: string; email: string; role: string 
             if (!supabase) return;
             await supabase.from("productions").update({ gcodeStorageKey: storageKey }).eq("id", productionId);
         },
-        async archiveSourceStl(archiveArgs) {
-            if (!supabase) return;
-            await archiveManufacturingSourceStl(supabase, archiveArgs);
-        },
         async deleteTemp(storageKey) {
-            deleteManufacturingTempBestEffort(supabase, storageKey);
+            await discardManufacturingTempStl(supabase, storageKey);
         },
     };
 }
@@ -298,7 +305,12 @@ export const manufacturingRouter = router({
 
             const key = buildManufacturingTempStlKey(ctx.user.id);
             await uploadAsset(supabase, key, bytes, "model/stl", MANUFACTURING_BUCKET);
-            const stlUrl = await signedDownloadUrl(supabase, key, 3600, MANUFACTURING_BUCKET);
+            const stlUrl = await signedDownloadUrl(
+                supabase,
+                key,
+                MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC,
+                MANUFACTURING_BUCKET,
+            );
 
             return { ok: true as const, stlUrl, storageKey: key };
         }),
@@ -715,7 +727,7 @@ export const manufacturingRouter = router({
                 const downloadUrl = await signedDownloadUrl(
                     storage,
                     production.gcodeStorageKey,
-                    3600,
+                    MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC,
                     MANUFACTURING_BUCKET,
                 );
                 return { downloadUrl, productionId: production.id };
@@ -746,9 +758,40 @@ export const manufacturingRouter = router({
             const downloadUrl = await signedDownloadUrl(
                 storage,
                 production.gcodeStorageKey,
-                3600,
+                MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC,
                 MANUFACTURING_BUCKET,
             );
             return { downloadUrl, productionId: production.id };
+        }),
+
+    /**
+     * Cad-operator G-code is removed once VertexOrders has accepted the file.
+     * The signed download URL is not deleted here; the 24h sweep covers UI G-code.
+     */
+    releaseGcodeAfterVoAttach: sessionOrCadOperatorProcedure("manufacturing:download")
+        .input(z.object({ storageKey: z.string().min(1).max(500) }))
+        .mutation(async ({ ctx, input }) => {
+            if (!ctx.cadOperator) {
+                throw new TRPCError({
+                    code: "FORBIDDEN",
+                    message: "CAD-operator attach release only",
+                });
+            }
+            try {
+                assertCadOperatorDeliverableKey(input.storageKey, ctx.cadOperator.credentialId);
+            } catch {
+                throw new TRPCError({
+                    code: "FORBIDDEN",
+                    message: "Production not found or access denied",
+                });
+            }
+            if (!input.storageKey.startsWith("gcode/cad-operator/")) {
+                throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message: "Only cad-operator G-code is released after attach",
+                });
+            }
+            const released = await deleteCadOperatorGcodeAfterVoAttach(getSupabaseAdmin(), input.storageKey);
+            return { released, storageKey: input.storageKey };
         }),
 });
