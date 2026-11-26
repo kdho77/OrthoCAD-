@@ -12,6 +12,7 @@ import {
     buildSavedDesignSnapshot,
     type SavedDesignSnapshotBuild,
 } from "../../../shared/saved-design-snapshot.js";
+import type { OrderScanFile } from "../../../src/lib/clinical/order-scan-file.js";
 import { type CadOperatorPrincipal, DOGFOOD_TENANT_ID } from "../auth/cad-operator.js";
 import { settingsEnvelopeForSave } from "./design-schema.js";
 import { classifyOrderPersonEvidence } from "./dogfood-order-person-boundary.js";
@@ -24,6 +25,7 @@ import {
     type VerifiedOrderPerson,
 } from "./dogfood-order-person-verifier.js";
 import {
+    applyRequestedOrderScans,
     applySavedDesignManufacturingMethod,
     type PersistSavedDesignSnapshotResult,
     type SavedDesignManufacturingMethod,
@@ -299,6 +301,13 @@ export async function createDogfoodSavedDesign(args: {
     chart?: { givenName?: string | null; familyName?: string | null } | null;
     /** Omitted keeps a print order. Milling is never inferred. */
     manufacturingMethod?: SavedDesignManufacturingMethod;
+    /**
+     * Explicit per-design opt-in. Omitted and false keep SAMPLE_Top and do not
+     * read foot scans.
+     */
+    useOrderScans?: boolean;
+    /** Required when useOrderScans is true. Not called otherwise. */
+    loadOrderScans?: (clientId: string) => Promise<OrderScanFile[]>;
     store: DogfoodSavedDesignStore;
     verifier?: OrderPersonVerifier;
     now?: () => Date;
@@ -377,6 +386,8 @@ async function bindVerifiedPerson(
         catalog?: unknown;
         chart?: { givenName?: string | null; familyName?: string | null } | null;
         manufacturingMethod?: SavedDesignManufacturingMethod;
+        useOrderScans?: boolean;
+        loadOrderScans?: (clientId: string) => Promise<OrderScanFile[]>;
         store: DogfoodSavedDesignStore;
         buildSnapshot?: typeof buildSavedDesignSnapshot;
         persist: (designId: string) => Promise<PersistSavedDesignSnapshotResult>;
@@ -422,6 +433,17 @@ async function bindVerifiedPerson(
     if (args.manufacturingMethod) {
         applySavedDesignManufacturingMethod(built.design, args.manufacturingMethod);
     }
+    let scanReview: string[] = [];
+    if (args.useOrderScans === true) {
+        const { parseSavedDesignCatalog } = await import("../../../shared/saved-design-catalog.js");
+        scanReview = await applyRequestedOrderScans({
+            useOrderScans: true,
+            clientId: existingPerson?.clientId ?? null,
+            loadOrderScans: args.loadOrderScans,
+            built,
+            catalog: parseSavedDesignCatalog(args.catalog),
+        });
+    }
     const settingsJson = envelopeFor(built);
     if (!orderPersonStillFresh(person, now)) throw identityError("verifier_stale");
     const linkShoeWidth = integrationLinkShoeWidth(built.shoeWidth, built.shoeWidthSource);
@@ -452,7 +474,8 @@ async function bindVerifiedPerson(
             paths: built.paths,
             settingsJson,
             template: "SAMPLE_Top",
-            scans_used: false,
+            scans_used: built.design.dogfoodManufacturing?.scansUsed === true,
+            ...(scanReview.length > 0 ? { scan_review: scanReview } : {}),
             shoe_width: built.shoeWidth,
             shoe_width_source: built.shoeWidthSource,
             hardness: built.hardness,
@@ -473,7 +496,8 @@ async function bindVerifiedPerson(
             paths: built.paths,
             settingsJson,
             template: "SAMPLE_Top",
-            scans_used: false,
+            scans_used: built.design.dogfoodManufacturing?.scansUsed === true,
+            ...(scanReview.length > 0 ? { scan_review: scanReview } : {}),
             shoe_width: built.shoeWidth,
             shoe_width_source: built.shoeWidthSource,
             hardness: built.hardness,

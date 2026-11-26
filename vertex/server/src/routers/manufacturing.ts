@@ -7,6 +7,7 @@ import { vertexSliceRegional3mfEnabled } from "../../../shared/vertexslice-regio
 import { assertCadOperatorDeliverableKey, buildCadOperatorTempStlKey } from "../auth/cad-operator.js";
 import { dogfoodDesignRead } from "../auth/dogfood-design-access.js";
 import { getSupabaseAdmin } from "../context.js";
+import { applyDesignMacrosOnDesign, listDesignMacrosForOperator } from "../lib/apply-design-macros.js";
 import { openClientFiles, rethrowClientFile } from "../lib/client-file-access.js";
 import { runtimeDogfoodOrderOwnerVerifier } from "../lib/dogfood-order-owner-wire.js";
 import {
@@ -21,6 +22,7 @@ import {
     archiveManufacturingSourceStl,
     deleteManufacturingTempBestEffort,
 } from "../lib/manufacturing-stl-lifecycle.js";
+import { loadClientFootScans } from "../lib/order-scans.js";
 import { RATE_LIMITS } from "../lib/rate-limit.js";
 import { persistSavedDesignSnapshotOnDesign } from "../lib/saved-design-snapshot.js";
 import {
@@ -454,6 +456,53 @@ export const manufacturingRouter = router({
         }),
 
     /**
+     * Customer and pathology macros the Corrections panel Merge button applies.
+     * Names only. Payloads are not returned.
+     */
+    listDesignMacros: sessionOrCadOperatorProcedure("design:read").query(() => {
+        return listDesignMacrosForOperator();
+    }),
+
+    /**
+     * Merge customer then pathology onto the saved design, the same way the
+     * Corrections panel Merge button does. Omit both names and nothing is written.
+     */
+    applyDesignMacros: rateLimitedSessionOrCadProcedure(
+        RATE_LIMITS.export,
+        "manufacturing:applyDesignMacros",
+        "manufacturing:generate",
+    )
+        .input(
+            z.object({
+                designId: z.string().uuid(),
+                customerMacro: z.string().trim().min(1).max(120).optional(),
+                pathologyMacro: z.string().trim().min(1).max(120).optional(),
+            }),
+        )
+        .mutation(async ({ ctx, input }) => {
+            if (!ctx.cadOperator) {
+                throw new TRPCError({ code: "FORBIDDEN", message: "CAD-operator credential required" });
+            }
+            try {
+                return await applyDesignMacrosOnDesign({
+                    prisma: ctx.prisma,
+                    principal: ctx.cadOperator,
+                    designId: input.designId,
+                    customerMacro: input.customerMacro,
+                    pathologyMacro: input.pathologyMacro,
+                });
+            } catch (error) {
+                if (
+                    (error instanceof Error && error.name === "DesignMacroError") ||
+                    error instanceof SavedDesignSnapshotError
+                ) {
+                    throw new TRPCError({ code: "UNPROCESSABLE_CONTENT", message: error.message });
+                }
+                throw error;
+            }
+        }),
+
+    /**
      * Persist a loftable SAMPLE_Top settingsJson on an existing design.
      * Does not create a design, change production status, or read rx text.
      */
@@ -467,6 +516,8 @@ export const manufacturingRouter = router({
                 designId: z.string().uuid(),
                 catalog: z.unknown().optional(),
                 manufacturingMethod: z.enum(["printing_solid", "milling_3axis"]).optional(),
+                /** Omitted and false keep the template. True reads this design's client scans. */
+                useOrderScans: z.boolean().optional(),
             }),
         )
         .mutation(async ({ ctx, input }) => {
@@ -480,6 +531,12 @@ export const manufacturingRouter = router({
                     designId: input.designId,
                     catalog: input.catalog,
                     manufacturingMethod: input.manufacturingMethod,
+                    ...(input.useOrderScans === true
+                        ? {
+                              useOrderScans: true,
+                              loadOrderScans: (clientId: string) => loadClientFootScans(ctx.prisma, clientId),
+                          }
+                        : {}),
                 });
             } catch (error) {
                 if (error instanceof SavedDesignSnapshotError) {
@@ -507,12 +564,21 @@ export const manufacturingRouter = router({
                 familyName: z.string().trim().min(1).max(100).optional(),
                 catalog: z.unknown().optional(),
                 manufacturingMethod: z.enum(["printing_solid", "milling_3axis"]).optional(),
+                /** Omitted and false keep the template. True reads the order client's scans. */
+                useOrderScans: z.boolean().optional(),
             }),
         )
         .mutation(async ({ ctx, input }) => {
             if (!ctx.cadOperator) {
                 throw new TRPCError({ code: "FORBIDDEN", message: "CAD-operator credential required" });
             }
+            const orderScans =
+                input.useOrderScans === true
+                    ? {
+                          useOrderScans: true as const,
+                          loadOrderScans: (clientId: string) => loadClientFootScans(ctx.prisma, clientId),
+                      }
+                    : {};
             try {
                 return await createDogfoodSavedDesign({
                     principal: ctx.cadOperator,
@@ -523,6 +589,7 @@ export const manufacturingRouter = router({
                     chart: { givenName: input.givenName, familyName: input.familyName },
                     verifier: runtimeDogfoodOrderOwnerVerifier(process.env),
                     store: prismaDogfoodSavedDesignStore(ctx.prisma),
+                    ...orderScans,
                     persist: (designId) =>
                         persistSavedDesignSnapshotOnDesign({
                             prisma: ctx.prisma,
@@ -530,6 +597,7 @@ export const manufacturingRouter = router({
                             designId,
                             catalog: input.catalog,
                             manufacturingMethod: input.manufacturingMethod,
+                            ...orderScans,
                         }),
                 });
             } catch (error) {
