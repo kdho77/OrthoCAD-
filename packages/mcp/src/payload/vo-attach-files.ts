@@ -34,6 +34,9 @@ export const DOGFOOD_HELD_ID_PREFIXES = ["886ffef7", "11e0ec9b", "c4092f6e"] as 
 /** Retrieved reference: "Export file is over the 100 MB limit". */
 const MAX_ATTACH_BYTES = 100 * 1024 * 1024;
 
+/** One attach attempt downloads each URL once. Further attempts are capped. */
+export const VO_ATTACH_MAX_ATTEMPTS = 3;
+
 const FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]*$/;
 
 export interface VoAttachFileInput {
@@ -154,6 +157,17 @@ function decodeBase64(value: string): Buffer {
  * `buildCadOperatorCentralFabStlKey` in vertex/server/src/auth/cad-operator.ts.
  * Temp manufacturing uploads and belt G-code keys are not this path.
  */
+export function isCadOperatorGcodeStorageKey(key: string | null | undefined): key is string {
+    if (!key) return false;
+    const trimmed = key.trim();
+    return (
+        trimmed.startsWith("gcode/cad-operator/") &&
+        !trimmed.includes("..") &&
+        !trimmed.includes("\\") &&
+        !trimmed.includes("//")
+    );
+}
+
 export function isCentralFabStlStorageKey(key: string | undefined): boolean {
     if (!key) return false;
     const trimmed = key.trim();
@@ -317,4 +331,86 @@ export function buildVoAttachFilesHandoff(input: VoAttachFilesInput): VoAttachPr
         },
         order_status_written: false,
     };
+}
+
+export interface VoAttachDownloadFile {
+    download_url?: string;
+    content_base64?: string;
+}
+
+/**
+ * Download each https URL at most once during this attempt.
+ * `attempt` must be between 1 and `maxAttempts` (default 3).
+ * A later attempt may download again. content_base64 skips the network.
+ */
+export async function downloadVoAttachFilesForAttempt(args: {
+    files: VoAttachDownloadFile[];
+    attempt: number;
+    maxAttempts?: number;
+    fetchImpl?: typeof fetch;
+}): Promise<Map<string, Uint8Array>> {
+    const maxAttempts = args.maxAttempts ?? VO_ATTACH_MAX_ATTEMPTS;
+    if (!Number.isInteger(args.attempt) || args.attempt < 1 || args.attempt > maxAttempts) {
+        throw new Error(`attach attempt ${args.attempt} exceeds the ${maxAttempts} attempt limit`);
+    }
+    const fetchImpl = args.fetchImpl ?? fetch;
+    const bytes = new Map<string, Uint8Array>();
+    for (const file of args.files) {
+        const url = file.download_url?.trim() ?? "";
+        if (!url || file.content_base64?.trim()) continue;
+        if (bytes.has(url)) continue;
+        const response = await fetchImpl(url);
+        if (!response.ok) {
+            throw new Error(`attach download failed (${response.status})`);
+        }
+        bytes.set(url, new Uint8Array(await response.arrayBuffer()));
+    }
+    return bytes;
+}
+
+/**
+ * Retry a failed attach download up to `maxAttempts`. Each attempt fetches a URL once.
+ */
+export async function downloadVoAttachWithBoundedRetries(args: {
+    files: VoAttachDownloadFile[];
+    maxAttempts?: number;
+    fetchImpl?: typeof fetch;
+}): Promise<Map<string, Uint8Array>> {
+    const maxAttempts = args.maxAttempts ?? VO_ATTACH_MAX_ATTEMPTS;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+            return await downloadVoAttachFilesForAttempt({
+                files: args.files,
+                attempt,
+                maxAttempts,
+                fetchImpl: args.fetchImpl,
+            });
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    throw lastError instanceof Error ? lastError : new Error("attach download failed");
+}
+
+export function cadOperatorGcodeKeysForRelease(preparation: VoAttachPreparation): string[] {
+    const keys: string[] = [];
+    for (const file of preparation.cad_provenance.files) {
+        if (!isCadOperatorGcodeStorageKey(file.storage_key)) continue;
+        const key = file.storage_key.trim();
+        if (!keys.includes(key)) keys.push(key);
+    }
+    return keys;
+}
+
+/** Delete cad-operator G-code only after attach is confirmed. Returns the keys released. */
+export async function releaseGcodeAfterVoAttachConfirmed(
+    preparation: VoAttachPreparation,
+    release: (storageKey: string) => Promise<void>,
+): Promise<string[]> {
+    const keys = cadOperatorGcodeKeysForRelease(preparation);
+    for (const key of keys) {
+        await release(key);
+    }
+    return keys;
 }

@@ -37,6 +37,7 @@
                 "vertex/src/features/clients/design-workflow-session.test.ts",
                 "vertex/src/features/elements/ElementHardnessSelector.test.tsx",
                 "vertex/src/features/exports/apex-print-material.test.ts",
+                "vertex/src/features/exports/gcode-signed-download.test.ts",
                 "vertex/src/features/exports/manufacturing-stl-upload.test.ts",
                 "vertex/src/features/exports/vertexslice-regional-capability.test.ts",
                 "vertex/src/features/production/installer-download.test.ts",
@@ -76,6 +77,7 @@
             "files": [
                 "packages/mcp/test/cnc-gcode.test.ts",
                 "packages/mcp/test/production-poll.test.ts",
+                "packages/mcp/test/vo-attach-download.test.ts",
                 "tests/bottom-pattern-cad-render.test.ts",
                 "tests/cnc/belt-phase-b-pitch.test.ts",
                 "tests/cnc/errors.test.ts",
@@ -159,6 +161,7 @@
                 "vertex/server/src/context.test.ts",
                 "vertex/server/src/lib/dev-auth.test.ts",
                 "vertex/server/src/lib/glb-validation.test.ts",
+                "vertex/server/src/lib/manufacturing-stl-lifecycle.test.ts",
                 "vertex/server/src/lib/prisma.test.ts",
                 "vertex/server/src/lib/tenancy.test.ts",
                 "vertex/server/src/routers/admin-access.test.ts",

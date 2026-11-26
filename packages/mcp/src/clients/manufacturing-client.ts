@@ -25,6 +25,9 @@ export type OrthocadMcpTrpcProxy = {
                 productionId: string;
             }) => Promise<{ downloadUrl: string; productionId: string }>;
         };
+        releaseGcodeAfterVoAttach: {
+            mutate: (input: { storageKey: string }) => Promise<{ released: boolean; storageKey: string }>;
+        };
         getProduction: {
             query: (input: { productionId: string }) => Promise<Record<string, unknown>>;
         };
@@ -170,6 +173,14 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
         /** Call site: vertex/server/src/routers/manufacturing.ts getGcodeDownloadUrl */
         getGcodeDownloadUrl(productionId: string) {
             return trpc.manufacturing.getGcodeDownloadUrl.query({ productionId });
+        },
+
+        /**
+         * Delete cad-operator G-code after VertexOrders attach is confirmed.
+         * Call site: vertex/server/src/routers/manufacturing.ts releaseGcodeAfterVoAttach.
+         */
+        releaseGcodeAfterVoAttach(storageKey: string) {
+            return trpc.manufacturing.releaseGcodeAfterVoAttach.mutate({ storageKey });
         },
 
         /** Status of one CAD-operator production. No G-code bytes. */
