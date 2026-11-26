@@ -41,6 +41,16 @@ export type OrthocadMcpTrpcProxy = {
         persistSavedDesignSnapshot: {
             mutate: (input: { designId: string; catalog?: unknown }) => Promise<Record<string, unknown>>;
         };
+        listDesignMacros: {
+            query: () => Promise<{ macros: Array<Record<string, unknown>> }>;
+        };
+        applyDesignMacros: {
+            mutate: (input: {
+                designId: string;
+                customerMacro?: string;
+                pathologyMacro?: string;
+            }) => Promise<Record<string, unknown>>;
+        };
         generateCentralFabStl: {
             mutate: (input: { designId: string; side: "left" | "right" }) => Promise<Record<string, unknown>>;
         };
@@ -196,6 +206,24 @@ export function createManufacturingClient(options: ManufacturingClientOptions) {
         /** Production parameter snapshot — settingsJson on the design document. */
         getDesignParams(designId: string) {
             return trpc.design.get.query({ id: designId });
+        },
+
+        /** Corrections-panel macros. Names only. Call site: manufacturing.listDesignMacros. */
+        listDesignMacros() {
+            return trpc.manufacturing.listDesignMacros.query();
+        },
+
+        /**
+         * Merge customer then pathology onto settingsJson.
+         * Call site: vertex/server/src/routers/manufacturing.ts applyDesignMacros.
+         * Omit both names and the server does not write.
+         */
+        applyDesignMacros(input: { designId: string; customerMacro?: string; pathologyMacro?: string }) {
+            return trpc.manufacturing.applyDesignMacros.mutate({
+                designId: input.designId,
+                customerMacro: input.customerMacro,
+                pathologyMacro: input.pathologyMacro,
+            });
         },
 
         /**

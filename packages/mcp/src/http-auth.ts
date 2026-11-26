@@ -11,7 +11,9 @@
 //   design.get — vertex/server/src/routers/design.ts:42 design:read
 //   prepareManufacturingStlUpload — manufacturing.ts:198-202 manufacturing:prepare
 //   generateSolid — manufacturing.ts:294-298 manufacturing:generate
-//   persistSavedDesignSnapshot / createSavedDesign — manufacturing.ts:381-420 manufacturing:generate
+//   listDesignMacros — manufacturing.ts listDesignMacros design:read
+//   applyDesignMacros — manufacturing.ts applyDesignMacros manufacturing:generate
+//   persistSavedDesignSnapshot / createSavedDesign — manufacturing.ts persistSavedDesignSnapshot manufacturing:generate
 //   getProduction / listProductionsByDesign / getGcodeDownloadUrl — manufacturing.ts:347-475 manufacturing:download
 // Integration design reads are dogfood-only (service.ts:627-631). They map to design:read.
 
@@ -64,6 +66,8 @@ export const MCP_TOOL_REQUIRED_SCOPES = {
     get_design: ["design:read"],
     list_designs_by_order: ["design:read"],
     get_design_params: ["design:read"],
+    list_macros: ["design:read"],
+    apply_macro: ["manufacturing:generate"],
     prepare_manufacturing_stl_upload: ["manufacturing:prepare"],
     list_materials: ["manufacturing:generate"],
     generate_gcode: ["manufacturing:generate"],

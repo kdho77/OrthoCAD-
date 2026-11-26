@@ -22,6 +22,7 @@ import {
     canonicalInsolePrintMaterialCatalog,
 } from "./print-materials.js";
 import {
+    applyMacroInputSchema,
     buildDesignExportedPayloadInputSchema,
     createSavedDesignInputSchema,
     generateCentralFabStlInputSchema,
@@ -32,6 +33,7 @@ import {
     getExportDownloadInputSchema,
     getProductionInputSchema,
     listDesignsByOrderInputSchema,
+    listMacrosInputSchema,
     listMaterialsInputSchema,
     listProductionsByDesignInputSchema,
     persistSavedDesignSnapshotInputSchema,
@@ -99,6 +101,24 @@ function questionFromMessage(message: string): UserQuestion | null {
                 {
                     field: "shoe_size",
                     prompt: "Shoe size is not on this order. What US men's or US women's size should this pair use?",
+                },
+            ],
+        };
+    }
+    const macro = /No (customer|pathology) macro named "([^"]+)"/.exec(message);
+    if (macro) {
+        const kind = macro[1] === "customer" ? "customer" : "pathology";
+        const name = macro[2] ?? "";
+        return {
+            ok: false,
+            ask: "user",
+            relay: "none",
+            questions: [
+                {
+                    field: kind === "customer" ? "customer_macro" : "pathology_macro",
+                    prompt:
+                        `No ${kind} macro named "${name}" is saved. ` +
+                        "Apply refuses to guess corrections. Which saved macro should be used?",
                 },
             ],
         };
@@ -589,6 +609,37 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
         case "build_design_exported_payload": {
             const input = buildDesignExportedPayloadInputSchema.parse(args);
             return buildDesignExportedPayload(input);
+        }
+        case "list_macros": {
+            listMacrosInputSchema.parse(args);
+            const manufacturing =
+                deps.manufacturing ??
+                (await import("../clients/manufacturing-client.js")).createManufacturingClient({
+                    trpcUrl: deps.config.trpcUrl,
+                    cadOperatorKey: requireCadOperatorKey(deps.config),
+                });
+            return manufacturing.listDesignMacros();
+        }
+        case "apply_macro": {
+            const input = applyMacroInputSchema.parse(args);
+            assertToolNotHeld(input.design_id);
+            const manufacturing =
+                deps.manufacturing ??
+                (await import("../clients/manufacturing-client.js")).createManufacturingClient({
+                    trpcUrl: deps.config.trpcUrl,
+                    cadOperatorKey: requireCadOperatorKey(deps.config),
+                });
+            try {
+                return await manufacturing.applyDesignMacros({
+                    designId: input.design_id,
+                    customerMacro: input.customer_macro,
+                    pathologyMacro: input.pathology_macro,
+                });
+            } catch (error) {
+                const question = questionFromMessage(error instanceof Error ? error.message : String(error));
+                if (question) return question;
+                throw error;
+            }
         }
         case "persist_saved_design_snapshot": {
             const input = persistSavedDesignSnapshotInputSchema.parse(args);
