@@ -3,7 +3,7 @@
     "version": "0.1.0-phase-a",
     "private": true,
     "license": "UNLICENSED",
-    "description": "OrthoCAD MCP Phase A — integration read/export handoff tools (no headless CAD)",
+    "description": "OrthoCAD MCP Phase A — integration read/export handoff. Default designs stay on SAMPLE_Top; use_order_scans is the explicit scan-arch option.",
     "type": "module",
     "engines": {
         "node": ">=20"
