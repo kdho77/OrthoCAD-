@@ -672,6 +672,22 @@ function applyFlange(design: DesignState, catalog: SavedDesignCatalog, paths: st
     }
 }
 
+/** Omitted and `both` post both feet. One foot unlinks so the other stays at the template. */
+function wedgeFeet(foot: "left" | "right" | "both" | undefined): Array<"left" | "right"> {
+    if (foot === "left" || foot === "right") return [foot];
+    return ["left", "right"];
+}
+
+function unlinkCorrectionsForOneFoot(
+    design: DesignState,
+    paths: string[],
+    feet: Array<"left" | "right">,
+): void {
+    if (feet.length !== 1 || !design.corrections.linked) return;
+    design.corrections.linked = false;
+    paths.push("settings.corrections.linked");
+}
+
 function sliderHasNumber(sliders: SavedDesignSlider | undefined): boolean {
     if (!sliders) return false;
     return Object.values(sliders).some((value) => typeof value === "number");
@@ -803,9 +819,12 @@ export function buildSavedDesignSnapshot(input: {
             unit: catalog.rearfoot_wedge.unit,
             ...(catalog.rearfoot_wedge.degree_mode ? { degreeMode: catalog.rearfoot_wedge.degree_mode } : {}),
         };
-        design.corrections.left.rearfootWedge = wedge;
-        design.corrections.right.rearfootWedge = { ...wedge };
-        paths.push("settings.corrections.left.rearfootWedge", "settings.corrections.right.rearfootWedge");
+        const feet = wedgeFeet(catalog.rearfoot_wedge.foot);
+        unlinkCorrectionsForOneFoot(design, paths, feet);
+        for (const sideName of feet) {
+            design.corrections[sideName].rearfootWedge = { ...wedge };
+            paths.push(`settings.corrections.${sideName}.rearfootWedge`);
+        }
     }
     if (catalog.forefoot_wedge) {
         const wedge = {
@@ -824,9 +843,17 @@ export function buildSavedDesignSnapshot(input: {
             value: catalog.full_length_wedge.value,
             unit: catalog.full_length_wedge.unit,
         };
-        design.corrections.left.fullLengthWedge = wedge;
-        design.corrections.right.fullLengthWedge = { ...wedge };
-        paths.push("settings.corrections.left.fullLengthWedge", "settings.corrections.right.fullLengthWedge");
+        const feet = wedgeFeet(catalog.full_length_wedge.foot);
+        unlinkCorrectionsForOneFoot(design, paths, feet);
+        for (const sideName of feet) {
+            design.corrections[sideName].fullLengthWedge = { ...wedge };
+            paths.push(`settings.corrections.${sideName}.fullLengthWedge`);
+        }
+    }
+
+    if (catalog.length !== undefined) {
+        design.trimPreset = { left: catalog.length, right: catalog.length };
+        paths.push("settings.trimPreset");
     }
 
     if (catalog.thickness_mm !== undefined) {

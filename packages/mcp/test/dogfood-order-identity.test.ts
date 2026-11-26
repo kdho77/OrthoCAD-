@@ -103,6 +103,64 @@ describe("create_saved_design order identity contract", () => {
         expect(toolText(result)).not.toMatch(/pendingCouponValidation|stl/i);
     });
 
+    test("use_order_scans is forwarded only when it is explicitly true", async () => {
+        const tool = MCP_TOOL_DEFINITIONS.find((entry) => entry.name === "create_saved_design");
+        expect(tool?.description).toMatch(/use_order_scans/);
+        expect(tool?.description).toMatch(/SAMPLE_Top/);
+        expect(createSavedDesignInputSchema.safeParse({ external_order_id: ORDER }).success).toBe(true);
+        expect(
+            createSavedDesignInputSchema.safeParse({ external_order_id: ORDER, use_order_scans: true })
+                .success,
+        ).toBe(true);
+        expect(
+            createSavedDesignInputSchema.safeParse({ external_order_id: ORDER, use_order_scans: false })
+                .success,
+        ).toBe(true);
+        expect(
+            createSavedDesignInputSchema.safeParse({ external_order_id: ORDER, scan_geometry: true }).success,
+        ).toBe(false);
+
+        const forwarded: Array<Record<string, unknown>> = [];
+        const manufacturing = {
+            createSavedDesign: async (input: Record<string, unknown>) => {
+                forwarded.push(input);
+                return {
+                    ok: true,
+                    created: false,
+                    established: false,
+                    identity: "existing_order_binding",
+                    design_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+                    external_order_id: ORDER,
+                    client_id: CLIENT,
+                    template: "SAMPLE_Top",
+                    scans_used: input.useOrderScans === true,
+                    shoe_width: "medium",
+                    shoe_width_source: "defaulted",
+                    hardness: null,
+                    hardness_source: "unspecified",
+                };
+            },
+        } as unknown as ManufacturingClient;
+        await handleOrthocadTool(
+            "create_saved_design",
+            { external_order_id: ORDER, client_id: CLIENT },
+            { config, manufacturing },
+        );
+        await handleOrthocadTool(
+            "create_saved_design",
+            { external_order_id: ORDER, client_id: CLIENT, use_order_scans: false },
+            { config, manufacturing },
+        );
+        await handleOrthocadTool(
+            "create_saved_design",
+            { external_order_id: ORDER, client_id: CLIENT, use_order_scans: true },
+            { config, manufacturing },
+        );
+        expect(forwarded[0]).not.toHaveProperty("useOrderScans");
+        expect(forwarded[1]).not.toHaveProperty("useOrderScans");
+        expect(forwarded[2]).toMatchObject({ useOrderScans: true, externalOrderId: ORDER, clientId: CLIENT });
+    });
+
     test("a new order's unbound result is an error and does not invent a client", async () => {
         let calls = 0;
         const manufacturing = {
