@@ -11,8 +11,8 @@ import {
     exportSideSuffix,
     looksLikeInitialsLabel,
     parsePatientNameForExport,
-    productionFootExportFilename,
     physicalSideLabel,
+    productionFootExportFilename,
     SAMPLE_TOP_TEMPLATE_ASSET_ID,
     sanitizeFilenamePart,
 } from "./export-filename.js";

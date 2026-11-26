@@ -83,7 +83,13 @@ function proceduralExportRequest(design: DesignState, side: Side, beltPrint = fa
             ? design.paired.leftThicknessMm
             : design.paired.rightThicknessMm
         : design.thicknessMm;
-    const field = baseModifierFieldAuthoritative(design, side, effThickness);
+    const trimline = resolveActiveTrimline(side, design);
+    let field = baseModifierFieldAuthoritative(design, side, effThickness);
+    // Saved Met-head / Sulcus has the preset id and no baked polyline.
+    // Posting and the compose clip must see the same #364 curve the UI confirm stores.
+    if (trimline && (!field.trimline || field.trimline.points.length < 4)) {
+        field = { ...field, trimline };
+    }
     const edits = useMeshEditStore.getState();
     const mirrored = Boolean(base.mirrored);
     const solidOptions = {
@@ -92,11 +98,11 @@ function proceduralExportRequest(design: DesignState, side: Side, beltPrint = fa
             side,
             field,
             viewer: viewer ?? {},
-            trimline: resolveActiveTrimline(side),
+            trimline,
             bottomPattern: resolveLiveBottomPattern({
                 draft: edits.getActiveDraftBottomPattern(side),
                 stored: useBottomPatternStore.getState().getPattern(side),
-                trim: resolveActiveTrimline(side),
+                trim: trimline,
             }),
         }),
         mirrored,

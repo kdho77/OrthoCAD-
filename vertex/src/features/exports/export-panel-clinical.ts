@@ -197,7 +197,10 @@ export async function exportClinicalPrinterGcode(input: {
     const firstFailure = failures[0];
     if (firstFailure) {
         const detail = failures
-            .map(({ foot, res }) => `${SIDE_LABELS[foot]} G-code failed. ${res.reason ?? "G-code export failed"}`)
+            .map(
+                ({ foot, res }) =>
+                    `${SIDE_LABELS[foot]} G-code failed. ${res.reason ?? "G-code export failed"}`,
+            )
             .join(" ");
         const reason = many
             ? `${detail}. No files were downloaded.`

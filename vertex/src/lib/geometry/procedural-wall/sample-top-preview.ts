@@ -427,10 +427,7 @@ function reflectPlanY(points: PolyPoint[], y0: number): PolyPoint[] {
  * apply the same 1D width the top mesh uses, so a preloft miss can refit
  * that pattern instead of the already-narrowed outline.
  */
-function taperedFairFromSheet(
-    sheet: BufferGeometry,
-    options: ProceduralPreviewOptions,
-): PolyPoint[] | null {
+function taperedFairFromSheet(sheet: BufferGeometry, options: ProceduralPreviewOptions): PolyPoint[] | null {
     const sw = options.shoeWidth;
     if (!sw || options.bottomPattern?.length || insetsForScanPattern(options.scanPattern) != null) {
         return null;

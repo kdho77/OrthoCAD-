@@ -219,9 +219,10 @@ describe("plantar name sweep", () => {
                     const foot = await composedFootRim(fresh, design, side);
                     fresh.dispose();
                     expect(plantarNameEngraved(pos, foot), `${name} M${usMenSize} ${side}`).toBe(true);
-                    expect(new DataView(stl).getUint32(80, true), `${name} M${usMenSize} ${side}`).toBeGreaterThan(
-                        10_000,
-                    );
+                    expect(
+                        new DataView(stl).getUint32(80, true),
+                        `${name} M${usMenSize} ${side}`,
+                    ).toBeGreaterThan(10_000);
                 }
             }
         }

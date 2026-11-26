@@ -4,9 +4,11 @@ import { getBaseCacheKey, getDesignBase } from "@/lib/geometry/base-asset";
 import type { TrimLine } from "@/lib/geometry/mesh-edit";
 import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-id";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import { applyShoeWidthToPoints, shoeWidthExtentOfPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { buildTrimPresetCurve } from "@/lib/geometry/trim-presets";
 import {
     cloneTrimline,
+    extractMeshOutline,
     getDesignTrimline,
     sampleDefaultOutline,
     type TrimlineCurve,
@@ -15,7 +17,7 @@ import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useIssuesStore } from "@/stores/issues-store";
-import type { Side, TrimPresetId } from "@/types";
+import type { DesignState, Side, TrimPresetId } from "@/types";
 
 export type MeshEditMode = "transform" | "trim" | "vertex" | "edit-trimline" | "edit-bottom-pattern";
 
@@ -144,6 +146,29 @@ function presetSourceOutline(side: Side): TrimlineCurve | null {
     return committedOrMesh(side);
 }
 
+/**
+ * Same outline the Top view publishes for a trim preset: mesh silhouette,
+ * then the shoe-width affine. Medium with no heel override is unchanged.
+ */
+export function widthAdjustedMeshOutline(
+    geometry: THREE.BufferGeometry,
+    design: DesignState,
+    side: Side,
+): TrimlineCurve | null {
+    const outline = extractMeshOutline(geometry);
+    if (!outline || outline.points.length < 4) return null;
+    const layout = insoleLayoutFromDesign(design);
+    const extent = shoeWidthExtentOfPoints(outline.points);
+    const points = applyShoeWidthToPoints(outline.points, shoeWidthForSide(design, side), {
+        ballWidthMm: layout.widthMm,
+        heelWidthMm: layout.widthMm * 0.62,
+        minX: extent.minX,
+        lengthMm: extent.lengthMm,
+        heelOverrideMm: design.corrections[side]?.heelCupWidthMm,
+    });
+    return { points };
+}
+
 /** Landmark trim of this foot's own outline. Does not reuse the other foot's Y. */
 export function curveForTrimPreset(
     side: Side,
@@ -182,7 +207,14 @@ export function resolveActiveTrimline(
     ) {
         return curveForTrimPreset(side, preset);
     }
-    return committed;
+    if (committed) return committed;
+    // Saved Met-head (3/4) and Sulcus rebuild #364 on this foot's outline.
+    // Full and a missing preset leave the outline uncut.
+    const saved = design.trimPreset?.[side];
+    if (saved === "sulcus" || saved === "met_head") {
+        return curveForTrimPreset(side, saved);
+    }
+    return null;
 }
 
 export const useMeshEditStore = create<MeshEditStore>((set, get) => ({

@@ -689,6 +689,49 @@ describe("persist saved design snapshot", () => {
         expect(design.method).toBe("printing_solid");
     });
 
+    test("catalog length stores the #364 preset and Full does not cut", () => {
+        const stored = {
+            system: "US_M" as const,
+            size: 9,
+            left: null,
+            right: null,
+            width: "medium" as const,
+        };
+        const omitted = buildSavedDesignSnapshot({ stored, catalog: parseSavedDesignCatalog({}) });
+        const full = buildSavedDesignSnapshot({
+            stored,
+            catalog: parseSavedDesignCatalog({ length: "Full" }),
+        });
+        const threeQuarter = buildSavedDesignSnapshot({
+            stored,
+            catalog: parseSavedDesignCatalog({ length: "3/4" }),
+        });
+        const sulcus = buildSavedDesignSnapshot({
+            stored,
+            catalog: parseSavedDesignCatalog({ length: "Sulcus" }),
+        });
+        expect(parseSavedDesignCatalog({ length: "3/4 length" }).length).toBe("met_head");
+        expect(parseSavedDesignCatalog({ length: "Met-head" }).length).toBe("met_head");
+        expect(omitted.design.trimPreset).toBeUndefined();
+        expect(omitted.design.trimlines).toBeUndefined();
+        expect(full.design.trimPreset).toEqual({ left: "full", right: "full" });
+        expect(full.design.trimlines).toBeUndefined();
+        const { trimPreset: _fullPreset, ...fullRest } = full.design;
+        expect(fullRest).toEqual(omitted.design);
+        expect(threeQuarter.design.trimPreset).toEqual({ left: "met_head", right: "met_head" });
+        expect(threeQuarter.design.trimlines).toBeUndefined();
+        expect(sulcus.design.trimPreset).toEqual({ left: "sulcus", right: "sulcus" });
+        expect(sulcus.design.trimlines).toBeUndefined();
+        expect(threeQuarter.design.textMarking).toEqual(omitted.design.textMarking);
+        expect(threeQuarter.design.textMarking).toMatchObject({
+            surface: "bottom",
+            mode: "engrave",
+            addPatientName: true,
+            feet: "both",
+        });
+        expect(() => parseSavedDesignCatalog({ length: "half" })).toThrow(SavedDesignSnapshotError);
+    });
+
     test("omitted useOrderScans does not read scans and matches the template envelope", async () => {
         let reads = 0;
         const catalog = { shoe_size: { system: "US_M" as const, size: 9 }, sliders: { medial_skive_mm: 4 } };
