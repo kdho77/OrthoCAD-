@@ -75,6 +75,7 @@
             "index": 2,
             "files": [
                 "packages/mcp/test/cnc-gcode.test.ts",
+                "packages/mcp/test/pr-475-independent-grader.test.ts",
                 "packages/mcp/test/production-poll.test.ts",
                 "tests/bottom-pattern-cad-render.test.ts",
                 "tests/cnc/belt-phase-b-pitch.test.ts",
@@ -301,6 +302,7 @@
                 "vertex/server/src/lib/dogfood-order-owner-wire.test.ts",
                 "vertex/server/src/lib/gcode-handedness.test.ts",
                 "vertex/server/src/lib/generate-reliability.test.ts",
+                "vertex/server/src/lib/pr-475-independent-grader.test.ts",
                 "vertex/server/src/lib/grant-admin-tokens.test.ts",
                 "vertex/server/src/lib/production-jobs.test.ts",
                 "vertex/server/src/print-bridge-function.test.ts",
