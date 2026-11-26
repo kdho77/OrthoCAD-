@@ -135,7 +135,7 @@ describe("export panel clinical gcode", () => {
         expect(rightOnly.filenames).toEqual(["hybrid-right.gcode"]);
     });
 
-    test("pair belt export downloads each foot as soon as that foot finishes slicing", async () => {
+    test("pair belt export downloads both feet only after both succeed", async () => {
         const design = useDesignStore.getState().design;
         let releaseLeft!: () => void;
         const leftGate = new Promise<void>((resolve) => {
@@ -166,7 +166,8 @@ describe("export panel clinical gcode", () => {
         expect(created).toEqual([]);
         releaseLeft();
         await new Promise((r) => setTimeout(r, 0));
-        expect(created).toEqual(["1"]);
+        // The left file waits until the right foot is known good.
+        expect(created).toEqual([]);
         releaseRight();
         const done = await exportPromise;
         expect(done.ok).toBe(true);
@@ -192,13 +193,11 @@ describe("export panel clinical gcode", () => {
         const failed = await exportClinicalPrinterGcode({ side: "left", feet: "both", design });
         expect(failed.ok).toBe(false);
         if (!failed.ok) {
-            expect(failed.reason).toMatch(/(left|foot 1)/i);
-            expect(failed.reason).toMatch(/download/i);
-            expect(failed.reason).toMatch(/(right|foot 2)/i);
-            expect(failed.reason).toMatch(/fail/i);
-            expect(failed.reason).not.toMatch(/No files were downloaded/);
+            expect(failed.reason).toMatch(/Right G-code failed/);
+            expect(failed.reason).toMatch(/slice failed/);
+            expect(failed.reason).toMatch(/No files were downloaded/);
         }
-        expect(created).toEqual(["1"]);
+        expect(created).toEqual([]);
 
         created.length = 0;
         hybridSpy.mockReset();
