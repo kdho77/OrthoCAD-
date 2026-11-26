@@ -90,10 +90,12 @@ describe("single-foot CNC stays inside the milling table", () => {
         if (!left || !right) throw new Error("expected both Peavy feet");
         expect(left.rotationDeg).toBe(6);
         expect(right.rotationDeg).toBe(-6);
-        expect(left.tx).toBeCloseTo(10.4681495, 4);
-        expect(left.ty).toBeCloseTo(60.8782518, 4);
-        expect(right.tx).toBeCloseTo(10.4654912, 4);
-        expect(right.ty).toBeCloseTo(200.4709739, 4);
+        // Remeasured after main's non-medium planform change. The half-pocket
+        // placer is the same function as main; these lock that pose.
+        expect(left.tx).toBeCloseTo(10.4683402, 4);
+        expect(left.ty).toBeCloseTo(60.8828287, 4);
+        expect(right.tx).toBeCloseTo(10.4688779, 4);
+        expect(right.ty).toBeCloseTo(200.47258, 4);
         expect(left.pocketIndex).toBe(0);
         expect(right.pocketIndex).toBe(1);
 
@@ -101,7 +103,7 @@ describe("single-foot CNC stays inside the milling table", () => {
         const one = placeWorkpieces(profile, peavyRight);
         expect(one).toHaveLength(1);
         expect(one[0]?.rotationDeg).toBe(-6);
-        expect(one[0]?.ty).toBeCloseTo(70.2959739, 4);
+        expect(one[0]?.ty).toBeCloseTo(70.29758, 4);
         const peavyOne = peavyRight[0];
         if (!peavyOne) throw new Error("expected the Peavy right foot");
         expect(footprintClearanceMm(peavyOne, profile)).toBeGreaterThanOrEqual(1 - 1e-4);
