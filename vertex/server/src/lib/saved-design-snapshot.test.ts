@@ -883,6 +883,5 @@ describe("persist saved design snapshot", () => {
             }),
         ).rejects.toThrow(/no foot scans/);
         expect(refused.updates).toHaveLength(0);
->>>>>>> origin/main
     });
 });
