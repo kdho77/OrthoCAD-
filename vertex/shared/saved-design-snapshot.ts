@@ -630,11 +630,13 @@ function resolveFlangeBorderMm(
     border: FlangeMmKey,
     fallback: number,
 ): number | undefined {
-    if (entry[border] !== undefined) {
-        return entry[border];
+    const explicit = entry[border];
+    // 0 is a flange of none. A missing key is the only input that may use the level default.
+    if (typeof explicit === "number") {
+        return explicit;
     }
     const other: FlangeMmKey = border === "medial_mm" ? "lateral_mm" : "medial_mm";
-    if (entry[other] !== undefined && entry.level === undefined) {
+    if (typeof entry[other] === "number" && entry.level === undefined) {
         return undefined;
     }
     return fallback;

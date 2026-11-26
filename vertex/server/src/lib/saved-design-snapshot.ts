@@ -272,6 +272,24 @@ function mergeStoredClinicalIntoSnapshot(
     ) {
         built.design.corrections.linked = existingCorrections.linked ?? built.design.corrections.linked;
     }
+    // Stored millimeters are merged above. An explicit 0 must still be the value that is saved.
+    reapplyExplicitFlangeMm(built, catalog);
+}
+
+/**
+ * Catalog numbers, including 0, win over a stored flange. A missing key is left
+ * as applyFlange and the merge already resolved it.
+ */
+function reapplyExplicitFlangeMm(built: SavedDesignSnapshotBuild, catalog: SavedDesignCatalog): void {
+    const flange = catalog.flange;
+    if (!flange) return;
+    for (const sideName of ["left", "right"] as const) {
+        const entry = flange[sideName];
+        if (!entry) continue;
+        const side = built.design.corrections[sideName];
+        if (typeof entry.medial_mm === "number") side.medialFlangeMm = entry.medial_mm;
+        if (typeof entry.lateral_mm === "number") side.lateralFlangeMm = entry.lateral_mm;
+    }
 }
 
 /**
