@@ -827,6 +827,11 @@ export function buildSavedDesignSnapshot(input: {
         paths.push("settings.corrections.left.fullLengthWedge", "settings.corrections.right.fullLengthWedge");
     }
 
+    if (catalog.length !== undefined) {
+        design.trimPreset = { left: catalog.length, right: catalog.length };
+        paths.push("settings.trimPreset");
+    }
+
     if (catalog.thickness_mm !== undefined) {
         const mm = catalog.thickness_mm;
         // Solid / milling: match the Setup slider — store thicknessMm and keep zonal

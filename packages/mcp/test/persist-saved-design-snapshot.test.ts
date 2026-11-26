@@ -8,9 +8,11 @@ import type { ManufacturingClient } from "../src/clients/manufacturing-client.js
 import type { OrthocadMcpConfig } from "../src/config.js";
 import { handleOrthocadTool } from "../src/tools/handlers.js";
 import {
+    createSavedDesignInputSchema,
     listMcpSavedDesignCatalogKeyPaths,
     MCP_TOOL_DEFINITIONS,
     persistSavedDesignSnapshotInputSchema,
+    savedDesignCatalogSchema,
 } from "../src/tools/schemas.js";
 
 const config = {
@@ -30,6 +32,29 @@ describe("persist_saved_design_snapshot tool", () => {
         for (const key of listSavedDesignCatalogKeyPaths()) {
             expect(tool?.description, key).toContain(key.split(".").pop());
         }
+    });
+
+    test("catalog length accepts Full, 3/4, and Sulcus and rejects an unknown length", () => {
+        const tool = MCP_TOOL_DEFINITIONS.find((entry) => entry.name === "create_saved_design");
+        expect(tool?.description).toContain("length");
+        expect(tool?.description).toContain("3/4");
+        expect(tool?.description).toContain("Sulcus");
+        for (const length of ["Full", "3/4", "3/4 length", "Met-head", "Sulcus"]) {
+            const shared = parseSavedDesignCatalog({ length });
+            const mcp = savedDesignCatalogSchema.parse({ length });
+            expect(mcp.length).toBe(shared.length);
+        }
+        expect(parseSavedDesignCatalog({ length: "3/4" }).length).toBe("met_head");
+        expect(savedDesignCatalogSchema.parse({ length: "Sulcus" }).length).toBe("sulcus");
+        expect(savedDesignCatalogSchema.parse({ length: "Full" }).length).toBe("full");
+        expect(
+            createSavedDesignInputSchema.safeParse({
+                external_order_id: "f1939235",
+                catalog: { length: "3/4" },
+            }).success,
+        ).toBe(true);
+        expect(savedDesignCatalogSchema.safeParse({ length: "half" }).success).toBe(false);
+        expect(parseSavedDesignCatalog({}).length).toBeUndefined();
     });
 
     test("catalog width accepts xx_wide and rejects unknown values", () => {

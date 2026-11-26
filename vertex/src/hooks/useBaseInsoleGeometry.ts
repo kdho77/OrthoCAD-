@@ -74,11 +74,11 @@ import {
 import { resolveViewerWallStyle } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
 import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
-import { applyShoeWidthToPoints, shoeWidthExtentOfPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
+import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { applySinkCutToGeometry } from "@/lib/geometry/sink";
 import { stockDebug, stockResolveLog } from "@/lib/geometry/stock-debug";
 import { patientDisplayNameFromParts } from "@/lib/geometry/text-marking/compose";
-import { clipGeometryToOutline, extractMeshOutline } from "@/lib/geometry/trimline";
+import { clipGeometryToOutline } from "@/lib/geometry/trimline";
 import { mirrorGeometry } from "@/lib/library/loaders";
 import { isApiConfigured } from "@/lib/trpc";
 import { useBaseBoundsStore } from "@/stores/base-bounds-store";
@@ -87,7 +87,7 @@ import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useClientStore } from "@/stores/client-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
-import { resolveActiveTrimline, useMeshEditStore } from "@/stores/mesh-edit-store";
+import { resolveActiveTrimline, useMeshEditStore, widthAdjustedMeshOutline } from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { useScanStore } from "@/stores/scan-store";
@@ -457,22 +457,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         clearBaseBoundsCache(lookupKey);
         const b = computeBaseBounds(sized, lookupKey);
         useBaseBoundsStore.getState().setBounds(lookupKey, b);
-        const outline = extractMeshOutline(sized);
+        const outline = widthAdjustedMeshOutline(sized, design, side);
         if (outline) {
-            const widthId = shoeWidthForSide(design, side);
-            const heelW = layout.widthMm * 0.62;
-            // BaseBounds stores axis lengths, not a footprint origin. Reading
-            // minX/maxX off it is undefined, so a non-medium width wrote NaN Y
-            // onto every outline point and the trimline tube crashed.
-            const extent = shoeWidthExtentOfPoints(outline.points);
-            const scaledPts = applyShoeWidthToPoints(outline.points, widthId, {
-                ballWidthMm: layout.widthMm,
-                heelWidthMm: heelW,
-                minX: extent.minX,
-                lengthMm: extent.lengthMm,
-                heelOverrideMm: design.corrections[side]?.heelCupWidthMm,
-            });
-            useBaseOutlineStore.getState().setOutline(lookupKey, { points: scaledPts });
+            useBaseOutlineStore.getState().setOutline(lookupKey, outline);
         }
     }, [
         assetId,

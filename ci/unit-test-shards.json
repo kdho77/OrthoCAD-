@@ -315,6 +315,7 @@
                 "vertex/src/features/corrections/CorrectionsPanel.test.tsx",
                 "vertex/src/features/exports/PrintingPanel.machine.test.tsx",
                 "vertex/src/features/exports/export-service-filename.test.ts",
+                "vertex/src/features/exports/saved-design-length-preset.test.ts",
                 "vertex/src/features/exports/saved-design-thickness-loft.test.ts",
                 "vertex/src/features/production/ProductionPage.enrollment.test.tsx",
                 "vertex/src/hooks/useKeyboardShortcuts.outline-edit.test.tsx",

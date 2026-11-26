@@ -180,6 +180,8 @@ Dogfood tenant `54b6a960-aa40-4988-b116-adf5ed6c72f8` only. CAD-operator Bearer 
 
 `persist_saved_design_snapshot` writes that parameter snapshot onto an existing design (`design_id`). It copies the stored integration-link shoe size and width, maps only structured catalog fields, and returns 422 instead of inventing a prescription. `rx_text` and notes are ignored. It does not change File Ready or In Production.
 
+`catalog.length` is Full, 3/4, or Sulcus. 3/4 selects the existing Met-head trim and Sulcus selects the existing Sulcus trim. Full and omitted leave the outline uncut. `create_saved_design` stores that preset on the saved design and the headless export rebuilds it with the same preset the UI uses.
+
 Residuals:
 
 - Reference design `cc357f83-3391-4c93-90b0-e18b6bce1a1d` was not compared. No production credential is available. Mesh parity tests use a sanitized SAMPLE_Top design against `buildPrinterFootManufacturingStl`.
