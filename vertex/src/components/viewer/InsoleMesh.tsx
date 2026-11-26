@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useInsoleGeometry } from "@/hooks/useInsoleGeometry";
+import { insoleViewportMaterialColor } from "@/lib/hardness/split-overlay";
 import { applyDesignElementColors } from "@/lib/geometry/element-visualization";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
@@ -14,14 +15,11 @@ interface InsoleMeshProps {
     design: DesignState;
     transparent: boolean;
     heightmap: boolean;
+    /** Lighter hardness tint for Print/Export solid view. */
+    printExportSolid?: boolean;
 }
 
-const sideColors: Record<Side, string> = {
-    left: "#f8fafc",
-    right: "#f8fafc",
-};
-
-export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshProps) {
+export function InsoleMesh({ side, design, transparent, heightmap, printExportSolid = false }: InsoleMeshProps) {
     const trimLines = useMeshEditStore((s) => s.trimLines);
     const selectedElementId = useDesignStore((s) => s.selectedElementId);
     const vertexOverrides = useMeshEditStore((s) => s.vertexOverrides);
@@ -57,14 +55,14 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
         }
         return new THREE.MeshStandardMaterial({
             vertexColors: true,
-            color: sideColors[side],
+            color: insoleViewportMaterialColor(design.printRecipe, { printExport: printExportSolid }),
             metalness: 0.15,
             roughness: 0.7,
             transparent,
             opacity: transparent ? 0.5 : 1,
             side: THREE.DoubleSide,
         });
-    }, [heightmap, transparent, side]);
+    }, [heightmap, transparent, design.printRecipe?.defaultHardness, printExportSolid]);
 
     useEffect(() => () => material.dispose(), [material]);
 

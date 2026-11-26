@@ -42,6 +42,7 @@ import { usePerformanceStore } from "@/stores/performance-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { useScanStore } from "@/stores/scan-store";
 import type { Side } from "@/types";
+import { InsoleContourLighting, InsoleStandardLighting } from "./InsoleContourLighting";
 import { AfoMarkerPlacement } from "./AfoMarkerPlacement";
 import { AfoMeshes } from "./AfoMeshes";
 import { applyAfoBottomAnchoredViewPreset, recenterAfoScanCamera, useAfoScanCameraFrame } from "./AfoScanCameraFrame";
@@ -127,6 +128,8 @@ export function Viewer3D() {
     const designStartPath = useClinicalWorkflowStore((s) => s.designStartPath);
     const deferTopMeshChip = shouldDeferTopMeshLoad(designStartPath, workflowStep);
     const printPreview = workflowStep === "print" || workflowStep === "export";
+    const printExportSolid = printPreview && !viewer.heightmap;
+    const contourLighting = printExportSolid;
     const setEditMode = useMeshEditStore((s) => s.setEditMode);
     const setTarget = useMeshEditStore((s) => s.setTarget);
     const target = useMeshEditStore((s) => s.target);
@@ -285,12 +288,10 @@ export function Viewer3D() {
                 }}
             >
                 <color attach="background" args={["#0c111b"]} />
-                {afoScanLandmarking ? null : (
-                    <>
-                        <ambientLight intensity={0.6} />
-                        <directionalLight position={[150, 300, 200]} intensity={1.1} castShadow />
-                        <directionalLight position={[-150, 100, -100]} intensity={0.4} />
-                    </>
+                {afoScanLandmarking ? null : contourLighting ? (
+                    <InsoleContourLighting />
+                ) : (
+                    <InsoleStandardLighting />
                 )}
                 <AfoScanLandmarkLighting />
 
@@ -304,12 +305,14 @@ export function Viewer3D() {
                                     design={design}
                                     transparent={viewer.transparent}
                                     heightmap={viewer.heightmap}
+                                    printExportSolid={printExportSolid}
                                 />
                             ) : (
                                 <BaseInsoleMesh
                                     side="left"
                                     transparent={viewer.transparent}
                                     heightmap={viewer.heightmap}
+                                    printExportSolid={printExportSolid}
                                 />
                             )}
                         </>
@@ -322,12 +325,14 @@ export function Viewer3D() {
                                     design={design}
                                     transparent={viewer.transparent}
                                     heightmap={viewer.heightmap}
+                                    printExportSolid={printExportSolid}
                                 />
                             ) : (
                                 <BaseInsoleMesh
                                     side="right"
                                     transparent={viewer.transparent}
                                     heightmap={viewer.heightmap}
+                                    printExportSolid={printExportSolid}
                                 />
                             )}
                         </>
