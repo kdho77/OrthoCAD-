@@ -11,6 +11,7 @@ import {
     exportSideSuffix,
     looksLikeInitialsLabel,
     parsePatientNameForExport,
+    productionFootExportFilename,
     physicalSideLabel,
     SAMPLE_TOP_TEMPLATE_ASSET_ID,
     sanitizeFilenamePart,
@@ -217,5 +218,56 @@ describe("exportPatientPartsForProduction", () => {
             firstName: "Jane",
             lastName: "Doe",
         });
+    });
+});
+
+describe("productionFootExportFilename", () => {
+    test("a right-foot Unknown_Patient key uses the chart when the left already names the patient", () => {
+        const left = productionFootExportFilename({
+            fileName: "Jane_Doe_ApexCore_L.gcode",
+            firstName: "Jane",
+            lastName: "Doe",
+            material: "ApexCore",
+            side: "left",
+        });
+        const right = productionFootExportFilename({
+            fileName: "Unknown_Patient_ApexCore_R.gcode",
+            firstName: "Jane",
+            lastName: "Doe",
+            material: "ApexCore",
+            side: "right",
+        });
+        expect(left).toBe("Jane_Doe_ApexCore_L.gcode");
+        expect(right).toBe("Jane_Doe_ApexCore_R.gcode");
+        expect(right).not.toContain("Unknown_Patient");
+    });
+
+    test("an explicit filename is kept and an empty request uses the chart", () => {
+        expect(
+            productionFootExportFilename({
+                fileName: "Ada_Lovelace_ApexCore_R.gcode",
+                firstName: "Jane",
+                lastName: "Doe",
+                material: "ApexCore",
+                side: "right",
+            }),
+        ).toBe("Ada_Lovelace_ApexCore_R.gcode");
+        expect(
+            productionFootExportFilename({
+                patientName: "Ada Lovelace",
+                firstName: "Jane",
+                lastName: "Doe",
+                material: "apex_core",
+                side: "right",
+            }),
+        ).toBe("Ada_Lovelace_ApexCore_R.gcode");
+        expect(
+            productionFootExportFilename({
+                firstName: "Jane",
+                lastName: "Doe",
+                material: "ApexCore",
+                side: "right",
+            }),
+        ).toBe("Jane_Doe_ApexCore_R.gcode");
     });
 });

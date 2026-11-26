@@ -76,6 +76,7 @@ import {
     scalePatternWidth,
     shiftPatternByRimFollow,
     smoothMovedStationOutline,
+    snapStationsInsidePreLoftCap,
 } from "./station-gates";
 import {
     applyStoredTB,
@@ -143,6 +144,12 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * before the loft. Native lofts leave posting triangulation alone.
      */
     repairUpwardBottom?: boolean;
+    /**
+     * `bottomPattern` already has the shoe-width taper. `true` refits it with
+     * the extra heel inset. `"rim"` tracks the composed silhouette without
+     * that inset.
+     */
+    widthPatternFair?: boolean | "rim";
 }
 
 function zeroCorrections(): SideCorrections {
@@ -1405,7 +1412,9 @@ export function reconstructProceduralWalls(
     const forefootFollowRim = foreW !== 0 && !forefootOnComposed;
     const wholeScale = options.insoleWidthScale ?? 1;
     const wholeWidth = Number.isFinite(wholeScale) && Math.abs(wholeScale - 1) > 1e-12;
-    const patternFairMode = wholeWidth ? "width" : "heel";
+    const widthFair = options.widthPatternFair === true || options.widthPatternFair === "rim";
+    const patternFairMode =
+        wholeWidth || options.widthPatternFair === "rim" ? "width" : widthFair ? "shoe" : "heel";
     const followFactor = wholeWidth
         ? 0
         : heelWiden || forefootFollowRim
@@ -1424,6 +1433,8 @@ export function reconstructProceduralWalls(
             const u = Math.max(0, Math.min(1, (p.x - minX) / length));
             return followFactor * widthCorrectionFollowEnvelope(u, heelW, followForeW);
         });
+        patternMoved = true;
+    } else if (widthFair) {
         patternMoved = true;
     }
     if (patternMoved && !(forefootOnComposed && !heelWiden)) {
@@ -1672,6 +1683,9 @@ export function reconstructProceduralWalls(
         }
     }
     clampStationHeadings(stations, hygiened.loop);
+    // Heading clamp and the arc reparameterize can put a station a fraction
+    // of a millimetre back over the cap the limiter already enforced.
+    snapStationsInsidePreLoftCap(stations, hygiened.loop, r1, r2, stationSkewOpts);
     assertPreLoftStations(stations, r1, r2, stationSkewOpts);
     {
         let minB = Infinity;

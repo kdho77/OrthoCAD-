@@ -338,9 +338,15 @@ export async function buildOrderPairGeometry(shouldAbort?: () => boolean): Promi
         // Start every foot before awaiting the next so cold lofts share the worker pool.
         const built = await Promise.all(
             sides.map(async (side) => {
-                const solid = await buildClosedExportGeometry(side, false, shouldAbort);
-                held.push(solid);
-                return { side, solid };
+                try {
+                    const solid = await buildClosedExportGeometry(side, false, shouldAbort);
+                    held.push(solid);
+                    return { side, solid };
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    const label = side === "right" ? "Right" : "Left";
+                    throw new Error(`${label} foot failed. ${message}`, { cause: error });
+                }
             }),
         );
         for (const { side, solid } of built) {

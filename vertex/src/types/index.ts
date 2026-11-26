@@ -498,7 +498,8 @@ export interface DesignState {
      */
     dogfoodManufacturing?: {
         template: "SAMPLE_Top";
-        scansUsed: false;
+        /** False on the template path. True only when this design opted into order scans. */
+        scansUsed: boolean;
         shoeWidth: "extra_narrow" | "narrow" | "medium" | "wide" | "extra_wide" | "xx_wide";
         shoeWidthSource: "prescribed" | "defaulted";
         hardness: HardnessName | null;

@@ -8,6 +8,7 @@ import {
     type CorrectionPresetPayload,
     captureCorrectionPresetFromDesign,
     correctionPresetOriginKeys,
+    listDesignMacros,
 } from "@/lib/clinical/correction-presets";
 import { cn } from "@/lib/utils";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
@@ -39,6 +40,7 @@ export function CorrectionPresetsPanel() {
     const [open, setOpen] = useState(false);
 
     const captured = useMemo(() => captureCorrectionPresetFromDesign(design), [design]);
+    const customerMacros = listDesignMacros().filter((macro) => macro.kind === "customer");
 
     const recordOrigin = (payload: CorrectionPresetPayload, mode: ApplyMode, label: string) => {
         const linked = useDesignStore.getState().design.corrections.linked;
@@ -106,6 +108,19 @@ export function CorrectionPresetsPanel() {
                             Save current
                         </Button>
                     </div>
+
+                    {customerMacros.length > 0 ? (
+                        <PresetGroup
+                            title="Customer macros"
+                            items={customerMacros.map((macro) => ({
+                                id: macro.id,
+                                name: macro.name,
+                                payload: macro.payload,
+                                scope: "vertex" as const,
+                            }))}
+                            onApply={apply}
+                        />
+                    ) : null}
 
                     <PresetGroup
                         title="Vertex starters"
