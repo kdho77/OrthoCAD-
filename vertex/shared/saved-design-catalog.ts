@@ -65,6 +65,24 @@ export const SLIDER_FIELDS = {
 
 export type SliderField = keyof typeof SLIDER_FIELDS;
 
+/**
+ * Sign of `rearfoot_posting_deg` on `sliders` and `sliders_by_side`.
+ * Matches the Corrections slider (`positive = pronation`), the posting-edge
+ * labels (lateral high = pronation, medial high = supination), and
+ * `migrateSideCorrections` (+deg → lateral wedge, −deg → medial wedge).
+ * Varus is medial-high. Valgus is lateral-high.
+ */
+export const REARFOOT_POSTING_DEG_SIGN =
+    "Positive is valgus (lateral high, pronation). Negative is varus (medial high, supination). " +
+    "The solid migrates a positive degree to a lateral rearfoot wedge and a negative degree to a medial rearfoot wedge, then clears the slider. Zero is no post.";
+
+/**
+ * `rearfoot_wedge.foot` and `full_length_wedge.foot`.
+ * Omitted is both feet, the same write the catalog did before this field existed.
+ */
+export const WEDGE_FOOT_FIELD =
+    "left, right, or both. Omit or both posts both feet. left or right posts that foot only and unlinks corrections so the other foot stays at the template.";
+
 /** Present on the catalog and never copied into clinical settings. Hardness is handled separately. */
 export const IGNORED_CATALOG_KEYS = ["rx_text", "notes", "rigidity", "extra_soft", "hardness"] as const;
 
@@ -87,7 +105,7 @@ const archSchema = z.preprocess(
 
 const sliderShape = {
     forefoot_posting_deg: z.number().finite().optional(),
-    rearfoot_posting_deg: z.number().finite().optional(),
+    rearfoot_posting_deg: z.number().finite().optional().describe(REARFOOT_POSTING_DEG_SIGN),
     medial_skive_mm: z.number().finite().optional(),
     lateral_skive_mm: z.number().finite().optional(),
     arch_elongation_mm: z.number().finite().optional(),
@@ -117,11 +135,24 @@ const wedgeSchema = z
     })
     .strict();
 
+const wedgeFootSchema = z.enum(["left", "right", "both"]).describe(WEDGE_FOOT_FIELD);
+
+const rearfootWedgeSchema = z
+    .object({
+        side: z.enum(["medial", "lateral"]),
+        value: z.number().finite(),
+        unit: z.enum(["mm", "deg"]),
+        degree_mode: z.enum(["local", "station"]).optional(),
+        foot: wedgeFootSchema.optional(),
+    })
+    .strict();
+
 const fullLengthWedgeSchema = z
     .object({
         side: z.enum(["medial", "lateral"]),
         value: z.number().finite(),
         unit: z.enum(["mm", "deg"]),
+        foot: wedgeFootSchema.optional(),
     })
     .strict();
 
@@ -187,7 +218,7 @@ export const savedDesignCatalogSchema = z
             })
             .strict()
             .optional(),
-        rearfoot_wedge: wedgeSchema.optional(),
+        rearfoot_wedge: rearfootWedgeSchema.optional(),
         forefoot_wedge: wedgeSchema.optional(),
         full_length_wedge: fullLengthWedgeSchema.optional(),
         /**
