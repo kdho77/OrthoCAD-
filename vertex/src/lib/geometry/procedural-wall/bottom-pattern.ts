@@ -889,6 +889,104 @@ export function analyticOffsetPattern(
     return out;
 }
 
+/**
+ * A met-head or sulcus rim ends on the ball, not a tapered toe. The widest
+ * station then sits in the distal fifth. A full-length SAMPLE_Top keeps that
+ * station near u 0.65, so this stays false and the shipped pattern is unused.
+ */
+export function anteriorRimIsBluntCut(rim: PolyPoint[]): boolean {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const p of rim) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+    }
+    const length = maxX - minX;
+    if (length < 20 || rim.length < 8) return false;
+    const bins = 24;
+    const lo = new Array<number>(bins).fill(Infinity);
+    const hi = new Array<number>(bins).fill(-Infinity);
+    const seen = new Array<boolean>(bins).fill(false);
+    for (const p of rim) {
+        let b = Math.floor(((p.x - minX) / length) * bins);
+        if (b < 0) b = 0;
+        else if (b >= bins) b = bins - 1;
+        if (p.y < lo[b]!) lo[b] = p.y;
+        if (p.y > hi[b]!) hi[b] = p.y;
+        seen[b] = true;
+    }
+    let ball = 0;
+    let best = -1;
+    for (let b = 0; b < bins; b++) {
+        if (!seen[b]) continue;
+        const w = hi[b]! - lo[b]!;
+        if (w > best) {
+            best = w;
+            ball = b;
+        }
+    }
+    return best > 20 && 1 - (ball + 0.5) / bins < 0.2;
+}
+
+/**
+ * Inset the clipped rim. The Windows trace is a full foot scaled by length, so
+ * on a shortened outline it is too narrow and the anterior columns hit the far
+ * side. A local inset follows the oblique cut.
+ */
+export function offsetPatternForBluntRim(
+    rim: PolyPoint[],
+    _bounds: { minX: number; maxX: number },
+    _sign: MedialYSign,
+): PolyPoint[] {
+    // A length-scaled full-foot trace (and its 6 mm heel / 0.45·W arch) does not
+    // sit on the inward normals of a shortened rim, so columns miss the near
+    // wall. A miter-limited parallel inset does. Full-length rims never call this.
+    const loop = resamplePolyline(
+        ensureCcw(rim.map((p) => ({ x: p.x, y: p.y, z: 0 }))),
+        Math.max(140, Math.min(220, rim.length)),
+    );
+    const dist = 3;
+    const n = loop.length;
+    const edgeN = (i: number) => {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % n]!;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy) || 1;
+        return { x: -dy / len, y: dx / len };
+    };
+    const out: PolyPoint[] = [];
+    for (let i = 0; i < n; i++) {
+        const n0 = edgeN((i - 1 + n) % n);
+        const n1 = edgeN(i);
+        const v = loop[i]!;
+        const bx = n0.x + n1.x;
+        const by = n0.y + n1.y;
+        const bl = Math.hypot(bx, by);
+        if (bl < 1e-6) {
+            out.push({ x: v.x + n1.x * dist, y: v.y + n1.y * dist, z: 0 });
+            continue;
+        }
+        const bisx = bx / bl;
+        const bisy = by / bl;
+        const denom = bisx * n0.x + bisy * n0.y;
+        if (denom < 0.55) {
+            out.push({ x: v.x + n0.x * dist, y: v.y + n0.y * dist, z: 0 });
+            out.push({ x: v.x + n1.x * dist, y: v.y + n1.y * dist, z: 0 });
+            continue;
+        }
+        const miter = dist / denom;
+        const q = { x: v.x + bisx * miter, y: v.y + bisy * miter, z: 0 };
+        if (!pointInPoly(q.x, q.y, loop)) {
+            out.push({ x: v.x + n0.x * dist, y: v.y + n0.y * dist, z: 0 });
+            out.push({ x: v.x + n1.x * dist, y: v.y + n1.y * dist, z: 0 });
+            continue;
+        }
+        out.push(q);
+    }
+    return out.length >= 3 ? out : loop;
+}
+
 /** Light Laplacian on the toe box so a rim pull does not spike curvature. */
 function smoothForefoot(
     loop: PolyPoint[],
