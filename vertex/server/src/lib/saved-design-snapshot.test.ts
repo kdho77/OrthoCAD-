@@ -1,13 +1,15 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, test } from "@rstest/core";
-
+import { archHeightScan } from "../../../../tests/helpers/arch-height-scan";
 import { readStoredDesignSettings } from "../../../shared/design-settings.js";
 import { parseSavedDesignCatalog, SavedDesignSnapshotError } from "../../../shared/saved-design-catalog.js";
 import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot.js";
 import { designStateFromDocument } from "../../../src/features/clients/design-document.js";
+import type { OrderScanFile } from "../../../src/lib/clinical/order-scan-file.js";
 import { assertMilledCncOrder, PRINT_ORDER_CNC_REFUSAL } from "../../../src/lib/cnc/mill-job.js";
 import { millExportSides } from "../../../src/lib/cnc/order-sides.js";
 import { thicknessMmForDesignSide } from "../../../src/lib/geometry/shape-finish-modifiers.js";
+import { geometryToBinarySTL } from "../../../src/lib/geometry/stl.js";
 import { type CadOperatorPrincipal, DOGFOOD_TENANT_ID } from "../auth/cad-operator.js";
 import { settingsEnvelopeForSave } from "./design-schema.js";
 import { persistSavedDesignSnapshotOnDesign } from "./saved-design-snapshot.js";
@@ -728,5 +730,107 @@ describe("persist saved design snapshot", () => {
             feet: "both",
         });
         expect(() => parseSavedDesignCatalog({ length: "half" })).toThrow(SavedDesignSnapshotError);
+    });
+
+    test("omitted useOrderScans does not read scans and matches the template envelope", async () => {
+        let reads = 0;
+        const catalog = { shoe_size: { system: "US_M" as const, size: 9 }, sliders: { medial_skive_mm: 4 } };
+        const { prisma } = fakePrisma();
+        const result = await persistSavedDesignSnapshotOnDesign({
+            prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog,
+            loadOrderScans: async () => {
+                reads += 1;
+                return [];
+            },
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        const envelope = settingsEnvelopeForSave(
+            buildSavedDesignSnapshot({
+                stored: {
+                    system: "US_M",
+                    size: 9,
+                    left: null,
+                    right: null,
+                    width: "medium",
+                },
+                catalog: parseSavedDesignCatalog(catalog),
+            }).design,
+        );
+        expect(reads).toBe(0);
+        expect(result.scans_used).toBe(false);
+        expect(result.scan_review).toBeUndefined();
+        expect(JSON.stringify(result.settingsJson)).toBe(JSON.stringify(envelope));
+    });
+
+    test("useOrderScans writes the scan arch and refuses an empty scan list without saving", async () => {
+        const clientId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        const scan = (
+            heightMm: number,
+            side: "left" | "right",
+            id: string,
+            uploadedAt: string,
+        ): OrderScanFile => ({
+            id,
+            side,
+            fileName: `${side}.stl`,
+            uploadedAt,
+            bytes: new Uint8Array(geometryToBinarySTL(archHeightScan(heightMm, side))),
+        });
+        const files = [
+            scan(30, "left", "new", "2026-06-01T00:00:00.000Z"),
+            scan(10, "left", "old", "2026-01-01T00:00:00.000Z"),
+            scan(20, "right", "right", "2026-06-01T00:00:00.000Z"),
+        ];
+        let reads = 0;
+        const current = row({
+            client: { id: clientId, tenantId: DOGFOOD_TENANT_ID },
+        });
+        const loaded = fakePrisma(current);
+        const result = await persistSavedDesignSnapshotOnDesign({
+            prisma: loaded.prisma,
+            principal,
+            designId: DESIGN_ID,
+            catalog: { shoe_size: { system: "US_M", size: 9 }, sliders: { medial_skive_mm: 4 } },
+            useOrderScans: true,
+            loadOrderScans: async (id) => {
+                reads += 1;
+                expect(id).toBe(clientId);
+                return files;
+            },
+            buildSnapshot: buildSavedDesignSnapshot,
+        });
+        expect(reads).toBe(1);
+        expect(result.scans_used).toBe(true);
+        expect(loaded.updates).toHaveLength(1);
+        const settings = readStoredDesignSettings(result.settingsJson);
+        const corrections = settings?.corrections as {
+            linked: boolean;
+            left: { archHeightMm: number; medialSkiveMm: number };
+            right: { archHeightMm: number; medialSkiveMm: number };
+        };
+        expect(corrections.left.archHeightMm).toBe(3);
+        expect(corrections.right.archHeightMm).toBe(-3.5);
+        expect(corrections.left.medialSkiveMm).toBe(4);
+        expect(corrections.right.medialSkiveMm).toBe(4);
+        expect(corrections.linked).toBe(false);
+        expect((settings?.dogfoodManufacturing as { scansUsed: boolean }).scansUsed).toBe(true);
+        expect((settings?.base as { assetId: string }).assetId).toBe("sample-top");
+
+        const refused = fakePrisma(current);
+        await expect(
+            persistSavedDesignSnapshotOnDesign({
+                prisma: refused.prisma,
+                principal,
+                designId: DESIGN_ID,
+                catalog: { shoe_size: { system: "US_M", size: 9 } },
+                useOrderScans: true,
+                loadOrderScans: async () => [],
+                buildSnapshot: buildSavedDesignSnapshot,
+            }),
+        ).rejects.toThrow(/no foot scans/);
+        expect(refused.updates).toHaveLength(0);
     });
 });
