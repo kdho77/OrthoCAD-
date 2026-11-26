@@ -27,10 +27,12 @@ import {
     WELD_MM,
 } from "./bezier-column";
 import {
+    anteriorRimIsBluntCut,
     assertCutInOnHighRimSide,
     medialYSignFromPattern,
     medialYSignFromTopRim,
     movedPatternHygiene,
+    offsetPatternForBluntRim,
     PATTERN_SOURCE_SYNTHETIC,
     parseBottomPattern,
 } from "./bottom-pattern";
@@ -59,7 +61,7 @@ import {
     postingZDelta,
 } from "./modifiers";
 import { applyOutlineClean } from "./outline-clean";
-import { hygieneBottomPattern } from "./pattern-hygiene";
+import { clipperRoundInset, hygieneBottomPattern } from "./pattern-hygiene";
 import { buildQuadGrid, rimJunctions, STATION_MERGE_MM } from "./quad-grid";
 import { assertClosedStationRing, assertPeriodicQuadStrip, rotateStationRing } from "./ring-seam";
 import {
@@ -1367,7 +1369,15 @@ export function reconstructProceduralWalls(
             : liveRimPlan;
     const patternRim = stockRimPlan.length >= 3 ? stockRimPlan : liveRimPlan;
     const legacyFaired = !patternPts?.length;
-    const rawOutline = patternPts?.length
+    // A shortened anterior cut is not a toe. Pair against an inset of that rim
+    // instead of a length-scaled full-foot trace. Full-length rims skip this.
+    const bluntCut = anteriorRimIsBluntCut(liveRimPlan);
+    const bluntPattern = bluntCut
+        ? offsetPatternForBluntRim(liveRimPlan, model.bounds, medialYSign)
+        : null;
+    const rawOutline = bluntPattern
+        ? startAtLowCurvature(ensureCcw(bluntPattern.map((p) => ({ ...p, z: 0 }))), model.bounds)
+        : patternPts?.length
         ? startAtLowCurvature(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))), model.bounds)
         : startAtLowCurvature(
               ensureCcw(
@@ -1672,36 +1682,100 @@ export function reconstructProceduralWalls(
         }
     }
     clampStationHeadings(stations, hygiened.loop);
-    assertPreLoftStations(stations, r1, r2, stationSkewOpts);
-    {
-        let minB = Infinity;
-        let maxHead = 0;
-        for (let i = 0; i < stations.length; i++) {
-            const a = stations[i]!;
-            const b = stations[(i + 1) % stations.length]!;
-            minB = Math.min(minB, Math.hypot(b.outline.x - a.outline.x, b.outline.y - a.outline.y));
-            const dx0 = a.outline.x - a.rim.x;
-            const dy0 = a.outline.y - a.rim.y;
-            const dx1 = b.outline.x - b.rim.x;
-            const dy1 = b.outline.y - b.rim.y;
-            const l0 = Math.hypot(dx0, dy0) || 1;
-            const l1 = Math.hypot(dx1, dy1) || 1;
-            const d = Math.max(-1, Math.min(1, (dx0 * dx1 + dy0 * dy1) / (l0 * l1)));
-            maxHead = Math.max(maxHead, (Math.acos(d) * 180) / Math.PI);
+    if (bluntCut) {
+        const rim = stations.map((s) => s.rim);
+        const n = rim.length;
+        const inset = 1.6;
+        const loop = clipperRoundInset(rim, inset);
+        const ln = loop.length;
+        const closest = (px: number, py: number) => {
+            let bestD = Infinity;
+            let bx = loop[0]!.x;
+            let by = loop[0]!.y;
+            let bs = 0;
+            for (let i = 0; i < ln; i++) {
+                const a = loop[i]!;
+                const b = loop[(i + 1) % ln]!;
+                const dx = b.x - a.x;
+                const dy = b.y - a.y;
+                const l2 = dx * dx + dy * dy || 1;
+                let t = ((px - a.x) * dx + (py - a.y) * dy) / l2;
+                if (t < 0) t = 0;
+                else if (t > 1) t = 1;
+                const x = a.x + dx * t;
+                const y = a.y + dy * t;
+                const d = (x - px) * (x - px) + (y - py) * (y - py);
+                if (d < bestD) {
+                    bestD = d;
+                    bx = x;
+                    by = y;
+                    bs = i + t;
+                }
+            }
+            return { x: bx, y: by, s: bs };
+        };
+        const at = (s: number) => {
+            const u = ((s % ln) + ln) % ln;
+            const i = Math.floor(u) % ln;
+            const t = u - Math.floor(u);
+            const a = loop[i]!;
+            const b = loop[(i + 1) % ln]!;
+            return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+        };
+        const advance = (s0: number, distMm: number) => {
+            let s = s0;
+            let left = distMm;
+            for (let guard = 0; guard < ln + 2 && left > 1e-6; guard++) {
+                const u = ((s % ln) + ln) % ln;
+                const i = Math.floor(u) % ln;
+                const t = u - Math.floor(u);
+                const a = loop[i]!;
+                const b = loop[(i + 1) % ln]!;
+                const seg = Math.hypot(b.x - a.x, b.y - a.y);
+                const remain = seg * (1 - t);
+                if (seg < 1e-9 || remain >= left) {
+                    s += seg < 1e-9 ? 1e-4 : left / seg;
+                    break;
+                }
+                left -= remain;
+                s += 1 - t + 1e-9;
+            }
+            return s;
+        };
+        let prevS = -1;
+        for (let i = 0; i < n; i++) {
+            const v = rim[i]!;
+            let s = closest(v.x, v.y).s;
+            if (prevS >= 0 && s < prevS - ln * 0.5) s += ln;
+            if (prevS >= 0 && s <= prevS) s = advance(prevS, 0.12);
+            const p = at(s);
+            if (prevS >= 0 && Math.hypot(p.x - at(prevS).x, p.y - at(prevS).y) < 0.12) s = advance(prevS, 0.12);
+            prevS = s;
+            const q = at(s);
+            const dx = q.x - v.x;
+            const dy = q.y - v.y;
+            const nl = Math.hypot(dx, dy) || 1;
+            stations[i]!.outline = { x: q.x, y: q.y, z: 0 };
+            stations[i]!.n = { x: dx / nl, y: dy / nl };
         }
-        console.log(
-            "[S1-PAIRS]",
-            JSON.stringify({
-                n: stations.length,
-                minB: Number(minB.toFixed(3)),
-                maxHead: Number(maxHead.toFixed(2)),
-                crossings: countPlanViewChordCrossings(
-                    stations.map((s) => s.outline),
-                    stations.map((s) => s.rim),
-                ),
-            }),
-        );
+        // A clipped rim edge under 0.4 mm makes the next column cross its
+        // neighbour. Keep the rim vertex (the top seam needs it) and copy
+        // the previous column so the sliver stays parallel.
+        for (let i = 0; i < n; i++) {
+            const a = stations[i]!.rim;
+            const b = stations[(i + 1) % n]!.rim;
+            if (Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) > 0.4) continue;
+            const prev = stations[i]!.outline;
+            const ox = prev.x + (b.x - a.x);
+            const oy = prev.y + (b.y - a.y);
+            const dx = ox - b.x;
+            const dy = oy - b.y;
+            const nl = Math.hypot(dx, dy) || 1;
+            stations[(i + 1) % n]!.outline = { x: ox, y: oy, z: 0 };
+            stations[(i + 1) % n]!.n = { x: dx / nl, y: dy / nl };
+        }
     }
+    assertPreLoftStations(stations, r1, r2, stationSkewOpts);
     const zDelta = (): number => 0;
     const wallStyle = resolveWallStyleParams({
         style: options.wallStyle ?? "straight",
