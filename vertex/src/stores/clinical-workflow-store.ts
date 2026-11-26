@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { create } from "zustand";
+import { applyViewerDefaultsForClinicalStep } from "@/components/viewer/viewer-tab-defaults";
 import {
     afoPrintRequiresConfirmedTrim,
     afoTrimConfirmedForPrint,
@@ -10,7 +11,6 @@ import {
 } from "@/lib/clinical/clinical-step-gates";
 import { useDesignStore } from "@/stores/design-store";
 import { leaveOutlineEdit } from "@/stores/mesh-edit-store";
-import { applyViewerDefaultsForClinicalStep } from "@/components/viewer/viewer-tab-defaults";
 import { invalidateProceduralPrintLoftForDesignStep } from "@/stores/preview-loft-status-store";
 import type { ProductionMethod } from "@/types";
 

@@ -1,8 +1,8 @@
 # Plantar name lock
 
-The bottom name on the physical plantar face of the final belt G-code must read left to right. This job is the lock from Kendon 2026-11-24 4:52 PM MT. A slicer-mirror flip or a placement flip turns it red.
+The bottom name on the physical plantar face of the final belt G-code must read left to right, cap up, when the sole is viewed from below. This job slices the live VertexSlice #52 image (Y-negate, then Rz). A placement flip turns it red.
 
-`JABBOUR` is a synthetic string, not a patient name.
+`JABBOUR` is a synthetic string, not a patient name. Unit coverage of `GNRF` is `plantar-glyph-chirality.test.ts`.
 
 ## Path
 
@@ -15,21 +15,17 @@ The bottom name on the physical plantar face of the final belt G-code must read 
 
 ## Reading frame
 
-Belt G-code is right-handed: X across the belt, Y height off the belt, Z along the belt. De-shear with `zt = Z - Y`. From below, toe toward the viewer in both print directions, then turned cap-up. On a toe-first print the heel is at high `zt`, image right is `-X`, and image up is `+zt`. A heel-first print is a 180° turn on the belt, which flips X and `zt` together, so the reading of a correct name does not change. A mirror flips one axis and the verdict flips. Thresholds are the #435 gate (`21b9bef3`). They are not loosened.
+Belt G-code is right-handed: X across the belt, Y height off the belt, Z along the belt. De-shear with `zt = Z - Y`. From below, toe toward the viewer in both print directions, then turned cap-up. On a toe-first print the heel is at high `zt` and the cap points toward `+X`. A heel-first print is a 180° turn on the belt, which flips X and `zt` together, so the reading of a correct name does not change. A mirror flips one axis and the verdict flips. Thresholds are the #435 gate (`21b9bef3`). They are not loosened.
 
 ## Images
 
-The default CI image is the VertexSlice fix: published live image
+The default CI image is live VertexSlice
 
-`ghcr.io/kdho77/vertexslice-server@sha256:8cac1d54c5e1a12f4693412c32fe40dd9c5682b9279e2b1d38f1225760aca579`
+`ghcr.io/kdho77/vertexslice-server@sha256:979e31bdf64b2eab4559717b8cc4e862a030fc35e235be2482c253cb2fd3b782`
 
-(`origin/main` `d935197976`) plus `validation/stl_preprocess.py` from the deploying VertexSlice #52 head `9fe936425ad4449ee6a6d932b636a432c8dd2ea2` (Y-negate before Rz270). That is the image the fix branch slices with. It is not a modelled slicer.
+(VertexSlice #52 `2bfc6f43a6`, live on Railway). Its `validation/stl_preprocess.py` negates Y and then rotates Z. That is the slicer the press runs. Do not copy another `stl_preprocess.py` over it.
 
-Dispatch the workflow with `vertexslice_image` set to the live digest to grade current main. That run is red while main still mirrors the name.
-
-After VertexSlice #52 merges and deploys, `LIVE_IMAGE` in `.github/workflows/name-plantar-e2e.yml` must be bumped to the new live digest so the default run uses production. The fix pin (live digest plus `stl_preprocess.py` from `9fe936425ad4449ee6a6d932b636a432c8dd2ea2`) stays until that deploy replaces it.
-
-The gateway timeout overlay (`260` → `880`) is the same wait-only edit as `validation/seam_fuse_gates/slice_all.sh`. It does not change G-code.
+Dispatch the workflow with `vertexslice_image` set to another digest to grade that image. The gateway timeout overlay (`260` → `880`) is the same wait-only edit as `validation/seam_fuse_gates/slice_all.sh`. It does not change G-code.
 
 ## Local
 

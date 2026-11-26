@@ -1,5 +1,7 @@
 # Plantar-name proofs
 
+The tables below use the old reading frame (`screen-up = −X`) and the old belt placement (`ySign = +1`). Live VertexSlice #52 (`979e31bd`) already negates Y before Rz. That pair scores `d > 0` in the old frame and is the sole that prints G inverted and N as И. The reading frame now puts the cap toward `+X`, and the belt upload places the cap at `−Y` so the negate lands it upright. Negating X still reverses the string. The historical `d` signs are not the current gate.
+
 Measured on the real path: SAMPLE_Top, both feet, default bottom text marking, engrave, `JABBOUR`, `buildPrinterFootManufacturingStl(side, true)`, then VertexSlice `POST /v1/slice` (`profile_id=apex-v2-insole-95a`, `wall_loops=1`, `infill_density=26`, `belt_insole_place=true`). The six cells are `apex_core` toe-first, `apex_light` toe-first, and `apex_light` heel-first, each for both feet. `apex_core` ignores a heel-first request, so heel-first uses `apex_light`, whose chain honours `print_direction`. The gateway wait is the `slice_all.sh` overlay (`SLICE_GATEWAY_TIMEOUT_S` 260 → 880). That overlay does not change G-code.
 
 Thresholds are the #435 gate (`21b9bef3`): `a > 0.5`, `d > 0.5`, `|b| < 0.15`, `|c| < 0.15`, advance `> 20` mm, J hook lower-left (`1.5` / `0.75` mm), sequence `JABBOUR` toward `+reading-x`. They were not loosened.

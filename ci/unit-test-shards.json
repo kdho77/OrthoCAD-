@@ -68,11 +68,12 @@
                 "vertex/src/lib/geometry/scan-plane-slice.test.ts",
                 "vertex/src/lib/geometry/sink.test.ts",
                 "vertex/src/lib/geometry/text-marking/font.test.ts",
-                "vertex/src/lib/geometry/trim-presets.test.ts",
-                "vertex/src/lib/hardness/resolve-bounds.test.ts",
-                "vertex/src/lib/vite-env.inline.test.ts",
-                "vertex/src/stores/client-store.persist.test.ts",
-                "vertex/src/stores/design-store.stock-loading.test.ts"
+                "vertex/src/lib/geometry/thickness-raise.test.ts",
+                "vertex/src/lib/hardness/hash.test.ts",
+                "vertex/src/lib/trpc-errors.test.ts",
+                "vertex/src/stores/client-store.directory.test.ts",
+                "vertex/src/stores/design-store.elements.test.ts",
+                "vertex/tests/pr456-ai-rx.grader.test.tsx"
             ]
         },
         {
@@ -141,11 +142,11 @@
                 "vertex/src/lib/geometry/scan-registration-phase2.test.ts",
                 "vertex/src/lib/geometry/text-marking/belt-print-frame.test.ts",
                 "vertex/src/lib/geometry/text-marking/place.test.ts",
-                "vertex/src/lib/geometry/trimline.test.ts",
-                "vertex/src/lib/hardness/split-overlay.insole-tint.test.ts",
-                "vertex/src/lib/vite-env.node.test.ts",
-                "vertex/src/stores/clinical-workflow-afo-trim-gate.test.ts",
-                "vertex/src/stores/outline-edit-leave.test.ts"
+                "vertex/src/lib/geometry/trim-presets.test.ts",
+                "vertex/src/lib/hardness/resolve-bounds.test.ts",
+                "vertex/src/lib/vite-env.inline.test.ts",
+                "vertex/src/stores/client-store.persist.test.ts",
+                "vertex/src/stores/design-store.stock-loading.test.ts"
             ]
         },
         {
@@ -213,12 +214,12 @@
                 "vertex/src/lib/geometry/reverse-mortons-watertight.test.ts",
                 "vertex/src/lib/geometry/shape-finish-modifiers.test.ts",
                 "vertex/src/lib/geometry/text-marking/bottom-engrave.test.ts",
-                "vertex/src/lib/geometry/text-marking/plantar-name-sweep.test.ts",
-                "vertex/src/lib/geometry/viewport-side-layout.test.ts",
-                "vertex/src/lib/library/loaders-order.test.ts",
-                "vertex/src/stores/afo-store.test.ts",
-                "vertex/src/stores/clinical-workflow-navigation.test.ts",
-                "vertex/src/stores/posting-degree-mode.test.ts"
+                "vertex/src/lib/geometry/text-marking/plantar-glyph-chirality.test.ts",
+                "vertex/src/lib/geometry/trimline.test.ts",
+                "vertex/src/lib/hardness/split-overlay.insole-tint.test.ts",
+                "vertex/src/lib/vite-env.node.test.ts",
+                "vertex/src/stores/clinical-workflow-afo-trim-gate.test.ts",
+                "vertex/src/stores/outline-edit-leave.test.ts"
             ]
         },
         {
@@ -286,12 +287,12 @@
                 "vertex/src/lib/geometry/scan-components.test.ts",
                 "vertex/src/lib/geometry/shell-thickness-zonal.test.ts",
                 "vertex/src/lib/geometry/text-marking/bottom-plantar-view.test.ts",
-                "vertex/src/lib/geometry/text-marking/text-marking.test.ts",
-                "vertex/src/lib/geometry/wedge-topcount-diag.test.ts",
-                "vertex/src/lib/library/loaders.test.ts",
-                "vertex/src/stores/bottom-pattern-store.test.ts",
-                "vertex/src/stores/clinical-workflow-print-loft.test.ts",
-                "vertex/src/stores/preview-loft-status-store.test.ts"
+                "vertex/src/lib/geometry/text-marking/plantar-name-sweep.test.ts",
+                "vertex/src/lib/geometry/viewport-side-layout.test.ts",
+                "vertex/src/lib/library/loaders-order.test.ts",
+                "vertex/src/stores/afo-store.test.ts",
+                "vertex/src/stores/clinical-workflow-navigation.test.ts",
+                "vertex/src/stores/posting-degree-mode.test.ts"
             ]
         },
         {
@@ -359,12 +360,12 @@
                 "vertex/src/lib/geometry/scan-manual-offset.test.ts",
                 "vertex/src/lib/geometry/shoe-size.test.ts",
                 "vertex/src/lib/geometry/text-marking/compose.test.ts",
-                "vertex/src/lib/geometry/thickness-datum-clearance.test.ts",
-                "vertex/src/lib/geometry/width-change.test.ts",
-                "vertex/src/lib/pressure-map/pressure-map.test.ts",
-                "vertex/src/stores/client-store.bulk-delete.test.ts",
-                "vertex/src/stores/clinical-workflow-store.test.ts",
-                "vertex/tests/occt-dormant.test.ts"
+                "vertex/src/lib/geometry/text-marking/text-marking.test.ts",
+                "vertex/src/lib/geometry/wedge-topcount-diag.test.ts",
+                "vertex/src/lib/library/loaders.test.ts",
+                "vertex/src/stores/bottom-pattern-store.test.ts",
+                "vertex/src/stores/clinical-workflow-print-loft.test.ts",
+                "vertex/src/stores/preview-loft-status-store.test.ts"
             ]
         },
         {
@@ -432,12 +433,12 @@
                 "vertex/src/lib/geometry/scan-marker-target.test.ts",
                 "vertex/src/lib/geometry/shoe-width.test.ts",
                 "vertex/src/lib/geometry/text-marking/fit.test.ts",
-                "vertex/src/lib/geometry/thickness-raise.test.ts",
-                "vertex/src/lib/hardness/hash.test.ts",
-                "vertex/src/lib/trpc-errors.test.ts",
-                "vertex/src/stores/client-store.directory.test.ts",
-                "vertex/src/stores/design-store.elements.test.ts",
-                "vertex/tests/pr456-ai-rx.grader.test.tsx"
+                "vertex/src/lib/geometry/thickness-datum-clearance.test.ts",
+                "vertex/src/lib/geometry/width-change.test.ts",
+                "vertex/src/lib/pressure-map/pressure-map.test.ts",
+                "vertex/src/stores/client-store.bulk-delete.test.ts",
+                "vertex/src/stores/clinical-workflow-store.test.ts",
+                "vertex/tests/occt-dormant.test.ts"
             ]
         }
     ]

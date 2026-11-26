@@ -44,7 +44,10 @@ describe("per-tab default viewport heightmap", () => {
     });
 
     test("goNext and goBack apply defaults", () => {
-        useClinicalWorkflowStore.setState({ step: "elements", completedSteps: ["scan", "setup", "base", "corrections"] });
+        useClinicalWorkflowStore.setState({
+            step: "elements",
+            completedSteps: ["scan", "setup", "base", "corrections"],
+        });
         useDesignStore.getState().setViewer({ heightmap: false });
 
         useClinicalWorkflowStore.getState().goNext();

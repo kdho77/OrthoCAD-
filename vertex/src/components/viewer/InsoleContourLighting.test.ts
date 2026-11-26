@@ -3,10 +3,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
-import {
-    PRINT_EXPORT_AMBIENT_INTENSITY,
-    PRINT_EXPORT_KEY_INTENSITY,
-} from "./InsoleContourLighting";
+import { PRINT_EXPORT_AMBIENT_INTENSITY, PRINT_EXPORT_KEY_INTENSITY } from "./InsoleContourLighting";
 
 describe("print/export contour lighting", () => {
     test("contour preset lowers ambient and raises key vs standard", () => {

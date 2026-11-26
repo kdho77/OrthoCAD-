@@ -57,16 +57,16 @@ const REALISTIC_NAMES = [
     "THEO ZIMMER",
 ] as const;
 
-/** STL sha256 at PR #461 head 4d223923 for the meshes that already passed. */
+/** STL sha256 for anchor cases after PR #492 plantar belt orientation fix. */
 const PASSING_SHA: Record<string, string> = {
-    "MAAR-left": "66a0d8fd8d5e984ac87e00cb15e6bae504d63b07102a104ac496c75aad0848e3",
-    "MAAR-right": "c2c11eda41393861a7f3a901a99bd7227613404519d4992ff7725fb7e9e0db4d",
-    "MANDIS KAAR-left": "689422cde139fd2d0a20da1bd77d88f63a7ddc864660dd1f372655f9df3a3877",
-    "MANDIS KAAR-right": "d59749b62e4caf8936b83bf274e2a89bac0ad0e53e5bc7ba6db4d6f94f555975",
+    "MAAR-left": "4dc6b5d65e85a7d18150a7f6ce946896cd85d0f8e805eea00597baea128b5e27",
+    "MAAR-right": "5fcff10b9ca9545bb11c078c972ce0792721be217b861da341d394c793489724",
+    "MANDIS KAAR-left": "846ee6a2115f47d462fdd82b495c330b8104d88bffd730bc98e6bc03488bfaa6",
+    "MANDIS KAAR-right": "bd9505e7fb1479dd6b7aa6a72f1b520d0709c86163280a89f85304a72c6b25fc",
     "notext-left": "a76ca52a70e5740eb71f111e3f35b9f3a2e9f6f66f463246f2a3853253bed841",
     "notext-right": "67ebe8f71e9110e6a4b407c5356053b173f3cb13e15f8aab005d72cc64bbaf93",
-    "KANDIS MAAR-left": "4b2741c130a788b2e7513acd87d1961dc4ccbf31bb3d503af813d11caad4b000",
-    "KANDIS MAAR-right": "05a3cc0b040081ea23192778b334039a0d7037c3b522ead6f28844569c81ec1f",
+    "KANDIS MAAR-left": "9b76ba3477b34eeb8c16b3a53eca82f472d8555cbe1e7f20c396940e83306dca",
+    "KANDIS MAAR-right": "b8d19cbb373a25366deb5075b7075d8c35a89733c3126975e1beeecf44df69b4",
 };
 
 function maarDesign(usMenSize: number): DesignState {

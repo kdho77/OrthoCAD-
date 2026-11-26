@@ -34,7 +34,11 @@ export interface FlattenedText {
 
 export interface TextApplyContext {
     side: Side;
-    /** Belt manufacturing STL. Compensates VertexSlice's det −1 forward. */
+    /**
+     * Belt manufacturing STL. Glyph Y matches the flat bed (cap on −Y).
+     * Live VertexSlice negates Y; the G-code reading frame undoes that,
+     * so the deposited sole matches the flat-bed camera.
+     */
     beltPrint?: boolean;
 }
 

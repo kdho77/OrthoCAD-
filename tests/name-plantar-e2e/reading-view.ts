@@ -4,9 +4,10 @@
 // (VertexSlice validation/handedness_gates/hand_classify.py, PM 2026-11-24):
 //   X across the belt, Y height off the belt (plantar at Y ~ 0), Z along the belt.
 //   (X, Y, Z) is right-handed. De-shear with zt = Z - Y.
-// Seen from below (device flipped onto its top): image right = -X, image up = +zt
-// (heel), toe toward the viewer. Rotate 90° so the length-wise text is cap-up
-// and the toe is to the right.
+// Seen from below (device flipped onto its top): the cap points toward +X,
+// image up along the belt is +zt (heel), toe toward the viewer. Rotate 90° so
+// the length-wise text is cap-up and the toe is to the right. −X as up is the
+// frame that called the mirrored Railway #52 sole upright.
 
 export interface Xyz {
     x: number;
@@ -92,13 +93,14 @@ export function heelEnd(points: readonly Xyz[]): HeelEnd {
  * Reading frame after the 90° turn. +x is toward the toe (left to right).
  * +y is the cap direction of an upright name.
  *
- * Toe-first (heel at high zt): from below, image right is -X and image up is
- * +zt, toe toward the viewer, then rotated so the toe is to the right.
- * Heel-first is that same camera after a 180° belt turn, which flips X and zt
- * together. A mirror flips only one axis, so the verdict flips.
+ * Toe-first (heel at high zt): from below, the cap points toward +X and the
+ * toe (low zt) is to the right. The older frame used −X as up and scored the
+ * Railway #52 sole — G inverted, N as И — as upright. Heel-first is the same
+ * camera after a 180° belt turn, which flips X and zt together. A mirror
+ * flips only one axis, so the verdict flips.
  */
 export function physicalReadingView(p: Xyz, heelHigh = true): Xy {
     const zt = beltAlongZt(p);
     const sign = heelHigh ? -1 : 1;
-    return { x: sign * zt, y: sign * p.x };
+    return { x: sign * zt, y: -sign * p.x };
 }
