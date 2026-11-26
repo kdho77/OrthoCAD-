@@ -106,6 +106,8 @@ node vertex/scripts/bundle-orthocad-mcp-http.mjs
 | `get_design` | Integration REST GET (dogfood tenant only) |
 | `list_designs_by_order` | Integration REST GET by order (dogfood tenant only) |
 | `get_design_params` | Documented tRPC wrap → `design.get` |
+| `list_macros` | tRPC `manufacturing.listDesignMacros` — customer then pathology names the Corrections panel applies. No payloads |
+| `apply_macro` | tRPC `manufacturing.applyDesignMacros` — Merge customer first, then pathology, onto `settingsJson`. Omit both names and nothing is written |
 | `prepare_manufacturing_stl_upload` | tRPC `manufacturing.prepareManufacturingStlUpload` |
 | `generate_gcode` | tRPC `manufacturing.generateSolid` → returns `{production_id, status}` per foot, then lofts and slices asynchronously |
 | `generate_central_fab_stl` | tRPC `manufacturing.generateCentralFabStl` → milling solid STL, enqueue then poll. No belt slice and no order status |
@@ -160,7 +162,7 @@ OrthoCAD never writes VO order status.
 
 1. `npm run build` in `packages/mcp` succeeds.
 2. MCP server starts: `ORTHOCAD_MCP_API_KEY=ocad_… ORTHOCAD_API_BASE=… node dist/cli.js` (stdio; no key in logs).
-3. Tool list includes thirteen tools (`get_design` … `prepare_vo_attachment`, plus `get_production`, `list_productions_by_design`, and `generate_central_fab_stl`).
+3. Tool list includes `list_macros` and `apply_macro` with the other dogfood tools (`get_design` … `prepare_vo_attachment`).
 4. `build_design_exported_payload` with sample files returns exact VO shape above (no `status` / order fields).
 5. `generate_gcode` documentation references main `/manufacture` path (VertexSlice/Apex/leader via #263 on main).
 
@@ -175,6 +177,8 @@ npm test -- packages/mcp/test
 ## Phase B
 
 Dogfood tenant `54b6a960-aa40-4988-b116-adf5ed6c72f8` only. CAD-operator Bearer (`ocad_…`) can read designs and call manufacturing prepare / generateSolid / getProduction / listProductionsByDesign / getGcodeDownloadUrl. Session auth is unchanged. Other tRPC procedures still reject the key.
+
+`list_macros` returns the customer and pathology macros the Corrections panel Merge button applies. Payloads stay on the server. `apply_macro` merges `customer_macro` first, then `pathology_macro`, with that same Merge. Omit both names and the saved design is not written. An unknown name is a question, not a guessed correction. The write is `settingsJson` only. The next `generate_gcode` lofts from that saved design.
 
 `use_saved_design` lofts with the UI Export path (SAMPLE_Top procedural solid, watertight check, leader once per foot) and returns G-code only.
 

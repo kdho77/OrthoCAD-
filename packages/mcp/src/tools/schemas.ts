@@ -17,6 +17,21 @@ export const getDesignParamsInputSchema = z.object({
     design_id: z.string().uuid(),
 });
 
+/** No arguments. The catalog is the Corrections panel library. */
+export const listMacrosInputSchema = z.object({}).strict();
+
+/**
+ * Names only. customer_macro is merged first, then pathology_macro.
+ * Omit both and the saved design is not written. A payload is not accepted.
+ */
+export const applyMacroInputSchema = z
+    .object({
+        design_id: z.string().uuid(),
+        customer_macro: z.string().trim().min(1).max(120).optional(),
+        pathology_macro: z.string().trim().min(1).max(120).optional(),
+    })
+    .strict();
+
 export const prepareManufacturingStlUploadInputSchema = z.object({
     side: sideSchema,
     file_name: z.string().max(200).optional(),
@@ -172,10 +187,23 @@ const archSchema = z.preprocess(
     z.enum(["low", "medium", "standard", "high"]),
 );
 
+/**
+ * Keep in lockstep with REARFOOT_POSTING_DEG_SIGN in vertex/shared/saved-design-catalog.ts.
+ * Positive matches the Corrections slider: pronation, lateral high, valgus.
+ * Negative is supination, medial high, varus.
+ */
+const REARFOOT_POSTING_DEG_SIGN =
+    "Positive is valgus (lateral high, pronation). Negative is varus (medial high, supination). " +
+    "The solid migrates a positive degree to a lateral rearfoot wedge and a negative degree to a medial rearfoot wedge, then clears the slider. Zero is no post.";
+
+/** Keep in lockstep with WEDGE_FOOT_FIELD in vertex/shared/saved-design-catalog.ts. */
+const WEDGE_FOOT_FIELD =
+    "left, right, or both. Omit or both posts both feet. left or right posts that foot only and unlinks corrections so the other foot stays at the template.";
+
 const savedDesignSliderSchema = z
     .object({
         forefoot_posting_deg: z.number().finite().optional(),
-        rearfoot_posting_deg: z.number().finite().optional(),
+        rearfoot_posting_deg: z.number().finite().optional().describe(REARFOOT_POSTING_DEG_SIGN),
         medial_skive_mm: z.number().finite().optional(),
         lateral_skive_mm: z.number().finite().optional(),
         arch_elongation_mm: z.number().finite().optional(),
@@ -197,6 +225,18 @@ const wedgeSchema = z
         value: z.number().finite(),
         unit: z.enum(["mm", "deg"]),
         degree_mode: z.enum(["local", "station"]).optional(),
+    })
+    .strict();
+
+const wedgeFootSchema = z.enum(["left", "right", "both"]).describe(WEDGE_FOOT_FIELD);
+
+const rearfootWedgeSchema = z
+    .object({
+        side: z.enum(["medial", "lateral"]),
+        value: z.number().finite(),
+        unit: z.enum(["mm", "deg"]),
+        degree_mode: z.enum(["local", "station"]).optional(),
+        foot: wedgeFootSchema.optional(),
     })
     .strict();
 
@@ -266,13 +306,14 @@ export const savedDesignCatalogSchema = z
             })
             .strict()
             .optional(),
-        rearfoot_wedge: wedgeSchema.optional(),
+        rearfoot_wedge: rearfootWedgeSchema.optional(),
         forefoot_wedge: wedgeSchema.optional(),
         full_length_wedge: z
             .object({
                 side: z.enum(["medial", "lateral"]),
                 value: z.number().finite(),
                 unit: z.enum(["mm", "deg"]),
+                foot: wedgeFootSchema.optional(),
             })
             .strict()
             .optional(),
@@ -389,6 +430,28 @@ export const MCP_TOOL_DEFINITIONS = [
         inputSchema: getDesignParamsInputSchema,
     },
     {
+        name: "list_macros",
+        description:
+            "Customer and pathology correction macros the Corrections panel Merge button applies. " +
+            "Customer macros are clinic starting points. Pathology macros are the Vertex starters " +
+            "(Planus is also accepted as pes planus). Returns id, name, kind, description, and aliases. " +
+            "Does not return millimetre payloads and does not write a design. " +
+            "A name that is not in this list is not a macro. Auth: CAD-operator key, design:read.",
+        inputSchema: listMacrosInputSchema,
+    },
+    {
+        name: "apply_macro",
+        description:
+            "Merge saved correction macros onto one design the way the Corrections panel Merge button does. " +
+            "customer_macro is applied first, then pathology_macro. Both names are optional. " +
+            "Omit both and the saved design is not written. " +
+            "Unknown names are refused and are not guessed. Millimetre payloads are not accepted. " +
+            "Merge keeps correction keys the macro does not set. Suggested elements are not placed. " +
+            "Writes settingsJson on that design. The next generate_gcode lofts from the saved design. " +
+            "Auth: CAD-operator key, manufacturing:generate.",
+        inputSchema: applyMacroInputSchema,
+    },
+    {
         name: "prepare_manufacturing_stl_upload",
         description:
             "Signed URL to upload finalized STL (CAD build is client-side in OrthoCAD). Auth: CAD-operator key.",
@@ -496,14 +559,18 @@ export const MCP_TOOL_DEFINITIONS = [
             "sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, " +
             "sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, " +
             "sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, " +
-            "sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys), " +
+            "sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys). " +
+            "rearfoot_posting_deg on sliders or sliders_by_side: Positive is valgus (lateral high, pronation). Negative is varus (medial high, supination). " +
+            "The solid migrates a positive degree to a lateral rearfoot wedge and a negative degree to a medial rearfoot wedge, then clears the slider. Zero is no post. " +
             "flange.left, flange.right, flange.left.medial_mm, flange.left.lateral_mm, flange.left.level, " +
             "flange.right.medial_mm, flange.right.lateral_mm, flange.right.level " +
             "(per-foot medial/lateral flange 0–8 mm; omit medial_mm and lateral_mm for 3 mm default, mild level 2 mm, " +
             "standard/unspecified 3 mm, high 6 mm; out of range is 422, not clamped; omitted flange leaves flanges unchanged), " +
             "rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, " +
+            "rearfoot_wedge.foot (left|right|both; omit or both posts both feet; left or right posts that foot only and unlinks corrections), " +
             "forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, " +
             "full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit, " +
+            "full_length_wedge.foot (left|right|both; omit or both posts both feet; left or right posts that foot only and unlinks corrections), " +
             "manufacturing_method (printing_solid or milling_3axis). Omit it to leave the order a print " +
             "(the method column is not written). milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. " +
             "It is not inferred from material, hardness, or thickness. " +
@@ -549,6 +616,8 @@ export const MCP_TOOL_DEFINITIONS = [
             "Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. " +
             "depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). " +
             "Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. " +
+            "rearfoot_wedge.foot and full_length_wedge.foot are left, right, or both; omit either to post both feet. " +
+            "rearfoot_posting_deg: Positive is valgus (lateral high, pronation). Negative is varus (medial high, supination). " +
             "flange.left / flange.right set medial_mm and lateral_mm (0–8) per foot; omit those mm for 3 mm default, " +
             "or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. " +
             "elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. " +
