@@ -689,6 +689,57 @@ describe("persist saved design snapshot", () => {
         expect(design.method).toBe("printing_solid");
     });
 
+    test("explicit flange 0 is the readback, and an omitted flange keeps the stored value", async () => {
+        const seeded = buildSavedDesignSnapshot({
+            stored: { system: "US_M", size: 9, left: null, right: null, width: "medium" },
+            catalog: parseSavedDesignCatalog({}),
+        });
+        seeded.design.corrections.left.medialFlangeMm = 4;
+        seeded.design.corrections.left.lateralFlangeMm = 3;
+        seeded.design.corrections.right.medialFlangeMm = 5;
+        seeded.design.corrections.right.lateralFlangeMm = 2;
+        const settingsJson = settingsEnvelopeForSave(seeded.design);
+
+        const read = async (catalog: unknown) => {
+            const result = await persistSavedDesignSnapshotOnDesign({
+                prisma: fakePrisma(row({ settingsJson })).prisma,
+                principal,
+                designId: DESIGN_ID,
+                catalog,
+                buildSnapshot: buildSavedDesignSnapshot,
+            });
+            const settings = readStoredDesignSettings(result.settingsJson);
+            const corrections = settings?.corrections as {
+                left: { medialFlangeMm: number; lateralFlangeMm: number };
+                right: { medialFlangeMm: number; lateralFlangeMm: number };
+            };
+            return { corrections, paths: result.paths, raw: JSON.stringify(result.settingsJson) };
+        };
+
+        const kept = await read({});
+        expect(kept.corrections.left).toMatchObject({ medialFlangeMm: 4, lateralFlangeMm: 3 });
+        expect(kept.corrections.right).toMatchObject({ medialFlangeMm: 5, lateralFlangeMm: 2 });
+
+        const explicit = await read({
+            flange: { left: { medial_mm: 3, lateral_mm: 0 }, right: { medial_mm: 0 } },
+        });
+        expect(explicit.corrections.left).toMatchObject({ medialFlangeMm: 3, lateralFlangeMm: 0 });
+        expect(explicit.corrections.right.medialFlangeMm).toBe(0);
+        expect(explicit.corrections.right.lateralFlangeMm).toBe(0);
+        expect(explicit.raw).toContain('"lateralFlangeMm":0');
+        expect(explicit.raw).toContain('"medialFlangeMm":0');
+        expect(explicit.paths).toContain("settings.corrections.left.lateralFlangeMm");
+        expect(explicit.paths).toContain("settings.corrections.right.medialFlangeMm");
+
+        const medialOnly = await read({ flange: { left: { medial_mm: 3 } } });
+        expect(medialOnly.corrections.left).toMatchObject({ medialFlangeMm: 3, lateralFlangeMm: 0 });
+        expect(medialOnly.corrections.right).toMatchObject({ medialFlangeMm: 5, lateralFlangeMm: 2 });
+
+        const lateralOnly = await read({ flange: { right: { lateral_mm: 0 } } });
+        expect(lateralOnly.corrections.right).toMatchObject({ medialFlangeMm: 0, lateralFlangeMm: 0 });
+        expect(lateralOnly.corrections.left).toMatchObject({ medialFlangeMm: 4, lateralFlangeMm: 3 });
+    });
+
     test("catalog length stores the #364 preset and Full does not cut", () => {
         const stored = {
             system: "US_M" as const,

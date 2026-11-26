@@ -64,7 +64,8 @@ interface ClientStore {
     duplicateDesign: (id: string) => string | null;
     archiveDesign: (id: string) => void;
     restoreDesignArchive: (id: string) => void;
-    softDeleteDesign: (id: string) => void;
+    softDeleteDesign: (id: string) => boolean;
+    softDeleteDesigns: (ids: string[]) => { failedIds: string[] };
     restoreDesign: (id: string, now?: number) => boolean;
     markExported: (id: string) => void;
     setActiveDesign: (id: string | null) => void;
@@ -272,13 +273,24 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
                     : design,
             ),
         })),
-    softDeleteDesign: (id) =>
+    softDeleteDesign: (id) => {
+        const design = get().designs.find((row) => row.id === id);
+        if (!design || design.deletedAt) return false;
         set((s) => ({
-            designs: s.designs.map((design) =>
-                design.id === id ? { ...design, deletedAt: new Date().toISOString() } : design,
+            designs: s.designs.map((row) =>
+                row.id === id ? { ...row, deletedAt: new Date().toISOString() } : row,
             ),
             activeDesignId: s.activeDesignId === id ? null : s.activeDesignId,
-        })),
+        }));
+        return true;
+    },
+    softDeleteDesigns: (ids) => {
+        const failedIds: string[] = [];
+        for (const id of ids) {
+            if (!get().softDeleteDesign(id)) failedIds.push(id);
+        }
+        return { failedIds };
+    },
     restoreDesign: (id, now = Date.now()) => {
         const design = get().designs.find((row) => row.id === id);
         if (!design?.deletedAt) return false;

@@ -790,6 +790,18 @@ export async function generateHybridGcode(
     });
 }
 
+/** Read G-code from a short-lived signed URL. Does not delete the stored object. */
+export async function readGcodeFromSignedUrl(
+    downloadUrl: string,
+    fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+    const textResp = await fetchImpl(downloadUrl);
+    if (!textResp.ok) {
+        throw new Error(`Failed to fetch G-code (status ${textResp.status})`);
+    }
+    return textResp.text();
+}
+
 export async function downloadGcodeByProductionId(productionId: string): Promise<ExportOutcome> {
     if (blockExportIfStaleBuild()) return staleBuildExportOutcome();
     return withExportBusy(async () => {
@@ -801,11 +813,7 @@ export async function downloadGcodeByProductionId(productionId: string): Promise
             if (!res?.downloadUrl) {
                 return { ok: false, reason: "No download URL returned for production" };
             }
-            const textResp = await fetch(res.downloadUrl);
-            if (!textResp.ok) {
-                throw new Error(`Failed to fetch G-code (status ${textResp.status})`);
-            }
-            const gcodeText = await textResp.text();
+            const gcodeText = await readGcodeFromSignedUrl(res.downloadUrl);
             const { design } = useDesignStore.getState();
             const feet = orderDownloadSides(design);
             const filename = userExportFilename({
