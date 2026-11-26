@@ -35,9 +35,9 @@ export interface FlattenedText {
 export interface TextApplyContext {
     side: Side;
     /**
-     * Belt manufacturing STL. Live VertexSlice negates Y before the belt
-     * rotation, so this path places the cap on −Y. A flat bed places it on +Y.
-     * Both plastics then read forward from below the sole.
+     * Belt manufacturing STL. Glyph Y matches the flat bed (cap on −Y).
+     * Live VertexSlice negates Y; the G-code reading frame undoes that,
+     * so the deposited sole matches the flat-bed camera.
      */
     beltPrint?: boolean;
 }

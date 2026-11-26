@@ -36,10 +36,10 @@ const ZERO: SideCorrections = {
 
 /**
  * Viewer under the sole, looking up (+Z). Toe (+X) is screen-right.
- * Screen-up is +Y. This is the plantar face, not a view through the top.
+ * Screen-up is −Y. This is the plantar face, not a view through the top.
  */
 function plantarView(p: TextXy): TextXy {
-    return { x: p.x, y: p.y };
+    return { x: p.x, y: -p.y };
 }
 
 /**

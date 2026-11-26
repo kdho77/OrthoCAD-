@@ -68,9 +68,9 @@ export function printedPlantarView(
     return { x: sign * zt, y: -sign * mach.x };
 }
 
-/** Flat-bed sole. No belt rotation and no Y-negate. Screen (X, +Y). */
+/** Flat-bed sole. No belt rotation. Same from-below camera: screen (X, −Y). */
 export function flatBedSoleView(p: TextXy): TextXy {
-    return { x: p.x, y: p.y };
+    return { x: p.x, y: -p.y };
 }
 
 /** Linear det of model → printed part. −1 is the mirror. */

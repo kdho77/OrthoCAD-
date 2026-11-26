@@ -207,16 +207,16 @@ describe("glyph chirality from below the sole", () => {
                     ),
                 ).toBe(false);
             }
-            const flatUp = fitLinear(
+            const flipY = fitLinear(
                 upright,
                 upright.map((p) => flatBedSoleView({ x: p.x, y: p.y })),
             );
-            expectSoleMap(flatUp, `${letter} flat bed`);
+            expect(flipY.d, `${letter} +Y cap is upside down from below`).toBeLessThan(-G1_AXIS_MIN);
             const capDown = fitLinear(
                 upright,
                 upright.map((p) => flatBedSoleView({ x: p.x, y: -p.y })),
             );
-            expect(capDown.d, `${letter} flat −Y cap is upside down`).toBeLessThan(-G1_AXIS_MIN);
+            expectSoleMap(capDown, `${letter} flat bed`);
             const belt = fitLinear(
                 upright,
                 upright.map((p) => printedPlantarView({ x: p.x, y: -p.y })),
@@ -275,15 +275,10 @@ describe("glyph chirality from below the sole", () => {
                 signs.push({ side, a: live.a, d: live.d });
             }
 
-            const mids: number[] = [];
             for (let i = 0; i < belt.meta.centroids.length; i++) {
                 const a = belt.meta.centroids[i]!;
                 const b = bed.meta.centroids[i]!;
-                expect(Math.abs(a.x - b.x), `${side} centroid x`).toBeLessThan(0.05);
-                mids.push((a.y + b.y) / 2);
-            }
-            for (const mid of mids) {
-                expect(Math.abs(mid - mids[0]!), `${side} belt/flat mirror axis`).toBeLessThan(0.05);
+                expect(Math.hypot(a.x - b.x, a.y - b.y), `${side} centroid`).toBeLessThan(0.05);
             }
             geo.dispose();
         }
@@ -325,7 +320,7 @@ describe("belt machine frame", () => {
         const belt = printedPlantarView(onSole);
         const bed = flatBedSoleView(onSole);
         expect(belt.x).toBeCloseTo(bed.x, 6);
-        expect(belt.y).toBeCloseTo(-bed.y, 6);
+        expect(belt.y).toBeCloseTo(bed.y, 6);
         expect(belt.x).toBeCloseTo(8, 6);
         expect(belt.y).toBeCloseTo(-3, 6);
     });
