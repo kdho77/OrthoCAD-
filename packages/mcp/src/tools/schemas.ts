@@ -17,6 +17,21 @@ export const getDesignParamsInputSchema = z.object({
     design_id: z.string().uuid(),
 });
 
+/** No arguments. The catalog is the Corrections panel library. */
+export const listMacrosInputSchema = z.object({}).strict();
+
+/**
+ * Names only. customer_macro is merged first, then pathology_macro.
+ * Omit both and the saved design is not written. A payload is not accepted.
+ */
+export const applyMacroInputSchema = z
+    .object({
+        design_id: z.string().uuid(),
+        customer_macro: z.string().trim().min(1).max(120).optional(),
+        pathology_macro: z.string().trim().min(1).max(120).optional(),
+    })
+    .strict();
+
 export const prepareManufacturingStlUploadInputSchema = z.object({
     side: sideSchema,
     file_name: z.string().max(200).optional(),
@@ -377,6 +392,28 @@ export const MCP_TOOL_DEFINITIONS = [
         description:
             "Design document / settingsJson for production via documented manufacturing tRPC wrap. Auth: CAD-operator key only.",
         inputSchema: getDesignParamsInputSchema,
+    },
+    {
+        name: "list_macros",
+        description:
+            "Customer and pathology correction macros the Corrections panel Merge button applies. " +
+            "Customer macros are clinic starting points. Pathology macros are the Vertex starters " +
+            "(Planus is also accepted as pes planus). Returns id, name, kind, description, and aliases. " +
+            "Does not return millimetre payloads and does not write a design. " +
+            "A name that is not in this list is not a macro. Auth: CAD-operator key, design:read.",
+        inputSchema: listMacrosInputSchema,
+    },
+    {
+        name: "apply_macro",
+        description:
+            "Merge saved correction macros onto one design the way the Corrections panel Merge button does. " +
+            "customer_macro is applied first, then pathology_macro. Both names are optional. " +
+            "Omit both and the saved design is not written. " +
+            "Unknown names are refused and are not guessed. Millimetre payloads are not accepted. " +
+            "Merge keeps correction keys the macro does not set. Suggested elements are not placed. " +
+            "Writes settingsJson on that design. The next generate_gcode lofts from the saved design. " +
+            "Auth: CAD-operator key, manufacturing:generate.",
+        inputSchema: applyMacroInputSchema,
     },
     {
         name: "prepare_manufacturing_stl_upload",

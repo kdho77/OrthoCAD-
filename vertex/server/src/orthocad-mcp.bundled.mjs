@@ -1,4 +1,4 @@
-// orthocad-mcp-http-bundle f5cd11e3561e1a9ee552e98028e61f3a05b982075a283a249849079f8aa005db
+// orthocad-mcp-http-bundle 555e2bea00606ad00d791fb02b273366bdc817e21be479d35a11a0dd5c6dbf36
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -9751,6 +9751,22 @@ function createManufacturingClient(options) {
     /** Production parameter snapshot — settingsJson on the design document. */
     getDesignParams(designId) {
       return trpc.design.get.query({ id: designId });
+    },
+    /** Corrections-panel macros. Names only. Call site: manufacturing.listDesignMacros. */
+    listDesignMacros() {
+      return trpc.manufacturing.listDesignMacros.query();
+    },
+    /**
+     * Merge customer then pathology onto settingsJson.
+     * Call site: vertex/server/src/routers/manufacturing.ts applyDesignMacros.
+     * Omit both names and the server does not write.
+     */
+    applyDesignMacros(input) {
+      return trpc.manufacturing.applyDesignMacros.mutate({
+        designId: input.designId,
+        customerMacro: input.customerMacro,
+        pathologyMacro: input.pathologyMacro
+      });
     },
     /**
      * Replace settingsJson on an existing design with a fail-closed SAMPLE_Top snapshot.
@@ -20727,6 +20743,8 @@ var MCP_TOOL_REQUIRED_SCOPES = {
   get_design: ["design:read"],
   list_designs_by_order: ["design:read"],
   get_design_params: ["design:read"],
+  list_macros: ["design:read"],
+  apply_macro: ["manufacturing:generate"],
   prepare_manufacturing_stl_upload: ["manufacturing:prepare"],
   list_materials: ["manufacturing:generate"],
   generate_gcode: ["manufacturing:generate"],
@@ -25397,6 +25415,12 @@ var listDesignsByOrderInputSchema = external_exports.object({
 var getDesignParamsInputSchema = external_exports.object({
   design_id: external_exports.string().uuid()
 });
+var listMacrosInputSchema = external_exports.object({}).strict();
+var applyMacroInputSchema = external_exports.object({
+  design_id: external_exports.string().uuid(),
+  customer_macro: external_exports.string().trim().min(1).max(120).optional(),
+  pathology_macro: external_exports.string().trim().min(1).max(120).optional()
+}).strict();
 var prepareManufacturingStlUploadInputSchema = external_exports.object({
   side: sideSchema,
   file_name: external_exports.string().max(200).optional()
@@ -25669,6 +25693,16 @@ var MCP_TOOL_DEFINITIONS = [
     inputSchema: getDesignParamsInputSchema
   },
   {
+    name: "list_macros",
+    description: "Customer and pathology correction macros the Corrections panel Merge button applies. Customer macros are clinic starting points. Pathology macros are the Vertex starters (Planus is also accepted as pes planus). Returns id, name, kind, description, and aliases. Does not return millimetre payloads and does not write a design. A name that is not in this list is not a macro. Auth: CAD-operator key, design:read.",
+    inputSchema: listMacrosInputSchema
+  },
+  {
+    name: "apply_macro",
+    description: "Merge saved correction macros onto one design the way the Corrections panel Merge button does. customer_macro is applied first, then pathology_macro. Both names are optional. Omit both and the saved design is not written. Unknown names are refused and are not guessed. Millimetre payloads are not accepted. Merge keeps correction keys the macro does not set. Suggested elements are not placed. Writes settingsJson on that design. The next generate_gcode lofts from the saved design. Auth: CAD-operator key, manufacturing:generate.",
+    inputSchema: applyMacroInputSchema
+  },
+  {
     name: "prepare_manufacturing_stl_upload",
     description: "Signed URL to upload finalized STL (CAD build is client-side in OrthoCAD). Auth: CAD-operator key.",
     inputSchema: prepareManufacturingStlUploadInputSchema
@@ -25758,6 +25792,22 @@ function questionFromMessage(message) {
         {
           field: "shoe_size",
           prompt: "Shoe size is not on this order. What US men's or US women's size should this pair use?"
+        }
+      ]
+    };
+  }
+  const macro = /No (customer|pathology) macro named "([^"]+)"/.exec(message);
+  if (macro) {
+    const kind = macro[1] === "customer" ? "customer" : "pathology";
+    const name = macro[2] ?? "";
+    return {
+      ok: false,
+      ask: "user",
+      relay: "none",
+      questions: [
+        {
+          field: kind === "customer" ? "customer_macro" : "pathology_macro",
+          prompt: `No ${kind} macro named "${name}" is saved. Apply refuses to guess corrections. Which saved macro should be used?`
         }
       ]
     };
@@ -26132,6 +26182,33 @@ async function dispatchTool(name, args, deps) {
     case "build_design_exported_payload": {
       const input = buildDesignExportedPayloadInputSchema.parse(args);
       return buildDesignExportedPayload(input);
+    }
+    case "list_macros": {
+      listMacrosInputSchema.parse(args);
+      const manufacturing = deps.manufacturing ?? (await Promise.resolve().then(() => (init_manufacturing_client(), manufacturing_client_exports))).createManufacturingClient({
+        trpcUrl: deps.config.trpcUrl,
+        cadOperatorKey: requireCadOperatorKey(deps.config)
+      });
+      return manufacturing.listDesignMacros();
+    }
+    case "apply_macro": {
+      const input = applyMacroInputSchema.parse(args);
+      assertToolNotHeld(input.design_id);
+      const manufacturing = deps.manufacturing ?? (await Promise.resolve().then(() => (init_manufacturing_client(), manufacturing_client_exports))).createManufacturingClient({
+        trpcUrl: deps.config.trpcUrl,
+        cadOperatorKey: requireCadOperatorKey(deps.config)
+      });
+      try {
+        return await manufacturing.applyDesignMacros({
+          designId: input.design_id,
+          customerMacro: input.customer_macro,
+          pathologyMacro: input.pathology_macro
+        });
+      } catch (error2) {
+        const question = questionFromMessage(error2 instanceof Error ? error2.message : String(error2));
+        if (question) return question;
+        throw error2;
+      }
     }
     case "persist_saved_design_snapshot": {
       const input = persistSavedDesignSnapshotInputSchema.parse(args);
