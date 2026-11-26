@@ -39,15 +39,40 @@ export function beltPrintedPoint(p: { x: number; y: number; z: number }): {
 }
 
 /**
- * Plantar face of the printed part, toe to the right.
- * The plastic sits at +height (model +Z). The camera looks +height.
- * right × up = −height and right = toe, which is −along, so screen-up is +across.
- * At z = 0 that is screen (mesh X, mesh Y). Cap must sit at +mesh Y on the
- * belt upload; the design mesh still uses −Y for its own plantar camera.
+ * Machine point the belt deposits. G-code is this frame: X across, Y height
+ * off the belt, Z along. Inverse of `BeltTransform::inverse_transform_point`
+ * (Y_mach = √2·Z_model, Z_mach = Y_model). Live preprocess is Rz only — the
+ * rejected Y-negate overlay is not applied.
  */
-export function printedPlantarView(p: TextXy & { z?: number }): TextXy {
-    const part = beltPrintedPoint({ x: p.x, y: p.y, z: p.z ?? 0 });
-    return { x: -part.along, y: part.across };
+export function beltMachinePoint(
+    p: { x: number; y: number; z: number },
+    rotateDeg = BELT_PREPROCESS_Z_DEG,
+): { x: number; y: number; z: number } {
+    const spun = rotateZ(p, rotateDeg);
+    const model = { x: spun.x, y: spun.y, z: p.z };
+    return { x: model.x, y: Math.SQRT2 * model.z, z: model.y };
+}
+
+/**
+ * Sole, from below. Look direction is +height toward the belt contact (Z = 0
+ * in the part frame). Toe (+mesh X) is screen-right and screen-up is −mesh Y,
+ * the same camera as the flat bed. Matches `physicalReadingView` on the
+ * machine point (toe-first: screen (−zt, −X)).
+ */
+export function printedPlantarView(
+    p: TextXy & { z?: number },
+    printDirection: "toe_first" | "heel_first" = "toe_first",
+): TextXy {
+    const heelFirst = printDirection === "heel_first";
+    const mach = beltMachinePoint({ x: p.x, y: p.y, z: p.z ?? 0 }, heelFirst ? 90 : BELT_PREPROCESS_Z_DEG);
+    const zt = mach.z - mach.y;
+    const sign = heelFirst ? 1 : -1;
+    return { x: sign * zt, y: sign * mach.x };
+}
+
+/** Flat-bed sole. No belt rotation. Same from-below camera: screen (X, −Y). */
+export function flatBedSoleView(p: TextXy): TextXy {
+    return { x: p.x, y: -p.y };
 }
 
 /** Linear det of model → printed part. −1 is the mirror. */

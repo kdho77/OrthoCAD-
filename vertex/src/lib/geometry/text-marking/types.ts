@@ -34,7 +34,7 @@ export interface FlattenedText {
 
 export interface TextApplyContext {
     side: Side;
-    /** Belt manufacturing STL. Compensates VertexSlice's det −1 forward. */
+    /** Belt manufacturing STL. Glyph chirality matches the flat-bed sole. */
     beltPrint?: boolean;
 }
 

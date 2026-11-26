@@ -1,8 +1,8 @@
 # Permanent lock: the bottom name on the physical plantar face of the final belt
-# G-code. A slicer-mirror flip or a placement flip turns this job red.
-# Default image is the VertexSlice belt-mirror fix (live server image plus
-# validation/stl_preprocess.py from the pinned fix SHA). Pass vertexslice_image
-# to grade a different image, including live origin/main.
+# G-code. A placement flip or a slicer Y-negate turns this job red.
+# Default image is live VertexSlice (Rz only, no pre-rotation Y negate). That is
+# the slicer that printed the upside-down sole. Pass vertexslice_image to grade
+# a different image. Do not overlay stl_preprocess.py from 9fe93642.
 name: Plantar name lock
 
 on:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       vertexslice_image:
-        description: "VertexSlice server image. Empty builds the fix image from the pinned SHA."
+        description: "VertexSlice server image. Empty uses the live image (pull, or build LIVE_SHA)."
         required: false
         default: ""
 
@@ -19,13 +19,12 @@ permissions:
   packages: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.vertexslice_image || 'fix' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.vertexslice_image || 'live' }}
   cancel-in-progress: true
 
 env:
   LIVE_IMAGE: ghcr.io/kdho77/vertexslice-server@sha256:979e31bdf64b2eab4559717b8cc4e862a030fc35e235be2482c253cb2fd3b782
   LIVE_SHA: d935197976b7cdd2fa89ced4ff43930b0212959f
-  FIX_SHA: 9fe936425ad4449ee6a6d932b636a432c8dd2ea2
 
 jobs:
   plantar-name:
@@ -50,14 +49,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/name-plantar/stl"
           NAME_PLANTAR_STL_DIR="$RUNNER_TEMP/name-plantar/stl" \
             npx rstest tests/name-plantar-e2e/build-stls.test.ts
-
-      - name: Checkout VertexSlice fix
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.vertexslice_image == '' }}
-        uses: actions/checkout@v4
-        with:
-          repository: kdho77/VertexSlice
-          ref: ${{ env.FIX_SHA }}
-          path: .vertexslice-fix
 
       - name: Log in to GHCR
         continue-on-error: true
@@ -115,18 +106,12 @@ jobs:
             missing
           fi
           if docker pull "$LIVE_IMAGE"; then
-            test -f .vertexslice-fix/validation/stl_preprocess.py
-            docker build -t vertexslice-server:plantar-fix -f - .vertexslice-fix <<'EOF'
-          FROM ghcr.io/kdho77/vertexslice-server@sha256:979e31bdf64b2eab4559717b8cc4e862a030fc35e235be2482c253cb2fd3b782
-          COPY validation/stl_preprocess.py /app/validation/stl_preprocess.py
-          EOF
-            publish vertexslice-server:plantar-fix
-            sha256sum .vertexslice-fix/validation/stl_preprocess.py
+            publish "$LIVE_IMAGE"
             exit 0
           fi
           echo "Cannot pull $LIVE_IMAGE."
-          build_server .vertexslice-fix vertexslice-server:plantar-fix "$FIX_SHA" || missing
-          publish vertexslice-server:plantar-fix
+          build_server "$RUNNER_TEMP/vertexslice-live" vertexslice-server:plantar-live "$LIVE_SHA" || missing
+          publish vertexslice-server:plantar-live
 
       - name: Slice both feet in both print directions
         run: |
