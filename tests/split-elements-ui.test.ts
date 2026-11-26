@@ -65,13 +65,13 @@ describe("split elements UI + one hardness table", () => {
         expect(stock).toMatch(/applyDesignElementColors/);
     });
 
-    test("design additions use the purple highlight on white bases", () => {
+    test("design additions use the purple highlight on hardness-tinted bases", () => {
         const colors = [0, 1, 2, 3, 4, 5, 6].map(designColorForElementIndex);
         expect(colors).toEqual(Array(7).fill("#a855f7"));
         const stockBase = readFileSync(repoFile("src/components/viewer/BaseInsoleMesh.tsx"), "utf8");
         const parametricBase = readFileSync(repoFile("src/components/viewer/InsoleMesh.tsx"), "utf8");
-        expect(stockBase.match(/#f8fafc/g)?.length).toBeGreaterThan(0);
-        expect(parametricBase.match(/#f8fafc/g)?.length).toBeGreaterThan(0);
+        expect(stockBase).toMatch(/insoleViewportMaterialColor/);
+        expect(parametricBase).toMatch(/insoleViewportMaterialColor/);
     });
 
     test("five named classes have distinct colors and line-width fingerprint", () => {

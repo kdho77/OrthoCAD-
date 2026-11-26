@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useInsoleGeometry } from "@/hooks/useInsoleGeometry";
+import { insoleViewportMaterialColor } from "@/lib/hardness/split-overlay";
 import { applyDesignElementColors } from "@/lib/geometry/element-visualization";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
@@ -15,11 +16,6 @@ interface InsoleMeshProps {
     transparent: boolean;
     heightmap: boolean;
 }
-
-const sideColors: Record<Side, string> = {
-    left: "#f8fafc",
-    right: "#f8fafc",
-};
 
 export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshProps) {
     const trimLines = useMeshEditStore((s) => s.trimLines);
@@ -57,14 +53,14 @@ export function InsoleMesh({ side, design, transparent, heightmap }: InsoleMeshP
         }
         return new THREE.MeshStandardMaterial({
             vertexColors: true,
-            color: sideColors[side],
+            color: insoleViewportMaterialColor(design.printRecipe),
             metalness: 0.15,
             roughness: 0.7,
             transparent,
             opacity: transparent ? 0.5 : 1,
             side: THREE.DoubleSide,
         });
-    }, [heightmap, transparent, side]);
+    }, [heightmap, transparent, design.printRecipe?.defaultHardness]);
 
     useEffect(() => () => material.dispose(), [material]);
 
