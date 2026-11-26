@@ -1,24 +1,15 @@
-// orthocad-mcp-http-bundle 169b32edebb8e6216988704c126d821cde52ef48ec26f2f5d49d3ca88e58142f
+// orthocad-mcp-http-bundle 196c75d17e6022ecb4389e5639e88ade2e53537b0e2aefdd75b6bd36545519a8
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __esm = (fn, res, err) => function __init() {
-  if (err) throw err[0];
-  try {
-    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-  } catch (e) {
-    throw err = [e], e;
-  }
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
 };
 var __commonJS = (cb, mod) => function __require() {
-  try {
-    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
-  } catch (e) {
-    throw mod = 0, e;
-  }
+  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
 var __export = (target, all) => {
   for (var name in all)
@@ -4016,7 +4007,7 @@ var require_fast_uri = __commonJS({
         throw new Error(MALFORMED_HOST_ERROR);
       }
       canonicalizeHost(resolved, options || {}, resolvedSchemeHandler, resolvedHostIsIP);
-      const encodedASCIIHost = resolvedHost && resolvedHost.indexOf("%") !== -1 && !new RegExp("\\P{ASCII}", "u").test(resolvedHost);
+      const encodedASCIIHost = resolvedHost && resolvedHost.indexOf("%") !== -1 && !/\P{ASCII}/u.test(resolvedHost);
       if (resolved.error && !encodedASCIIHost) {
         throw new Error(resolved.error);
       }
@@ -7624,9 +7615,11 @@ function behaviorSubject(initialValue) {
   obs.get = () => value;
   return obs;
 }
+var distinctUnsetMarker;
 var init_observable_DMA7fHJ6 = __esm({
   "packages/mcp/node_modules/@trpc/server/dist/observable-DMA7fHJ6.mjs"() {
     init_observable_CdPmrXKY();
+    distinctUnsetMarker = Symbol();
   }
 });
 
@@ -7848,7 +7841,7 @@ function _objectSpread22(e) {
   }
   return e;
 }
-var noop, freezeIfAvailable, createRecursiveProxy, createFlatProxy;
+var noop, freezeIfAvailable, createRecursiveProxy, createFlatProxy, formattedShapeSymbol;
 var init_getErrorShape_B5jPKHJ3 = __esm({
   "packages/mcp/node_modules/@trpc/server/dist/getErrorShape-B5jPKHJ3.mjs"() {
     init_codes_nbrm_zWY();
@@ -7864,6 +7857,7 @@ var init_getErrorShape_B5jPKHJ3 = __esm({
         return callback(name);
       } });
     };
+    formattedShapeSymbol = Symbol("trpc_formattedErrorShape");
   }
 });
 
@@ -7956,7 +7950,7 @@ function AsyncGenerator(e) {
     });
   }, "function" != typeof e["return"] && (this["return"] = void 0);
 }
-var TransformResultError;
+var TransformResultError, trackedSymbol;
 var init_asyncGeneratorDelegate_JWx0LJUD = __esm({
   "packages/mcp/node_modules/@trpc/server/dist/asyncGeneratorDelegate-JWx0LJUD.mjs"() {
     init_codes_nbrm_zWY();
@@ -7975,6 +7969,7 @@ var init_asyncGeneratorDelegate_JWx0LJUD = __esm({
     }, AsyncGenerator.prototype["return"] = function(e) {
       return this._invoke("return", e);
     };
+    trackedSymbol = Symbol();
   }
 });
 
@@ -8740,7 +8735,7 @@ var init_dist = __esm({
         });
       }
     };
-    untypedClientSymbol = /* @__PURE__ */ Symbol.for("trpc_untypedClient");
+    untypedClientSymbol = Symbol.for("trpc_untypedClient");
     clientCallTypeMap = {
       query: "query",
       mutate: "mutation",
@@ -9937,6 +9932,7 @@ function $constructor(name, initializer3, params) {
   Object.defineProperty(_, "name", { value: name });
   return _;
 }
+var $brand = Symbol("zod_brand");
 var $ZodAsyncError = class extends Error {
   constructor() {
     super(`Encountered Promise during synchronous parse. Use .parseAsync() instead.`);
@@ -12440,6 +12436,8 @@ function en_default() {
 }
 
 // packages/mcp/node_modules/zod/v4/core/registries.js
+var $output = Symbol("ZodOutput");
+var $input = Symbol("ZodInput");
 var $ZodRegistry = class {
   constructor() {
     this._map = /* @__PURE__ */ new Map();
@@ -13364,7 +13362,6 @@ var JSONSchemaGenerator = class {
             _json.readOnly = true;
             break;
           }
-          // passthrough types
           case "promise": {
             this.process(def.innerType, params);
             result.ref = def.innerType;
@@ -13657,7 +13654,6 @@ function isTransforming(_schema, _ctx) {
     case "set": {
       return isTransforming(def.valueType, ctx);
     }
-    // inner types
     case "promise":
     case "optional":
     case "nonoptional":
@@ -13793,10 +13789,10 @@ var ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
   };
   inst.clone = (def2, params) => clone(inst, def2, params);
   inst.brand = () => inst;
-  inst.register = ((reg, meta) => {
+  inst.register = (reg, meta) => {
     reg.add(inst, meta);
     return inst;
-  });
+  };
   inst.parse = (data, params) => parse2(inst, data, params, { callee: inst.parse });
   inst.safeParse = (data, params) => safeParse2(inst, data, params);
   inst.parseAsync = async (data, params) => parseAsync2(inst, data, params, { callee: inst.parseAsync });
@@ -15768,13 +15764,11 @@ function assertCompleteRequestPrompt(request) {
   if (request.params.ref.type !== "ref/prompt") {
     throw new TypeError(`Expected CompleteRequestPrompt, but got ${request.params.ref.type}`);
   }
-  void request;
 }
 function assertCompleteRequestResourceTemplate(request) {
   if (request.params.ref.type !== "ref/resource") {
     throw new TypeError(`Expected CompleteRequestResourceTemplate, but got ${request.params.ref.type}`);
   }
-  void request;
 }
 var CompleteResultSchema = ResultSchema.extend({
   completion: looseObject({
@@ -20492,7 +20486,7 @@ ZodNaN.create = (params) => {
     ...processCreateParams(params)
   });
 };
-var BRAND = /* @__PURE__ */ Symbol("zod_brand");
+var BRAND = Symbol("zod_brand");
 var ZodBranded = class extends ZodType2 {
   _parse(input) {
     const { ctx } = this._processInputParams(input);
@@ -20694,14 +20688,14 @@ var ostring = () => stringType().optional();
 var onumber = () => numberType().optional();
 var oboolean = () => booleanType().optional();
 var coerce = {
-  string: ((arg) => ZodString2.create({ ...arg, coerce: true })),
-  number: ((arg) => ZodNumber2.create({ ...arg, coerce: true })),
-  boolean: ((arg) => ZodBoolean2.create({
+  string: (arg) => ZodString2.create({ ...arg, coerce: true }),
+  number: (arg) => ZodNumber2.create({ ...arg, coerce: true }),
+  boolean: (arg) => ZodBoolean2.create({
     ...arg,
     coerce: true
-  })),
-  bigint: ((arg) => ZodBigInt.create({ ...arg, coerce: true })),
-  date: ((arg) => ZodDate.create({ ...arg, coerce: true }))
+  }),
+  bigint: (arg) => ZodBigInt.create({ ...arg, coerce: true }),
+  date: (arg) => ZodDate.create({ ...arg, coerce: true })
 };
 var NEVER2 = INVALID;
 
@@ -20844,10 +20838,10 @@ var ZodMiniType = /* @__PURE__ */ $constructor("ZodMiniType", (inst, def) => {
   };
   inst.clone = (_def, params) => clone(inst, _def, params);
   inst.brand = () => inst;
-  inst.register = ((reg, meta) => {
+  inst.register = (reg, meta) => {
     reg.add(inst, meta);
     return inst;
-  });
+  };
 });
 var ZodMiniObject = /* @__PURE__ */ $constructor("ZodMiniObject", (inst, def) => {
   $ZodObject.init(inst, def);
@@ -21032,7 +21026,7 @@ function isTerminal(status) {
 }
 
 // packages/mcp/node_modules/zod-to-json-schema/dist/esm/Options.js
-var ignoreOverride = /* @__PURE__ */ Symbol("Let zodToJsonSchema decide on which parser to use");
+var ignoreOverride = Symbol("Let zodToJsonSchema decide on which parser to use");
 var defaultOptions = {
   name: void 0,
   $refStrategy: "root",
@@ -24022,7 +24016,7 @@ var Server = class extends Protocol {
 };
 
 // packages/mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/server/completable.js
-var COMPLETABLE_SYMBOL = /* @__PURE__ */ Symbol.for("mcp.completable");
+var COMPLETABLE_SYMBOL = Symbol.for("mcp.completable");
 function isCompletable(schema) {
   return !!schema && typeof schema === "object" && COMPLETABLE_SYMBOL in schema;
 }

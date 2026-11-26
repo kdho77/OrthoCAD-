@@ -196,6 +196,7 @@
                 "vertex/src/lib/geometry/procedural-wall/bottom-pattern.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/faired-pattern.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/manufacturing-foot-guard.test.ts",
+                "vertex/src/lib/geometry/text-marking/plantar-name-sweep.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/pattern-hygiene.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/print-export-cache-parity.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/reconstruct-sliver.test.ts",
