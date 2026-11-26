@@ -529,12 +529,14 @@ export function fairMovedPattern(input: {
     bounds?: { minX: number; maxX: number };
     medialYSign?: 1 | -1;
     /** `width` tracks the scaled silhouette more tightly so pairing stays. */
-    mode?: "heel" | "width";
+    mode?: "heel" | "width" | "shoe";
 }): PolyPoint[] {
     const rim = startAtLowCurvature(ensureCcw(input.rim.map((p) => ({ ...p, z: 0 }))));
     const moved = startAtLowCurvature(ensureCcw(input.pattern.map((p) => ({ ...p, z: 0 }))));
     if (moved.length < 3 || rim.length < 3) return moved;
-    const floorInset = minInsetForLeanMm(input.r1, input.r2, 0);
+    // A shallow refit of the tapered scale still crosses wall triangles.
+    // Eight millimetres of extra inset clears the skew cap and the heel bridge.
+    const floorInset = minInsetForLeanMm(input.r1, input.r2, 0) + (input.mode === "shoe" ? 8 : 0);
     const sign = input.medialYSign ?? 1;
     const yMid = moved.reduce((s, p) => s + p.y, 0) / moved.length;
     const length = input.bounds ? Math.max(1e-3, input.bounds.maxX - input.bounds.minX) : 1;
@@ -550,7 +552,7 @@ export function fairMovedPattern(input: {
         if ((p.y - yMid) * sign > 0 && u >= PATTERN_ARCH_U0 && u <= PATTERN_ARCH_U1) arch.push(p);
     }
     const sOf = (p: PolyPoint) => nearestClosedArc01(moved, p);
-    const widthMode = input.mode === "width";
+    const widthMode = input.mode === "width" || input.mode === "shoe";
     const targets = widthMode
         ? [
               ...resamplePolyline(moved, 64).map((p) => ({ point: p, weight: 1.6, s01: sOf(p) })),

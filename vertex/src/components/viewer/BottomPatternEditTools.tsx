@@ -6,7 +6,6 @@ import * as THREE from "three";
 import { sideOffsetX } from "@/lib/geometry/layout";
 import { shiftClosedLoopForefoot } from "@/lib/geometry/procedural-wall/modifiers";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
-import { applyShoeWidthToPoints, shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { endPatternOnTrim } from "@/lib/geometry/trim-presets";
 import {
     deformTrimlineSection,
@@ -89,8 +88,6 @@ function BottomPatternOverlay({
     const layout = insoleLayoutFromDesign(design);
     const centerX = layout.lengthMm / 2;
     const offsetY = sideOffsetX(side, layout.widthMm);
-    const widthId = shoeWidthForSide(design, side);
-    const heelW = design.corrections[side].heelCupWidthMm ?? 0;
     const forePreview = usePerformanceStore((s) => s.correctionPreview[side]?.forefootWidthMm);
     const forefootMm = isEditing ? 0 : (forePreview ?? design.corrections[side].forefootWidthMm ?? 0);
     const setDraft = useMeshEditStore((s) => s.setBottomPatternDraft);
@@ -109,23 +106,12 @@ function BottomPatternOverlay({
     const rafRef = useRef<number | null>(null);
 
     const pickRadius = isEditing ? TRIMLINE_PICK_RADIUS_EDIT : TRIMLINE_PICK_RADIUS_IDLE;
+    // The stored pattern is already in the top mesh's width frame. A second
+    // affine here wings the forefoot (heel scale stays near 1, ball scale compounds).
     const displayPoints = useMemo(() => {
-        let minX = Infinity;
-        let maxX = -Infinity;
-        for (const p of curve.points) {
-            minX = Math.min(minX, p.x);
-            maxX = Math.max(maxX, p.x);
-        }
-        const sized = applyShoeWidthToPoints(curve.points, widthId, {
-            ballWidthMm: layout.widthMm,
-            heelWidthMm: layout.widthMm * 0.62,
-            minX,
-            lengthMm: Math.max(1e-3, maxX - minX),
-            heelOverrideMm: heelW,
-        });
-        const shifted = shiftClosedLoopForefoot(sized, forefootMm);
+        const shifted = shiftClosedLoopForefoot(curve.points, forefootMm);
         return shifted.map((p) => new THREE.Vector3(p.x, p.y, (p.z ?? 0) + 0.8));
-    }, [curve.points, widthId, layout.widthMm, heelW, forefootMm]);
+    }, [curve.points, forefootMm]);
     const outlineColor = isEditing ? (isDragging ? "#ef4444" : "#22d3ee") : "#0EA5E9";
     const fillShape = useMemo(() => {
         if (displayPoints.length < 3) return null;
