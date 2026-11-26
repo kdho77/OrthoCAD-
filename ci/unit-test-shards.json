@@ -202,6 +202,7 @@
                 "vertex/src/lib/geometry/text-marking/bottom-engrave.test.ts",
                 "vertex/src/lib/geometry/text-marking/text-marking.test.ts",
                 "vertex/src/lib/geometry/wedge-topcount-diag.test.ts",
+                "vertex/src/lib/hardness/split-overlay.insole-tint.test.ts",
                 "vertex/src/lib/trpc-errors.test.ts",
                 "vertex/src/stores/client-store.persist.test.ts",
                 "vertex/src/stores/design-store.stock-loading.test.ts"
@@ -309,6 +310,7 @@
                 "vertex/src/components/layout/SessionRecoveryDialog.test.tsx",
                 "vertex/src/components/viewer/AfoScanLandmarkLighting.test.ts",
                 "vertex/src/components/viewer/element-markers-no-coin.test.ts",
+                "vertex/src/components/viewer/viewer-tab-defaults.test.ts",
                 "vertex/src/features/afo/afo-frame-side.test.ts",
                 "vertex/src/features/clients/ClientFilePage.deeplink.test.tsx",
                 "vertex/src/features/clients/client-list-nav.test.ts",
@@ -377,6 +379,7 @@
                 "vertex/shared/print-recipe/print-recipe.test.ts",
                 "vertex/src/components/layout/TopNav.test.tsx",
                 "vertex/src/components/viewer/AfoScanMarkers.test.ts",
+                "vertex/src/components/viewer/InsoleContourLighting.test.ts",
                 "vertex/src/features/admin/admin-client.test.ts",
                 "vertex/src/features/afo/afo-scan-ui.test.ts",
                 "vertex/src/features/clients/DesignNotesField.test.tsx",
