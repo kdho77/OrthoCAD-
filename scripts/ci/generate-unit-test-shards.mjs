@@ -27,6 +27,7 @@ const PINNED_HEAVY = {
     "vertex/server/src/lib/finalized-mesh-runner.test.ts": 4,
     // Saved-design length presets loft Met-head and Sulcus against the UI export.
     "vertex/src/features/exports/saved-design-length-preset.test.ts": 5,
+    "vertex/tests/pr485-orthotic-length.grader.test.ts": 6,
     // Pair STL byte identity is two full Export builds per foot.
     "vertex/server/src/lib/pair-loft-byte-identity.test.ts": 1,
     "tests/arch-wall-falloff.test.ts": 4,
