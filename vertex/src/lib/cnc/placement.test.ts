@@ -284,9 +284,56 @@ describe("CNC envelope placement fallback", () => {
         expect(placedRight.ty).toBe(legacyRight.ty);
     });
 
-    test("a part that cannot fit by 8° still throws the default placement error", () => {
+    test("a single foot wider than the pocket but inside the table is placed on the block", () => {
         const profile = cloneProfile(IDAHO_PROFILE);
-        const wp = workpiece("left", blockOutline(PEAVY_LENGTH_MM, 120));
+        const wp = workpiece("right", blockOutline(PEAVY_LENGTH_MM, 120));
+        const legacy = outlineCentered(profile, wp, 0);
+        const legacyFit = evaluatePlacedPart(legacy, profile);
+        expect(legacyFit.ok).toBe(false);
+        expect(legacyFit.reason).toMatch(/Tool envelope does not fit pocket 1/);
+
+        const placed = placeWorkpieces(profile, [wp]);
+        expect(placed).toHaveLength(1);
+        const part = placed[0];
+        if (!part) throw new Error("expected part");
+        expect(part.side).toBe("right");
+        expect(part.rotationDeg).toBe(0);
+        expect(part.pocketIndex).toBe(0);
+        const bb = bboxOf(worldFootprint(part, profile));
+        expect(bb.minX).toBeGreaterThanOrEqual(1 - 1e-4);
+        expect(bb.maxX).toBeLessThanOrEqual(profile.tableWidthMm - 1 + 1e-4);
+        expect(bb.minY).toBeGreaterThanOrEqual(1 - 1e-4);
+        expect(bb.maxY).toBeLessThanOrEqual(profile.tableLengthMm - 1 + 1e-4);
+        const pocket = profile.pockets[0];
+        if (!pocket) throw new Error("expected a pocket");
+        expect(bb.maxY - bb.minY).toBeGreaterThan(pocket.length - 2);
+
+        const radius = profile.toolpathCutter.diameterMm / 2;
+        let x = 0;
+        let y = 0;
+        let toolClear = Infinity;
+        const job = generateCncJob(profile, [wp]);
+        for (const line of job.gcode.split("\n")) {
+            if (!line.startsWith("G1")) continue;
+            const xm = line.match(/X(-?\d+(?:\.\d+)?)/);
+            const ym = line.match(/Y(-?\d+(?:\.\d+)?)/);
+            if (!xm && !ym) continue;
+            if (xm) x = Number(xm[1]);
+            if (ym) y = Number(ym[1]);
+            toolClear = Math.min(
+                toolClear,
+                x - radius,
+                y - radius,
+                profile.tableWidthMm - (x + radius),
+                profile.tableLengthMm - (y + radius),
+            );
+        }
+        expect(toolClear).toBeGreaterThanOrEqual(1 - 1e-4);
+    });
+
+    test("a single foot that does not fit the table still throws the pocket guard", () => {
+        const profile = cloneProfile(IDAHO_PROFILE);
+        const wp = workpiece("left", blockOutline(PEAVY_LENGTH_MM, 250));
         const legacy = outlineCentered(profile, wp, 0);
         const legacyFit = evaluatePlacedPart(legacy, profile);
         expect(legacyFit.ok).toBe(false);
