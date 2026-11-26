@@ -400,6 +400,7 @@
                 "vertex/src/lib/geometry/heel-cup-depth.verify.test.ts",
                 "vertex/src/lib/geometry/kabsch.test.ts",
                 "vertex/src/lib/geometry/measure/measure.test.ts",
+                "vertex/src/lib/geometry/grader-pr-470-independent.test.ts",
                 "vertex/src/lib/geometry/mortons-preview-export.test.ts",
                 "vertex/src/lib/geometry/mortons-shape-gates.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/densify-stations.test.ts",
