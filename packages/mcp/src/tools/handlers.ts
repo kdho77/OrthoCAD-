@@ -4,7 +4,11 @@ import type { ManufacturingClient } from "../clients/manufacturing-client.js";
 import type { OrthocadMcpConfig } from "../config.js";
 import { requireCadOperatorKey } from "../config.js";
 import { buildDesignExportedPayload } from "../payload/design-exported-payload.js";
-import { buildVoAttachFilesHandoff, DOGFOOD_HELD_ID_PREFIXES } from "../payload/vo-attach-files.js";
+import {
+    buildVoAttachFilesHandoff,
+    DOGFOOD_HELD_ID_PREFIXES,
+    releaseGcodeAfterVoAttachConfirmed,
+} from "../payload/vo-attach-files.js";
 import {
     buildExportFilename,
     canonicalExportMaterialName,
@@ -41,6 +45,8 @@ export interface OrthocadToolDeps {
     config: OrthocadMcpConfig;
     integration?: IntegrationClient;
     manufacturing?: ManufacturingClient;
+    /** Test double. Production uses manufacturing.releaseGcodeAfterVoAttach. */
+    releaseGcodeAfterVoAttach?: (storageKey: string) => Promise<void>;
 }
 
 interface SavedDesignGcodeFile {
@@ -749,7 +755,22 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
         }
         case "prepare_vo_attachment": {
             const input = prepareVoAttachmentInputSchema.parse(args);
-            return buildVoAttachFilesHandoff(input);
+            const preparation = buildVoAttachFilesHandoff(input);
+            if (input.attach_confirmed === true) {
+                const release =
+                    deps.releaseGcodeAfterVoAttach ??
+                    (async (storageKey: string) => {
+                        const manufacturing =
+                            deps.manufacturing ??
+                            (await import("../clients/manufacturing-client.js")).createManufacturingClient({
+                                trpcUrl: deps.config.trpcUrl,
+                                cadOperatorKey: requireCadOperatorKey(deps.config),
+                            });
+                        await manufacturing.releaseGcodeAfterVoAttach(storageKey);
+                    });
+                await releaseGcodeAfterVoAttachConfirmed(preparation, release);
+            }
+            return preparation;
         }
         default:
             throw new Error(`Unknown tool: ${name}`);

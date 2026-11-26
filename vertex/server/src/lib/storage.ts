@@ -6,8 +6,14 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const MAIN_BUCKET = process.env.STORAGE_BUCKET ?? "vertex-assets";
 
-/** Private bucket for manufacturing STL uploads, archives, and G-code output. */
+/** Private bucket for short-lived manufacturing STL uploads and G-code output. */
 export const MANUFACTURING_BUCKET = process.env.MANUFACTURING_BUCKET ?? "vertex-manufacturing";
+
+/**
+ * UI and CAD downloads. The object stays in the bucket until the 24h sweep.
+ * Do not raise this above one hour.
+ */
+export const MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC = 60 * 60;
 
 export interface SignedUpload {
     key: string;
@@ -26,11 +32,17 @@ if (process.env.MANUFACTURING_BUCKET === undefined) {
  */
 export const STOCK_BUCKET = process.env.STOCK_STORAGE_BUCKET ?? MAIN_BUCKET;
 
-/** Ephemeral manufacturing STL uploads (TTL-cleaned). Written via signed URL or `uploadManufacturingStl`. */
+/** Ephemeral manufacturing STL uploads. Deleted after slice, or by the 24h sweep. */
 export const MANUFACTURING_TEMP_PREFIX = "manufacturing-temp/";
 
-/** Permanent submitted-geometry archive for successful manufacturing jobs. */
+/**
+ * Legacy submitted-geometry prefix. New jobs do not write it.
+ * `exports.sourceStlPath` stays nullable and is not written.
+ */
 export const MANUFACTURING_ARCHIVE_PREFIX = "manufacturing-archive/";
+
+/** Short-lived G-code. Cad-operator objects are removed after VO attach; the 24h sweep covers the rest. */
+export const GCODE_STORAGE_PREFIX = "gcode/";
 
 export interface StorageUploadResult {
     key: string;
@@ -143,7 +155,7 @@ export function buildManufacturingTempStlKey(userId: string, stamp = Date.now(),
     return `${MANUFACTURING_TEMP_PREFIX}${userId}/${stamp}-${id}.stl`;
 }
 
-/** Permanent archive path for a successful manufacturing export. */
+/** Legacy archive path. Inventory only — successful jobs no longer copy an STL here. */
 export function buildManufacturingArchiveStlKey(userId: string, exportId: string): string {
     return `${MANUFACTURING_ARCHIVE_PREFIX}${userId}/${exportId}.stl`;
 }

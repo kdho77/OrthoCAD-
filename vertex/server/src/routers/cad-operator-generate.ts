@@ -57,10 +57,7 @@ import {
     resolveProductionTextMarking,
 } from "../lib/integration-text-marking.js";
 import { manufacturingStlRunIdentity } from "../lib/manufacturing-stl-identity.js";
-import {
-    archiveManufacturingSourceStl,
-    deleteManufacturingTempBestEffort,
-} from "../lib/manufacturing-stl-lifecycle.js";
+import { discardManufacturingTempStl } from "../lib/manufacturing-stl-lifecycle.js";
 import { deleteAsset, MANUFACTURING_BUCKET, uploadAsset } from "../lib/storage.js";
 import { assertActiveLicense, getUserTokenBalance, requireSupabaseAdmin } from "../lib/supabase-db.js";
 import { getVertexSliceBuild, UNKNOWN_SLICER_BUILD } from "../lib/vertexslice-build.js";
@@ -309,7 +306,7 @@ async function continueInFlightSlice(args: {
             }
         },
         deleteTemp: async (stlStorageKey) => {
-            deleteManufacturingTempBestEffort(getSupabaseAdmin(), stlStorageKey);
+            await discardManufacturingTempStl(getSupabaseAdmin(), stlStorageKey);
         },
     });
 }
@@ -520,17 +517,8 @@ export async function runCadOperatorGenerateRequest(args: {
                         mapChargeFailure(error);
                     }
                 },
-                archiveTemp: async ({ stlStorageKey, exportId }) => {
-                    const supabase = getSupabaseAdmin();
-                    if (!supabase) return;
-                    await archiveManufacturingSourceStl(supabase, {
-                        userId: plan.ownerId,
-                        exportId,
-                        tempStlKey: stlStorageKey,
-                    });
-                },
                 deleteTemp: async (stlStorageKey) => {
-                    deleteManufacturingTempBestEffort(getSupabaseAdmin(), stlStorageKey);
+                    await discardManufacturingTempStl(getSupabaseAdmin(), stlStorageKey);
                 },
             });
         },
@@ -697,7 +685,7 @@ export async function runCadOperatorCentralFabStlRequest(args: {
                         );
                         return;
                     }
-                    deleteManufacturingTempBestEffort(supabase, stlStorageKey);
+                    await discardManufacturingTempStl(supabase, stlStorageKey);
                 },
             }),
     });

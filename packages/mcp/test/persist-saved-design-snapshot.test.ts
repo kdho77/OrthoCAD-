@@ -216,6 +216,37 @@ describe("persist_saved_design_snapshot tool", () => {
         expect(payload.questions?.[0]?.field).toBe("shoe_size");
     });
 
+    test("explicit flange 0 is kept on create and persist catalogs", () => {
+        const catalog = {
+            flange: {
+                left: { medial_mm: 3, lateral_mm: 0 },
+                right: { medial_mm: 0, lateral_mm: 4 },
+            },
+        };
+        const persisted = persistSavedDesignSnapshotInputSchema.safeParse({
+            design_id: designId,
+            catalog,
+        });
+        expect(persisted.success).toBe(true);
+        if (!persisted.success) return;
+        expect(persisted.data.catalog?.flange?.left?.lateral_mm).toBe(0);
+        expect(persisted.data.catalog?.flange?.right?.medial_mm).toBe(0);
+        const created = createSavedDesignInputSchema.safeParse({
+            external_order_id: "order-1",
+            catalog,
+        });
+        expect(created.success).toBe(true);
+        if (!created.success) return;
+        expect(created.data.catalog?.flange?.left?.lateral_mm).toBe(0);
+        expect(created.data.catalog?.flange?.right?.medial_mm).toBe(0);
+        const built = buildSavedDesignSnapshot({
+            stored: { system: "US_M", size: 9, left: null, right: null, width: null },
+            catalog: parseSavedDesignCatalog(created.data.catalog),
+        });
+        expect(built.design.corrections.left).toMatchObject({ medialFlangeMm: 3, lateralFlangeMm: 0 });
+        expect(built.design.corrections.right).toMatchObject({ medialFlangeMm: 0, lateralFlangeMm: 4 });
+    });
+
     test("catalog accepts a bilateral 1st met head sink and rejects an unknown sink field", () => {
         const catalog = {
             shoe_size: { system: "US_M" as const, size: 9 },
