@@ -616,9 +616,7 @@ function unslidBlockPose(
     const footprint = toolFootprintLocal(outline, profile);
     const envBb = rotatedLocalBbox(footprint.length >= 3 ? footprint : outline, c.x, c.y, rotationDeg);
     const ty =
-        edge === "front"
-            ? edgeClearance - envBb.minY
-            : profile.tableLengthMm - edgeClearance - envBb.maxY;
+        edge === "front" ? edgeClearance - envBb.minY : profile.tableLengthMm - edgeClearance - envBb.maxY;
     return { tx: auto.tx, ty, cx: c.x, cy: c.y };
 }
 
@@ -767,13 +765,27 @@ function canUseWholeBlock(
     overrides: PartPlacement[],
 ): boolean {
     if (!profile.insolesHorizontal) return false;
-    if (parts.length !== 2) return false;
+    if (parts.length !== 1 && parts.length !== 2) return false;
     return !overrides.some((override) => userLockedPlacement(override));
 }
 
 /**
- * Half-pocket placement first. A pair that already fits is returned unchanged.
- * Pocket overflow or envelope overlap falls back to the whole block.
+ * One foot on the front edge of the block, heel at X0, no toe slide.
+ * The same inset as a pair's unslid pose. Returns null when that pose leaves
+ * the table, so the caller keeps the pocket guard's refusal.
+ */
+function placeSingleOnWholeBlock(profile: MillingProfile, wp: CncWorkpiece): PlacedPart[] | null {
+    const rotationDeg = defaultRotationDeg(profile);
+    const pose = unslidBlockPose(profile, wp.outline, "front", rotationDeg);
+    const placed = makePlaced(wp, 0, rotationDeg, pose);
+    if (!envelopeInsideBlock(placed, profile)) return null;
+    return [placed];
+}
+
+/**
+ * Half-pocket placement first. A pair or a single foot that already fits is
+ * returned unchanged. Pocket overflow or envelope overlap falls back to the
+ * whole block. One foot uses the front edge and does not slide.
  */
 export function placeWorkpieces(
     profile: MillingProfile,
@@ -787,6 +799,13 @@ export function placeWorkpieces(
     } catch (error) {
         if (!(error instanceof CncExportError) || error.code !== "no_fit") throw error;
         if (!canUseWholeBlock(profile, parts, overrides)) throw error;
+        if (parts.length === 1) {
+            const wp = parts[0];
+            if (!wp || profile.pockets.length === 0) throw error;
+            const single = placeSingleOnWholeBlock(profile, wp);
+            if (!single) throw error;
+            return single;
+        }
         return placePairOnWholeBlock(profile, parts);
     }
 }

@@ -8,7 +8,7 @@ import type { Side, TrimPresetId } from "@/types";
 export const TRIM_PRESET_LABELS: Record<TrimPresetId, string> = {
     full: "Full",
     sulcus: "Sulcus",
-    met_head: "Met-head",
+    met_head: "3/4",
 };
 
 /**

@@ -17,6 +17,21 @@ export const getDesignParamsInputSchema = z.object({
     design_id: z.string().uuid(),
 });
 
+/** No arguments. The catalog is the Corrections panel library. */
+export const listMacrosInputSchema = z.object({}).strict();
+
+/**
+ * Names only. customer_macro is merged first, then pathology_macro.
+ * Omit both and the saved design is not written. A payload is not accepted.
+ */
+export const applyMacroInputSchema = z
+    .object({
+        design_id: z.string().uuid(),
+        customer_macro: z.string().trim().min(1).max(120).optional(),
+        pathology_macro: z.string().trim().min(1).max(120).optional(),
+    })
+    .strict();
+
 export const prepareManufacturingStlUploadInputSchema = z.object({
     side: sideSchema,
     file_name: z.string().max(200).optional(),
@@ -213,6 +228,32 @@ const wedgeSchema = z
     })
     .strict();
 
+/** Same aliases as vertex/shared/saved-design-catalog.ts catalogLengthPreset. */
+function mcpCatalogLengthPreset(value: string): "full" | "met_head" | "sulcus" | null {
+    const key = value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+    if (key === "full") return "full";
+    if (key === "sulcus") return "sulcus";
+    if (
+        key === "3/4" ||
+        key === "3/4 length" ||
+        key === "met head" ||
+        key === "methead" ||
+        key === "three quarter" ||
+        key === "threequarter"
+    ) {
+        return "met_head";
+    }
+    return null;
+}
+
+const catalogLengthSchema = z.preprocess(
+    (value) => {
+        if (typeof value !== "string") return value;
+        return mcpCatalogLengthPreset(value) ?? value;
+    },
+    z.enum(["full", "met_head", "sulcus"]),
+);
+
 const wedgeFootSchema = z.enum(["left", "right", "both"]).describe(WEDGE_FOOT_FIELD);
 
 const rearfootWedgeSchema = z
@@ -307,6 +348,11 @@ export const savedDesignCatalogSchema = z
          * Omitted keeps the 2 mm default. Out of range is rejected.
          */
         thickness_mm: z.number().finite().min(1.5).max(8).optional(),
+        /**
+         * Full, 3/4, or Sulcus. 3/4 is the Met-head trim preset. Sulcus is the Sulcus preset.
+         * Full and omitted leave the outline uncut.
+         */
+        length: catalogLengthSchema.optional(),
         flange: z
             .object({
                 left: flangeSideSchema.optional(),
@@ -341,6 +387,11 @@ export const createSavedDesignInputSchema = z
         given_name: z.string().trim().min(1).max(100).optional(),
         /** Chart label for a new client after the server verifier. Not sent to VertexOrders. */
         family_name: z.string().trim().min(1).max(100).optional(),
+        /**
+         * Explicit per-design opt-in. Omitted and false keep SAMPLE_Top and do not
+         * read scans. True builds arch height from the order client's stored scans.
+         */
+        use_order_scans: z.boolean().optional(),
     })
     .strict();
 
@@ -369,6 +420,12 @@ export const prepareVoAttachmentInputSchema = z
         base_asset_id: z.string().trim().min(1).max(80).optional(),
         patient_name: z.string().max(200).optional(),
         material: z.string().max(80).optional(),
+        /**
+         * Set after VertexOrders has accepted the files. Releases cad-operator
+         * G-code keys and does not fetch them again. Omitted leaves objects for
+         * the 24h sweep. Not copied into vo_attach_files.
+         */
+        attach_confirmed: z.boolean().optional(),
         files: z.array(attachFileSchema).min(1).max(2),
     })
     .strict();
@@ -381,6 +438,11 @@ export const persistSavedDesignSnapshotInputSchema = z
         /** Accepted and dropped. Clinical values are not read from free text. */
         rx_text: z.string().max(8000).optional(),
         notes: z.string().max(8000).optional(),
+        /**
+         * Explicit per-design opt-in. Omitted and false keep SAMPLE_Top and do not
+         * read scans. True builds arch height from the design client's stored scans.
+         */
+        use_order_scans: z.boolean().optional(),
     })
     .strict();
 
@@ -403,6 +465,28 @@ export const MCP_TOOL_DEFINITIONS = [
         description:
             "Design document / settingsJson for production via documented manufacturing tRPC wrap. Auth: CAD-operator key only.",
         inputSchema: getDesignParamsInputSchema,
+    },
+    {
+        name: "list_macros",
+        description:
+            "Customer and pathology correction macros the Corrections panel Merge button applies. " +
+            "Customer macros are clinic starting points. Pathology macros are the Vertex starters " +
+            "(Planus is also accepted as pes planus). Returns id, name, kind, description, and aliases. " +
+            "Does not return millimetre payloads and does not write a design. " +
+            "A name that is not in this list is not a macro. Auth: CAD-operator key, design:read.",
+        inputSchema: listMacrosInputSchema,
+    },
+    {
+        name: "apply_macro",
+        description:
+            "Merge saved correction macros onto one design the way the Corrections panel Merge button does. " +
+            "customer_macro is applied first, then pathology_macro. Both names are optional. " +
+            "Omit both and the saved design is not written. " +
+            "Unknown names are refused and are not guessed. Millimetre payloads are not accepted. " +
+            "Merge keeps correction keys the macro does not set. Suggested elements are not placed. " +
+            "Writes settingsJson on that design. The next generate_gcode lofts from the saved design. " +
+            "Auth: CAD-operator key, manufacturing:generate.",
+        inputSchema: applyMacroInputSchema,
     },
     {
         name: "prepare_manufacturing_stl_upload",
@@ -429,7 +513,8 @@ export const MCP_TOOL_DEFINITIONS = [
         description:
             "Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. " +
             "The server lofts and slices after that response. Poll get_production. Download with get_export_download only after succeeded. " +
-            "A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset. " +
+            "A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset, and runs a failed production again. " +
+            "A pair retries submit unavailable, fetch failed, and lease expiry; any other failure names that foot and does not return one foot. " +
             "Set force_new_slice to true (saved-design only) after a slicer fix or design change to enqueue a fresh slice " +
             "without reusing a succeeded production; in-flight work is still reused. " +
             "No STL deliverable and no G-code bytes. Omitting side enqueues both feet. " +
@@ -532,13 +617,24 @@ export const MCP_TOOL_DEFINITIONS = [
             "When set, settings store that clearance and uniform shell mode so the loft uses the shell-thickness slider. " +
             "When omitted, thickness stays 2 mm and the zonal shell is unchanged. " +
             "Out of range is 422 and is not clamped. " +
+            "length is Full, 3/4, or Sulcus. 3/4 stores the Met-head trim preset (medial landmark 66% from the heel). " +
+            "Sulcus stores the Sulcus preset (72% from the heel). Full and omitted leave the outline uncut. " +
+            "The choice is saved on settings.trimPreset for both feet. Unknown length text is 422. " +
             "Ignored and never mapped: rx_text, notes, rigidity, extra_soft. " +
             "sliders.arch_ease_mm is accepted and not applied (migrated to 0). " +
             "sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. " +
             "hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. " +
             "Absent width is Medium and recorded as defaulted, not prescribed. " +
             "422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, " +
-            "or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
+            "or a catalog field is unrecognized. Does not write File Ready, In Production, or STL. " +
+            "Omitted use_order_scans does not read scans and does not write scan geometry (scans_used stays false). " +
+            "use_order_scans true is the explicit per-design option: import the design client's stored left and right " +
+            "scans with the Scan step's cleanup, measure arch height the way Generate Orthotic does, and set that " +
+            "arch-height slider on each scanned foot. A side with no stored scan keeps its catalog correction. " +
+            "The mesh stays SAMPLE_Top. Left and right are not linked. " +
+            "catalog.arch, when present, replaces the scan class. Other catalog corrections, elements, and sinks stay. " +
+            "The newest stored file is used when one side has more than one. A missing scan or a failed measurement " +
+            "is 422 and does not write the template. Shoe size is not taken from the scan.",
         inputSchema: persistSavedDesignSnapshotInputSchema,
     },
     {
@@ -558,6 +654,8 @@ export const MCP_TOOL_DEFINITIONS = [
             "milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. " +
             "It is not inferred from material, hardness, or thickness. " +
             "Optional catalog.thickness_mm sets shell thickness in mm (1.5–8, default 2 when omitted). " +
+            "Optional catalog.length is Full, 3/4, or Sulcus. 3/4 is the Met-head preset and Sulcus is the Sulcus preset. " +
+            "Full and omitted do not cut the outline. The preset is stored for both feet. " +
             "Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. " +
             "depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). " +
             "Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. " +
@@ -567,7 +665,15 @@ export const MCP_TOOL_DEFINITIONS = [
             "or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. " +
             "elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. " +
             "Medium width is used only when width is absent and is recorded as defaulted, not prescribed. " +
-            "Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
+            "Missing shoe size or an unknown hardness returns a question for the user and does not guess. " +
+            "Omitted use_order_scans keeps that template and does not read scans (scans_used stays false). " +
+            "use_order_scans true is the explicit per-design option: import the order client's stored scans with the " +
+            "Scan step's cleanup and set each scanned foot's arch-height slider the way Generate Orthotic does. " +
+            "A side with no stored scan keeps its catalog correction. " +
+            "The mesh stays SAMPLE_Top. Left and right are not linked, so a left foot can differ from the right. " +
+            "catalog.arch, when present, replaces the scan class. Other catalog corrections, elements, and sinks stay. " +
+            "The newest stored file is used when one side has more than one. A missing scan or a failed measurement " +
+            "is 422 and does not substitute the template. Shoe size is not taken from the scan.",
         inputSchema: createSavedDesignInputSchema,
     },
     {

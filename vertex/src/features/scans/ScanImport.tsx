@@ -18,7 +18,7 @@ import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
 import { markerPlaceControl } from "@/features/afo/afo-scan-markers";
 import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
 import { ArchFitError } from "@/lib/geometry/fit-arch-from-scan";
-import { importScanFile } from "@/lib/geometry/import";
+import { importFootScanFile } from "@/lib/geometry/import-foot-scan";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import {
     ARCH_MATCH_BLOCK_RMS_MM,
@@ -30,18 +30,7 @@ import {
     suggestSizeFromScanGeometry,
 } from "@/lib/geometry/match-design-from-scan";
 import type { SizeSuggestion } from "@/lib/geometry/measure-foot-from-scan";
-import {
-    extractKeptGeometry,
-    rankComponents,
-    selectedComponentsBBox,
-    weldAndLabelComponents,
-} from "@/lib/geometry/scan-components";
-import {
-    buildScanDisplayInfo,
-    buildScanDisplayInfoFromBBox,
-    isNonZeroScanOffset,
-    resolveScanMeshMatrix,
-} from "@/lib/geometry/scan-display";
+import { isNonZeroScanOffset, resolveScanMeshMatrix } from "@/lib/geometry/scan-display";
 import { type SuggestedScanLandmarks, suggestScanLandmarks } from "@/lib/geometry/scan-landmark-suggest";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import { cn } from "@/lib/utils";
@@ -469,56 +458,31 @@ export function ScanImport() {
                 const file = fileList[fileIndex];
                 const side: Side =
                     importSideChoice === "pair" ? (fileIndex === 0 ? "left" : "right") : importSideChoice;
-                const { geometry: rawGeometry, format } = await importScanFile(file);
-
                 setCleanupBusy(true);
-                const labeling = weldAndLabelComponents(rawGeometry);
-                const ranked = rankComponents(labeling.components);
-                // Multi-component: preselect top-ranked foot only. Single: keep all.
-                const keptIds =
-                    ranked.length <= 1 ? ranked.map((c) => c.id) : ranked[0] ? [ranked[0].id] : [];
-                const keptGeo =
-                    keptIds.length > 0 ? extractKeptGeometry(rawGeometry, labeling, keptIds) : rawGeometry;
-                const prior = buildScanDisplayInfo(rawGeometry);
-                const bbox = selectedComponentsBBox(ranked, keptIds);
-                const display = bbox
-                    ? buildScanDisplayInfoFromBBox(bbox.min, bbox.max, {
-                          inferredUnit: prior.inferredUnit,
-                          dominantRawAxis: prior.dominantRawAxis,
-                          rawLongest: prior.rawLongest,
-                      })
-                    : prior;
-
-                const index = keptGeo.getIndex();
-                const triangleCount = index ? index.count / 3 : keptGeo.getAttribute("position").count / 3;
+                const imported = await importFootScanFile(file, side);
 
                 const id = crypto.randomUUID();
                 addScan({
                     id,
-                    name: file.name,
-                    side,
-                    format,
-                    triangleCount,
-                    geometry: keptGeo,
-                    rawGeometry,
-                    manifold: analyzeManifold(keptGeo),
-                    display,
-                    components: ranked,
-                    keptComponentIds: keptIds,
-                    triangleComponentOf: labeling.triangleComponentOf,
-                    labelingMeta: {
-                        degenerateTriangleCount: labeling.degenerateTriangleCount,
-                        weldTolerance: labeling.weldTolerance,
-                        elapsedMs: labeling.elapsedMs,
-                        originalTriangleCount: labeling.originalTriangleCount,
-                    },
+                    name: imported.name,
+                    side: imported.side,
+                    format: imported.format,
+                    triangleCount: imported.triangleCount,
+                    geometry: imported.geometry,
+                    rawGeometry: imported.rawGeometry,
+                    manifold: analyzeManifold(imported.geometry),
+                    display: imported.display,
+                    components: imported.components,
+                    keptComponentIds: imported.keptComponentIds,
+                    triangleComponentOf: imported.triangleComponentOf,
+                    labelingMeta: imported.labelingMeta,
                 });
 
                 // Suggestions never block import.
-                const sug = suggestScanLandmarks(keptGeo, side);
+                const sug = suggestScanLandmarks(imported.geometry, side);
                 if (sug) setSuggestedLandmarks(id, sug);
 
-                if (labeling.elapsedMs <= 250) setCleanupBusy(false);
+                if (imported.labelingMeta.elapsedMs <= 250) setCleanupBusy(false);
                 else {
                     // Keep busy treatment visible briefly when analysis was heavy.
                     window.setTimeout(() => setCleanupBusy(false), 0);

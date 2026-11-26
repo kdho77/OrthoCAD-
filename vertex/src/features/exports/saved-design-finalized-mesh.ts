@@ -1,8 +1,10 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 // Headless caller for the UI Export loft. The mesh is internal. G-code is the deliverable.
 
+import type { BufferGeometry } from "three";
 import { buildPrinterFootManufacturingStl } from "@/features/exports/export-service";
 import { buildVertexSliceModel } from "@/features/exports/vertexslice-regional-model";
+import { getDesignBase } from "@/lib/geometry/base-asset";
 import {
     type ElementAssetReader,
     injectElementAssetSource,
@@ -11,6 +13,7 @@ import { manufacturingFingerprintForActiveExport } from "@/lib/geometry/export-g
 import { binaryStlTriangleCount } from "@/lib/geometry/leader-block";
 import { assertProductionFootStl } from "@/lib/geometry/procedural-wall/manufacturing-foot-guard";
 import { resetManufacturingSolidCache } from "@/lib/geometry/procedural-wall/manufacturing-solid-cache";
+import { SAMPLE_TOP_ASSET_ID } from "@/lib/geometry/procedural-wall/sample-top-id";
 import {
     loadSampleTopGeometry,
     primeSampleTopGeometry,
@@ -18,9 +21,11 @@ import {
     sampleTopFromArrayBuffer,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { primeTextFont } from "@/lib/geometry/text-marking/font";
+import { mirrorGeometry } from "@/lib/library/loaders";
+import { useBaseOutlineStore } from "@/stores/base-outline-store";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
-import { useMeshEditStore } from "@/stores/mesh-edit-store";
+import { useMeshEditStore, widthAdjustedMeshOutline } from "@/stores/mesh-edit-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import type { DesignState, Side } from "@/types";
 import { readStoredDesignSettings } from "../../../shared/design-settings";
@@ -62,6 +67,27 @@ export function designStateFromSavedSettings(settingsJson: unknown): DesignState
     return design;
 }
 
+/**
+ * Publish the same SAMPLE_Top silhouette the Top view uses for #364 presets.
+ * Right is the mirrored base. Full does not need this curve.
+ */
+export function publishProceduralSampleTopOutlines(native: BufferGeometry, design: DesignState): void {
+    for (const side of ["left", "right"] as const) {
+        const base = getDesignBase(design, side);
+        if (!base) continue;
+        const mirrored = Boolean(base.mirrored);
+        const geometry = mirrored ? mirrorGeometry(native) : native.clone();
+        try {
+            const outline = widthAdjustedMeshOutline(geometry, design, side);
+            if (!outline) continue;
+            const tag = mirrored ? "m" : "p";
+            useBaseOutlineStore.getState().setOutline(`${SAMPLE_TOP_ASSET_ID}:${side}:${tag}`, outline);
+        } finally {
+            geometry.dispose();
+        }
+    }
+}
+
 function installSavedDesign(design: DesignState, printLoftEpoch: number): void {
     resetManufacturingSolidCache();
     useBottomPatternStore.getState().clear();
@@ -92,6 +118,7 @@ export async function buildFinalizedFootFromSavedDesign(input: {
     const native = await sampleTopFromArrayBuffer(input.sampleTopBytes);
     primeSampleTopGeometry(native);
     installSavedDesign(input.design, input.printLoftEpoch ?? 0);
+    publishProceduralSampleTopOutlines(native, input.design);
     const fingerprint = manufacturingFingerprintForActiveExport(input.side, true);
     if (input.fontBytes) primeTextFont(input.fontBytes);
     if (input.elementsBaseDir != null || input.elementAssetReader) {

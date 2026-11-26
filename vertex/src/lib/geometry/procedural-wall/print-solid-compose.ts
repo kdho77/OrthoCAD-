@@ -18,7 +18,12 @@ import {
     DEFAULT_SHELL_THICKNESS_MF_MM,
     DEFAULT_SHELL_THICKNESS_RF_MM,
 } from "@/lib/geometry/shell-thickness-zonal";
-import { applyShoeWidthToGeometry, type ShoeWidthId, shoeWidthAffineActive } from "@/lib/geometry/shoe-width";
+import {
+    applyShoeWidthToGeometry,
+    type ShoeWidthId,
+    shoeWidthAffineActive,
+    shoeWidthReferenceOfGeometry,
+} from "@/lib/geometry/shoe-width";
 import {
     applySinkCutToGeometry,
     applySinkThicknessToGeometry,
@@ -49,7 +54,9 @@ export interface ComposePrintSolidInput {
 /**
  * CAD-approved Print top: one composed mesh, then loft.
  *
- * 1. width affine (same as applyShoeWidthToPoints)
+ * 1. width affine — this mesh's own Medium chords, full at the forefoot and
+ *    tapering to the heel. A mirrored sheet measures the same chords and the
+ *    negated vertex-mean Y, so the right foot is the mirror of the left.
  * 2. applyBaseModifiers (wedge/posting/arch — elements stripped from F)
  * 3. applyElementsToTopMeshLast (GLB height-field flow / noFlow + procedural fallback)
  * 4. sink thickness T then cut S, height-only (no-op when the field has no sinks)
@@ -103,9 +110,17 @@ function composePrintSolidTopCore(
     let owned = false;
     const sw = input.shoeWidth;
     if (sw && shoeWidthAffineActive(sw.width, sw.heelOverrideMm)) {
+        // Chords and the Y pivot come from this mesh, not from the shoe-size
+        // layout width. Forefoot chord then changes by the full width-class
+        // delta. The vertex-mean pivot mirrors with the sheet, so a right
+        // foot scaled here is the mirror of the left. Heel override still
+        // replaces the width-class heel cap.
+        const ref = shoeWidthReferenceOfGeometry(raw);
         current = applyShoeWidthToGeometry(raw, sw.width, {
-            ballWidthMm: sw.ballWidthMm,
-            heelWidthMm: sw.heelWidthMm,
+            ballWidthMm: ref.ballWidthMm,
+            heelWidthMm: ref.heelWidthMm,
+            minX: ref.frame.minX,
+            lengthMm: ref.frame.lengthMm,
             heelOverrideMm: sw.heelOverrideMm,
         });
         owned = true;

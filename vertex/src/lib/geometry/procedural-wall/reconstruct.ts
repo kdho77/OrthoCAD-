@@ -78,6 +78,7 @@ import {
     scalePatternWidth,
     shiftPatternByRimFollow,
     smoothMovedStationOutline,
+    snapStationsInsidePreLoftCap,
 } from "./station-gates";
 import {
     applyStoredTB,
@@ -145,6 +146,12 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * before the loft. Native lofts leave posting triangulation alone.
      */
     repairUpwardBottom?: boolean;
+    /**
+     * `bottomPattern` already has the shoe-width taper. `true` refits it with
+     * the extra heel inset. `"rim"` tracks the composed silhouette without
+     * that inset.
+     */
+    widthPatternFair?: boolean | "rim";
 }
 
 function zeroCorrections(): SideCorrections {
@@ -1415,7 +1422,9 @@ export function reconstructProceduralWalls(
     const forefootFollowRim = foreW !== 0 && !forefootOnComposed;
     const wholeScale = options.insoleWidthScale ?? 1;
     const wholeWidth = Number.isFinite(wholeScale) && Math.abs(wholeScale - 1) > 1e-12;
-    const patternFairMode = wholeWidth ? "width" : "heel";
+    const widthFair = options.widthPatternFair === true || options.widthPatternFair === "rim";
+    const patternFairMode =
+        wholeWidth || options.widthPatternFair === "rim" ? "width" : widthFair ? "shoe" : "heel";
     const followFactor = wholeWidth
         ? 0
         : heelWiden || forefootFollowRim
@@ -1434,6 +1443,8 @@ export function reconstructProceduralWalls(
             const u = Math.max(0, Math.min(1, (p.x - minX) / length));
             return followFactor * widthCorrectionFollowEnvelope(u, heelW, followForeW);
         });
+        patternMoved = true;
+    } else if (widthFair) {
         patternMoved = true;
     }
     if (patternMoved && !(forefootOnComposed && !heelWiden)) {
@@ -1775,7 +1786,39 @@ export function reconstructProceduralWalls(
             stations[(i + 1) % n]!.n = { x: dx / nl, y: dy / nl };
         }
     }
+    // Heading clamp and the arc reparameterize can put a station a fraction
+    // of a millimetre back over the cap the limiter already enforced.
+    snapStationsInsidePreLoftCap(stations, hygiened.loop, r1, r2, stationSkewOpts);
     assertPreLoftStations(stations, r1, r2, stationSkewOpts);
+    {
+        let minB = Infinity;
+        let maxHead = 0;
+        for (let i = 0; i < stations.length; i++) {
+            const a = stations[i]!;
+            const b = stations[(i + 1) % stations.length]!;
+            minB = Math.min(minB, Math.hypot(b.outline.x - a.outline.x, b.outline.y - a.outline.y));
+            const dx0 = a.outline.x - a.rim.x;
+            const dy0 = a.outline.y - a.rim.y;
+            const dx1 = b.outline.x - b.rim.x;
+            const dy1 = b.outline.y - b.rim.y;
+            const l0 = Math.hypot(dx0, dy0) || 1;
+            const l1 = Math.hypot(dx1, dy1) || 1;
+            const d = Math.max(-1, Math.min(1, (dx0 * dx1 + dy0 * dy1) / (l0 * l1)));
+            maxHead = Math.max(maxHead, (Math.acos(d) * 180) / Math.PI);
+        }
+        console.log(
+            "[S1-PAIRS]",
+            JSON.stringify({
+                n: stations.length,
+                minB: Number(minB.toFixed(3)),
+                maxHead: Number(maxHead.toFixed(2)),
+                crossings: countPlanViewChordCrossings(
+                    stations.map((s) => s.outline),
+                    stations.map((s) => s.rim),
+                ),
+            }),
+        );
+    }
     const zDelta = (): number => 0;
     const wallStyle = resolveWallStyleParams({
         style: options.wallStyle ?? "straight",
