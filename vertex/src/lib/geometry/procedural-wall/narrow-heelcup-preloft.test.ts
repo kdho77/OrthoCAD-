@@ -106,6 +106,30 @@ function designFor(input: {
     return design;
 }
 
+/** Grader GR1 design: heel cup 9 mm, met pad, no placement mode on the element. */
+function graderDesign(input: { width: ShoeWidthId; size: number; side: "left" | "right" }): DesignState {
+    const design = designFor({
+        width: input.width,
+        size: input.size,
+        heelCupHeightMm: 9,
+        side: input.side,
+    });
+    const layout = insoleLayoutFromDesign(design);
+    const pose = defaultElementPose("met_pad", input.side, layout.lengthMm, layout.widthMm);
+    design.elements = [
+        {
+            id: input.side === "left" ? "met-left" : "met-right",
+            kind: "met_pad",
+            side: input.side,
+            position: pose.position,
+            rotationDeg: pose.rotationDeg,
+            scale: pose.scale,
+            heightMm: pose.heightMm,
+        },
+    ];
+    return design;
+}
+
 function meshHash(pos: ArrayBufferView, idx: ArrayBufferView): string {
     const h = createHash("sha256");
     h.update(Buffer.from(pos.buffer, pos.byteOffset, pos.byteLength));
@@ -170,24 +194,25 @@ describe("narrow width + 9 mm heel cup preloft", () => {
         }
     }, 720_000);
 
-    test("right foot matches the mirrored left at Men's 9 and on Wide / 2X Wide", async () => {
+    test("GR1: right foot matches the mirrored left for Narrow, Wide, and 2X Wide at M6, M9, and M10", async () => {
         await loadTemplate();
-        // Men's 9 is footprint scale 1. Wide and 2X Wide there, and US M10
-        // 2X Wide, still have to match the mirrored left within 0.05 mm.
+        // Same matrix as the independent grader. The met pad is the pose
+        // without a placement mode, matching that test's element record.
         const cases: Array<{ size: number; width: ShoeWidthId }> = [
+            { size: 6, width: "narrow" },
+            { size: 10, width: "narrow" },
             { size: 9, width: "narrow" },
+            { size: 6, width: "wide" },
+            { size: 10, width: "wide" },
             { size: 9, width: "wide" },
-            { size: 9, width: "xx_wide" },
+            { size: 6, width: "xx_wide" },
             { size: 10, width: "xx_wide" },
+            { size: 9, width: "xx_wide" },
         ];
         for (const { size, width } of cases) {
             const label = `US M${size} ${width}`;
-            const left = await exportLeft(
-                designFor({ width, size, heelCupHeightMm: 9, metPad: true }),
-            );
-            const right = await exportRight(
-                designFor({ width, size, heelCupHeightMm: 9, metPad: true, side: "right" }),
-            );
+            const left = await exportLeft(graderDesign({ width, size, side: "left" }));
+            const right = await exportRight(graderDesign({ width, size, side: "right" }));
             const mirroredLeft = mirrorGeometry(left.geometry);
             const gap = hausdorffReport(mirroredLeft, right.geometry);
             expect(gap.maxMm, label).toBeLessThanOrEqual(0.05);
@@ -195,7 +220,7 @@ describe("narrow width + 9 mm heel cup preloft", () => {
             left.geometry.dispose();
             right.geometry.dispose();
         }
-    }, 900_000);
+    }, 1_500_000);
 
     test("US M6 narrow, heel cup height 9 mm, default met pad exports without S1-PRELOFT skew", async () => {
         await loadTemplate();
