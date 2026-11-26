@@ -120,6 +120,7 @@
                 "vertex/src/lib/geometry/afo/landmark-frame.test.ts",
                 "vertex/src/lib/geometry/afo/trim-cleanup.test.ts",
                 "vertex/src/lib/geometry/arch-grind.shape-finish.test.ts",
+                "vertex/src/lib/geometry/bottom-planform-width.test.ts",
                 "vertex/src/lib/geometry/corrections-posting-wedge.test.ts",
                 "vertex/src/lib/geometry/element-assets/library-thumbs.test.ts",
                 "vertex/src/lib/geometry/export-geometry.routing.test.ts",
