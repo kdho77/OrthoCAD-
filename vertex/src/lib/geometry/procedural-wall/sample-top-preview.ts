@@ -8,7 +8,11 @@ import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heelCupWidthScaleFactor, widthCorrectionFollowEnvelope } from "@/lib/geometry/height-field";
 import { perfMark } from "@/lib/geometry/perf/load-export-perf";
 import { scaleSourceShapeToFootprint } from "@/lib/geometry/shoe-size";
-import { shoeWidthAffineActive } from "@/lib/geometry/shoe-width";
+import {
+    applyShoeWidthToPoints,
+    shoeWidthAffineActive,
+    shoeWidthReferenceOfGeometry,
+} from "@/lib/geometry/shoe-width";
 import { effectiveInsoleThicknessMm } from "@/lib/geometry/sink";
 import { hasActiveComposedTextMarking } from "@/lib/geometry/text-marking/compose";
 import type { TrimlineCurve } from "@/lib/geometry/trimline";
@@ -405,33 +409,13 @@ function heelCupWidthMmOf(options: ProceduralPreviewOptions): number {
 }
 
 /**
- * Men's 9 fair, then a uniform size scale, does not include the shoe-width
- * move the top sheet gets next. On a short narrow foot the rim moves in and
- * the station ray hits the far side of that pattern (S1-PRELOFT skew).
- * Heel-cup width already follows the rim, and that path already exports, so
- * it is left alone.
+ * Heel-cup width already follows the rim on its own path. The shoe-width
+ * taper applies only when that follow is off and the affine actually moves Y.
  */
-function patternNeedsShoeWidthFollow(options: ProceduralPreviewOptions): boolean {
+function shoeWidthTaperActive(options: ProceduralPreviewOptions): boolean {
     const sw = options.shoeWidth;
     if (!sw || !shoeWidthAffineActive(sw.width, sw.heelOverrideMm)) return false;
     return Math.abs(heelCupWidthMmOf(options)) < 1e-6;
-}
-
-function rimPlanOf(model: StockWallModel): PolyPoint[] | null {
-    const pos = model.top.meshPositions;
-    const rim = model.top.rimLocal;
-    if (!pos || !rim || rim.length < 3) return null;
-    return rim.map((i) => ({
-        x: pos[i * 3] ?? 0,
-        y: pos[i * 3 + 1] ?? 0,
-        z: 0,
-    }));
-}
-
-function isPreloftSkewError(error: unknown): boolean {
-    return (
-        error instanceof Error && error.message.includes("[S1-PRELOFT]") && error.message.includes("skew[")
-    );
 }
 
 function reflectPlanY(points: PolyPoint[], y0: number): PolyPoint[] {
@@ -469,6 +453,34 @@ function mirrorSolidPlanFrames(geometry: BufferGeometry): void {
 }
 
 /**
+ * The station loft is not mirror-symmetric, and a direct loft of the mirrored
+ * sheet clears the skew gate without being the mirror of the left solid.
+ * Build that left solid and reflect it. Z is not flipped, so the plantar
+ * seam stays on the bottom.
+ */
+async function loftRightAsMirroredLeft(
+    topGeo: BufferGeometry,
+    options: ProceduralPreviewOptions,
+    fairCenterY: number,
+): Promise<{ pattern: PolyPoint[]; geometry: BufferGeometry }> {
+    if (!options.sourceField) throw new Error("right-foot mirror loft needs a source field");
+    const leftTop = mirrorGeometry(topGeo);
+    try {
+        const leftPreview = await reconstructProceduralPreview(leftTop, {
+            ...options,
+            side: "left",
+            sourceField: leftFieldFromMirroredRight(options.sourceField),
+        });
+        const geometry = mirrorGeometry(leftPreview.geometry);
+        mirrorSolidPlanFrames(geometry);
+        leftPreview.geometry.dispose();
+        return { pattern: reflectPlanY(leftPreview.pattern, fairCenterY), geometry };
+    } finally {
+        leftTop.dispose();
+    }
+}
+
+/**
  * The right field was built on the mirrored sheet. Drop mesh closures so the
  * left-frame loft rebuilds them from the unmirrored stock, and place elements
  * on the opposite side of the centre.
@@ -502,6 +514,7 @@ export async function reconstructProceduralPreview(
     let footprintClone: BufferGeometry | null = null;
     let scaledPattern: PolyPoint[] | null = null;
     let nativeFairScaled = false;
+    let taperedPattern: PolyPoint[] | null = null;
     let fairCenter: { x: number; y: number } | null = null;
     if (footprintScale != null && Number.isFinite(footprintScale) && Math.abs(footprintScale - 1) > 1e-9) {
         if (!topGeo.boundingBox) topGeo.computeBoundingBox();
@@ -541,18 +554,19 @@ export async function reconstructProceduralPreview(
         scaleSourceShapeToFootprint(footprintClone, footprintScale, BASE_REFERENCE_THICKNESS_MM);
         working = footprintClone;
     }
-    // Rim before the shoe-width affine. Captured from the sized sheet, before
-    // compose moves it. Used only if the unmoved pattern fails the skew gate.
-    let shoeWidthRimBefore: PolyPoint[] | null = null;
-    if (nativeFairScaled && scaledPattern && patternNeedsShoeWidthFollow(options)) {
-        const sized = working.clone();
-        try {
-            shoeWidthRimBefore = rimPlanOf(
-                extractTopOnlyModel(sized, { id: SAMPLE_TOP_ASSET_ID, name: SAMPLE_TOP_NAME }),
-            );
-        } finally {
-            sized.dispose();
-        }
+    // Same 1D scale the top sheet gets, about this sized mesh's vertex-mean Y.
+    // Held for a skew retry. The first loft keeps the footprint fair so a foot
+    // that already clears the gate stays on that mesh.
+    if (nativeFairScaled && scaledPattern && options.shoeWidth && shoeWidthTaperActive(options)) {
+        const ref = shoeWidthReferenceOfGeometry(working);
+        taperedPattern = applyShoeWidthToPoints(scaledPattern, options.shoeWidth.width, {
+            ballWidthMm: ref.ballWidthMm,
+            heelWidthMm: ref.heelWidthMm,
+            minX: ref.frame.minX,
+            lengthMm: ref.frame.lengthMm,
+            yMid: ref.frame.yMid,
+            heelOverrideMm: options.shoeWidth.heelOverrideMm,
+        });
     }
     const useComposed = Boolean(options.sourceField) || options.composedTop === true;
     let source = working;
@@ -606,7 +620,7 @@ export async function reconstructProceduralPreview(
         (options.bottomPattern?.length
             ? options.bottomPattern
             : buildFairedPatternFromTop(model, options.scanPattern));
-    const loft = (pattern: PolyPoint[]) => {
+    const loft = (pattern: PolyPoint[], fair: boolean) => {
         const thicknessMm =
             options.thicknessMm ?? options.sourceField?.thicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
         const stockThicknessMm = options.stockThicknessMm ?? BASE_REFERENCE_THICKNESS_MM;
@@ -637,46 +651,31 @@ export async function reconstructProceduralPreview(
             // Scaled outlines only. Native posting and the US 9 reference
             // stay on the triangulation those baselines already froze.
             ...(footprintClone ? { repairUpwardBottom: true } : {}),
+            ...(fair ? { widthPatternFair: true } : {}),
         });
         return { model, pattern, geometry };
     };
+    // A right foot that lofts on its own is still not the mirror of the left.
+    // Reflect the left solid whenever the width affine is on.
+    if (options.side === "right" && options.sourceField && fairCenter && shoeWidthTaperActive(options)) {
+        const mirrored = await loftRightAsMirroredLeft(topGeo, options, fairCenter.y);
+        return { model, pattern: mirrored.pattern, geometry: mirrored.geometry };
+    }
     try {
-        return loft(requested);
+        return loft(requested, false);
     } catch (e) {
-        // Designs that already clear the skew gate keep the unaligned pattern,
-        // so their mesh stays byte-for-byte. Only a failed gate is rebuilt.
-        const shoeWidthRimAfter = shoeWidthRimBefore ? rimPlanOf(model) : null;
-        if (shoeWidthRimBefore && shoeWidthRimAfter && scaledPattern && isPreloftSkewError(e)) {
-            // The rim-follow map is already the mirror of the left map, but the
-            // station loft is not mirror-symmetric and still misses the 0.5×inset
-            // cap. Run that same left loft on the unmirrored stock and mirror the
-            // solid back. Z is not flipped, so the seam stays on the bottom.
-            if (options.side === "right" && options.sourceField && fairCenter) {
-                const leftTop = mirrorGeometry(topGeo);
-                try {
-                    const leftPreview = await reconstructProceduralPreview(leftTop, {
-                        ...options,
-                        side: "left",
-                        sourceField: leftFieldFromMirroredRight(options.sourceField),
-                    });
-                    const geometry = mirrorGeometry(leftPreview.geometry);
-                    mirrorSolidPlanFrames(geometry);
-                    leftPreview.geometry.dispose();
-                    return {
-                        model,
-                        pattern: reflectPlanY(leftPreview.pattern, fairCenter.y),
-                        geometry,
-                    };
-                } finally {
-                    leftTop.dispose();
-                }
-            }
-            return loft(shiftPatternByRimFollow(scaledPattern, shoeWidthRimBefore, shoeWidthRimAfter, 1));
+        if (
+            taperedPattern &&
+            e instanceof Error &&
+            e.message.includes("[S1-PRELOFT]") &&
+            e.message.includes("skew[")
+        ) {
+            return loft(taperedPattern, true);
         }
         if (options.bottomPattern?.length || !options.scanPattern || options.scanPattern === "full_contact") {
             throw e;
         }
         // Prefab 3D / Flat must still produce a mesh from SAMPLE_Top.
-        return loft(buildFairedPatternFromTop(model));
+        return loft(buildFairedPatternFromTop(model), false);
     }
 }

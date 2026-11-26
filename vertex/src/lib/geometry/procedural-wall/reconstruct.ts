@@ -143,6 +143,12 @@ export interface ReconstructOptions extends ProceduralModifierInput {
      * before the loft. Native lofts leave posting triangulation alone.
      */
     repairUpwardBottom?: boolean;
+    /**
+     * `bottomPattern` already has the shoe-width taper. Refit it to the
+     * composed rim in width mode. The uniform {@link insoleWidthScale} path
+     * is a different scale and stays off.
+     */
+    widthPatternFair?: boolean;
 }
 
 function zeroCorrections(): SideCorrections {
@@ -1405,7 +1411,8 @@ export function reconstructProceduralWalls(
     const forefootFollowRim = foreW !== 0 && !forefootOnComposed;
     const wholeScale = options.insoleWidthScale ?? 1;
     const wholeWidth = Number.isFinite(wholeScale) && Math.abs(wholeScale - 1) > 1e-12;
-    const patternFairMode = wholeWidth ? "width" : "heel";
+    const widthFair = options.widthPatternFair === true;
+    const patternFairMode = wholeWidth ? "width" : widthFair ? "shoe" : "heel";
     const followFactor = wholeWidth
         ? 0
         : heelWiden || forefootFollowRim
@@ -1424,6 +1431,8 @@ export function reconstructProceduralWalls(
             const u = Math.max(0, Math.min(1, (p.x - minX) / length));
             return followFactor * widthCorrectionFollowEnvelope(u, heelW, followForeW);
         });
+        patternMoved = true;
+    } else if (widthFair) {
         patternMoved = true;
     }
     if (patternMoved && !(forefootOnComposed && !heelWiden)) {
