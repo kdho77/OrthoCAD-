@@ -292,3 +292,118 @@ export function applyCorrectionPresetToDesign(
         elements: design.elements,
     };
 }
+
+/** Customer macros are clinic starting points. Pathology macros are the Vertex starters. */
+export type DesignMacroKind = "customer" | "pathology";
+
+export interface DesignMacro {
+    id: string;
+    name: string;
+    kind: DesignMacroKind;
+    description?: string;
+    /** Extra lookup names. They do not add clinical values. */
+    aliases?: readonly string[];
+    payload: CorrectionPresetPayload;
+}
+
+/**
+ * Clinic customer macros shared by the Corrections panel and the CAD-operator bot.
+ * A row belongs here only when its payload is already defined in this repo or in
+ * OrthoCAD-LMS. Rhinebeck is not listed: its stored corrections are not in either
+ * place, and apply refuses that name instead of inventing millimetres.
+ */
+export const CUSTOMER_DESIGN_MACROS: readonly DesignMacro[] = [];
+
+/** Lookup names for starters whose UI label is shorter than the prescription word. */
+const PATHOLOGY_ALIASES: Readonly<Record<string, readonly string[]>> = {
+    "vertex-planus": ["pes planus"],
+};
+
+export class DesignMacroError extends Error {
+    constructor(message: string) {
+        super(message.startsWith("422 ") ? message : `422 ${message}`);
+        this.name = "DesignMacroError";
+    }
+}
+
+function pathologyMacro(preset: CorrectionPresetDefinition): DesignMacro {
+    return {
+        id: preset.id,
+        name: preset.name,
+        kind: "pathology",
+        description: preset.description,
+        aliases: PATHOLOGY_ALIASES[preset.id],
+        payload: preset.payload,
+    };
+}
+
+/** The macros the Corrections panel can apply, customer first, then pathology starters. */
+export function listDesignMacros(extraCustomer: readonly DesignMacro[] = []): DesignMacro[] {
+    return [...CUSTOMER_DESIGN_MACROS, ...extraCustomer, ...VERTEX_STARTER_PRESETS.map(pathologyMacro)];
+}
+
+export function normalizeDesignMacroName(value: string): string {
+    return value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+}
+
+function macroMatches(macro: DesignMacro, key: string): boolean {
+    if (normalizeDesignMacroName(macro.id) === key) return true;
+    if (normalizeDesignMacroName(macro.name) === key) return true;
+    return (macro.aliases ?? []).some((alias) => normalizeDesignMacroName(alias) === key);
+}
+
+function requireDesignMacro(
+    macros: readonly DesignMacro[],
+    name: string,
+    kind: DesignMacroKind,
+): DesignMacro {
+    const key = normalizeDesignMacroName(name);
+    const matches = macros.filter((macro) => macro.kind === kind && macroMatches(macro, key));
+    const match = matches[0];
+    if (matches.length === 1 && match) return match;
+    if (matches.length > 1) {
+        throw new DesignMacroError(
+            `More than one ${kind} macro matches "${name.trim()}". Refusing to guess a clinical value.`,
+        );
+    }
+    throw new DesignMacroError(
+        `No ${kind} macro named "${name.trim()}" is in the library. Refusing to guess a clinical value.`,
+    );
+}
+
+export interface DesignMacroSelection {
+    customer?: string | null;
+    pathology?: string | null;
+}
+
+/** Names that will be merged, customer then pathology. Empty when both names are omitted. */
+export function resolveDesignMacros(
+    selection: DesignMacroSelection,
+    macros: readonly DesignMacro[] = listDesignMacros(),
+): DesignMacro[] {
+    const applied: DesignMacro[] = [];
+    const customer = selection.customer?.trim() ?? "";
+    const pathology = selection.pathology?.trim() ?? "";
+    if (customer) applied.push(requireDesignMacro(macros, customer, "customer"));
+    if (pathology) applied.push(requireDesignMacro(macros, pathology, "pathology"));
+    return applied;
+}
+
+/**
+ * Merge macros the way the Corrections panel Merge button does.
+ * Customer is applied first, then pathology, so the second merge does not wipe
+ * keys it does not set. Omit both names and the same design is returned.
+ */
+export function applyDesignMacrosToDesign(
+    design: DesignState,
+    selection: DesignMacroSelection,
+    macros: readonly DesignMacro[] = listDesignMacros(),
+): DesignState {
+    const applied = resolveDesignMacros(selection, macros);
+    if (applied.length === 0) return design;
+    let next = design;
+    for (const macro of applied) {
+        next = applyCorrectionPresetToDesign(next, macro.payload, { mode: "merge" });
+    }
+    return next;
+}
