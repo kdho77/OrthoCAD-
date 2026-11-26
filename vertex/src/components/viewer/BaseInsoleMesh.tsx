@@ -11,17 +11,13 @@ import {
 } from "@/lib/geometry/procedural-wall/sample-top-display";
 import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
 import type { TextGuide } from "@/lib/geometry/text-marking/place";
+import { insoleViewportMaterialColor } from "@/lib/hardness/split-overlay";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { Side } from "@/types";
 import { ElementSurfaceMeshes } from "./ElementSurfaceMeshes";
 import { TextPlacementGuide, useTextSurfaceDrag } from "./TextPlacementGuide";
-
-const sideColors: Record<Side, string> = {
-    left: "#f8fafc",
-    right: "#f8fafc",
-};
 
 function applyHeightmapColors(geometry: THREE.BufferGeometry, colors: THREE.BufferAttribute): void {
     const pos = geometry.getAttribute("position");
@@ -53,10 +49,13 @@ export function BaseInsoleMesh({
     side,
     transparent,
     heightmap = false,
+    printExportSolid = false,
 }: {
     side: Side;
     transparent: boolean;
     heightmap?: boolean;
+    /** Lighter hardness tint for Print/Export solid view. */
+    printExportSolid?: boolean;
 }) {
     const design = useDesignStore((s) => s.design);
     const interacting = usePerformanceStore((s) => s.interacting);
@@ -83,14 +82,14 @@ export function BaseInsoleMesh({
         }
         return new THREE.MeshStandardMaterial({
             vertexColors: true,
-            color: sideColors[side],
+            color: insoleViewportMaterialColor(design.printRecipe, { printExport: printExportSolid }),
             metalness: 0.15,
             roughness: 0.7,
             transparent,
             opacity: transparent ? 0.5 : 1,
             side: THREE.DoubleSide,
         });
-    }, [heightmap, transparent, side]);
+    }, [heightmap, transparent, design.printRecipe?.defaultHardness, printExportSolid]);
 
     useEffect(() => () => material.dispose(), [material]);
 
@@ -176,7 +175,13 @@ export function BaseInsoleMesh({
             {showEdges ? (
                 <lineSegments position={[-layout.lengthMm / 2, offsetX, 0]}>
                     <edgesGeometry args={[geometry, 35]} />
-                    <lineBasicMaterial color={sideColors[side]} transparent opacity={0.35} />
+                    <lineBasicMaterial
+                        color={insoleViewportMaterialColor(design.printRecipe, {
+                            printExport: printExportSolid,
+                        })}
+                        transparent
+                        opacity={0.35}
+                    />
                 </lineSegments>
             ) : null}
         </group>

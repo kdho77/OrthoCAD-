@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "@rstest/core";
@@ -15,7 +14,6 @@ import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { effectiveInsoleThicknessMm, FLOOR_MIN_MM } from "@/lib/geometry/sink";
 import { binaryStlToGeometry } from "@/lib/geometry/stl";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
-import { createDesignWithStockPlaceholder } from "@/stores/design-store";
 import { settingsEnvelopeForSave } from "../../../server/src/lib/design-schema";
 import { parseSavedDesignCatalog } from "../../../shared/saved-design-catalog";
 import { buildSavedDesignSnapshot } from "../../../shared/saved-design-snapshot";
@@ -63,18 +61,6 @@ function maxTopZInLengthBand(stl: ArrayBuffer, uMin: number, uMax: number): numb
     }
 }
 
-function uiDesignAtThicknessMm(thicknessMm: number) {
-    const base = createDesignWithStockPlaceholder();
-    return createDesignWithStockPlaceholder({
-        ...base,
-        thicknessMm,
-        shellThicknessMode: "zonal",
-        paired: base.paired
-            ? { ...base.paired, leftThicknessMm: thicknessMm, rightThicknessMm: thicknessMm }
-            : base.paired,
-    });
-}
-
 describe("saved-design shell thickness loft", () => {
     test("generate_gcode headless path uses settings.thicknessMm from the envelope", () => {
         const stored = { system: "US_M" as const, size: 9, left: null, right: null, width: null };
@@ -109,24 +95,23 @@ describe("saved-design shell thickness loft", () => {
             sampleTopBytes: sampleTop,
             includeLeader: false,
         });
-        const thinBounds = binaryStlBounds(thinMesh.stl);
-        const thickBounds = binaryStlBounds(thickMesh.stl);
-        const thinSpan = thinBounds.maxZ - thinBounds.minZ;
-        const thickSpan = thickBounds.maxZ - thickBounds.minZ;
-        expect(thickSpan).toBeGreaterThan(thinSpan + 1);
+        const forefootLift =
+            maxTopZInLengthBand(thickMesh.stl, 0.8, 0.9) - maxTopZInLengthBand(thinMesh.stl, 0.8, 0.9);
+        expect(forefootLift).toBeGreaterThanOrEqual(1.9);
+        expect(forefootLift).toBeLessThanOrEqual(2.1);
         expect(thickMesh.fingerprint).not.toBe(thinMesh.fingerprint);
         expect(thinMesh.uploadTriangles).toBe(thinMesh.solidTriangles);
         expect(thickMesh.uploadTriangles).toBe(thickMesh.solidTriangles);
     }, 180_000);
 
-    test("3 mm integration snapshot stays zonal and matches the UI thickness slider loft", async () => {
+    test("3 mm catalog thickness is uniform and the loft builds that clearance", async () => {
         const stored = { system: "US_M" as const, size: 9, left: null, right: null, width: null };
         const integration = buildSavedDesignSnapshot({
             stored,
             catalog: parseSavedDesignCatalog({ thickness_mm: 3 }),
         });
         expect(integration.design.method).toBe("printing_solid");
-        expect(integration.design.shellThicknessMode).toBe("zonal");
+        expect(integration.design.shellThicknessMode).toBe("uniform");
         expect(integration.design.thicknessMm).toBe(3);
 
         const sampleTop = sampleTopBytes();
@@ -136,16 +121,18 @@ describe("saved-design shell thickness loft", () => {
             sampleTopBytes: sampleTop,
             includeLeader: false,
         });
-        const uiMesh = await buildFinalizedFootFromSavedDesign({
-            design: uiDesignAtThicknessMm(3),
+        const defaultMesh = await buildFinalizedFootFromSavedDesign({
+            design: buildSavedDesignSnapshot({ stored, catalog: parseSavedDesignCatalog({}) }).design,
             side: "left",
             sampleTopBytes: sampleTop,
             includeLeader: false,
         });
-        const stlHash = (stl: ArrayBuffer) =>
-            createHash("sha256").update(Buffer.from(stl)).digest("hex");
-        expect(stlHash(integrationMesh.stl)).toBe(stlHash(uiMesh.stl));
-        expect(integrationMesh.solidTriangles).toBe(uiMesh.solidTriangles);
+        const forefootLift =
+            maxTopZInLengthBand(integrationMesh.stl, 0.8, 0.9) -
+            maxTopZInLengthBand(defaultMesh.stl, 0.8, 0.9);
+        expect(forefootLift).toBeGreaterThanOrEqual(0.9);
+        expect(forefootLift).toBeLessThanOrEqual(1.1);
+        expect(integrationMesh.uploadTriangles).toBe(integrationMesh.solidTriangles);
     }, 180_000);
 
     test("3 mm raises forefoot top height by ~1.0 mm between 80–90% length", async () => {
@@ -186,7 +173,7 @@ describe("saved-design shell thickness loft", () => {
                 sinks: [{ name: "mpj1", side: "left", depth_mm: 2 }],
             }),
         });
-        expect(snap.design.shellThicknessMode).toBe("zonal");
+        expect(snap.design.shellThicknessMode).toBe("uniform");
         const layout = insoleLayoutForUsMenSize(9);
         const shellMm = effectiveInsoleThicknessMm(3, {
             side: "left",
@@ -215,16 +202,17 @@ describe("saved-design shell thickness loft", () => {
         expect(forefootLift).toBeGreaterThanOrEqual(0.9);
     }, 180_000);
 
-    test("legacy uniform + non-default thickness is refused for manufacturing loft", () => {
+    test("uniform catalog thickness is the shell the manufacturing loft reads", () => {
         const stored = { system: "US_M" as const, size: 9, left: null, right: null, width: null };
         const snap = buildSavedDesignSnapshot({
             stored,
             catalog: parseSavedDesignCatalog({ thickness_mm: 3 }),
         });
-        const envelope = settingsEnvelopeForSave({
-            ...(snap.design as object),
-            shellThicknessMode: "uniform",
-        } as typeof snap.design);
-        expect(() => designStateFromSavedSettings(envelope)).toThrow(/uniform mode/);
+        const envelope = settingsEnvelopeForSave(snap.design);
+        const design = designStateFromSavedSettings(envelope);
+        expect(design.shellThicknessMode).toBe("uniform");
+        expect(design.thicknessMm).toBe(3);
+        expect(design.paired?.leftThicknessMm).toBe(3);
+        expect(design.paired?.rightThicknessMm).toBe(3);
     });
 });

@@ -1369,6 +1369,21 @@ export function sinkDeepestMm(sink: PlacedSink, ctx: SinkSurfaceContext): { x: n
     return { x: frame.dx, y: frame.dy };
 }
 
+/**
+ * Wall column under a lowered crest. The old scale `(z / H) * crest` runs
+ * down to the bed and pinches the shell to a few hundredths of a millimetre.
+ * Vertices already at or below the guaranteed floor stay put (the fillet).
+ * Vertices above it map in a straight line onto `[floor, crest]`, so the
+ * pocket cannot come through the wall and the fillet is not crushed.
+ */
+function sinkWallColumnZ(z: number, rimZ: number, crest: number): number {
+    if (z <= FLOOR_MIN_MM) return z;
+    const crestHeld = Math.max(crest, FLOOR_MIN_MM);
+    if (rimZ <= FLOOR_MIN_MM + 1e-6) return crestHeld;
+    const span = rimZ - FLOOR_MIN_MM;
+    return FLOOR_MIN_MM + ((z - FLOOR_MIN_MM) / span) * (crestHeld - FLOOR_MIN_MM);
+}
+
 export function applyFloorGuard(
     topZ: number,
     cutMm: number,
@@ -2144,9 +2159,13 @@ export function applyAnalyticSinkToLoftedSolid(input: AnalyticSinkLoftInput): Si
             const z = input.positions[vi * 3 + 2]!;
             if (z <= 1e-4) continue;
             touched.add(vi);
-            const zS = H > 1e-3 ? (z / H) * crest : z;
-            const dz = notch ? styloidWallReliefAt(zS, crest, depth, R) : 0;
-            input.positions[vi * 3 + 2] = Math.max(0, zS + dz);
+            const column = sinkWallColumnZ(z, H, crest);
+            const dz = notch ? styloidWallReliefAt(column, Math.max(crest, FLOOR_MIN_MM), depth, R) : 0;
+            const dipped = column + dz;
+            // A notch may ease the wall, but not through the guaranteed floor
+            // when this vertex started above it.
+            input.positions[vi * 3 + 2] =
+                z > FLOOR_MIN_MM ? Math.max(FLOOR_MIN_MM, dipped) : Math.max(0, dipped);
         }
     }
     return mergeSinkWarnings(sinkDepthWarnings(input.sinks), sinkRimWarnings(ctx), warnings);

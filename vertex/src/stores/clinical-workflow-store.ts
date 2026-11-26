@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { create } from "zustand";
+import { applyViewerDefaultsForClinicalStep } from "@/components/viewer/viewer-tab-defaults";
 import {
     afoPrintRequiresConfirmedTrim,
     afoTrimConfirmedForPrint,
@@ -227,14 +228,16 @@ function applyScanStickyReason(step: ClinicalStepId, product: ClinicalProductTyp
 
 export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get) => ({
     productType: "insole",
-    setProductType: (product) =>
+    setProductType: (product) => {
         set({
             productType: product,
             step: "scan",
             completedSteps: [],
             nextBlockReason: null,
             scanGateStickyReason: null,
-        }),
+        });
+        applyViewerDefaultsForClinicalStep("scan");
+    },
     step: "scan",
     designStartPath: null,
     completedSteps: [],
@@ -295,6 +298,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
             nextBlockReason: sticky,
             pendingCorrectionSections: sectionsForStep(next),
         });
+        applyViewerDefaultsForClinicalStep(next);
     },
     setElementPlacementFoot: (foot) => set({ elementPlacementFoot: foot }),
     openTextEditor: () => {
@@ -303,6 +307,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
             step: "elements",
             textFocusNonce: s.textFocusNonce + 1,
         }));
+        applyViewerDefaultsForClinicalStep("elements");
     },
     goNext: () => {
         const product = get().productType;
@@ -320,6 +325,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
                     scanGateStickyReason: gate.reason,
                     pendingCorrectionSections: sectionsForStep("scan"),
                 });
+                applyViewerDefaultsForClinicalStep("scan");
                 return;
             }
         } else if (current === "scan") {
@@ -334,6 +340,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
                     scanGateStickyReason: gate.reason,
                     pendingCorrectionSections: sectionsForStep(current),
                 });
+                applyViewerDefaultsForClinicalStep(current);
                 return;
             }
         }
@@ -348,6 +355,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
             completedSteps: markCompleted(s.completedSteps, current),
             pendingCorrectionSections: sectionsForStep(step),
         }));
+        applyViewerDefaultsForClinicalStep(step);
     },
     goBack: () => {
         const current = get().step;
@@ -363,6 +371,7 @@ export const useClinicalWorkflowStore = create<ClinicalWorkflowStore>((set, get)
             scanGateStickyReason: sticky,
             pendingCorrectionSections: sectionsForStep(step),
         });
+        applyViewerDefaultsForClinicalStep(step);
     },
     consumePendingCorrectionSections: () => {
         const pending = get().pendingCorrectionSections;
@@ -383,6 +392,7 @@ function pullAfoPrintBackToDesign(): void {
         nextBlockReason: gate.reason,
         pendingCorrectionSections: [],
     });
+    applyViewerDefaultsForClinicalStep("design");
 }
 
 useClinicalWorkflowStore.subscribe(() => {
