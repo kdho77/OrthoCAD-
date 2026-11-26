@@ -42,6 +42,7 @@
                 "vertex/src/features/production/installer-download.test.ts",
                 "vertex/src/lib/app-version.test.ts",
                 "vertex/src/lib/clinical/medial-sign.test.ts",
+                "vertex/src/lib/clinical/per-foot-wedge.test.ts",
                 "vertex/src/lib/clinical/saved-design-snapshot.test.ts",
                 "vertex/src/lib/geometry/afo/afo-flat-review.test.ts",
                 "vertex/src/lib/geometry/afo/afo-scan-pick.test.ts",
