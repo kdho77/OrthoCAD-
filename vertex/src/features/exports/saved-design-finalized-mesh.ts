@@ -24,8 +24,6 @@ import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import type { DesignState, Side } from "@/types";
 import { readStoredDesignSettings } from "../../../shared/design-settings";
-import { SHELL_THICKNESS_MM_DEFAULT } from "../../../shared/saved-design-catalog";
-
 export interface FinalizedFootMesh {
     side: Side;
     /** Internal manufacturing bytes (solid + one leader). Not a client deliverable. */
@@ -42,24 +40,12 @@ export class SavedDesignMeshError extends Error {
     }
 }
 
-function assertSolidManufacturingShellThickness(settings: DesignState): void {
-    const method = settings.method;
-    if (method !== "printing_solid" && method !== "milling_3axis") return;
-    if (settings.shellThicknessMode !== "uniform") return;
-    if (Math.abs(settings.thicknessMm - SHELL_THICKNESS_MM_DEFAULT) <= 1e-9) return;
-    throw new SavedDesignMeshError(
-        "This design was saved with a non-default shell thickness in uniform mode and would print too thin. Re-save the design (create_saved_design / saved-design-snapshot) or open it in the UI and save again so shell thickness stays in zonal mode.",
-    );
-}
-
 export function designStateFromSavedSettings(settingsJson: unknown): DesignState {
     const settings = readStoredDesignSettings(settingsJson);
     if (!settings) {
         throw new SavedDesignMeshError("Design has no saved parameter snapshot");
     }
-    const design = createDesignWithStockPlaceholder(settings as DesignState);
-    assertSolidManufacturingShellThickness(design);
-    return design;
+    return createDesignWithStockPlaceholder(settings as DesignState);
 }
 
 function installSavedDesign(design: DesignState, printLoftEpoch: number): void {

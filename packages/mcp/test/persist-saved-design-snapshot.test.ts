@@ -1,4 +1,6 @@
 import { describe, expect, test } from "@rstest/core";
+import { settingsEnvelopeForSave } from "../../../vertex/server/src/lib/design-schema.ts";
+import { readStoredDesignSettings } from "../../../vertex/shared/design-settings.ts";
 import {
     listSavedDesignCatalogKeyPaths,
     parseSavedDesignCatalog,
@@ -190,6 +192,38 @@ describe("persist_saved_design_snapshot tool", () => {
         expect(payload.ask).toBe("user");
         expect(payload.relay).toBe("none");
         expect(payload.questions?.[0]?.field).toBe("shoe_size");
+    });
+
+    test("create_saved_design thickness_mm 3 stores uniform shell for get_design_params", async () => {
+        let persistedSettings: unknown;
+        const manufacturing = {
+            createSavedDesign: async (input: { catalog?: { thickness_mm?: number } }) => {
+                const built = buildSavedDesignSnapshot({
+                    stored: { system: "US_M", size: 9, left: null, right: null, width: null },
+                    catalog: parseSavedDesignCatalog(input.catalog ?? {}),
+                });
+                persistedSettings = settingsEnvelopeForSave(built.design);
+                return { ok: true, design_id: designId };
+            },
+            getDesignParams: async () => ({ id: designId, settingsJson: persistedSettings }),
+        } as unknown as ManufacturingClient;
+        await handleOrthocadTool(
+            "create_saved_design",
+            { external_order_id: "VO-TEST-ORDER", catalog: { thickness_mm: 3 } },
+            { config, manufacturing },
+        );
+        const params = await handleOrthocadTool(
+            "get_design_params",
+            { design_id: designId },
+            { config, manufacturing },
+        );
+        expect(params.isError).toBeUndefined();
+        const doc = JSON.parse(params.content[0]?.text ?? "{}") as { settingsJson?: unknown };
+        const settings = readStoredDesignSettings(doc.settingsJson);
+        expect(settings?.shellThicknessMode).toBe("uniform");
+        expect(settings?.thicknessMm).toBe(3);
+        expect((settings?.paired as { leftThicknessMm: number }).leftThicknessMm).toBe(3);
+        expect((settings?.paired as { rightThicknessMm: number }).rightThicknessMm).toBe(3);
     });
 
     test("catalog accepts a bilateral 1st met head sink and rejects an unknown sink field", () => {
