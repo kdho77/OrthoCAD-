@@ -1,4 +1,4 @@
-// Independent grader for PR #462 at 647dc31e. Do not merge.
+// Independent grader for PR #462 at 8de0d057. Do not merge.
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { createHash } from "node:crypto";
@@ -47,7 +47,7 @@ import type { DesignState, Side } from "@/types";
 import { markingWithComposedText } from "../shared/bottom-text-marking";
 import { designSettingsEnvelope } from "../shared/design-settings";
 
-const WORKER_HEAD = "647dc31e221387db84363b637a877f7b64bf891f";
+const WORKER_HEAD = "8de0d0576f14bfa5cc6ec6725c804542355386b5";
 const MAIN_BASE = "228c72f2771a74e5b7c1d515ab0d01e4dd44d751";
 
 const PR462_CHANGED_FILES = [
@@ -364,7 +364,7 @@ describe("PR #462 grader G7 — PR scope", () => {
                 /shoe-width|bottom-planform|useBaseInsole|BottomPattern|print-solid-compose|sample-top|station-gates|reconstruct|narrow-heelcup|unit-test-shards/,
             );
         }
-        expect(WORKER_HEAD.slice(0, 8)).toBe("647dc31e");
+        expect(WORKER_HEAD.slice(0, 8)).toBe("8de0d057");
         expect(MAIN_BASE.slice(0, 8)).toBe("228c72f2");
     });
 });
@@ -537,6 +537,6 @@ describe("PR #462 grader GR4 — Wide plantar name (production path)", () => {
 
 describe("PR #462 grader GR5 — CI metadata", () => {
     test("GR5: grades worker head SHA for CI cross-check", () => {
-        expect(WORKER_HEAD).toBe("647dc31e221387db84363b637a877f7b64bf891f");
+        expect(WORKER_HEAD).toBe("8de0d0576f14bfa5cc6ec6725c804542355386b5");
     });
 });
