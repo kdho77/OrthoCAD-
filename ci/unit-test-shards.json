@@ -153,6 +153,7 @@
                 "tests/one-click-baseline-parity.test.ts",
                 "tests/s1-ring-size-regression.test.ts",
                 "tests/sink-min-floor.test.ts",
+                "tests/grade-pr-493-sink-min-floor.test.ts",
                 "tests/sink-proximal-shift.test.ts",
                 "tests/text-marking-wall-place.test.ts",
                 "vertex/print-bridge/apply-update.test.ts",
