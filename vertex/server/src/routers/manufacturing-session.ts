@@ -128,7 +128,6 @@ export interface SessionManufacturingIo {
     signedOutputUrl(storageKey: string): Promise<string>;
     updateExportStorage(exportId: string, storageKey: string): Promise<void>;
     updateProductionGcode(productionId: string, storageKey: string): Promise<void>;
-    archiveSourceStl(args: { userId: string; exportId: string; tempStlKey: string }): Promise<void>;
     deleteTemp(storageKey: string): Promise<void>;
 }
 
@@ -434,12 +433,16 @@ export async function runSessionGenerateSolid(args: {
             }
         }
 
-        await io.archiveSourceStl({
-            userId: actorUserId,
-            exportId: result.exportId,
-            tempStlKey,
-        });
-        if (regionalTempKey) await io.deleteTemp(regionalTempKey);
+        try {
+            await io.deleteTemp(tempStlKey);
+            if (regionalTempKey) await io.deleteTemp(regionalTempKey);
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error("[manufacturing] failed to delete temp STL after slice", {
+                tempStlKey,
+                message,
+            });
+        }
 
         console.log("[manufacturing] generateSolid success", {
             userId: actorUserId,

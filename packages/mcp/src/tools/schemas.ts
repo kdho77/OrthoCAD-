@@ -420,6 +420,12 @@ export const prepareVoAttachmentInputSchema = z
         base_asset_id: z.string().trim().min(1).max(80).optional(),
         patient_name: z.string().max(200).optional(),
         material: z.string().max(80).optional(),
+        /**
+         * Set after VertexOrders has accepted the files. Releases cad-operator
+         * G-code keys and does not fetch them again. Omitted leaves objects for
+         * the 24h sweep. Not copied into vo_attach_files.
+         */
+        attach_confirmed: z.boolean().optional(),
         files: z.array(attachFileSchema).min(1).max(2),
     })
     .strict();
