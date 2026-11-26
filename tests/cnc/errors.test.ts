@@ -21,6 +21,8 @@ describe("CNC export errors", () => {
 
     test("does not fit the pocket", () => {
         const profile = cloneProfile();
+        profile.tableWidthMm = 20;
+        profile.tableLengthMm = 10;
         profile.pockets = [{ x: 0, y: 0, width: 20, length: 10 }];
         const wp = syntheticWorkpiece(profile);
         try {

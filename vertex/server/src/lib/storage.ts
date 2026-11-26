@@ -6,8 +6,14 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const MAIN_BUCKET = process.env.STORAGE_BUCKET ?? "vertex-assets";
 
-/** Private bucket for manufacturing STL uploads, archives, and G-code output. */
+/** Private bucket for short-lived manufacturing STL uploads and G-code output. */
 export const MANUFACTURING_BUCKET = process.env.MANUFACTURING_BUCKET ?? "vertex-manufacturing";
+
+/**
+ * UI and CAD downloads. The object stays in the bucket until the 24h sweep.
+ * Do not raise this above one hour.
+ */
+export const MANUFACTURING_SIGNED_DOWNLOAD_TTL_SEC = 60 * 60;
 
 export interface SignedUpload {
     key: string;
@@ -26,15 +32,39 @@ if (process.env.MANUFACTURING_BUCKET === undefined) {
  */
 export const STOCK_BUCKET = process.env.STOCK_STORAGE_BUCKET ?? MAIN_BUCKET;
 
-/** Ephemeral manufacturing STL uploads (TTL-cleaned). Written via signed URL or `uploadManufacturingStl`. */
+/** Ephemeral manufacturing STL uploads. Deleted after slice, or by the 24h sweep. */
 export const MANUFACTURING_TEMP_PREFIX = "manufacturing-temp/";
 
-/** Permanent submitted-geometry archive for successful manufacturing jobs. */
+/**
+ * Legacy submitted-geometry prefix. New jobs do not write it.
+ * `exports.sourceStlPath` stays nullable and is not written.
+ */
 export const MANUFACTURING_ARCHIVE_PREFIX = "manufacturing-archive/";
+
+/** Short-lived G-code. Cad-operator objects are removed after VO attach; the 24h sweep covers the rest. */
+export const GCODE_STORAGE_PREFIX = "gcode/";
 
 export interface StorageUploadResult {
     key: string;
     sizeBytes: number;
+}
+
+/** Transient storage failures. A duplicate key or an auth error is not retried. */
+export const STORAGE_UPLOAD_ATTEMPTS = 3;
+
+const STORAGE_UPLOAD_BACKOFF_MS = 200;
+
+export function isTransientStorageUploadMessage(message: string): boolean {
+    return /fetch failed|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|UND_ERR_|network error/i.test(
+        message,
+    );
+}
+
+function storageUploadBackoff(attempt: number): Promise<void> {
+    return new Promise((resolve) => {
+        const timer = setTimeout(resolve, STORAGE_UPLOAD_BACKOFF_MS * attempt);
+        timer.unref?.();
+    });
 }
 
 /**
@@ -48,14 +78,24 @@ export async function uploadAsset(
     contentType: string,
     bucket = MAIN_BUCKET,
 ): Promise<StorageUploadResult> {
-    const { error } = await supabase.storage.from(bucket).upload(key, data, {
-        contentType,
-        upsert: false,
-    });
-    if (error) {
-        throw new Error(`Storage upload failed: ${error.message}`);
+    let last = "unknown";
+    for (let attempt = 1; attempt <= STORAGE_UPLOAD_ATTEMPTS; attempt++) {
+        try {
+            const { error } = await supabase.storage.from(bucket).upload(key, data, {
+                contentType,
+                upsert: false,
+            });
+            if (!error) return { key, sizeBytes: data.length };
+            last = error.message;
+        } catch (err) {
+            last = err instanceof Error ? err.message : String(err);
+        }
+        if (!isTransientStorageUploadMessage(last) || attempt === STORAGE_UPLOAD_ATTEMPTS) {
+            throw new Error(`Storage upload failed: ${last}`);
+        }
+        await storageUploadBackoff(attempt);
     }
-    return { key, sizeBytes: data.length };
+    throw new Error(`Storage upload failed: ${last}`);
 }
 
 /** Create a one-shot signed upload URL so the browser can PUT bytes directly to Storage. */
@@ -115,7 +155,7 @@ export function buildManufacturingTempStlKey(userId: string, stamp = Date.now(),
     return `${MANUFACTURING_TEMP_PREFIX}${userId}/${stamp}-${id}.stl`;
 }
 
-/** Permanent archive path for a successful manufacturing export. */
+/** Legacy archive path. Inventory only — successful jobs no longer copy an STL here. */
 export function buildManufacturingArchiveStlKey(userId: string, exportId: string): string {
     return `${MANUFACTURING_ARCHIVE_PREFIX}${userId}/${exportId}.stl`;
 }

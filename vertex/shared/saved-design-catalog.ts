@@ -103,6 +103,36 @@ const archSchema = z.preprocess(
     z.enum(["low", "medium", "standard", "high"]),
 );
 
+/**
+ * Catalog `length` → the #364 trim preset. Full is uncut.
+ * 3/4 is Met-head (`TRIM_PRESET_LANDMARK_U.met_head`). Sulcus is the Sulcus preset.
+ * Nothing else is accepted.
+ */
+export function catalogLengthPreset(value: string): "full" | "met_head" | "sulcus" | null {
+    const key = value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+    if (key === "full") return "full";
+    if (key === "sulcus") return "sulcus";
+    if (
+        key === "3/4" ||
+        key === "3/4 length" ||
+        key === "met head" ||
+        key === "methead" ||
+        key === "three quarter" ||
+        key === "threequarter"
+    ) {
+        return "met_head";
+    }
+    return null;
+}
+
+export const catalogLengthSchema = z.preprocess(
+    (value) => {
+        if (typeof value !== "string") return value;
+        return catalogLengthPreset(value) ?? value;
+    },
+    z.enum(["full", "met_head", "sulcus"]),
+);
+
 const sliderShape = {
     forefoot_posting_deg: z.number().finite().optional(),
     rearfoot_posting_deg: z.number().finite().optional().describe(REARFOOT_POSTING_DEG_SIGN),
@@ -226,6 +256,12 @@ export const savedDesignCatalogSchema = z
          * Omitted keeps {@link SHELL_THICKNESS_MM_DEFAULT} and the zonal shell.
          */
         thickness_mm: z.number().finite().min(SHELL_THICKNESS_MM_MIN).max(SHELL_THICKNESS_MM_MAX).optional(),
+        /**
+         * Device length. Full leaves the #364 outline uncut.
+         * 3/4 stores the Met-head preset. Sulcus stores the Sulcus preset.
+         * Omitted is Full. Unknown text is rejected.
+         */
+        length: catalogLengthSchema.optional(),
         flange: z
             .object({
                 left: flangeSideSchema.optional(),

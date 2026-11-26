@@ -1,4 +1,4 @@
-// orthocad-mcp-http-bundle 9aa2fdab48460007e089b04b0c45864961c43ea77673b3253f5eaa05ebdc2dc7
+// orthocad-mcp-http-bundle c99cce7c2703033b6b2cafe6028fe780d21d2aaa206bb956bcdb4d2abe8ffa60
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -9740,6 +9740,13 @@ function createManufacturingClient(options) {
     getGcodeDownloadUrl(productionId) {
       return trpc.manufacturing.getGcodeDownloadUrl.query({ productionId });
     },
+    /**
+     * Delete cad-operator G-code after VertexOrders attach is confirmed.
+     * Call site: vertex/server/src/routers/manufacturing.ts releaseGcodeAfterVoAttach.
+     */
+    releaseGcodeAfterVoAttach(storageKey) {
+      return trpc.manufacturing.releaseGcodeAfterVoAttach.mutate({ storageKey });
+    },
     /** Status of one CAD-operator production. No G-code bytes. */
     getProduction(productionId) {
       return trpc.manufacturing.getProduction.query({ productionId });
@@ -9752,6 +9759,22 @@ function createManufacturingClient(options) {
     getDesignParams(designId) {
       return trpc.design.get.query({ id: designId });
     },
+    /** Corrections-panel macros. Names only. Call site: manufacturing.listDesignMacros. */
+    listDesignMacros() {
+      return trpc.manufacturing.listDesignMacros.query();
+    },
+    /**
+     * Merge customer then pathology onto settingsJson.
+     * Call site: vertex/server/src/routers/manufacturing.ts applyDesignMacros.
+     * Omit both names and the server does not write.
+     */
+    applyDesignMacros(input) {
+      return trpc.manufacturing.applyDesignMacros.mutate({
+        designId: input.designId,
+        customerMacro: input.customerMacro,
+        pathologyMacro: input.pathologyMacro
+      });
+    },
     /**
      * Replace settingsJson on an existing design with a fail-closed SAMPLE_Top snapshot.
      * Call site: vertex/server/src/routers/manufacturing.ts persistSavedDesignSnapshot.
@@ -9761,7 +9784,8 @@ function createManufacturingClient(options) {
       return trpc.manufacturing.persistSavedDesignSnapshot.mutate({
         designId: input.designId,
         catalog: input.catalog,
-        ...input.manufacturingMethod ? { manufacturingMethod: input.manufacturingMethod } : {}
+        ...input.manufacturingMethod ? { manufacturingMethod: input.manufacturingMethod } : {},
+        ...input.useOrderScans === true ? { useOrderScans: true } : {}
       });
     },
     /**
@@ -9776,7 +9800,8 @@ function createManufacturingClient(options) {
         givenName: input.givenName,
         familyName: input.familyName,
         catalog: input.catalog,
-        ...input.manufacturingMethod ? { manufacturingMethod: input.manufacturingMethod } : {}
+        ...input.manufacturingMethod ? { manufacturingMethod: input.manufacturingMethod } : {},
+        ...input.useOrderScans === true ? { useOrderScans: true } : {}
       });
     }
   };
@@ -20727,6 +20752,8 @@ var MCP_TOOL_REQUIRED_SCOPES = {
   get_design: ["design:read"],
   list_designs_by_order: ["design:read"],
   get_design_params: ["design:read"],
+  list_macros: ["design:read"],
+  apply_macro: ["manufacturing:generate"],
   prepare_manufacturing_stl_upload: ["manufacturing:prepare"],
   list_materials: ["manufacturing:generate"],
   generate_gcode: ["manufacturing:generate"],
@@ -25169,6 +25196,11 @@ function decodeBase64(value) {
   if (bytes.byteLength > MAX_ATTACH_BYTES) throw new Error("Export file is over the 100 MB limit");
   return bytes;
 }
+function isCadOperatorGcodeStorageKey(key) {
+  if (!key) return false;
+  const trimmed = key.trim();
+  return trimmed.startsWith("gcode/cad-operator/") && !trimmed.includes("..") && !trimmed.includes("\\") && !trimmed.includes("//");
+}
 function isCentralFabStlStorageKey(key) {
   if (!key) return false;
   const trimmed = key.trim();
@@ -25307,6 +25339,22 @@ function buildVoAttachFilesHandoff(input) {
     order_status_written: false
   };
 }
+function cadOperatorGcodeKeysForRelease(preparation) {
+  const keys = [];
+  for (const file of preparation.cad_provenance.files) {
+    if (!isCadOperatorGcodeStorageKey(file.storage_key)) continue;
+    const key = file.storage_key.trim();
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+async function releaseGcodeAfterVoAttachConfirmed(preparation, release) {
+  const keys = cadOperatorGcodeKeysForRelease(preparation);
+  for (const key of keys) {
+    await release(key);
+  }
+  return keys;
+}
 
 // packages/mcp/src/tools/print-materials.ts
 var LOCKED_INSOLE_PRESET_ID = "apex-v2-insole-95a";
@@ -25397,6 +25445,12 @@ var listDesignsByOrderInputSchema = external_exports.object({
 var getDesignParamsInputSchema = external_exports.object({
   design_id: external_exports.string().uuid()
 });
+var listMacrosInputSchema = external_exports.object({}).strict();
+var applyMacroInputSchema = external_exports.object({
+  design_id: external_exports.string().uuid(),
+  customer_macro: external_exports.string().trim().min(1).max(120).optional(),
+  pathology_macro: external_exports.string().trim().min(1).max(120).optional()
+}).strict();
 var prepareManufacturingStlUploadInputSchema = external_exports.object({
   side: sideSchema,
   file_name: external_exports.string().max(200).optional()
@@ -25543,6 +25597,22 @@ var wedgeSchema = external_exports.object({
   unit: external_exports.enum(["mm", "deg"]),
   degree_mode: external_exports.enum(["local", "station"]).optional()
 }).strict();
+function mcpCatalogLengthPreset(value) {
+  const key = value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  if (key === "full") return "full";
+  if (key === "sulcus") return "sulcus";
+  if (key === "3/4" || key === "3/4 length" || key === "met head" || key === "methead" || key === "three quarter" || key === "threequarter") {
+    return "met_head";
+  }
+  return null;
+}
+var catalogLengthSchema = external_exports.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    return mcpCatalogLengthPreset(value) ?? value;
+  },
+  external_exports.enum(["full", "met_head", "sulcus"])
+);
 var wedgeFootSchema = external_exports.enum(["left", "right", "both"]).describe(WEDGE_FOOT_FIELD);
 var rearfootWedgeSchema = external_exports.object({
   side: external_exports.enum(["medial", "lateral"]),
@@ -25605,6 +25675,11 @@ var savedDesignCatalogSchema = external_exports.object({
    * Omitted keeps the 2 mm default. Out of range is rejected.
    */
   thickness_mm: external_exports.number().finite().min(1.5).max(8).optional(),
+  /**
+   * Full, 3/4, or Sulcus. 3/4 is the Met-head trim preset. Sulcus is the Sulcus preset.
+   * Full and omitted leave the outline uncut.
+   */
+  length: catalogLengthSchema.optional(),
   flange: external_exports.object({
     left: flangeSideSchema.optional(),
     right: flangeSideSchema.optional()
@@ -25630,7 +25705,12 @@ var createSavedDesignInputSchema = external_exports.object({
   /** Chart label for a new client after the server verifier. Not sent to VertexOrders. */
   given_name: external_exports.string().trim().min(1).max(100).optional(),
   /** Chart label for a new client after the server verifier. Not sent to VertexOrders. */
-  family_name: external_exports.string().trim().min(1).max(100).optional()
+  family_name: external_exports.string().trim().min(1).max(100).optional(),
+  /**
+   * Explicit per-design opt-in. Omitted and false keep SAMPLE_Top and do not
+   * read scans. True builds arch height from the order client's stored scans.
+   */
+  use_order_scans: external_exports.boolean().optional()
 }).strict();
 var attachFileSchema = external_exports.object({
   /** Pair CNC files omit side. combined and both are accepted and not forwarded. */
@@ -25653,6 +25733,12 @@ var prepareVoAttachmentInputSchema = external_exports.object({
   base_asset_id: external_exports.string().trim().min(1).max(80).optional(),
   patient_name: external_exports.string().max(200).optional(),
   material: external_exports.string().max(80).optional(),
+  /**
+   * Set after VertexOrders has accepted the files. Releases cad-operator
+   * G-code keys and does not fetch them again. Omitted leaves objects for
+   * the 24h sweep. Not copied into vo_attach_files.
+   */
+  attach_confirmed: external_exports.boolean().optional(),
   files: external_exports.array(attachFileSchema).min(1).max(2)
 }).strict();
 var persistSavedDesignSnapshotInputSchema = external_exports.object({
@@ -25661,7 +25747,12 @@ var persistSavedDesignSnapshotInputSchema = external_exports.object({
   catalog: savedDesignCatalogSchema.optional(),
   /** Accepted and dropped. Clinical values are not read from free text. */
   rx_text: external_exports.string().max(8e3).optional(),
-  notes: external_exports.string().max(8e3).optional()
+  notes: external_exports.string().max(8e3).optional(),
+  /**
+   * Explicit per-design opt-in. Omitted and false keep SAMPLE_Top and do not
+   * read scans. True builds arch height from the design client's stored scans.
+   */
+  use_order_scans: external_exports.boolean().optional()
 }).strict();
 var MCP_TOOL_DEFINITIONS = [
   {
@@ -25680,6 +25771,16 @@ var MCP_TOOL_DEFINITIONS = [
     inputSchema: getDesignParamsInputSchema
   },
   {
+    name: "list_macros",
+    description: "Customer and pathology correction macros the Corrections panel Merge button applies. Customer macros are clinic starting points. Pathology macros are the Vertex starters (Planus is also accepted as pes planus). Returns id, name, kind, description, and aliases. Does not return millimetre payloads and does not write a design. A name that is not in this list is not a macro. Auth: CAD-operator key, design:read.",
+    inputSchema: listMacrosInputSchema
+  },
+  {
+    name: "apply_macro",
+    description: "Merge saved correction macros onto one design the way the Corrections panel Merge button does. customer_macro is applied first, then pathology_macro. Both names are optional. Omit both and the saved design is not written. Unknown names are refused and are not guessed. Millimetre payloads are not accepted. Merge keeps correction keys the macro does not set. Suggested elements are not placed. Writes settingsJson on that design. The next generate_gcode lofts from the saved design. Auth: CAD-operator key, manufacturing:generate.",
+    inputSchema: applyMacroInputSchema
+  },
+  {
     name: "prepare_manufacturing_stl_upload",
     description: "Signed URL to upload finalized STL (CAD build is client-side in OrthoCAD). Auth: CAD-operator key.",
     inputSchema: prepareManufacturingStlUploadInputSchema
@@ -25691,7 +25792,7 @@ var MCP_TOOL_DEFINITIONS = [
   },
   {
     name: "generate_gcode",
-    description: 'Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. The server lofts and slices after that response. Poll get_production. Download with get_export_download only after succeeded. A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset. Set force_new_slice to true (saved-design only) after a slicer fix or design change to enqueue a fresh slice without reusing a succeeded production; in-flight work is still reused. No STL deliverable and no G-code bytes. Omitting side enqueues both feet. Legacy mode still calls manufacturing.generateSolid \u2192 Python /manufacture with stl_storage_key. PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck. material: omit for apex_core, or pass apex_light, apex_core, apex_bounce, apex_forge, or a list_materials alias ("ApexLight Foam" is apex_light). Unknown materials are rejected and not substituted. preset_id: omit or pass apex-v2-insole-95a. Any other preset_id is rejected and not substituted. Every enabled insole material keeps that locked profile.',
+    description: 'Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. The server lofts and slices after that response. Poll get_production. Download with get_export_download only after succeeded. A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset, and runs a failed production again. A pair retries submit unavailable, fetch failed, and lease expiry; any other failure names that foot and does not return one foot. Set force_new_slice to true (saved-design only) after a slicer fix or design change to enqueue a fresh slice without reusing a succeeded production; in-flight work is still reused. No STL deliverable and no G-code bytes. Omitting side enqueues both feet. Legacy mode still calls manufacturing.generateSolid \u2192 Python /manufacture with stl_storage_key. PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck. material: omit for apex_core, or pass apex_light, apex_core, apex_bounce, apex_forge, or a list_materials alias ("ApexLight Foam" is apex_light). Unknown materials are rejected and not substituted. preset_id: omit or pass apex-v2-insole-95a. Any other preset_id is rejected and not substituted. Every enabled insole material keeps that locked profile.',
     inputSchema: generateGcodeInputObjectSchema
   },
   {
@@ -25726,12 +25827,12 @@ var MCP_TOOL_DEFINITIONS = [
   },
   {
     name: "persist_saved_design_snapshot",
-    description: "Update one existing design's settingsJson in place with a loftable SAMPLE_Top parameter snapshot for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide|xx_wide), arch (low|medium|standard|high \u2192 \u22123.5|0|0|+3 mm), flexible_foot (true \u2192 apex +4 mm on both feet), elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys). rearfoot_posting_deg on sliders or sliders_by_side: Positive is valgus (lateral high, pronation). Negative is varus (medial high, supination). The solid migrates a positive degree to a lateral rearfoot wedge and a negative degree to a medial rearfoot wedge, then clears the slider. Zero is no post. flange.left, flange.right, flange.left.medial_mm, flange.left.lateral_mm, flange.left.level, flange.right.medial_mm, flange.right.lateral_mm, flange.right.level (per-foot medial/lateral flange 0\u20138 mm; omit medial_mm and lateral_mm for 3 mm default, mild level 2 mm, standard/unspecified 3 mm, high 6 mm; out of range is 422, not clamped; omitted flange leaves flanges unchanged), rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, rearfoot_wedge.foot (left|right|both; omit or both posts both feet; left or right posts that foot only and unlinks corrections), forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit, full_length_wedge.foot (left|right|both; omit or both posts both feet; left or right posts that foot only and unlinks corrections), manufacturing_method (printing_solid or milling_3axis). Omit it to leave the order a print (the method column is not written). milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. It is not inferred from material, hardness, or thickness. thickness_mm (shell thickness, design.thicknessMm, 1.5\u20138 mm inclusive). thickness_mm is the labelled shell/base clearance, not the zonal rear/mid/fore walls. When set, settings store that clearance and uniform shell mode so the loft uses the shell-thickness slider. When omitted, thickness stays 2 mm and the zonal shell is unchanged. Out of range is 422 and is not clamped. Ignored and never mapped: rx_text, notes, rigidity, extra_soft. sliders.arch_ease_mm is accepted and not applied (migrated to 0). sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. Absent width is Medium and recorded as defaulted, not prescribed. 422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, or a catalog field is unrecognized. Does not write File Ready, In Production, STL, or scan geometry.",
+    description: "Update one existing design's settingsJson in place with a loftable SAMPLE_Top parameter snapshot for use_saved_design. Requires design_id. Copies stored integration-link shoe size and width when present. Optional catalog keys (VertexOrders): shoe_size.system (US_M|US_W|EU), shoe_size.size, shoe_size.left, shoe_size.right, width (narrow|medium|wide|extra_narrow|extra_wide|xx_wide), arch (low|medium|standard|high \u2192 \u22123.5|0|0|+3 mm), flexible_foot (true \u2192 apex +4 mm on both feet), elements.name, elements.side (left|right), elements.height_mm (omit for the built-in magnitude), sinks.name or sinks.kind (mpj1, mpj2, mpj3, mpj4, mpj5, rkw, styloid; aliases include 1st MPJ and 1st met head), sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys). rearfoot_posting_deg on sliders or sliders_by_side: Positive is valgus (lateral high, pronation). Negative is varus (medial high, supination). The solid migrates a positive degree to a lateral rearfoot wedge and a negative degree to a medial rearfoot wedge, then clears the slider. Zero is no post. flange.left, flange.right, flange.left.medial_mm, flange.left.lateral_mm, flange.left.level, flange.right.medial_mm, flange.right.lateral_mm, flange.right.level (per-foot medial/lateral flange 0\u20138 mm; omit medial_mm and lateral_mm for 3 mm default, mild level 2 mm, standard/unspecified 3 mm, high 6 mm; out of range is 422, not clamped; omitted flange leaves flanges unchanged), rearfoot_wedge.side, rearfoot_wedge.value, rearfoot_wedge.unit, rearfoot_wedge.degree_mode, rearfoot_wedge.foot (left|right|both; omit or both posts both feet; left or right posts that foot only and unlinks corrections), forefoot_wedge.side, forefoot_wedge.value, forefoot_wedge.unit, forefoot_wedge.degree_mode, full_length_wedge.side, full_length_wedge.value, full_length_wedge.unit, full_length_wedge.foot (left|right|both; omit or both posts both feet; left or right posts that foot only and unlinks corrections), manufacturing_method (printing_solid or milling_3axis). Omit it to leave the order a print (the method column is not written). milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. It is not inferred from material, hardness, or thickness. thickness_mm (shell thickness, design.thicknessMm, 1.5\u20138 mm inclusive). thickness_mm is the labelled shell/base clearance, not the zonal rear/mid/fore walls. When set, settings store that clearance and uniform shell mode so the loft uses the shell-thickness slider. When omitted, thickness stays 2 mm and the zonal shell is unchanged. Out of range is 422 and is not clamped. length is Full, 3/4, or Sulcus. 3/4 stores the Met-head trim preset (medial landmark 66% from the heel). Sulcus stores the Sulcus preset (72% from the heel). Full and omitted leave the outline uncut. The choice is saved on settings.trimPreset for both feet. Unknown length text is 422. Ignored and never mapped: rx_text, notes, rigidity, extra_soft. sliders.arch_ease_mm is accepted and not applied (migrated to 0). sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. Absent width is Medium and recorded as defaulted, not prescribed. 422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, or a catalog field is unrecognized. Does not write File Ready, In Production, or STL. Omitted use_order_scans does not read scans and does not write scan geometry (scans_used stays false). use_order_scans true is the explicit per-design option: import the design client's stored left and right scans with the Scan step's cleanup, measure arch height the way Generate Orthotic does, and set that arch-height slider on each scanned foot. A side with no stored scan keeps its catalog correction. The mesh stays SAMPLE_Top. Left and right are not linked. catalog.arch, when present, replaces the scan class. Other catalog corrections, elements, and sinks stay. The newest stored file is used when one side has more than one. A missing scan or a failed measurement is 422 and does not write the template. Shoe size is not taken from the scan.",
     inputSchema: persistSavedDesignSnapshotInputSchema
   },
   {
     name: "create_saved_design",
-    description: "Refresh the dogfood SAMPLE_Top design already bound to an existing VertexOrders order. Source is vo2 and the tenant is the internal dogfood tenant. Does not take a clinic tenant id. client_id is optional and only confirms the client already stored on that order. patient_name, an external client id, and a name are not accepted as identity. given_name and family_name are chart labels for a new client after the server verifier and are not sent as order-owner proof. A different client_id, more than one link, or a client outside the dogfood tenant fails closed with no write and no tenant change. When the order-owner verifier is unconfigured or refuses, this does not create a client or a design and does not call integration client upsert. A server verifier may bind the verified person for this dogfood order. Caller fields are not that verifier. CAD-operator scopes cannot assert the order's person. A bound refresh uses the saved-design snapshot rules. No scan upload. Optional manufacturing_method is printing_solid or milling_3axis. Omit it and the new order stays a print. milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. It is not inferred from material, hardness, or thickness. Optional catalog.thickness_mm sets shell thickness in mm (1.5\u20138, default 2 when omitted). Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. rearfoot_wedge.foot and full_length_wedge.foot are left, right, or both; omit either to post both feet. rearfoot_posting_deg: Positive is valgus (lateral high, pronation). Negative is varus (medial high, supination). flange.left / flange.right set medial_mm and lateral_mm (0\u20138) per foot; omit those mm for 3 mm default, or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. Medium width is used only when width is absent and is recorded as defaulted, not prescribed. Missing shoe size or an unknown hardness returns a question for the user and does not guess.",
+    description: "Refresh the dogfood SAMPLE_Top design already bound to an existing VertexOrders order. Source is vo2 and the tenant is the internal dogfood tenant. Does not take a clinic tenant id. client_id is optional and only confirms the client already stored on that order. patient_name, an external client id, and a name are not accepted as identity. given_name and family_name are chart labels for a new client after the server verifier and are not sent as order-owner proof. A different client_id, more than one link, or a client outside the dogfood tenant fails closed with no write and no tenant change. When the order-owner verifier is unconfigured or refuses, this does not create a client or a design and does not call integration client upsert. A server verifier may bind the verified person for this dogfood order. Caller fields are not that verifier. CAD-operator scopes cannot assert the order's person. A bound refresh uses the saved-design snapshot rules. No scan upload. Optional manufacturing_method is printing_solid or milling_3axis. Omit it and the new order stays a print. milling_3axis sets design.method and both feet so generate_cnc_gcode accepts one pair file. It is not inferred from material, hardness, or thickness. Optional catalog.thickness_mm sets shell thickness in mm (1.5\u20138, default 2 when omitted). Optional catalog.length is Full, 3/4, or Sulcus. 3/4 is the Met-head preset and Sulcus is the Sulcus preset. Full and omitted do not cut the outline. The preset is stored for both feet. Catalog sinks[] places an existing subtractive sink (mpj1 / 1st MPJ / 1st met head, and the other library kinds) on the named side. depth_mm defaults to 2 mm, must be greater than 0, and must not exceed that kind's maximum (mpj1 max 4 mm). Omit u and v so placement matches the human UI. Omit forefoot_wedge for a flat forefoot. rearfoot_wedge.foot and full_length_wedge.foot are left, right, or both; omit either to post both feet. rearfoot_posting_deg: Positive is valgus (lateral high, pronation). Negative is varus (medial high, supination). flange.left / flange.right set medial_mm and lateral_mm (0\u20138) per foot; omit those mm for 3 mm default, or set level mild (2 mm), standard/unspecified (3 mm), or high (6 mm). Out of range is 422. elements[] stays additive: heel_sink, navicular_sink, and dancers_pad there are raises, not a met-head cut. Medium width is used only when width is absent and is recorded as defaulted, not prescribed. Missing shoe size or an unknown hardness returns a question for the user and does not guess. Omitted use_order_scans keeps that template and does not read scans (scans_used stays false). use_order_scans true is the explicit per-design option: import the order client's stored scans with the Scan step's cleanup and set each scanned foot's arch-height slider the way Generate Orthotic does. A side with no stored scan keeps its catalog correction. The mesh stays SAMPLE_Top. Left and right are not linked, so a left foot can differ from the right. catalog.arch, when present, replaces the scan class. Other catalog corrections, elements, and sinks stay. The newest stored file is used when one side has more than one. A missing scan or a failed measurement is 422 and does not substitute the template. Shoe size is not taken from the scan.",
     inputSchema: createSavedDesignInputSchema
   },
   {
@@ -25773,6 +25874,22 @@ function questionFromMessage(message) {
       ]
     };
   }
+  const macro = /No (customer|pathology) macro named "([^"]+)"/.exec(message);
+  if (macro) {
+    const kind = macro[1] === "customer" ? "customer" : "pathology";
+    const name = macro[2] ?? "";
+    return {
+      ok: false,
+      ask: "user",
+      relay: "none",
+      questions: [
+        {
+          field: kind === "customer" ? "customer_macro" : "pathology_macro",
+          prompt: `No ${kind} macro named "${name}" is saved. Apply refuses to guess corrections. Which saved macro should be used?`
+        }
+      ]
+    };
+  }
   if (/hardness/i.test(message) && /refus|guess|known/i.test(message)) {
     return {
       ok: false,
@@ -25799,6 +25916,29 @@ function assertToolNotHeld(value) {
 var PRODUCTION_STATUSES = /* @__PURE__ */ new Set(["pending", "running", "succeeded", "failed"]);
 var PRODUCTION_TERMINAL_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed"]);
 var GET_PRODUCTION_POLL_INTERVAL_MS = 2e3;
+var GENERATE_ENQUEUE_ATTEMPT_MS = 12e3;
+var GENERATE_ENQUEUE_ATTEMPTS = 3;
+function isTransientGenerateFailure(message) {
+  if (/VertexSlice (?:slice exceeded|queue wait exceeded|timed out after)/.test(message)) return false;
+  return /submit unavailable|fetch failed|Production lease expired|Manufacturing timed out \(|generate enqueue timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up/i.test(
+    message
+  );
+}
+function withEnqueueDeadline(work, ms = GENERATE_ENQUEUE_ATTEMPT_MS) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("generate enqueue timed out")), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error2) => {
+        clearTimeout(timer);
+        reject(error2);
+      }
+    );
+  });
+}
 function sleepMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -25950,26 +26090,42 @@ async function dispatchTool(name, args, deps) {
               input.file_name,
               exportBase
             );
-            try {
-              const result = await manufacturing.generateFromSavedDesign({
-                designId,
-                side,
-                presetId,
-                material,
-                fileName: exportFileName,
-                patientName: input.patient_name,
-                hardness: input.hardness,
-                forceNewSlice: input.force_new_slice === true
-              });
-              return { side, exportFileName, result, error: null };
-            } catch (error2) {
-              return {
-                side,
-                exportFileName,
-                result: null,
-                error: error2 instanceof Error ? error2 : new Error(String(error2))
-              };
+            let lastError = null;
+            for (let attempt = 1; attempt <= GENERATE_ENQUEUE_ATTEMPTS; attempt++) {
+              try {
+                const result = await withEnqueueDeadline(
+                  manufacturing.generateFromSavedDesign({
+                    designId,
+                    side,
+                    presetId,
+                    material,
+                    fileName: exportFileName,
+                    patientName: input.patient_name,
+                    hardness: input.hardness,
+                    forceNewSlice: input.force_new_slice === true
+                  })
+                );
+                const fields = result;
+                const failed = typeof result.status === "string" && result.status === "failed" && isTransientGenerateFailure(textField(fields, "error") ?? "");
+                if (failed && attempt < GENERATE_ENQUEUE_ATTEMPTS) {
+                  lastError = new Error(textField(fields, "error") ?? "transient");
+                  continue;
+                }
+                return { side, exportFileName, result, error: null };
+              } catch (error2) {
+                lastError = error2 instanceof Error ? error2 : new Error(String(error2));
+                if (attempt < GENERATE_ENQUEUE_ATTEMPTS && isTransientGenerateFailure(lastError.message)) {
+                  continue;
+                }
+                return { side, exportFileName, result: null, error: lastError };
+              }
             }
+            return {
+              side,
+              exportFileName,
+              result: null,
+              error: lastError ?? new Error("generate enqueue timed out")
+            };
           })
         );
         const files = [];
@@ -25983,6 +26139,11 @@ async function dispatchTool(name, args, deps) {
             throw entry.error;
           }
           const result = entry.result;
+          if (pairEnqueue && typeof result.status === "string" && result.status === "failed") {
+            throw new Error(
+              `Belt pair failed on the ${entry.side} foot. No partial pair is returned. ${textField(result, "error") ?? "Manufacturing failed"}`
+            );
+          }
           if (isUserQuestion(result)) {
             const partialSuccess = sideOutcomes.some(
               (other) => other !== entry && other.result && !isUserQuestion(other.result) && !other.error
@@ -26144,6 +26305,33 @@ async function dispatchTool(name, args, deps) {
       const input = buildDesignExportedPayloadInputSchema.parse(args);
       return buildDesignExportedPayload(input);
     }
+    case "list_macros": {
+      listMacrosInputSchema.parse(args);
+      const manufacturing = deps.manufacturing ?? (await Promise.resolve().then(() => (init_manufacturing_client(), manufacturing_client_exports))).createManufacturingClient({
+        trpcUrl: deps.config.trpcUrl,
+        cadOperatorKey: requireCadOperatorKey(deps.config)
+      });
+      return manufacturing.listDesignMacros();
+    }
+    case "apply_macro": {
+      const input = applyMacroInputSchema.parse(args);
+      assertToolNotHeld(input.design_id);
+      const manufacturing = deps.manufacturing ?? (await Promise.resolve().then(() => (init_manufacturing_client(), manufacturing_client_exports))).createManufacturingClient({
+        trpcUrl: deps.config.trpcUrl,
+        cadOperatorKey: requireCadOperatorKey(deps.config)
+      });
+      try {
+        return await manufacturing.applyDesignMacros({
+          designId: input.design_id,
+          customerMacro: input.customer_macro,
+          pathologyMacro: input.pathology_macro
+        });
+      } catch (error2) {
+        const question = questionFromMessage(error2 instanceof Error ? error2.message : String(error2));
+        if (question) return question;
+        throw error2;
+      }
+    }
     case "persist_saved_design_snapshot": {
       const input = persistSavedDesignSnapshotInputSchema.parse(args);
       assertToolNotHeld(input.design_id);
@@ -26155,7 +26343,8 @@ async function dispatchTool(name, args, deps) {
         return await manufacturing.persistSavedDesignSnapshot({
           designId: input.design_id,
           catalog: input.catalog,
-          ...input.manufacturing_method ? { manufacturingMethod: input.manufacturing_method } : {}
+          ...input.manufacturing_method ? { manufacturingMethod: input.manufacturing_method } : {},
+          ...input.use_order_scans === true ? { useOrderScans: true } : {}
         });
       } catch (error2) {
         const question = questionFromMessage(error2 instanceof Error ? error2.message : String(error2));
@@ -26178,7 +26367,8 @@ async function dispatchTool(name, args, deps) {
           givenName: input.given_name,
           familyName: input.family_name,
           catalog: input.catalog,
-          ...input.manufacturing_method ? { manufacturingMethod: input.manufacturing_method } : {}
+          ...input.manufacturing_method ? { manufacturingMethod: input.manufacturing_method } : {},
+          ...input.use_order_scans === true ? { useOrderScans: true } : {}
         });
       } catch (error2) {
         const question = questionFromMessage(error2 instanceof Error ? error2.message : String(error2));
@@ -26188,7 +26378,18 @@ async function dispatchTool(name, args, deps) {
     }
     case "prepare_vo_attachment": {
       const input = prepareVoAttachmentInputSchema.parse(args);
-      return buildVoAttachFilesHandoff(input);
+      const preparation = buildVoAttachFilesHandoff(input);
+      if (input.attach_confirmed === true) {
+        const release = deps.releaseGcodeAfterVoAttach ?? (async (storageKey) => {
+          const manufacturing = deps.manufacturing ?? (await Promise.resolve().then(() => (init_manufacturing_client(), manufacturing_client_exports))).createManufacturingClient({
+            trpcUrl: deps.config.trpcUrl,
+            cadOperatorKey: requireCadOperatorKey(deps.config)
+          });
+          await manufacturing.releaseGcodeAfterVoAttach(storageKey);
+        });
+        await releaseGcodeAfterVoAttachConfirmed(preparation, release);
+      }
+      return preparation;
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

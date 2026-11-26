@@ -78,9 +78,6 @@ function exportIo(
         signedOutputUrl: async () => "https://files.example.test/out.gcode",
         updateExportStorage: async () => {},
         updateProductionGcode: async () => {},
-        archiveSourceStl: async () => {
-            calls.push("archive");
-        },
         deleteTemp: async () => {
             calls.push("delete");
         },
@@ -169,9 +166,6 @@ describe("session generateSolid", () => {
             signedOutputUrl: async () => "https://files.example.test/out.gcode",
             updateExportStorage: async () => {},
             updateProductionGcode: async () => {},
-            archiveSourceStl: async () => {
-                order.push("archive");
-            },
             deleteTemp: async () => {
                 order.push("delete");
             },
@@ -197,7 +191,7 @@ describe("session generateSolid", () => {
             io,
         });
 
-        expect(order).toEqual(["license", "design", "slice", "charge", "upload", "archive"]);
+        expect(order).toEqual(["license", "design", "slice", "charge", "upload", "delete"]);
         expect(infill).toBe(32);
         expect(charges).toHaveLength(1);
         expect(charges[0]).not.toHaveProperty("p_production_id");
@@ -473,7 +467,6 @@ describe("session generateSolid", () => {
             signedOutputUrl: async () => "https://files.example.test/out.gcode",
             updateExportStorage: async () => undefined,
             updateProductionGcode: async () => undefined,
-            archiveSourceStl: async () => undefined,
             deleteTemp: async () => undefined,
         });
         const input = {
@@ -551,7 +544,6 @@ function sessionIo(args: {
         signedOutputUrl: async () => "https://files.example.test/out.gcode",
         updateExportStorage: async () => undefined,
         updateProductionGcode: async () => undefined,
-        archiveSourceStl: async () => undefined,
         deleteTemp: async () => undefined,
     };
 }

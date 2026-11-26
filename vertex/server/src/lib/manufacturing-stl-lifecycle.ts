@@ -2,47 +2,19 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
-    buildManufacturingArchiveStlKey,
-    copyStorageObject,
     deleteAsset,
-    deleteManufacturingTempBestEffort,
+    GCODE_STORAGE_PREFIX,
+    isManufacturingTempKey,
+    MANUFACTURING_ARCHIVE_PREFIX,
     MANUFACTURING_BUCKET,
     MANUFACTURING_TEMP_PREFIX,
 } from "./storage.js";
 
-/**
- * After a successful manufacturing job, archive the submitted STL and remove the temp copy.
- * Failures are logged but do not fail the request.
- */
-export async function archiveManufacturingSourceStl(
-    supabase: SupabaseClient,
-    opts: { userId: string; exportId: string; tempStlKey: string },
-): Promise<void> {
-    const archiveKey = buildManufacturingArchiveStlKey(opts.userId, opts.exportId);
-    try {
-        await copyStorageObject(supabase, opts.tempStlKey, archiveKey, "model/stl", MANUFACTURING_BUCKET);
-        const { error } = await supabase
-            .from("exports")
-            .update({ sourceStlPath: archiveKey })
-            .eq("id", opts.exportId);
-        if (error) {
-            throw new Error(error.message);
-        }
-        await deleteAsset(supabase, opts.tempStlKey, MANUFACTURING_BUCKET);
-        console.log("[manufacturing] archived source STL", {
-            exportId: opts.exportId,
-            archiveKey,
-        });
-    } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error("[manufacturing] FAILED to archive source STL — temp will expire via TTL job", {
-            exportId: opts.exportId,
-            tempStlKey: opts.tempStlKey,
-            archiveKey,
-            message,
-        });
-    }
-}
+/** Sweep never keeps a manufacturing temp or G-code object longer than this. */
+export const MANUFACTURING_SWEEP_MAX_AGE_HOURS = 24;
+
+const MS_PER_HOUR = 60 * 60 * 1000;
+const LIST_DEPTH_LIMIT = 8;
 
 export interface ManufacturingTempCleanupSummary {
     scanned: number;
@@ -50,51 +22,189 @@ export interface ManufacturingTempCleanupSummary {
     errors: string[];
 }
 
-const MS_PER_HOUR = 60 * 60 * 1000;
+export interface StoredManufacturingInventory {
+    manufacturingArchive: string[];
+    staleManufacturingTemp: string[];
+    staleGcode: string[];
+}
 
 /**
- * Delete manufacturing-temp objects older than `maxAgeHours` (by Storage `created_at`).
+ * Dry-run plan for the inventory script. `--confirm` is recognized and still
+ * does not delete. Existing-object removal is a separate approved step.
+ */
+export function storedManufacturingListPlan(argv: readonly string[]): {
+    confirmRequested: boolean;
+    deletes: false;
+} {
+    return {
+        confirmRequested: argv.includes("--confirm"),
+        deletes: false,
+    };
+}
+
+function cappedSweepAgeHours(maxAgeHours: number): number {
+    if (!Number.isFinite(maxAgeHours) || maxAgeHours <= 0) return MANUFACTURING_SWEEP_MAX_AGE_HOURS;
+    return Math.min(maxAgeHours, MANUFACTURING_SWEEP_MAX_AGE_HOURS);
+}
+
+/**
+ * Drop a temp STL after slice success or failure.
+ * Does not copy to manufacturing-archive and does not write exports.sourceStlPath.
+ */
+export async function discardManufacturingTempStl(
+    supabase: SupabaseClient | null | undefined,
+    tempStlKey: string | undefined,
+): Promise<void> {
+    if (!supabase || !tempStlKey || !isManufacturingTempKey(tempStlKey)) return;
+    try {
+        await deleteAsset(supabase, tempStlKey, MANUFACTURING_BUCKET);
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[manufacturing] failed to delete temp STL", { key: tempStlKey, message });
+    }
+}
+
+/** Fire-and-forget wrapper kept for callers that must not await storage. */
+export function deleteManufacturingTempBestEffort(
+    supabase: SupabaseClient | null | undefined,
+    key: string | undefined,
+): void {
+    void discardManufacturingTempStl(supabase, key);
+}
+
+export function isCadOperatorGcodeStorageKey(key: string): boolean {
+    const trimmed = key.trim();
+    return (
+        trimmed.startsWith("gcode/cad-operator/") &&
+        !trimmed.includes("..") &&
+        !trimmed.includes("\\") &&
+        !trimmed.includes("//")
+    );
+}
+
+/**
+ * Delete one cad-operator G-code object after VertexOrders attach is confirmed.
+ * UI G-code (`gcode/{designId}/…`) stays until the sweep so the signed URL still works.
+ */
+export async function deleteCadOperatorGcodeAfterVoAttach(
+    supabase: SupabaseClient | null | undefined,
+    storageKey: string,
+): Promise<boolean> {
+    if (!supabase || !isCadOperatorGcodeStorageKey(storageKey)) return false;
+    try {
+        await deleteAsset(supabase, storageKey.trim(), MANUFACTURING_BUCKET);
+        return true;
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[manufacturing] failed to delete G-code after VO attach", {
+            key: storageKey,
+            message,
+        });
+        return false;
+    }
+}
+
+/**
+ * Delete manufacturing-temp and gcode objects older than `maxAgeHours`.
+ * Age is capped at 24 hours. manufacturing-archive objects are left in place.
  */
 export async function cleanupManufacturingTempObjects(
     supabase: SupabaseClient,
-    maxAgeHours = 48,
+    maxAgeHours = MANUFACTURING_SWEEP_MAX_AGE_HOURS,
     bucket = MANUFACTURING_BUCKET,
+    nowMs = Date.now(),
 ): Promise<ManufacturingTempCleanupSummary> {
     const summary: ManufacturingTempCleanupSummary = { scanned: 0, deleted: 0, errors: [] };
-    const cutoff = Date.now() - maxAgeHours * MS_PER_HOUR;
-
-    const userFolders = await listAll(supabase, bucket, MANUFACTURING_TEMP_PREFIX.replace(/\/$/, ""));
-    for (const folder of userFolders) {
-        if (folder.id !== null) continue;
-        const userPrefix = `${MANUFACTURING_TEMP_PREFIX}${folder.name}`;
-        const files = await listAll(supabase, bucket, userPrefix);
-        for (const file of files) {
-            if (file.id === null || !file.name.endsWith(".stl")) continue;
-            summary.scanned += 1;
-            const key = `${userPrefix}/${file.name}`;
-            const createdAt = file.created_at ? Date.parse(file.created_at) : Number.NaN;
-            if (!Number.isFinite(createdAt)) {
-                summary.errors.push(`missing created_at for ${key}`);
-                continue;
-            }
-            if (createdAt >= cutoff) continue;
-            try {
-                await deleteAsset(supabase, key, bucket);
-                summary.deleted += 1;
-            } catch (err: unknown) {
-                const message = err instanceof Error ? err.message : String(err);
-                summary.errors.push(`${key}: ${message}`);
-            }
+    const cutoff = nowMs - cappedSweepAgeHours(maxAgeHours) * MS_PER_HOUR;
+    const objects = [
+        ...(await collectStorageObjects(supabase, bucket, MANUFACTURING_TEMP_PREFIX)),
+        ...(await collectStorageObjects(supabase, bucket, GCODE_STORAGE_PREFIX)),
+    ];
+    for (const object of objects) {
+        summary.scanned += 1;
+        if (object.createdAtMs === null) {
+            summary.errors.push(`missing created_at for ${object.key}`);
+            continue;
+        }
+        if (object.createdAtMs >= cutoff) continue;
+        try {
+            await deleteAsset(supabase, object.key, bucket);
+            summary.deleted += 1;
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            summary.errors.push(`${object.key}: ${message}`);
         }
     }
-
     return summary;
+}
+
+/**
+ * List manufacturing-archive objects (any age) and stale manufacturing-temp
+ * and gcode objects. Never deletes.
+ */
+export async function listStoredManufacturingFiles(
+    supabase: SupabaseClient,
+    maxAgeHours = MANUFACTURING_SWEEP_MAX_AGE_HOURS,
+    bucket = MANUFACTURING_BUCKET,
+    nowMs = Date.now(),
+): Promise<StoredManufacturingInventory> {
+    const cutoff = nowMs - cappedSweepAgeHours(maxAgeHours) * MS_PER_HOUR;
+    const archive = await collectStorageObjects(supabase, bucket, MANUFACTURING_ARCHIVE_PREFIX);
+    const temps = await collectStorageObjects(supabase, bucket, MANUFACTURING_TEMP_PREFIX);
+    const gcode = await collectStorageObjects(supabase, bucket, GCODE_STORAGE_PREFIX);
+    return {
+        manufacturingArchive: archive.map((object) => object.key).sort(),
+        staleManufacturingTemp: temps
+            .filter((object) => object.createdAtMs !== null && object.createdAtMs < cutoff)
+            .map((object) => object.key)
+            .sort(),
+        staleGcode: gcode
+            .filter((object) => object.createdAtMs !== null && object.createdAtMs < cutoff)
+            .map((object) => object.key)
+            .sort(),
+    };
 }
 
 interface ListedObject {
     name: string;
     id: string | null;
     created_at?: string;
+}
+
+interface StoredObject {
+    key: string;
+    createdAtMs: number | null;
+}
+
+async function collectStorageObjects(
+    supabase: SupabaseClient,
+    bucket: string,
+    prefix: string,
+): Promise<StoredObject[]> {
+    const out: StoredObject[] = [];
+    await walkStorage(supabase, bucket, prefix.replace(/\/$/, ""), 0, out);
+    return out;
+}
+
+async function walkStorage(
+    supabase: SupabaseClient,
+    bucket: string,
+    prefix: string,
+    depth: number,
+    out: StoredObject[],
+): Promise<void> {
+    if (depth > LIST_DEPTH_LIMIT) return;
+    const items = await listAll(supabase, bucket, prefix);
+    for (const item of items) {
+        if (!item.name || item.name === ".emptyFolderPlaceholder" || item.name.includes("..")) continue;
+        const key = `${prefix}/${item.name}`;
+        if (item.id === null) {
+            await walkStorage(supabase, bucket, key, depth + 1, out);
+            continue;
+        }
+        const createdAtMs = item.created_at ? Date.parse(item.created_at) : Number.NaN;
+        out.push({ key, createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : null });
+    }
 }
 
 async function listAll(supabase: SupabaseClient, bucket: string, prefix: string): Promise<ListedObject[]> {
@@ -119,5 +229,3 @@ async function listAll(supabase: SupabaseClient, bucket: string, prefix: string)
     }
     return out;
 }
-
-export { deleteManufacturingTempBestEffort };

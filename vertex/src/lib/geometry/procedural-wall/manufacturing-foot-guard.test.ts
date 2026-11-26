@@ -34,8 +34,8 @@ import {
 const SAMPLE_TOP = resolve(process.cwd(), "vertex/public/Templates/SAMPLE_Top.glb");
 const FONT = resolve(process.cwd(), "vertex/public/fonts/Inter-Bold.ttf");
 
-/** Synthetic marking only. No patient string. */
-const MARK = "TEST";
+/** Synthetic marking only. No patient string. Counters (A, B, O, R) stay open. */
+const MARK = "JABBOUR";
 
 function design2e781189(): DesignState {
     const design = createDesignWithStockPlaceholder();
@@ -217,6 +217,13 @@ describe("design 2e781189 headless export", () => {
             expect(uiIou, `${side} UI vs SAMPLE_Top`).toBeGreaterThanOrEqual(0.97);
             expect(headIou, `${side} headless vs SAMPLE_Top`).toBeGreaterThanOrEqual(0.97);
             expect(cross, `${side} headless vs UI`).toBeGreaterThanOrEqual(0.98);
+            const uiMid = narrowestMidfoot(uiPos);
+            const headMid = narrowestMidfoot(headPos);
+            // This US M6 narrow foot's midfoot is the composed outline (~61 mm),
+            // not the waisted parametric last (~44 mm). Headless matches UI.
+            expect(Math.abs(uiMid - headMid), `${side} midfoot UI vs headless`).toBeLessThan(1.5);
+            expect(uiMid, `${side} UI midfoot`).toBeGreaterThan(58);
+            expect(headMid, `${side} headless midfoot`).toBeGreaterThan(58);
             const uiTris = triangleCount(ui);
             expect(Math.abs(head.solidTriangles - uiTris) / uiTris, `${side} triangle class`).toBeLessThan(
                 0.02,
@@ -302,6 +309,236 @@ describe("production right-foot plantar name", () => {
         }
     }, 600_000);
 });
+
+/**
+ * Design ffcfa6f9. US men 6.5, medium, corrections 0, no elements, thickness 2,
+ * printing_solid, apex-belt Hard. KANDIS MAAR is the two-word line that left
+ * the letter floor open. MANDIS KAAR is the same letters in the other order.
+ * Counters are A, D, and R. The headless belt export runs assertExactManifold
+ * and refuses the upload when that check throws.
+ */
+const MAAR_NAMES = ["MANDIS KAAR", "KANDIS MAAR"] as const;
+
+function designFfcfa6f9(): DesignState {
+    const design = createDesignWithStockPlaceholder();
+    design.method = "printing_solid";
+    design.pattern = "full_contact";
+    design.thicknessMm = 2;
+    design.sizeSystem = "us";
+    design.usMenSize = 6.5;
+    design.shoeWidth = "medium";
+    design.shoeWidthBySide = { left: "medium", right: "medium" };
+    design.elements = [];
+    design.shellThicknessMode = "zonal";
+    design.shellThicknessFfMm = 2;
+    design.shellThicknessMfMm = 2.5;
+    design.shellThicknessRfMm = 3;
+    design.shellThicknessBlendMm = 12;
+    design.corrections = {
+        ...design.corrections,
+        linked: true,
+        unit: "mm",
+        left: { ...design.corrections.left, archElongationMm: 0 },
+        right: { ...design.corrections.right, archElongationMm: 0 },
+    };
+    if (design.paired) {
+        design.paired = {
+            ...design.paired,
+            linked: false,
+            leftThicknessMm: 2,
+            rightThicknessMm: 2,
+            leftMethod: "printing_solid",
+            rightMethod: "printing_solid",
+        };
+    }
+    if (design.printRecipe) {
+        design.printRecipe = { ...design.printRecipe, defaultHardness: "Hard", profileId: "apex-belt-v2" };
+    }
+    if (design.shapeFinish) {
+        design.shapeFinish = { ...design.shapeFinish, linked: true };
+    }
+    return design;
+}
+
+/**
+ * Small closed loops in the z=0.6 floor are the open counters (A, D, R).
+ * A filled counter has no inner loop.
+ */
+function engraveCounterLoops(positions: Float64Array): number {
+    const zOf = (i: number) => positions[i * 3 + 2] ?? 0;
+    const xy = (i: number) =>
+        `${(positions[i * 3] ?? 0).toFixed(3)},${(positions[i * 3 + 1] ?? 0).toFixed(3)}`;
+    const next = new Map<string, string[]>();
+    const nTri = positions.length / 9;
+    const edgeCount = new Map<string, number>();
+    const undirected = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (let t = 0; t < nTri; t++) {
+        const ids = [t * 3, t * 3 + 1, t * 3 + 2];
+        if (ids.some((i) => zOf(i) < 0.55 || zOf(i) > 0.65)) continue;
+        const keys = ids.map(xy);
+        for (let e = 0; e < 3; e++) {
+            const k = undirected(keys[e]!, keys[(e + 1) % 3]!);
+            edgeCount.set(k, (edgeCount.get(k) ?? 0) + 1);
+        }
+    }
+    for (const [k, n] of edgeCount) {
+        if (n !== 1) continue;
+        const [a, b] = k.split("|");
+        if (!a || !b) continue;
+        const list = next.get(a) ?? [];
+        list.push(b);
+        next.set(a, list);
+        const back = next.get(b) ?? [];
+        back.push(a);
+        next.set(b, back);
+    }
+    const used = new Set<string>();
+    let counters = 0;
+    for (const start of next.keys()) {
+        if (used.has(start)) continue;
+        const loop = [start];
+        used.add(start);
+        let prev = "";
+        let cur = start;
+        let guard = 0;
+        while (guard++ < next.size + 2) {
+            const opts = (next.get(cur) ?? []).filter((v) => v !== prev && !used.has(v));
+            if (!opts.length) break;
+            const nxt = opts[0]!;
+            if (nxt === start) break;
+            used.add(nxt);
+            loop.push(nxt);
+            prev = cur;
+            cur = nxt;
+        }
+        if (loop.length < 6) continue;
+        let area = 0;
+        for (let i = 0; i < loop.length; i++) {
+            const [ax, ay] = loop[i]!.split(",").map(Number);
+            const [bx, by] = loop[(i + 1) % loop.length]!.split(",").map(Number);
+            area += (ax ?? 0) * (by ?? 0) - (bx ?? 0) * (ay ?? 0);
+        }
+        const abs = Math.abs(area) * 0.5;
+        if (abs >= 0.4 && abs <= 30) counters++;
+    }
+    return counters;
+}
+
+describe("design ffcfa6f9 plantar name", () => {
+    test("US M6.5 medium engraves MANDIS KAAR and KANDIS MAAR on both feet", async () => {
+        const sampleTop = await prime();
+        const font = readFileSync(FONT);
+        const fontBytes = font.buffer.slice(font.byteOffset, font.byteOffset + font.byteLength);
+        const elementsBaseDir = resolve(process.cwd(), "vertex/public/elements");
+        for (const name of MAAR_NAMES) {
+            for (const side of ["left", "right"] as const) {
+                const design = designFfcfa6f9();
+                const composed = markingWithComposedText(
+                    {
+                        ...defaultTextMarking("bottom"),
+                        text: "",
+                        addPatientName: true,
+                        feet: "both",
+                        capHeightUserSet: false,
+                    },
+                    side,
+                    name,
+                );
+                expect(composed.text).toBe(name);
+                const saved = { ...design, textMarking: composed };
+                install(saved);
+                const head = await buildFinalizedFootFromSavedSettings({
+                    settingsJson: designSettingsEnvelope(saved as unknown as Record<string, unknown>),
+                    side,
+                    sampleTopBytes: sampleTop,
+                    includeLeader: true,
+                    fontBytes,
+                    elementsBaseDir,
+                });
+                const headPos = stlPositions(head.stl);
+                const fresh = await sampleTopFromArrayBuffer(sampleTop.slice(0));
+                const foot = await composedFootRim(fresh, saved, side);
+                fresh.dispose();
+                expect(plantarNameEngraved(headPos, foot), `${side} ${name}`).toBe(true);
+                // Three A's, one D, one R. A filled counter has no inner loop.
+                expect(engraveCounterLoops(headPos), `${side} ${name} counters`).toBeGreaterThanOrEqual(5);
+            }
+        }
+    }, 600_000);
+
+    test("US M6 and M10 engrave KATE WONG on both feet", async () => {
+        const sampleTop = await prime();
+        const font = readFileSync(FONT);
+        const fontBytes = font.buffer.slice(font.byteOffset, font.byteOffset + font.byteLength);
+        const elementsBaseDir = resolve(process.cwd(), "vertex/public/elements");
+        for (const usMenSize of [6, 10] as const) {
+            for (const side of ["left", "right"] as const) {
+                const design = designFfcfa6f9();
+                design.usMenSize = usMenSize;
+                const composed = markingWithComposedText(
+                    {
+                        ...defaultTextMarking("bottom"),
+                        text: "",
+                        addPatientName: true,
+                        feet: "both",
+                        capHeightUserSet: false,
+                    },
+                    side,
+                    "KATE WONG",
+                );
+                const saved = { ...design, textMarking: composed };
+                install(saved);
+                const head = await buildFinalizedFootFromSavedSettings({
+                    settingsJson: designSettingsEnvelope(saved as unknown as Record<string, unknown>),
+                    side,
+                    sampleTopBytes: sampleTop,
+                    includeLeader: true,
+                    fontBytes,
+                    elementsBaseDir,
+                });
+                const headPos = stlPositions(head.stl);
+                const fresh = await sampleTopFromArrayBuffer(sampleTop.slice(0));
+                const foot = await composedFootRim(fresh, saved, side);
+                fresh.dispose();
+                expect(plantarNameEngraved(headPos, foot), `M${usMenSize} ${side}`).toBe(true);
+                expect(engraveCounterLoops(headPos), `M${usMenSize} ${side} counters`).toBeGreaterThanOrEqual(
+                    2,
+                );
+            }
+        }
+    }, 600_000);
+});
+
+function narrowestMidfoot(positions: Float64Array): number {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (let i = 0; i + 1 < positions.length; i += 3) {
+        const x = positions[i] ?? 0;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+    }
+    const span = Math.max(1e-6, maxX - minX);
+    const bins = 48;
+    const lo = new Array<number>(bins).fill(Infinity);
+    const hi = new Array<number>(bins).fill(-Infinity);
+    for (let i = 0; i + 1 < positions.length; i += 3) {
+        const x = positions[i] ?? 0;
+        const y = positions[i + 1] ?? 0;
+        const u = (x - minX) / span;
+        if (u < 0.35 || u > 0.65) continue;
+        let b = Math.floor(((u - 0.35) / 0.3) * (bins - 1));
+        if (b < 0) b = 0;
+        if (b >= bins) b = bins - 1;
+        if (y < lo[b]!) lo[b] = y;
+        if (y > hi[b]!) hi[b] = y;
+    }
+    let best = Infinity;
+    for (let i = 0; i < bins; i++) {
+        if (!Number.isFinite(lo[i])) continue;
+        best = Math.min(best, hi[i]! - lo[i]!);
+    }
+    return best;
+}
 
 function outlineFrom(positions: Float64Array): Array<{ x: number; y: number }> {
     const pts = [];

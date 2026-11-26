@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { bundleCanonicalExportLoft, canonicalExportLoftOutfile } from "./bundle-canonical-export-loft.mjs";
 import { bundleCncMillJob, cncMillJobOutfile } from "./bundle-cnc-mill-job.mjs";
+import { bundleDesignMacros, designMacrosOutfile } from "./bundle-design-macros.mjs";
 
 const vertexRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(vertexRoot, ".esm-boot");
@@ -45,6 +46,7 @@ tsEntries.push(...extraTsEntries);
 // Same artifacts `vercel-build` emits before @vercel/node traces the function.
 await bundleCanonicalExportLoft();
 await bundleCncMillJob();
+await bundleDesignMacros();
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
@@ -173,3 +175,18 @@ if (resolutionFailure.test(cncRefusal) || !cncRefusal.includes("Print orders are
     process.exit(1);
 }
 console.log("server-esm-boot: ok cnc mill job");
+
+const macroApplyPath = join(outDir, "server/src/lib/apply-design-macros.js");
+cpSync(designMacrosOutfile, join(outDir, "server/src/lib/design-macros.bundled.js"));
+const macroApply = await import(pathToFileURL(macroApplyPath).href);
+const listedMacros = await macroApply.listDesignMacrosForOperator();
+const planus = listedMacros.macros.find((macro) => macro.id === "vertex-planus");
+if (!planus || planus.kind !== "pathology" || !planus.aliases?.includes("pes planus")) {
+    console.error("server-esm-boot: design macro bundle did not list Planus", listedMacros);
+    process.exit(1);
+}
+if (listedMacros.macros.some((macro) => macro.name === "Rhinebeck")) {
+    console.error("server-esm-boot: design macro bundle invented Rhinebeck");
+    process.exit(1);
+}
+console.log("server-esm-boot: ok design macros");

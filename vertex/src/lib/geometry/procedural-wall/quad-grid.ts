@@ -153,7 +153,8 @@ export function rimJunctions(
             const fy = uz * vx - ux * vz;
             const fz = ux * vy - uy * vx;
             // Keep past-vertical faces (nz < 0). Flipping them hid the 8→102° cup curl.
-            const fl = Math.hypot(fx, fy, fz) || 1;
+            const fl = Math.hypot(fx, fy, fz);
+            if (fl < 1e-8) continue;
             const fn = { x: fx / fl, y: fy / fl, z: fz / fl };
             const steep = Math.abs(Math.atan2(fn.x * ox + fn.y * oy, fn.z));
             if (steep > bestAbs) {
@@ -199,11 +200,18 @@ export function rimJunctions(
                 const fx = uy * vz - uz * vy;
                 const fy = uz * vx - ux * vz;
                 const fz = ux * vy - uy * vx;
-                const fl = Math.hypot(fx, fy, fz) || 1;
+                const fl = Math.hypot(fx, fy, fz);
+                if (fl < 1e-8) continue;
                 edgeN = { x: fx / fl, y: fy / fl, z: fz / fl };
                 break;
             }
         }
+        if (nx * nx + ny * ny + nz * nz < 1e-12) {
+            nx = 0;
+            ny = 0;
+            nz = 1;
+        }
+        if (edgeN.x * edgeN.x + edgeN.y * edgeN.y + edgeN.z * edgeN.z < 1e-12) edgeN = { x: nx, y: ny, z: nz };
         return {
             planeN: { x: nx, y: ny, z: nz },
             edgePlaneN: edgeN,

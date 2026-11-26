@@ -4,7 +4,11 @@ import type { ManufacturingClient } from "../clients/manufacturing-client.js";
 import type { OrthocadMcpConfig } from "../config.js";
 import { requireCadOperatorKey } from "../config.js";
 import { buildDesignExportedPayload } from "../payload/design-exported-payload.js";
-import { buildVoAttachFilesHandoff, DOGFOOD_HELD_ID_PREFIXES } from "../payload/vo-attach-files.js";
+import {
+    buildVoAttachFilesHandoff,
+    DOGFOOD_HELD_ID_PREFIXES,
+    releaseGcodeAfterVoAttachConfirmed,
+} from "../payload/vo-attach-files.js";
 import {
     buildExportFilename,
     canonicalExportMaterialName,
@@ -18,6 +22,7 @@ import {
     canonicalInsolePrintMaterialCatalog,
 } from "./print-materials.js";
 import {
+    applyMacroInputSchema,
     buildDesignExportedPayloadInputSchema,
     createSavedDesignInputSchema,
     generateCentralFabStlInputSchema,
@@ -28,6 +33,7 @@ import {
     getExportDownloadInputSchema,
     getProductionInputSchema,
     listDesignsByOrderInputSchema,
+    listMacrosInputSchema,
     listMaterialsInputSchema,
     listProductionsByDesignInputSchema,
     persistSavedDesignSnapshotInputSchema,
@@ -39,6 +45,8 @@ export interface OrthocadToolDeps {
     config: OrthocadMcpConfig;
     integration?: IntegrationClient;
     manufacturing?: ManufacturingClient;
+    /** Test double. Production uses manufacturing.releaseGcodeAfterVoAttach. */
+    releaseGcodeAfterVoAttach?: (storageKey: string) => Promise<void>;
 }
 
 interface SavedDesignGcodeFile {
@@ -97,6 +105,24 @@ function questionFromMessage(message: string): UserQuestion | null {
             ],
         };
     }
+    const macro = /No (customer|pathology) macro named "([^"]+)"/.exec(message);
+    if (macro) {
+        const kind = macro[1] === "customer" ? "customer" : "pathology";
+        const name = macro[2] ?? "";
+        return {
+            ok: false,
+            ask: "user",
+            relay: "none",
+            questions: [
+                {
+                    field: kind === "customer" ? "customer_macro" : "pathology_macro",
+                    prompt:
+                        `No ${kind} macro named "${name}" is saved. ` +
+                        "Apply refuses to guess corrections. Which saved macro should be used?",
+                },
+            ],
+        };
+    }
     if (/hardness/i.test(message) && /refus|guess|known/i.test(message)) {
         return {
             ok: false,
@@ -126,6 +152,36 @@ const PRODUCTION_STATUSES = new Set(["pending", "running", "succeeded", "failed"
 const PRODUCTION_TERMINAL_STATUSES = new Set(["succeeded", "failed"]);
 /** In-process get_production polling interval when wait_s > 0. */
 const GET_PRODUCTION_POLL_INTERVAL_MS = 2000;
+/**
+ * One enqueue attempt. Three of these stay under the MCP client's 60s
+ * request timeout, so generate_gcode returns a production id or a per-foot
+ * error instead of JSON-RPC -32001 while the server keeps the row.
+ */
+export const GENERATE_ENQUEUE_ATTEMPT_MS = 12_000;
+export const GENERATE_ENQUEUE_ATTEMPTS = 3;
+
+export function isTransientGenerateFailure(message: string): boolean {
+    if (/VertexSlice (?:slice exceeded|queue wait exceeded|timed out after)/.test(message)) return false;
+    return /submit unavailable|fetch failed|Production lease expired|Manufacturing timed out \(|generate enqueue timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up/i.test(
+        message,
+    );
+}
+
+export function withEnqueueDeadline<T>(work: Promise<T>, ms = GENERATE_ENQUEUE_ATTEMPT_MS): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("generate enqueue timed out")), ms);
+        work.then(
+            (value) => {
+                clearTimeout(timer);
+                resolve(value);
+            },
+            (error: unknown) => {
+                clearTimeout(timer);
+                reject(error);
+            },
+        );
+    });
+}
 
 function sleepMs(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -353,26 +409,48 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                             input.file_name,
                             exportBase,
                         );
-                        try {
-                            const result = await manufacturing.generateFromSavedDesign({
-                                designId,
-                                side,
-                                presetId,
-                                material,
-                                fileName: exportFileName,
-                                patientName: input.patient_name,
-                                hardness: input.hardness,
-                                forceNewSlice: input.force_new_slice === true,
-                            });
-                            return { side, exportFileName, result, error: null as Error | null };
-                        } catch (error) {
-                            return {
-                                side,
-                                exportFileName,
-                                result: null,
-                                error: error instanceof Error ? error : new Error(String(error)),
-                            };
+                        let lastError: Error | null = null;
+                        for (let attempt = 1; attempt <= GENERATE_ENQUEUE_ATTEMPTS; attempt++) {
+                            try {
+                                const result = await withEnqueueDeadline(
+                                    manufacturing.generateFromSavedDesign({
+                                        designId,
+                                        side,
+                                        presetId,
+                                        material,
+                                        fileName: exportFileName,
+                                        patientName: input.patient_name,
+                                        hardness: input.hardness,
+                                        forceNewSlice: input.force_new_slice === true,
+                                    }),
+                                );
+                                const fields = result as Record<string, unknown>;
+                                const failed =
+                                    typeof result.status === "string" &&
+                                    result.status === "failed" &&
+                                    isTransientGenerateFailure(textField(fields, "error") ?? "");
+                                if (failed && attempt < GENERATE_ENQUEUE_ATTEMPTS) {
+                                    lastError = new Error(textField(fields, "error") ?? "transient");
+                                    continue;
+                                }
+                                return { side, exportFileName, result, error: null as Error | null };
+                            } catch (error) {
+                                lastError = error instanceof Error ? error : new Error(String(error));
+                                if (
+                                    attempt < GENERATE_ENQUEUE_ATTEMPTS &&
+                                    isTransientGenerateFailure(lastError.message)
+                                ) {
+                                    continue;
+                                }
+                                return { side, exportFileName, result: null, error: lastError };
+                            }
                         }
+                        return {
+                            side,
+                            exportFileName,
+                            result: null,
+                            error: lastError ?? new Error("generate enqueue timed out"),
+                        };
                     }),
                 );
                 const files: Array<ReturnType<typeof gcodeFileFromResult>> = [];
@@ -386,6 +464,14 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                         throw entry.error;
                     }
                     const result = entry.result!;
+                    if (pairEnqueue && typeof result.status === "string" && result.status === "failed") {
+                        throw new Error(
+                            `Belt pair failed on the ${entry.side} foot. No partial pair is returned. ${
+                                textField(result as Record<string, unknown>, "error") ??
+                                "Manufacturing failed"
+                            }`,
+                        );
+                    }
                     if (isUserQuestion(result)) {
                         const partialSuccess = sideOutcomes.some(
                             (other) =>
@@ -584,6 +670,37 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
             const input = buildDesignExportedPayloadInputSchema.parse(args);
             return buildDesignExportedPayload(input);
         }
+        case "list_macros": {
+            listMacrosInputSchema.parse(args);
+            const manufacturing =
+                deps.manufacturing ??
+                (await import("../clients/manufacturing-client.js")).createManufacturingClient({
+                    trpcUrl: deps.config.trpcUrl,
+                    cadOperatorKey: requireCadOperatorKey(deps.config),
+                });
+            return manufacturing.listDesignMacros();
+        }
+        case "apply_macro": {
+            const input = applyMacroInputSchema.parse(args);
+            assertToolNotHeld(input.design_id);
+            const manufacturing =
+                deps.manufacturing ??
+                (await import("../clients/manufacturing-client.js")).createManufacturingClient({
+                    trpcUrl: deps.config.trpcUrl,
+                    cadOperatorKey: requireCadOperatorKey(deps.config),
+                });
+            try {
+                return await manufacturing.applyDesignMacros({
+                    designId: input.design_id,
+                    customerMacro: input.customer_macro,
+                    pathologyMacro: input.pathology_macro,
+                });
+            } catch (error) {
+                const question = questionFromMessage(error instanceof Error ? error.message : String(error));
+                if (question) return question;
+                throw error;
+            }
+        }
         case "persist_saved_design_snapshot": {
             const input = persistSavedDesignSnapshotInputSchema.parse(args);
             assertToolNotHeld(input.design_id);
@@ -600,6 +717,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                     ...(input.manufacturing_method
                         ? { manufacturingMethod: input.manufacturing_method }
                         : {}),
+                    ...(input.use_order_scans === true ? { useOrderScans: true } : {}),
                 });
             } catch (error) {
                 const question = questionFromMessage(error instanceof Error ? error.message : String(error));
@@ -627,6 +745,7 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
                     ...(input.manufacturing_method
                         ? { manufacturingMethod: input.manufacturing_method }
                         : {}),
+                    ...(input.use_order_scans === true ? { useOrderScans: true } : {}),
                 });
             } catch (error) {
                 const question = questionFromMessage(error instanceof Error ? error.message : String(error));
@@ -636,7 +755,22 @@ async function dispatchTool(name: string, args: unknown, deps: OrthocadToolDeps)
         }
         case "prepare_vo_attachment": {
             const input = prepareVoAttachmentInputSchema.parse(args);
-            return buildVoAttachFilesHandoff(input);
+            const preparation = buildVoAttachFilesHandoff(input);
+            if (input.attach_confirmed === true) {
+                const release =
+                    deps.releaseGcodeAfterVoAttach ??
+                    (async (storageKey: string) => {
+                        const manufacturing =
+                            deps.manufacturing ??
+                            (await import("../clients/manufacturing-client.js")).createManufacturingClient({
+                                trpcUrl: deps.config.trpcUrl,
+                                cadOperatorKey: requireCadOperatorKey(deps.config),
+                            });
+                        await manufacturing.releaseGcodeAfterVoAttach(storageKey);
+                    });
+                await releaseGcodeAfterVoAttachConfirmed(preparation, release);
+            }
+            return preparation;
         }
         default:
             throw new Error(`Unknown tool: ${name}`);
