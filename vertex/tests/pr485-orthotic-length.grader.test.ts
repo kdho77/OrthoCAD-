@@ -305,6 +305,6 @@ describe("PR #485 grader G7 — shard manifest registers length suite", () => {
         expect(files).toContain("vertex/src/features/exports/saved-design-length-preset.test.ts");
         expect(files).toContain("packages/mcp/test/persist-saved-design-snapshot.test.ts");
         expect(files).toContain("vertex/tests/pr485-orthotic-length.grader.test.ts");
-        expect(files.length).toBeGreaterThanOrEqual(388);
+        expect(files.length).toBe(389);
     });
 });

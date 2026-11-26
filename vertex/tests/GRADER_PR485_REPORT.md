@@ -22,7 +22,7 @@ Catalog, MCP, trim-pattern parity, Full-length export identity with `main`, and 
 | Headless vs UI parity (3/4 / Sulcus manufacturing STL) | **FAIL** (known residual) | G6b: both paths throw `[S1-PRELOFT]` before STL is produced — no finished solid to compare |
 | Patient name on bottom marking | **PASS** | G6a `textMarking.surface === "bottom"`, `addPatientName`, `activePatientDisplayName()` |
 | MCP `create_saved_design` / persistence | **PASS** | G3; full MCP suite run locally |
-| Shard manifest includes new suites (388 files) | **PASS** | G7; `node scripts/ci/validate-unit-test-shards.mjs` → OK |
+| Shard manifest includes new suites (389 files with grader) | **PASS** | G7; `node scripts/ci/validate-unit-test-shards.mjs` → OK (388 on graded SHA; grader adds one file) |
 | GitHub Actions full Test matrix green on graded SHA | **INCONCLUSIVE** at grade time | Only Vercel check on `f391f49d`; Test workflow run 1644 was **in progress** on a later merge commit (`d45a9177`) when grading finished |
 | Local independent test run (graded tree) | **PASS** | `saved-design-length-preset.test.ts` + MCP persist + grader tests (see commit on grader branch) |
 
