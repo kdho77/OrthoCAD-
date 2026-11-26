@@ -1,4 +1,4 @@
-// orthocad-mcp-http-bundle f5cd11e3561e1a9ee552e98028e61f3a05b982075a283a249849079f8aa005db
+// orthocad-mcp-http-bundle 933aaaebd2b113575a4a832bf741260ef0dfe69701a25e77e05635b25d444462
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -9739,6 +9739,13 @@ function createManufacturingClient(options) {
     /** Call site: vertex/server/src/routers/manufacturing.ts getGcodeDownloadUrl */
     getGcodeDownloadUrl(productionId) {
       return trpc.manufacturing.getGcodeDownloadUrl.query({ productionId });
+    },
+    /**
+     * Delete cad-operator G-code after VertexOrders attach is confirmed.
+     * Call site: vertex/server/src/routers/manufacturing.ts releaseGcodeAfterVoAttach.
+     */
+    releaseGcodeAfterVoAttach(storageKey) {
+      return trpc.manufacturing.releaseGcodeAfterVoAttach.mutate({ storageKey });
     },
     /** Status of one CAD-operator production. No G-code bytes. */
     getProduction(productionId) {
@@ -25169,6 +25176,11 @@ function decodeBase64(value) {
   if (bytes.byteLength > MAX_ATTACH_BYTES) throw new Error("Export file is over the 100 MB limit");
   return bytes;
 }
+function isCadOperatorGcodeStorageKey(key) {
+  if (!key) return false;
+  const trimmed = key.trim();
+  return trimmed.startsWith("gcode/cad-operator/") && !trimmed.includes("..") && !trimmed.includes("\\") && !trimmed.includes("//");
+}
 function isCentralFabStlStorageKey(key) {
   if (!key) return false;
   const trimmed = key.trim();
@@ -25306,6 +25318,22 @@ function buildVoAttachFilesHandoff(input) {
     },
     order_status_written: false
   };
+}
+function cadOperatorGcodeKeysForRelease(preparation) {
+  const keys = [];
+  for (const file of preparation.cad_provenance.files) {
+    if (!isCadOperatorGcodeStorageKey(file.storage_key)) continue;
+    const key = file.storage_key.trim();
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+async function releaseGcodeAfterVoAttachConfirmed(preparation, release) {
+  const keys = cadOperatorGcodeKeysForRelease(preparation);
+  for (const key of keys) {
+    await release(key);
+  }
+  return keys;
 }
 
 // packages/mcp/src/tools/print-materials.ts
@@ -25642,6 +25670,12 @@ var prepareVoAttachmentInputSchema = external_exports.object({
   base_asset_id: external_exports.string().trim().min(1).max(80).optional(),
   patient_name: external_exports.string().max(200).optional(),
   material: external_exports.string().max(80).optional(),
+  /**
+   * Set after VertexOrders has accepted the files. Releases cad-operator
+   * G-code keys and does not fetch them again. Omitted leaves objects for
+   * the 24h sweep. Not copied into vo_attach_files.
+   */
+  attach_confirmed: external_exports.boolean().optional(),
   files: external_exports.array(attachFileSchema).min(1).max(2)
 }).strict();
 var persistSavedDesignSnapshotInputSchema = external_exports.object({
@@ -26177,7 +26211,18 @@ async function dispatchTool(name, args, deps) {
     }
     case "prepare_vo_attachment": {
       const input = prepareVoAttachmentInputSchema.parse(args);
-      return buildVoAttachFilesHandoff(input);
+      const preparation = buildVoAttachFilesHandoff(input);
+      if (input.attach_confirmed === true) {
+        const release = deps.releaseGcodeAfterVoAttach ?? (async (storageKey) => {
+          const manufacturing = deps.manufacturing ?? (await Promise.resolve().then(() => (init_manufacturing_client(), manufacturing_client_exports))).createManufacturingClient({
+            trpcUrl: deps.config.trpcUrl,
+            cadOperatorKey: requireCadOperatorKey(deps.config)
+          });
+          await manufacturing.releaseGcodeAfterVoAttach(storageKey);
+        });
+        await releaseGcodeAfterVoAttachConfirmed(preparation, release);
+      }
+      return preparation;
     }
     default:
       throw new Error(`Unknown tool: ${name}`);
