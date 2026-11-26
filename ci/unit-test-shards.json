@@ -164,6 +164,7 @@
                 "vertex/server/src/lib/dev-auth.test.ts",
                 "vertex/server/src/lib/glb-validation.test.ts",
                 "vertex/server/src/lib/manufacturing-stl-lifecycle.test.ts",
+                "vertex/server/src/lib/pr480-storage-nostore.grader.test.ts",
                 "vertex/server/src/lib/prisma.test.ts",
                 "vertex/server/src/lib/tenancy.test.ts",
                 "vertex/server/src/routers/admin-access.test.ts",
