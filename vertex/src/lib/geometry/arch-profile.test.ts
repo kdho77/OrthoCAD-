@@ -659,6 +659,151 @@ describe("arch profile slider", () => {
             }
         }
     });
+
+    test("SAMPLE_Top valley stays a continuous sheet across the slider", async () => {
+        const bytes = readFileSync(resolve("tests/fixtures/SAMPLE_Top.glb"));
+        const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        const group = await loadGlbFromBuffer(buffer);
+        const merged = extractMergedGeometry(group);
+        if (!merged) throw new Error("SAMPLE_Top.glb produced no geometry");
+        const sheet = reorientToFootprintFrame(merged.geometry, { preserveAuthorZ: true });
+        merged.geometry.dispose();
+
+        // Native SAMPLE_Top is the left foot. The photographed insole is that
+        // left sheet after mirrorGeometry, which is how a mirrored left load
+        // reaches the slider. Both have to stay one opaque sheet.
+        const feet: { label: string; geo: import("three").BufferGeometry; side: Side }[] = [
+            { label: "native-left", geo: sheet, side: "left" },
+            { label: "mirrored-left", geo: mirrorGeometry(sheet), side: "left" },
+        ];
+        const profiles: (number | undefined)[] = [undefined, 100, 0, 25, 50, 75];
+
+        for (const foot of feet) {
+            const indexAttr = foot.geo.getIndex();
+            if (!indexAttr) throw new Error(`${foot.label} lost its index`);
+            const index = indexAttr.array;
+            const stockPos = foot.geo.getAttribute("position")!.array as Float32Array;
+            const stockFaces = faceOrientation(stockPos, index);
+            // The indexed buffer still carries per-corner copies. 7809 is the
+            // welded position count; the copies are what a Laplacian tears.
+            expect({
+                label: foot.label,
+                unique: uniquePositionCount(stockPos),
+                tris: stockFaces.tris,
+                down: stockFaces.down,
+            }).toEqual({
+                label: foot.label,
+                unique: 7809,
+                tris: 15170,
+                down: 0,
+            });
+
+            const stamped = foot.geo.clone();
+            const stampedPos = stamped.getAttribute("position")!.array as Float32Array;
+            const donor = valleyDonor(stockPos, foot.side);
+            const other = donor === 0 ? 1 : 0;
+            stampedPos[other * 3] = stampedPos[donor * 3]!;
+            stampedPos[other * 3 + 1] = stampedPos[donor * 3 + 1]!;
+            stampedPos[other * 3 + 2] = stampedPos[donor * 3 + 2]!;
+            const stampedOut = deformSample(stamped, foot.side, 0).getAttribute("position")!
+                .array as Float32Array;
+            expect(
+                Math.hypot(
+                    stampedOut[donor * 3]! - stampedOut[other * 3]!,
+                    stampedOut[donor * 3 + 1]! - stampedOut[other * 3 + 1]!,
+                    stampedOut[donor * 3 + 2]! - stampedOut[other * 3 + 2]!,
+                ),
+            ).toBeLessThan(1e-6);
+
+            let omittedPrint: Float32Array | null = null;
+            let omittedPrintGeo: import("three").BufferGeometry | null = null;
+            for (const profile of profiles) {
+                const shaped = deformSample(foot.geo, foot.side, profile);
+                const preview = applyBaseModifiers(
+                    foot.geo,
+                    field(
+                        foot.side,
+                        profile == null ? {} : { archProfile: profile },
+                        BASE_REFERENCE_THICKNESS_MM,
+                    ),
+                    0,
+                    { skipNormals: true },
+                );
+                const shapedPos = shaped.getAttribute("position")!.array as Float32Array;
+                const previewPos = preview.getAttribute("position")!.array as Float32Array;
+                const printed = await composeViewerPrintSolidTop({
+                    raw: foot.geo.clone(),
+                    sourceField: field(
+                        foot.side,
+                        profile == null ? {} : { archProfile: profile },
+                        BASE_REFERENCE_THICKNESS_MM,
+                    ),
+                });
+                const printedPos = printed.getAttribute("position")!.array as Float32Array;
+                const printedIndex = printed.getIndex()?.array ?? index;
+                const name = `${foot.label}/${profile == null ? "omitted" : profile}`;
+                const problems = sheetProblems(name, stockPos, shapedPos, index, shaped);
+                if (!sameBuffer(previewPos, shapedPos))
+                    problems.push(`${name}: preview positions differ from export`);
+                const printFaces = faceOrientation(printedPos, printedIndex);
+                if (printFaces.tris !== 15170 || printFaces.down !== 0) {
+                    problems.push(
+                        `${name}: print faces ${printFaces.tris}, downward ${printFaces.down}, min nz ${printFaces.minNz}`,
+                    );
+                }
+                if (tornExact(stockPos, printedPos) !== 0)
+                    problems.push(`${name}: print tore a coincident vertex`);
+                const weld = nearWeldTears(stockPos, printedPos);
+                if (weld.tears !== 0) {
+                    problems.push(
+                        `${name}: print opened ${weld.tears} near-weld cracks (max ${weld.maxExtra} mm)`,
+                    );
+                }
+                if (profile == null) {
+                    omittedPrint = printedPos;
+                    omittedPrintGeo = printed;
+                } else if (profile === 100) {
+                    if (!omittedPrint || !sameBuffer(printedPos, omittedPrint)) {
+                        problems.push(`${name}: print at 100 is not the omitted print`);
+                    }
+                } else if (omittedPrint && printedPos.length === omittedPrint.length) {
+                    let maxDelta = 0;
+                    for (let k = 2; k < printedPos.length; k += 3) {
+                        const printDz = Math.abs(
+                            printedPos[k]! - omittedPrint[k]! - (shapedPos[k]! - stockPos[k]!),
+                        );
+                        if (printDz > maxDelta) maxDelta = printDz;
+                    }
+                    // Zonal shell on the print sheet shifts the arch delta by a fraction
+                    // of a millimetre. A torn valley would miss by millimetres.
+                    if (maxDelta > 1)
+                        problems.push(`${name}: print/preview arch delta differs by ${maxDelta} mm`);
+                    if (omittedPrintGeo) {
+                        const seam = valleySeamStats(omittedPrintGeo, printed, foot.side);
+                        if (seam.edges < 80) problems.push(`${name}: print valley edges ${seam.edges}`);
+                        if (seam.p95Deg >= 13) problems.push(`${name}: print valley p95 ${seam.p95Deg}`);
+                        if (seam.edgesOver20 >= 18)
+                            problems.push(`${name}: print edges over 20° ${seam.edgesOver20}`);
+                        // One stock fillet edge already sits near 40° and the zonal shell
+                        // moves it a few degrees. A folded patch is a much larger crease.
+                        if (seam.maxDeg >= 70) problems.push(`${name}: print valley max ${seam.maxDeg}`);
+                    }
+                }
+                if (profile !== 100 && profile != null) {
+                    const seam = valleySeamStats(foot.geo, shaped, foot.side);
+                    if (seam.edges < 80) problems.push(`${name}: valley edges ${seam.edges}`);
+                    if (seam.p95Deg >= 13) problems.push(`${name}: valley p95 ${seam.p95Deg}`);
+                    if (seam.edgesOver20 >= 18) problems.push(`${name}: edges over 20° ${seam.edgesOver20}`);
+                    // Stay with the stock crease, or under the ~11° fillet. A new sawtooth clears both.
+                    if (seam.maxDeg >= seam.stockMaxDeg + 3 && seam.maxDeg >= 13) {
+                        problems.push(`${name}: valley max ${seam.maxDeg} vs stock ${seam.stockMaxDeg}`);
+                    }
+                    if (seam.roughnessMm >= 8) problems.push(`${name}: valley roughness ${seam.roughnessMm}`);
+                }
+                expect(problems).toEqual([]);
+            }
+        }
+    });
 });
 
 function maxAbsSecond(values: number[]): number {
@@ -705,6 +850,7 @@ function valleySeamStats(
     stock: import("three").BufferGeometry,
     shaped: import("three").BufferGeometry,
     side: Side,
+    maxAbsDz = 2.5,
 ): SeamStats {
     const stockPos = stock.getAttribute("position")!.array as Float32Array;
     const pos = shaped.getAttribute("position")!.array as Float32Array;
@@ -731,7 +877,7 @@ function valleySeamStats(
     const inFillet = (i: number) => {
         if (!inBand(i)) return false;
         const dz = Math.abs(dzOf(i));
-        return dz > 0.15 && dz < 2.5;
+        return dz > 0.15 && dz < maxAbsDz;
     };
 
     const angles: number[] = [];
@@ -847,4 +993,251 @@ function faceNormal(pos: Float32Array, ia: number, ib: number, ic: number): [num
 function normalAngleDeg(a: [number, number, number], b: [number, number, number]): number {
     const dot = Math.min(1, Math.max(-1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
     return (Math.acos(dot) * 180) / Math.PI;
+}
+
+function sameBuffer(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+}
+
+/** Face nz in the footprint frame. A Z-only fold that turns a triangle over lands here. */
+function faceOrientation(
+    pos: Float32Array,
+    index: ArrayLike<number>,
+): { tris: number; down: number; minNz: number } {
+    let tris = 0;
+    let down = 0;
+    let minNz = Infinity;
+    for (let t = 0; t + 2 < index.length; t += 3) {
+        tris++;
+        const n = faceNormal(pos, index[t]!, index[t + 1]!, index[t + 2]!);
+        const nz = n ? n[2] : 0;
+        if (!(nz > 0)) down++;
+        if (nz < minNz) minNz = nz;
+    }
+    return { tris, down, minNz };
+}
+
+/** Welded positions. Copies closer than 1e-6 mm are the same point. */
+function uniquePositionCount(pos: Float32Array): number {
+    const map = new Set<string>();
+    const n = (pos.length / 3) | 0;
+    for (let i = 0; i < n; i++) map.add(quantKey(pos, i, 1e6));
+    return map.size;
+}
+
+function quantKey(pos: Float32Array, i: number, scale: number): string {
+    return `${Math.round(pos[i * 3]! * scale)}:${Math.round(pos[i * 3 + 1]! * scale)}:${Math.round(pos[i * 3 + 2]! * scale)}`;
+}
+
+/** Vertices that matched before the slider must still match. A torn pair counts. */
+function tornExact(before: Float32Array, after: Float32Array): number {
+    if (before.length !== after.length) return 1;
+    const map = new Map<string, number[]>();
+    const n = (before.length / 3) | 0;
+    for (let i = 0; i < n; i++) {
+        const key = `${before[i * 3]},${before[i * 3 + 1]},${before[i * 3 + 2]}`;
+        const list = map.get(key);
+        if (list) list.push(i);
+        else map.set(key, [i]);
+    }
+    let torn = 0;
+    for (const ids of map.values()) {
+        if (ids.length < 2) continue;
+        const a = ids[0]!;
+        for (let k = 1; k < ids.length; k++) {
+            const b = ids[k]!;
+            const gap = Math.hypot(
+                after[b * 3]! - after[a * 3]!,
+                after[b * 3 + 1]! - after[a * 3 + 1]!,
+                after[b * 3 + 2]! - after[a * 3 + 2]!,
+            );
+            if (!(gap < 1e-6)) torn++;
+        }
+    }
+    return torn;
+}
+
+/**
+ * Vertices within 0.02 mm are the split copies a Laplacian would pull apart.
+ * The arch field moves them together. A crack is a separation well past that.
+ */
+function nearWeldTears(
+    before: Float32Array,
+    after: Float32Array,
+    tol = 0.02,
+    extra = 0.05,
+): { pairs: number; tears: number; maxExtra: number } {
+    const scale = 1 / tol;
+    const n = (before.length / 3) | 0;
+    const grid = new Map<string, number[]>();
+    const cellOf = (i: number) =>
+        [
+            Math.floor(before[i * 3]! * scale),
+            Math.floor(before[i * 3 + 1]! * scale),
+            Math.floor(before[i * 3 + 2]! * scale),
+        ] as const;
+    for (let i = 0; i < n; i++) {
+        const [ix, iy, iz] = cellOf(i);
+        const key = `${ix}:${iy}:${iz}`;
+        const list = grid.get(key);
+        if (list) list.push(i);
+        else grid.set(key, [i]);
+    }
+    const dist = (pos: Float32Array, i: number, j: number) =>
+        Math.hypot(
+            pos[i * 3]! - pos[j * 3]!,
+            pos[i * 3 + 1]! - pos[j * 3 + 1]!,
+            pos[i * 3 + 2]! - pos[j * 3 + 2]!,
+        );
+    let pairs = 0;
+    let tears = 0;
+    let maxExtra = 0;
+    for (let i = 0; i < n; i++) {
+        const [ix, iy, iz] = cellOf(i);
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    const list = grid.get(`${ix + dx}:${iy + dy}:${iz + dz}`);
+                    if (!list) continue;
+                    for (const j of list) {
+                        if (j <= i) continue;
+                        const beforeGap = dist(before, i, j);
+                        if (!(beforeGap <= tol)) continue;
+                        pairs++;
+                        const grew = dist(after, i, j) - beforeGap;
+                        if (grew > maxExtra) maxExtra = grew;
+                        if (grew > extra) tears++;
+                    }
+                }
+            }
+        }
+    }
+    return { pairs, tears, maxExtra };
+}
+
+function valleyDonor(pos: Float32Array, side: Side): number {
+    const n = (pos.length / 3) | 0;
+    let xMin = Infinity;
+    let xMax = -Infinity;
+    for (let i = 0; i < n; i++) {
+        const x = pos[i * 3]!;
+        if (x < xMin) xMin = x;
+        if (x > xMax) xMax = x;
+    }
+    const len = xMax - xMin || 1;
+    for (let i = 0; i < n; i++) {
+        const u = (pos[i * 3]! - xMin) / len;
+        if (Math.abs(u - 0.42) > 0.015) continue;
+        const y = pos[i * 3 + 1]!;
+        if (side === "left" ? y < -2 && y > -16 : y > 2 && y < 16) return i;
+    }
+    throw new Error("no valley vertex to stamp");
+}
+
+/** How far a moved vertex drops under the undeformed floor at its station. */
+function punchBelowFloorMm(stock: Float32Array, shaped: Float32Array): number {
+    const n = (stock.length / 3) | 0;
+    let xMin = Infinity;
+    let xMax = -Infinity;
+    for (let i = 0; i < n; i++) {
+        const x = stock[i * 3]!;
+        if (x < xMin) xMin = x;
+        if (x > xMax) xMax = x;
+    }
+    const len = xMax - xMin || 1;
+    const bins = 32;
+    const floor = new Array<number>(bins).fill(Infinity);
+    for (let i = 0; i < n; i++) {
+        const u = (stock[i * 3]! - xMin) / len;
+        const bi = Math.min(bins - 1, Math.max(0, Math.floor(u * bins)));
+        const z = stock[i * 3 + 2]!;
+        if (z < floor[bi]!) floor[bi] = z;
+    }
+    const dilated = floor.slice();
+    for (let i = 0; i < bins; i++) {
+        dilated[i] = Math.min(floor[Math.max(0, i - 1)]!, floor[i]!, floor[Math.min(bins - 1, i + 1)]!);
+    }
+    let maxBelow = 0;
+    for (let i = 0; i < n; i++) {
+        const u = (stock[i * 3]! - xMin) / len;
+        if (u <= 0.28 || u >= 0.58) continue;
+        const bi = Math.min(bins - 1, Math.max(0, Math.floor(u * bins)));
+        const below = dilated[bi]! - shaped[i * 3 + 2]!;
+        if (below > maxBelow) maxBelow = below;
+    }
+    return maxBelow;
+}
+
+function sheetProblems(
+    name: string,
+    stock: Float32Array,
+    shaped: Float32Array,
+    index: ArrayLike<number>,
+    shapedGeo: import("three").BufferGeometry,
+): string[] {
+    const problems: string[] = [];
+    if (stock.length !== shaped.length) {
+        problems.push(`${name}: vertex count changed`);
+        return problems;
+    }
+    const faces = faceOrientation(shaped, index);
+    if (faces.down !== 0) problems.push(`${name}: ${faces.down} downward faces, min nz ${faces.minNz}`);
+    const normals = shapedGeo.getAttribute("normal");
+    if (!normals) {
+        problems.push(`${name}: vertex normals were not rebuilt`);
+    } else {
+        const arr = normals.array as Float32Array;
+        let down = 0;
+        let minNz = Infinity;
+        const used = new Uint8Array((shaped.length / 3) | 0);
+        for (let t = 0; t < index.length; t++) used[index[t]!] = 1;
+        for (let i = 0; i < used.length; i++) {
+            if (!used[i]) continue;
+            const nz = arr[i * 3 + 2]!;
+            const len = Math.hypot(arr[i * 3]!, arr[i * 3 + 1]!, nz);
+            if (!(len > 1e-8)) continue;
+            if (!(nz > 0)) down++;
+            if (nz < minNz) minNz = nz;
+        }
+        if (down !== 0) problems.push(`${name}: ${down} downward vertex normals, min nz ${minNz}`);
+    }
+    const torn = tornExact(stock, shaped);
+    if (torn !== 0) problems.push(`${name}: ${torn} coincident vertices split`);
+    const weld = nearWeldTears(stock, shaped);
+    if (weld.tears !== 0) {
+        problems.push(`${name}: ${weld.tears} near-weld cracks, max extra ${weld.maxExtra} mm`);
+    }
+    let xyDrift = 0;
+    let endDrift = 0;
+    let identical = true;
+    const n = (stock.length / 3) | 0;
+    let xMin = Infinity;
+    let xMax = -Infinity;
+    for (let i = 0; i < n; i++) {
+        const x = stock[i * 3]!;
+        if (x < xMin) xMin = x;
+        if (x > xMax) xMax = x;
+        if (shaped[i * 3] !== stock[i * 3] || shaped[i * 3 + 1] !== stock[i * 3 + 1]) xyDrift++;
+        if (
+            shaped[i * 3] !== stock[i * 3] ||
+            shaped[i * 3 + 1] !== stock[i * 3 + 1] ||
+            shaped[i * 3 + 2] !== stock[i * 3 + 2]
+        ) {
+            identical = false;
+        }
+    }
+    const len = xMax - xMin || 1;
+    for (let i = 0; i < n; i++) {
+        const u = (stock[i * 3]! - xMin) / len;
+        if ((u <= 0.28 || u >= 0.58) && shaped[i * 3 + 2] !== stock[i * 3 + 2]) endDrift++;
+    }
+    if (xyDrift !== 0) problems.push(`${name}: ${xyDrift} vertices drifted in X/Y`);
+    if (endDrift !== 0) problems.push(`${name}: ${endDrift} vertices outside the arch moved`);
+    const cradled = name.endsWith("/100") || name.endsWith("/omitted");
+    if (cradled && !identical) problems.push(`${name}: not byte-identical to the undeformed top`);
+    const punch = punchBelowFloorMm(stock, shaped);
+    if (punch > 0.5) problems.push(`${name}: surface drops ${punch} mm through the local floor`);
+    return problems;
 }

@@ -49,11 +49,6 @@ const SECTION_M_VALLEY_LAMBDA = 64;
 const SECTION_M_RIM_LAMBDA = 4;
 const SECTION_Z_VALLEY_LAMBDA = 16;
 const SECTION_Z_RIM_LAMBDA = 0.5;
-/** Valley fairing stays below the midspan crown. */
-const VALLEY_FAIR_S_MAX = 0.42;
-const VALLEY_FAIR_ITERS = 16;
-const VALLEY_FAIR_LAMBDA = 0.5;
-const VALLEY_FAIR_MU = -0.53;
 
 export interface ArchSectionSample {
     m: number;
@@ -613,6 +608,11 @@ function lerpSection(a: ArchSection, b: ArchSection, t: number): ArchSection {
  * delta is not used here: a stock mesh (SAMPLE_Top) is not the procedural
  * shell, so the chord has to be measured on the deformed top. No-op when the
  * slider is Cradled, and pinned vertices are not written.
+ *
+ * The valley join is the analytic C2 fillet (`archProfileValleyBlend`). A mesh
+ * Laplacian here folds triangles on the real SAMPLE_Top sheet: neighbors mix
+ * the pinned floor with the higher parabola, and the resulting z oscillation
+ * inverts faces. Do not add one back.
  */
 export function applyArchProfileToTopPositions(args: {
     positions: Float32Array;
@@ -630,8 +630,6 @@ export function applyArchProfileToTopPositions(args: {
     topVertexCount: number;
     topFactor?: ArrayLike<number> | null;
     lengthMm: number;
-    /** Triangle indices of `positions`. Used to fair the valley. Omit to skip that pass. */
-    indices?: ArrayLike<number> | null;
 }): void {
     if (!archProfileActive(args.corrections.archProfile)) return;
     if (!(args.lenSize > 1e-6) || !(args.widSize > 1e-6)) return;
@@ -709,8 +707,6 @@ export function applyArchProfileToTopPositions(args: {
     const halfWidthMm = args.widSize / 2;
 
     const { apexMoveMm, archElongationMm, archProfile } = args.corrections;
-    const medialS = new Float32Array(count);
-    medialS.fill(Number.NaN);
     for (let i = 0; i < count; i++) {
         if (!isTop(i)) continue;
         const u = uOf(i);
@@ -731,79 +727,8 @@ export function applyArchProfileToTopPositions(args: {
             };
         }
         const m = mOf(i);
-        const span = section.mRim - section.mValley;
-        if (span > 1e-4) medialS[i] = (m - section.mValley) / span;
         const z = args.positions[i * 3 + args.thickAxis]!;
         const delta = archProfileDeltaMm(m, z, archProfile, section, envelope, halfWidthMm);
         if (delta !== 0) args.positions[i * 3 + args.thickAxis] = z + delta;
-    }
-    if (args.indices && args.indices.length >= 3) {
-        fairValleySeam(args.positions, args.indices, medialS, isTop, args.thickAxis);
-    }
-}
-
-/**
- * Zero-shrinkage Taubin on z only, inside the valley fillet. The floor
- * (s ≤ 0), the parabola above the fillet, the trimline, and the heel / 1st MPJ
- * stay pinned, so the 4 mm crown and the endpoint heights do not move.
- */
-function fairValleySeam(
-    positions: Float32Array,
-    indices: ArrayLike<number>,
-    medialS: Float32Array,
-    isTop: (i: number) => boolean,
-    thickAxis: Axis,
-): void {
-    const count = medialS.length;
-    const free = new Uint8Array(count);
-    let freeCount = 0;
-    for (let i = 0; i < count; i++) {
-        const s = medialS[i]!;
-        if (!isTop(i) || !Number.isFinite(s) || !(s > 0) || s >= VALLEY_FAIR_S_MAX) continue;
-        free[i] = 1;
-        freeCount++;
-    }
-    if (freeCount < 8) return;
-
-    const neighbors: number[][] = Array.from({ length: count }, () => []);
-    const seen: Set<number>[] = Array.from({ length: count }, () => new Set());
-    const link = (a: number, b: number) => {
-        if (a === b || a < 0 || b < 0 || a >= count || b >= count) return;
-        if (seen[a]!.has(b)) return;
-        seen[a]!.add(b);
-        neighbors[a]!.push(b);
-    };
-    for (let t = 0; t + 2 < indices.length; t += 3) {
-        const a = indices[t]!;
-        const b = indices[t + 1]!;
-        const c = indices[t + 2]!;
-        link(a, b);
-        link(b, a);
-        link(b, c);
-        link(c, b);
-        link(c, a);
-        link(a, c);
-    }
-
-    const next = new Float64Array(count);
-    const pass = (k: number) => {
-        for (let i = 0; i < count; i++) {
-            if (!free[i]) continue;
-            const nbs = neighbors[i]!;
-            if (nbs.length === 0) continue;
-            let mean = 0;
-            for (const j of nbs) mean += positions[j * 3 + thickAxis]!;
-            mean /= nbs.length;
-            const z = positions[i * 3 + thickAxis]!;
-            next[i] = z + k * (mean - z);
-        }
-        for (let i = 0; i < count; i++) {
-            if (!free[i] || neighbors[i]!.length === 0) continue;
-            positions[i * 3 + thickAxis] = next[i]!;
-        }
-    };
-    for (let iter = 0; iter < VALLEY_FAIR_ITERS; iter++) {
-        pass(VALLEY_FAIR_LAMBDA);
-        pass(VALLEY_FAIR_MU);
     }
 }

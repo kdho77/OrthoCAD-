@@ -3443,7 +3443,6 @@ export function applyBaseModifiers(
         topVertexCount,
         topFactor: topFactors,
         lengthMm: field.lengthMm,
-        indices: geometry.index?.array ?? null,
     });
 
     pos.needsUpdate = true;
