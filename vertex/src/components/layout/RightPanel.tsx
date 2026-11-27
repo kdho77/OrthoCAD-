@@ -23,37 +23,53 @@ export function RightPanel() {
     const productType = useClinicalWorkflowStore((s) => s.productType);
     const isAfo = productType === "afo";
     const method = useDesignStore((s) => s.design.method);
+    const insoleMeasureHost = !isAfo && (step === "corrections" || step === "elements");
+
+    const insoleStepContent = (
+        <>
+            {!isAfo && step === "scan" ? <ClinicalScanStepPanel /> : null}
+            {!isAfo && step === "setup" ? <SetupStepPanel /> : null}
+            {!isAfo && step === "corrections" ? (
+                <div className="space-y-3">
+                    <CorrectionPresetsPanel />
+                    <CorrectionsPanel />
+                </div>
+            ) : null}
+            {!isAfo && step === "elements" ? <ElementsPanel /> : null}
+            {!isAfo && step === "print" ? (
+                <div className="space-y-3">
+                    <ClinicalPrintStepPanel />
+                    {method === "milling_3axis" ? null : <HardnessStepPanel />}
+                </div>
+            ) : null}
+            {!isAfo && step === "export" ? <ExportPanel clinicalExportStep /> : null}
+        </>
+    );
+
+    const afoStepContent = (
+        <>
+            {isAfo && step === "scan" ? <AfoScanPanel /> : null}
+            {isAfo && step === "cast" ? <AfoCastPanel /> : null}
+            {isAfo && step === "corrections" ? <AfoCorrectionsPanel /> : null}
+            {isAfo && step === "design" ? <AfoDesignPanel /> : null}
+            {isAfo && step === "print" ? <AfoPrintPanel /> : null}
+            {isAfo && step === "export" ? <AfoExportPanel /> : null}
+        </>
+    );
+
+    const stepPanelContent = isAfo ? (
+        <MeasurePanelHost product="afo">{afoStepContent}</MeasurePanelHost>
+    ) : insoleMeasureHost ? (
+        <MeasurePanelHost product="insole">{insoleStepContent}</MeasurePanelHost>
+    ) : (
+        insoleStepContent
+    );
 
     return (
         <aside className="flex h-full w-full flex-col border-l border-border bg-panel lg:w-80 lg:shrink-0">
             <EditingStepHeader />
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="flex-1 overflow-y-auto p-3">
-                    <MeasurePanelHost product={isAfo ? "afo" : "insole"}>
-                        {isAfo && step === "scan" ? <AfoScanPanel /> : null}
-                        {isAfo && step === "cast" ? <AfoCastPanel /> : null}
-                        {isAfo && step === "corrections" ? <AfoCorrectionsPanel /> : null}
-                        {isAfo && step === "design" ? <AfoDesignPanel /> : null}
-                        {isAfo && step === "print" ? <AfoPrintPanel /> : null}
-                        {isAfo && step === "export" ? <AfoExportPanel /> : null}
-                        {!isAfo && step === "scan" ? <ClinicalScanStepPanel /> : null}
-                        {!isAfo && step === "setup" ? <SetupStepPanel /> : null}
-                        {!isAfo && step === "corrections" ? (
-                            <div className="space-y-3">
-                                <CorrectionPresetsPanel />
-                                <CorrectionsPanel />
-                            </div>
-                        ) : null}
-                        {!isAfo && step === "elements" ? <ElementsPanel /> : null}
-                        {!isAfo && step === "print" ? (
-                            <div className="space-y-3">
-                                <ClinicalPrintStepPanel />
-                                {method === "milling_3axis" ? null : <HardnessStepPanel />}
-                            </div>
-                        ) : null}
-                        {!isAfo && step === "export" ? <ExportPanel clinicalExportStep /> : null}
-                    </MeasurePanelHost>
-                </div>
+                <div className="flex-1 overflow-y-auto p-3">{stepPanelContent}</div>
                 <ClinicalStepFooter />
             </div>
         </aside>

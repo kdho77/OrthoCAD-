@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import * as THREE from "three";
 import { type BufferGeometry, DoubleSide } from "three";
 import {
     buildElementDisplayMeshes,
@@ -13,16 +14,19 @@ import { useDesignStore } from "@/stores/design-store";
 import { mergeElementPreviews, usePerformanceStore } from "@/stores/performance-store";
 import type { Side } from "@/types";
 import { ElementHardnessPopup } from "./ElementHardnessPopup";
+import { applyHeightmapColors, extendZRange, zRangeFromPositions } from "./heightmap-colors";
 
 /** Uses the same coordinates and visibility as its parent insole. */
 export function ElementSurfaceMeshes({
     base,
     reference = base,
     side,
+    heightmap = false,
 }: {
     base: BufferGeometry;
     reference?: BufferGeometry;
     side: Side;
+    heightmap?: boolean;
 }) {
     const elements = useDesignStore((s) => s.design.elements);
     const geometryElementsKey = elementGeometryKey(elements);
@@ -65,6 +69,39 @@ export function ElementSurfaceMeshes({
             }
         };
     }, [base, reference, geometryElementsKey, side, print, previews]);
+
+    const heightmapZRange = useMemo(() => {
+        if (!heightmap || print) return null;
+        let range = zRangeFromPositions(base);
+        for (const { surface } of meshes) {
+            range = extendZRange(range, surface);
+        }
+        return range;
+    }, [base, heightmap, print, meshes]);
+
+    useEffect(() => {
+        if (!heightmap || print) {
+            for (const { surface } of meshes) {
+                surface.deleteAttribute("color");
+            }
+            return;
+        }
+        if (!heightmapZRange) return;
+        for (const { surface } of meshes) {
+            const pos = surface.getAttribute("position");
+            if (!pos) continue;
+            if (!surface.getAttribute("normal")) surface.computeVertexNormals();
+            const existing = surface.getAttribute("color") as THREE.BufferAttribute | undefined;
+            const colors =
+                existing?.count === pos.count
+                    ? existing
+                    : new THREE.BufferAttribute(new Float32Array(pos.count * 3), 3);
+            applyHeightmapColors(surface, colors, heightmapZRange);
+        }
+    }, [heightmap, print, meshes, heightmapZRange]);
+
+    const useHeightmapSurface = heightmap && !print;
+
     return (
         <group>
             {meshes.map(({ element, surface, border }) => {
@@ -89,7 +126,8 @@ export function ElementSurfaceMeshes({
                             }}
                         >
                             <meshStandardMaterial
-                                color={color}
+                                color={useHeightmapSurface ? "#ffffff" : color}
+                                vertexColors={useHeightmapSurface}
                                 roughness={0.8}
                                 metalness={0}
                                 side={DoubleSide}

@@ -11,4 +11,10 @@ describe("EditingStepHeader", () => {
         expect(editingHeader).toContain("Pick Left, Right, or Pair");
         expect(editingHeader).not.toContain("text-amber");
     });
+
+    test("renders only on corrections and elements", () => {
+        expect(editingHeader).toMatch(/step !== "corrections" && step !== "elements"/);
+        expect(editingHeader).not.toMatch(/step === "setup"/);
+        expect(editingHeader).not.toContain('"setup"');
+    });
 });

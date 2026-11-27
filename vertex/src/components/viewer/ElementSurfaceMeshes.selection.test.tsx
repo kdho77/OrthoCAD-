@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, rs, test } from "@rstest/core";
 import * as React from "react";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { BoxGeometry, BufferGeometry } from "three";
+import { BoxGeometry, type BufferAttribute, BufferGeometry } from "three";
 import { buildElementDisplayMeshes } from "@/lib/geometry/element-assets/display-mesh";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -82,4 +82,40 @@ test("element pointer-down is consumed; selection, hardness and dismissal reuse 
     // A real placement change must still invalidate the display geometry.
     await act(async () => useDesignStore.getState().updateElement("pad", { heightMm: 6 }));
     expect(buildElementDisplayMeshes).toHaveBeenCalledTimes(2);
+});
+
+test("heightmap applies vertex colors and vertexColors material on elements step", async () => {
+    useClinicalWorkflowStore.setState({ step: "elements" });
+    await act(async () =>
+        root.render(createElement(ElementSurfaceMeshes, { base, side: "left", heightmap: true })),
+    );
+    await act(async () => {
+        await Promise.resolve();
+    });
+    const mesh = container.querySelector("mesh");
+    expect(mesh).not.toBeNull();
+    const surface = rs.mocked(buildElementDisplayMeshes).mock.results[0]?.value;
+    const resolved = surface instanceof Promise ? await surface : surface;
+    const geometry = (Array.isArray(resolved) ? resolved[0] : null)?.surface as BufferGeometry | undefined;
+    expect(geometry?.getAttribute("color")).not.toBeUndefined();
+    const colors = geometry?.getAttribute("color") as BufferAttribute;
+    expect(colors.count).toBe(geometry?.getAttribute("position").count);
+    const material = mesh?.querySelector("meshstandardmaterial");
+    expect(material?.getAttribute("color")).toBe("#ffffff");
+});
+
+test("heightmap off keeps solid color material without vertex color attribute", async () => {
+    useClinicalWorkflowStore.setState({ step: "elements" });
+    await act(async () =>
+        root.render(createElement(ElementSurfaceMeshes, { base, side: "left", heightmap: false })),
+    );
+    await act(async () => {
+        await Promise.resolve();
+    });
+    const mesh = container.querySelector("mesh");
+    expect(mesh).not.toBeNull();
+    const surface = rs.mocked(buildElementDisplayMeshes).mock.results[0]?.value;
+    const resolved = surface instanceof Promise ? await surface : surface;
+    const geometry = (Array.isArray(resolved) ? resolved[0] : null)?.surface as BufferGeometry | undefined;
+    expect(geometry?.getAttribute("color")).toBeUndefined();
 });

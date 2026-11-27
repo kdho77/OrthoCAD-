@@ -5,15 +5,10 @@ import { ActiveFootSideBar } from "@/features/clinical/ActiveFootSideBar";
 import { evaluateScanStepGate, isFootSideExplicitlyKnown } from "@/lib/clinical/clinical-step-gates";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 
-function editingInfoCopy(step: "setup" | "corrections" | "elements"): string {
+function editingInfoCopy(step: "corrections" | "elements"): string {
     const gate = evaluateScanStepGate();
     const needSide = !isFootSideExplicitlyKnown() && gate.reason.includes("Left, Right, or Pair");
 
-    if (step === "setup") {
-        return needSide
-            ? "Pick Left, Right, or Pair before continuing. Choose which foot you edit for top trim."
-            : "Choose Left, Right, or Pair for top trim on the active foot or linked pair.";
-    }
     if (step === "corrections") {
         return needSide
             ? "Pick Left, Right, or Pair first. Corrections apply to the active foot or linked pair."
@@ -26,7 +21,7 @@ function editingInfoCopy(step: "setup" | "corrections" | "elements"): string {
 
 export function EditingStepHeader() {
     const step = useClinicalWorkflowStore((s) => s.step);
-    if (step !== "setup" && step !== "corrections" && step !== "elements") return null;
+    if (step !== "corrections" && step !== "elements") return null;
 
     return (
         <div className="border-b border-border px-3 py-2">
