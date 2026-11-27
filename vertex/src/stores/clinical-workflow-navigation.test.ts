@@ -80,7 +80,7 @@ describe("clinical workflow Next navigation", () => {
         useClinicalWorkflowStore.setState({
             step: "print",
             footSideExplicitlyChosen: false,
-            completedSteps: ["scan", "setup", "base", "corrections", "elements"],
+            completedSteps: ["scan", "setup", "corrections", "elements"],
         });
         useClinicalWorkflowStore.getState().goNext();
         expect(useClinicalWorkflowStore.getState().step).toBe("export");
@@ -101,7 +101,8 @@ describe("clinical workflow Next navigation", () => {
         useClinicalWorkflowStore.setState({ step: "shape" as ClinicalStepId });
         useClinicalWorkflowStore.getState().goNext();
         expect(useClinicalWorkflowStore.getState().step).toBe("corrections");
-        expect(normalizeClinicalStep("shape")).toBe("base");
+        expect(normalizeClinicalStep("shape")).toBe("setup");
+        expect(normalizeClinicalStep("base")).toBe("setup");
 
         useClinicalWorkflowStore.setState({ step: "hardness" as ClinicalStepId });
         useClinicalWorkflowStore.getState().goNext();
