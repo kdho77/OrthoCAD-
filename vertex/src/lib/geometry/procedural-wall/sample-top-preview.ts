@@ -487,10 +487,67 @@ function mirrorSolidPlanFrames(geometry: BufferGeometry): void {
 }
 
 /**
+ * Same width-axis reflection as {@link mirrorGeometry}: the middle bbox span,
+ * about its centre. The right sheet and its trim have to use one centre or
+ * the anterior cut lands off the mirrored solid.
+ */
+function widthAxisMirror(geometry: BufferGeometry): { axis: 0 | 1 | 2; center: number } | null {
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    if (!box) return null;
+    const spans: Array<[0 | 1 | 2, number]> = [
+        [0, box.max.x - box.min.x],
+        [1, box.max.y - box.min.y],
+        [2, box.max.z - box.min.z],
+    ];
+    spans.sort((a, b) => a[1] - b[1]);
+    const axis = spans[1]![0];
+    const min = axis === 0 ? box.min.x : axis === 1 ? box.min.y : box.min.z;
+    const max = axis === 0 ? box.max.x : axis === 1 ? box.max.y : box.max.z;
+    return { axis, center: (min + max) / 2 };
+}
+
+function mirrorPlanCoord(
+    value: number,
+    mirror: { axis: 0 | 1 | 2; center: number },
+    axis: 0 | 1 | 2,
+): number {
+    return axis === mirror.axis ? 2 * mirror.center - value : value;
+}
+
+function mirrorTrimline(curve: TrimlineCurve, mirror: { axis: 0 | 1 | 2; center: number }): TrimlineCurve {
+    // A reflection reverses the ring. The clip fillet and the anterior-cut
+    // test both follow that walk, so put the original direction back.
+    const points = curve.points.map((p) => {
+        const q = p.clone();
+        q.x = mirrorPlanCoord(q.x, mirror, 0);
+        q.y = mirrorPlanCoord(q.y, mirror, 1);
+        q.z = mirrorPlanCoord(q.z, mirror, 2);
+        return q;
+    });
+    points.reverse();
+    return { ...curve, points };
+}
+
+function mirrorPolyPoint(p: PolyPoint, mirror: { axis: 0 | 1 | 2; center: number }): PolyPoint {
+    return {
+        x: mirrorPlanCoord(p.x, mirror, 0),
+        y: mirrorPlanCoord(p.y, mirror, 1),
+        z: mirrorPlanCoord(p.z ?? 0, mirror, 2),
+    };
+}
+
+/**
  * The station loft is not mirror-symmetric, and a direct loft of the mirrored
  * sheet clears the skew gate without being the mirror of the left solid.
  * Build that left solid and reflect it. Z is not flipped, so the plantar
  * seam stays on the bottom.
+ *
+ * A short right trim is mirrored with the sheet. Clipping and tapering in
+ * the right frame, after the sheet has been reflected to the left, leaves
+ * the cut on the wrong side of a widened foot and the toe rim stays full
+ * thickness. The taper runs on the left solid, then the reflection carries
+ * the thinned edge back.
  */
 async function loftRightAsMirroredLeft(
     topGeo: BufferGeometry,
@@ -500,19 +557,31 @@ async function loftRightAsMirroredLeft(
     if (!options.sourceField) throw new Error("right-foot mirror loft needs a source field");
     const leftTop = mirrorGeometry(topGeo);
     try {
+        const mirror = widthAxisMirror(topGeo);
+        const tapering = Boolean(
+            options.anteriorEdgeTaper && mirror && options.trimline && options.trimline.points.length >= 4,
+        );
+        const leftTrim =
+            tapering && mirror && options.trimline
+                ? mirrorTrimline(options.trimline, mirror)
+                : options.trimline;
+        const leftField = leftFieldFromMirroredRight(options.sourceField);
+        if (tapering && leftTrim) leftField.trimline = leftTrim;
+        const leftPattern =
+            tapering && mirror && options.bottomPattern?.length
+                ? options.bottomPattern.map((p) => mirrorPolyPoint(p, mirror))
+                : options.bottomPattern;
         const leftPreview = await reconstructProceduralPreview(leftTop, {
             ...options,
             side: "left",
-            sourceField: leftFieldFromMirroredRight(options.sourceField),
-            // The left frame is mirrored back. Taper once, in the right frame.
-            anteriorEdgeTaper: false,
+            sourceField: leftField,
+            trimline: leftTrim,
+            ...(leftPattern ? { bottomPattern: leftPattern } : {}),
+            anteriorEdgeTaper: tapering,
         });
         const geometry = mirrorGeometry(leftPreview.geometry);
         mirrorSolidPlanFrames(geometry);
         leftPreview.geometry.dispose();
-        if (options.anteriorEdgeTaper && options.trimline && options.trimline.points.length >= 4) {
-            taperAnteriorSolid(geometry, options.trimline);
-        }
         return { pattern: reflectPlanY(leftPreview.pattern, fairCenterY), geometry };
     } finally {
         leftTop.dispose();
