@@ -217,6 +217,30 @@ export function resolveActiveTrimline(
     return null;
 }
 
+/**
+ * Sulcus and 3/4 lower the front edge. Full and a freehand trim do not.
+ * A linked preview uses the preset being committed, same as the trim curve.
+ */
+export function activeAnteriorEdgeTaper(
+    side: Side,
+    design = useDesignStore.getState().design,
+    session = useMeshEditStore.getState().trimlineEdit,
+): boolean {
+    const short = (preset: TrimPresetId | null | undefined) => preset === "sulcus" || preset === "met_head";
+    if (session?.side === side) return short(session.presetOnCommit);
+    if (
+        session &&
+        session.side !== side &&
+        design.corrections.linked &&
+        (session.presetOnCommit === "full" ||
+            session.presetOnCommit === "sulcus" ||
+            session.presetOnCommit === "met_head")
+    ) {
+        return short(session.presetOnCommit);
+    }
+    return short(design.trimPreset?.[side]);
+}
+
 export const useMeshEditStore = create<MeshEditStore>((set, get) => ({
     editMode: "transform",
     target: null,

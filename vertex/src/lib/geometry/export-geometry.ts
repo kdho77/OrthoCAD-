@@ -36,7 +36,7 @@ import { getDesignTrimline, sampleDefaultOutline } from "@/lib/geometry/trimline
 import { useAfoStore } from "@/stores/afo-store";
 import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useDesignStore } from "@/stores/design-store";
-import { resolveActiveTrimline, useMeshEditStore } from "@/stores/mesh-edit-store";
+import { activeAnteriorEdgeTaper, resolveActiveTrimline, useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { DesignState, ProductionMethod, Side } from "@/types";
 
 /** Export routing: manufacturing and preview STL both use mesh-close. */
@@ -107,6 +107,7 @@ function proceduralExportRequest(design: DesignState, side: Side, beltPrint = fa
         }),
         mirrored,
         ...(beltPrint ? { beltPrint: true } : {}),
+        ...(activeAnteriorEdgeTaper(side, design, edits.trimlineEdit) ? { anteriorEdgeTaper: true } : {}),
     };
     return {
         solidOptions,

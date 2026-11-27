@@ -271,6 +271,56 @@ function pointInPolygonXY(x: number, y: number, poly: THREE.Vector3[]): boolean 
     return inside;
 }
 
+/** Sulcus and 3/4 blend the front edge down over this distance. Full-length does not. */
+export const ANTERIOR_EDGE_TAPER_MM = 10;
+/**
+ * Printable tip thickness. Stays on the minimum wall so the rim does not
+ * collapse into a zero-thickness edge.
+ */
+export const ANTERIOR_EDGE_TIP_MM = 0.8;
+
+/**
+ * Edges of the trim whose inward normal points toward the heel: the oblique
+ * front cut. Side walls and the heel are left out, so a taper does not thin
+ * the medial or lateral border.
+ */
+export function anteriorCutSegments(curve: TrimlineCurve): Array<[THREE.Vector3, THREE.Vector3]> {
+    const pts = curve.points;
+    if (pts.length < 4) return [];
+    const frame = lengthFrame(pts);
+    let area = 0;
+    for (let i = 0; i < pts.length; i++) {
+        const a = pts[i]!;
+        const b = pts[(i + 1) % pts.length]!;
+        area += a.x * b.y - b.x * a.y;
+    }
+    const ccw = area > 0;
+    const out: Array<[THREE.Vector3, THREE.Vector3]> = [];
+    for (let i = 0; i < pts.length; i++) {
+        const a = pts[i]!;
+        const b = pts[(i + 1) % pts.length]!;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 1e-6) continue;
+        const nx = (ccw ? -dy : dy) / len;
+        const ny = (ccw ? dx : -dx) / len;
+        const towardHeel = frame.axis === "x" ? nx : ny;
+        if (towardHeel < -0.45) out.push([a, b]);
+    }
+    return out;
+}
+
+/** Distance in the plan to the front cut. Infinity when the curve has no front edge. */
+export function distanceToAnteriorCutMm(x: number, y: number, curve: TrimlineCurve): number {
+    const segments = anteriorCutSegments(curve);
+    if (segments.length === 0) return Infinity;
+    const p = new THREE.Vector3(x, y, 0);
+    let best = Infinity;
+    for (const [a, b] of segments) best = Math.min(best, distToSegment(p, a, b));
+    return best;
+}
+
 function distToSegment(p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): number {
     const abx = b.x - a.x;
     const aby = b.y - a.y;

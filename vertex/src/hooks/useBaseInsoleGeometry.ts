@@ -64,7 +64,10 @@ import {
     buildProceduralViewerPatternInWorker,
     reconstructProceduralPreviewInWorker,
 } from "@/lib/geometry/procedural-wall/preview-loft-worker";
-import { composeViewerPrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
+import {
+    composeViewerPrintSolidTop,
+    taperAnteriorEdge,
+} from "@/lib/geometry/procedural-wall/print-solid-compose";
 import { printSolidOptions } from "@/lib/geometry/procedural-wall/print-solid-options";
 import { proceduralViewerStockGate } from "@/lib/geometry/procedural-wall/sample-top-display";
 import {
@@ -91,7 +94,12 @@ import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useClientStore } from "@/stores/client-store";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
-import { resolveActiveTrimline, useMeshEditStore, widthAdjustedMeshOutline } from "@/stores/mesh-edit-store";
+import {
+    activeAnteriorEdgeTaper,
+    resolveActiveTrimline,
+    useMeshEditStore,
+    widthAdjustedMeshOutline,
+} from "@/stores/mesh-edit-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import { usePreviewLoftStatusStore } from "@/stores/preview-loft-status-store";
 import { useScanStore } from "@/stores/scan-store";
@@ -771,6 +779,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             sourceField: zeroField,
                             shoeWidth: shoeWidthOpt,
                             trimline: printTrim,
+                            anteriorEdgeTaper: activeAnteriorEdgeTaper(side),
                         });
                         const fwLog = field.corrections?.forefootWedge;
                         if (
@@ -950,20 +959,23 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                             }),
                             printLoftEpoch,
                         };
-                        const solidOptions = printSolidOptions({
-                            design,
-                            side,
-                            field,
-                            viewer: {
-                                wallStyle,
-                                deviceType,
-                                lateralFlangeHeightMm,
-                                lateralFlangeLengthMm,
-                                lateralFlangeAngleDeg,
-                            },
-                            trimline: printTrim,
-                            bottomPattern: livePts,
-                        });
+                        const solidOptions = {
+                            ...printSolidOptions({
+                                design,
+                                side,
+                                field,
+                                viewer: {
+                                    wallStyle,
+                                    deviceType,
+                                    lateralFlangeHeightMm,
+                                    lateralFlangeLengthMm,
+                                    lateralFlangeAngleDeg,
+                                },
+                                trimline: printTrim,
+                                bottomPattern: livePts,
+                            }),
+                            ...(activeAnteriorEdgeTaper(side) ? { anteriorEdgeTaper: true } : {}),
+                        };
                         const fingerprint = manufacturingSolidFingerprint(solidOptions, cacheCtx);
                         const cachedSolid = peekManufacturingSolid(fingerprint, side);
                         const reuseCached =
@@ -990,6 +1002,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                                         heelOverrideMm: heelW,
                                     },
                                     trimline: printTrim,
+                                    anteriorEdgeTaper: activeAnteriorEdgeTaper(side),
                                 });
                             } catch (error) {
                                 previewGeometry.dispose();
@@ -1089,6 +1102,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         let display: BufferGeometry = modified;
         if (activeForClip && !fastPreview) {
             display = clipGeometryToOutline(modified, activeForClip);
+            if (activeAnteriorEdgeTaper(side)) taperAnteriorEdge(display, activeForClip);
         }
         if (outRef.current && outRef.current !== display && outRef.current !== workRef.current) {
             outRef.current.dispose();
@@ -1110,6 +1124,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.shoeWidthBySide,
         design.shapeFinish,
         design.trimlines,
+        design.trimPreset,
         design.textMarking,
         patientDisplayName,
         design.sinks,
