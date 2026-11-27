@@ -1,6 +1,5 @@
 import { ClinicalStepFooter } from "@/components/clinical/ClinicalStepRail";
 import { EditingStepHeader } from "@/components/clinical/EditingStepHeader";
-import { LeftSidebar } from "@/components/layout/LeftSidebar";
 import { AfoCastPanel } from "@/features/afo/AfoCastPanel";
 import { AfoCorrectionsPanel } from "@/features/afo/AfoCorrectionsPanel";
 import { AfoDesignPanel } from "@/features/afo/AfoDesignPanel";
@@ -16,10 +15,6 @@ import { ElementsPanel } from "@/features/elements/ElementsPanel";
 import { ExportPanel } from "@/features/exports/ExportPanel";
 import { MeasurePanelHost } from "@/features/measure/MeasurePanelHost";
 import { CorrectionPresetsPanel } from "@/features/shape/CorrectionPresetsPanel";
-import { OutlineEditEntries } from "@/features/shape/OutlineEditEntries";
-import { TrimPresetsPanel } from "@/features/shape/TrimPresetsPanel";
-import { ShapeFinishPanel } from "@/features/shape-finish/ShapeFinishPanel";
-import { shouldShowShapeFinishOnShapeStep } from "@/features/shape-finish/shape-finish-mount";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 
@@ -43,18 +38,6 @@ export function RightPanel() {
                         {isAfo && step === "export" ? <AfoExportPanel /> : null}
                         {!isAfo && step === "scan" ? <ClinicalScanStepPanel /> : null}
                         {!isAfo && step === "setup" ? <SetupStepPanel /> : null}
-                        {!isAfo && step === "base" ? (
-                            <div className="space-y-3">
-                                <LeftSidebar
-                                    embedded
-                                    sections={["pattern", "library"]}
-                                    clinicalDeclutter="base"
-                                />
-                                <TrimPresetsPanel />
-                                <OutlineEditEntries />
-                                {shouldShowShapeFinishOnShapeStep() ? <ShapeFinishPanel /> : null}
-                            </div>
-                        ) : null}
                         {!isAfo && step === "corrections" ? (
                             <div className="space-y-3">
                                 <CorrectionPresetsPanel />
