@@ -22,7 +22,7 @@ import {
     ARCH_PROFILE_CAP_MM,
     type ArchSection,
     archProfileEnvelope,
-    archProfilePinWindow,
+    archProfileValleyBlend,
     medialCoordinate,
     measureArchSection,
     sampleMedialArchSection,
@@ -102,36 +102,55 @@ describe("arch profile slider", () => {
         const height = (s: number, profile: number | undefined) =>
             zAt(u, mAt(s), side, profile == null ? {} : { archProfile: profile });
 
-        // Inboard foot of the stock shell is below the chord (the cradled sweep).
-        const inboardDev = height(0.2, undefined) - chordAt(0.2);
-        expect(inboardDev).toBeLessThan(-0.3);
-        // Neutral lays that station on the chord; Domed lifts it further. Monotone.
-        const inboard = [100, 75, 50, 25, 0].map((profile) => height(0.2, profile));
-        for (let i = 1; i < inboard.length; i++) {
-            const prev = inboard[i - 1] ?? 0;
-            const next = inboard[i] ?? 0;
-            expect(next).toBeGreaterThan(prev + 0.05);
+        const dzRim = section.zRim - section.zValley;
+        const amp = Math.min(ARCH_PROFILE_BULGE_MM, Math.max(0, dzRim / 4));
+        const env = archProfileEnvelope(u, 0, layout.lengthMm, 0);
+        const onChord = (s: number, profile: number) => {
+            const zCur = height(s, 100);
+            const chord = chordAt(s);
+            const bulge = 4 * amp * s * (1 - s);
+            const w = archProfileValleyBlend(s);
+            if (profile >= 50) {
+                const t = (100 - profile) / 50;
+                return zCur + env * t * (chord - zCur) * w;
+            }
+            const c = (50 - profile) / 50;
+            return zCur + env * w * (chord - zCur + c * bulge);
+        };
+        for (const s of [0.2, 0.35, 0.5, 0.65]) {
+            for (const profile of [0, 25, 50, 75]) {
+                expect(height(s, profile)).toBeCloseTo(onChord(s, profile), 2);
+            }
         }
-        expect(Math.abs(height(0.5, 50) - chordAt(0.5))).toBeLessThan(0.02);
-        expect(Math.abs(height(0.2, 50) - chordAt(0.2))).toBeLessThan(0.02);
+        const dome = [0.2, 0.35, 0.5, 0.65, 0.8, 0.95].map((s) => height(s, 0));
+        for (let i = 1; i < dome.length; i++) {
+            expect(dome[i]!).toBeGreaterThan(dome[i - 1]!);
+        }
         const crown = height(0.5, 0) - chordAt(0.5);
-        expect(crown).toBeGreaterThan(ARCH_PROFILE_BULGE_MM - 0.05);
-        expect(crown).toBeLessThan(ARCH_PROFILE_BULGE_MM + 0.05);
-        // Domed crown sits above its neighbours. Neutral is the straight chord.
-        const domeMid = height(0.5, 0);
-        expect(domeMid).toBeGreaterThan((height(0.35, 0) + height(0.65, 0)) / 2 + 0.2);
-        expect(Math.abs(height(0.35, 50) + height(0.65, 50) - 2 * height(0.5, 50))).toBeLessThan(0.05);
+        const zCurMid = height(0.5, 100);
+        const expectedCrown = (1 - env) * (zCurMid - chordAt(0.5)) + env * amp;
+        expect(crown).toBeCloseTo(expectedCrown, 2);
+        expect(crown).toBeLessThanOrEqual(ARCH_PROFILE_CAP_MM + 1e-6);
+        expect(height(0.5, 0)).toBeGreaterThan(height(0.5, 50));
+        expect(height(0.5, 0)).toBeGreaterThan((height(0.35, 0) + height(0.65, 0)) / 2);
     });
 
-    test("midspan height rises monotonically as the slider moves toward Domed", () => {
-        const section = sectionAt(0.42, "right", { archHeightMm: 8 });
+    test("midspan rises from the chord to the dome as the slider leaves Neutral", () => {
+        const u = 0.43;
+        const section = sectionAt(u, "right", { archHeightMm: 8 });
         const midM = (section.mValley + section.mRim) / 2;
-        let prev = -Infinity;
-        for (const profile of [100, 75, 50, 25, 0]) {
-            const z = zAt(0.42, midM, "right", { archHeightMm: 8, archProfile: profile });
-            expect(z).toBeGreaterThan(prev + 1e-4);
+        const zAtProfile = (profile: number) =>
+            zAt(u, midM, "right", { archHeightMm: 8, archProfile: profile });
+        const chord = (section.zValley + section.zRim) / 2;
+        expect(Math.abs(zAtProfile(50) - chord)).toBeLessThan(0.02);
+        let prev = zAtProfile(50);
+        for (const profile of [25, 0]) {
+            const z = zAtProfile(profile);
+            expect(z).toBeGreaterThan(prev + 1e-3);
             prev = z;
         }
+        const amp = Math.min(ARCH_PROFILE_BULGE_MM, Math.max(0, (section.zRim - section.zValley) / 4));
+        expect(zAtProfile(0) - chord).toBeCloseTo(amp, 2);
     });
 
     test("valley floor and medial rim stay fixed, and the heel and forefoot do not move", () => {
@@ -179,13 +198,24 @@ describe("arch profile slider", () => {
                 }
             }
         }
-        expect(archProfileEnvelope(0.42, 0, layout.lengthMm, 0)).toBe(1);
+        const bell = Array.from({ length: 61 }, (_, i) =>
+            archProfileEnvelope(0.28 + (0.3 * i) / 60, 0, layout.lengthMm, 0),
+        );
+        expect(bell[0]).toBe(0);
+        expect(bell[bell.length - 1]).toBe(0);
+        expect(archProfileEnvelope(0.43, 0, layout.lengthMm, 0)).toBe(1);
+        expect(archProfileEnvelope(0.38, 0, layout.lengthMm, 0)).toBeLessThan(0.9);
+        expect(archProfileEnvelope(0.48, 0, layout.lengthMm, 0)).toBeLessThan(0.9);
+        let peaks = 0;
+        for (let i = 1; i < bell.length - 1; i++) {
+            if (bell[i]! >= bell[i - 1]! && bell[i]! > bell[i + 1]!) peaks++;
+        }
+        expect(peaks).toBe(1);
     });
 
-    test("domed crown stays at 4 mm and never exceeds 5 mm above the chord", () => {
+    test("domed crown is the parabola amplitude and never exceeds 5 mm above the chord", () => {
         for (const archHeightMm of [0, 8, 14]) {
-            let maxAbove = 0;
-            let peakAtCrest = 0;
+            let maxAbove = -Infinity;
             for (let ui = 0; ui <= 30; ui++) {
                 const u = 0.28 + (0.3 * ui) / 30;
                 const section = sectionAt(u, "left", { archHeightMm, heelCupDepthMm: 12 }, 6);
@@ -197,14 +227,15 @@ describe("arch profile slider", () => {
                     maxAbove = Math.max(maxAbove, z - chord);
                 }
             }
-            const crest = sectionAt(0.42, "left", { archHeightMm, heelCupDepthMm: 12 }, 6);
+            const crest = sectionAt(0.43, "left", { archHeightMm, heelCupDepthMm: 12 }, 6);
+            const amp = Math.min(ARCH_PROFILE_BULGE_MM, Math.max(0, (crest.zRim - crest.zValley) / 4));
             const mid = (crest.mValley + crest.mRim) / 2;
-            const zMid = zAt(0.42, mid, "left", { archHeightMm, heelCupDepthMm: 12, archProfile: 0 }, 6);
+            const zMid = zAt(0.43, mid, "left", { archHeightMm, heelCupDepthMm: 12, archProfile: 0 }, 6);
             const chordMid = (crest.zValley + crest.zRim) / 2;
-            peakAtCrest = zMid - chordMid;
-            expect(maxAbove).toBeLessThanOrEqual(ARCH_PROFILE_CAP_MM + 1e-6);
-            expect(peakAtCrest).toBeGreaterThan(ARCH_PROFILE_BULGE_MM - 0.05);
-            expect(peakAtCrest).toBeLessThanOrEqual(ARCH_PROFILE_BULGE_MM + 0.05);
+            expect(zMid - chordMid).toBeCloseTo(amp, 2);
+            expect(amp).toBeLessThanOrEqual(ARCH_PROFILE_BULGE_MM);
+            expect(zMid - chordMid).toBeLessThanOrEqual(ARCH_PROFILE_CAP_MM + 1e-6);
+            expect(maxAbove).toBeGreaterThan(0);
         }
     });
 
@@ -229,13 +260,13 @@ describe("arch profile slider", () => {
                     maxSecond = Math.max(maxSecond, Math.abs(zs[i - 1]! - 2 * zs[i]! + zs[i + 1]!));
                 }
             }
-            // A crease would jump by millimetres between 1/40 of the span. The crown is a broad sine.
+            // A crease would jump by millimetres between 1/40 of the span.
             expect(maxSecond).toBeLessThan(1.25);
         }
         expect(medialCoordinate(0.4, "left")).toBeCloseTo(medialCoordinate(-0.4, "right"), 9);
-        expect(archProfilePinWindow(0)).toBe(0);
-        expect(archProfilePinWindow(1)).toBe(0);
-        expect(archProfilePinWindow(0.5)).toBe(1);
+        expect(archProfileValleyBlend(0)).toBe(0);
+        expect(archProfileValleyBlend(0.14)).toBe(1);
+        expect(archProfileValleyBlend(1)).toBe(1);
     });
 
     test("procedural solids stay watertight across the slider", () => {
@@ -430,48 +461,106 @@ describe("arch profile slider", () => {
             band.push({ i, m: mOf(src, i), z: zOf(src, i) });
         }
         expect(band.length).toBeGreaterThan(12);
+        const edgeM = Math.max(...band.map((sample) => sample.m));
         const section = measureArchSection([...band].sort((a, b) => a.m - b.m));
         expect(section).toBeTruthy();
-        const span = section!.mRim - section!.mValley;
-
+        expect(section!.mRim).toBeCloseTo(edgeM, 3);
+        expect(section!.mRim).toBeGreaterThan(0.75);
+        expect(section!.mRim).toBeLessThan(0.95);
+        expect(section!.mValley).toBeGreaterThanOrEqual(0);
+        expect(section!.mValley).toBeLessThan(0.06);
+        const halfWidthMm = size[widthAxis]! / 2;
         let pinned = 0;
-        const probes: { s: number; d0: number; d50: number; d100: number; above0: number; above50: number }[] =
-            [];
+        let rimZ = -Infinity;
+        let rimI = -1;
         for (const sample of band) {
-            const { i, m, z } = sample;
-            const d0 = zOf(domed, i) - z;
-            const d50 = zOf(neutral, i) - z;
-            const d100 = zOf(cradled, i) - z;
-            expect(d100).toBe(0);
-            if (m <= section!.mValley || m >= section!.mRim) {
+            if (sample.m >= section!.mRim - 1e-4 && sample.z > rimZ) {
+                rimZ = sample.z;
+                rimI = sample.i;
+            }
+        }
+        for (const sample of band) {
+            const d0 = zOf(domed, sample.i) - sample.z;
+            const d50 = zOf(neutral, sample.i) - sample.z;
+            expect(zOf(cradled, sample.i) - sample.z).toBe(0);
+            if (sample.m <= section!.mValley + 1e-6 || sample.i === rimI) {
                 expect(d0).toBe(0);
                 expect(d50).toBe(0);
                 pinned++;
-                continue;
-            }
-            const s = (m - section!.mValley) / span;
-            const zChord = (1 - s) * section!.zValley + s * section!.zRim;
-            if (s > 0.2 && s < 0.8) {
-                probes.push({
-                    s,
-                    d0,
-                    d50,
-                    d100,
-                    above0: zOf(domed, i) - zChord,
-                    above50: zOf(neutral, i) - zChord,
-                });
             }
         }
         expect(pinned).toBeGreaterThan(0);
-        expect(probes.length).toBeGreaterThan(4);
+        expect(rimZ).toBeCloseTo(section!.zRim, 3);
 
-        const mid = probes.reduce((best, p) => (Math.abs(p.s - 0.5) < Math.abs(best.s - 0.5) ? p : best));
-        const crest = probes.reduce((best, p) => (p.above0 > best.above0 ? p : best));
+        const slice: { i: number; m: number; z: number }[] = [];
+        for (let i = 0; i < count; i++) {
+            if (Math.abs(uOf(src, i) - 0.42) > 0.004) continue;
+            slice.push({ i, m: mOf(src, i), z: zOf(src, i) });
+        }
+        expect(slice.length).toBeGreaterThan(8);
+        const sliceSection = measureArchSection([...slice].sort((a, b) => a.m - b.m))!;
+        const sliceSpan = sliceSection.mRim - sliceSection.mValley;
+        const bins = 36;
+        const topZ = (pos: Float32Array) => {
+            const z = Array.from({ length: bins }, () => -Infinity);
+            const mAt = Array.from({ length: bins }, () => 0);
+            for (const sample of slice) {
+                const s = (sample.m - sliceSection.mValley) / sliceSpan;
+                if (s < 0 || s > 1) continue;
+                const bi = Math.min(bins - 1, Math.max(0, Math.floor(s * (bins - 1))));
+                const zHere = zOf(pos, sample.i);
+                if (zHere > z[bi]!) {
+                    z[bi] = zHere;
+                    mAt[bi] = sample.m;
+                }
+            }
+            return { z, mAt };
+        };
+        const stockTop = topZ(src);
+        const domedTop = topZ(domed);
+        let prev = -Infinity;
+        let rises = 0;
+        let worstDip = 0;
+        for (let bi = 0; bi < bins; bi++) {
+            if (!Number.isFinite(domedTop.z[bi])) continue;
+            if (domedTop.z[bi]! < prev) worstDip = Math.max(worstDip, prev - domedTop.z[bi]!);
+            if (domedTop.z[bi]! > prev + 0.15) rises++;
+            prev = domedTop.z[bi]!;
+        }
+        expect(worstDip).toBeLessThan(0.15);
+        expect(rises).toBeGreaterThan(8);
 
-        expect(crest.above0).toBeGreaterThan(1);
-        expect(crest.above0).toBeLessThanOrEqual(ARCH_PROFILE_CAP_MM + 0.05);
-        expect(Math.abs(mid.above50)).toBeLessThan(0.35);
-        expect(mid.d0).toBeGreaterThan(mid.d50);
-        expect(mid.d100).toBe(0);
+        let flatMm = 0;
+        let runM0 = sliceSection.mValley;
+        let runZ = stockTop.z.find((z) => Number.isFinite(z)) ?? 0;
+        for (let bi = 0; bi < bins; bi++) {
+            if (!Number.isFinite(domedTop.z[bi])) continue;
+            if (Math.abs(domedTop.z[bi]! - runZ) < 0.15) {
+                flatMm = Math.max(flatMm, (domedTop.mAt[bi]! - runM0) * halfWidthMm);
+            } else {
+                runM0 = domedTop.mAt[bi]!;
+                runZ = domedTop.z[bi]!;
+            }
+        }
+        expect(flatMm).toBeLessThan(6);
+
+        const outer: number[] = [];
+        for (let bi = 0; bi < bins; bi++) {
+            const s = bi / (bins - 1);
+            if (s > 0.82 && s < 0.98 && Number.isFinite(domedTop.z[bi]) && Number.isFinite(stockTop.z[bi])) {
+                outer.push(bi);
+            }
+        }
+        expect(outer.length).toBeGreaterThan(1);
+        const slope = (z: number[], a: number, b: number) => {
+            const dm = (domedTop.mAt[b]! - domedTop.mAt[a]!) * halfWidthMm;
+            return dm > 0.2 ? (z[b]! - z[a]!) / dm : 0;
+        };
+        const a = outer[0]!;
+        const b = outer[outer.length - 1]!;
+        const stockSlope = slope(stockTop.z, a, b);
+        const domedSlope = slope(domedTop.z, a, b);
+        expect(domedSlope).toBeGreaterThan(-0.05);
+        expect(domedSlope).toBeLessThan(stockSlope * 0.45);
     });
 });

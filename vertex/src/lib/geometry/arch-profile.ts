@@ -5,8 +5,9 @@ import type { Side, SideCorrections } from "@/types";
 /**
  * Transverse medial-arch profile.
  *
- * 0 = Domed (convex, up to 4 mm above the valley-to-rim chord),
- * 50 = Neutral (the straight chord, with a short C2 fillet at each end),
+ * 0 = Domed (a concave-down parabola from the plantar valley up to the
+ *     medial trimline, tangent at that edge),
+ * 50 = Neutral (the straight valley-to-trimline chord),
  * 100 = Cradled (the current shell, zero displacement).
  * A missing value is Cradled so saved designs do not move.
  */
@@ -19,8 +20,10 @@ export const ARCH_PROFILE_U_POSTERIOR = 0.28;
 /** Anterior cutoff. The 1st metatarsal head (u ≥ 0.58) is untouched. */
 export const ARCH_PROFILE_U_ANTERIOR = 0.58;
 
-/** Fraction of the valley-to-rim span used for the C2 fillet at each end. */
-const PIN_RAMP = 0.14;
+/** Fraction of the valley-to-rim span used for the C2 fillet at the valley only. */
+const VALLEY_BLEND_S = 0.14;
+/** Single peak of the longitudinal bell. The midpoint of [0.28, 0.58]. */
+const ARCH_PROFILE_U_PEAK = 0.43;
 const SECTION_SAMPLES = 64;
 const VALLEY_M_MIN = -0.2;
 /** The bow stays on the medial side of the centerline. */
@@ -81,20 +84,19 @@ function quintic(t: number): number {
 }
 
 /**
- * C2 window that is 0 at both endpoints (value and first derivative) and 1
- * across the interior, so the chord blend does not crease into the floor or rim.
+ * C2 blend that is 0 on the plantar valley and 1 from `VALLEY_BLEND_S` through
+ * the medial trimline. The rim is not pinned by a second window.
  */
-export function archProfilePinWindow(s: number): number {
-    if (s <= 0 || s >= 1) return 0;
-    if (s < PIN_RAMP) return quintic(s / PIN_RAMP);
-    if (s > 1 - PIN_RAMP) return quintic((1 - s) / PIN_RAMP);
-    return 1;
+export function archProfileValleyBlend(s: number): number {
+    if (s <= 0) return 0;
+    if (s >= VALLEY_BLEND_S) return 1;
+    return quintic(s / VALLEY_BLEND_S);
 }
 
 /**
- * Longitudinal gate. Exact 0 at and outside [0.28, 0.58]. The plateau sits on
- * the navicular / sustentaculum (about 0.38–0.48) and slides with the apex,
- * but the cutoffs stay clamped so the heel cup and the 1st MPJ never rise.
+ * Longitudinal gate. Exact 0 at and outside [0.28, 0.58]. One C2 peak near
+ * u = 0.43 (shifted by apex and elongation), with no flat plateau. The heel
+ * cup and the 1st MPJ stay at 0.
  */
 export function archProfileEnvelope(
     u: number,
@@ -107,30 +109,28 @@ export function archProfileEnvelope(
     const elong = elongationMm != null && elongationMm > 0 ? elongationMm : 0;
     const widen = lengthMm > 0 ? Math.min(5, elong) / lengthMm : 0;
     const minRamp = 0.04;
-    let riseEnd = 0.38 + shift - widen * 0.5;
-    let fallStart = 0.48 + shift + widen * 0.5;
-    riseEnd = Math.min(Math.max(riseEnd, ARCH_PROFILE_U_POSTERIOR + minRamp), 0.46);
-    fallStart = Math.max(Math.min(fallStart, ARCH_PROFILE_U_ANTERIOR - minRamp), riseEnd);
-    if (u < riseEnd) {
-        return quintic((u - ARCH_PROFILE_U_POSTERIOR) / (riseEnd - ARCH_PROFILE_U_POSTERIOR));
+    let uPeak = ARCH_PROFILE_U_PEAK + shift + widen * 0.35;
+    const lo = ARCH_PROFILE_U_POSTERIOR + minRamp;
+    const hi = ARCH_PROFILE_U_ANTERIOR - minRamp;
+    if (uPeak < lo) uPeak = lo;
+    if (uPeak > hi) uPeak = hi;
+    if (u <= uPeak) {
+        return quintic((u - ARCH_PROFILE_U_POSTERIOR) / (uPeak - ARCH_PROFILE_U_POSTERIOR));
     }
-    if (u > fallStart) {
-        return quintic((ARCH_PROFILE_U_ANTERIOR - u) / (ARCH_PROFILE_U_ANTERIOR - fallStart));
-    }
-    return 1;
+    return 1 - quintic((u - uPeak) / (ARCH_PROFILE_U_ANTERIOR - uPeak));
 }
 
 /**
- * Valley = medial edge of the plantar floor. Rim = highest point on the
- * medial arch. Samples should be ordered by increasing `m`.
+ * Valley = medial edge of the plantar floor. Rim = the local medial trimline
+ * (largest `m` among the samples), with the surface height at that edge.
+ * `m` stays in the caller's normalization. Samples should be ordered by `m`.
  */
 export function measureArchSection(samples: readonly ArchSectionSample[]): ArchSection | null {
     let rim: ArchSectionSample | null = null;
     for (const s of samples) {
-        if (s.m < RIM_M_MIN) continue;
-        if (!rim || s.z >= rim.z) rim = s;
+        if (!rim || s.m > rim.m || (s.m === rim.m && s.z > rim.z)) rim = s;
     }
-    if (!rim) return null;
+    if (!rim || rim.m < RIM_M_MIN) return null;
 
     let zMin = Infinity;
     for (const s of samples) {
@@ -156,7 +156,8 @@ export function measureArchSection(samples: readonly ArchSectionSample[]): ArchS
 
 /**
  * Added millimetres at one point. `zCur` is the cradled height (profile 100).
- * Endpoints and anything outside the span return 0.
+ * Outside the valley-to-trimline span the delta is 0. At the trimline the
+ * target is `zRim`, so the edge height stays put.
  */
 export function archProfileDeltaMm(
     m: number,
@@ -170,19 +171,25 @@ export function archProfileDeltaMm(
     if (p >= 1) return 0;
     const span = section.mRim - section.mValley;
     if (!(span > 1e-4)) return 0;
-    if (m <= section.mValley || m >= section.mRim) return 0;
-    const s = (m - section.mValley) / span;
-    const zChord = (1 - s) * section.zValley + s * section.zRim;
-    const w = archProfilePinWindow(s);
+    if (m < section.mValley || m > section.mRim) return 0;
+    const s = Math.min(1, (m - section.mValley) / span);
+    const dzRim = section.zRim - section.zValley;
+    const zChord = section.zValley + s * dzRim;
+    // Peak of 4*A*s*(1-s) is A. A tracks a quarter of the arch rise, and never
+    // passes 4 mm. The 5 mm cap is the hard ceiling above the chord.
+    const amp = Math.min(ARCH_PROFILE_BULGE_MM, Math.max(0, dzRim / 4));
+    let bulge = 4 * amp * s * (1 - s);
+    if (bulge > ARCH_PROFILE_CAP_MM) bulge = ARCH_PROFILE_CAP_MM;
+    const wValley = archProfileValleyBlend(s);
     let zTarget: number;
     if (p >= 0.5) {
         const t = (1 - p) / 0.5;
-        zTarget = zCur + t * (zChord - zCur) * w;
+        zTarget = zCur + t * (zChord - zCur) * wValley;
     } else {
-        const zNeutral = zCur + (zChord - zCur) * w;
         const c = (0.5 - p) / 0.5;
-        const bulge = c * ARCH_PROFILE_BULGE_MM * Math.sin(Math.PI * s) ** 2;
-        zTarget = zNeutral + bulge;
+        const zNeutral = zCur + (zChord - zCur) * wValley;
+        const zDomed = zCur + (zChord + bulge - zCur) * wValley;
+        zTarget = zNeutral + c * (zDomed - zNeutral);
         if (zTarget - zChord > ARCH_PROFILE_CAP_MM) zTarget = zChord + ARCH_PROFILE_CAP_MM;
     }
     return envelope * (zTarget - zCur);
