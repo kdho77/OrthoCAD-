@@ -350,6 +350,28 @@ function distalWalk(
 }
 
 /**
+ * The classified inside/outside edge can sit a fraction of a millimetre
+ * outside the polygon: the boundary tolerance counts that vertex as inside,
+ * so the segment we would test never meets an edge. Walk a few samples
+ * until a segment actually crosses.
+ */
+function crossingAhead(
+    points: THREE.Vector3[],
+    start: number,
+    trim: THREE.Vector3[],
+    limit: number,
+): { point: THREE.Vector3; edge: number; from: number } | null {
+    const n = points.length;
+    const steps = Math.max(1, Math.min(limit, n - 1));
+    for (let k = 0; k < steps; k++) {
+        const from = (start + k) % n;
+        const hit = boundaryHit(points[from]!, points[(from + 1) % n]!, trim);
+        if (hit) return { point: hit.point, edge: hit.edge, from };
+    }
+    return null;
+}
+
+/**
  * End a closed bottom pattern on the top trim's distal boundary.
  * Heel and midfoot points that already lie inside the trim are kept.
  * A trim that does not cut the pattern off (Full, or an inset pattern inside
@@ -357,20 +379,23 @@ function distalWalk(
  */
 export function endPatternOnTrim(pattern: TrimlineCurve, trim: TrimlineCurve | null): TrimlineCurve {
     if (!trim || trim.points.length < 4 || pattern.points.length < 4) return pattern;
-    const tol = 0.8;
-    const inside = pattern.points.map((p) => onOrInside(p, trim.points, tol));
+    // Tight enough that the next sample past the cut (about 1 mm) stays outside.
+    const tol = 0.15;
+    const points = pattern.points;
+    const n = points.length;
+    const inside = points.map((p) => onOrInside(p, trim.points, tol));
     if (inside.every(Boolean)) return pattern;
 
     let runs = 0;
-    for (let i = 0; i < inside.length; i++) {
-        const prev = (i - 1 + inside.length) % inside.length;
+    for (let i = 0; i < n; i++) {
+        const prev = (i - 1 + n) % n;
         if (!inside[i] && inside[prev]) runs++;
     }
     if (runs !== 1) return pattern;
 
     let chainStart = -1;
-    for (let i = 0; i < inside.length; i++) {
-        const prev = (i - 1 + inside.length) % inside.length;
+    for (let i = 0; i < n; i++) {
+        const prev = (i - 1 + n) % n;
         if (inside[i] && !inside[prev]) {
             chainStart = i;
             break;
@@ -378,29 +403,46 @@ export function endPatternOnTrim(pattern: TrimlineCurve, trim: TrimlineCurve | n
     }
     if (chainStart < 0) return pattern;
 
-    const kept: THREE.Vector3[] = [];
+    const insideIdx: number[] = [];
     let i = chainStart;
-    while (inside[i] && kept.length < pattern.points.length) {
-        kept.push(pattern.points[i]!.clone());
-        i = (i + 1) % pattern.points.length;
+    while (inside[i] && insideIdx.length < n) {
+        insideIdx.push(i);
+        i = (i + 1) % n;
     }
-    if (kept.length < 3) return pattern;
-    const firstOut = pattern.points[i]!;
-    const lastIn = kept[kept.length - 1]!;
+    if (insideIdx.length < 3) return pattern;
+    const lastInIndex = insideIdx[insideIdx.length - 1]!;
 
-    let lastOut = firstOut;
+    let lastOutIndex = i;
     let guard = 0;
-    while (!inside[i] && guard < pattern.points.length) {
-        lastOut = pattern.points[i]!;
-        i = (i + 1) % pattern.points.length;
+    while (!inside[i] && guard < n) {
+        lastOutIndex = i;
+        i = (i + 1) % n;
         guard++;
     }
-    const enterHit = boundaryHit(lastIn, firstOut, trim.points);
-    const exitHit = boundaryHit(lastOut, pattern.points[i]!, trim.points);
-    if (!enterHit || !exitHit) return pattern;
+    // The tolerance can mark the first vertex past the cut as inside, so the
+    // crossing sits on the previous edge. Start a few samples proximal of it.
+    const enter = crossingAhead(points, (lastInIndex - 5 + n) % n, trim.points, 12);
+    const exit = crossingAhead(points, lastOutIndex, trim.points, 8);
+    if (!enter || !exit || enter.from === exit.from) return pattern;
+
+    const insideSet = new Set(insideIdx);
+    let stop = enter.from;
+    if (!insideSet.has(stop)) stop = lastInIndex;
+    const resume = (exit.from + 1) % n;
+    if (!insideSet.has(resume)) return pattern;
+
+    const kept: THREE.Vector3[] = [];
+    let k = resume;
+    for (let step = 0; step < n; step++) {
+        if (!insideSet.has(k)) return pattern;
+        kept.push(points[k]!.clone());
+        if (k === stop) break;
+        k = (k + 1) % n;
+    }
+    if (kept.length < 3 || k !== stop) return pattern;
 
     const frame = lengthFrame(trim.points);
-    const mid = distalWalk(trim.points, enterHit.edge, exitHit.edge, frame);
-    const arc = [enterHit.point, ...mid, exitHit.point];
+    const mid = distalWalk(trim.points, enter.edge, exit.edge, frame);
+    const arc = [enter.point, ...mid, exit.point];
     return { points: [...kept, ...arc] };
 }
