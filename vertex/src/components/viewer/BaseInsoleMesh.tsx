@@ -162,15 +162,13 @@ export function BaseInsoleMesh({
             <group position={[-layout.lengthMm / 2, offsetX, 0]}>
                 <TextPlacementGuide side={side} />
             </group>
-            {!heightmap && (
-                <group position={[-layout.lengthMm / 2, offsetX, 0]}>
-                    <ElementSurfaceMeshes
-                        base={geometry}
-                        reference={elementReference ?? geometry}
-                        side={side}
-                    />
-                </group>
-            )}
+            <group position={[-layout.lengthMm / 2, offsetX, 0]}>
+                <ElementSurfaceMeshes
+                    base={geometry}
+                    reference={elementReference ?? geometry}
+                    side={side}
+                />
+            </group>
             {/* Edge extract is expensive on large bases — only when idle and small. */}
             {showEdges ? (
                 <lineSegments position={[-layout.lengthMm / 2, offsetX, 0]}>
