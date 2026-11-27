@@ -44,6 +44,7 @@ import {
     composePrintSolidTop,
     fieldWithoutSinks,
     type PrintSolidShoeWidth,
+    taperAnteriorSolid,
     withDefaultPrintShell,
 } from "./print-solid-compose";
 import { hasCurveOrTopModifiers, reconstructProceduralWalls } from "./reconstruct";
@@ -330,6 +331,8 @@ export interface ProceduralPreviewOptions {
     shoeWidth?: PrintSolidShoeWidth | null;
     /** Committed / draft trimline. Clipped before rim extraction. */
     trimline?: TrimlineCurve | null;
+    /** Sulcus and 3/4 front-edge blend. Omitted on Full so the loft stays put. */
+    anteriorEdgeTaper?: boolean;
     /** Force the composed-top loft path (skip analytic deltas). */
     composedTop?: boolean;
     /** Print-step custom text. Applied after loft; empty is a no-op. */
@@ -501,10 +504,15 @@ async function loftRightAsMirroredLeft(
             ...options,
             side: "left",
             sourceField: leftFieldFromMirroredRight(options.sourceField),
+            // The left frame is mirrored back. Taper once, in the right frame.
+            anteriorEdgeTaper: false,
         });
         const geometry = mirrorGeometry(leftPreview.geometry);
         mirrorSolidPlanFrames(geometry);
         leftPreview.geometry.dispose();
+        if (options.anteriorEdgeTaper && options.trimline && options.trimline.points.length >= 4) {
+            taperAnteriorSolid(geometry, options.trimline);
+        }
         return { pattern: reflectPlanY(leftPreview.pattern, fairCenterY), geometry };
     } finally {
         leftTop.dispose();
@@ -684,6 +692,9 @@ export async function reconstructProceduralPreview(
             ...(footprintClone ? { repairUpwardBottom: true } : {}),
             ...(fair ? { widthPatternFair: fair === true ? true : "rim" } : {}),
         });
+        if (options.anteriorEdgeTaper && options.trimline && options.trimline.points.length >= 4) {
+            taperAnteriorSolid(geometry, options.trimline);
+        }
         return { model, pattern, geometry };
     };
     // Men's 9 is scale 1, so the footprint branch never stores a centre.

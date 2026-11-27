@@ -30,6 +30,11 @@ import {
     effectiveInsoleThicknessMm,
     sinksActive,
 } from "@/lib/geometry/sink";
+import {
+    ANTERIOR_EDGE_TAPER_MM,
+    ANTERIOR_EDGE_TIP_MM,
+    anteriorCutSegments,
+} from "@/lib/geometry/trim-presets";
 import { clipGeometryToOutline, type TrimlineCurve } from "@/lib/geometry/trimline";
 
 /**
@@ -49,6 +54,11 @@ export interface ComposePrintSolidInput {
     shoeWidth?: PrintSolidShoeWidth | null;
     /** Clip before rim extraction. Falls back to sourceField.trimline. */
     trimline?: TrimlineCurve | null;
+    /**
+     * Sulcus and 3/4 only. Lowers the top over the last 10 mm into a thin
+     * front edge. Full-length leaves this unset.
+     */
+    anteriorEdgeTaper?: boolean;
 }
 
 /**
@@ -67,11 +77,13 @@ export async function composeViewerPrintSolidTop(input: {
     sourceField: HeightFieldParams;
     shoeWidth?: PrintSolidShoeWidth | null;
     trimline?: TrimlineCurve | null;
+    anteriorEdgeTaper?: boolean;
 }): Promise<BufferGeometry> {
     return composePrintSolidTop(input.raw, {
         sourceField: input.sourceField,
         shoeWidth: input.shoeWidth,
         trimline: input.trimline,
+        anteriorEdgeTaper: input.anteriorEdgeTaper,
     });
 }
 
@@ -255,10 +267,11 @@ function simplifyAnterior(poly: PlanPoint[], eps: number): PlanPoint[] {
     const distal = (i: number) => poly[i]!.x >= cut;
     // Rotate so the distal run, if it wraps, sits in the middle of the array.
     let start = 0;
-    for (let i = 0; i < n; i++) if (!distal(i)) {
-        start = (i + 1) % n;
-        break;
-    }
+    for (let i = 0; i < n; i++)
+        if (!distal(i)) {
+            start = (i + 1) % n;
+            break;
+        }
     const ring: PlanPoint[] = [];
     for (let k = 0; k < n; k++) ring.push(poly[(start + k) % n]!);
     const out: PlanPoint[] = [];
@@ -345,8 +358,12 @@ function filletDistalTrimCorners(poly: PlanPoint[]): PlanPoint[] {
         while (sweep < -Math.PI) sweep += Math.PI * 2;
         const midAng = a0 + sweep / 2;
         const mid = { x: center.x + Math.cos(midAng) * radius, y: center.y + Math.sin(midAng) * radius };
-        if (!pointInPolygon(mid.x, mid.y, poly)) sweep = sweep > 0 ? sweep - Math.PI * 2 : sweep + Math.PI * 2;
-        const steps = Math.max(1, Math.ceil(Math.abs(sweep) / ((TRIM_CORNER_FILLET_STEP_DEG * Math.PI) / 180)));
+        if (!pointInPolygon(mid.x, mid.y, poly))
+            sweep = sweep > 0 ? sweep - Math.PI * 2 : sweep + Math.PI * 2;
+        const steps = Math.max(
+            1,
+            Math.ceil(Math.abs(sweep) / ((TRIM_CORNER_FILLET_STEP_DEG * Math.PI) / 180)),
+        );
         out.push(start);
         for (let s = 1; s < steps; s++) {
             const ang = a0 + sweep * (s / steps);
@@ -482,7 +499,9 @@ function clipMeshAlongTrimBoundary(geometry: BufferGeometry, curve: TrimlineCurv
         if (p.y > maxY) maxY = p.y;
     }
 
-    const attrNames = Object.keys(geometry.attributes).filter((name) => name !== "position" && name !== "normal");
+    const attrNames = Object.keys(geometry.attributes).filter(
+        (name) => name !== "position" && name !== "normal",
+    );
     const positions: number[] = [];
     const attrs = new Map<string, number[]>();
     for (const name of attrNames) attrs.set(name, []);
@@ -570,7 +589,13 @@ function clipMeshAlongTrimBoundary(geometry: BufferGeometry, curve: TrimlineCurv
         comp: Map<string, number[]>;
     }
 
-    const clipHalfPlane = (subject: PlanPoint[], ax: number, ay: number, bx: number, by: number): PlanPoint[] => {
+    const clipHalfPlane = (
+        subject: PlanPoint[],
+        ax: number,
+        ay: number,
+        bx: number,
+        by: number,
+    ): PlanPoint[] => {
         const n = subject.length;
         if (n < 3) return [];
         const inside = (x: number, y: number) => (bx - ax) * (y - ay) - (by - ay) * (x - ax) >= -1e-8;
@@ -704,7 +729,13 @@ function clipMeshAlongTrimBoundary(geometry: BufferGeometry, curve: TrimlineCurv
             if (prev && Math.hypot(p.x - prev.x, p.y - prev.y) < 1e-5) continue;
             unique.push(p);
         }
-        if (unique.length >= 2 && Math.hypot(unique[0]!.x - unique[unique.length - 1]!.x, unique[0]!.y - unique[unique.length - 1]!.y) < 1e-5) {
+        if (
+            unique.length >= 2 &&
+            Math.hypot(
+                unique[0]!.x - unique[unique.length - 1]!.x,
+                unique[0]!.y - unique[unique.length - 1]!.y,
+            ) < 1e-5
+        ) {
             unique.pop();
         }
         if (unique.length < 3) continue;
@@ -754,6 +785,147 @@ function clipPrintTopToTrim(geometry: BufferGeometry, curve: TrimlineCurve): Buf
     return cut ?? clipGeometryToOutline(geometry, curve);
 }
 
+function smoothstep01(t: number): number {
+    const x = t < 0 ? 0 : t > 1 ? 1 : t;
+    return x * x * (3 - 2 * x);
+}
+
+/**
+ * Drop the top surface over the last 10 mm approaching the front cut.
+ * Full thickness is unchanged at 10 mm and behind. The rim lands on the
+ * printable tip. XY stays put, so the clip and the loft pairing do not move.
+ */
+export function taperAnteriorEdge(geometry: BufferGeometry, curve: TrimlineCurve): void {
+    const segments = anteriorCutSegments(curve);
+    if (segments.length === 0) return;
+    const pos = geometry.getAttribute("position");
+    if (!pos) return;
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        let best = Infinity;
+        for (const [a, b] of segments) {
+            const abx = b.x - a.x;
+            const aby = b.y - a.y;
+            const lenSq = abx * abx + aby * aby;
+            const t =
+                lenSq < 1e-9 ? 0 : Math.max(0, Math.min(1, ((x - a.x) * abx + (y - a.y) * aby) / lenSq));
+            const d = Math.hypot(x - (a.x + abx * t), y - (a.y + aby * t));
+            if (d < best) best = d;
+        }
+        if (best >= ANTERIOR_EDGE_TAPER_MM) continue;
+        const height = pos.getZ(i);
+        if (!(height > ANTERIOR_EDGE_TIP_MM)) continue;
+        const blend = smoothstep01(best / ANTERIOR_EDGE_TAPER_MM);
+        pos.setZ(i, ANTERIOR_EDGE_TIP_MM + (height - ANTERIOR_EDGE_TIP_MM) * blend);
+    }
+    pos.needsUpdate = true;
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+}
+
+/**
+ * Shorten a finished solid over the last 10 mm. The loft is built at full
+ * thickness first — a 0.8 mm rim is too short for the wall fillet and the
+ * column folds. Scaling Z about the plantar plane keeps the wall profile
+ * and leaves everything 10 mm behind the cut untouched.
+ */
+export function taperAnteriorSolid(geometry: BufferGeometry, curve: TrimlineCurve): void {
+    const segments = anteriorCutSegments(curve);
+    if (segments.length === 0) return;
+    const pos = geometry.getAttribute("position");
+    if (!pos) return;
+    geometry.computeVertexNormals();
+    const normals = geometry.getAttribute("normal");
+    if (!normals) return;
+    const cell = 2;
+    const reach = 12;
+    const keyOf = (ix: number, iy: number) => `${ix},${iy}`;
+    const distAt = (x: number, y: number) => {
+        let best = Infinity;
+        for (const [a, b] of segments) {
+            const abx = b.x - a.x;
+            const aby = b.y - a.y;
+            const lenSq = abx * abx + aby * aby;
+            const t =
+                lenSq < 1e-9 ? 0 : Math.max(0, Math.min(1, ((x - a.x) * abx + (y - a.y) * aby) / lenSq));
+            const d = Math.hypot(x - (a.x + abx * t), y - (a.y + aby * t));
+            if (d < best) best = d;
+        }
+        return best;
+    };
+    type TopCell = { x: number; y: number; z: number; d: number };
+    const tops = new Map<string, TopCell>();
+    for (let i = 0; i < pos.count; i++) {
+        if (!(normals.getZ(i) > 0.45)) continue;
+        const z = pos.getZ(i);
+        if (!(z > ANTERIOR_EDGE_TIP_MM)) continue;
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        const d = distAt(x, y);
+        if (d > ANTERIOR_EDGE_TAPER_MM + 2) continue;
+        const key = keyOf(Math.round(x / cell), Math.round(y / cell));
+        const prev = tops.get(key);
+        if (!prev || z > prev.z) tops.set(key, { x, y, z, d });
+    }
+    const drivers = [...tops.values()];
+    if (drivers.length === 0) return;
+    const driverFactor = drivers.map((top) => {
+        if (top.d >= ANTERIOR_EDGE_TAPER_MM) return 1;
+        const blend = smoothstep01(top.d / ANTERIOR_EDGE_TAPER_MM);
+        return (ANTERIOR_EDGE_TIP_MM + (top.z - ANTERIOR_EDGE_TIP_MM) * blend) / top.z;
+    });
+    const buckets = new Map<string, number[]>();
+    for (let k = 0; k < drivers.length; k++) {
+        const top = drivers[k]!;
+        const key = keyOf(Math.round(top.x / cell), Math.round(top.y / cell));
+        const list = buckets.get(key);
+        if (list) list.push(k);
+        else buckets.set(key, [k]);
+    }
+    const ring = Math.ceil(reach / cell);
+    for (let i = 0; i < pos.count; i++) {
+        const z = pos.getZ(i);
+        if (!(z > 1e-4)) continue;
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        const ix = Math.round(x / cell);
+        const iy = Math.round(y / cell);
+        let best = Infinity;
+        let factor = 1;
+        for (let dx = -ring; dx <= ring; dx++) {
+            for (let dy = -ring; dy <= ring; dy++) {
+                const list = buckets.get(keyOf(ix + dx, iy + dy));
+                if (!list) continue;
+                for (const k of list) {
+                    const top = drivers[k]!;
+                    const dd = Math.hypot(x - top.x, y - top.y);
+                    if (dd < best) {
+                        best = dd;
+                        factor = driverFactor[k] ?? 1;
+                    }
+                }
+            }
+        }
+        if (!(best <= reach) || !(factor < 1)) continue;
+        pos.setZ(i, z * factor);
+    }
+    pos.needsUpdate = true;
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+}
+
+function finishTrimmedTop(
+    geometry: BufferGeometry,
+    trim: TrimlineCurve,
+    anteriorEdgeTaper: boolean | undefined,
+): BufferGeometry {
+    if (anteriorEdgeTaper) taperAnteriorEdge(geometry, trim);
+    return geometry;
+}
+
 /** T then S on the composed top. No writes when the design has no sinks. */
 function applyViewerSinkHeight(
     geometry: BufferGeometry,
@@ -775,7 +947,7 @@ export function composePrintSolidTopSync(raw: BufferGeometry, input: ComposePrin
     if (trim && trim.points.length >= 4) {
         const clipped = clipPrintTopToTrim(geometry, trim);
         if (geometry !== raw) geometry.dispose();
-        return clipped;
+        return finishTrimmedTop(clipped, trim, input.anteriorEdgeTaper);
     }
     return geometry;
 }
@@ -794,7 +966,7 @@ export async function composePrintSolidTop(
     if (trim && trim.points.length >= 4) {
         const clipped = clipPrintTopToTrim(geometry, trim);
         if (geometry !== raw) geometry.dispose();
-        return clipped;
+        return finishTrimmedTop(clipped, trim, input.anteriorEdgeTaper);
     }
     return geometry;
 }
