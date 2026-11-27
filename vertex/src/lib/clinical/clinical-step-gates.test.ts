@@ -103,10 +103,11 @@ describe("clinical step gates", () => {
         expect(gate.ok).toBe(false);
     });
 
-    test("evaluateStepComplete does not auto-complete Shape from base load alone", () => {
+    test("evaluateStepComplete does not auto-complete Setup from base load alone", () => {
         useClinicalWorkflowStore.setState({ footSideExplicitlyChosen: true });
-        expect(evaluateStepComplete("base", [])).toBe(false);
-        expect(evaluateStepComplete("base", ["base"])).toBe(true);
+        expect(evaluateStepComplete("setup", [])).toBe(false);
+        expect(evaluateStepComplete("setup", ["setup"])).toBe(true);
+        expect(evaluateStepComplete("base", ["setup"])).toBe(true);
         expect(evaluateStepComplete("corrections", [])).toBe(false);
         expect(evaluateStepComplete("elements", [])).toBe(false);
         expect(evaluateStepComplete("print", [])).toBe(false);

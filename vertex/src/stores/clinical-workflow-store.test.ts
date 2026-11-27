@@ -4,11 +4,10 @@ import { describe, expect, test } from "@rstest/core";
 import { CLINICAL_STEPS, clinicalStepShort, useClinicalWorkflowStore } from "./clinical-workflow-store";
 
 describe("clinical workflow steps", () => {
-    test("Scan > Setup > Base > Corrections > Elements > Print > Export", () => {
+    test("Scan > Setup > Corrections > Elements > Print > Export", () => {
         expect(CLINICAL_STEPS.map((s) => s.id)).toEqual([
             "scan",
             "setup",
-            "base",
             "corrections",
             "elements",
             "print",
@@ -35,14 +34,14 @@ describe("clinical workflow steps", () => {
         if (sticky) expect(sticky).not.toMatch(/Select Left, Right, or Pair/i);
     });
 
-    test("Next from Setup advances to Base instead of bouncing to Scan", () => {
+    test("Next from Setup advances to Corrections instead of bouncing to Scan", () => {
         useClinicalWorkflowStore.setState({
             step: "setup",
             footSideExplicitlyChosen: false,
             nextBlockReason: null,
         });
         useClinicalWorkflowStore.getState().goNext();
-        expect(useClinicalWorkflowStore.getState().step).toBe("base");
+        expect(useClinicalWorkflowStore.getState().step).toBe("corrections");
     });
 
     test("Continue to Export from Print opens Export when the scan gate would bounce Next", () => {

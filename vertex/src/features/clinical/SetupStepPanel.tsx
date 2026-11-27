@@ -4,6 +4,7 @@ import { PanelHeading } from "@/components/clinical/PanelHeading";
 import { LeftSidebar } from "@/components/layout/LeftSidebar";
 import { SliderField } from "@/components/ui/slider-field";
 import { SetupAiGenerateButton } from "@/features/clinical/SetupAiGenerateButton";
+import { TrimPresetsPanel } from "@/features/shape/TrimPresetsPanel";
 import { sinksForSide } from "@/lib/geometry/migrate-corrections";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { effectiveInsoleThicknessMm, sinkRaisedThicknessHint } from "@/lib/geometry/sink";
@@ -101,6 +102,7 @@ export function SetupStepPanel() {
                 <LeftSidebar embedded sections={["production"]} clinicalDeclutter="setup" />
                 <LeftSidebar embedded sections={["size"]} clinicalDeclutter="setup" />
                 <SetupInsoleThicknessField />
+                <TrimPresetsPanel />
             </div>
         </div>
     );

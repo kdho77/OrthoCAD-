@@ -45,13 +45,12 @@ export function normalizeClinicalStep(step: string, product: ClinicalProductType
         }
         return "scan";
     }
-    if (step === "shape") return "base";
+    if (step === "shape" || step === "base") return "setup";
     if (step === "cast") return "setup";
     if (step === "design") return "elements";
     if (
         step === "scan" ||
         step === "setup" ||
-        step === "base" ||
         step === "corrections" ||
         step === "elements" ||
         step === "print" ||
@@ -65,7 +64,6 @@ export function normalizeClinicalStep(step: string, product: ClinicalProductType
 export const CLINICAL_STEPS: { id: ClinicalStepId; label: string; short: string }[] = [
     { id: "scan", label: "Scan", short: "Scan" },
     { id: "setup", label: "Setup", short: "Setup" },
-    { id: "base", label: "Base", short: "Base" },
     { id: "corrections", label: "Corrections", short: "Corrections" },
     { id: "elements", label: "Elements", short: "Elements" },
     { id: "print", label: "Print", short: "Print" },

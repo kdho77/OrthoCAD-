@@ -9,8 +9,8 @@ const scanStepPanel = readFileSync(resolve("vertex/src/features/clinical/Clinica
 const elementsPanel = readFileSync(resolve("vertex/src/features/elements/ElementsPanel.tsx"), "utf8");
 
 describe("RightPanel step deduplication", () => {
-    test("Base step does not mount ScanImport", () => {
-        expect(rightPanel).not.toMatch(/step === "base"[\s\S]*ScanImport/);
+    test("insole workflow has no Base step panel", () => {
+        expect(rightPanel).not.toMatch(/step === "base"/);
     });
 
     test("ScanImport appears only on the scan step panel", () => {
