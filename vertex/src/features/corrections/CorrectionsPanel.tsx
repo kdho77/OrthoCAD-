@@ -3,8 +3,9 @@
 import { AlertTriangle, ChevronRight, Link2, Lock, Unlink, Unlock } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { SliderField } from "@/components/ui/slider-field";
-import { useProductionMethodForActiveFoot } from "@/lib/clinical/active-foot-side";
 import { CORRECTION_SCALAR_FIELDS } from "@/features/corrections/correction-field-meta";
+import { useProductionMethodForActiveFoot } from "@/lib/clinical/active-foot-side";
+import { archProfilePhase } from "@/lib/geometry/arch-profile";
 import {
     CLINICAL_LIMITS,
     constrainDesignCorrections,
@@ -61,7 +62,11 @@ import { skiveDerivedDisplayText } from "./skive-derived-display";
  */
 /** Panel scalar fields (subset of shared prescription metadata — no skive/posting legacy keys). */
 const FIELDS = CORRECTION_SCALAR_FIELDS.filter(
-    (f) => f.group !== "Skive" && !f.key.endsWith("PostingDeg") && f.key !== "archFillMm" && f.key !== "heelCupHeightMm",
+    (f) =>
+        f.group !== "Skive" &&
+        !f.key.endsWith("PostingDeg") &&
+        f.key !== "archFillMm" &&
+        f.key !== "heelCupHeightMm",
 );
 
 const GROUPS = ["Arch", "Heel", "Forefoot", "Flanges", "Posting"];
@@ -827,45 +832,62 @@ export function CorrectionsPanel() {
                         {(["left", "right"] as Side[]).map((side) => (
                             <div key={side} className="space-y-2">
                                 <div className="text-[10px] uppercase text-primary/80">{side}</div>
-                                {FIELDS.filter((f) => f.group === group).map((f) => (
-                                    <SliderField
-                                        key={`${side}-${f.key}`}
-                                        label={f.label}
-                                        value={sideValues[side][f.key] as number}
-                                        min={f.min}
-                                        max={f.max}
-                                        step={0.5}
-                                        unit={f.unit ?? "mm"}
-                                        defaultValue={0}
-                                        originLabel={
-                                            presetOrigin?.keys[side].includes(f.key)
-                                                ? `from ${presetOrigin.name}`
-                                                : undefined
-                                        }
-                                        onReset={() => {
-                                            updateCorrection(side, {
-                                                [f.key]: 0,
-                                            } as Partial<SideCorrections>);
-                                            clearPresetKey(side, f.key);
-                                        }}
-                                        hint={f.hint}
-                                        onPreview={(v) =>
-                                            previewCorrection(side, {
-                                                [f.key]: v,
-                                            } as Partial<SideCorrections>)
-                                        }
-                                        onChange={(v) => {
-                                            const preview =
-                                                usePerformanceStore.getState().correctionPreview[side] ?? {};
-                                            updateCorrection(side, {
-                                                ...preview,
-                                                [f.key]: v,
-                                            } as Partial<SideCorrections>);
-                                            clearCorrectionPreview();
-                                            clearPresetKey(side, f.key);
-                                        }}
-                                    />
-                                ))}
+                                {FIELDS.filter((f) => f.group === group).map((f) => {
+                                    const stored = sideValues[side][f.key];
+                                    const value =
+                                        typeof stored === "number" && Number.isFinite(stored)
+                                            ? stored
+                                            : (f.defaultValue ?? 0);
+                                    return (
+                                        <SliderField
+                                            key={`${side}-${f.key}`}
+                                            label={f.label}
+                                            value={value}
+                                            min={f.min}
+                                            max={f.max}
+                                            step={f.step ?? 0.5}
+                                            unit={f.unit === "" ? undefined : (f.unit ?? "mm")}
+                                            defaultValue={f.defaultValue ?? 0}
+                                            ends={f.ends}
+                                            readout={
+                                                f.key === "archProfile" ? archProfilePhase(value) : undefined
+                                            }
+                                            title={
+                                                f.key === "archProfile"
+                                                    ? "Domed (convex) at 0, Neutral at 50, Cradled at 100"
+                                                    : undefined
+                                            }
+                                            originLabel={
+                                                presetOrigin?.keys[side].includes(f.key)
+                                                    ? `from ${presetOrigin.name}`
+                                                    : undefined
+                                            }
+                                            onReset={() => {
+                                                updateCorrection(side, {
+                                                    [f.key]: f.defaultValue ?? 0,
+                                                } as Partial<SideCorrections>);
+                                                clearPresetKey(side, f.key);
+                                            }}
+                                            hint={f.hint}
+                                            onPreview={(v) =>
+                                                previewCorrection(side, {
+                                                    [f.key]: v,
+                                                } as Partial<SideCorrections>)
+                                            }
+                                            onChange={(v) => {
+                                                const preview =
+                                                    usePerformanceStore.getState().correctionPreview[side] ??
+                                                    {};
+                                                updateCorrection(side, {
+                                                    ...preview,
+                                                    [f.key]: v,
+                                                } as Partial<SideCorrections>);
+                                                clearCorrectionPreview();
+                                                clearPresetKey(side, f.key);
+                                            }}
+                                        />
+                                    );
+                                })}
                             </div>
                         ))}
                     </div>

@@ -70,6 +70,8 @@ export const CLINICAL_LIMITS = {
     archFillMm: { min: 0, max: 0 },
     /** Lengthwise medial-arch stretch. Does not change peak height or apex. */
     archElongationMm: { min: 0, max: 5 },
+    /** 0 Domed, 50 Neutral, 100 Cradled. Omitted is Cradled and is not written. */
+    archProfile: { min: 0, max: 100 },
     heelCupHeightMm: { min: 0, max: 12.0 },
     /** Biomechanics lock 2026-09-20: usable 12–18 mm when enabled; 0 = off (see clamp below). */
     heelCupDepthMm: { min: 12, max: 18.0 },
@@ -182,6 +184,22 @@ export function constrainSideCorrections(corrections: SideCorrections, thickness
         const res = clamp(raw, lim.min, lim.max, key);
         (c as any)[key] = res.value;
         if (res.violation) v.push(res.violation);
+    }
+
+    // Missing archProfile stays missing (Cradled). Do not materialize 100.
+    if (c.archProfile != null) {
+        if (!Number.isFinite(c.archProfile)) {
+            delete c.archProfile;
+        } else {
+            const res = clamp(
+                c.archProfile,
+                CLINICAL_LIMITS.archProfile.min,
+                CLINICAL_LIMITS.archProfile.max,
+                "archProfile",
+            );
+            c.archProfile = res.value;
+            if (res.violation) v.push(res.violation);
+        }
     }
 
     // Heel cup depth: 0 = disabled; positive values clamp to Biomechanics range 12–18 mm.

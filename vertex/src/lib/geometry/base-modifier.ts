@@ -2,6 +2,7 @@
 
 import type { BufferGeometry } from "three";
 import { apexWarpShiftMm, applyDefaultArchApexWarp } from "@/lib/geometry/apex-move-warp";
+import { applyArchProfileToTopPositions, archProfileActive } from "@/lib/geometry/arch-profile";
 import { applyArchSkiveToTopMesh } from "@/lib/geometry/arch-skive";
 import { getDesignBase } from "@/lib/geometry/base-asset";
 import {
@@ -2778,6 +2779,10 @@ export function applyBaseModifiers(
             heelCupDepthMm: 0,
             medialSkiveMm: 0,
             lateralSkiveMm: 0,
+            // The profile is measured on this mesh after the other modifiers,
+            // not taken from the procedural shell's chord. Forcing Cradled
+            // here keeps the delta identical to a design that omits the slider.
+            archProfile: 100,
         },
     };
 
@@ -3421,6 +3426,25 @@ export function applyBaseModifiers(
         }
     }
 
+    // Medial-arch profile, after apex slide so the chord follows the crest.
+    // Cradled / omitted returns before any vertex is written.
+    applyArchProfileToTopPositions({
+        positions: array,
+        corrections: field.corrections,
+        side: field.side,
+        lengthAxis,
+        widthAxis,
+        thickAxis,
+        lenMin,
+        lenSize,
+        widCenter,
+        widSize,
+        widthSign,
+        topVertexCount,
+        topFactor: topFactors,
+        lengthMm: field.lengthMm,
+    });
+
     pos.needsUpdate = true;
     if (!options?.skipNormals) {
         geometry.computeVertexNormals();
@@ -3631,7 +3655,12 @@ export function hasActiveModifiers(design: DesignState, side?: Side): boolean {
     const sides: Side[] = side ? [side] : ["left", "right"];
     for (const s of sides) {
         const c = design.corrections[s];
-        const anyCorrection = Object.values(c).some((v) => typeof v === "number" && Math.abs(v) > 1e-3);
+        // Cradled (100) and a missing arch profile are the stock shell, not a modifier.
+        // 0 is Domed and must count even though its magnitude is zero.
+        if (archProfileActive(c.archProfile)) return true;
+        const anyCorrection = Object.entries(c).some(
+            ([key, v]) => key !== "archProfile" && typeof v === "number" && Math.abs(v) > 1e-3,
+        );
         if (anyCorrection) return true;
         if (design.elements.some((e) => e.side === s)) return true;
         if (design.trimlines?.[s] && design.trimlines[s]!.length >= 4) return true;

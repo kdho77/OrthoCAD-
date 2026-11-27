@@ -42,6 +42,12 @@ interface SliderFieldProps {
     originLabel?: string;
     /** Short note under the slider. */
     hint?: string;
+    /** End captions under the track: [min side, max side]. */
+    ends?: readonly [string, string];
+    /** Short phase label beside the numeric readout. */
+    readout?: string;
+    /** Tooltip on the track. */
+    title?: string;
 }
 
 /**
@@ -64,6 +70,9 @@ export function SliderField({
     onReset,
     originLabel,
     hint,
+    ends,
+    readout,
+    title,
 }: SliderFieldProps) {
     const setInteracting = usePerformanceStore((s) => s.setInteracting);
     const [draft, setDraft] = useState<string | null>(null);
@@ -95,6 +104,11 @@ export function SliderField({
                     {originLabel ? (
                         <span className="max-w-[4.5rem] truncate rounded bg-primary/15 px-1 py-0.5 text-[9px] text-primary">
                             {originLabel}
+                        </span>
+                    ) : null}
+                    {readout ? (
+                        <span className="text-[10px] text-muted-foreground" title={title}>
+                            {readout}
                         </span>
                     ) : null}
                     {displayText != null ? (
@@ -148,8 +162,15 @@ export function SliderField({
                 onPointerDown={onPointerDown}
                 onPointerUp={(e) => handleCommit(Number(e.currentTarget.value))}
                 onChange={(e) => handlePreview(Number(e.target.value))}
+                title={title}
                 className="h-1 w-full cursor-pointer appearance-none rounded bg-muted accent-primary"
             />
+            {ends ? (
+                <div className="flex justify-between text-[10px] leading-none text-muted-foreground">
+                    <span>{ends[0]}</span>
+                    <span>{ends[1]}</span>
+                </div>
+            ) : null}
             {hint ? <p className="text-[10px] leading-tight text-muted-foreground">{hint}</p> : null}
         </div>
     );

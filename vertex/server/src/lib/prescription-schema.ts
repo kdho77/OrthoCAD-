@@ -28,6 +28,7 @@ const sideCorrectionPatch = z
         lateralSkiveMm: z.number(),
         archFillMm: z.number(),
         archHeightMm: z.number(),
+        archProfile: z.number(),
         heelCupDepthMm: z.number(),
         heelCupHeightMm: z.number(),
         apexMoveMm: z.number(),

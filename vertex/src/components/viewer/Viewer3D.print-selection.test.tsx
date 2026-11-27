@@ -48,6 +48,10 @@ rs.mock("./ScanTransformTool", () => ({
     ScanTransformTool: () => null,
     consumeScanMissDeselectSuppression: () => false,
 }));
+rs.mock("./InsoleContourLighting", () => ({
+    InsoleContourLighting: () => null,
+    InsoleStandardLighting: () => null,
+}));
 rs.mock("./MeshEditTools", () => ({
     MeshEditTools: () =>
         React.createElement("button", { type: "button", "data-edit-target": "MeshEditTools" }),

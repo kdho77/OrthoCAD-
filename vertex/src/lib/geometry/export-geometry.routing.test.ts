@@ -34,6 +34,7 @@ rs.mock("@/stores/mesh-edit-store", () => ({
         }),
     },
     resolveActiveTrimline: () => mockDraftTrim(),
+    activeAnteriorEdgeTaper: () => false,
 }));
 rs.mock("@/stores/bottom-pattern-store", () => ({
     useBottomPatternStore: { getState: () => ({ getPattern: mockStoredPattern }) },
