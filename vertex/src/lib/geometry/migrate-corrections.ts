@@ -55,6 +55,10 @@ export function migrateSideCorrections(c: SideCorrections): SideCorrections {
     if (next.archElongationMm == null || !Number.isFinite(next.archElongationMm)) {
         next.archElongationMm = 0;
     }
+    // A missing arch profile is Cradled. Do not write 100; that would change saved JSON.
+    if (next.archProfile != null && !Number.isFinite(next.archProfile)) {
+        delete next.archProfile;
+    }
 
     if (next.forefootWidthMm == null || !Number.isFinite(next.forefootWidthMm)) {
         next.forefootWidthMm = 0;

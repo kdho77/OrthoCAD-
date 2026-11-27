@@ -12,6 +12,11 @@ export type CorrectionFieldMeta = {
     unit?: string;
     group: string;
     hint?: string;
+    step?: number;
+    /** Slider reset target. Omitted fields reset to 0. */
+    defaultValue?: number;
+    /** Captions under the track, min end then max end. */
+    ends?: readonly [string, string];
 };
 
 /** Scalar sliders shared with CorrectionsPanel and AI prescription review. */
@@ -22,6 +27,18 @@ export const CORRECTION_SCALAR_FIELDS: CorrectionFieldMeta[] = [
         min: CLINICAL_LIMITS.archHeightMm.min,
         max: CLINICAL_LIMITS.archHeightMm.max,
         group: "Arch",
+    },
+    {
+        key: "archProfile",
+        label: "Arch profile",
+        min: CLINICAL_LIMITS.archProfile.min,
+        max: CLINICAL_LIMITS.archProfile.max,
+        unit: "",
+        group: "Arch",
+        step: 1,
+        defaultValue: 100,
+        ends: ["Domed", "Cradled"],
+        hint: "Left is Domed (convex). 50 is Neutral, the straight valley-to-rim chord. Right is Cradled, the current shell.",
     },
     {
         key: "archElongationMm",

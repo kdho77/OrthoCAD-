@@ -1,3 +1,4 @@
+import { archProfileActive, archProfileDeltaAt } from "@/lib/geometry/arch-profile";
 import { elementHeightAt, isLoweringElement, REMAINING_MATERIAL_MM } from "@/lib/geometry/elements";
 import {
     type FullLengthRimFrame,
@@ -582,7 +583,72 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
         h += elementHeightAt(mortonsExtension, u * lengthMm, vSigned * hw, lengthMm, widthMm);
     }
 
-    return h;
+    // Cradled (100) and a missing archProfile return `h` unchanged. The delta
+    // samples this same function; the sampler bails out so the chord is the
+    // unprofiled shell (arch height, fill, and heel cup already included).
+    if (!archProfileActive(c.archProfile)) return h;
+    const profileDelta = archProfileDeltaAt({
+        u,
+        vSigned,
+        zCur: h,
+        side,
+        lengthMm,
+        profile: c.archProfile,
+        apexMoveMm: c.apexMoveMm,
+        archElongationMm: c.archElongationMm,
+        cacheToken: archSurfaceToken(params),
+        sampleUnprofiled: (uu, vv) => heightAt(uu, vv, params),
+    });
+    return profileDelta === 0 ? h : h + profileDelta;
+}
+
+/** Fingerprint of the unprofiled shell. The arch-profile slider is excluded. */
+function archSurfaceToken(params: HeightFieldParams): number {
+    const c = params.corrections;
+    let hash = 2166136261;
+    const mix = (n: number) => {
+        const bits = Number.isFinite(n) ? Math.round(n * 1000) : 0;
+        hash ^= bits;
+        hash = Math.imul(hash, 16777619);
+    };
+    mix(params.side === "left" ? 1 : 2);
+    mix(params.lengthMm);
+    mix(params.widthMm);
+    mix(params.thicknessMm);
+    mix(c.archHeightMm);
+    mix(c.archFillMm);
+    mix(c.archElongationMm ?? 0);
+    mix(c.heelCupDepthMm);
+    mix(c.heelCupHeightMm);
+    mix(c.heelCupWidthMm ?? 0);
+    mix(c.apexMoveMm);
+    mix(c.heelLiftMm);
+    mix(c.medialFlangeMm);
+    mix(c.lateralFlangeMm);
+    mix(c.forefootPostingDeg);
+    mix(c.rearfootPostingDeg);
+    mix(c.medialSkiveMm);
+    mix(c.lateralSkiveMm);
+    mix(c.skiveAngleDeg ?? 0);
+    mix(c.heelLiftTaperEndU ?? 0);
+    mix(c.rearfootWedge?.value ?? 0);
+    mix(c.forefootWedge?.value ?? 0);
+    mix(c.fullLengthWedge?.value ?? 0);
+    mix(params.includeElements === false ? 0 : 1);
+    mix(params.includeSkives === false ? 0 : 1);
+    mix(params.elements?.length ?? 0);
+    mix(params.shapeFinish?.topCoverAccommodateMm ?? 0);
+    mix(params.shellThicknessRfMm ?? 0);
+    mix(params.shellThicknessMfMm ?? 0);
+    mix(params.shellThicknessFfMm ?? 0);
+    mix(params.trimline?.points.length ?? 0);
+    mix(params.graph?.operators.length ?? 0);
+    let elementStamp = 0;
+    for (const el of params.elements ?? []) {
+        elementStamp += el.heightMm + el.position.x + el.position.y;
+    }
+    mix(elementStamp);
+    return hash >>> 0;
 }
 
 export interface GridPoint {

@@ -71,4 +71,30 @@ describe("CorrectionsPanel arch elongation", () => {
         expect(container.textContent).toContain("left");
         expect(container.textContent).toContain("right");
     });
+
+    test("Arch profile runs from Domed to Cradled and rests on Cradled", async () => {
+        const arch = [...container.querySelectorAll("button")].find(
+            (button) => button.textContent?.trim() === "Arch",
+        );
+        if (!arch) throw new Error("Arch section missing");
+        await act(async () => {
+            arch.click();
+        });
+        const blocks = sliderBlock("Arch profile");
+        expect(blocks).toHaveLength(2);
+        for (const block of blocks) {
+            const range = block.querySelector<HTMLInputElement>('input[type="range"]');
+            const number = block.querySelector<HTMLInputElement>('input[type="number"]');
+            if (!range || !number) throw new Error("Arch profile slider missing");
+            expect(range.min).toBe("0");
+            expect(range.max).toBe("100");
+            expect(range.value).toBe("100");
+            expect(number.value).toBe("100");
+            expect(range.title).toMatch(/Domed/);
+            expect(range.title).toMatch(/Cradled/);
+            expect(block.textContent).toContain("Domed");
+            expect(block.textContent).toContain("Cradled");
+            expect(block.textContent).toContain("Neutral");
+        }
+    });
 });

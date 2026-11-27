@@ -196,6 +196,7 @@
                 "vertex/src/lib/geometry/afo/landmark-frame.test.ts",
                 "vertex/src/lib/geometry/afo/trim-cleanup.test.ts",
                 "vertex/src/lib/geometry/arch-grind.shape-finish.test.ts",
+                "vertex/src/lib/geometry/arch-profile.test.ts",
                 "vertex/src/lib/geometry/clinical-constraints.test.ts",
                 "vertex/src/lib/geometry/element-assets/library-element-visible.test.ts",
                 "vertex/src/lib/geometry/elements.test.ts",

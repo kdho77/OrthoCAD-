@@ -125,6 +125,7 @@ export function BaseInsoleMesh({
         design.footLengthMm,
         side,
         corr.archHeightMm,
+        corr.archProfile,
         corr.heelCupDepthMm,
         corr.heelCupWidthMm,
         corr.forefootWidthMm,

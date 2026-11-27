@@ -194,6 +194,13 @@ export interface SideCorrections {
      * Peak height and apex position stay put. 0 is the unstretched dome. Range 0–5.
      */
     archElongationMm?: number;
+    /**
+     * Transverse profile of the medial longitudinal arch.
+     * 0 = Domed (convex), 50 = Neutral (valley-to-rim chord), 100 = Cradled
+     * (the current concave shell). Omitted is Cradled, so older designs and
+     * the default export do not move.
+     */
+    archProfile?: number;
     heelCupDepthMm: number;
     heelCupHeightMm: number;
     /**

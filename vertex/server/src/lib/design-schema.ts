@@ -50,6 +50,7 @@ const sideCorrection = z
         heelLiftCustomTaperPctAp: z.number().optional(),
         archEaseMm: z.number().optional(),
         archElongationMm: z.number().optional(),
+        archProfile: z.number().optional(),
         skiveAngleDeg: z.number().optional(),
         skiveLocationPct: z.number().optional(),
         skiveDriven: z.enum(["angle", "location"]).optional(),

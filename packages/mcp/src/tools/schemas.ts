@@ -207,6 +207,8 @@ const savedDesignSliderSchema = z
         medial_skive_mm: z.number().finite().optional(),
         lateral_skive_mm: z.number().finite().optional(),
         arch_elongation_mm: z.number().finite().optional(),
+        /** 0 Domed, 50 Neutral, 100 Cradled. Omit to leave the shell Cradled. */
+        arch_profile: z.number().finite().min(0).max(100).optional(),
         /** Legacy. Accepted so old catalogs load. Not copied onto the design. */
         arch_ease_mm: z.number().finite().optional(),
         heel_cup_depth_mm: z.number().finite().optional(),
@@ -595,7 +597,7 @@ export const MCP_TOOL_DEFINITIONS = [
             "sinks.side (left|right), sinks.depth_mm (positive mm; omit for the 2 mm library default; 0 or above that kind's maximum is 422), " +
             "sinks.u, sinks.v (omit for the built-in profile placement; one of each kind per side), " +
             "sliders.forefoot_posting_deg, sliders.rearfoot_posting_deg, sliders.medial_skive_mm, " +
-            "sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, " +
+            "sliders.lateral_skive_mm, sliders.arch_elongation_mm, sliders.arch_profile, sliders.arch_ease_mm, sliders.heel_cup_depth_mm, sliders.heel_cup_height_mm, " +
             "sliders.heel_cup_width_mm, sliders.forefoot_width_mm, sliders.heel_lift_mm, sliders.medial_flange_mm, " +
             "sliders.lateral_flange_mm, sliders_by_side.left, sliders_by_side.right (same slider keys). " +
             "rearfoot_posting_deg on sliders or sliders_by_side: Positive is valgus (lateral high, pronation). Negative is varus (medial high, supination). " +
@@ -623,6 +625,8 @@ export const MCP_TOOL_DEFINITIONS = [
             "Ignored and never mapped: rx_text, notes, rigidity, extra_soft. " +
             "sliders.arch_ease_mm is accepted and not applied (migrated to 0). " +
             "sliders.arch_elongation_mm lengthens the medial arch dome by up to 5 mm without changing peak height or apex. " +
+            "sliders.arch_profile is 0 Domed (convex, up to 4 mm above the valley-to-rim chord), 50 Neutral (that chord), " +
+            "100 Cradled (the current shell). Omit it to leave the shell Cradled. " +
             "hardness is stored only when it is Extra Soft, Soft, Medium, Hard, or Extra Hard; anything else is a question, not a guess. " +
             "Absent width is Medium and recorded as defaulted, not prescribed. " +
             "422 when shoe size is missing, EU cannot be mapped, supplied size or width disagrees with the stored link, " +
