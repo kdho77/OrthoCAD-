@@ -90,7 +90,12 @@ export function evaluateStepComplete(
     step: ClinicalStepId | string,
     completedSteps: ClinicalStepId[],
 ): boolean {
-    const id = step === "shape" ? "base" : step === "hardness" ? "print" : step;
+    const id =
+        step === "shape" || step === "base"
+            ? "setup"
+            : step === "hardness"
+              ? "print"
+              : step;
     if (completedSteps.includes(id as ClinicalStepId)) return true;
     if (id === "scan") return evaluateScanStepGate().ok;
     return false;

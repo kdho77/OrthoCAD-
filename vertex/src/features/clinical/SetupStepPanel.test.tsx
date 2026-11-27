@@ -91,6 +91,15 @@ describe("SetupStepPanel insole thickness", () => {
         expect(reopened.thicknessMm).toBe(4.2);
     });
 
+    test("shows Top trim presets on Setup", async () => {
+        useDesignStore.getState().setMethod("printing_solid");
+        await act(async () => root.render(createElement(SetupStepPanel)));
+        expect(container.textContent).toContain("Top trim");
+        expect(container.textContent).toContain("Full");
+        expect(container.textContent).toContain("Sulcus");
+        expect(container.textContent).toContain("3/4");
+    });
+
     test("a 2 mm sink shows the raised thickness and leaves the slider value", async () => {
         useDesignStore.getState().setMethod("printing_solid");
         useDesignStore.getState().addSink("mpj1", "left");
