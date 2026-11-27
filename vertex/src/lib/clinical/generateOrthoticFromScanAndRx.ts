@@ -1,14 +1,22 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import type { BufferGeometry } from "three";
-import { type ArchBand, classifyArchHeightMm, FLEXIBLE_APEX_ANTERIOR_MM } from "@/lib/clinical/arch-class";
-import { measureScanArchHeightMm } from "@/lib/clinical/measure-scan-arch";
+import { type ArchBand, FLEXIBLE_APEX_ANTERIOR_MM } from "@/lib/clinical/arch-class";
+import {
+    forefootWidthDeltaMm,
+    measurePlantarArch,
+    resolveScanArchAssignment,
+} from "@/lib/clinical/measure-scan-arch";
 import { interpretOneClickRx } from "@/lib/clinical/one-click-rx";
 import {
     type PathologyDesigner,
     type PathologyDesignResult,
     stubPathologyDesigner,
 } from "@/lib/clinical/pathology-designer";
+import {
+    explicitArchTierForSide,
+    pathologyAsksToRaiseArch,
+} from "@/lib/clinical/resolve-rx-vs-scan-corrections";
 import { constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { defaultElementPose } from "@/lib/geometry/elements";
 import type { ScanDisplayInfo } from "@/lib/geometry/scan-display";
@@ -27,6 +35,8 @@ import type {
     ElementKind,
     PlacedElement,
     PlacedSink,
+    ScanArchTierName,
+    ScanDrivenArchRecord,
     Side,
     SideCorrections,
     SinkKind,
@@ -37,6 +47,8 @@ export type FootScanBundle = {
     geometry: BufferGeometry;
     display: ScanDisplayInfo;
     markers?: ScanMarkers;
+    /** Set when the clinician dragged the arch marker off the detected apex. */
+    archMarkerSource?: "scan_measured" | "manual_override";
     keepSetApproved?: boolean;
 };
 
@@ -61,6 +73,7 @@ export type GenerateOrthoticInput = {
 export type FootGenerationSummary = {
     side: Side;
     archHeightMeasuredMm: number;
+    /** Legacy label. Medium is reported as standard so existing readers stay valid. */
     archBand: ArchBand;
     archReviewBelow18: boolean;
     archHeightMm: number;
@@ -68,6 +81,7 @@ export type FootGenerationSummary = {
     flexible: boolean;
     rxArchOverride: boolean;
     sizeLabel: string;
+    scanArch: ScanDrivenArchRecord;
 };
 
 export type GenerateOrthoticSuccess = {
@@ -157,6 +171,21 @@ function applyShoeSize(design: DesignState, shoe: RequiredShoeSize): DesignState
         ukSize: usMenToUk(layout.usMenSize),
         footLengthMm: layout.footLengthMm,
     };
+}
+
+function legacyArchBand(tier: ScanArchTierName): ArchBand {
+    if (tier === "low") return "low";
+    if (tier === "high") return "high";
+    return "standard";
+}
+
+function placedArchLandmarks(markers: ScanMarkers | undefined): {
+    heel: { x: number; y: number; z: number };
+    m1: { x: number; y: number; z: number };
+    m5: { x: number; y: number; z: number };
+} | null {
+    if (!markers?.M1 || !markers.M2 || !markers.M3) return null;
+    return { heel: markers.M3, m1: markers.M1, m5: markers.M2 };
 }
 
 function writeSide(design: DesignState, side: Side, patch: SideCorrections): DesignState {
@@ -266,36 +295,55 @@ export function generateOrthoticFromScanAndRx(input: GenerateOrthoticInput): Gen
                 warnings,
             };
         }
-        const measured = measureScanArchHeightMm(scan.geometry, scan.side, scan.display.displayScale);
-        if (!measured) {
-            return {
-                ok: false,
-                reason: `${scan.side}: could not measure arch height from the scan`,
-                failedStep: "arch_height",
-                warnings,
-            };
-        }
-        const classified = classifyArchHeightMm(measured.heightMm);
-        if (classified.reviewBelow18) {
-            const note = `${scan.side}: arch ${measured.heightMm.toFixed(1)} mm is below 18 mm — Low, review the scan`;
+        const landmarks = placedArchLandmarks(scan.markers);
+        const manualApex =
+            scan.archMarkerSource === "manual_override" && scan.markers?.ARCH ? scan.markers.ARCH : null;
+        const measurement = measurePlantarArch({
+            geometry: scan.geometry,
+            side: scan.side,
+            displayScale: scan.display.displayScale,
+            landmarks,
+            manualApex,
+        });
+        const rxText = input.prescriptionText ?? "";
+        const explicitTier = explicitArchTierForSide(rxText, scan.side);
+        const explicit = rx.correctionsBySide[scan.side] ?? {};
+        const rxArchMm = Object.hasOwn(explicit, "archHeightMm");
+        const rxArchOverride = rxArchMm || explicitTier != null;
+        const scanClass = resolveScanArchAssignment({
+            measurement,
+            markerSource: manualApex ? "manual_override" : "scan_measured",
+        });
+        const resolved = resolveScanArchAssignment({
+            measurement,
+            markerSource: manualApex ? "manual_override" : "scan_measured",
+            explicitArchHeightMm: rxArchMm ? (explicit.archHeightMm as number) : undefined,
+            explicitTier,
+            pathologyBlocksArchRaise: pathologyAsksToRaiseArch(rxText, scan.side),
+        });
+        for (const flag of resolved.record.reviewFlags) {
+            const note = `${scan.side}: ${flag}`;
             warnings.push(note);
             reviewItems.push(note);
         }
+        for (const warning of resolved.warnings) {
+            warnings.push(`${scan.side}: ${warning}`);
+        }
 
-        const explicit = rx.correctionsBySide[scan.side] ?? {};
-        const rxArchOverride = Object.hasOwn(explicit, "archHeightMm");
         const rxApexOverride = Object.hasOwn(explicit, "apexMoveMm");
         const flexible = input.flexibleBySide?.[scan.side] === true;
         // Slider values, not offsets. An explicit Rx number replaces the
-        // scan class or the Flexible +4. Nothing is added on top.
-        const archHeightMm = rxArchOverride ? (explicit.archHeightMm as number) : classified.archHeightMm;
+        // scan tier or the Flexible +4. Nothing is added on top.
+        const archHeightMm = resolved.record.archHeightDeltaMm;
         const apexMoveMm = rxApexOverride
             ? (explicit.apexMoveMm as number)
             : flexible
               ? FLEXIBLE_APEX_ANTERIOR_MM
               : 0;
         if (rxArchOverride) {
-            warnings.push(`${scan.side}: Rx arch height overrides the ${classified.band} scan class`);
+            warnings.push(
+                `${scan.side}: Rx arch height overrides the ${legacyArchBand(scanClass.record.assignedArchTier)} scan class`,
+            );
         }
         if (rxApexOverride && flexible) {
             warnings.push(
@@ -303,16 +351,28 @@ export function generateOrthoticFromScanAndRx(input: GenerateOrthoticInput): Gen
             );
         }
 
+        const forefootFromScan =
+            landmarks &&
+            measurement.forefootWidthMm != null &&
+            !measurement.lowCoverage &&
+            !Object.hasOwn(explicit, "forefootWidthMm")
+                ? forefootWidthDeltaMm(measurement.forefootWidthMm, layout.widthMm)
+                : undefined;
         const sidePatch: SideCorrections = {
             ...freshSide(),
             ...explicit,
             archHeightMm,
             apexMoveMm,
+            ...(forefootFromScan !== undefined ? { forefootWidthMm: forefootFromScan } : {}),
             rearfootWedge: explicit.rearfootWedge,
             forefootWedge: explicit.forefootWedge,
             fullLengthWedge: explicit.fullLengthWedge,
         };
         design = writeSide(design, scan.side, sidePatch);
+        design = {
+            ...design,
+            scanArchBySide: { ...design.scanArchBySide, [scan.side]: resolved.record },
+        };
 
         for (const el of rx.elements) {
             if (el.side !== scan.side) continue;
@@ -326,14 +386,18 @@ export function generateOrthoticFromScanAndRx(input: GenerateOrthoticInput): Gen
 
         perFoot.push({
             side: scan.side,
-            archHeightMeasuredMm: measured.heightMm,
-            archBand: classified.band,
-            archReviewBelow18: classified.reviewBelow18,
+            archHeightMeasuredMm: measurement.measuredArchMm ?? 0,
+            archBand: legacyArchBand(scanClass.record.assignedArchTier),
+            archReviewBelow18:
+                measurement.measuredArchMm != null &&
+                measurement.measuredArchMm < 18 &&
+                !measurement.lowCoverage,
             archHeightMm: design.corrections[scan.side].archHeightMm,
             apexMoveMm: design.corrections[scan.side].apexMoveMm,
             flexible,
             rxArchOverride,
             sizeLabel,
+            scanArch: resolved.record,
         });
     }
 

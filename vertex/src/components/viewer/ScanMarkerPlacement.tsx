@@ -3,6 +3,7 @@
 import { useThree } from "@react-three/fiber";
 import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
+import { setScanArchMarkerSource } from "@/lib/clinical/measure-scan-arch";
 import { worldHitToScanLocal } from "@/lib/geometry/scan-display";
 import { resolveMarkerPlacementTarget } from "@/lib/geometry/scan-marker-target";
 import { refineHitOnFullMesh } from "@/lib/geometry/scan-pick-mesh";
@@ -96,6 +97,7 @@ export function ScanMarkerPlacement() {
             const displayScale = scan?.display.displayScale ?? 1;
             const target = resolveMarkerPlacementTarget(placementMode.next, markers, local, displayScale);
             dragging.current = target;
+            if (target === "ARCH") setScanArchMarkerSource(placementMode.scanId, "manual_override");
             setMarker(placementMode.scanId, target, local);
             gl.domElement.setPointerCapture(e.pointerId);
         },

@@ -52,7 +52,7 @@ describe("one-click recipe", () => {
         const cases: [number, number][] = [
             [20, -3.5],
             [23, 0],
-            [26, 0],
+            [26, 3],
             [28, 3],
         ];
         for (const [measured, arch] of cases) {

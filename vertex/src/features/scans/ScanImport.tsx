@@ -17,6 +17,7 @@ import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog"
 import { deviationLegendLabel } from "@/components/viewer/ScanMeshes";
 import { markerPlaceControl } from "@/features/afo/afo-scan-markers";
 import { ScanCleanupPanel } from "@/features/scans/ScanCleanupPanel";
+import { scanArchMarkerSource } from "@/lib/clinical/measure-scan-arch";
 import { ArchFitError } from "@/lib/geometry/fit-arch-from-scan";
 import { importFootScanFile } from "@/lib/geometry/import-foot-scan";
 import { analyzeManifold } from "@/lib/geometry/manifold";
@@ -394,8 +395,12 @@ export function ScanImport() {
                 rawBase,
                 side,
                 layout,
+                displayScale: scan.display.displayScale,
+                m1Local: markers?.M1,
+                m5Local: markers?.M2,
                 archMarkerLocal: markers?.ARCH,
                 heelMarkerLocal: markers?.M3,
+                archMarkerSource: scanArchMarkerSource(scanId),
             });
             updateCorrection(side, clinical.correction);
             const warnSuffix = rmsWarning ? ` · ${rmsWarning}` : "";

@@ -108,6 +108,12 @@ export async function applyOrderScansToSavedDesign(args: {
         const path = `settings.corrections.${foot.side}.archHeightMm`;
         if (!args.built.paths.includes(path)) args.built.paths.push(path);
     }
+    if (outcome.design.scanArchBySide) {
+        args.built.design.scanArchBySide = outcome.design.scanArchBySide;
+        if (!args.built.paths.includes("settings.scanArchBySide")) {
+            args.built.paths.push("settings.scanArchBySide");
+        }
+    }
 
     args.built.design.corrections.linked = false;
     if (!args.built.paths.includes("settings.corrections.linked")) {

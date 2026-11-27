@@ -8,6 +8,9 @@
  * zero-arch field) and solves for the two scalar arch operators that best
  * close that gap in the medial midfoot. Result is applied via design
  * corrections — the scan store stays off the export path.
+ *
+ * Scan-created insoles do not use this solve. They bin plantar arch height
+ * into a Low / Medium / High delta on the default mesh (measure-scan-arch).
  */
 
 import type { BufferGeometry } from "three";

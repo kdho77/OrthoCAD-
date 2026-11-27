@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import type { PrescriptionParseResult, Side, SideCorrections } from "@/types";
+import type { PrescriptionParseResult, ScanArchTierName, Side, SideCorrections } from "@/types";
 
 const RX_PRIORITY_KEYS: (keyof SideCorrections)[] = [
     "forefootPostingDeg",
@@ -62,6 +62,39 @@ export function mergeScanFitWithPrescription(args: {
         }
     }
     return { merged, rxKeys, scanOnlyKeys };
+}
+
+function clauseNamesSide(clause: string, side: Side): boolean {
+    const namesLeft = /\bleft\b/i.test(clause);
+    const namesRight = /\bright\b/i.test(clause);
+    if (side === "left" && namesRight && !namesLeft) return false;
+    if (side === "right" && namesLeft && !namesRight) return false;
+    return true;
+}
+
+/**
+ * Explicit tier words ("arch tier high", "arch: low"). A diagnosis such as
+ * "high arch" is not an order to change the slider.
+ */
+export function explicitArchTierForSide(text: string, side: Side): ScanArchTierName | null {
+    let found: ScanArchTierName | null = null;
+    for (const clause of text.split(/[.;\n]+/)) {
+        if (!clauseNamesSide(clause, side)) continue;
+        const match = clause.match(/\barch(?:\s*(?:height|tier))?\s*(?:to|as|=|:)?\s*(low|medium|high)\b/i);
+        const word = match?.[1]?.toLowerCase();
+        if (word === "low" || word === "medium" || word === "high") found = word;
+    }
+    return found;
+}
+
+/** Pronation plus a request to raise the arch. The tier is not increased. */
+export function pathologyAsksToRaiseArch(text: string, side: Side): boolean {
+    for (const clause of text.split(/[.;\n]+/)) {
+        if (!clauseNamesSide(clause, side)) continue;
+        if (!/\bpronat/i.test(clause)) continue;
+        if (/\b(?:raise|increase|higher|taller)\b/i.test(clause) && /\barch\b/i.test(clause)) return true;
+    }
+    return false;
 }
 
 export function detectRxConflicts(rx: PrescriptionParseResult | null | undefined): string[] {
