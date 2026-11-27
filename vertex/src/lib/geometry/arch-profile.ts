@@ -307,7 +307,10 @@ export function applyArchProfileToTopPositions(args: {
     const factor = args.topFactor;
     const isTop = (i: number): boolean => {
         if (topEnd > 0) return i < topEnd;
-        return factor != null && (factor[i] ?? 0) > 0.65;
+        // Top-only open sheet (e.g. SAMPLE_Top.glb): classifyBaseTopFactors
+        // returns null because there is no downward-facing bottom surface.
+        if (factor == null) return true;
+        return (factor[i] ?? 0) > 0.65;
     };
 
     const halfW = args.widSize / 2;

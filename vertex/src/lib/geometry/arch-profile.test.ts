@@ -1,11 +1,16 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
 import {
     applyBaseModifiers,
     BASE_REFERENCE_THICKNESS_MM,
+    classifyBaseTopFactors,
+    detectArchSideSign,
     hasActiveModifiers,
 } from "@/lib/geometry/base-modifier";
+import { sampleTopFromArrayBuffer } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { buildInsoleGeometry } from "@/lib/geometry/insole";
 import { analyzeManifold } from "@/lib/geometry/manifold";
@@ -19,6 +24,7 @@ import {
     archProfileEnvelope,
     archProfilePinWindow,
     medialCoordinate,
+    measureArchSection,
     sampleMedialArchSection,
     vSignedFromMedial,
 } from "./arch-profile";
@@ -343,5 +349,129 @@ describe("arch profile slider", () => {
         expect(migrated.archProfile).toBeUndefined();
         const stored = migrateSideCorrections(zeros({ archProfile: 40 }));
         expect(stored.archProfile).toBe(40);
+    });
+
+    test("SAMPLE_Top open sheet bows, and cradled is unchanged", async () => {
+        const bytes = readFileSync(resolve("tests/fixtures/SAMPLE_Top.glb"));
+        const sheet = await sampleTopFromArrayBuffer(
+            bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+        );
+        expect(classifyBaseTopFactors(sheet)).toBeNull();
+        const userData = sheet.userData as { isMultiMeshBase?: boolean; topVertexCount?: number };
+        expect(userData.isMultiMeshBase ?? false).toBe(false);
+        expect(userData.topVertexCount ?? 0).toBe(0);
+
+        if (!sheet.boundingBox) sheet.computeBoundingBox();
+        const box = sheet.boundingBox!;
+        const min = [box.min.x, box.min.y, box.min.z];
+        const size = [
+            box.max.x - box.min.x || 1,
+            box.max.y - box.min.y || 1,
+            box.max.z - box.min.z || 1,
+        ];
+        const axes = [0, 1, 2].sort((a, b) => size[a]! - size[b]!);
+        const thickAxis = axes[0]!;
+        const widthAxis = axes[1]!;
+        const lengthAxis = axes[2]!;
+        const lenMin = min[lengthAxis]!;
+        const lenSize = size[lengthAxis]!;
+        const widCenter = min[widthAxis]! + size[widthAxis]! / 2;
+        const halfW = size[widthAxis]! / 2;
+        const medialSign = -1;
+        const widthSign = -(detectArchSideSign(sheet) * medialSign);
+        const src = sheet.getAttribute("position")!.array as Float32Array;
+
+        const run = (profile: number | undefined) =>
+            applyBaseModifiers(
+                sheet,
+                field("left", profile == null ? {} : { archProfile: profile }, BASE_REFERENCE_THICKNESS_MM),
+                0,
+                { skipNormals: true },
+            ).getAttribute("position")!.array as Float32Array;
+        const omitted = run(undefined);
+        const cradled = run(100);
+        const neutral = run(50);
+        const domed = run(0);
+
+        const count = (src.length / 3) | 0;
+        const uOf = (pos: Float32Array, i: number) => (pos[i * 3 + lengthAxis]! - lenMin) / lenSize;
+        const mOf = (pos: Float32Array, i: number) => {
+            const vNorm = (widthSign * (pos[i * 3 + widthAxis]! - widCenter)) / halfW;
+            const vSigned = vNorm < -1 ? -1 : vNorm > 1 ? 1 : vNorm;
+            return -(vSigned * medialSign);
+        };
+        const zOf = (pos: Float32Array, i: number) => pos[i * 3 + thickAxis]!;
+
+        for (let k = 0; k < src.length; k++) {
+            expect(omitted[k]).toBe(src[k]);
+            expect(cradled[k]).toBe(src[k]);
+        }
+
+        let moved = 0;
+        let crownRise = 0;
+        for (let i = 0; i < count; i++) {
+            const u = uOf(src, i);
+            const dzDomed = zOf(domed, i) - zOf(src, i);
+            const dzNeutral = zOf(neutral, i) - zOf(src, i);
+            if (u <= 0.28 || u >= 0.58) {
+                expect(dzDomed).toBe(0);
+                expect(dzNeutral).toBe(0);
+                continue;
+            }
+            if (dzDomed > 0.2) moved++;
+            if (dzDomed > crownRise) crownRise = dzDomed;
+        }
+        expect(moved).toBeGreaterThan(30);
+        expect(crownRise).toBeGreaterThan(1);
+
+        const band: { i: number; m: number; z: number }[] = [];
+        for (let i = 0; i < count; i++) {
+            if (Math.abs(uOf(src, i) - 0.42) > 0.008) continue;
+            band.push({ i, m: mOf(src, i), z: zOf(src, i) });
+        }
+        expect(band.length).toBeGreaterThan(12);
+        const section = measureArchSection([...band].sort((a, b) => a.m - b.m));
+        expect(section).toBeTruthy();
+        const span = section!.mRim - section!.mValley;
+
+        let pinned = 0;
+        const probes: { s: number; d0: number; d50: number; d100: number; above0: number; above50: number }[] =
+            [];
+        for (const sample of band) {
+            const { i, m, z } = sample;
+            const d0 = zOf(domed, i) - z;
+            const d50 = zOf(neutral, i) - z;
+            const d100 = zOf(cradled, i) - z;
+            expect(d100).toBe(0);
+            if (m <= section!.mValley || m >= section!.mRim) {
+                expect(d0).toBe(0);
+                expect(d50).toBe(0);
+                pinned++;
+                continue;
+            }
+            const s = (m - section!.mValley) / span;
+            const zChord = (1 - s) * section!.zValley + s * section!.zRim;
+            if (s > 0.2 && s < 0.8) {
+                probes.push({
+                    s,
+                    d0,
+                    d50,
+                    d100,
+                    above0: zOf(domed, i) - zChord,
+                    above50: zOf(neutral, i) - zChord,
+                });
+            }
+        }
+        expect(pinned).toBeGreaterThan(0);
+        expect(probes.length).toBeGreaterThan(4);
+
+        const mid = probes.reduce((best, p) => (Math.abs(p.s - 0.5) < Math.abs(best.s - 0.5) ? p : best));
+        const crest = probes.reduce((best, p) => (p.above0 > best.above0 ? p : best));
+
+        expect(crest.above0).toBeGreaterThan(1);
+        expect(crest.above0).toBeLessThanOrEqual(ARCH_PROFILE_CAP_MM + 0.05);
+        expect(Math.abs(mid.above50)).toBeLessThan(0.35);
+        expect(mid.d0).toBeGreaterThan(mid.d50);
+        expect(mid.d100).toBe(0);
     });
 });
