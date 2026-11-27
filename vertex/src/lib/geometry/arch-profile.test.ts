@@ -10,25 +10,34 @@ import {
     detectArchSideSign,
     hasActiveModifiers,
 } from "@/lib/geometry/base-modifier";
-import { sampleTopFromArrayBuffer } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { constrainSideCorrections } from "@/lib/geometry/clinical-constraints";
 import { buildInsoleGeometry } from "@/lib/geometry/insole";
 import { analyzeManifold } from "@/lib/geometry/manifold";
 import { migrateSideCorrections } from "@/lib/geometry/migrate-corrections";
+import { composeViewerPrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
+import { sampleTopFromArrayBuffer } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
+import {
+    extractMergedGeometry,
+    loadGlbFromBuffer,
+    mirrorGeometry,
+    reorientToFootprintFrame,
+} from "@/lib/library/loaders";
 import type { DesignState, Side, SideCorrections } from "@/types";
 import {
     ARCH_PROFILE_BULGE_MM,
     ARCH_PROFILE_CAP_MM,
+    ARCH_PROFILE_VALLEY_BLEND_MM,
     type ArchSection,
     archProfileEnvelope,
     archProfileValleyBlend,
-    medialCoordinate,
+    archProfileValleyBlendFraction,
+    fairedMedialArchSection,
     measureArchSection,
-    sampleMedialArchSection,
+    medialCoordinate,
     vSignedFromMedial,
 } from "./arch-profile";
-import { type HeightFieldParams, heightAt } from "./height-field";
+import { type HeightFieldParams, heightAt, outlineHalfWidth } from "./height-field";
 
 const layout = insoleLayoutForUsMenSize(9);
 
@@ -65,9 +74,14 @@ function field(side: Side, patch: Partial<SideCorrections>, thicknessMm = 3): He
 
 function sectionAt(u: number, side: Side, patch: Partial<SideCorrections>, thicknessMm = 3): ArchSection {
     const cradled = field(side, { ...patch, archProfile: undefined }, thicknessMm);
-    const section = sampleMedialArchSection(u, side, (uu, vv) => heightAt(uu, vv, cradled));
+    const section = fairedMedialArchSection(u, side, (uu, vv) => heightAt(uu, vv, cradled));
     if (!section) throw new Error(`no arch section at u=${u}`);
     return section;
+}
+
+/** Physical valley-to-trimline span. Matches the half-width `heightAt` passes in. */
+function spanMmOf(u: number, section: ArchSection): number {
+    return (section.mRim - section.mValley) * outlineHalfWidth(u) * (layout.widthMm / 2);
 }
 
 function zAt(u: number, m: number, side: Side, patch: Partial<SideCorrections>, thicknessMm = 3): number {
@@ -109,7 +123,7 @@ describe("arch profile slider", () => {
             const zCur = height(s, 100);
             const chord = chordAt(s);
             const bulge = 4 * amp * s * (1 - s);
-            const w = archProfileValleyBlend(s);
+            const w = archProfileValleyBlend(s, spanMmOf(u, section));
             if (profile >= 50) {
                 const t = (100 - profile) / 50;
                 return zCur + env * t * (chord - zCur) * w;
@@ -264,9 +278,24 @@ describe("arch profile slider", () => {
             expect(maxSecond).toBeLessThan(1.25);
         }
         expect(medialCoordinate(0.4, "left")).toBeCloseTo(medialCoordinate(-0.4, "right"), 9);
-        expect(archProfileValleyBlend(0)).toBe(0);
-        expect(archProfileValleyBlend(0.14)).toBe(1);
-        expect(archProfileValleyBlend(1)).toBe(1);
+        const spanMm = 40;
+        expect(archProfileValleyBlend(0, spanMm)).toBe(0);
+        expect(archProfileValleyBlend(1, spanMm)).toBe(1);
+        const blendS = archProfileValleyBlendFraction(spanMm);
+        expect(blendS * spanMm).toBeCloseTo(ARCH_PROFILE_VALLEY_BLEND_MM, 6);
+        expect(archProfileValleyBlend(blendS, spanMm)).toBeCloseTo(1, 8);
+        expect(archProfileValleyBlend(blendS * 0.5, spanMm)).toBeGreaterThan(0.05);
+        expect(archProfileValleyBlend(blendS * 0.5, spanMm)).toBeLessThan(0.95);
+        // 12 mm on a 40 mm span is wider than the old 0.14 window, which was one facet.
+        expect(archProfileValleyBlend(0.14, spanMm)).toBeLessThan(0.5);
+        const h = 1e-4;
+        const d1 = archProfileValleyBlend(h, spanMm) - archProfileValleyBlend(0, spanMm);
+        const d2 =
+            archProfileValleyBlend(0, spanMm) -
+            2 * archProfileValleyBlend(h, spanMm) +
+            archProfileValleyBlend(2 * h, spanMm);
+        expect(Math.abs(d1)).toBeLessThan(1e-6);
+        expect(Math.abs(d2)).toBeLessThan(1e-6);
     });
 
     test("procedural solids stay watertight across the slider", () => {
@@ -395,11 +424,7 @@ describe("arch profile slider", () => {
         if (!sheet.boundingBox) sheet.computeBoundingBox();
         const box = sheet.boundingBox!;
         const min = [box.min.x, box.min.y, box.min.z];
-        const size = [
-            box.max.x - box.min.x || 1,
-            box.max.y - box.min.y || 1,
-            box.max.z - box.min.z || 1,
-        ];
+        const size = [box.max.x - box.min.x || 1, box.max.y - box.min.y || 1, box.max.z - box.min.z || 1];
         const axes = [0, 1, 2].sort((a, b) => size[a]! - size[b]!);
         const thickAxis = axes[0]!;
         const widthAxis = axes[1]!;
@@ -563,4 +588,263 @@ describe("arch profile slider", () => {
         expect(domedSlope).toBeGreaterThan(-0.05);
         expect(domedSlope).toBeLessThan(stockSlope * 0.45);
     });
+
+    test("faired valley isoline is C2 along the foot", () => {
+        for (const side of ["left", "right"] as const) {
+            const mValley: number[] = [];
+            const zValley: number[] = [];
+            const mRim: number[] = [];
+            for (let i = 0; i <= 48; i++) {
+                const u = 0.3 + (0.26 * i) / 48;
+                const section = sectionAt(u, side, { archHeightMm: 6, heelCupDepthMm: 10 }, 4);
+                mValley.push(section.mValley);
+                zValley.push(section.zValley);
+                mRim.push(section.mRim);
+            }
+            // 49 samples across 0.26 of the foot. A 24-bin hop of ~0.02 in m
+            // has a second difference near 0.04. The faired curve must not.
+            expect(maxAbsSecond(mValley)).toBeLessThan(0.0025);
+            expect(maxAbsThird(mValley)).toBeLessThan(0.001);
+            expect(maxAbsSecond(zValley)).toBeLessThan(0.05);
+            expect(maxAbsThird(zValley)).toBeLessThan(0.02);
+            expect(maxAbsSecond(mRim)).toBeLessThan(0.0025);
+            for (let i = 0; i < mValley.length; i++) {
+                expect(mRim[i]! - mValley[i]!).toBeGreaterThan(0.12);
+            }
+        }
+    });
+
+    test("SAMPLE_Top valley fillet has no sawtooth seam", async () => {
+        const bytes = readFileSync(resolve("tests/fixtures/SAMPLE_Top.glb"));
+        const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        const group = await loadGlbFromBuffer(buffer);
+        const merged = extractMergedGeometry(group);
+        if (!merged) throw new Error("SAMPLE_Top.glb produced no geometry");
+        const sheet = reorientToFootprintFrame(merged.geometry, { preserveAuthorZ: true });
+        merged.geometry.dispose();
+        // Same bytes the production helper parses. Guards a drift in that helper.
+        const viaHelper = await sampleTopFromArrayBuffer(buffer.slice(0));
+        expect(viaHelper.getAttribute("position")!.count).toBe(sheet.getAttribute("position")!.count);
+
+        const profiles = [0, 50] as const;
+        for (const side of ["left", "right"] as const) {
+            const source = side === "left" ? sheet : mirrorGeometry(sheet);
+            for (const profile of profiles) {
+                const cradled = deformSample(source, side, undefined);
+                const shaped = deformSample(source, side, profile);
+                const stats = valleySeamStats(cradled, shaped, side);
+                // 12 mm C2 fillet on this triangulation: p95 dihedral stays near
+                // 11°. A bin-polyline sawtooth creases the whole valley, so p95
+                // and the count of edges steeper than 20° both jump.
+                expect(stats.edges).toBeGreaterThan(200);
+                expect(stats.p95Deg).toBeLessThan(13);
+                expect(stats.edgesOver20).toBeLessThan(18);
+                expect(stats.maxDeg).toBeLessThan(stats.stockMaxDeg + 3);
+                expect(stats.roughnessMm).toBeLessThan(8);
+            }
+            if (side === "left") {
+                const cradledMesh = await composeViewerPrintSolidTop({
+                    raw: source.clone(),
+                    sourceField: field("left", {}, BASE_REFERENCE_THICKNESS_MM),
+                });
+                const domedMesh = await composeViewerPrintSolidTop({
+                    raw: source.clone(),
+                    sourceField: field("left", { archProfile: 0 }, BASE_REFERENCE_THICKNESS_MM),
+                });
+                const stats = valleySeamStats(cradledMesh, domedMesh, "left");
+                expect(stats.edges).toBeGreaterThan(200);
+                expect(stats.p95Deg).toBeLessThan(13);
+                expect(stats.edgesOver20).toBeLessThan(18);
+                expect(stats.maxDeg).toBeLessThan(stats.stockMaxDeg + 3);
+            }
+        }
+    });
 });
+
+function maxAbsSecond(values: number[]): number {
+    let max = 0;
+    for (let i = 1; i < values.length - 1; i++) {
+        max = Math.max(max, Math.abs(values[i - 1]! - 2 * values[i]! + values[i + 1]!));
+    }
+    return max;
+}
+
+function maxAbsThird(values: number[]): number {
+    let max = 0;
+    for (let i = 1; i < values.length - 2; i++) {
+        const a = values[i - 1]! - 2 * values[i]! + values[i + 1]!;
+        const b = values[i]! - 2 * values[i + 1]! + values[i + 2]!;
+        max = Math.max(max, Math.abs(b - a));
+    }
+    return max;
+}
+
+function deformSample(sheet: import("three").BufferGeometry, side: Side, profile: number | undefined) {
+    return applyBaseModifiers(
+        sheet,
+        field(side, profile == null ? {} : { archProfile: profile }, BASE_REFERENCE_THICKNESS_MM),
+        0,
+    );
+}
+
+interface SeamStats {
+    edges: number;
+    maxDeg: number;
+    p95Deg: number;
+    edgesOver20: number;
+    stockP95Deg: number;
+    stockMaxDeg: number;
+    roughnessMm: number;
+}
+
+/**
+ * Dihedral and longitudinal roughness where the arch leaves the plantar floor.
+ * Footprint frame: X length, Y width, Z height. Medial is −Y on the left.
+ */
+function valleySeamStats(
+    stock: import("three").BufferGeometry,
+    shaped: import("three").BufferGeometry,
+    side: Side,
+): SeamStats {
+    const stockPos = stock.getAttribute("position")!.array as Float32Array;
+    const pos = shaped.getAttribute("position")!.array as Float32Array;
+    const index = shaped.getIndex()!.array;
+    const count = (pos.length / 3) | 0;
+    let lenMin = Infinity;
+    let lenMax = -Infinity;
+    for (let i = 0; i < count; i++) {
+        const x = stockPos[i * 3]!;
+        if (x < lenMin) lenMin = x;
+        if (x > lenMax) lenMax = x;
+    }
+    const lenSize = lenMax - lenMin || 1;
+    const uOf = (i: number) => (stockPos[i * 3]! - lenMin) / lenSize;
+    const dzOf = (i: number) => pos[i * 3 + 2]! - stockPos[i * 3 + 2]!;
+    // Medial is −Y on the left and +Y on the right. Keep a few mm past
+    // centerline so a valley that sits on m ≈ 0 is inside the band.
+    const onMedial = (y: number) => (side === "left" ? y < 8 : y > -8);
+    const inBand = (i: number) => {
+        const u = uOf(i);
+        return u >= 0.36 && u <= 0.48 && onMedial(stockPos[i * 3 + 1]!);
+    };
+    // Lower arch: off the untouched floor, below the midspan crown.
+    const inFillet = (i: number) => {
+        if (!inBand(i)) return false;
+        const dz = Math.abs(dzOf(i));
+        return dz > 0.15 && dz < 2.5;
+    };
+
+    const angles: number[] = [];
+    const stockAngles: number[] = [];
+    let edgesOver20 = 0;
+    // SAMPLE_Top keeps duplicate vertices along triangle edges, so index
+    // adjacency misses the seam. Match edges that occupy the same stock segment.
+    const edgeFaces = new Map<string, number[]>();
+    const quant = (v: number) => Math.round(v * 20);
+    const pointKey = (i: number) =>
+        `${quant(stockPos[i * 3]!)}:${quant(stockPos[i * 3 + 1]!)}:${quant(stockPos[i * 3 + 2]!)}`;
+    for (let t = 0; t + 2 < index.length; t += 3) {
+        const tri = [index[t]!, index[t + 1]!, index[t + 2]!];
+        const keys = tri.map(pointKey);
+        for (let e = 0; e < 3; e++) {
+            const ka = keys[e]!;
+            const kb = keys[(e + 1) % 3]!;
+            const k = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+            const list = edgeFaces.get(k);
+            if (list) list.push(t);
+            else edgeFaces.set(k, [t]);
+        }
+    }
+    for (const faces of edgeFaces.values()) {
+        if (faces.length !== 2) continue;
+        const t0 = faces[0]!;
+        const t1 = faces[1]!;
+        const tri0 = [index[t0]!, index[t0 + 1]!, index[t0 + 2]!];
+        if (!tri0.some(inFillet)) continue;
+        const n1 = triNormal(pos, index, t0);
+        const n2 = triNormal(pos, index, t1);
+        if (!n1 || !n2) continue;
+        const deg = normalAngleDeg(n1, n2);
+        angles.push(deg);
+        if (deg > 20) edgesOver20++;
+        const s1 = triNormal(stockPos, index, t0);
+        const s2 = triNormal(stockPos, index, t1);
+        if (s1 && s2) stockAngles.push(normalAngleDeg(s1, s2));
+    }
+
+    angles.sort((p, q) => p - q);
+    stockAngles.sort((p, q) => p - q);
+    const p95 = (sorted: number[]) => {
+        if (sorted.length === 0) return 0;
+        return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))]!;
+    };
+    // Y of the vertex nearest |dz| = 0.4 mm. Mesh rows are a few millimetres
+    // apart, so this only fails a multi-centimetre zigzag. The dihedral is
+    // the crease check.
+    const bins = 24;
+    const bestGap = new Array<number>(bins).fill(Infinity);
+    const bestY = new Array<number>(bins).fill(Number.NaN);
+    for (let i = 0; i < count; i++) {
+        const u = uOf(i);
+        if (u < 0.36 || u > 0.48) continue;
+        const y = stockPos[i * 3 + 1]!;
+        // The valley sits near the centerline. The medial rim is much farther out
+        // and would make this isoline jump between unrelated vertices.
+        const nearValley = side === "left" ? y < 6 && y > -18 : y > -6 && y < 18;
+        if (!nearValley) continue;
+        const gap = Math.abs(Math.abs(dzOf(i)) - 0.4);
+        if (gap > 0.35) continue;
+        const bi = Math.min(bins - 1, Math.max(0, Math.floor(((u - 0.36) / 0.12) * bins)));
+        if (gap < bestGap[bi]!) {
+            bestGap[bi] = gap;
+            bestY[bi] = stockPos[i * 3 + 1]!;
+        }
+    }
+    const yAlong = bestY.filter((y) => Number.isFinite(y));
+    let rough = 0;
+    let roughN = 0;
+    for (let i = 1; i < yAlong.length - 1; i++) {
+        rough += (yAlong[i - 1]! - 2 * yAlong[i]! + yAlong[i + 1]!) ** 2;
+        roughN++;
+    }
+    return {
+        edges: angles.length,
+        maxDeg: angles.length ? angles[angles.length - 1]! : 0,
+        p95Deg: p95(angles),
+        edgesOver20,
+        stockP95Deg: p95(stockAngles),
+        stockMaxDeg: stockAngles.length ? stockAngles[stockAngles.length - 1]! : 0,
+        roughnessMm: roughN > 0 ? Math.sqrt(rough / roughN) : 0,
+    };
+}
+
+function triNormal(
+    pos: Float32Array,
+    index: ArrayLike<number>,
+    tri: number,
+): [number, number, number] | null {
+    return faceNormal(pos, index[tri]!, index[tri + 1]!, index[tri + 2]!);
+}
+
+function faceNormal(pos: Float32Array, ia: number, ib: number, ic: number): [number, number, number] | null {
+    const ax = pos[ia * 3]!;
+    const ay = pos[ia * 3 + 1]!;
+    const az = pos[ia * 3 + 2]!;
+    const bx = pos[ib * 3]! - ax;
+    const by = pos[ib * 3 + 1]! - ay;
+    const bz = pos[ib * 3 + 2]! - az;
+    const cx = pos[ic * 3]! - ax;
+    const cy = pos[ic * 3 + 1]! - ay;
+    const cz = pos[ic * 3 + 2]! - az;
+    const nx = by * cz - bz * cy;
+    const ny = bz * cx - bx * cz;
+    const nz = bx * cy - by * cx;
+    const len = Math.hypot(nx, ny, nz);
+    if (!(len > 1e-8)) return null;
+    return [nx / len, ny / len, nz / len];
+}
+
+function normalAngleDeg(a: [number, number, number], b: [number, number, number]): number {
+    const dot = Math.min(1, Math.max(-1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
+    return (Math.acos(dot) * 180) / Math.PI;
+}

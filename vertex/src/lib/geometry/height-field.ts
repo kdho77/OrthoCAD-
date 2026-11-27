@@ -598,6 +598,7 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
         archElongationMm: c.archElongationMm,
         cacheToken: archSurfaceToken(params),
         sampleUnprofiled: (uu, vv) => heightAt(uu, vv, params),
+        halfWidthMm: resolveOutlineHalfWidth(u, params) * halfW,
     });
     return profileDelta === 0 ? h : h + profileDelta;
 }
