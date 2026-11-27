@@ -106,6 +106,7 @@
                 "vertex/shared/print-bridge-update.test.ts",
                 "vertex/src/components/layout/SessionRecoveryDialog.test.tsx",
                 "vertex/src/components/viewer/AfoMarkerPlacement.sides.test.tsx",
+                "vertex/src/components/viewer/BaseInsoleMesh.heightmap-elements.test.ts",
                 "vertex/src/components/viewer/Viewer3D.print-selection.test.tsx",
                 "vertex/src/features/afo/AfoPrintPanel.generate.test.tsx",
                 "vertex/src/features/auth/auth-session-resilience.test.ts",
