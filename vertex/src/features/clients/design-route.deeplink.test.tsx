@@ -298,7 +298,7 @@ describe("design deep link", () => {
         expect(useClinicalWorkflowStore.getState().completedSteps).toEqual([
             "scan",
             "setup",
-            "base",
+            "setup",
         ]);
     });
 

@@ -19,7 +19,8 @@ describe("design workflow session", () => {
         });
         const loaded = loadDesignWorkflowSession(DESIGN);
         expect(loaded?.step).toBe("corrections");
-        expect(loaded?.completedSteps).toEqual(["scan", "setup", "base"]);
+        // Retired "base" loads as Setup.
+        expect(loaded?.completedSteps).toEqual(["scan", "setup", "setup"]);
         expect(loaded?.footSideExplicitlyChosen).toBe(true);
     });
 
@@ -30,6 +31,6 @@ describe("design workflow session", () => {
             footSideExplicitlyChosen: false,
             designStartPath: "scan",
         });
-        expect(loadDesignWorkflowSession(DESIGN)?.step).toBe("base");
+        expect(loadDesignWorkflowSession(DESIGN)?.step).toBe("setup");
     });
 });
