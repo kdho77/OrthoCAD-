@@ -27,6 +27,12 @@ describe("print/export contour lighting", () => {
         expect(src).toMatch(/InsoleContourLighting/);
         expect(src).toMatch(/printExportSolid/);
     });
+
+    test("camera-anchored directional lights do not cast shadows", () => {
+        const src = readFileSync(resolve("vertex/src/components/viewer/InsoleContourLighting.tsx"), "utf8");
+        expect(src).not.toMatch(/castShadow/);
+        expect(src).not.toMatch(/keyCastShadow/);
+    });
 });
 
 function topBottomCameras(): { label: string; cam: PerspectiveCamera; faceNormal: Vector3 }[] {

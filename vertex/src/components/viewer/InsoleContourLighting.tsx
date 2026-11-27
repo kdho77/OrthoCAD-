@@ -110,15 +110,9 @@ type AnchoredLightsProps = {
     keyIntensity: number;
     fillIntensity: number;
     rimIntensity?: number;
-    keyCastShadow?: boolean;
 };
 
-function CameraAnchoredInsoleLights({
-    keyIntensity,
-    fillIntensity,
-    rimIntensity,
-    keyCastShadow,
-}: AnchoredLightsProps) {
+function CameraAnchoredInsoleLights({ keyIntensity, fillIntensity, rimIntensity }: AnchoredLightsProps) {
     const { camera } = useThree();
     const keyRef = useRef<DirectionalLight>(null);
     const fillRef = useRef<DirectionalLight>(null);
@@ -147,7 +141,7 @@ function CameraAnchoredInsoleLights({
 
     return (
         <>
-            <directionalLight ref={keyRef} intensity={keyIntensity} castShadow={keyCastShadow ?? false} />
+            <directionalLight ref={keyRef} intensity={keyIntensity} />
             <directionalLight ref={fillRef} intensity={fillIntensity} />
             {rimIntensity != null ? <directionalLight ref={rimRef} intensity={rimIntensity} /> : null}
         </>
@@ -162,7 +156,6 @@ export function InsoleContourLighting() {
                 keyIntensity={PRINT_EXPORT_KEY_INTENSITY}
                 fillIntensity={PRINT_EXPORT_FILL_INTENSITY}
                 rimIntensity={PRINT_EXPORT_RIM_INTENSITY}
-                keyCastShadow
             />
         </>
     );
@@ -172,7 +165,7 @@ export function InsoleStandardLighting() {
     return (
         <>
             <ambientLight intensity={0.6} />
-            <CameraAnchoredInsoleLights keyIntensity={1.1} fillIntensity={0.4} keyCastShadow />
+            <CameraAnchoredInsoleLights keyIntensity={1.1} fillIntensity={0.4} />
         </>
     );
 }
