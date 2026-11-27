@@ -324,6 +324,7 @@
                 "vertex/shared/moonraker-printer-state.test.ts",
                 "vertex/shared/printer-address-policy.test.ts",
                 "vertex/src/components/layout/right-panel-duplicates.test.ts",
+                "vertex/src/components/viewer/BaseInsoleMesh.heightmap-elements.test.ts",
                 "vertex/src/components/viewer/ElementSurfaceMeshes.selection.test.tsx",
                 "vertex/src/components/viewer/viewer-tab-defaults.test.ts",
                 "vertex/src/features/afo/afo-frame-side.test.ts",
