@@ -2733,6 +2733,18 @@ export function applyBaseModifiers(
     let thicknessDatumClamped = false;
     let thicknessDatumNativeMm: number | null = null;
     const shellMode = resolveShellThicknessContext(field).mode;
+    // Uniform solid / milling used to leave the z≈2 mm floor unmoved: the
+    // thickness term is multiplied by a height weight that is ~0 there.
+    // The labelled clearance is applied later as a full-strength lift, so it
+    // must not also sit in this delta.
+    const uniformSolidLift =
+        !isMultiMesh &&
+        shellMode === "uniform" &&
+        (field.method === "printing_solid" || field.method === "milling_3axis") &&
+        Math.abs(field.thicknessMm - BASE_REFERENCE_THICKNESS_MM) > 1e-9;
+    if (uniformSolidLift) {
+        thicknessMmForDelta = BASE_REFERENCE_THICKNESS_MM;
+    }
     if (isMultiMesh && topVertexCount > 0 && shellMode !== "zonal") {
         const datum = deriveNativeShellThicknessDatum(base);
         if (datum) {
@@ -2976,17 +2988,16 @@ export function applyBaseModifiers(
     const heelCupNarrowing =
         (field.corrections.heelCupWidthMm ?? 0) < 0 || (field.corrections.forefootWidthMm ?? 0) < 0;
 
-    // Zonal shell thickness samples t(u) and never reads thicknessMm, so the
-    // Setup slider was a no-op on Solid print and Milling. Those methods loft a
-    // top-only SAMPLE_Top sheet over a z=0 bottom pattern. Raise the whole sheet
-    // by (thickness − reference) at full strength — the height weight `w` is ~0
-    // on the z≈2 mm floor and would leave that surface parked at 2 mm.
-    // Reference thickness adds 0, so today's 2 mm meshes stay byte-identical.
-    // printing_shell keeps its zonal wall controls. Uniform mode already folds
-    // thicknessMm into correctionDeltaAt, so it is not lifted again.
+    // Zonal t(u) ignores thicknessMm, and uniform's thickness term is weighted
+    // by a height factor that is ~0 on the z≈2 mm floor. Solid print and milling
+    // loft a top-only SAMPLE_Top sheet over a z=0 bottom. Raise the whole sheet
+    // by (thickness − reference) at full strength. Reference thickness adds 0,
+    // so a 2 mm zonal mesh stays byte-identical. printing_shell keeps its own
+    // thickness term. Uniform's delta was cleared above so this lift is not
+    // applied twice.
     const solidTopLiftMm =
         !isMultiMesh &&
-        shellMode === "zonal" &&
+        (shellMode === "zonal" || shellMode === "uniform") &&
         (field.method === "printing_solid" || field.method === "milling_3axis") &&
         Math.abs(field.thicknessMm - BASE_REFERENCE_THICKNESS_MM) > 1e-9
             ? field.thicknessMm - BASE_REFERENCE_THICKNESS_MM

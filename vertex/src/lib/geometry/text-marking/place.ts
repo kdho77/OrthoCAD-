@@ -765,11 +765,14 @@ export function placeBottomText(
     // (SAMPLE_Top internal left is the unmirrored mesh; internal right is the Y mirror).
     // A side-keyed X flip would invert one foot.
     void side;
-    // Design mesh, looked at from below (+Z, screen-right +X, screen-up −Y): negate Y.
-    // Belt upload: VertexSlice Rz(270) then BeltTransform forward (det −1) makes
-    // that same camera's screen-up equal +mesh Y. Leave Y so the printed plantar
-    // face reads upright. X stays put either way; (−x, y) would mirror the string.
-    const ySign = opts?.beltPrint ? 1 : -1;
+    // From below the sole (+Z looking at Z=0): screen-right is +X, screen-up is −Y.
+    // Live VertexSlice #52 negates Y before Rz. The G-code reading frame puts the
+    // cap toward +X, which undoes that negate, so the deposited belt sole matches
+    // this mesh camera. The cap is −Y on the belt upload and on the flat bed.
+    // +Y prints the cap upside down (N reads as И). −X reverses the string.
+    // Do not flip from `side`; the right foot mesh is already mirrored.
+    void opts;
+    const ySign = -1;
     const cy = centrelineYAtX(ctx.outline, cx, ctx.midY) + (marking.nudgeAcrossMm ?? 0);
     const local = { x: flat.advanceMm / 2, y: flat.capHeightMm / 2 };
     const applyAt = (src: FlattenedText, scale: number): FlattenedText => {

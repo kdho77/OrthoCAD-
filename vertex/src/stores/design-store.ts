@@ -644,7 +644,7 @@ export const useDesignStore = create<DesignStore>()(
             exportSide: "left",
             viewer: {
                 transparent: false,
-                heightmap: false,
+                heightmap: true,
                 showLeft: true,
                 showRight: true,
                 showScans: true,

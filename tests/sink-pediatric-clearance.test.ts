@@ -96,15 +96,16 @@ function stampLabel(
 
 /**
  * Men's 9 SAMPLE_Top with MPJ1–5 and the styloid at max depth.
- * Re-recorded for the met-head plateaus (30×26, 24×18, 22×17, 21×16, 20×17).
+ * Re-recorded for the met-head plateaus (30×26, 24×18, 22×17, 21×16, 20×17)
+ * and again when the wall under a sink was held at the 1 mm floor.
  */
 const US9_SINK_SHA256: Record<string, string> = {
-    "left-straight": "590d01d79c73313adec165cc2c47e9b3b2b5d09643e8f92db507350792020dbc",
-    "left-round": "512d7de177171b74b241cb668c3c525ea9a53e45e85c7c368dd8aa6b3c89c835",
-    "left-hybrid": "3ca12b6014ebb26bc31e708c8b40b6d84cc184056e48445f1b3ce1dbd0afc83b",
-    "right-straight": "33f94f381d193dc16c58e0181d07051d877a722d2d3e53f5da4fd2f984ad6514",
-    "right-round": "6c0cab18a5292f4985d6df490a3846dba2441ce2d4b4e6505d8def06bc8464b9",
-    "right-hybrid": "89767db9c8125ad454b80be33757589a220f7d5bc22d43b7974e1c8c84e632f5",
+    "left-straight": "e7b789e9574de11b53283ac6ff8f14b26ebbebd4a0748cfbc561bfafbfa3d704",
+    "left-round": "3b3cc0d52645c424f77efc3d9ebdfd4ebee264e94e83937ac194c6f0c0157870",
+    "left-hybrid": "16d91e8f8ba6f532a61c1bc089a2b1557b50bdc06164ff08824554b094932717",
+    "right-straight": "ef4b101ab316e3d5f3986b9db59798ea80dab89b5cf4f4f3456ff893eb70733b",
+    "right-round": "26eaba333324459f68dbe757f3b4fc619193a0f3ddf84fdca14d65e1220f50ca",
+    "right-hybrid": "9c732c9b6fb4c758f54dab7d4a78d3c1c172de9e33bd18d2c7552479c93f83fd",
 };
 
 function nonRkwSinks(): PlacedSink[] {

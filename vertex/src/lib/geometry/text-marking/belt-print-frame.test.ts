@@ -10,7 +10,7 @@ import {
 import { mirrorGeometry } from "@/lib/library/loaders";
 import type { Side, SideCorrections } from "@/types";
 import { normalizeBottomTextMarking } from "../../../../shared/bottom-text-marking";
-import { beltPrintFrameDet, printedPlantarView } from "./belt-print-frame";
+import { beltPrintFrameDet, flatBedSoleView, printedPlantarView } from "./belt-print-frame";
 import { defaultTextMarking } from "./constants";
 import { flattenText } from "./contours";
 import { loadTextFont } from "./font";
@@ -39,8 +39,8 @@ const ZERO: SideCorrections = {
  * Printed plantar face, toe to the right. Capital J's hook is the lower-left.
  * A name that only reads through the top puts that hook on the right.
  */
-function jHookExtendsLeft(outer: TextXy[]): boolean {
-    const viewed = outer.map((p) => printedPlantarView(p));
+function jHookExtendsLeft(outer: TextXy[], view: (p: TextXy) => TextXy = printedPlantarView): boolean {
+    const viewed = outer.map((p) => view(p));
     const ys = viewed.map((p) => p.y);
     const minY = Math.min(...ys);
     const maxY = Math.max(...ys);
@@ -55,16 +55,19 @@ function jHookExtendsLeft(outer: TextXy[]): boolean {
     return hookMin < capMin - 1.5 && hookMax <= capMax + 0.75;
 }
 
-function leftmostGroup(placed: {
-    flat: { groups: TextGlyphGroup[] };
-    meta: { centroids: Array<{ x: number; y: number }> };
-}): TextGlyphGroup | undefined {
+function leftmostGroup(
+    placed: {
+        flat: { groups: TextGlyphGroup[] };
+        meta: { centroids: Array<{ x: number; y: number }> };
+    },
+    view: (p: TextXy) => TextXy = printedPlantarView,
+): TextGlyphGroup | undefined {
     let jay: TextGlyphGroup | undefined;
     let jayX = Infinity;
     placed.flat.groups.forEach((group, index) => {
         const centroid = placed.meta.centroids[index];
         if (!centroid) return;
-        const x = printedPlantarView(centroid).x;
+        const x = view(centroid).x;
         if (x < jayX) {
             jayX = x;
             jay = group;
@@ -117,18 +120,23 @@ describe("printed bottom name in the belt frame", () => {
             const ctx = extractHostTextContext(geo);
             const design = placeBottomText(geo, ctx, legacy, flat, side);
             const printed = placeBottomText(geo, ctx, legacy, flat, side, { beltPrint: true });
-            const designJay = leftmostGroup(design);
+            const designJay = leftmostGroup(design, flatBedSoleView);
             expect(designJay, `${side} design J`).toBeDefined();
             if (!designJay) return;
-            expect(
-                jHookExtendsLeft(designJay.outer),
-                `${side} design-space name is mirrored on the belt`,
-            ).toBe(false);
+            expect(jHookExtendsLeft(designJay.outer, flatBedSoleView), `${side} flat-bed sole`).toBe(true);
 
             const jay = leftmostGroup(printed);
             expect(jay, `${side} has a J`).toBeDefined();
             if (!jay) return;
-            expect(jHookExtendsLeft(jay.outer), `${side} printed J reads from below`).toBe(true);
+            expect(jHookExtendsLeft(jay.outer), `${side} belt sole from below`).toBe(true);
+            expect(
+                jHookExtendsLeft(jay.outer, (p) => printedPlantarView(p, "heel_first")),
+                `${side} heel-first sole`,
+            ).toBe(true);
+            expect(
+                jHookExtendsLeft(jay.outer, (p) => printedPlantarView({ x: p.x, y: -p.y })),
+                `${side} pre-rotation Y negate mirrors the sole`,
+            ).toBe(false);
 
             const ordered = [...printed.meta.centroids].sort(
                 (a, b) => printedPlantarView(a).x - printedPlantarView(b).x,
