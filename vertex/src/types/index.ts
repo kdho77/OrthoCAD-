@@ -413,6 +413,51 @@ export interface DesignPressureMaps {
     right?: PressureMapFoot;
 }
 
+/** How the foot was captured. Offsets stay 0 until a capture-mode calibration is chosen. */
+export type ScanCaptureMode = "NWB" | "semi-WB" | "FWB";
+
+/** Standard arch chosen for the default parametric mesh. */
+export type ScanArchTierName = "low" | "medium" | "high";
+
+/**
+ * Why the arch slider has its current value.
+ * The scan never becomes the shell; it only picks a tier or records an override.
+ */
+export type ScanArchAssignmentSource =
+    | "scan_measured"
+    | "manual_override"
+    | "rx_explicit_override"
+    | "pathology_guardrail"
+    | "fallback_no_scan";
+
+/**
+ * Explainability for a new scan-created design. Absent on designs that were
+ * not created from a scan, so existing saved orders stay unchanged.
+ */
+export interface ScanDrivenArchRecord {
+    measuredArchMm: number | null;
+    normalizedArchMm: number | null;
+    archApexU: number | null;
+    scanCaptureMode: ScanCaptureMode;
+    assignedArchTier: ScanArchTierName;
+    /** Absolute standard arch: Low 20, Medium 23.5, High 26.5. */
+    assignedArchHeightMm: 20 | 23.5 | 26.5;
+    assignmentSource: ScanArchAssignmentSource;
+    /** Value written to corrections.archHeightMm on the default mesh. */
+    archHeightDeltaMm: number;
+    footLengthMm: number | null;
+    /** M1–M5 distance. Applied as a forefoot-width slider only when those markers were placed. */
+    forefootWidthMm: number | null;
+    /** Plantar footprint width near 15% of foot length. */
+    heelWidthMm: number | null;
+    /** Suggestion only. Positive when the medial met is higher than the lateral met. */
+    forefootVarusDeg: number | null;
+    /** Suggestion only. Positive when the medial heel is higher than the lateral heel. */
+    rearfootAngleDeg: number | null;
+    lengthNormalization: boolean;
+    reviewFlags: string[];
+}
+
 export interface DesignState {
     /** Insole (default) vs ankle-foot orthosis. AFO never loads SAMPLE_Top. */
     productType?: "insole" | "afo";
@@ -504,6 +549,15 @@ export interface DesignState {
         shoeWidthSource: "prescribed" | "defaulted";
         hardness: HardnessName | null;
         hardnessSource: "prescribed" | "unspecified";
+    };
+
+    /**
+     * Per-foot scan arch measurement for designs created from a scan.
+     * Omitted on older designs. Does not replace the parametric mesh.
+     */
+    scanArchBySide?: {
+        left?: ScanDrivenArchRecord;
+        right?: ScanDrivenArchRecord;
     };
 
     /**

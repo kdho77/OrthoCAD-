@@ -7,6 +7,7 @@ import {
     generateOrthoticFromScanAndRx,
     type RequiredShoeSize,
 } from "@/lib/clinical/generateOrthoticFromScanAndRx";
+import { scanArchMarkerSource } from "@/lib/clinical/measure-scan-arch";
 import { footLengthMmOptions, ukShoeSizeOptions, usShoeSizeOptions } from "@/lib/geometry/shoe-size";
 import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
@@ -23,6 +24,7 @@ function applyGeneratedDesign(result: GenerateOrthoticSuccess) {
 
 export function GenerateOrthoticPanel() {
     const scans = useScanStore((s) => s.scans);
+    const markersByScanId = useScanStore((s) => s.markersByScanId);
     const design = useDesignStore((s) => s.design);
     const canUndo = useDesignStore((s) => s.canUndo());
     const undo = useDesignStore((s) => s.undo);
@@ -41,9 +43,11 @@ export function GenerateOrthoticPanel() {
                 side: scan.side,
                 geometry: scan.geometry,
                 display: scan.display,
+                markers: markersByScanId[scan.id],
+                archMarkerSource: scanArchMarkerSource(scan.id) ?? undefined,
                 keepSetApproved: scan.keepSetApproved,
             })),
-        [scans],
+        [scans, markersByScanId],
     );
 
     const sides = useMemo(() => [...new Set(bundles.map((b) => b.side))], [bundles]);

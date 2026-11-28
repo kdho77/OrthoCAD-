@@ -339,6 +339,7 @@
                 "vertex/src/lib/clinical/arch-class.test.ts",
                 "vertex/src/lib/clinical/generateOrthoticFromScanAndRx.test.ts",
                 "vertex/src/lib/clinical/one-click-recipe.test.ts",
+                "vertex/src/lib/clinical/scan-arch-tier.test.ts",
                 "vertex/src/lib/geometry/afo/afo-clinical.test.ts",
                 "vertex/src/lib/geometry/afo/afo-rotation-direction.test.ts",
                 "vertex/src/lib/geometry/afo/flat-plate-trim.test.ts",

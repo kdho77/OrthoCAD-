@@ -84,7 +84,7 @@ describe("one-click recipe matrix", () => {
         geometry.dispose();
     });
 
-    test("a scan that is too small to measure fails at arch height", () => {
+    test("a scan with no plantar arch falls back to Medium", () => {
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(9), 3));
         const out = generateOrthoticFromScanAndRx({
@@ -99,9 +99,12 @@ describe("one-click recipe matrix", () => {
             ],
             shoeSize: shoe,
         });
-        expect(out.ok).toBe(false);
-        if (out.ok) return;
-        expect(out.failedStep).toBe("arch_height");
+        expect(out.ok).toBe(true);
+        if (!out.ok) return;
+        expect(out.design.corrections.left.archHeightMm).toBe(0);
+        expect(out.perFoot[0]?.scanArch.assignmentSource).toBe("fallback_no_scan");
+        expect(out.perFoot[0]?.scanArch.assignedArchTier).toBe("medium");
+        expect(out.reviewItems.some((line) => /plantar|coverage|apex/i.test(line))).toBe(true);
         geometry.dispose();
     });
 

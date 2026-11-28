@@ -1,34 +1,32 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 /**
- * Orchestrator helpers: suggest shoe size from scan length, then fit parametric
- * arch height + apex from the registered medial plantar gap.
+ * Orchestrator helpers: suggest shoe size from scan length, then set the
+ * parametric arch slider from the plantar Low / Medium / High tier.
  *
- * Size and arch are separate clinical parameters. Registration stays rigid;
- * footprint scale lives only in design layout. When a non-default size is
- * selected, Kabsch targets must be the sized B1/B2/B3 (same XY map as
+ * The scan is not copied into the shell. Registration stays rigid; footprint
+ * scale lives only in design layout. When a non-default size is selected,
+ * Kabsch targets must be the sized B1/B2/B3 (same XY map as
  * scaleGeometryToInsoleSize).
  */
 
 import type * as THREE from "three";
 import type { BufferGeometry, Matrix4 } from "three";
 import {
+    formatScanArchReadout,
+    measurePlantarArch,
+    resolveScanArchAssignment,
+} from "@/lib/clinical/measure-scan-arch";
+import {
     ARCH_FIT_CLEARANCE_MM,
     ArchFitError,
     type ArchFitReference,
     type ArchFitResult,
     archFitReferenceFromBase,
-    archFitToCorrectionPatch,
     fitArchParamsFromScan,
-    sampleArchFitReferenceAt,
 } from "@/lib/geometry/fit-arch-from-scan";
 import {
-    type ArchMarkerFitResult,
     acceptHeelCupFit,
-    archMarkerFitToCorrectionPatch,
-    DEFAULT_STOCK_ARCH_APEX_HEIGHT_MM,
-    fitArchParamsFromApexMarker,
-    formatArchMarkerFitMessage,
     formatHeelCupFitMessage,
     type HeelCupWidthFitResult,
     heelCupWidthParamForTarget,
@@ -51,7 +49,7 @@ import {
     type ShoeSizeSystem,
     type ShoeSizingDesign,
 } from "@/lib/geometry/shoe-size";
-import type { Side, SideCorrections } from "@/types";
+import type { ScanCaptureMode, Side, SideCorrections } from "@/types";
 
 /**
  * Soft warning threshold for marker residual (mm). Kabsch returns RMS for
@@ -256,116 +254,96 @@ export type ArchCorrectionPatch = Partial<SideCorrections>;
 export type ClinicalMatchResult = {
     correction: Partial<SideCorrections>;
     message: string;
-    archSource: "marker" | "gap";
+    archSource: "marker" | "tier";
     heel: HeelCupWidthFitResult | null;
 };
 
 /**
- * Match arch (+ optional heel cup width) from a registered scan.
- * Requires a clinician-placed ARCH apex marker (no automatic gap fit).
+ * Match arch tier (+ optional heel cup width) from a registered scan.
+ * The arch slider is the Low / Medium / High delta. The scan surface is not copied.
  */
 export function matchClinicalParamsFromRegisteredScan(args: {
     scanPositions: ArrayLike<number>;
     scanVertexCount: number;
+    /** Indexed or welded scans must pass the geometry (or `scanIndex`) so triangles stay intact. */
+    scanGeometry?: BufferGeometry;
+    scanIndex?: { count: number; getX: (i: number) => number } | null;
     scanToBase: Matrix4;
     rawBase: BufferGeometry;
     side: Side;
     layout: InsoleLayout;
-    /** ARCH marker in scan-local space (optional). */
+    /** ARCH marker in scan-local space (optional). A drag sets manual_override. */
     archMarkerLocal?: THREE.Vector3 | null;
+    /** M1 in scan-local space. */
+    m1Local?: THREE.Vector3 | null;
+    /** M5 (stored as M2) in scan-local space. */
+    m5Local?: THREE.Vector3 | null;
     /** M3 heel centre in scan-local space (for seat Z / heel width). */
     heelMarkerLocal?: THREE.Vector3 | null;
+    archMarkerSource?: "scan_measured" | "manual_override" | null;
+    captureMode?: ScanCaptureMode;
+    displayScale?: number;
     clearanceMm?: number;
 }): ClinicalMatchResult {
+    void args.clearanceMm;
     const reference = archFitReferenceFromBaseSized(args.rawBase, args.layout.lengthMm, args.layout.widthMm);
     if (reference.kind !== "base") {
         throw new ArchFitError("no_reference", "Sized arch reference missing top positions");
     }
 
-    let archPatch: Partial<SideCorrections>;
-    let archMsg: string;
-    let archSource: "marker" | "gap";
-    let heelSeatBase: THREE.Vector3 | null = null;
-    if (args.heelMarkerLocal) {
-        heelSeatBase = args.heelMarkerLocal.clone().applyMatrix4(args.scanToBase);
-    }
-
-    // Arch raise requires a clinician-placed ARCH apex — never auto gap-fit here.
-    if (!args.archMarkerLocal) {
-        throw new ArchFitError(
-            "no_registration",
-            "Place the ARCH apex marker on the medial arch, then match again",
-        );
-    }
-    const archPointBase = args.archMarkerLocal.clone().applyMatrix4(args.scanToBase);
-    const hit = sampleArchFitReferenceAt(archPointBase.x, archPointBase.y, reference);
-    if (!hit.ok) {
-        throw new ArchFitError(
-            "insufficient_samples",
-            "ARCH marker is not over the insole top — re-place it on the medial arch plantar surface",
-        );
-    }
-    // Raise = gap of marker above stock shell at that XY (meets the placed point).
-    const fit: ArchMarkerFitResult = fitArchParamsFromApexMarker({
-        archPointBase,
-        baseSurfaceZ: hit.z,
-        heelSeatBase,
-        lengthMm: args.layout.lengthMm,
-        lengthMin: reference.lengthMin,
-        lengthSize: reference.lengthSize,
-        stockArchHeightMm: DEFAULT_STOCK_ARCH_APEX_HEIGHT_MM,
-        clearanceMm: 0,
+    const displayScale =
+        args.displayScale !== undefined && Number.isFinite(args.displayScale) && args.displayScale > 0
+            ? args.displayScale
+            : 1;
+    const landmarks =
+        args.m1Local && args.m5Local && args.heelMarkerLocal
+            ? { heel: args.heelMarkerLocal, m1: args.m1Local, m5: args.m5Local }
+            : null;
+    const manual =
+        args.archMarkerSource === "manual_override" && args.archMarkerLocal ? args.archMarkerLocal : null;
+    const measurement = measurePlantarArch({
+        geometry: args.scanGeometry,
+        positions: args.scanPositions,
+        vertexCount: args.scanVertexCount,
+        index: args.scanIndex,
+        side: args.side,
+        displayScale,
+        landmarks,
+        manualApex: manual,
     });
-    archPatch = archMarkerFitToCorrectionPatch(fit);
-    archMsg = formatArchMarkerFitMessage(fit);
-    archSource = "marker";
-
-    let heel: HeelCupWidthFitResult | null = null;
-    const heelSeatX = heelSeatBase?.x ?? null;
-    const scanHeel = measureHeelWidthMm(
-        args.scanPositions,
-        args.scanVertexCount,
-        args.scanToBase,
-        reference.lengthMin,
-        reference.lengthSize,
-        heelSeatX,
-    );
-    const baseHeel = measureHeelWidthFromTopPositions(
-        reference.topPositions,
-        reference.topVertexCount,
-        reference.lengthMin,
-        reference.lengthSize,
-        heelSeatX,
-    );
-    if (scanHeel != null && baseHeel != null) {
-        heel = acceptHeelCupFit(
-            heelCupWidthParamForTarget({
-                scanHeelWidthMm: scanHeel,
-                baseHeelWidthMm: baseHeel,
-            }),
-        );
-    }
-
-    const correction: Partial<SideCorrections> = {
-        ...archPatch,
-        ...(heel ? { heelCupWidthMm: heel.heelCupWidthMm } : {}),
-    };
+    const resolved = resolveScanArchAssignment({
+        measurement,
+        captureMode: args.captureMode ?? "NWB",
+        markerSource: manual ? "manual_override" : "scan_measured",
+    });
+    const archSource = manual ? "marker" : "tier";
+    const heel = measureHeelCupFromScan({
+        scanPositions: args.scanPositions,
+        scanVertexCount: args.scanVertexCount,
+        scanToBase: args.scanToBase,
+        reference,
+        heelMarkerLocal: args.heelMarkerLocal,
+    });
     const heelMsg = heel
         ? ` · ${formatHeelCupFitMessage(heel)}`
         : " · Heel width unavailable — check heel registration / cleanup";
     return {
-        correction,
-        message: `${archMsg}${heelMsg}`,
+        correction: {
+            archHeightMm: resolved.record.archHeightDeltaMm,
+            ...(heel ? { heelCupWidthMm: heel.heelCupWidthMm } : {}),
+        },
+        message: `${formatScanArchReadout(resolved.record)}${heelMsg}`,
         archSource,
         heel,
     };
 }
 
+/** Registered heel-cup width. Uses measureHeelWidthMm, not the arch record's heel width. */
 function measureHeelCupFromScan(args: {
     scanPositions: ArrayLike<number>;
     scanVertexCount: number;
     scanToBase: Matrix4;
-    reference: ArchFitReference;
+    reference: Extract<ArchFitReference, { kind: "base" }>;
     heelMarkerLocal?: THREE.Vector3 | null;
 }): HeelCupWidthFitResult | null {
     let heelSeatBase: THREE.Vector3 | null = null;
@@ -400,61 +378,28 @@ function measureHeelCupFromScan(args: {
 }
 
 /**
- * Marker-first arch fit; optional medial gap-fit when ARCH is missing or marker fit fails.
+ * Same tier assignment as {@link matchClinicalParamsFromRegisteredScan}.
+ * `allowGapFit` does not copy the scan into the shell; a missing apex stays Medium.
  */
 export function matchClinicalParamsFromRegisteredScanAuto(args: {
     scanPositions: ArrayLike<number>;
     scanVertexCount: number;
+    scanGeometry?: BufferGeometry;
+    scanIndex?: { count: number; getX: (i: number) => number } | null;
     scanToBase: Matrix4;
     rawBase: BufferGeometry;
     side: Side;
     layout: InsoleLayout;
     archMarkerLocal?: THREE.Vector3 | null;
+    m1Local?: THREE.Vector3 | null;
+    m5Local?: THREE.Vector3 | null;
     heelMarkerLocal?: THREE.Vector3 | null;
+    archMarkerSource?: "scan_measured" | "manual_override" | null;
+    captureMode?: ScanCaptureMode;
+    displayScale?: number;
     clearanceMm?: number;
     allowGapFit?: boolean;
 }): ClinicalMatchResult {
-    if (args.archMarkerLocal) {
-        try {
-            return matchClinicalParamsFromRegisteredScan(args);
-        } catch (e) {
-            if (!args.allowGapFit || !(e instanceof ArchFitError)) throw e;
-        }
-    } else if (!args.allowGapFit) {
-        throw new ArchFitError(
-            "no_registration",
-            "Place the ARCH apex marker on the medial arch, then match again",
-        );
-    }
-
-    const reference = archFitReferenceFromBaseSized(args.rawBase, args.layout.lengthMm, args.layout.widthMm);
-    const gapFit = matchArchParamsFromRegisteredScan({
-        scanPositions: args.scanPositions,
-        scanVertexCount: args.scanVertexCount,
-        scanToBase: args.scanToBase,
-        rawBase: args.rawBase,
-        side: args.side,
-        layout: args.layout,
-        clearanceMm: args.clearanceMm,
-    });
-    const heel = measureHeelCupFromScan({
-        scanPositions: args.scanPositions,
-        scanVertexCount: args.scanVertexCount,
-        scanToBase: args.scanToBase,
-        reference,
-        heelMarkerLocal: args.heelMarkerLocal,
-    });
-    const correction: Partial<SideCorrections> = {
-        ...archFitToCorrectionPatch(gapFit),
-        ...(heel ? { heelCupWidthMm: heel.heelCupWidthMm } : {}),
-    };
-    const heelMsg = heel
-        ? ` · ${formatHeelCupFitMessage(heel)}`
-        : " · Heel width unavailable — check heel registration / cleanup";
-    return {
-        correction,
-        message: `${formatArchFitMessage(gapFit)} (gap-fit)${heelMsg}`,
-        archSource: "gap",
-        heel,
-    };
+    void args.allowGapFit;
+    return matchClinicalParamsFromRegisteredScan(args);
 }
