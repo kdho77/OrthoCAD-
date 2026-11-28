@@ -828,20 +828,22 @@ export function taperAnteriorEdge(geometry: BufferGeometry, curve: TrimlineCurve
 /**
  * Shorten a finished solid over the last 10 mm. The loft is built at full
  * thickness first — a 0.8 mm rim is too short for the wall fillet and the
- * column folds. Scaling Z about the plantar plane keeps the wall profile
- * and leaves everything 10 mm behind the cut untouched.
+ * column folds. Move Z about the plantar plane (z = 0) by plan distance to
+ * the cut only.
+ *
+ * A nearest-top snap does not. The round fillet and the flat forefoot share
+ * a triangle with vertices a fraction of a millimetre apart, and those
+ * vertices were picking different drivers. One corner dropped by several
+ * tenths of a millimetre while its neighbours stayed put, and the facet
+ * inverted. Distance is continuous and smoothstep is flat at the tip. The
+ * upper lip keeps its original spacing so the fillet does not flatten onto
+ * itself; the wall below compresses onto the plantar plane.
  */
 export function taperAnteriorSolid(geometry: BufferGeometry, curve: TrimlineCurve): void {
     const segments = anteriorCutSegments(curve);
     if (segments.length === 0) return;
     const pos = geometry.getAttribute("position");
     if (!pos) return;
-    geometry.computeVertexNormals();
-    const normals = geometry.getAttribute("normal");
-    if (!normals) return;
-    const cell = 2;
-    const reach = 12;
-    const keyOf = (ix: number, iy: number) => `${ix},${iy}`;
     const distAt = (x: number, y: number) => {
         let best = Infinity;
         for (const [a, b] of segments) {
@@ -855,61 +857,35 @@ export function taperAnteriorSolid(geometry: BufferGeometry, curve: TrimlineCurv
         }
         return best;
     };
-    type TopCell = { x: number; y: number; z: number; d: number };
-    const tops = new Map<string, TopCell>();
+    // Footbed height on the tip itself. A sample 2 mm back can stand taller
+    // than the rim; anchoring on that peak leaves the rim short of 0.8 mm.
+    const band: number[] = [];
     for (let i = 0; i < pos.count; i++) {
-        if (!(normals.getZ(i) > 0.45)) continue;
         const z = pos.getZ(i);
-        if (!(z > ANTERIOR_EDGE_TIP_MM)) continue;
-        const x = pos.getX(i);
-        const y = pos.getY(i);
-        const d = distAt(x, y);
-        if (d > ANTERIOR_EDGE_TAPER_MM + 2) continue;
-        const key = keyOf(Math.round(x / cell), Math.round(y / cell));
-        const prev = tops.get(key);
-        if (!prev || z > prev.z) tops.set(key, { x, y, z, d });
+        if (!(z > 0.5)) continue;
+        if (distAt(pos.getX(i), pos.getY(i)) > 1) continue;
+        band.push(z);
     }
-    const drivers = [...tops.values()];
-    if (drivers.length === 0) return;
-    const driverFactor = drivers.map((top) => {
-        if (top.d >= ANTERIOR_EDGE_TAPER_MM) return 1;
-        const blend = smoothstep01(top.d / ANTERIOR_EDGE_TAPER_MM);
-        return (ANTERIOR_EDGE_TIP_MM + (top.z - ANTERIOR_EDGE_TIP_MM) * blend) / top.z;
-    });
-    const buckets = new Map<string, number[]>();
-    for (let k = 0; k < drivers.length; k++) {
-        const top = drivers[k]!;
-        const key = keyOf(Math.round(top.x / cell), Math.round(top.y / cell));
-        const list = buckets.get(key);
-        if (list) list.push(k);
-        else buckets.set(key, [k]);
-    }
-    const ring = Math.ceil(reach / cell);
+    if (band.length < 8) return;
+    band.sort((a, b) => a - b);
+    const height = band[band.length - 1]!;
+    if (!(height > ANTERIOR_EDGE_TIP_MM + 0.05)) return;
+    // Keep the last 0.12 mm of shell spacing so fillet slivers do not land on
+    // one plane. The wall below that lip compresses onto the plantar plane.
+    const lip = Math.min(0.12, (height - ANTERIOR_EDGE_TIP_MM) * 0.5);
+    const heel = height - lip;
     for (let i = 0; i < pos.count; i++) {
         const z = pos.getZ(i);
         if (!(z > 1e-4)) continue;
-        const x = pos.getX(i);
-        const y = pos.getY(i);
-        const ix = Math.round(x / cell);
-        const iy = Math.round(y / cell);
-        let best = Infinity;
-        let factor = 1;
-        for (let dx = -ring; dx <= ring; dx++) {
-            for (let dy = -ring; dy <= ring; dy++) {
-                const list = buckets.get(keyOf(ix + dx, iy + dy));
-                if (!list) continue;
-                for (const k of list) {
-                    const top = drivers[k]!;
-                    const dd = Math.hypot(x - top.x, y - top.y);
-                    if (dd < best) {
-                        best = dd;
-                        factor = driverFactor[k] ?? 1;
-                    }
-                }
-            }
-        }
-        if (!(best <= reach) || !(factor < 1)) continue;
-        pos.setZ(i, z * factor);
+        const d = distAt(pos.getX(i), pos.getY(i));
+        if (d >= ANTERIOR_EDGE_TAPER_MM) continue;
+        const blend = smoothstep01(d / ANTERIOR_EDGE_TAPER_MM);
+        const target = ANTERIOR_EDGE_TIP_MM + (height - ANTERIOR_EDGE_TIP_MM) * blend;
+        if (!(target < height - 1e-4)) continue;
+        const floorH = Math.max(0, target - lip);
+        const next = z >= heel ? target - (height - z) : heel > 1e-6 ? (z / heel) * floorH : 0;
+        if (!(next < z - 1e-6)) continue;
+        pos.setZ(i, next);
     }
     pos.needsUpdate = true;
     geometry.computeVertexNormals();

@@ -356,7 +356,15 @@ function mergeCollapsedStations(
         const prev = keep[keep.length - 1]!;
         const a = pairing.top[prev]!;
         const b = pairing.top[i]!;
-        if (Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) < minDist) {
+        const pa = pairing.plantar[prev]!;
+        const pb = pairing.plantar[i]!;
+        const dTop = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+        const dBot = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+        // Shared plantar samples (dBot = 0) with a real top step must stay.
+        // A widened 3/4 outline also repeats a whole station ~0.001 mm apart,
+        // and that edge is too short for the plantar CDT.
+        const duplicate = dBot > 0 && dBot < minDist && Math.hypot(b.x - a.x, b.y - a.y) < 0.05;
+        if (dTop < minDist || duplicate) {
             const from = rimLocal[i]!;
             const to = rimLocal[prev]!;
             if (from !== to) {
@@ -1379,26 +1387,24 @@ export function reconstructProceduralWalls(
     // A shortened anterior cut is not a toe. Pair against an inset of that rim
     // instead of a length-scaled full-foot trace. Full-length rims skip this.
     const bluntCut = anteriorRimIsBluntCut(liveRimPlan);
-    const bluntPattern = bluntCut
-        ? offsetPatternForBluntRim(liveRimPlan, model.bounds, medialYSign)
-        : null;
+    const bluntPattern = bluntCut ? offsetPatternForBluntRim(liveRimPlan, model.bounds, medialYSign) : null;
     const rawOutline = bluntPattern
         ? startAtLowCurvature(ensureCcw(bluntPattern.map((p) => ({ ...p, z: 0 }))), model.bounds)
         : patternPts?.length
-        ? startAtLowCurvature(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))), model.bounds)
-        : startAtLowCurvature(
-              ensureCcw(
-                  fairedPlantarFromStock({
-                      stock: stockOutline,
-                      rim: patternRim,
-                      r1,
-                      r2,
-                      bounds: model.bounds,
-                      medialYSign,
-                  }),
-              ),
-              model.bounds,
-          );
+          ? startAtLowCurvature(ensureCcw(patternPts.map((p) => ({ ...p, z: 0 }))), model.bounds)
+          : startAtLowCurvature(
+                ensureCcw(
+                    fairedPlantarFromStock({
+                        stock: stockOutline,
+                        rim: patternRim,
+                        r1,
+                        r2,
+                        bounds: model.bounds,
+                        medialYSign,
+                    }),
+                ),
+                model.bounds,
+            );
     const patternLabel =
         options.bottomPatternLabel ?? (patternPts?.length ? "pattern" : PATTERN_SOURCE_FAIRED_STOCK);
     const heelW = options.corrections?.heelCupWidthMm ?? 0;
@@ -1520,7 +1526,9 @@ export function reconstructProceduralWalls(
         bounds: model.bounds,
     };
     let pairing = limitPairingSkew(pairAtNativeTop(hygiened.loop, rimPts), hygiened.loop, skewOpts);
-    const collapsed = mergeCollapsedStations(pairing, rimLocal, indices, 1e-6);
+    // 1e-6 left a repeated 3/4 station 0.001 mm apart. The plantar CDT turns
+    // that edge into a sliver. Fillet stations on this foot stay above 0.01 mm.
+    const collapsed = mergeCollapsedStations(pairing, rimLocal, indices, 0.002);
     pairing = collapsed.pairing;
     rimLocal = collapsed.rimLocal;
     const sourceRim = rimLocal.slice();
@@ -1760,7 +1768,8 @@ export function reconstructProceduralWalls(
             if (prevS >= 0 && s < prevS - ln * 0.5) s += ln;
             if (prevS >= 0 && s <= prevS) s = advance(prevS, 0.12);
             const p = at(s);
-            if (prevS >= 0 && Math.hypot(p.x - at(prevS).x, p.y - at(prevS).y) < 0.12) s = advance(prevS, 0.12);
+            if (prevS >= 0 && Math.hypot(p.x - at(prevS).x, p.y - at(prevS).y) < 0.12)
+                s = advance(prevS, 0.12);
             prevS = s;
             const q = at(s);
             const dx = q.x - v.x;

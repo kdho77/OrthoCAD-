@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "@rstest/core";
-import { type BufferGeometry, Vector3 } from "three";
+import { type BufferAttribute, type BufferGeometry, Vector3 } from "three";
 import { buildPrinterFootManufacturingStl } from "@/features/exports/export-service";
 import { buildFinalizedFootFromSavedDesign } from "@/features/exports/saved-design-finalized-mesh";
 import { baseModifierFieldAuthoritative } from "@/lib/geometry/base-asset";
@@ -13,9 +13,12 @@ import { resetManufacturingSolidCache } from "@/lib/geometry/procedural-wall/man
 import { composePrintSolidTop } from "@/lib/geometry/procedural-wall/print-solid-compose";
 import {
     primeSampleTopGeometry,
+    reconstructProceduralPreview,
     resetSampleTopGeometryCache,
     sampleTopFromArrayBuffer,
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
+import { insoleLayoutFromDesign } from "@/lib/geometry/shoe-size";
+import { shoeWidthForSide } from "@/lib/geometry/shoe-width";
 import { binaryStlToGeometry } from "@/lib/geometry/stl";
 import { defaultTextMarking } from "@/lib/geometry/text-marking/constants";
 import { primeTextFont } from "@/lib/geometry/text-marking/font";
@@ -30,7 +33,7 @@ import { useBottomPatternStore } from "@/stores/bottom-pattern-store";
 import { useClientStore } from "@/stores/client-store";
 import { createDesignWithStockPlaceholder, useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
-import type { TrimPresetId } from "@/types";
+import type { ShoeWidthId, Side, TrimPresetId } from "@/types";
 
 const originalFetch = globalThis.fetch;
 const SAMPLE = resolve("tests/fixtures/SAMPLE_Top.glb");
@@ -372,4 +375,244 @@ describe("sulcus and 3/4 front-edge taper", () => {
             native.dispose();
         }
     }, 180_000);
+});
+
+function anteriorSolidReport(geometry: BufferGeometry, curve: TrimlineCurve) {
+    const pos = geometry.getAttribute("position") as BufferAttribute;
+    const index = geometry.getIndex();
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    if (!pos || !box) throw new Error("solid has no positions");
+    const toe = box.max.x;
+    let yAtToe = 0;
+    let zAtToe = 0;
+    let maxX = -Infinity;
+    let tip = -Infinity;
+    let tipN = 0;
+    let rim = -Infinity;
+    let rimN = 0;
+    let minRimD = Infinity;
+    let behind = -Infinity;
+    let behindN = 0;
+    const bands: number[][] = [[], [], [], [], []];
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        const z = pos.getZ(i);
+        if (x > maxX) {
+            maxX = x;
+            yAtToe = y;
+            zAtToe = z;
+        }
+        if (!(z > 0.25)) continue;
+        const d = distanceToAnteriorCutMm(x, y, curve);
+        if (d <= 0.6) {
+            tip = Math.max(tip, z);
+            tipN++;
+        } else if (d >= 12 && d <= 20) {
+            behind = Math.max(behind, z);
+            behindN++;
+        }
+        if (x >= toe - 1.5) {
+            rim = Math.max(rim, z);
+            rimN++;
+            minRimD = Math.min(minRimD, d);
+        }
+        if (d < 10) {
+            const band = Math.min(4, Math.floor(d / 2));
+            bands[band]!.push(z);
+        }
+    }
+    const faces: Array<[number, number, number]> = [];
+    if (index) {
+        for (let i = 0; i < index.count; i += 3)
+            faces.push([index.getX(i), index.getX(i + 1), index.getX(i + 2)]);
+    } else {
+        for (let i = 0; i < pos.count; i += 3) faces.push([i, i + 1, i + 2]);
+    }
+    const normals = faces.map(([a, b, c]) => {
+        const ax = pos.getX(b) - pos.getX(a);
+        const ay = pos.getY(b) - pos.getY(a);
+        const az = pos.getZ(b) - pos.getZ(a);
+        const bx = pos.getX(c) - pos.getX(a);
+        const by = pos.getY(c) - pos.getY(a);
+        const bz = pos.getZ(c) - pos.getZ(a);
+        const nx = ay * bz - az * by;
+        const ny = az * bx - ax * bz;
+        const nz = ax * by - ay * bx;
+        const len = Math.hypot(nx, ny, nz);
+        const ds = [a, b, c].map((k) => distanceToAnteriorCutMm(pos.getX(k), pos.getY(k), curve));
+        return { nx, ny, nz, len, area: len * 0.5, front: Math.min(...ds) <= 10 };
+    });
+    const edge = new Map<string, number[]>();
+    const key = (i: number, j: number) => (i < j ? `${i}:${j}` : `${j}:${i}`);
+    faces.forEach((face, fi) => {
+        for (let e = 0; e < 3; e++) {
+            const k = key(face[e]!, face[(e + 1) % 3]!);
+            const list = edge.get(k);
+            if (list) list.push(fi);
+            else edge.set(k, [fi]);
+        }
+    });
+    let folded = 0;
+    let degenerate = 0;
+    for (const normal of normals) if (normal.front && normal.area < 1e-6) degenerate++;
+    for (const list of edge.values()) {
+        if (list.length !== 2) continue;
+        const n0 = normals[list[0]!]!;
+        const n1 = normals[list[1]!]!;
+        if (!n0.front && !n1.front) continue;
+        if (n0.len < 1e-8 || n1.len < 1e-8) continue;
+        const cos = Math.max(
+            -1,
+            Math.min(1, (n0.nx * n1.nx + n0.ny * n1.ny + n0.nz * n1.nz) / (n0.len * n1.len)),
+        );
+        const deg = (Math.acos(cos) * 180) / Math.PI;
+        if (deg > 90) folded++;
+    }
+    return { yAtToe, zAtToe, tip, tipN, rim, rimN, minRimD, behind, behindN, bands, folded, degenerate };
+}
+
+describe("manufacturing solid anterior taper", () => {
+    test("sulcus and 3/4 taper to about 0.8 mm with no folded front fillet, including wide right", async () => {
+        const bytes = readFileSync(SAMPLE);
+        const native = await sampleTopFromArrayBuffer(
+            bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+        );
+        const mirrored = mirrorGeometry(native.clone());
+        const leftOutline = extractMeshOutline(native, 64);
+        const rightOutline = extractMeshOutline(mirrored, 64);
+        if (!leftOutline || !rightOutline) throw new Error("SAMPLE_Top outline missing");
+        const leftFoot = footprintOf(leftOutline.points);
+        const rightFoot = footprintOf(rightOutline.points);
+        try {
+            for (const width of ["medium", "wide"] as const) {
+                for (const side of ["left", "right"] as const) {
+                    for (const preset of ["sulcus", "met_head"] as const) {
+                        const label = `${width} ${side} ${preset}`;
+                        const mesh = side === "left" ? native : mirrored;
+                        const outline = side === "left" ? leftOutline : rightOutline;
+                        const foot = side === "left" ? leftFoot : rightFoot;
+                        const trim = buildTrimPresetCurve(preset, {
+                            lengthMm: foot.lengthMm,
+                            widthMm: foot.widthMm,
+                            baseCurve: outline,
+                            footSide: side,
+                        });
+                        const design = {
+                            ...createDesignWithStockPlaceholder(),
+                            shoeWidth: width as ShoeWidthId,
+                            shoeWidthBySide: { left: width as ShoeWidthId, right: width as ShoeWidthId },
+                        };
+                        const layout = insoleLayoutFromDesign(design);
+                        const sourceField = {
+                            ...baseModifierFieldAuthoritative(design, side, design.thicknessMm),
+                            trimline: trim,
+                        };
+                        const preview = await reconstructProceduralPreview(mesh.clone(), {
+                            sourceField,
+                            composedTop: true,
+                            corrections: sourceField.corrections,
+                            wallStyle: "round",
+                            scanPattern: design.pattern,
+                            side: side as Side,
+                            shoeWidth: {
+                                width: shoeWidthForSide(design, side),
+                                ballWidthMm: layout.widthMm,
+                                heelWidthMm: layout.widthMm * 0.62,
+                                heelOverrideMm: 0,
+                            },
+                            trimline: trim,
+                            anteriorEdgeTaper: true,
+                            footprintScale: layout.scale,
+                        });
+                        try {
+                            const report = anteriorSolidReport(preview.geometry, trim);
+                            const manifold = validateManifold(preview.geometry);
+                            expect(manifold.isWatertight, label).toBe(true);
+                            expect(manifold.openEdges, label).toBe(0);
+                            expect(report.folded, `${label} folded front triangles`).toBe(0);
+                            expect(report.degenerate, `${label} degenerate front triangles`).toBe(0);
+                            expect(report.tipN, label).toBeGreaterThan(8);
+                            expect(report.rimN, label).toBeGreaterThan(8);
+                            expect(report.behindN, label).toBeGreaterThan(8);
+                            expect(report.tip, `${label} tip`).toBeGreaterThan(0.55);
+                            expect(report.tip, `${label} tip`).toBeLessThan(1.05);
+                            expect(report.rim, `${label} rim`).toBeGreaterThan(0.55);
+                            expect(report.rim, `${label} rim`).toBeLessThan(1.05);
+                            expect(report.minRimD, `${label} rim misses the cut`).toBeLessThan(1.5);
+                            expect(report.behind, `${label} behind`).toBeGreaterThan(report.tip + 1);
+                            expect(report.yAtToe, `${label} medial toe`).toBeLessThan(
+                                side === "left" ? -15 : 80,
+                            );
+                            expect(report.yAtToe, `${label} medial toe`).toBeGreaterThan(
+                                side === "right" ? 15 : -80,
+                            );
+                            const mids = report.bands.map((band) => {
+                                expect(band.length, label).toBeGreaterThan(8);
+                                return median(band);
+                            });
+                            for (let i = 1; i < mids.length; i++) {
+                                expect(mids[i], `${label} band ${i}`).toBeGreaterThan(
+                                    (mids[i - 1] ?? 0) + 0.04,
+                                );
+                            }
+                        } finally {
+                            preview.geometry.dispose();
+                        }
+                    }
+                }
+            }
+        } finally {
+            mirrored.dispose();
+            native.dispose();
+        }
+    }, 900_000);
+
+    test("full-length solids stay thick when the taper flag is off", async () => {
+        const bytes = readFileSync(SAMPLE);
+        const native = await sampleTopFromArrayBuffer(
+            bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+        );
+        const design = createDesignWithStockPlaceholder();
+        const layout = insoleLayoutFromDesign(design);
+        const field = baseModifierFieldAuthoritative(design, "left", design.thicknessMm);
+        const base = {
+            sourceField: field,
+            composedTop: true as const,
+            corrections: field.corrections,
+            wallStyle: "round" as const,
+            scanPattern: design.pattern,
+            side: "left" as const,
+            shoeWidth: {
+                width: shoeWidthForSide(design, "left"),
+                ballWidthMm: layout.widthMm,
+                heelWidthMm: layout.widthMm * 0.62,
+                heelOverrideMm: 0,
+            },
+            footprintScale: layout.scale,
+        };
+        const plain = await reconstructProceduralPreview(native.clone(), base);
+        const flagged = await reconstructProceduralPreview(native.clone(), {
+            ...base,
+            anteriorEdgeTaper: true,
+        });
+        try {
+            expect(samePositions(plain.geometry, flagged.geometry)).toBe(true);
+            plain.geometry.computeBoundingBox();
+            const toe = plain.geometry.boundingBox?.max.x ?? 0;
+            const pos = plain.geometry.getAttribute("position");
+            let toeZ = -Infinity;
+            if (pos) {
+                for (let i = 0; i < pos.count; i++) {
+                    if (pos.getX(i) >= toe - 1.5 && pos.getZ(i) > toeZ) toeZ = pos.getZ(i);
+                }
+            }
+            expect(toeZ).toBeGreaterThan(2);
+        } finally {
+            plain.geometry.dispose();
+            flagged.geometry.dispose();
+            native.dispose();
+        }
+    }, 240_000);
 });
