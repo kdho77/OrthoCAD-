@@ -34,6 +34,10 @@ rs.mock("@react-three/fiber", () => ({
     useFrame: () => {},
 }));
 rs.mock("@react-three/drei", () => ({ OrbitControls: () => null, Html: () => null }));
+rs.mock("./InsoleContourLighting", () => ({
+    InsoleContourLighting: () => null,
+    InsoleStandardLighting: () => null,
+}));
 rs.mock("./BaseInsoleMesh", () => ({ BaseInsoleMesh: () => null }));
 rs.mock("./InsoleMesh", () => ({ InsoleMesh: () => null }));
 rs.mock("./ElementMarkers", () => ({ ElementMarkers: () => null }));
