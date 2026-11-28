@@ -953,7 +953,7 @@ export async function listClientFiles(
         .map((client) => ({
             client: redactClientRow(client, storePhi),
             designs: designs
-                .filter((design) => design.clientId === client.id)
+                .filter((design) => design.clientId === client.id && !design.deletedAt)
                 .map((design) => redactDesignRow(design, storePhi)),
         }));
 }

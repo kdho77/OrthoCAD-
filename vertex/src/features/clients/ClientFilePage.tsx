@@ -39,6 +39,7 @@ import {
 } from "./client-actions";
 import { DesignNotesField } from "./DesignNotesField";
 import { DirectoryHeader } from "./DirectoryHeader";
+import { clearDesignWorkflowSession } from "./design-workflow-session";
 import { NewClientDialog } from "./NewClientDialog";
 import { RowMenu } from "./RowMenu";
 import { designPath } from "./routes";
@@ -491,8 +492,13 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                 onClose={() => setPendingDelete(null)}
                 onConfirm={() => {
                     if (!pendingDelete) return;
-                    useClientStore.getState().softDeleteDesign(pendingDelete.id);
+                    const design = pendingDelete;
                     setPendingDelete(null);
+                    return (async () => {
+                        const deleted = await useClientStore.getState().softDeleteDesign(design.id);
+                        if (deleted) clearDesignWorkflowSession(design.id);
+                        else setBulkDeleteErrors([design.name]);
+                    })();
                 }}
             />
             <BulkDeleteDesignsDialog
@@ -501,19 +507,24 @@ export function ClientFilePage({ clientId }: { clientId: string }) {
                 onClose={() => setPendingBulkDelete(false)}
                 onConfirm={() => {
                     const ids = selectedForBulk.map((design) => design.id);
-                    const { failedIds } = useClientStore.getState().softDeleteDesigns(ids);
-                    const failedNames = selectedForBulk
-                        .filter((design) => failedIds.includes(design.id))
-                        .map((design) => design.name);
-                    setPendingBulkDelete(false);
-                    setSelectedDesignIds((current) => {
-                        const next = new Set(current);
-                        for (const id of ids) {
-                            if (!failedIds.includes(id)) next.delete(id);
-                        }
-                        return next;
-                    });
-                    setBulkDeleteErrors(failedNames);
+                    const selected = selectedForBulk;
+                    return (async () => {
+                        const { failedIds } = await useClientStore.getState().softDeleteDesigns(ids);
+                        const failedNames = selected
+                            .filter((design) => failedIds.includes(design.id))
+                            .map((design) => design.name);
+                        setPendingBulkDelete(false);
+                        setSelectedDesignIds((current) => {
+                            const next = new Set(current);
+                            for (const id of ids) {
+                                if (failedIds.includes(id)) continue;
+                                next.delete(id);
+                                clearDesignWorkflowSession(id);
+                            }
+                            return next;
+                        });
+                        setBulkDeleteErrors(failedNames);
+                    })();
                 }}
             />
         </div>
@@ -748,7 +759,7 @@ function BulkDeleteDesignsDialog({
     open: boolean;
     designs: DesignRecord[];
     onClose: () => void;
-    onConfirm: () => void;
+    onConfirm: () => void | Promise<void>;
 }) {
     const [phrase, setPhrase] = useState("");
     const designKey = designs.map((design) => design.id).join(",");
@@ -793,7 +804,7 @@ function BulkDeleteDesignsDialog({
                         className="min-h-11"
                         data-testid="bulk-delete-confirm"
                         disabled={!enabled}
-                        onClick={onConfirm}
+                        onClick={() => onConfirm()}
                     >
                         Delete {designs.length}
                     </Button>
@@ -810,7 +821,7 @@ function DeleteDesignDialog({
 }: {
     design: DesignRecord | null;
     onClose: () => void;
-    onConfirm: () => void;
+    onConfirm: () => void | Promise<void>;
 }) {
     const [phrase, setPhrase] = useState("");
     const designId = design?.id ?? "";
@@ -847,7 +858,7 @@ function DeleteDesignDialog({
                         className="min-h-11"
                         data-testid="delete-confirm"
                         disabled={!enabled}
-                        onClick={onConfirm}
+                        onClick={() => onConfirm()}
                     >
                         Delete
                     </Button>

@@ -26,6 +26,7 @@ import {
     idleLogoutSignOutOptions,
     inactivityPhase,
     listClientFiles,
+    listDesignFiles,
     type MemoryDb,
     mergeActivityTimestamp,
     nextSharedActivityTimestamp,
@@ -240,6 +241,38 @@ describe("client file API", () => {
         expect(
             canRestoreDesign(deletedAt.toISOString(), new Date("2026-12-01T00:00:00.000Z").getTime()),
         ).toBe(false);
+    });
+
+    test("a soft-deleted design is left out of the client file and the design list", async () => {
+        const db = emptyDb();
+        const repo = createMemoryClientFileRepo(db);
+        const me = actor("clinician", ORG);
+        const { client: created } = await createClientFile(repo, me, {
+            firstName: "Jane",
+            lastName: "Doe",
+            reference: "REF-1",
+            ...defaultShoeChart(),
+        });
+        const kept = await createDesignFile(repo, me, {
+            clientId: created.id,
+            name: "Kept",
+            kind: "insole",
+        });
+        const removed = await createDesignFile(repo, me, {
+            clientId: created.id,
+            name: "Insole · L/R · Nov 26",
+            kind: "insole",
+        });
+        await softDeleteDesignFile(repo, me, removed.id, new Date("2026-11-28T00:00:00.000Z"));
+        const listed = await listClientFiles(repo, me);
+        expect(listed[0]?.designs.map((design) => design.id)).toEqual([kept.id]);
+        const designs = await listDesignFiles(repo, me, created.id);
+        expect(designs.map((design) => design.id)).toEqual([kept.id]);
+        const withDeleted = await listDesignFiles(repo, actor("admin", ORG), created.id, {
+            includeDeleted: true,
+        });
+        expect(withDeleted.map((design) => design.id).sort()).toEqual([kept.id, removed.id].sort());
+        expect(db.designs).toHaveLength(2);
     });
 
     test("notes autosave commits on blur and escape reverts", async () => {
