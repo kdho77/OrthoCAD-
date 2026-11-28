@@ -13,8 +13,9 @@ import type {
 /**
  * Scan arch measurement. The scan is analysis only.
  *
- * Landmarks (M1, M5, heel) define the floor. Only downward plantar triangles
- * in the medial midfoot are searched, so a steep medial wall is not the arch.
+ * Landmarks (M1, M5, heel) define the floor. Plantar triangles in the medial
+ * midfoot are searched. Winding is detected from the lowest layer, so a steep
+ * medial wall is not the arch and an up-facing grid still measures.
  * The result is a Low / Medium / High tier on the default parametric mesh.
  */
 
@@ -43,10 +44,20 @@ export const SCAN_ARCH_TIER_CONFIG = {
     searchUMax: 0.55,
     searchVMin: 0,
     searchVMax: 0.35,
-    /** Plantar faces point at the floor. Side walls are near 0 and are dropped. */
+    /**
+     * Steepness gate. The sign of the plantar normal is detected per mesh;
+     * this value's magnitude is the |nz| cutoff (0.5 keeps faces steeper than 60°).
+     */
     plantarNormalZMax: -0.5,
-    /** In-plane median window. A single spike inside the window does not set the peak. */
+    /** In-plane median window. A lone spike inside the window cannot set the peak. */
     smoothRadiusMm: 4,
+    /** Apex candidates need this many other samples inside the window. */
+    minApexNeighbors: 5,
+    /** Hole edges need at least half of these sectors occupied. */
+    apexSectorCount: 8,
+    /** Robust foot length uses this percentile band of plantar vertices. */
+    lengthPercentileLow: 0.005,
+    lengthPercentileHigh: 0.995,
     minBandTriangles: 8,
     artifactMinMm: 5,
     artifactMaxMm: 45,
@@ -370,6 +381,7 @@ type Sample = {
     lat: number;
     raw: V3;
     smooth: number;
+    apexCandidate: boolean;
 };
 
 function emptyMeasurement(landmarksPlaced: boolean): PlantarArchMeasurement {
@@ -390,6 +402,154 @@ function emptyMeasurement(landmarksPlaced: boolean): PlantarArchMeasurement {
     };
 }
 
+type Face = {
+    nz: number;
+    nLen: number;
+    height: number;
+    centroid: V3;
+    aAlong: number;
+    bAlong: number;
+    cAlong: number;
+};
+
+function resolveTriangleIndex(
+    geometry: BufferGeometry | undefined,
+    explicit?: IndexLike | null,
+): IndexLike | null {
+    if (explicit) return explicit;
+    const indexAttr = geometry?.getIndex();
+    if (!indexAttr) return null;
+    return { count: indexAttr.count, getX: (i) => indexAttr.getX(i) };
+}
+
+function collectFaces(
+    positions: ArrayLike<number>,
+    vertexCount: number,
+    index: IndexLike | null,
+    displayScale: number,
+    frame: Frame,
+): Face[] {
+    const faces: Face[] = [];
+    const triN = triangleCount(vertexCount, index);
+    for (let t = 0; t < triN; t++) {
+        const [ia, ib, ic] = triangleVertices(t, index);
+        if (ia >= vertexCount || ib >= vertexCount || ic >= vertexCount) continue;
+        const a = readPoint(positions, ia, displayScale);
+        const b = readPoint(positions, ib, displayScale);
+        const c = readPoint(positions, ic, displayScale);
+        const n = cross(sub(b, a), sub(c, a));
+        const nLen = len(n);
+        if (nLen < 1e-8) continue;
+        const centroid = scale(add(add(a, b), c), 1 / 3);
+        faces.push({
+            nz: dot(n, frame.up) / nLen,
+            nLen,
+            height: frameCoords(frame, centroid).height,
+            centroid,
+            aAlong: dot(sub(a, frame.heel), frame.lengthAxis),
+            bAlong: dot(sub(b, frame.heel), frame.lengthAxis),
+            cAlong: dot(sub(c, frame.heel), frame.lengthAxis),
+        });
+    }
+    return faces;
+}
+
+/** Sign of the plantar normal from area-weighted nz on the lowest horizontal layer. */
+function plantarNormalSign(faces: Face[]): number {
+    const horizontal = faces.filter((face) => Math.abs(face.nz) > 0.35);
+    if (horizontal.length === 0) return -1;
+    const heights = horizontal.map((face) => face.height).sort((a, b) => a - b);
+    const floorH = percentile(heights, 0.02);
+    let weighted = 0;
+    for (const face of horizontal) {
+        if (face.height > floorH + 8) continue;
+        weighted += face.nz * face.nLen;
+    }
+    return weighted >= 0 ? 1 : -1;
+}
+
+/** 0.5–99.5 percentile of plantar vertices. A few stray points no longer set L. */
+function applyRobustLength(frame: Frame, plantarAlongs: number[]): void {
+    if (plantarAlongs.length < 20) return;
+    const sorted = [...plantarAlongs].sort((a, b) => a - b);
+    const start = percentile(sorted, SCAN_ARCH_TIER_CONFIG.lengthPercentileLow);
+    const end = percentile(sorted, SCAN_ARCH_TIER_CONFIG.lengthPercentileHigh);
+    if (end - start < 20) return;
+    frame.uOriginMm = start;
+    frame.footLengthMm = end - start;
+}
+
+function apexWindowRadius(samples: Sample[], floorMm: number): number {
+    if (samples.length < 6) return floorMm;
+    const fifth: number[] = [];
+    for (let i = 0; i < samples.length; i++) {
+        const dists: number[] = [];
+        const origin = samples[i];
+        if (!origin) continue;
+        for (let j = 0; j < samples.length; j++) {
+            if (i === j) continue;
+            const other = samples[j];
+            if (!other) continue;
+            const du = other.along - origin.along;
+            const dv = other.lat - origin.lat;
+            dists.push(du * du + dv * dv);
+        }
+        dists.sort((a, b) => a - b);
+        fifth.push(Math.sqrt(dists[4] ?? Number.POSITIVE_INFINITY));
+    }
+    fifth.sort((a, b) => a - b);
+    const p90 = fifth[Math.min(fifth.length - 1, Math.floor(0.9 * (fifth.length - 1)))] ?? floorMm;
+    return Math.max(floorMm, Number.isFinite(p90) ? p90 : floorMm);
+}
+
+function markApexCandidates(
+    samples: Sample[],
+    floorRadiusMm: number,
+    minNeighbors: number,
+    sectorCount: number,
+): void {
+    const radius = apexWindowRadius(samples, floorRadiusMm);
+    const radius2 = radius * radius;
+    const buckets = new Map<string, Sample[]>();
+    const cell = radius;
+    for (const sample of samples) {
+        const key = `${Math.floor(sample.along / cell)},${Math.floor(sample.lat / cell)}`;
+        const bucket = buckets.get(key);
+        if (bucket) bucket.push(sample);
+        else buckets.set(key, [sample]);
+    }
+    for (const sample of samples) {
+        const ix = Math.floor(sample.along / cell);
+        const iy = Math.floor(sample.lat / cell);
+        const heights: number[] = [sample.height];
+        const sectors = new Uint8Array(sectorCount);
+        let neighbors = 0;
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                const bucket = buckets.get(`${ix + dx},${iy + dy}`);
+                if (!bucket) continue;
+                for (const other of bucket) {
+                    if (other === sample) continue;
+                    const du = other.along - sample.along;
+                    const dv = other.lat - sample.lat;
+                    const d2 = du * du + dv * dv;
+                    if (d2 > radius2 || d2 < 1e-8) continue;
+                    neighbors++;
+                    heights.push(other.height);
+                    let bin = Math.floor(((Math.atan2(dv, du) + Math.PI) / (2 * Math.PI)) * sectorCount);
+                    if (bin >= sectorCount) bin = sectorCount - 1;
+                    if (bin < 0) bin = 0;
+                    sectors[bin] = 1;
+                }
+            }
+        }
+        let occupied = 0;
+        for (const hit of sectors) occupied += hit;
+        sample.smooth = median(heights);
+        sample.apexCandidate = neighbors >= minNeighbors && occupied >= Math.ceil(sectorCount / 2);
+    }
+}
+
 /**
  * Plantar medial-arch height above the M1 / M5 / heel plane.
  * Landmarks are in the same unscaled space as `positions`. When omitted, they
@@ -400,11 +560,15 @@ export function measurePlantarArch(args: {
     geometry?: BufferGeometry;
     positions?: ArrayLike<number>;
     vertexCount?: number;
+    /** Indexed triangle list. Without it, a welded buffer is read as a triangle soup. */
+    index?: IndexLike | null;
     side: Side;
     displayScale?: number;
     landmarks?: ArchLandmarks | null;
     /** When set, the arch height is this point's height above the floor (marker drag). */
     manualApex?: ArchPoint | null;
+    /** Overrides `SCAN_ARCH_TIER_CONFIG.plantarNormalZMax` for the steepness gate. */
+    plantarNormalZMax?: number;
 }): PlantarArchMeasurement {
     const geometry = args.geometry;
     const positions =
@@ -415,10 +579,7 @@ export function measurePlantarArch(args: {
     const landmarksPlaced = Boolean(args.landmarks?.heel && args.landmarks.m1 && args.landmarks.m5);
     if (!positions || vertexCount < 9) return emptyMeasurement(landmarksPlaced);
 
-    const indexAttr = geometry?.getIndex();
-    const index: IndexLike | null = indexAttr
-        ? { count: indexAttr.count, getX: (i) => indexAttr.getX(i) }
-        : null;
+    const index = resolveTriangleIndex(geometry, args.index);
     const scaledLandmarks = args.landmarks
         ? {
               heel: scale(args.landmarks.heel, displayScale),
@@ -432,24 +593,28 @@ export function measurePlantarArch(args: {
     if (!frame) return emptyMeasurement(landmarksPlaced);
 
     const cfg = SCAN_ARCH_TIER_CONFIG;
+    const steep = Math.abs(
+        args.plantarNormalZMax !== undefined && Number.isFinite(args.plantarNormalZMax)
+            ? args.plantarNormalZMax
+            : cfg.plantarNormalZMax,
+    );
+    const faces = collectFaces(positions, vertexCount, index, displayScale, frame);
+    const plantarSign = plantarNormalSign(faces);
+    const plantarAlongs: number[] = [];
+    const accepted: Face[] = [];
+    for (const face of faces) {
+        if (face.nz * plantarSign <= steep) continue;
+        accepted.push(face);
+        plantarAlongs.push(face.aAlong, face.bAlong, face.cAlong);
+    }
+    applyRobustLength(frame, plantarAlongs);
+
     const samples: Sample[] = [];
     let bandTriangles = 0;
     const heelLats: number[] = [];
     const heelHeights: number[] = [];
-    const triN = triangleCount(vertexCount, index);
-    for (let t = 0; t < triN; t++) {
-        const [ia, ib, ic] = triangleVertices(t, index);
-        if (ia >= vertexCount || ib >= vertexCount || ic >= vertexCount) continue;
-        const a = readPoint(positions, ia, displayScale);
-        const b = readPoint(positions, ib, displayScale);
-        const c = readPoint(positions, ic, displayScale);
-        const n = cross(sub(b, a), sub(c, a));
-        const nLen = len(n);
-        if (nLen < 1e-8) continue;
-        const nz = dot(n, frame.up) / nLen;
-        if (nz >= cfg.plantarNormalZMax) continue;
-        const centroid = scale(add(add(a, b), c), 1 / 3);
-        const coords = frameCoords(frame, centroid);
+    for (const face of accepted) {
+        const coords = frameCoords(frame, face.centroid);
         if (Math.abs(coords.u - cfg.heelU) <= cfg.heelHalfWidthU && coords.v >= -0.05 && coords.v <= 1.05) {
             heelLats.push(coords.lat);
             heelHeights.push(coords.height);
@@ -457,38 +622,19 @@ export function measurePlantarArch(args: {
         if (coords.u < cfg.searchUMin || coords.u > cfg.searchUMax) continue;
         if (coords.v < cfg.searchVMin || coords.v > cfg.searchVMax) continue;
         bandTriangles++;
-        const raw = scale(centroid, 1 / displayScale);
-        samples.push({ ...coords, raw, smooth: coords.height });
+        samples.push({
+            ...coords,
+            raw: scale(face.centroid, 1 / displayScale),
+            smooth: coords.height,
+            apexCandidate: false,
+        });
     }
 
-    const cell = cfg.smoothRadiusMm;
-    const buckets = new Map<string, Sample[]>();
-    for (const sample of samples) {
-        const key = `${Math.floor(sample.along / cell)},${Math.floor(sample.lat / cell)}`;
-        const bucket = buckets.get(key);
-        if (bucket) bucket.push(sample);
-        else buckets.set(key, [sample]);
-    }
-    for (const sample of samples) {
-        const ix = Math.floor(sample.along / cell);
-        const iy = Math.floor(sample.lat / cell);
-        const heights: number[] = [];
-        for (let dx = -1; dx <= 1; dx++) {
-            for (let dy = -1; dy <= 1; dy++) {
-                const bucket = buckets.get(`${ix + dx},${iy + dy}`);
-                if (!bucket) continue;
-                for (const other of bucket) {
-                    const du = other.along - sample.along;
-                    const dv = other.lat - sample.lat;
-                    if (du * du + dv * dv <= cell * cell) heights.push(other.height);
-                }
-            }
-        }
-        sample.smooth = heights.length > 0 ? median(heights) : sample.height;
-    }
+    markApexCandidates(samples, cfg.smoothRadiusMm, cfg.minApexNeighbors, cfg.apexSectorCount);
 
     let winner: Sample | null = null;
     for (const sample of samples) {
+        if (!sample.apexCandidate) continue;
         if (!winner) {
             winner = sample;
             continue;

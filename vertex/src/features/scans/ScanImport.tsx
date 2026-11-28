@@ -391,6 +391,7 @@ export function ScanImport() {
             const clinical = matchClinicalParamsFromRegisteredScan({
                 scanPositions: pos.array as ArrayLike<number>,
                 scanVertexCount: pos.count,
+                scanGeometry: scan.geometry,
                 scanToBase,
                 rawBase,
                 side,

@@ -295,6 +295,7 @@ describe("design deep link", () => {
         });
         await renderDesign();
         expect(useClinicalWorkflowStore.getState().step).toBe("corrections");
+        // Retired id "base" loads as "setup" (normalizeClinicalStep on main).
         expect(useClinicalWorkflowStore.getState().completedSteps).toEqual(["scan", "setup", "setup"]);
     });
 

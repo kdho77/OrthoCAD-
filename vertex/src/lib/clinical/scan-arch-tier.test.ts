@@ -13,10 +13,12 @@ import {
 } from "@/lib/clinical/measure-scan-arch";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt } from "@/lib/geometry/height-field";
+import { matchClinicalParamsFromRegisteredScan } from "@/lib/geometry/match-design-from-scan";
 import { buildScanDisplayInfo } from "@/lib/geometry/scan-display";
+import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { createDesignWithStockPlaceholder, defaultDesign } from "@/stores/design-store";
 import type { SideCorrections } from "@/types";
-import { plantarArchScan } from "../../../../tests/helpers/arch-height-scan";
+import { archHeightScan, plantarArchScan } from "../../../../tests/helpers/arch-height-scan";
 
 function corrections(archHeightMm: number): SideCorrections {
     return {
@@ -257,6 +259,10 @@ describe("plantar arch golden scans", () => {
         expect(JSON.stringify(baseline)).toBe(before);
         expect(out.design.corrections.left.archHeightMm).toBe(-3.5);
         expect(out.design.corrections.right.archHeightMm).toBe(3);
+        expect(out.design.corrections.left.forefootWidthMm).toBe(0);
+        expect(out.design.corrections.left.heelCupWidthMm).toBe(0);
+        expect(out.design.corrections.right.forefootWidthMm).toBe(0);
+        expect(out.design.corrections.right.heelCupWidthMm).toBe(0);
         expect(out.design.corrections.left.rearfootPostingDeg).toBe(0);
         expect(out.design.corrections.right.forefootPostingDeg).toBe(0);
         expect(out.perFoot.find((foot) => foot.side === "left")?.scanArch.assignmentSource).toBe(
@@ -324,6 +330,231 @@ describe("plantar arch golden scans", () => {
         expect(heightAt(u, v, field(delta)) - heightAt(u, v, field(0))).toBeCloseTo(delta, 1);
         const direct = measureScanArchHeightMm(scan.geometry, "left", 1);
         expect(direct?.heightMm).toBeGreaterThan(25);
+        scan.geometry.dispose();
+    });
+});
+
+function weldGeometry(source: THREE.BufferGeometry): THREE.BufferGeometry {
+    const pos = source.getAttribute("position");
+    if (!pos) throw new Error("missing positions");
+    const unique: number[] = [];
+    const index: number[] = [];
+    const map = new Map<string, number>();
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        const z = pos.getZ(i);
+        const key = `${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)}`;
+        let id = map.get(key);
+        if (id === undefined) {
+            id = unique.length / 3;
+            map.set(key, id);
+            unique.push(x, y, z);
+        }
+        index.push(id);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(unique, 3));
+    geo.setIndex(index);
+    return geo;
+}
+
+function flipWinding(source: THREE.BufferGeometry): THREE.BufferGeometry {
+    const geo = source.clone();
+    const pos = geo.getAttribute("position");
+    for (let i = 0; i < pos.count; i += 3) {
+        const b = i + 1;
+        const c = i + 2;
+        for (let k = 0; k < 3; k++) {
+            const tmp = pos.getComponent(b, k);
+            pos.setComponent(b, k, pos.getComponent(c, k));
+            pos.setComponent(c, k, tmp);
+        }
+    }
+    return geo;
+}
+
+function withStrayPlantarTriangles(source: THREE.BufferGeometry): THREE.BufferGeometry {
+    const pos = source.getAttribute("position");
+    const next = new Float32Array(pos.count * 3 + 18);
+    next.set(pos.array as Float32Array);
+    const base = pos.count * 3;
+    for (let tri = 0; tri < 2; tri++) {
+        for (let v = 0; v < 3; v++) {
+            const src = (tri * 3 + v) * 3;
+            const dst = base + (tri * 3 + v) * 3;
+            next[dst] = (pos.array as ArrayLike<number>)[src]! + 180;
+            next[dst + 1] = (pos.array as ArrayLike<number>)[src + 1]!;
+            next[dst + 2] = (pos.array as ArrayLike<number>)[src + 2]!;
+        }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(next, 3));
+    return geo;
+}
+
+describe("CAD review guards", () => {
+    test("an indexed welded scan matches generateOrthotic within 0.1 mm", () => {
+        const scan = plantarArchScan({ side: "left", archHeightMm: 23.5, lengthMm: 260 });
+        const welded = weldGeometry(scan.geometry);
+        expect(welded.getIndex()).not.toBeNull();
+        expect(welded.getAttribute("position").count).toBeLessThan(
+            scan.geometry.getAttribute("position").count,
+        );
+        const fromGeometry = measurePlantarArch({
+            geometry: welded,
+            side: "left",
+            landmarks: scan.landmarks,
+        });
+        const fromMatch = matchClinicalParamsFromRegisteredScan({
+            scanPositions: welded.getAttribute("position").array,
+            scanVertexCount: welded.getAttribute("position").count,
+            scanGeometry: welded,
+            scanToBase: new THREE.Matrix4(),
+            rawBase: scan.geometry,
+            side: "left",
+            layout: insoleLayoutForUsMenSize(9),
+            m1Local: scan.landmarks.m1,
+            m5Local: scan.landmarks.m5,
+            heelMarkerLocal: scan.landmarks.heel,
+            displayScale: 1,
+        });
+        const generated = generateOrthoticFromScanAndRx({
+            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
+            scans: [
+                {
+                    side: "left",
+                    geometry: welded,
+                    display: buildScanDisplayInfo(welded),
+                    markers: {
+                        M1: scan.landmarks.m1,
+                        M2: scan.landmarks.m5,
+                        M3: scan.landmarks.heel,
+                        ARCH: null,
+                    },
+                    keepSetApproved: true,
+                },
+            ],
+            shoeSize: { system: "us", value: 9 },
+        });
+        if (!generated.ok) throw new Error(generated.reason);
+        expect(fromGeometry.measuredArchMm).toBeCloseTo(23.5, 1);
+        expect(generated.perFoot[0]?.archHeightMeasuredMm).toBeCloseTo(fromGeometry.measuredArchMm ?? 0, 1);
+        expect(
+            Math.abs((generated.perFoot[0]?.archHeightMeasuredMm ?? 0) - (fromGeometry.measuredArchMm ?? 0)),
+        ).toBeLessThanOrEqual(0.1);
+        expect(fromMatch.correction.archHeightMm).toBe(generated.design.corrections.left.archHeightMm);
+        expect(fromMatch.correction.forefootWidthMm).toBeUndefined();
+        expect(fromMatch.correction.heelCupWidthMm).toBeUndefined();
+        scan.geometry.dispose();
+        welded.dispose();
+    });
+
+    test("flipped winding and an up-facing height grid still measure the plantar arch", () => {
+        const scan = plantarArchScan({ side: "left", archHeightMm: 23.5, lengthMm: 260 });
+        const flipped = flipWinding(scan.geometry);
+        const down = measurePlantarArch({ geometry: scan.geometry, side: "left", landmarks: scan.landmarks });
+        const up = measurePlantarArch({ geometry: flipped, side: "left", landmarks: scan.landmarks });
+        expect(down.measuredArchMm).toBeCloseTo(23.5, 1);
+        expect(up.measuredArchMm).toBeCloseTo(down.measuredArchMm ?? 0, 1);
+        expect(Math.abs((up.measuredArchMm ?? 0) - (down.measuredArchMm ?? 0))).toBeLessThanOrEqual(0.1);
+        const gridDown = archHeightScan(20, "left");
+        const gridUp = flipWinding(gridDown);
+        const measuredDown = measureScanArchHeightMm(gridDown, "left");
+        const measuredUp = measureScanArchHeightMm(gridUp, "left");
+        expect(measuredDown?.heightMm).toBeCloseTo(20, 1);
+        expect(measuredUp?.heightMm).toBeCloseTo(20, 1);
+        scan.geometry.dispose();
+        flipped.dispose();
+        gridDown.dispose();
+        gridUp.dispose();
+    });
+
+    test("stray plantar triangles do not inflate foot length or change the tier", () => {
+        const scan = plantarArchScan({ side: "left", archHeightMm: 23.5, lengthMm: 260 });
+        const clean = measurePlantarArch({
+            geometry: scan.geometry,
+            side: "left",
+            landmarks: scan.landmarks,
+        });
+        const stray = withStrayPlantarTriangles(scan.geometry);
+        const dirty = measurePlantarArch({ geometry: stray, side: "left", landmarks: scan.landmarks });
+        expect(clean.footLengthMm).toBeGreaterThan(240);
+        expect(dirty.footLengthMm).toBeCloseTo(clean.footLengthMm ?? 0, 0);
+        expect(Math.abs((dirty.footLengthMm ?? 0) - (clean.footLengthMm ?? 0))).toBeLessThan(5);
+        expect(dirty.measuredArchMm).toBeCloseTo(clean.measuredArchMm ?? 0, 1);
+        expect(resolveScanArchAssignment({ measurement: dirty }).record.assignedArchTier).toBe(
+            resolveScanArchAssignment({ measurement: clean }).record.assignedArchTier,
+        );
+        scan.geometry.dispose();
+        stray.dispose();
+    });
+
+    test("Low, Medium, and High tiers hold at plantarNormalZMax -0.5 and -0.7", () => {
+        const rows: [number, "low" | "medium" | "high"][] = [
+            [20, "low"],
+            [23.5, "medium"],
+            [27, "high"],
+        ];
+        for (const threshold of [-0.5, -0.7]) {
+            expect(SCAN_ARCH_TIER_CONFIG.scanModeOffsetMm.NWB).toBe(0);
+            expect(SCAN_ARCH_TIER_CONFIG.scanModeOffsetMm["semi-WB"]).toBe(0);
+            expect(SCAN_ARCH_TIER_CONFIG.scanModeOffsetMm.FWB).toBe(0);
+            for (const [height, tier] of rows) {
+                const scan = plantarArchScan({ archHeightMm: height, lengthMm: 260 });
+                const measured = measurePlantarArch({
+                    geometry: scan.geometry,
+                    side: "left",
+                    landmarks: scan.landmarks,
+                    plantarNormalZMax: threshold,
+                });
+                const resolved = resolveScanArchAssignment({ measurement: measured });
+                expect(resolved.record.assignedArchTier, `${height} @ ${threshold}`).toBe(tier);
+                expect(measured.measuredArchMm, `${height} @ ${threshold}`).toBeCloseTo(height, 1);
+                scan.geometry.dispose();
+            }
+        }
+    });
+
+    test("M2 is the 5th met head and M3 is the heel", () => {
+        const scan = plantarArchScan({ side: "left", archHeightMm: 20, lengthMm: 260 });
+        const markers = {
+            M1: scan.landmarks.m1,
+            M2: scan.landmarks.m5,
+            M3: scan.landmarks.heel,
+            ARCH: null,
+        };
+        const placed = generateOrthoticFromScanAndRx({
+            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
+            scans: [
+                {
+                    side: "left",
+                    geometry: scan.geometry,
+                    display: buildScanDisplayInfo(scan.geometry),
+                    markers,
+                    keepSetApproved: true,
+                },
+            ],
+            shoeSize: { system: "us", value: 9 },
+        });
+        const swapped = generateOrthoticFromScanAndRx({
+            baselineDesign: createDesignWithStockPlaceholder(defaultDesign()),
+            scans: [
+                {
+                    side: "left",
+                    geometry: scan.geometry,
+                    display: buildScanDisplayInfo(scan.geometry),
+                    markers: { ...markers, M2: scan.landmarks.heel, M3: scan.landmarks.m5 },
+                    keepSetApproved: true,
+                },
+            ],
+            shoeSize: { system: "us", value: 9 },
+        });
+        if (!placed.ok) throw new Error(placed.reason);
+        if (!swapped.ok) throw new Error(swapped.reason);
+        expect(placed.perFoot[0]?.archHeightMeasuredMm).toBeCloseTo(20, 1);
+        expect(placed.design.corrections.left.archHeightMm).toBe(-3.5);
+        expect(swapped.perFoot[0]?.archHeightMeasuredMm).not.toBeCloseTo(20, 0);
         scan.geometry.dispose();
     });
 });

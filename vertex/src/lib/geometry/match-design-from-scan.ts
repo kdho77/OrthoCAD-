@@ -13,12 +13,10 @@
 import type * as THREE from "three";
 import type { BufferGeometry, Matrix4 } from "three";
 import {
-    forefootWidthDeltaMm,
     formatScanArchReadout,
     measurePlantarArch,
     resolveScanArchAssignment,
 } from "@/lib/clinical/measure-scan-arch";
-import { CLINICAL_LIMITS } from "@/lib/geometry/clinical-constraints";
 import {
     ARCH_FIT_CLEARANCE_MM,
     ArchFitError,
@@ -27,14 +25,7 @@ import {
     archFitReferenceFromBase,
     fitArchParamsFromScan,
 } from "@/lib/geometry/fit-arch-from-scan";
-import {
-    acceptHeelCupFit,
-    formatHeelCupFitMessage,
-    type HeelCupWidthFitResult,
-    heelCupWidthParamForTarget,
-    measureHeelWidthFromTopPositions,
-    measureHeelWidthMm,
-} from "@/lib/geometry/fit-scan-clinical-params";
+import type { HeelCupWidthFitResult } from "@/lib/geometry/fit-scan-clinical-params";
 import {
     formatSizeSuggestionLabel,
     measureBallWidthMm,
@@ -267,6 +258,9 @@ export type ClinicalMatchResult = {
 export function matchClinicalParamsFromRegisteredScan(args: {
     scanPositions: ArrayLike<number>;
     scanVertexCount: number;
+    /** Indexed or welded scans must pass the geometry (or `scanIndex`) so triangles stay intact. */
+    scanGeometry?: BufferGeometry;
+    scanIndex?: { count: number; getX: (i: number) => number } | null;
     scanToBase: Matrix4;
     rawBase: BufferGeometry;
     side: Side;
@@ -285,6 +279,7 @@ export function matchClinicalParamsFromRegisteredScan(args: {
     clearanceMm?: number;
 }): ClinicalMatchResult {
     void args.clearanceMm;
+    void args.scanToBase;
     const reference = archFitReferenceFromBaseSized(args.rawBase, args.layout.lengthMm, args.layout.widthMm);
     if (reference.kind !== "base") {
         throw new ArchFitError("no_reference", "Sized arch reference missing top positions");
@@ -301,8 +296,10 @@ export function matchClinicalParamsFromRegisteredScan(args: {
     const manual =
         args.archMarkerSource === "manual_override" && args.archMarkerLocal ? args.archMarkerLocal : null;
     const measurement = measurePlantarArch({
+        geometry: args.scanGeometry,
         positions: args.scanPositions,
         vertexCount: args.scanVertexCount,
+        index: args.scanIndex,
         side: args.side,
         displayScale,
         landmarks,
@@ -313,57 +310,11 @@ export function matchClinicalParamsFromRegisteredScan(args: {
         captureMode: args.captureMode ?? "NWB",
         markerSource: manual ? "manual_override" : "scan_measured",
     });
-    const archPatch: Partial<SideCorrections> = { archHeightMm: resolved.record.archHeightDeltaMm };
-    const archMsg = formatScanArchReadout(resolved.record);
     const archSource = manual ? "marker" : "tier";
-    if (landmarks && measurement.forefootWidthMm != null && !measurement.lowCoverage) {
-        const lim = CLINICAL_LIMITS.forefootWidthMm;
-        const raw = forefootWidthDeltaMm(measurement.forefootWidthMm, args.layout.widthMm);
-        archPatch.forefootWidthMm = Math.max(lim.min, Math.min(lim.max, raw));
-    }
-
-    let heelSeatBase: THREE.Vector3 | null = null;
-    if (args.heelMarkerLocal) {
-        heelSeatBase = args.heelMarkerLocal.clone().applyMatrix4(args.scanToBase);
-    }
-
-    let heel: HeelCupWidthFitResult | null = null;
-    const heelSeatX = heelSeatBase?.x ?? null;
-    const registeredHeel = measureHeelWidthMm(
-        args.scanPositions,
-        args.scanVertexCount,
-        args.scanToBase,
-        reference.lengthMin,
-        reference.lengthSize,
-        heelSeatX,
-    );
-    const scanHeel = measurement.heelWidthMm ?? registeredHeel;
-    const baseHeel = measureHeelWidthFromTopPositions(
-        reference.topPositions,
-        reference.topVertexCount,
-        reference.lengthMin,
-        reference.lengthSize,
-        heelSeatX,
-    );
-    if (scanHeel != null && baseHeel != null) {
-        heel = acceptHeelCupFit(
-            heelCupWidthParamForTarget({
-                scanHeelWidthMm: scanHeel,
-                baseHeelWidthMm: baseHeel,
-            }),
-        );
-    }
-
-    const correction: Partial<SideCorrections> = {
-        ...archPatch,
-        ...(heel ? { heelCupWidthMm: heel.heelCupWidthMm } : {}),
-    };
-    const heelMsg = heel
-        ? ` · ${formatHeelCupFitMessage(heel)}`
-        : " · Heel width unavailable — check heel registration / cleanup";
+    const heel: HeelCupWidthFitResult | null = null;
     return {
-        correction,
-        message: `${archMsg}${heelMsg}`,
+        correction: { archHeightMm: resolved.record.archHeightDeltaMm },
+        message: formatScanArchReadout(resolved.record),
         archSource,
         heel,
     };
@@ -376,6 +327,8 @@ export function matchClinicalParamsFromRegisteredScan(args: {
 export function matchClinicalParamsFromRegisteredScanAuto(args: {
     scanPositions: ArrayLike<number>;
     scanVertexCount: number;
+    scanGeometry?: BufferGeometry;
+    scanIndex?: { count: number; getX: (i: number) => number } | null;
     scanToBase: Matrix4;
     rawBase: BufferGeometry;
     side: Side;

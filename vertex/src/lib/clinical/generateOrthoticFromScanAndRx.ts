@@ -2,11 +2,7 @@
 
 import type { BufferGeometry } from "three";
 import { type ArchBand, FLEXIBLE_APEX_ANTERIOR_MM } from "@/lib/clinical/arch-class";
-import {
-    forefootWidthDeltaMm,
-    measurePlantarArch,
-    resolveScanArchAssignment,
-} from "@/lib/clinical/measure-scan-arch";
+import { measurePlantarArch, resolveScanArchAssignment } from "@/lib/clinical/measure-scan-arch";
 import { interpretOneClickRx } from "@/lib/clinical/one-click-rx";
 import {
     type PathologyDesigner,
@@ -351,19 +347,11 @@ export function generateOrthoticFromScanAndRx(input: GenerateOrthoticInput): Gen
             );
         }
 
-        const forefootFromScan =
-            landmarks &&
-            measurement.forefootWidthMm != null &&
-            !measurement.lowCoverage &&
-            !Object.hasOwn(explicit, "forefootWidthMm")
-                ? forefootWidthDeltaMm(measurement.forefootWidthMm, layout.widthMm)
-                : undefined;
         const sidePatch: SideCorrections = {
             ...freshSide(),
             ...explicit,
             archHeightMm,
             apexMoveMm,
-            ...(forefootFromScan !== undefined ? { forefootWidthMm: forefootFromScan } : {}),
             rearfootWedge: explicit.rearfootWedge,
             forefootWedge: explicit.forefootWedge,
             fullLengthWedge: explicit.fullLengthWedge,

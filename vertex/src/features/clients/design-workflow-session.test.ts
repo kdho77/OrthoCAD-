@@ -19,6 +19,7 @@ describe("design workflow session", () => {
         });
         const loaded = loadDesignWorkflowSession(DESIGN);
         expect(loaded?.step).toBe("corrections");
+        // Retired id "base" loads as "setup" (normalizeClinicalStep on main).
         expect(loaded?.completedSteps).toEqual(["scan", "setup", "setup"]);
         expect(loaded?.footSideExplicitlyChosen).toBe(true);
     });
@@ -30,6 +31,7 @@ describe("design workflow session", () => {
             footSideExplicitlyChosen: false,
             designStartPath: "scan",
         });
+        // Retired id "shape" loads as "setup", same normalizer as "base".
         expect(loadDesignWorkflowSession(DESIGN)?.step).toBe("setup");
     });
 });
