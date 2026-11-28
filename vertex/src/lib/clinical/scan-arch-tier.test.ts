@@ -11,9 +11,19 @@ import {
     SCAN_ARCH_TIER_CONFIG,
     tierForNormalizedArchMm,
 } from "@/lib/clinical/measure-scan-arch";
+import {
+    acceptHeelCupFit,
+    formatHeelCupFitMessage,
+    heelCupWidthParamForTarget,
+    measureHeelWidthFromTopPositions,
+    measureHeelWidthMm,
+} from "@/lib/geometry/fit-scan-clinical-params";
 import type { HeightFieldParams } from "@/lib/geometry/height-field";
 import { heightAt } from "@/lib/geometry/height-field";
-import { matchClinicalParamsFromRegisteredScan } from "@/lib/geometry/match-design-from-scan";
+import {
+    archFitReferenceFromBaseSized,
+    matchClinicalParamsFromRegisteredScan,
+} from "@/lib/geometry/match-design-from-scan";
 import { buildScanDisplayInfo } from "@/lib/geometry/scan-display";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { createDesignWithStockPlaceholder, defaultDesign } from "@/stores/design-store";
@@ -445,7 +455,6 @@ describe("CAD review guards", () => {
         ).toBeLessThanOrEqual(0.1);
         expect(fromMatch.correction.archHeightMm).toBe(generated.design.corrections.left.archHeightMm);
         expect(fromMatch.correction.forefootWidthMm).toBeUndefined();
-        expect(fromMatch.correction.heelCupWidthMm).toBeUndefined();
         scan.geometry.dispose();
         welded.dispose();
     });
@@ -556,5 +565,110 @@ describe("CAD review guards", () => {
         expect(placed.design.corrections.left.archHeightMm).toBe(-3.5);
         expect(swapped.perFoot[0]?.archHeightMeasuredMm).not.toBeCloseTo(20, 0);
         scan.geometry.dispose();
+    });
+
+    test("registered heel cup width matches main's measureHeelWidthMm fit", () => {
+        const scan = plantarArchScan({ side: "left", archHeightMm: 23.5, lengthMm: 260 });
+        const layout = insoleLayoutForUsMenSize(9);
+        const scanToBase = new THREE.Matrix4();
+        const reference = archFitReferenceFromBaseSized(scan.geometry, layout.lengthMm, layout.widthMm);
+        if (reference.kind !== "base") throw new Error("expected a base reference");
+        const heelSeatX = scan.landmarks.heel.clone().applyMatrix4(scanToBase).x;
+        const positions = scan.geometry.getAttribute("position");
+        const scanHeel = measureHeelWidthMm(
+            positions.array,
+            positions.count,
+            scanToBase,
+            reference.lengthMin,
+            reference.lengthSize,
+            heelSeatX,
+        );
+        const baseHeel = measureHeelWidthFromTopPositions(
+            reference.topPositions,
+            reference.topVertexCount,
+            reference.lengthMin,
+            reference.lengthSize,
+            heelSeatX,
+        );
+        if (scanHeel == null || baseHeel == null) throw new Error("fixture has no registered heel width");
+        const expected = acceptHeelCupFit(
+            heelCupWidthParamForTarget({
+                scanHeelWidthMm: scanHeel,
+                baseHeelWidthMm: baseHeel,
+            }),
+        );
+        if (!expected) throw new Error("main's acceptHeelCupFit dropped the fixture");
+        const matched = matchClinicalParamsFromRegisteredScan({
+            scanPositions: positions.array,
+            scanVertexCount: positions.count,
+            scanGeometry: scan.geometry,
+            scanToBase,
+            rawBase: scan.geometry,
+            side: "left",
+            layout,
+            m1Local: scan.landmarks.m1,
+            m5Local: scan.landmarks.m5,
+            heelMarkerLocal: scan.landmarks.heel,
+            displayScale: 1,
+        });
+        const measured = measurePlantarArch({
+            geometry: scan.geometry,
+            side: "left",
+            landmarks: scan.landmarks,
+        });
+        expect(matched.correction.heelCupWidthMm).toBe(expected.heelCupWidthMm);
+        expect(matched.heel?.scanHeelWidthMm).toBe(scanHeel);
+        expect(matched.heel?.scanHeelWidthMm).not.toBe(measured.heelWidthMm);
+        expect(matched.correction.forefootWidthMm).toBeUndefined();
+        expect(matched.message).toContain(formatHeelCupFitMessage(expected));
+        scan.geometry.dispose();
+    });
+
+    test("a 20k-sample arch band measures in under 250 ms", () => {
+        const length = 260;
+        const width = 90;
+        const medialY = width / 2;
+        const yAt = (v: number) => medialY + v * (-medialY - medialY);
+        const positions: number[] = [];
+        const pushDown = (u0: number, v0: number, u1: number, v1: number, z: number) => {
+            const p00 = { x: u0 * length, y: yAt(v0), z };
+            const p10 = { x: u1 * length, y: yAt(v0), z };
+            const p11 = { x: u1 * length, y: yAt(v1), z };
+            const p01 = { x: u0 * length, y: yAt(v1), z };
+            positions.push(p00.x, p00.y, p00.z, p11.x, p11.y, p11.z, p10.x, p10.y, p10.z);
+            positions.push(p00.x, p00.y, p00.z, p01.x, p01.y, p01.z, p11.x, p11.y, p11.z);
+        };
+        const endCells = 200;
+        for (let i = 0; i < endCells; i++) {
+            const v0 = 0.4 + (i / endCells) * 0.2;
+            const v1 = 0.4 + ((i + 1) / endCells) * 0.2;
+            pushDown(0, v0, 0.01, v1, 0);
+            pushDown(0.99, v0, 1, v1, 0);
+        }
+        const nu = 100;
+        const nv = 100;
+        for (let iu = 0; iu < nu; iu++) {
+            const u0 = 0.38 + (iu / nu) * 0.14;
+            const u1 = 0.38 + ((iu + 1) / nu) * 0.14;
+            for (let iv = 0; iv < nv; iv++) {
+                const v0 = 0.1 + (iv / nv) * 0.22;
+                const v1 = 0.1 + ((iv + 1) / nv) * 0.22;
+                pushDown(u0, v0, u1, v1, 23.5);
+            }
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+        const landmarks = {
+            heel: new THREE.Vector3(0.02 * length, yAt(0.5), 0),
+            m1: new THREE.Vector3(0.72 * length, yAt(0.08), 0),
+            m5: new THREE.Vector3(0.72 * length, yAt(0.92), 0),
+        };
+        const started = performance.now();
+        const measured = measurePlantarArch({ geometry, side: "left", landmarks });
+        const elapsed = performance.now() - started;
+        expect(measured.plantarBandTriangles).toBeGreaterThanOrEqual(20_000);
+        expect(elapsed).toBeLessThan(250);
+        expect(measured.measuredArchMm).toBeCloseTo(23.5, 1);
+        geometry.dispose();
     });
 });

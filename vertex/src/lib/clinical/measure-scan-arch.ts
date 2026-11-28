@@ -479,27 +479,107 @@ function applyRobustLength(frame: Frame, plantarAlongs: number[]): void {
     frame.footLengthMm = end - start;
 }
 
+const APEX_RADIUS_SAMPLE_CAP = 1500;
+
+/** Stride subsample. Exact 5-NN stays on the small fixtures; dense bands stay bounded. */
+function radiusEstimateSamples(samples: Sample[]): Sample[] {
+    if (samples.length <= APEX_RADIUS_SAMPLE_CAP) return samples;
+    const stride = Math.ceil(samples.length / APEX_RADIUS_SAMPLE_CAP);
+    const picked: Sample[] = [];
+    for (let i = 0; i < samples.length && picked.length < APEX_RADIUS_SAMPLE_CAP; i += stride) {
+        const sample = samples[i];
+        if (sample) picked.push(sample);
+    }
+    return picked.length >= 6 ? picked : samples;
+}
+
+/**
+ * p90 of each sample's 5th-nearest-neighbor distance.
+ * Buckets replace the all-pairs scan. Above 1500 samples the radius is estimated
+ * from a stride subsample so a dense band does not go quadratic.
+ */
 function apexWindowRadius(samples: Sample[], floorMm: number): number {
     if (samples.length < 6) return floorMm;
-    const fifth: number[] = [];
-    for (let i = 0; i < samples.length; i++) {
-        const dists: number[] = [];
-        const origin = samples[i];
-        if (!origin) continue;
-        for (let j = 0; j < samples.length; j++) {
-            if (i === j) continue;
-            const other = samples[j];
-            if (!other) continue;
-            const du = other.along - origin.along;
-            const dv = other.lat - origin.lat;
-            dists.push(du * du + dv * dv);
-        }
-        dists.sort((a, b) => a - b);
-        fifth.push(Math.sqrt(dists[4] ?? Number.POSITIVE_INFINITY));
-    }
+    const estimate = radiusEstimateSamples(samples);
+    const fifth = fifthNearestDistances(estimate);
     fifth.sort((a, b) => a - b);
     const p90 = fifth[Math.min(fifth.length - 1, Math.floor(0.9 * (fifth.length - 1)))] ?? floorMm;
     return Math.max(floorMm, Number.isFinite(p90) ? p90 : floorMm);
+}
+
+function fifthNearestDistances(samples: Sample[]): number[] {
+    const n = samples.length;
+    let minA = Infinity;
+    let maxA = -Infinity;
+    let minL = Infinity;
+    let maxL = -Infinity;
+    for (const sample of samples) {
+        if (sample.along < minA) minA = sample.along;
+        if (sample.along > maxA) maxA = sample.along;
+        if (sample.lat < minL) minL = sample.lat;
+        if (sample.lat > maxL) maxL = sample.lat;
+    }
+    const spanA = Math.max(1e-3, maxA - minA);
+    const spanL = Math.max(1e-3, maxL - minL);
+    const cell = Math.max(1e-3, Math.sqrt((spanA * spanL) / Math.max(1, n / 4)));
+    const buckets = new Map<string, number[]>();
+    for (let i = 0; i < n; i++) {
+        const sample = samples[i];
+        if (!sample) continue;
+        const key = `${Math.floor(sample.along / cell)},${Math.floor(sample.lat / cell)}`;
+        const bucket = buckets.get(key);
+        if (bucket) bucket.push(i);
+        else buckets.set(key, [i]);
+    }
+    const fifth: number[] = [];
+    const cand: number[] = [];
+    const maxRing = Math.ceil(Math.max(spanA, spanL) / cell) + 2;
+    for (let i = 0; i < n; i++) {
+        const origin = samples[i];
+        if (!origin) continue;
+        const qx = Math.floor(origin.along / cell);
+        const qy = Math.floor(origin.lat / cell);
+        const localX = origin.along - qx * cell;
+        const localY = origin.lat - qy * cell;
+        cand.length = 0;
+        let proven = false;
+        for (let ring = 0; ring <= maxRing && !proven; ring++) {
+            for (let dx = -ring; dx <= ring; dx++) {
+                for (let dy = -ring; dy <= ring; dy++) {
+                    if (ring > 0 && Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+                    const bucket = buckets.get(`${qx + dx},${qy + dy}`);
+                    if (!bucket) continue;
+                    for (const j of bucket) {
+                        if (j === i) continue;
+                        const other = samples[j];
+                        if (!other) continue;
+                        const du = other.along - origin.along;
+                        const dv = other.lat - origin.lat;
+                        cand.push(du * du + dv * dv);
+                    }
+                }
+            }
+            const gapX = Math.min((ring + 1) * cell - localX, ring * cell + localX);
+            const gapY = Math.min((ring + 1) * cell - localY, ring * cell + localY);
+            const minNext = Math.min(gapX, gapY);
+            if (cand.length >= 5 && minNext > 0) {
+                const limit = minNext * minNext;
+                let within = 0;
+                for (const d2 of cand) {
+                    if (d2 <= limit) within++;
+                    if (within >= 5) break;
+                }
+                if (within >= 5) proven = true;
+            }
+        }
+        if (cand.length < 5) {
+            fifth.push(Number.POSITIVE_INFINITY);
+            continue;
+        }
+        cand.sort((a, b) => a - b);
+        fifth.push(Math.sqrt(cand[4] ?? Number.POSITIVE_INFINITY));
+    }
+    return fifth;
 }
 
 function markApexCandidates(
@@ -512,11 +592,15 @@ function markApexCandidates(
     const radius2 = radius * radius;
     const buckets = new Map<string, Sample[]>();
     const cell = radius;
+    // Sparse fixtures keep every neighbor. A dense band stores a spatial cap per cell
+    // so the 4 mm window does not scan tens of millions of pairs.
+    const perCellCap = samples.length > 2500 ? 16 : Number.POSITIVE_INFINITY;
     for (const sample of samples) {
         const key = `${Math.floor(sample.along / cell)},${Math.floor(sample.lat / cell)}`;
         const bucket = buckets.get(key);
-        if (bucket) bucket.push(sample);
-        else buckets.set(key, [sample]);
+        if (bucket) {
+            if (bucket.length < perCellCap) bucket.push(sample);
+        } else buckets.set(key, [sample]);
     }
     for (const sample of samples) {
         const ix = Math.floor(sample.along / cell);

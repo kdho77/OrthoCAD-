@@ -25,7 +25,14 @@ import {
     archFitReferenceFromBase,
     fitArchParamsFromScan,
 } from "@/lib/geometry/fit-arch-from-scan";
-import type { HeelCupWidthFitResult } from "@/lib/geometry/fit-scan-clinical-params";
+import {
+    acceptHeelCupFit,
+    formatHeelCupFitMessage,
+    type HeelCupWidthFitResult,
+    heelCupWidthParamForTarget,
+    measureHeelWidthFromTopPositions,
+    measureHeelWidthMm,
+} from "@/lib/geometry/fit-scan-clinical-params";
 import {
     formatSizeSuggestionLabel,
     measureBallWidthMm,
@@ -279,7 +286,6 @@ export function matchClinicalParamsFromRegisteredScan(args: {
     clearanceMm?: number;
 }): ClinicalMatchResult {
     void args.clearanceMm;
-    void args.scanToBase;
     const reference = archFitReferenceFromBaseSized(args.rawBase, args.layout.lengthMm, args.layout.widthMm);
     if (reference.kind !== "base") {
         throw new ArchFitError("no_reference", "Sized arch reference missing top positions");
@@ -311,13 +317,64 @@ export function matchClinicalParamsFromRegisteredScan(args: {
         markerSource: manual ? "manual_override" : "scan_measured",
     });
     const archSource = manual ? "marker" : "tier";
-    const heel: HeelCupWidthFitResult | null = null;
+    const heel = measureHeelCupFromScan({
+        scanPositions: args.scanPositions,
+        scanVertexCount: args.scanVertexCount,
+        scanToBase: args.scanToBase,
+        reference,
+        heelMarkerLocal: args.heelMarkerLocal,
+    });
+    const heelMsg = heel
+        ? ` · ${formatHeelCupFitMessage(heel)}`
+        : " · Heel width unavailable — check heel registration / cleanup";
     return {
-        correction: { archHeightMm: resolved.record.archHeightDeltaMm },
-        message: formatScanArchReadout(resolved.record),
+        correction: {
+            archHeightMm: resolved.record.archHeightDeltaMm,
+            ...(heel ? { heelCupWidthMm: heel.heelCupWidthMm } : {}),
+        },
+        message: `${formatScanArchReadout(resolved.record)}${heelMsg}`,
         archSource,
         heel,
     };
+}
+
+/** Registered heel-cup width. Uses measureHeelWidthMm, not the arch record's heel width. */
+function measureHeelCupFromScan(args: {
+    scanPositions: ArrayLike<number>;
+    scanVertexCount: number;
+    scanToBase: Matrix4;
+    reference: Extract<ArchFitReference, { kind: "base" }>;
+    heelMarkerLocal?: THREE.Vector3 | null;
+}): HeelCupWidthFitResult | null {
+    let heelSeatBase: THREE.Vector3 | null = null;
+    if (args.heelMarkerLocal) {
+        heelSeatBase = args.heelMarkerLocal.clone().applyMatrix4(args.scanToBase);
+    }
+    const heelSeatX = heelSeatBase?.x ?? null;
+    const scanHeel = measureHeelWidthMm(
+        args.scanPositions,
+        args.scanVertexCount,
+        args.scanToBase,
+        args.reference.lengthMin,
+        args.reference.lengthSize,
+        heelSeatX,
+    );
+    const baseHeel = measureHeelWidthFromTopPositions(
+        args.reference.topPositions,
+        args.reference.topVertexCount,
+        args.reference.lengthMin,
+        args.reference.lengthSize,
+        heelSeatX,
+    );
+    if (scanHeel != null && baseHeel != null) {
+        return acceptHeelCupFit(
+            heelCupWidthParamForTarget({
+                scanHeelWidthMm: scanHeel,
+                baseHeelWidthMm: baseHeel,
+            }),
+        );
+    }
+    return null;
 }
 
 /**
