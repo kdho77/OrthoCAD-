@@ -1,0 +1,134 @@
+{
+    "mode": "grade",
+    "measSha": "5a67b17fcf1a3f0694d0098f16221bfad0a8a326",
+    "baseSha": "268aac85847160b5b2703a05688721ea4cb93b24",
+    "report": {
+        "G-DEFECT": {
+            "pass": true,
+            "areaMm2": 455.494,
+            "ratio": 1,
+            "triDelta": 22982,
+            "textDropped": false
+        },
+        "G-DETECTOR": {
+            "pass": true,
+            "right": {
+                "pass": true,
+                "areaMm2": 455.49,
+                "ratio": 1,
+                "triDelta": 23926,
+                "textDropped": false
+            },
+            "left": {
+                "pass": true,
+                "areaMm2": 455.494,
+                "ratio": 1,
+                "triDelta": 23014,
+                "textDropped": false
+            },
+            "referenceAreaMm2": 455.494
+        },
+        "G-OTHER-FOOT": {
+            "pass": true,
+            "rightHashSame": true,
+            "leftNameHashSame": true,
+            "plantarRight": {
+                "pass": true,
+                "spanX": 70.242,
+                "spanY": 12.638,
+                "axisDeg": -0.16
+            },
+            "plantarLeft": {
+                "pass": true,
+                "spanX": 70.242,
+                "spanY": 12.637,
+                "axisDeg": 0.045
+            },
+            "rightTri": 99770,
+            "baseRightTri": 99770,
+            "leftTri": 98858,
+            "baseLeftTri": 98858
+        },
+        "G-ELEMENT": {
+            "pass": true,
+            "nameVsPlain": {
+                "pass": true,
+                "maxDeltaMm": 0,
+                "unmatched": 0,
+                "cells": 8820
+            },
+            "nameVsBase": {
+                "pass": true,
+                "maxDeltaMm": 0,
+                "unmatched": 0,
+                "cells": 8820
+            },
+            "plainVsBase": {
+                "pass": true,
+                "maxDeltaMm": 0,
+                "unmatched": 0,
+                "cells": 8820
+            },
+            "maxRaiseMm": 2.9999999999999996,
+            "raisedMeanY": -35.039,
+            "meanYDeltaMm": 0,
+            "heightMm": 3
+        },
+        "G-R1": {
+            "pass": true,
+            "mortonTopDeltaMm": 0,
+            "mortonUnmatched": 0,
+            "stockTopDeltaMm": 0,
+            "stockUnmatched": 0
+        },
+        "G-R2": {
+            "pass": true,
+            "kiriMismatches": [],
+            "surfaceDeltaMm": 0
+        },
+        "G-R3": {
+            "pass": true,
+            "scope": [],
+            "forbidden": []
+        },
+        "G-R4": {
+            "pass": true,
+            "fixtureMismatches": [],
+            "newMesh": []
+        },
+        "G-R5": {
+            "pass": true,
+            "marking": {
+                "surface": "bottom",
+                "mode": "engrave",
+                "depthMm": 0.6,
+                "feet": "both",
+                "text": "SAMPLE",
+                "addPatientName": false
+            },
+            "engravers": []
+        },
+        "G-R6": {
+            "pass": true,
+            "secretHits": 0,
+            "phiHits": 0,
+            "deploy": []
+        },
+        "G-R7": {
+            "pass": true,
+            "stockHashSame": true,
+            "stockSha256": "4c0e3fa857504ddf81f2722737c83f47b20eac9b642e406656e06ed3deab13e1",
+            "baseStockSha256": "4c0e3fa857504ddf81f2722737c83f47b20eac9b642e406656e06ed3deab13e1",
+            "leftNameHashSame": true,
+            "rightHashSame": true
+        },
+        "G-ONE": {
+            "pass": true
+        },
+        "meta": {
+            "baseMortonNameTri": 76926,
+            "surfaceZMinMm": 1,
+            "surfaceCellMm": 1
+        }
+    }
+}
