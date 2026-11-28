@@ -1,0 +1,110 @@
+{
+    "frozen": "Measured on BASE 268aac85847160b5b2703a05688721ea4cb93b24 before the candidate was graded. Do not edit after the freeze commit.",
+    "baseSha": "268aac85847160b5b2703a05688721ea4cb93b24",
+    "candidateSha": "a86c4be42da66f742bf4a414cb1e2f1ed1ed88ad",
+    "thresholds": {
+        "SKEW_INSET_RATIO": 0.5,
+        "SKEW_LIMIT_MM": 2,
+        "PRELOFT_HEADING_MAX_DEG": 15,
+        "POSTLOFT_DIHEDRAL_MAX_DEG": 150
+    },
+    "signature": ["[S1-PRELOFT]", "138 station(s)", "skew[45]=50.577>29.076", "skew[46]=76.058>25.756"],
+    "vertBand": { "minRatio": 0.5, "maxRatio": 2, "referenceId": "s9-medium" },
+    "headlessMinTriangles": 10000,
+    "identicalFiles": {
+        "threshold": [
+            "vertex/src/lib/geometry/procedural-wall/station-gates.ts",
+            "vertex/src/lib/geometry/procedural-wall/stations.ts",
+            "vertex/src/lib/geometry/procedural-wall/reconstruct.ts"
+        ],
+        "r1": [
+            "vertex/src/lib/kiri/cnc.ts",
+            "vertex/src/lib/kiri/engine.ts",
+            "vertex/src/lib/kiri/gcode.ts",
+            "vertex/src/lib/kiri/index.ts",
+            "vertex/src/lib/kiri/presets.ts",
+            "vertex/src/lib/kiri/slicer.ts",
+            "vertex/src/lib/geometry/base-modifier.ts",
+            "vertex/src/lib/geometry/procedural-wall/wall-spline.ts",
+            "vertex/src/lib/geometry/procedural-wall/ring-seam.ts",
+            "vertex/src/lib/geometry/procedural-wall/densify-stations.ts"
+        ],
+        "r2": [
+            "vertex/src/lib/kiri/engine.ts",
+            "vertex/src/lib/kiri/gcode.ts",
+            "vertex/src/lib/kiri/presets.ts",
+            "vertex/src/lib/kiri/slicer.ts"
+        ],
+        "r4": [
+            "vertex/src/lib/geometry/procedural-wall/sample-top-id.ts",
+            "vertex/public/Templates/SAMPLE_Top.glb",
+            "tests/fixtures/SAMPLE_Top.glb"
+        ]
+    },
+    "r5Prefix": "vertex/src/lib/geometry/text-marking/",
+    "allowPrefixes": [
+        "vertex/src/lib/geometry/procedural-wall/",
+        "vertex/src/lib/geometry/shoe-width.ts",
+        "vertex/src/lib/geometry/shoe-size.ts",
+        "vertex/src/lib/geometry/height-field.ts",
+        "ci/unit-test-shards.json"
+    ],
+    "existingTests": [
+        "vertex/src/lib/geometry/procedural-wall/station-gates.test.ts",
+        "vertex/src/lib/geometry/shoe-width.test.ts",
+        "vertex/src/lib/geometry/procedural-wall/sample-top-preview.test.ts"
+    ],
+    "identity": [
+        {
+            "id": "s9-medium",
+            "role": "R7 SAMPLE_Top stock, no corrections",
+            "width": "medium",
+            "hash": "11a9b0627846c2da4638567c202a1cb7264c89b660b3aae0bc5bab2cc493c62d",
+            "verts": 55156
+        },
+        {
+            "id": "s8-medium",
+            "role": "already exports",
+            "width": "medium",
+            "size": 8,
+            "hash": "39111add1574cbd9401b2abb60b5652e3cbb3891267405e6beb8bb59c6ed7cbf",
+            "verts": 54357
+        },
+        {
+            "id": "s9-narrow",
+            "role": "already exports",
+            "width": "narrow",
+            "size": 9,
+            "hash": "13a8ac9a159c1f20b9faf35e40d3e85e7ad4b14d41d1affb18d009428deac9e0",
+            "verts": 55555
+        },
+        {
+            "id": "s8.5-narrow-h9-met",
+            "role": "already exports",
+            "width": "narrow",
+            "size": 8.5,
+            "heelCupHeightMm": 9,
+            "metPad": true,
+            "hash": "9a302d9dc56f56e481726194e8a24ed3cd289087964e6e128002c08e0265fb2a",
+            "verts": 57012
+        },
+        {
+            "id": "s10-narrow-h9-met",
+            "role": "already exports",
+            "width": "narrow",
+            "size": 10,
+            "heelCupHeightMm": 9,
+            "metPad": true,
+            "hash": "439fffc428be4c3dfa697908af48a67594bd6a65c71cc1ebe3b63442fbb7984a",
+            "verts": 58421
+        }
+    ],
+    "defect": {
+        "id": "s6-narrow-h9-met",
+        "width": "narrow",
+        "size": 6,
+        "heelCupHeightMm": 9,
+        "metPad": true,
+        "side": "left"
+    }
+}

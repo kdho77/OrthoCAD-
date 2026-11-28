@@ -1,0 +1,83 @@
+{
+    "mode": "base",
+    "product": "/tmp/narrow-heelcup-gate-r84CVj",
+    "baseSha": "268aac85847160b5b2703a05688721ea4cb93b24",
+    "head": "268aac85847160b5b2703a05688721ea4cb93b24",
+    "changed": ["vertex/src/lib/geometry/procedural-wall/sample-top-preview.ts"],
+    "gates": [
+        {
+            "id": "G-R1",
+            "status": "PASS",
+            "measured": "10 surface/seam files byte-identical to BASE",
+            "threshold": "kiri, base-modifier, wall-spline, ring-seam, densify-stations unchanged",
+            "evidence": "R1 print surface quality is untouched",
+            "command": "git hash-object vs BASE"
+        },
+        {
+            "id": "G-R2",
+            "status": "PASS",
+            "measured": "4 slicer files byte-identical to BASE",
+            "threshold": "kiri engine/gcode/presets/slicer unchanged",
+            "evidence": "R2 seam and layer-change placement stays on the existing bottom path",
+            "command": "git hash-object vs BASE"
+        },
+        {
+            "id": "G-R3",
+            "status": "PASS",
+            "measured": "changed=vertex/src/lib/geometry/procedural-wall/sample-top-preview.ts; outside=(none); shardRemoved=0",
+            "threshold": "only procedural-wall, shoe-width, shoe-size, height-field, and an additive procedural-wall shard line",
+            "evidence": "R3 scope stays on the preloft outline defect",
+            "command": "git diff --name-only BASE"
+        },
+        {
+            "id": "G-R4",
+            "status": "PASS",
+            "measured": "meshPaths=(none); id/glb match BASE",
+            "threshold": "SAMPLE_Top id and both SAMPLE_Top.glb blobs unchanged; no new glb/stl/obj/3mf/ply",
+            "evidence": "R4 designs still start from the approved SAMPLE_Top stock mesh",
+            "command": "git hash-object SAMPLE_Top.glb"
+        },
+        {
+            "id": "G-R5",
+            "status": "PASS",
+            "measured": "text-marking files 30; new=(none)",
+            "threshold": "vertex/src/lib/geometry/text-marking identical to BASE; no new engraving file",
+            "evidence": "R5 patient marking stays on the existing textMarking bottom engrave",
+            "command": "git hash-object text-marking"
+        },
+        {
+            "id": "G-R6",
+            "status": "PASS",
+            "measured": "secretLines=0; phiLines=0; deployPaths=(none)",
+            "threshold": "no api_key/bearer/token-like secret, no patient name literal, no vertex-web/vertex-api/railway/print-bridge path",
+            "evidence": "R6 secrets, PHI, Railway, and printers stay out of the diff",
+            "command": "git diff -U0 | secret scan"
+        },
+        {
+            "id": "G-MUST-THRESHOLD",
+            "status": "PASS",
+            "measured": "SKEW_INSET_RATIO station-gates=0.5 stations=0.5; SKEW_LIMIT_MM=2; PRELOFT_HEADING_MAX_DEG=15; POSTLOFT_DIHEDRAL_MAX_DEG=150; redefined=0; blobs=true",
+            "threshold": "SKEW_INSET_RATIO=0.5; SKEW_LIMIT_MM=2; PRELOFT_HEADING_MAX_DEG=15; POSTLOFT_DIHEDRAL_MAX_DEG=150; station-gates.ts stations.ts reconstruct.ts identical",
+            "evidence": "MUST-MATCH skew thresholds unchanged",
+            "command": "git hash-object + const parse"
+        },
+        {
+            "id": "G-R7",
+            "status": "FAIL",
+            "measured": "verts 55156 vs 55156; hash 5d3909c82d66e89b10eae819be8b85aef6b1178880ff70b38c08118d24c929dd",
+            "threshold": "sha256 11a9b0627846c2da4638567c202a1cb7264c89b660b3aae0bc5bab2cc493c62d verts 55156",
+            "evidence": "R7 SAMPLE_Top stock with no corrections is byte-identical",
+            "command": "npx rstest --config validation/narrow_heelcup_preloft_gates/rstest.gate.config.ts"
+        },
+        {
+            "id": "G-MUST-IDENTITY",
+            "status": "FAIL",
+            "measured": "s9-medium: ok=true verts 55156 vs 55156 hash DIFF",
+            "threshold": "every already-exporting design matches the BASE hash and vertex count",
+            "evidence": "MUST-MATCH designs that already export produce identical meshes",
+            "command": "npx rstest --config validation/narrow_heelcup_preloft_gates/rstest.gate.config.ts"
+        }
+    ],
+    "runtimeTail": "mp: \"2026-11-23T20:21:53.397Z\"\nruntime: {\"node\":\"v22.23.4\",\"platform\":\"linux\",\"cwd\":\"/agent/repos/OrthoCAD-\"}\n---\n\n# Rstest Test Execution Report\n\n## Summary\n\n```json\n{\n  \"status\": \"pass\",\n  \"counts\": {\n    \"testFiles\": 1,\n    \"failedFiles\": 0,\n    \"tests\": 1,\n    \"failedTests\": 0,\n    \"passedTests\": 1,\n    \"skippedTests\": 0,\n    \"todoTests\": 0\n  },\n  \"durationMs\": {\n    \"total\": 18184,\n    \"build\": 301,\n    \"tests\": 17883\n  },\n  \"snapshot\": {\n    \"added\": 0,\n    \"updated\": 0,\n    \"unmatched\": 0,\n    \"removed\": 0,\n    \"unchecked\": 0\n  }\n}\n```\n\n## Tests\n\n### Passed\n\n- validation/narrow_heelcup_preloft_gates/runtime/export-cases.gate.ts :: narrow heelcup preloft gates > measure identity meshes and the order-shaped headless export\n\n### Skipped\n\nNone.\n\n## Failures\n\nNo test failures reported.\n\n",
+    "existingTail": ""
+}
