@@ -52,3 +52,10 @@ export function saveDesignWorkflowSession(designId: string, session: DesignWorkf
     map[designId] = session;
     writeMap(map);
 }
+
+export function clearDesignWorkflowSession(designId: string): void {
+    const map = readMap();
+    if (!(designId in map)) return;
+    delete map[designId];
+    writeMap(map);
+}

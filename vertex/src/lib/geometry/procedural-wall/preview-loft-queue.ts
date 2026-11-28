@@ -3,16 +3,19 @@
 import type { Side } from "@/types";
 
 /**
- * Serial preview-loft queue.
+ * Preview-loft queue.
  *
- * Reconstruct runs in a Web Worker, but left and right still share one worker
- * and one queue. Jobs run one at a time, active foot first, with a paint yield
- * between them so the splash can update.
+ * Left and right each take a worker and run together. A third job waits.
+ * Priority still orders who starts when a slot is free. A paint yield between
+ * a finish and the next start lets the splash update.
  *
  * Lower-resolution preview rows (widening OUTLINE_STATION_SPACING_MM) would
  * change the approved wall station set and need CAD expert sign-off. This
  * queue does not change reconstruct math.
  */
+
+/** Two feet, two workers. Station spacing stays 1.5 mm. */
+export const PREVIEW_LOFT_PARALLELISM = 2;
 
 export interface PreviewLoftJob {
     side: Side;
@@ -27,8 +30,8 @@ interface QueuedLoft extends PreviewLoftJob {
 
 let seq = 0;
 const pending: QueuedLoft[] = [];
-let running: QueuedLoft | null = null;
-let pumping = false;
+const runningJobs: QueuedLoft[] = [];
+let runningCount = 0;
 
 export function isCoarsePointerDevice(): boolean {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
@@ -67,7 +70,7 @@ export function enqueuePreviewLoft(job: PreviewLoftJob): { id: string; cancel: (
     const queued: QueuedLoft = { ...job, id: `loft-${++seq}`, cancelled: false };
     pending.push(queued);
     pending.sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
-    void pumpPreviewLoftQueue();
+    fillPreviewLoftSlots();
     return {
         id: queued.id,
         cancel: () => {
@@ -78,45 +81,48 @@ export function enqueuePreviewLoft(job: PreviewLoftJob): { id: string; cancel: (
     };
 }
 
-async function pumpPreviewLoftQueue(): Promise<void> {
-    if (pumping) return;
-    pumping = true;
-    try {
-        while (true) {
-            const next = pending.shift();
-            if (!next) return;
-            if (next.cancelled) continue;
-            running = next;
-            try {
-                await next.run();
-            } finally {
-                running = null;
-            }
+function launchPreviewLoft(job: QueuedLoft): void {
+    runningCount += 1;
+    runningJobs.push(job);
+    void (async () => {
+        try {
+            if (!job.cancelled) await job.run();
+        } finally {
+            const index = runningJobs.indexOf(job);
+            if (index >= 0) runningJobs.splice(index, 1);
+            runningCount -= 1;
             await yieldToPaint();
+            fillPreviewLoftSlots();
         }
-    } finally {
-        pumping = false;
-        if (pending.length > 0) void pumpPreviewLoftQueue();
+    })();
+}
+
+function fillPreviewLoftSlots(): void {
+    while (runningCount < PREVIEW_LOFT_PARALLELISM) {
+        const next = pending.shift();
+        if (!next) return;
+        if (next.cancelled) continue;
+        launchPreviewLoft(next);
     }
 }
 
-/** Cancel queued jobs and mark the running job so Cancel aborts generate. */
+/** Cancel queued jobs and mark every running job so Cancel aborts generate. */
 export function cancelAllPreviewLofts(): void {
     for (const job of pending) job.cancelled = true;
     pending.length = 0;
-    if (running) running.cancelled = true;
+    for (const job of runningJobs) job.cancelled = true;
 }
 
 export function resetPreviewLoftQueueForTests(): void {
     pending.length = 0;
-    running = null;
-    pumping = false;
+    runningJobs.length = 0;
+    runningCount = 0;
     seq = 0;
 }
 
-export function previewLoftQueueSnapshotForTests(): { pending: Side[]; running: Side | null } {
+export function previewLoftQueueSnapshotForTests(): { pending: Side[]; running: Side[] } {
     return {
         pending: pending.filter((j) => !j.cancelled).map((j) => j.side),
-        running: running?.side ?? null,
+        running: runningJobs.filter((j) => !j.cancelled).map((j) => j.side),
     };
 }

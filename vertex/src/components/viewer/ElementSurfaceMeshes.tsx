@@ -36,6 +36,7 @@ export function ElementSurfaceMeshes({
     const step = useClinicalWorkflowStore((s) => s.step);
     const previews = usePerformanceStore((s) => s.elementPreviews);
     const print = step === "print" || step === "export";
+    const defaultHardness = useDesignStore((s) => s.design.printRecipe?.defaultHardness);
     const [meshes, setMeshes] = useState<ElementDisplayMesh[]>([]);
     // biome-ignore lint/correctness/useExhaustiveDependencies: geometryElementsKey excludes material metadata; previews trigger placement changes
     useEffect(() => {
@@ -108,7 +109,7 @@ export function ElementSurfaceMeshes({
                 const liveElement = elements.find((e) => e.id === element.id);
                 if (!liveElement) return null;
                 const isSelected = selected === element.id;
-                const color = elementPreviewColor(liveElement, print, isSelected, split);
+                const color = elementPreviewColor(liveElement, print, isSelected, split, defaultHardness);
                 if (!surface.boundingBox) surface.computeBoundingBox();
                 const bounds = surface.boundingBox;
                 const popupPosition: [number, number, number] = bounds

@@ -1,6 +1,12 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { countOpenNonBoundaryEdges, minDistToLoopXY, pointInPoly } from "./cdt-band";
+import {
+    countOpenNonBoundaryEdges,
+    loopDistanceExceeds,
+    loopDistanceIsBelow,
+    minDistToLoopXY,
+    pointInPoly,
+} from "./cdt-band";
 import { assertIEdges, assertLibraryDisk, libraryCdtInterior } from "./cdt-lib";
 import { type PolyPoint, polygonSignedArea, polylineArcLengths, sampleClosedAtArc01 } from "./curves";
 import { sampleUvField } from "./extract";
@@ -77,8 +83,8 @@ export function hexSteiner(
         const x0 = minX + margin + (row % 2 === 1 ? step * 0.5 : 0);
         for (let x = x0; x <= maxX - margin; x += step) {
             if (!pointInPoly(x, y, clip)) continue;
-            if (minDistToLoopXY(x, y, outer) < outlineKeep) continue;
-            if (inner && inner.length >= 3 && minDistToLoopXY(x, y, inner) < margin * 0.5) continue;
+            if (loopDistanceIsBelow(x, y, outer, outlineKeep)) continue;
+            if (inner && inner.length >= 3 && loopDistanceIsBelow(x, y, inner, margin * 0.5)) continue;
             out.push({ x, y, z: 0 });
         }
     }
@@ -253,7 +259,7 @@ export function maxBoundaryAspect(
         const C = points[f[2]!]!;
         const cx = (A.x + B.x + C.x) / 3;
         const cy = (A.y + B.y + C.y) / 3;
-        if (minDistToLoopXY(cx, cy, boundary) > withinMm) continue;
+        if (loopDistanceExceeds(cx, cy, boundary, withinMm)) continue;
         const e1 = Math.hypot(B.x - A.x, B.y - A.y);
         const e2 = Math.hypot(C.x - B.x, C.y - B.y);
         const e3 = Math.hypot(A.x - C.x, A.y - C.y);
@@ -331,7 +337,7 @@ function nudgeClosePair(
         ny = b.y + Math.sin(ang) * tol;
     }
     if (loop && keep > 0) {
-        if (!pointInPoly(nx, ny, loop) || minDistToLoopXY(nx, ny, loop) < keep) return;
+        if (!pointInPoly(nx, ny, loop) || loopDistanceIsBelow(nx, ny, loop, keep)) return;
     }
     b.x = nx;
     b.y = ny;
@@ -448,7 +454,7 @@ export function collarSteiner(loop: PolyPoint[], keep: number, spacingMm: number
     try {
         const inset = clipperRoundInset(loop, insetMm);
         return resampleClosedSpacing(inset, spacingMm).filter(
-            (p) => pointInPoly(p.x, p.y, loop) && minDistToLoopXY(p.x, p.y, loop) >= keep,
+            (p) => pointInPoly(p.x, p.y, loop) && !loopDistanceIsBelow(p.x, p.y, loop, keep),
         );
     } catch {
         return [];
@@ -478,7 +484,7 @@ export function inwardEdgeSteiner(loop: PolyPoint[], dist: number, keep: number)
             const x = midX + s * nx * dist;
             const y = midY + s * ny * dist;
             if (!pointInPoly(x, y, loop)) continue;
-            if (minDistToLoopXY(x, y, loop) < keep) continue;
+            if (loopDistanceIsBelow(x, y, loop, keep)) continue;
             out.push({ x, y, z: 0 });
             break;
         }
@@ -524,7 +530,7 @@ export function maxBoundaryMinAngleDeg(
         const C = points[f[2]!]!;
         const cx = (A.x + B.x + C.x) / 3;
         const cy = (A.y + B.y + C.y) / 3;
-        if (minDistToLoopXY(cx, cy, boundary) > withinMm) continue;
+        if (loopDistanceExceeds(cx, cy, boundary, withinMm)) continue;
         worst = Math.min(worst, faceMinAngleDeg(A, B, C));
     }
     return worst;
@@ -556,7 +562,7 @@ function projectInsideKeep(loop: PolyPoint[], x: number, y: number, keep: number
     const hit = nearestOnLoopXY(x, y, loop);
     const tryAt = (px: number, py: number): PolyPoint | null => {
         if (!pointInPoly(px, py, loop)) return null;
-        if (minDistToLoopXY(px, py, loop) < keep - 1e-9) return null;
+        if (loopDistanceIsBelow(px, py, loop, keep - 1e-9)) return null;
         return { x: px, y: py, z: 0 };
     };
     if (hit.d >= keep) return tryAt(x, y);
@@ -799,8 +805,12 @@ export function splitBoundarySlivers(
         for (const face of faces) {
             const [a, b, c] = face.map((i) => points[i]!) as [PolyPoint, PolyPoint, PolyPoint];
             if (
-                minDistToLoopXY((a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3, boundary) >
-                PLANTAR_SLIVER_BAND_MM
+                loopDistanceExceeds(
+                    (a.x + b.x + c.x) / 3,
+                    (a.y + b.y + c.y) / 3,
+                    boundary,
+                    PLANTAR_SLIVER_BAND_MM,
+                )
             )
                 continue;
             const { aspect } = faceAspect(a, b, c);
@@ -879,7 +889,7 @@ function cdtDiskOf(
     const wantSteiner = opts?.steiner !== false;
     const hex = wantSteiner
         ? hexSteiner(loop, step, Math.max(margin, keep)).filter(
-              (p) => minDistToLoopXY(p.x, p.y, loop) >= keep,
+              (p) => !loopDistanceIsBelow(p.x, p.y, loop, keep),
           )
         : [];
     const collar = wantSteiner && dense ? collarSteiner(loop, keep, 0.9) : [];
