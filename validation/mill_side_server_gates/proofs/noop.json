@@ -1,0 +1,470 @@
+{
+  "baseSha": "4a6c76f2e8acf7b62506090b96164dc74ca4e7ba",
+  "ok": true,
+  "defectFailed": [
+    "defect_zod_rr",
+    "defect_zod_ll",
+    "defect_zod_rejects_rx",
+    "defect_wiring",
+    "defect_sides_rr",
+    "defect_sides_ll",
+    "defect_filename_rr",
+    "defect_filename_ll",
+    "defect_idempotency_rr",
+    "defect_idempotency_ll",
+    "defect_gcode_rr",
+    "defect_gcode_ll"
+  ],
+  "keepFailed": [],
+  "results": [
+    {
+      "id": "defect_zod_rr",
+      "rule": "R1 ONE",
+      "pass": false,
+      "measured": null,
+      "threshold": "RR",
+      "detail": "generateCncGcode input keeps millSide RR"
+    },
+    {
+      "id": "defect_zod_ll",
+      "rule": "R1 ONE",
+      "pass": false,
+      "measured": null,
+      "threshold": "LL",
+      "detail": "generateCncGcode input keeps millSide LL"
+    },
+    {
+      "id": "defect_zod_rejects_rx",
+      "rule": "ONE",
+      "pass": false,
+      "measured": false,
+      "threshold": true,
+      "detail": "generateCncGcode rejects millSide outside LR|RR|LL"
+    },
+    {
+      "id": "keep_zod_lr_omitted",
+      "rule": "R6 MUST-MATCH",
+      "pass": true,
+      "measured": {
+        "lr": null,
+        "omitted": null
+      },
+      "threshold": "undefined or LR",
+      "detail": "omitted and LR stay accepted on the server input"
+    },
+    {
+      "id": "defect_wiring",
+      "rule": "ONE",
+      "pass": false,
+      "measured": {
+        "prepare": false,
+        "filename": false,
+        "build": false
+      },
+      "threshold": {
+        "prepare": true,
+        "filename": true,
+        "build": true
+      },
+      "detail": "runCadOperatorCncGcodeRequest passes args.input.millSide into prepare, filename, and build"
+    },
+    {
+      "id": "defect_sides_rr",
+      "rule": "R1 TESTS",
+      "pass": false,
+      "measured": {
+        "sides": [
+          "left",
+          "right"
+        ],
+        "internalRight": "left"
+      },
+      "threshold": {
+        "sides": [
+          "left",
+          "left"
+        ],
+        "internalRight": "left"
+      },
+      "detail": "RR on a two-foot milled SAMPLE_Top design returns [internal-right, internal-right]"
+    },
+    {
+      "id": "defect_sides_ll",
+      "rule": "R1 TESTS",
+      "pass": false,
+      "measured": {
+        "sides": [
+          "left",
+          "right"
+        ],
+        "internalLeft": "right"
+      },
+      "threshold": {
+        "sides": [
+          "right",
+          "right"
+        ],
+        "internalLeft": "right"
+      },
+      "detail": "LL returns [internal-left, internal-left]"
+    },
+    {
+      "id": "defect_filename_rr",
+      "rule": "TESTS",
+      "pass": false,
+      "measured": "_EVA_LR.gcode",
+      "threshold": "_EVA_RR.gcode",
+      "detail": "EVA Milled filename suffix for millSide RR"
+    },
+    {
+      "id": "defect_filename_ll",
+      "rule": "TESTS",
+      "pass": false,
+      "measured": "_EVA_LR.gcode",
+      "threshold": "_EVA_LL.gcode",
+      "detail": "EVA Milled filename suffix for millSide LL"
+    },
+    {
+      "id": "defect_idempotency_rr",
+      "rule": "TESTS ONE",
+      "pass": false,
+      "measured": {
+        "rr": "cadop:v1:11111111-1111-4111-8111-111111111111:pair:vertex-lab-idaho-one-side:e67c91518c8a8687947c13b0e70dbb4671b8dc3e03ecf6e6b4fbaa2219aa9ef3",
+        "lr": "cadop:v1:11111111-1111-4111-8111-111111111111:pair:vertex-lab-idaho-one-side:e67c91518c8a8687947c13b0e70dbb4671b8dc3e03ecf6e6b4fbaa2219aa9ef3"
+      },
+      "threshold": "RR key differs from LR and from main LR key",
+      "detail": "RR gets its own idempotency key"
+    },
+    {
+      "id": "defect_idempotency_ll",
+      "rule": "TESTS ONE",
+      "pass": false,
+      "measured": {
+        "ll": "cadop:v1:11111111-1111-4111-8111-111111111111:pair:vertex-lab-idaho-one-side:e67c91518c8a8687947c13b0e70dbb4671b8dc3e03ecf6e6b4fbaa2219aa9ef3",
+        "lr": "cadop:v1:11111111-1111-4111-8111-111111111111:pair:vertex-lab-idaho-one-side:e67c91518c8a8687947c13b0e70dbb4671b8dc3e03ecf6e6b4fbaa2219aa9ef3",
+        "rr": "cadop:v1:11111111-1111-4111-8111-111111111111:pair:vertex-lab-idaho-one-side:e67c91518c8a8687947c13b0e70dbb4671b8dc3e03ecf6e6b4fbaa2219aa9ef3"
+      },
+      "threshold": "LL key differs from LR and from RR",
+      "detail": "LL gets its own idempotency key"
+    },
+    {
+      "id": "defect_gcode_rr",
+      "rule": "TESTS",
+      "pass": false,
+      "measured": {
+        "server": {
+          "sha256": "4f23cf6efcf29e358b8d730cf907fdc4d875b9db27cc0ad23949fcf5d993f4b6",
+          "bytes": 1643392
+        },
+        "browser": {
+          "sha256": "fbb9eb5f34f8cccd255f8701d98f3ee03ebdd957d9353f386e0f574c34744bb3",
+          "bytes": 1643617
+        }
+      },
+      "threshold": "sha256 equal and byte length equal",
+      "detail": "server RR G-code bytes equal browser buildMillCncGcode millSide RR"
+    },
+    {
+      "id": "defect_gcode_ll",
+      "rule": "TESTS",
+      "pass": false,
+      "measured": {
+        "server": {
+          "sha256": "4f23cf6efcf29e358b8d730cf907fdc4d875b9db27cc0ad23949fcf5d993f4b6",
+          "bytes": 1643392
+        },
+        "browser": {
+          "sha256": "40152b8e67e4fd43ec2f634220fcc8d8b2c0adb400a5a54ee7bab1a6ef2d557d",
+          "bytes": 1643586
+        }
+      },
+      "threshold": "sha256 equal and byte length equal",
+      "detail": "server LL G-code bytes equal browser buildMillCncGcode millSide LL"
+    },
+    {
+      "id": "keep_lr_sides",
+      "rule": "R6 MUST-MATCH",
+      "pass": true,
+      "measured": {
+        "lr": [
+          "left",
+          "right"
+        ],
+        "omit": [
+          "left",
+          "right"
+        ]
+      },
+      "threshold": [
+        "left",
+        "right"
+      ],
+      "detail": "omitted and LR sides stay the main pair"
+    },
+    {
+      "id": "keep_lr_filename",
+      "rule": "R6 MUST-MATCH",
+      "pass": true,
+      "measured": {
+        "lr": "_EVA_LR.gcode",
+        "omit": "_EVA_LR.gcode"
+      },
+      "threshold": "_EVA_LR.gcode",
+      "detail": "omitted and LR filename suffix stays the main suffix"
+    },
+    {
+      "id": "keep_lr_idempotency",
+      "rule": "R6 MUST-MATCH",
+      "pass": true,
+      "measured": {
+        "lr": "cadop:v1:11111111-1111-4111-8111-111111111111:pair:vertex-lab-idaho-one-side:e67c91518c8a8687947c13b0e70dbb4671b8dc3e03ecf6e6b4fbaa2219aa9ef3",
+        "omit": "cadop:v1:11111111-1111-4111-8111-111111111111:pair:vertex-lab-idaho-one-side:e67c91518c8a8687947c13b0e70dbb4671b8dc3e03ecf6e6b4fbaa2219aa9ef3"
+      },
+      "threshold": "cadop:v1:11111111-1111-4111-8111-111111111111:pair:vertex-lab-idaho-one-side:e67c91518c8a8687947c13b0e70dbb4671b8dc3e03ecf6e6b4fbaa2219aa9ef3",
+      "detail": "omitted and LR idempotency key stays the main key"
+    },
+    {
+      "id": "keep_lr_gcode",
+      "rule": "R6 MUST-MATCH",
+      "pass": true,
+      "measured": {
+        "lr": {
+          "sha256": "4f23cf6efcf29e358b8d730cf907fdc4d875b9db27cc0ad23949fcf5d993f4b6",
+          "bytes": 1643392
+        },
+        "omit": {
+          "sha256": "4f23cf6efcf29e358b8d730cf907fdc4d875b9db27cc0ad23949fcf5d993f4b6",
+          "bytes": 1643392
+        }
+      },
+      "threshold": {
+        "sha256": "4f23cf6efcf29e358b8d730cf907fdc4d875b9db27cc0ad23949fcf5d993f4b6",
+        "bytes": 1643392
+      },
+      "detail": "omitted and LR G-code bytes stay identical to main"
+    },
+    {
+      "id": "keep_profile_r6",
+      "rule": "R6",
+      "pass": true,
+      "measured": {
+        "id": "vertex-lab-idaho-one-side",
+        "strategy": "spiral",
+        "stepoverBallMm": 1.4,
+        "stepoverFlatMm": 3,
+        "layeredMm": 15,
+        "toolpathCutter": {
+          "diameterMm": 10,
+          "type": "ball",
+          "rpm": 24000
+        },
+        "topFeeds": {
+          "dip": 3500,
+          "normal": 36000,
+          "slow": 3500,
+          "contour": 2500
+        },
+        "bottomFeeds": {
+          "dip": 3500,
+          "normal": 24000,
+          "slow": 3500,
+          "contour": 2500
+        }
+      },
+      "threshold": {
+        "id": "vertex-lab-idaho-one-side",
+        "strategy": "spiral",
+        "stepoverBallMm": 1.4,
+        "stepoverFlatMm": 3,
+        "layeredMm": 15,
+        "toolpathCutter": {
+          "diameterMm": 10,
+          "type": "ball",
+          "rpm": 24000
+        },
+        "topFeeds": {
+          "dip": 3500,
+          "normal": 36000,
+          "slow": 3500,
+          "contour": 2500
+        },
+        "bottomFeeds": {
+          "dip": 3500,
+          "normal": 24000,
+          "slow": 3500,
+          "contour": 2500
+        }
+      },
+      "detail": "cutter, feeds, stepover, and strategy stay the main Idaho profile"
+    },
+    {
+      "id": "keep_normalize_mill_side",
+      "rule": "ONE",
+      "pass": true,
+      "measured": {
+        "RR": "RR",
+        "LL": "LL",
+        "LR": "LR",
+        "omit": "LR",
+        "RX": "LR"
+      },
+      "threshold": {
+        "RR": "RR",
+        "LL": "LL",
+        "LR": "LR",
+        "omit": "LR",
+        "RX": "LR"
+      },
+      "detail": "reuse normalizeMillSide; unknown values stay LR"
+    },
+    {
+      "id": "keep_r2_thickness",
+      "rule": "R2",
+      "pass": true,
+      "measured": {
+        "left": 4,
+        "right": 4
+      },
+      "threshold": {
+        "minMm": 4,
+        "baseline": {
+          "left": 4,
+          "right": 4
+        }
+      },
+      "detail": "unmarked EVA mill thickness stays >= 4.0 mm on both feet"
+    },
+    {
+      "id": "keep_r2_marked",
+      "rule": "R2",
+      "pass": true,
+      "measured": {
+        "left": 6,
+        "right": 6
+      },
+      "threshold": {
+        "left": 6,
+        "right": 6
+      },
+      "detail": "a thickness marked otherwise stays that thickness"
+    },
+    {
+      "id": "keep_r2_files",
+      "rule": "R2 R7",
+      "pass": true,
+      "measured": [],
+      "threshold": [],
+      "detail": "thickness implementation files match main"
+    },
+    {
+      "id": "keep_r3_clearance",
+      "rule": "R3",
+      "pass": true,
+      "measured": {
+        "clearanceMm": 1,
+        "drifted": []
+      },
+      "threshold": {
+        "clearanceMm": 1,
+        "drifted": []
+      },
+      "detail": "toolpath clearance stays 1 mm and the clearance sources match main"
+    },
+    {
+      "id": "keep_r3_size15_fit",
+      "rule": "R3",
+      "pass": true,
+      "measured": {
+        "lengthMm": 310.323,
+        "widthMm": 113.387,
+        "xMarginMm": 45.977,
+        "yMarginMm": 4.788
+      },
+      "threshold": {
+        "lengthMm": 310.323,
+        "widthMm": 113.387,
+        "xMarginMm": ">= 0",
+        "yMarginMm": ">= 0"
+      },
+      "detail": "US men size 15 tool envelope fits the block with clearance; cutouts stay apart"
+    },
+    {
+      "id": "keep_r4_scope",
+      "rule": "R4",
+      "pass": true,
+      "measured": {
+        "changed": [],
+        "outOfScope": []
+      },
+      "threshold": {
+        "outOfScope": []
+      },
+      "detail": "product edits stay on the millSide server wiring allowlist"
+    },
+    {
+      "id": "keep_r5_phi",
+      "rule": "R5",
+      "pass": true,
+      "measured": {
+        "hits": 0,
+        "forbiddenPaths": []
+      },
+      "threshold": {
+        "hits": 0,
+        "forbiddenPaths": []
+      },
+      "detail": "no new name-field logs, secrets, Railway, vertex-web, vertex-api, or migrations"
+    },
+    {
+      "id": "keep_r7_surface",
+      "rule": "R7",
+      "pass": true,
+      "measured": {
+        "drifted": [],
+        "lrSha256": "4f23cf6efcf29e358b8d730cf907fdc4d875b9db27cc0ad23949fcf5d993f4b6"
+      },
+      "threshold": {
+        "drifted": [],
+        "lrSha256": "4f23cf6efcf29e358b8d730cf907fdc4d875b9db27cc0ad23949fcf5d993f4b6"
+      },
+      "detail": "surface, seam, and layer-change sources match main and LR toolpath bytes match"
+    },
+    {
+      "id": "keep_safety_guards",
+      "rule": "TESTS",
+      "pass": true,
+      "measured": {
+        "prepareAssert": true,
+        "prepareCall": true,
+        "buildCall": true,
+        "printRefusal": true,
+        "uuid": true,
+        "rateLimit": true,
+        "credential": true
+      },
+      "threshold": {
+        "prepareAssert": true,
+        "prepareCall": true,
+        "buildCall": true,
+        "printRefusal": true,
+        "uuid": true,
+        "rateLimit": true,
+        "credential": true
+      },
+      "detail": "print-order refusal, design id check, rate limit, and CAD-operator credential check stay"
+    },
+    {
+      "id": "keep_existing_tests",
+      "rule": "TESTS",
+      "pass": true,
+      "measured": {
+        "exitCode": 0,
+        "summary": "\"failedFiles\": 0, | \"failedTests\": 0, | \"passedTests\": 3,"
+      },
+      "threshold": {
+        "exitCode": 0
+      },
+      "detail": "vertex/server/src/lib/cnc-mill-gcode.test.ts passes"
+    }
+  ]
+}
