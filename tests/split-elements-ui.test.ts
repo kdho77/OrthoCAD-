@@ -75,6 +75,7 @@ describe("split elements UI + one hardness table", () => {
     });
 
     test("five named classes have distinct colors and line-width fingerprint", () => {
+        expect(CLASS_PREVIEW_COLORS.Medium).toBe("#ffffff");
         const colors = new Set(NAMED_HARDNESS_CLASSES.map((c) => CLASS_PREVIEW_COLORS[c]));
         expect(colors.size).toBe(5);
         expect(classLineWidthMm("Extra Soft")).toBe(0.7);

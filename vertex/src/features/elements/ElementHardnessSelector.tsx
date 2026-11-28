@@ -6,7 +6,7 @@ import { useClinicalWorkflowStore } from "@/stores/clinical-workflow-store";
 import { useDesignStore } from "@/stores/design-store";
 import {
     CLASS_DISPLAY_NAMES,
-    CLASS_PREVIEW_COLORS,
+    classPreviewSwatchStyle,
     NAMED_HARDNESS_CLASSES,
 } from "../../../shared/print-recipe/hardness-class-table";
 
@@ -76,7 +76,7 @@ export function ElementHardnessSelector({ elementId }: { elementId: string }) {
                         <span
                             aria-hidden="true"
                             className="h-3 w-3 rounded-full"
-                            style={{ backgroundColor: CLASS_PREVIEW_COLORS[hardness] }}
+                            style={classPreviewSwatchStyle(hardness)}
                         />
                         {CLASS_DISPLAY_NAMES[hardness]}
                         {element.hardnessClass === hardness ? (
