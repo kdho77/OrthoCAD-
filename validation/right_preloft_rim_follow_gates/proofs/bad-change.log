@@ -1,0 +1,10 @@
+PASS bad-change: unchanged main cap is accepted
+PASS bad-change: SKEW_INSET_RATIO loosened from 0.5 to 1 rejected (exit 1)
+PASS bad-change: 0.5×inset formula multiplied by 4 rejected (exit 1)
+PASS bad-change: outer-surface perimeter order reversed rejected (exit 1)
+PASS bad-change: layer-change timing constant edited rejected (exit 1)
+PASS bad-change: ring seam start moved rejected (exit 1)
+PASS bad-change: left-pin comparator self-test
+PASS bad-change: product-diff classifier self-test
+PASS bad-change: loosened cap, outer surface, seam, and layer-change copies were rejected
+BAD_EXIT:0

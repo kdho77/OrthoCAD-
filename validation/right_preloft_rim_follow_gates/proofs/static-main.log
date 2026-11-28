@@ -1,0 +1,15 @@
+PASS cap: assertPreLoftStations SHA-256 822d85299ff2e2ad26e43af621da49e09d30391e8169f7eb9eb10428eb28781f matches frozen main
+PASS cap: shoe-width rim-follow call is unchanged
+PASS cap: reconstruct still calls assertPreLoftStations
+PASS cap: SKEW_INSET_RATIO stays 0.5 and the skew cap formula is unchanged
+PASS surface: vertex/src/lib/kiri/slicer.ts 3650c487c38f4b4b9aa4d0c04f795445bdca70ea9f317301e623d30f43f6edcd
+PASS surface: vertex/src/lib/kiri/engine.ts f6f611b1e4808e42a203f99bd3933d739ff1f0d8319e69a94e0f4e39e14f0d25
+PASS surface: vertex/src/lib/kiri/gcode.ts d3b2a3d2ef5ff4f379530327360bf5b4cefd2e4579981ae3e2357d5341963dba
+PASS surface: vertex/src/lib/kiri/presets.ts 07564936650fb5908dcdaabdfc1b4ee1aed902bbfe3c28d145897814874c39fe
+PASS surface: python-service/app/services/slicer.py 222b011b17643ddbebac6edbf688479c80be6019864c1726e8e0db43ed3f6f4c
+PASS surface: vertex/src/lib/geometry/procedural-wall/ring-seam.ts 11175c73c6534a03f9e0ac0ebf8c835e64757c0efb4baa5b24e5d84b389bc3bd
+PASS surface: vertex/src/lib/geometry/procedural-wall/curves.ts cb386075ee529140635bed74cab45800b5bcef5a400294682983c479528a5d35
+PASS surface: vertex/src/lib/geometry/procedural-wall/wall-spline.ts 4395ed0e5cc7c587fbdd7a99db262a1e66b0160eb294ea1a50ed9b8a5bc80cbc
+PASS surface: vertex/src/lib/geometry/procedural-wall/bezier-column.ts c27feb57048bea16729bc914542a5403aff691a334371eaec90056929ae04350
+PASS surface: vertex/src/lib/geometry/text-marking/bottom-engrave.ts 7cdfac5ff8d8eb51839365e66384e6d582d892d2d61fec26a7e6518c6a56749c
+PASS surface: outer-surface, seam, layer-change, and surface-quality files match main
