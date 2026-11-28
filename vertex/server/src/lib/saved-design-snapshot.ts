@@ -380,6 +380,10 @@ export async function persistSavedDesignSnapshotOnDesign(args: {
         },
     })) as SnapshotRow | null;
 
+    if (row?.deletedAt) {
+        throw new SavedDesignSnapshotError("Design is deleted. Refusing to write.");
+    }
+
     const design = dogfoodDesignRead(
         args.principal,
         row

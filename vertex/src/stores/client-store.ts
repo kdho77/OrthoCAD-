@@ -64,8 +64,8 @@ interface ClientStore {
     duplicateDesign: (id: string) => string | null;
     archiveDesign: (id: string) => void;
     restoreDesignArchive: (id: string) => void;
-    softDeleteDesign: (id: string) => boolean;
-    softDeleteDesigns: (ids: string[]) => { failedIds: string[] };
+    softDeleteDesign: (id: string) => Promise<boolean>;
+    softDeleteDesigns: (ids: string[]) => Promise<{ failedIds: string[] }>;
     restoreDesign: (id: string, now?: number) => boolean;
     markExported: (id: string) => void;
     setActiveDesign: (id: string | null) => void;
@@ -205,6 +205,11 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
             useClientNoticeStore.getState().setError(message);
             throw new Error(message);
         }
+        if (record.deletedAt) {
+            const message = "Design is deleted";
+            useClientNoticeStore.getState().setError(message);
+            throw new Error(message);
+        }
         if (isApiConfigured()) {
             try {
                 const settings = settingsForDesignSave(state);
@@ -273,9 +278,18 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
                     : design,
             ),
         })),
-    softDeleteDesign: (id) => {
+    softDeleteDesign: async (id) => {
         const design = get().designs.find((row) => row.id === id);
         if (!design || design.deletedAt) return false;
+        if (isApiConfigured()) {
+            try {
+                await trpc.design.delete.mutate({ id });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : "Design delete failed";
+                useClientNoticeStore.getState().setError(message);
+                return false;
+            }
+        }
         set((s) => ({
             designs: s.designs.map((row) =>
                 row.id === id ? { ...row, deletedAt: new Date().toISOString() } : row,
@@ -284,10 +298,10 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
         }));
         return true;
     },
-    softDeleteDesigns: (ids) => {
+    softDeleteDesigns: async (ids) => {
         const failedIds: string[] = [];
         for (const id of ids) {
-            if (!get().softDeleteDesign(id)) failedIds.push(id);
+            if (!(await get().softDeleteDesign(id))) failedIds.push(id);
         }
         return { failedIds };
     },
@@ -333,13 +347,15 @@ export const useClientStore = create<ClientStore>()((set, get) => ({
                 get().replaceDirectory(
                     items.map((item) => item.client),
                     items.flatMap((item) =>
-                        item.designs.map((design) => ({
-                            ...design,
-                            notes: design.notes ?? "",
-                            state:
-                                local.find((row) => row.id === design.id)?.state ??
-                                createDesignWithStockPlaceholder(),
-                        })),
+                        item.designs
+                            .filter((design) => !design.deletedAt)
+                            .map((design) => ({
+                                ...design,
+                                notes: design.notes ?? "",
+                                state:
+                                    local.find((row) => row.id === design.id)?.state ??
+                                    createDesignWithStockPlaceholder(),
+                            })),
                     ),
                 );
             } catch (error) {

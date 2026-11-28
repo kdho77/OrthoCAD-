@@ -1,7 +1,11 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { beforeEach, describe, expect, test } from "@rstest/core";
-import { loadDesignWorkflowSession, saveDesignWorkflowSession } from "./design-workflow-session";
+import {
+    clearDesignWorkflowSession,
+    loadDesignWorkflowSession,
+    saveDesignWorkflowSession,
+} from "./design-workflow-session";
 
 const DESIGN = "11111111-1111-4111-8111-111111111111";
 
@@ -13,13 +17,13 @@ describe("design workflow session", () => {
     test("round-trips step and completed steps for a design id", () => {
         saveDesignWorkflowSession(DESIGN, {
             step: "corrections",
-            completedSteps: ["scan", "setup", "base"],
+            completedSteps: ["scan", "setup", "elements"],
             footSideExplicitlyChosen: true,
             designStartPath: null,
         });
         const loaded = loadDesignWorkflowSession(DESIGN);
         expect(loaded?.step).toBe("corrections");
-        expect(loaded?.completedSteps).toEqual(["scan", "setup", "base"]);
+        expect(loaded?.completedSteps).toEqual(["scan", "setup", "elements"]);
         expect(loaded?.footSideExplicitlyChosen).toBe(true);
     });
 
@@ -30,6 +34,17 @@ describe("design workflow session", () => {
             footSideExplicitlyChosen: false,
             designStartPath: "scan",
         });
-        expect(loadDesignWorkflowSession(DESIGN)?.step).toBe("base");
+        expect(loadDesignWorkflowSession(DESIGN)?.step).toBe("setup");
+    });
+
+    test("clearing a deleted design removes its cached session", () => {
+        saveDesignWorkflowSession(DESIGN, {
+            step: "corrections",
+            completedSteps: ["scan"],
+            footSideExplicitlyChosen: true,
+            designStartPath: "template",
+        });
+        clearDesignWorkflowSession(DESIGN);
+        expect(loadDesignWorkflowSession(DESIGN)).toBeNull();
     });
 });
