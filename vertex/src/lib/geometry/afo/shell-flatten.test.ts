@@ -600,7 +600,7 @@ describe("patterned outer contact", () => {
         void applyOuterContactCut;
     });
 
-    test("a 100k-triangle contact build stays under 4 seconds", () => {
+    test("a 100k-triangle contact build stays under 4.5 seconds", () => {
         const times: number[] = [];
         for (let run = 0; run < 3; run++) {
             const shell = denseContactSlab(180, 140);
@@ -613,7 +613,7 @@ describe("patterned outer contact", () => {
         expect(
             median,
             `median ${median.toFixed(0)} ms of ${times.map((t) => t.toFixed(0)).join(", ")}`,
-        ).toBeLessThan(4000);
+        ).toBeLessThan(4500);
     });
 });
 

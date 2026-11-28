@@ -2,8 +2,8 @@
 
 import {
     CLASS_DISPLAY_NAMES,
-    CLASS_PREVIEW_COLORS,
     classLineWidthMm,
+    classPreviewSwatchStyle,
     HARDNESS_CLASS_TABLE,
     NAMED_HARDNESS_CLASSES,
     type RegionHardnessClass,
@@ -81,7 +81,7 @@ export function HardnessPicker({ id, value, onChange, required = false }: Props)
                 <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
                     <span
                         className="h-2.5 w-2.5 rounded-full"
-                        style={{ background: CLASS_PREVIEW_COLORS[cls] }}
+                        style={classPreviewSwatchStyle(cls)}
                     />
                     <span>
                         {HARDNESS_CLASS_TABLE[cls].sparseInfillDensityPct}% gyroid ·{" "}
