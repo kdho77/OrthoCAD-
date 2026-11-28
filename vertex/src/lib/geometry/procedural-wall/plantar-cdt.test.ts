@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { describe, expect, test } from "@rstest/core";
-import { minDistToLoopXY } from "./cdt-band";
+import { loopDistanceExceeds, loopDistanceIsBelow, minDistToLoopXY } from "./cdt-band";
 import { assertIEdges, assertLibraryDisk } from "./cdt-lib";
 import {
     assertBoundarySlivers,
@@ -340,5 +340,46 @@ describe("boundary sliver edge repair", () => {
         expect(splitBoundarySlivers(points, faces, 3)).toBe(0);
         expect(JSON.stringify({ points, faces })).toBe(saved);
         expect(() => assertBoundarySlivers(points, faces, points)).toThrow();
+    });
+
+    test("outline distance index matches the segment scan on every sample", () => {
+        const n = 420;
+        const loop = Array.from({ length: n }, (_, i) => {
+            const a = (i / n) * Math.PI * 2;
+            const radius = 42 + 7 * Math.sin(3 * a);
+            return { x: 130 + radius * Math.cos(a) * 2.4, y: radius * Math.sin(a), z: 1 };
+        });
+        const brute = (x: number, y: number): number => {
+            let best = Infinity;
+            for (let i = 0; i < loop.length; i++) {
+                const a = loop[i]!;
+                const b = loop[(i + 1) % loop.length]!;
+                const ex = b.x - a.x;
+                const ey = b.y - a.y;
+                const len2 = ex * ex + ey * ey;
+                const t =
+                    len2 > 1e-12 ? Math.max(0, Math.min(1, ((x - a.x) * ex + (y - a.y) * ey) / len2)) : 0;
+                const dx = x - (a.x + ex * t);
+                const dy = y - (a.y + ey * t);
+                const d = dx * dx + dy * dy;
+                if (d < best) best = d;
+            }
+            return Math.sqrt(best);
+        };
+        const samples = [
+            { x: 130, y: 0 },
+            { x: 230, y: 0.2 },
+            { x: 20, y: -40 },
+            { x: 130, y: 30 },
+        ];
+        for (let k = 0; k < 120; k++) samples.push({ x: 20 + ((k * 19) % 240), y: -55 + ((k * 11) % 110) });
+        for (const p of samples) {
+            const exact = brute(p.x, p.y);
+            expect(minDistToLoopXY(p.x, p.y, loop)).toBe(exact);
+            expect(minDistToLoopXY(p.x, p.y, loop)).toBe(exact);
+            expect(loopDistanceExceeds(p.x, p.y, loop, 2)).toBe(exact > 2);
+            expect(loopDistanceIsBelow(p.x, p.y, loop, 0.5)).toBe(exact < 0.5);
+            expect(loopDistanceIsBelow(p.x, p.y, loop, 0.5 - 1e-9)).toBe(exact < 0.5 - 1e-9);
+        }
     });
 });

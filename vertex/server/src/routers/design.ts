@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
     archiveDesignFile,
+    ClientFileError,
     createDesignFile,
     duplicateDesignFile,
     getDesignFile,
@@ -209,7 +210,10 @@ export const designRouter = router({
         .mutation(async ({ ctx, input }) => {
             try {
                 const { repo, actor, storePhi } = await scope(ctx);
-                await getDesignFile(repo, actor, input.id, storePhi);
+                const existing = await getDesignFile(repo, actor, input.id, storePhi);
+                if (existing.deletedAt) {
+                    throw new ClientFileError("BAD_REQUEST", "Design is deleted");
+                }
                 const { state } = input;
                 return await repo.saveDesignGeometry({
                     userId: ctx.user.id,

@@ -23,6 +23,9 @@ import {
     buildProceduralViewerPatternInWorker,
     EXPORT_SOLID_WORKER_POOL_SIZE,
     exportSolidWorkerCountForTests,
+    PREVIEW_LOFT_WORKER_POOL_SIZE,
+    previewLoftWorkerCountForTests,
+    reconstructProceduralPreviewInWorker,
     terminateExportSolidWorkers,
     terminateProceduralWallWorker,
 } from "./preview-loft-worker";
@@ -100,6 +103,65 @@ describe("preview loft worker pattern parity", () => {
         expect(workerRight).toEqual(mainRight);
         leftGeo.dispose();
         rightGeo.dispose();
+    });
+});
+
+describe("preview lofts in parallel workers", () => {
+    test("pool has a worker per foot", () => {
+        expect(PREVIEW_LOFT_WORKER_POOL_SIZE).toBe(2);
+    });
+
+    test("left and right reconstructs check out two workers at once", async () => {
+        class PoolWorker {
+            static instances: PoolWorker[] = [];
+            static inFlight = 0;
+            static maxInFlight = 0;
+            onmessage: ((event: MessageEvent) => void) | null = null;
+            onerror: ((event: Event) => void) | null = null;
+
+            constructor() {
+                PoolWorker.instances.push(this);
+            }
+
+            postMessage(msg: { id: number }): void {
+                PoolWorker.inFlight += 1;
+                PoolWorker.maxInFlight = Math.max(PoolWorker.maxInFlight, PoolWorker.inFlight);
+                setTimeout(() => {
+                    PoolWorker.inFlight -= 1;
+                    const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+                    const indices = new Uint32Array([0, 1, 2]);
+                    this.onmessage?.({
+                        data: {
+                            id: msg.id,
+                            type: "geometry",
+                            payload: { positions, indices },
+                            pattern: [],
+                        },
+                    } as MessageEvent);
+                }, 40);
+            }
+
+            terminate(): void {}
+        }
+
+        PoolWorker.instances = [];
+        globalThis.Worker = PoolWorker as unknown as typeof Worker;
+        const left = tinyTop();
+        const right = tinyTop();
+        const [a, b] = await Promise.all([
+            reconstructProceduralPreviewInWorker(left, { side: "left" }),
+            reconstructProceduralPreviewInWorker(right, { side: "right" }),
+        ]);
+        expect(PoolWorker.instances.length).toBeGreaterThanOrEqual(2);
+        expect(PoolWorker.maxInFlight).toBeGreaterThanOrEqual(2);
+        expect(PoolWorker.instances[0]).not.toBe(PoolWorker.instances[1]);
+        expect(previewLoftWorkerCountForTests()).toBe(2);
+        a.geometry.dispose();
+        b.geometry.dispose();
+        left.dispose();
+        right.dispose();
+        terminateProceduralWallWorker();
+        expect(previewLoftWorkerCountForTests()).toBe(0);
     });
 });
 

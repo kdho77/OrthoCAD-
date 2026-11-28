@@ -38,6 +38,8 @@ const PINNED_HEAVY = {
     "tests/heel-cup-depth.realmesh.test.ts": 2,
     "tests/heel-cup-depth.export-solid.test.ts": 6,
     "tests/toprim-extraction.test.ts": 4,
+    // ~88 headless export builds; keep off shard 4 (finalized-mesh-runner + wedge gates).
+    "vertex/src/lib/geometry/text-marking/plantar-name-sweep.test.ts": 6,
     "tests/two-pointer-walk-steering.phase3.test.ts": 5,
     "tests/synced-bottom-shell-field.test.ts": 6,
 };

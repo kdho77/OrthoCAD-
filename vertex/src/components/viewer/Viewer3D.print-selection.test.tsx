@@ -43,6 +43,10 @@ rs.mock("./ScanMeshes", () => ({ ScanMeshes: () => null }));
 rs.mock("./ScanPlaneSliceTool", () => ({ ScanPlaneSliceTool: () => null }));
 rs.mock("./ScanRotateTool", () => ({ ScanRotateTool: () => null }));
 rs.mock("./PrintLoftSplash", () => ({ PrintLoftSplash: () => null }));
+rs.mock("./InsoleContourLighting", () => ({
+    InsoleContourLighting: () => null,
+    InsoleStandardLighting: () => null,
+}));
 rs.mock("./PerformanceMonitor", () => ({ PerformanceMonitorOverlay: () => null }));
 rs.mock("./InsoleContourLighting", () => ({
     InsoleContourLighting: () => null,

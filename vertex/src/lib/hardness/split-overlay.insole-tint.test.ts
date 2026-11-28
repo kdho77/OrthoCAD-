@@ -3,11 +3,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "@rstest/core";
+import type { PlacedElement } from "@/types";
 import {
     CLASS_PREVIEW_COLORS,
     NAMED_HARDNESS_CLASSES,
 } from "../../../shared/print-recipe/hardness-class-table";
-import { INSOLE_VIEWPORT_BASE_COLOR, insoleViewportMaterialColor } from "./split-overlay";
+import {
+    elementPreviewColor,
+    INSOLE_VIEWPORT_BASE_COLOR,
+    insoleViewportMaterialColor,
+} from "./split-overlay";
 
 function repoFile(...parts: string[]): string {
     const a = resolve(process.cwd(), ...parts);
@@ -31,19 +36,34 @@ describe("insole viewport hardness tint", () => {
         );
     });
 
-    test("Print/Export solid uses a lighter near-white hardness tint", () => {
+    test("Print/Export solid uses exact CLASS_PREVIEW_COLORS (no washout)", () => {
+        for (const name of NAMED_HARDNESS_CLASSES) {
+            expect(insoleViewportMaterialColor({ defaultHardness: name }, { printExport: true })).toBe(
+                CLASS_PREVIEW_COLORS[name],
+            );
+        }
         const design = insoleViewportMaterialColor({ defaultHardness: "Soft" });
         const print = insoleViewportMaterialColor({ defaultHardness: "Soft" }, { printExport: true });
+        expect(print).toBe(CLASS_PREVIEW_COLORS.Soft);
         expect(print).not.toBe(design);
-        expect(print).toBe(insoleViewportMaterialColor({ defaultHardness: "Soft" }, { printExport: true }));
-        const distFromBase = (hex: string) => {
-            const v = Number.parseInt(hex.slice(1), 16);
-            const r = (v >> 16) & 255;
-            const g = (v >> 8) & 255;
-            const b = v & 255;
-            return Math.abs(r - 248) + Math.abs(g - 250) + Math.abs(b - 252);
+    });
+
+    test("inheriting elements match insole Print/Export color for the same device hardness", () => {
+        const base: PlacedElement = {
+            id: "el",
+            kind: "dancers_pad",
+            side: "left",
+            position: { x: 0, y: 0 },
+            rotationDeg: 0,
+            scale: { x: 1, y: 1 },
+            heightMm: 4,
         };
-        expect(distFromBase(print)).toBeLessThan(distFromBase(design));
+        for (const name of NAMED_HARDNESS_CLASSES) {
+            const insole = insoleViewportMaterialColor({ defaultHardness: name }, { printExport: true });
+            const element = elementPreviewColor(base, true, false, true, name);
+            expect(insole).toBe(CLASS_PREVIEW_COLORS[name]);
+            expect(element).toBe(insole);
+        }
     });
 
     test("hardness tint derives from the same preview palette as split elements", () => {

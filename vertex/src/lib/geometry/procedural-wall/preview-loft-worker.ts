@@ -69,11 +69,20 @@ export interface ProceduralWallWorkerResponse {
 }
 
 interface Pending {
+    worker: Worker;
     resolve: (value: { geometry?: BufferGeometry; pattern: PolyPoint[] }) => void;
     reject: (err: Error) => void;
 }
 
-let worker: Worker | null = null;
+/** Print shows both feet. Each foot gets its own worker so the lofts overlap. */
+export const PREVIEW_LOFT_WORKER_POOL_SIZE = 2;
+
+interface PreviewSlot {
+    worker: Worker;
+    reserved: boolean;
+}
+
+const previewPool: PreviewSlot[] = [];
 let nextId = 1;
 const pending = new Map<number, Pending>();
 
@@ -89,52 +98,90 @@ function geometryCopy(geo: BufferGeometry): {
     return { positions, indices };
 }
 
-function ensureWorker(): Worker | null {
-    if (worker) return worker;
+function bindPreviewWorker(created: Worker): void {
+    created.onmessage = (event: MessageEvent<ProceduralWallWorkerResponse>) => {
+        const msg = event.data;
+        const req = pending.get(msg.id);
+        if (!req) return;
+        pending.delete(msg.id);
+        if (msg.type === "error") {
+            req.reject(new Error(msg.message ?? "Procedural wall worker failed"));
+            return;
+        }
+        if (msg.type === "pattern") {
+            req.resolve({ pattern: msg.pattern ?? [] });
+            return;
+        }
+        if (!msg.payload) {
+            req.reject(new Error(msg.message ?? "Procedural wall worker failed"));
+            return;
+        }
+        const geometry = payloadToGeometry(msg.payload);
+        if (msg.userData) geometry.userData = { ...geometry.userData, ...msg.userData };
+        req.resolve({ geometry, pattern: msg.pattern ?? [] });
+    };
+    created.onerror = (ev) => {
+        failPreviewWorker(created, new Error(ev.message || "Procedural wall worker crashed"));
+    };
+}
+
+function createPreviewWorker(): Worker | null {
     if (typeof Worker === "undefined") return null;
     try {
-        worker = new Worker(new URL("../../../workers/procedural-wall.worker.ts", import.meta.url), {
+        const created = new Worker(new URL("../../../workers/procedural-wall.worker.ts", import.meta.url), {
             type: "module",
         });
-        worker.onmessage = (event: MessageEvent<ProceduralWallWorkerResponse>) => {
-            const msg = event.data;
-            const req = pending.get(msg.id);
-            if (!req) return;
-            pending.delete(msg.id);
-            if (msg.type === "error") {
-                req.reject(new Error(msg.message ?? "Procedural wall worker failed"));
-                return;
-            }
-            if (msg.type === "pattern") {
-                req.resolve({ pattern: msg.pattern ?? [] });
-                return;
-            }
-            if (!msg.payload) {
-                req.reject(new Error(msg.message ?? "Procedural wall worker failed"));
-                return;
-            }
-            const geometry = payloadToGeometry(msg.payload);
-            if (msg.userData) geometry.userData = { ...geometry.userData, ...msg.userData };
-            req.resolve({ geometry, pattern: msg.pattern ?? [] });
-        };
-        worker.onerror = (ev) => {
-            const err = new Error(ev.message || "Procedural wall worker crashed");
-            for (const req of pending.values()) req.reject(err);
-            pending.clear();
-            worker?.terminate();
-            worker = null;
-        };
-        return worker;
+        bindPreviewWorker(created);
+        return created;
     } catch {
         return null;
     }
 }
 
-/** Kill an in-flight reconstruct so Cancel does not leave a running worker. */
+function failPreviewWorker(live: Worker, error: Error): void {
+    for (const [id, req] of pending) {
+        if (req.worker !== live) continue;
+        pending.delete(id);
+        req.reject(error);
+    }
+    const index = previewPool.findIndex((slot) => slot.worker === live);
+    if (index >= 0) previewPool.splice(index, 1);
+    live.terminate();
+}
+
+/** Reserve a preview worker before the next await so left and right do not share one thread. */
+function checkoutPreviewWorker(): { worker: Worker; reserved: boolean } | null {
+    if (typeof Worker === "undefined") return null;
+    const idle = previewPool.find((slot) => !slot.reserved);
+    if (idle) {
+        idle.reserved = true;
+        return { worker: idle.worker, reserved: true };
+    }
+    if (previewPool.length < PREVIEW_LOFT_WORKER_POOL_SIZE) {
+        const created = createPreviewWorker();
+        if (!created) return null;
+        previewPool.push({ worker: created, reserved: true });
+        return { worker: created, reserved: true };
+    }
+    const shared = previewPool[0];
+    if (!shared) return null;
+    return { worker: shared.worker, reserved: false };
+}
+
+function releasePreviewWorker(worker: Worker): void {
+    const slot = previewPool.find((candidate) => candidate.worker === worker);
+    if (slot) slot.reserved = false;
+}
+
+export function previewLoftWorkerCountForTests(): number {
+    return previewPool.length;
+}
+
+/** Kill in-flight preview reconstructs so Cancel does not leave a running worker. */
 export function terminateProceduralWallWorker(): void {
-    const live = worker;
-    worker = null;
-    live?.terminate();
+    const live = previewPool.map((slot) => slot.worker);
+    previewPool.length = 0;
+    for (const worker of live) worker.terminate();
     const err = new Error("Print solid cancelled");
     for (const req of pending.values()) req.reject(err);
     pending.clear();
@@ -153,13 +200,14 @@ export async function reconstructProceduralPreviewInWorker(
         const preview = await reconstructProceduralPreview(topGeo, options);
         return { geometry: preview.geometry, pattern: preview.pattern };
     };
-    const w = ensureWorker();
-    if (!w) return await sync();
+    const checked = checkoutPreviewWorker();
+    if (!checked) return await sync();
+    const w = checked.worker;
     const id = ++nextId;
     const copy = geometryCopy(topGeo);
     try {
         return await new Promise((resolve, reject) => {
-            pending.set(id, { resolve, reject });
+            pending.set(id, { worker: w, resolve, reject });
             const transfer: Transferable[] = [copy.positions.buffer];
             if (copy.indices) transfer.push(copy.indices.buffer);
             const msg: ProceduralWallWorkerRequest = {
@@ -211,6 +259,8 @@ export async function reconstructProceduralPreviewInWorker(
         if (/cancelled/i.test(message)) throw e;
         console.warn("[preview-loft-worker] falling back to main thread:", message);
         return sync();
+    } finally {
+        if (checked.reserved) releasePreviewWorker(w);
     }
 }
 
@@ -224,13 +274,14 @@ export async function buildProceduralViewerPatternInWorker(
     corrections?: Partial<SideCorrections>,
 ): Promise<PolyPoint[]> {
     const sync = () => buildProceduralViewerPattern(topGeo, scanPattern, corrections);
-    const w = ensureWorker();
-    if (!w) return sync();
+    const checked = checkoutPreviewWorker();
+    if (!checked) return sync();
+    const w = checked.worker;
     const id = ++nextId;
     const copy = geometryCopy(topGeo);
     try {
         const result = await new Promise<{ pattern: PolyPoint[] }>((resolve, reject) => {
-            pending.set(id, { resolve, reject });
+            pending.set(id, { worker: w, resolve, reject });
             const transfer: Transferable[] = [copy.positions.buffer];
             if (copy.indices) transfer.push(copy.indices.buffer);
             const msg: ProceduralWallWorkerRequest = {
@@ -248,6 +299,8 @@ export async function buildProceduralViewerPatternInWorker(
         const message = e instanceof Error ? e.message : String(e);
         console.warn("[preview-loft-worker] pattern falling back to main thread:", message);
         return sync();
+    } finally {
+        if (checked.reserved) releasePreviewWorker(w);
     }
 }
 
