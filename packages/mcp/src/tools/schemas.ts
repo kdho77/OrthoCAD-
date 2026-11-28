@@ -513,10 +513,10 @@ export const MCP_TOOL_DEFINITIONS = [
         description:
             "Belt G-code. Saved-design mode (use_saved_design) returns a production_id and status (pending, running, succeeded, or failed) per foot within a few seconds. " +
             "The server lofts and slices after that response. Poll get_production. Download with get_export_download only after succeeded. " +
-            "A repeat call reuses an in-flight or succeeded production for the same design, foot, and preset, and runs a failed production again. " +
+            "Saved-design mode always rebuilds the 3D file from the saved design and slices fresh; it never returns a previously succeeded production or a stored STL. " +
+            "The only reuse is joining a production that is in flight right now for the same design, foot, and preset (still a new slice, not old G-code); a failed production can be run again. " +
             "A pair retries submit unavailable, fetch failed, and lease expiry; any other failure names that foot and does not return one foot. " +
-            "Set force_new_slice to true (saved-design only) after a slicer fix or design change to enqueue a fresh slice " +
-            "without reusing a succeeded production; in-flight work is still reused. " +
+            "force_new_slice is accepted for compatibility; in saved-design mode the server always treats it as true, so a fresh slice does not depend on setting it. " +
             "No STL deliverable and no G-code bytes. Omitting side enqueues both feet. " +
             "Legacy mode still calls manufacturing.generateSolid → Python /manufacture with stl_storage_key. " +
             "PR #263 merged (70e33f8a): Apex + VertexSlice profiles. Leader v3 is a 20 mm block with a 1 mm neck. " +
