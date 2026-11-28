@@ -215,6 +215,7 @@
                 "vertex/src/lib/geometry/procedural-wall/sample-top-display.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/stations.test.ts",
                 "vertex/src/lib/geometry/scan-manual-offset.test.ts",
+                "vertex/src/lib/geometry/shoe-size-per-foot.test.ts",
                 "vertex/src/lib/geometry/shoe-size.test.ts",
                 "vertex/src/lib/geometry/text-marking/compose.test.ts",
                 "vertex/src/lib/geometry/thickness-datum-clearance.test.ts",
@@ -443,7 +444,8 @@
                 "vertex/src/lib/hardness/resolve-bounds.test.ts",
                 "vertex/src/lib/vite-env.inline.test.ts",
                 "vertex/src/stores/client-store.persist.test.ts",
-                "vertex/src/stores/design-store.stock-loading.test.ts"
+                "vertex/src/stores/design-store.stock-loading.test.ts",
+                "vertex/src/stores/shoe-size-sides.test.tsx"
             ]
         }
     ]
