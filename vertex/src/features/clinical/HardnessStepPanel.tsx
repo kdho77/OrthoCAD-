@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
-import { HardnessRegionList } from "@/features/clinical/HardnessRegionList";
 import { PanelHeading } from "@/components/clinical/PanelHeading";
+import { HardnessRegionList } from "@/features/clinical/HardnessRegionList";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
+import { CLASS_PREVIEW_COLORS } from "../../../shared/print-recipe/hardness-class-table";
 import {
     gyroidInfillPctForHardness,
     HARDNESS_NAMES,
@@ -43,7 +44,14 @@ export function HardnessStepPanel() {
                                     : "border-border bg-background text-muted-foreground hover:border-primary/40",
                             )}
                         >
-                            <span>{name}</span>
+                            <span className="flex items-center gap-2">
+                                <span
+                                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                                    style={{ backgroundColor: CLASS_PREVIEW_COLORS[name] }}
+                                    aria-hidden="true"
+                                />
+                                {name}
+                            </span>
                             <span className="text-[10px] tabular-nums text-muted-foreground">
                                 gyroid {gyroidInfillPctForHardness(name, recipe.hardnessToInfillPct)}%
                             </span>
