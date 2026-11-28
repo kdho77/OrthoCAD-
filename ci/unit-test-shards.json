@@ -281,6 +281,7 @@
                 "vertex/src/lib/geometry/procedural-wall/export-solid.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/modifiers.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/preview-loft-queue.test.ts",
+                "vertex/src/lib/geometry/procedural-wall/print-solid-golden-parity.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/print-solid-parity.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/s1-pattern-rim-containment.test.ts",
                 "vertex/src/lib/geometry/procedural-wall/station-gates.test.ts",
