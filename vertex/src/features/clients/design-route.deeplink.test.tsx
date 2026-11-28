@@ -279,7 +279,7 @@ describe("design deep link", () => {
     test("reopening without entry restores the saved clinical step", async () => {
         saveDesignWorkflowSession(DESIGN_ID, {
             step: "corrections",
-            completedSteps: ["scan", "setup", "elements"],
+            completedSteps: ["scan", "setup", "base"],
             footSideExplicitlyChosen: true,
             designStartPath: null,
         });
@@ -295,7 +295,7 @@ describe("design deep link", () => {
         });
         await renderDesign();
         expect(useClinicalWorkflowStore.getState().step).toBe("corrections");
-        expect(useClinicalWorkflowStore.getState().completedSteps).toEqual(["scan", "setup", "elements"]);
+        expect(useClinicalWorkflowStore.getState().completedSteps).toEqual(["scan", "setup", "setup"]);
     });
 
     test("after the directory is loaded, an unknown design shows the session message without another fetch", async () => {

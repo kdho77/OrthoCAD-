@@ -17,13 +17,13 @@ describe("design workflow session", () => {
     test("round-trips step and completed steps for a design id", () => {
         saveDesignWorkflowSession(DESIGN, {
             step: "corrections",
-            completedSteps: ["scan", "setup", "elements"],
+            completedSteps: ["scan", "setup", "base"],
             footSideExplicitlyChosen: true,
             designStartPath: null,
         });
         const loaded = loadDesignWorkflowSession(DESIGN);
         expect(loaded?.step).toBe("corrections");
-        expect(loaded?.completedSteps).toEqual(["scan", "setup", "elements"]);
+        expect(loaded?.completedSteps).toEqual(["scan", "setup", "setup"]);
         expect(loaded?.footSideExplicitlyChosen).toBe(true);
     });
 
