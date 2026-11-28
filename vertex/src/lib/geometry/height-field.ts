@@ -85,6 +85,13 @@ export interface HeightFieldParams {
      * unscaled code outline. Millimetre wedges ignore it.
      */
     shoeWidth?: PostingShoeWidth | null;
+    /**
+     * Loaded-mesh crest the arch-height kernel must peak on, in footprint
+     * `(u, medial m)`. The kernel then has zero gradient there, so arch
+     * height changes elevation and leaves that crest where it is. Absent on
+     * the procedural shell, which carries its own stationary crest.
+     */
+    archAnchor?: { u: number; m: number } | null;
 }
 
 export function resolveShellThicknessContext(params: HeightFieldParams): ShellThicknessContext {
@@ -145,6 +152,23 @@ function archDomeHalfWidth(elongationMm: number | undefined, lengthMm: number): 
     if (!(elongationMm > 0) || !(lengthMm > 0)) return ARCH_DOME_HALF_WIDTH;
     const capped = elongationMm > ARCH_ELONGATION_MAX_MM ? ARCH_ELONGATION_MAX_MM : elongationMm;
     return ARCH_DOME_HALF_WIDTH + capped / lengthMm;
+}
+
+/**
+ * Procedural medial-arch crest. The baseline shell and the arch-height
+ * kernel both peak here, so their gradients vanish together and arch height
+ * cannot slide the crest. Apex shift moves this station only when the arch
+ * height is nonzero; a zero arch delta is slid by the stock-mesh warp.
+ */
+export const ARCH_CREST_U = 0.4;
+/** Inboard of the trimline. A crest on the rim is the wall, not the arch. */
+export const ARCH_CREST_M = 0.87;
+/** Transverse radius of the crest lobe. Zero slope at {@link ARCH_CREST_M}. */
+const ARCH_CREST_M_RADIUS = 0.62;
+
+/** Transverse crest lobe. Peaks at 1 on `mCrest` with zero slope there. */
+export function archCrestTransverse(m: number, mCrest = ARCH_CREST_M): number {
+    return bump(m, mCrest, ARCH_CREST_M_RADIUS);
 }
 
 /** Smooth bump centered at `c` with radius `r`. Returns 0..1. */
@@ -408,33 +432,63 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
     // Without this every insole is a uniform `thicknessMm` slab — a flat block.
     // This is the inherent foot-bed contour of a full-contact orthotic: a cupped
     // heel, a medial longitudinal arch, a lower lateral column and a toe spring,
-    // formed as a dished centre with raised perimeter walls. It depends only on
-    // footprint geometry (not corrections), so it cancels out of the Base +
-    // Modifier delta and leaves loaded bases untouched, while clinical
-    // corrections below still add on top of it. Added after the correction edge
-    // feather so the cup/arch rim walls survive at the trimline edge.
+    // formed as a dished centre with raised perimeter walls. Heel walls, the
+    // lateral column, and the toe spring depend only on the footprint. The
+    // medial crest station follows apex shift unless a loaded mesh has already
+    // anchored it. With no anchor the same shift is in the neutral field, so
+    // the Base + Modifier delta still cancels. Added after the correction edge
+    // feather so the cup and arch walls survive at the trimline.
     const heelEnv = smoothstep(0.26, 0.04, u); // 1 at heel → 0 by midfoot
-    const archEnv = bump(u, 0.4, 0.32); // medial longitudinal arch span
     const toeEnv = smoothstep(0.7, 1.0, u); // forefoot curl toward the toe
     const dish = smoothstep(0.12, 1.0, av); // raised edges, dished centre
-    const medialRim = 12 * heelEnv + 16 * archEnv;
-    const lateralRim = 12 * heelEnv + 5 * archEnv;
-    const baseline = dish * (medialRim * medialBlend + lateralRim * lateralBlend) + 4 * toeEnv;
+    // Heel walls and the lateral column stay on the dished rim. The medial
+    // longitudinal arch is a crest lobe: zero slope at (crestU, crestM), so
+    // adding a kernel with the same peak cannot move the critical point.
+    const heelWall = dish * heelEnv * 12 * (medialBlend + lateralBlend);
+    const lateralArch = dish * lateralBlend * 5 * bump(u, ARCH_CREST_U, 0.32);
+    const archRaise = c.archHeightMm + c.archFillMm;
+    // No loaded-mesh anchor: the crest station follows apex shift at every
+    // arch height, including zero. Gating the shift on a nonzero height made
+    // the crest jump when the slider left zero. The mesh path passes
+    // `archAnchor` and does not use this shift — the stock warp owns it.
+    const proceduralShift =
+        params.archAnchor == null && Number.isFinite(c.apexMoveMm) ? c.apexMoveMm / lengthMm : 0;
+    const crestU = ARCH_CREST_U + proceduralShift;
+    const crestM = ARCH_CREST_M;
+    const medialArch = 16 * bump(u, crestU, 0.32) * archCrestTransverse(m, crestM);
+    const baseline = heelWall + lateralArch + medialArch + 4 * toeEnv;
 
     // Shaping that should feather toward the trimline edge (dome/cup/flange/
     // elements) accumulates in `shaped`; the planar posting tilt — which must
     // remain full-strength at the edge — accumulates separately in `posting`.
     let shaped = 0;
 
+    // Feather is applied to `shaped` below. The arch kernel is divided by it
+    // first, so the surface that remains is exactly amplitude × lobe. A
+    // feather that still multiplies the lobe has a slope at the crest, and
+    // that slope slides the apex as the amplitude changes.
+    const edgeFeather = smoothstep(1.0, 0.86, av); // 1 interior → 0 at outer edge
+    let featherScale = 0.35 + 0.65 * edgeFeather;
+    const avEdge = params.topEdgeAvProfile ? params.topEdgeAvProfile(u, vSigned) : 0;
+    if (avEdge > 1e-6) {
+        const edgeScale = 0.35 + 0.65 * smoothstep(1.0, 0.86, Math.min(avEdge, 1));
+        if (edgeScale < 1 - 1e-9) {
+            const r = Math.min(1, av / avEdge);
+            const t = (r - EDGE_FEATHER_EASE_START_R) / (1 - EDGE_FEATHER_EASE_START_R);
+            featherScale = 1 - (1 - edgeScale) * quinticSmoothstep(t);
+        }
+    }
+
     // --- Longitudinal arch dome ------------------------------------------------
-    // Wider, gentler bell so the arch blends into the forefoot and rearfoot.
-    // Elongation lengthens the bell along the foot only. Peak stays 1 at
-    // apexCenter. archAcross is not scaled.
-    const apexCenter = 0.42 + c.apexMoveMm / lengthMm;
-    const arch = bump(u, apexCenter, archDomeHalfWidth(c.archElongationMm, lengthMm));
-    // Dome peaks just inboard of the medial edge and fades smoothly to centerline.
-    const archAcross = medialBlend * (0.45 + 0.55 * smoothstep(0.05, 0.9, av));
-    shaped += (c.archHeightMm + c.archFillMm) * arch * archAcross;
+    // Elongation widens the bell symmetrically about the crest. The peak
+    // value stays 1 there, so the crest does not travel with elongation.
+    // A loaded mesh passes its measured crest as `archAnchor`; the procedural
+    // shell uses the same station as the baseline lobe above.
+    const kernelU = params.archAnchor?.u ?? crestU;
+    const kernelM = params.archAnchor?.m ?? crestM;
+    const arch = bump(u, kernelU, archDomeHalfWidth(c.archElongationMm, lengthMm));
+    const archAcross = archCrestTransverse(m, kernelM);
+    if (featherScale > 1e-6) shaped += (archRaise * arch * archAcross) / featherScale;
 
     const heel = bump(u, 0.1, 0.18); // longitudinal heel region (used by cup + skives)
 
@@ -480,22 +534,9 @@ export function heightAt(u: number, vSigned: number, params: HeightFieldParams):
         shaped += elementHeightAt(shapedElements, u * lengthMm, vSigned * hw, lengthMm, widthMm);
     }
 
-    // --- Natural edge feathering ----------------------------------------------
     // Feather the additive shaping toward the trimline so the perimeter thins to
     // a clinical edge while the base wall and posting wedge are preserved.
-    const edgeFeather = smoothstep(1.0, 0.86, av); // 1 interior → 0 at outer edge
-    let featherScale = 0.35 + 0.65 * edgeFeather;
-    const avEdge = params.topEdgeAvProfile ? params.topEdgeAvProfile(u, vSigned) : 0;
-    if (avEdge > 1e-6) {
-        const edgeScale = 0.35 + 0.65 * smoothstep(1.0, 0.86, Math.min(avEdge, 1));
-        // Wide C2 ease to the real local top-sheet edge (ca915f24). Preserves
-        // the exact feather value at the edge so rim deltas stay stable.
-        if (edgeScale < 1 - 1e-9) {
-            const r = Math.min(1, av / avEdge);
-            const t = (r - EDGE_FEATHER_EASE_START_R) / (1 - EDGE_FEATHER_EASE_START_R);
-            featherScale = 1 - (1 - edgeScale) * quinticSmoothstep(t);
-        }
-    }
+    // The arch kernel was pre-divided by this scale, so it is unchanged.
     shaped *= featherScale;
 
     // --- Zone posting (rearfoot / forefoot wedge, raise-only, low-edge pivot) ---

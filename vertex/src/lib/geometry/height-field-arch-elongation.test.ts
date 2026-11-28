@@ -3,10 +3,14 @@
 import { describe, expect, test } from "@rstest/core";
 import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import type { Side, SideCorrections } from "@/types";
-import { type HeightFieldParams, heightAt } from "./height-field";
+import { ARCH_CREST_U, type HeightFieldParams, heightAt } from "./height-field";
 
-/** Height-field hash on main b18be414 with arch ease 0 (no elongation key). */
-const MAIN_EASE_ZERO_HASH = 3677847511;
+/**
+ * Height-field hash after the medial crest was anchored at u = 0.4, m = 0.87.
+ * Elongation 0 still ignores a stored archEase. This is not the export-STL
+ * baseline hash; that fixture is unchanged because a zero arch delta cancels.
+ */
+const ANCHORED_CREST_HASH = 755629234;
 
 function zeros(patch: Partial<SideCorrections> = {}): SideCorrections {
     return {
@@ -100,7 +104,7 @@ function measureDome(
     const raised = field(archHeightMm, elongationMm);
     const flat = field(0, elongationMm);
     const dome = (u: number, v: number) => heightAt(u, v, raised) - heightAt(u, v, flat);
-    const apexU = 0.42 + apexMoveMm / lengthMm;
+    const apexU = ARCH_CREST_U + apexMoveMm / lengthMm;
 
     let bestV = side === "right" ? -0.55 : 0.55;
     let bestAtApex = -Infinity;
@@ -160,10 +164,10 @@ function measureDome(
 
 describe("arch elongation height field", () => {
     test("elongation 0 matches main with arch ease 0, and a stored ease does not move the surface", () => {
-        expect(sampleHash({})).toBe(MAIN_EASE_ZERO_HASH);
-        expect(sampleHash({ archElongationMm: 0 })).toBe(MAIN_EASE_ZERO_HASH);
-        expect(sampleHash({ archEaseMm: 6 })).toBe(MAIN_EASE_ZERO_HASH);
-        expect(sampleHash({ archEaseMm: 6, archElongationMm: 0 })).toBe(MAIN_EASE_ZERO_HASH);
+        expect(sampleHash({})).toBe(ANCHORED_CREST_HASH);
+        expect(sampleHash({ archElongationMm: 0 })).toBe(ANCHORED_CREST_HASH);
+        expect(sampleHash({ archEaseMm: 6 })).toBe(ANCHORED_CREST_HASH);
+        expect(sampleHash({ archEaseMm: 6, archElongationMm: 0 })).toBe(ANCHORED_CREST_HASH);
 
         const layout = insoleLayoutForUsMenSize(9);
         const at = (u: number, v: number, archHeightMm: number) =>
@@ -176,7 +180,8 @@ describe("arch elongation height field", () => {
                 corrections: zeros({ archHeightMm }),
             });
         expect(at(0, -1, 0)).toBe(f64FromHex("0000000000002e40"));
-        expect(at(0.42, -0.55, 8)).toBe(f64FromHex("f4a6d6fd85073140"));
+        // Medial sample on the anchored crest lobe (was the dished wall).
+        expect(at(0.42, -0.55, 8)).toBe(f64FromHex("b93f0119af942c40"));
     });
 
     test("5 mm elongation keeps the dome peak and apex and lengthens the half-peak span by about 5 mm", () => {

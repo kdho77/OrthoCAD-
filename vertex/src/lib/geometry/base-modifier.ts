@@ -2,7 +2,11 @@
 
 import type { BufferGeometry } from "three";
 import { apexWarpShiftMm, applyDefaultArchApexWarp } from "@/lib/geometry/apex-move-warp";
-import { applyArchProfileToTopPositions, archProfileActive } from "@/lib/geometry/arch-profile";
+import {
+    applyArchProfileToTopPositions,
+    archProfileActive,
+    measureLoadedArchApex,
+} from "@/lib/geometry/arch-profile";
 import { applyArchSkiveToTopMesh } from "@/lib/geometry/arch-skive";
 import { getDesignBase } from "@/lib/geometry/base-asset";
 import {
@@ -14,6 +18,7 @@ import type { SolidResult } from "@/lib/geometry/geometry-kernel";
 import { heelLiftDeltaAt } from "@/lib/geometry/heel-lift";
 import { applyHeelSkiveToTopMesh } from "@/lib/geometry/heel-skive";
 import {
+    bump,
     forefootWidthPerSideDeltaMm,
     type HeightFieldParams,
     heelCupWidthScaleFactor,
@@ -2786,6 +2791,51 @@ export function applyBaseModifiers(
         },
     };
 
+    // Arch height and apex shift share one crest. The warp slides the stock
+    // arch; the kernel is then centered on the crest that slide produced, so
+    // the added dome has zero gradient there and height cannot move it again.
+    // A zero arch delta keeps the late warp, which also follows the wall.
+    const archRaiseMm = (field.corrections.archHeightMm ?? 0) + (field.corrections.archFillMm ?? 0);
+    const apexMoveForArch = field.corrections.apexMoveMm ?? 0;
+    if (archRaiseMm !== 0 && apexMoveForArch !== 0 && geometry.index) {
+        applyDefaultArchApexWarp({
+            positions: array,
+            original: srcPos.array as ArrayLike<number>,
+            index: geometry.index.array,
+            lengthAxis,
+            widthAxis,
+            thickAxis,
+            lenMin,
+            lenSize,
+            topVertexCount,
+            shiftMm: apexMoveForArch,
+        });
+    }
+    // Anchor whenever the arch or the apex shift is live. Without it, a
+    // height of zero still shifts the procedural baseline, and the mesh
+    // warp would slide that crest a second time.
+    if (archRaiseMm !== 0 || apexMoveForArch !== 0) {
+        const anchor = measureLoadedArchApex({
+            positions: array,
+            side: field.side,
+            lengthAxis,
+            widthAxis,
+            thickAxis,
+            lenMin,
+            lenSize,
+            widCenter,
+            widSize,
+            widthSign,
+            topVertexCount,
+        });
+        if (anchor) {
+            fieldForDelta.archAnchor = { u: anchor.u, m: anchor.m };
+            // The neutral baseline uses the same crest, so it cancels and the
+            // kernel is the only arch contribution.
+            neutral.archAnchor = fieldForDelta.archAnchor;
+        }
+    }
+
     const lateralCtx: LateralDeltaContext = {
         count,
         lengthAxis,
@@ -2842,6 +2892,18 @@ export function applyBaseModifiers(
     //    rim-conformity moves the wall). Top-range samples are bit-identical
     //    either way (same u/vSigned → correctionDeltaAt).
     const delta = new Float32Array(count);
+    // On a top-only sheet, classifyBaseTopFactors returns null and the core
+    // delta is scaled by (z − zMin) / zRange. That weight is larger at the rim
+    // than at the inboard crest, so an arch kernel centered on the crest lands
+    // its highest addition farther medial. Around the measured crest the arch
+    // is restored to full strength. A closed solid still uses its top factor.
+    const archAt = archRaiseMm !== 0 ? new Float32Array(count) : null;
+    const fieldForNoArch: HeightFieldParams | null = archAt
+        ? {
+              ...fieldForDelta,
+              corrections: { ...fieldForDelta.corrections, archHeightMm: 0, archFillMm: 0 },
+          }
+        : null;
     const wedgeAt = wedgeActive ? new Float32Array(count) : null;
     // Heel lift is inside correctionDeltaAt. Sample it beside the wedge so the
     // apply pass can add heelLiftDeltaAt at full strength. Lift 0 leaves this
@@ -2883,6 +2945,9 @@ export function applyBaseModifiers(
         const vSigned = Math.max(-1, Math.min(1, (widthSign * (widCoord - widCenter)) / (widSize / 2)));
         if (heelAt) heelAt[i] = heelLiftDeltaAt(u, heelLiftMm, heelTaper);
         let d = correctionDeltaAt(u, vSigned, fieldForDelta, neutral);
+        if (archAt && fieldForNoArch) {
+            archAt[i] = d - correctionDeltaAt(u, vSigned, fieldForNoArch, neutral);
+        }
         if (wedgeActive) {
             const wD = regionalWedgeActive
                 ? wedgeDeltaAt(u, vSigned, field.side, field.corrections, wedgeParams)
@@ -3040,14 +3105,28 @@ export function applyBaseModifiers(
         // corePart so a rim with w ≈ 1 is not lifted twice. Bottom-sheet verts
         // stay at weight 0. heelPart === 0 keeps the previous vertD expression,
         // so heelLiftMm = 0 is byte-identical.
+        const archPart = archAt ? archAt[i]! : 0;
+        // Full strength only around the measured crest. Farther out, the
+        // top-only sheet keeps the height weight, so the heel and the 1st
+        // metatarsal head do not take the whole dome.
+        let archW = w;
+        const archAnchor = fieldForDelta.archAnchor;
+        if (archPart !== 0 && !topFactors && archAnchor) {
+            const u = (array[i * 3 + lengthAxis]! - lenMin) / lenSize;
+            const vSigned = (widthSign * (array[i * 3 + widthAxis]! - widCenter)) / (widSize / 2);
+            const medialSign = field.side === "left" ? -1 : 1;
+            const m = -(Math.max(-1, Math.min(1, vSigned)) * medialSign);
+            const gate = bump(u, archAnchor.u, 0.12) * bump(m, archAnchor.m, 0.28);
+            archW = w + (1 - w) * gate;
+        }
         let vertD: number;
         if (heelPart !== 0) {
             const heelW = isMultiMesh && topVertexCount > 0 ? (i < topVertexCount ? 1 : 0) : 1;
-            const corePart = delta[i]! - wedgePart - heelPart;
-            vertD = corePart * w + wedgeScaled + heelPart * heelW;
+            const corePart = delta[i]! - wedgePart - heelPart - archPart;
+            vertD = corePart * w + archPart * archW + wedgeScaled + heelPart * heelW;
         } else {
-            const corePart = delta[i]! - wedgePart;
-            vertD = corePart * w + wedgeScaled;
+            const corePart = delta[i]! - wedgePart - archPart;
+            vertD = corePart * w + archPart * archW + wedgeScaled;
         }
         const foreWActive = (field.corrections.forefootWidthMm ?? 0) !== 0;
         const latD = lateralDelta[i]! * (heelCupNarrowing || foreWActive ? 1 : w);
