@@ -180,7 +180,6 @@
                 "vertex/shared/print-recipe/print-recipe.test.ts",
                 "vertex/src/components/layout/TopNav.test.tsx",
                 "vertex/src/components/viewer/AfoScanLandmarkLighting.test.ts",
-                "vertex/src/components/viewer/BaseInsoleMesh.heightmap-elements.test.ts",
                 "vertex/src/components/viewer/element-footprints.test.ts",
                 "vertex/src/features/afo/AfoScanPanel.test.tsx",
                 "vertex/src/features/auth/session-profile.test.ts",
