@@ -5,33 +5,63 @@ import type { Side, SideCorrections } from "@/types";
 /**
  * Transverse medial-arch profile.
  *
- * 0 = Domed (a concave-down parabola from the plantar valley up to the
- *     medial trimline, tangent at that edge),
- * 50 = Neutral (the straight valley-to-trimline chord),
+ * 0 = Domed (a concave-down parabola, crown ≤ 4 mm above the chord, hard
+ *     cap 5 mm),
+ * 50 = Neutral (the straight valley-to-trimline chord in the fully active
+ *     region),
  * 100 = Cradled (the current shell, zero displacement).
  * A missing value is Cradled so saved designs do not move.
+ *
+ * The chord is not applied through an inboard anatomical crest. A straight
+ * valley-to-rim line passes several millimetres under that crest, and
+ * pulling the crest down onto it relocates the apex. The crest hold keeps
+ * the crest and the crest-to-trimline shoulder on the shell. When the crest
+ * is the trimline itself, the hold is idle and the parabola still ends on
+ * the edge.
  */
 
 export const ARCH_PROFILE_CRADLED = 100;
 export const ARCH_PROFILE_BULGE_MM = 4;
 export const ARCH_PROFILE_CAP_MM = 5;
-/** Posterior cutoff. The heel cup (u ≤ 0.28) is untouched. */
+/**
+ * Posterior cutoff. The heel-cup bowl `bump(u, 0.1, 0.18)` is already 0 at
+ * u = 0.28, and a 16 mm heel cup stops moving the medial wall by u ≈ 0.25.
+ * u = 0.23 would land inside that bowl.
+ */
 export const ARCH_PROFILE_U_POSTERIOR = 0.28;
-/** Anterior cutoff. The 1st metatarsal head (u ≥ 0.58) is untouched. */
+/**
+ * Anterior cutoff. The 1st MPJ pad is centered at u = 0.665 and is 30 mm
+ * long; on a Men's 9 its proximal blend reaches u ≈ 0.58. u = 0.63 would
+ * land on the metatarsal head.
+ */
 export const ARCH_PROFILE_U_ANTERIOR = 0.58;
+/**
+ * Raises the shoulders of the longitudinal bell without moving its maximum.
+ * `1 - (1 - q) ** 2` is strictly increasing on [0, 1], so a single raw peak
+ * stays a single peak.
+ */
+export const ARCH_PROFILE_ENVELOPE_BROADEN = 2;
 
 /**
  * C2 fillet from the plantar floor into the parabola, in millimetres.
  * A fraction-only window of 0.14 was ~5 mm on SAMPLE_Top — one facet — so the
- * theoretically smooth join still read as a crease.
+ * theoretically smooth join still read as a crease. 14 mm keeps that fillet
+ * under the sheet's dihedral limit once the longitudinal bell is broadened
+ * to full strength at the crest.
  */
-export const ARCH_PROFILE_VALLEY_BLEND_MM = 12;
+export const ARCH_PROFILE_VALLEY_BLEND_MM = 14;
 /** Fillet never passes this fraction of the span, so s = 0.5 stays on the parabola. */
 const VALLEY_BLEND_S_MAX = 0.42;
 /** On a very wide span, keep the fillet at least this fraction so it still covers several facets. */
 const VALLEY_BLEND_S_MIN = 0.28;
-/** Single peak of the longitudinal bell. The midpoint of [0.28, 0.58]. */
-const ARCH_PROFILE_U_PEAK = 0.43;
+/** Fallback only when the surface has no measurable crest. The window midpoint. */
+const ARCH_PROFILE_U_FALLBACK = (ARCH_PROFILE_U_POSTERIOR + ARCH_PROFILE_U_ANTERIOR) / 2;
+/** Crest within this fraction of the trimline is the trimline. The hold stays idle. */
+const CREST_RIM_FRACTION = 0.015;
+/** Pin the hold this far valley-ward of the sampled peak so one sample cannot lower it. */
+const CREST_PIN_FRACTION = 0.012;
+/** Midspan crown (s = 0.5) stays fully active when the crest is medial of this. */
+const CREST_HOLD_CROWN_S = 0.52;
 const SECTION_SAMPLES = 64;
 const VALLEY_M_MIN = -0.2;
 /** The bow stays on the medial side of the centerline. */
@@ -60,6 +90,11 @@ export interface ArchSection {
     mRim: number;
     zValley: number;
     zRim: number;
+    /**
+     * Medial coordinate of the unprofiled crest. Equal to `mRim` when the
+     * highest point is the trimline, so the parabola still meets that edge.
+     */
+    mCrest: number;
 }
 
 /** 100 when the value is missing or not finite. Clamped to 0..100. */
@@ -104,7 +139,7 @@ function quintic(t: number): number {
 
 /**
  * Fraction of the valley-to-rim span covered by the fillet.
- * `spanMm` is the physical width of that span. The fillet is 12 mm when that
+ * `spanMm` is the physical width of that span. The fillet is 14 mm when that
  * fits between 28% and 42% of the span; otherwise it stays inside that band so
  * the midspan crown is still the pure parabola.
  */
@@ -129,30 +164,99 @@ export function archProfileValleyBlend(s: number, spanMm = 0): number {
 }
 
 /**
- * Longitudinal gate. Exact 0 at and outside [0.28, 0.58]. One C2 peak near
- * u = 0.43 (shifted by apex and elongation), with no flat plateau. The heel
- * cup and the 1st MPJ stay at 0.
+ * Longitudinal gate. Exact 0 at and outside [0.28, 0.58]. One C2 peak at
+ * `apexU` — the measured anatomical crest, not a nominal 0.43 and not an
+ * extra apex-shift or elongation offset. Arch elongation lengthens the
+ * height-field dome about that crest; it does not move this peak.
+ * Shoulders are broadened with {@link ARCH_PROFILE_ENVELOPE_BROADEN}.
+ * The heel cup and the 1st MPJ stay at 0.
  */
-export function archProfileEnvelope(
-    u: number,
-    apexMoveMm: number,
-    lengthMm: number,
-    elongationMm: number | undefined,
-): number {
+export function archProfileEnvelope(u: number, apexU: number): number {
     if (u <= ARCH_PROFILE_U_POSTERIOR || u >= ARCH_PROFILE_U_ANTERIOR) return 0;
-    const shift = lengthMm > 0 && Number.isFinite(apexMoveMm) ? apexMoveMm / lengthMm : 0;
-    const elong = elongationMm != null && elongationMm > 0 ? elongationMm : 0;
-    const widen = lengthMm > 0 ? Math.min(5, elong) / lengthMm : 0;
     const minRamp = 0.04;
-    let uPeak = ARCH_PROFILE_U_PEAK + shift + widen * 0.35;
     const lo = ARCH_PROFILE_U_POSTERIOR + minRamp;
     const hi = ARCH_PROFILE_U_ANTERIOR - minRamp;
+    let uPeak = Number.isFinite(apexU) ? apexU : ARCH_PROFILE_U_FALLBACK;
     if (uPeak < lo) uPeak = lo;
     if (uPeak > hi) uPeak = hi;
-    if (u <= uPeak) {
-        return quintic((u - ARCH_PROFILE_U_POSTERIOR) / (uPeak - ARCH_PROFILE_U_POSTERIOR));
+    const raw =
+        u <= uPeak
+            ? quintic((u - ARCH_PROFILE_U_POSTERIOR) / (uPeak - ARCH_PROFILE_U_POSTERIOR))
+            : 1 - quintic((u - uPeak) / (ARCH_PROFILE_U_ANTERIOR - uPeak));
+    return broadenArchEnvelope(raw);
+}
+
+/** Strictly increasing on [0, 1]. A unique raw maximum stays the unique maximum. */
+export function broadenArchEnvelope(raw: number): number {
+    const q = raw <= 0 ? 0 : raw >= 1 ? 1 : raw;
+    return 1 - (1 - q) ** ARCH_PROFILE_ENVELOPE_BROADEN;
+}
+
+/**
+ * 1 from the valley through the fully active chord, 0 at and medial of the
+ * anatomical crest. Idle when the crest is the trimline (`sCrest` ≈ 1), so
+ * the parabola still meets that edge. The blend starts at or after s = 0.52
+ * so the midspan crown stays on the chord.
+ */
+export function archProfileCrestHold(s: number, sCrest: number, spanMm: number): number {
+    if (!(sCrest < 1 - CREST_RIM_FRACTION)) return 1;
+    if (!(s < sCrest)) return 0;
+    const mm = spanMm > 1 ? spanMm : 40;
+    const hold = Math.min(Math.max(0, sCrest - CREST_HOLD_CROWN_S), ARCH_PROFILE_VALLEY_BLEND_MM / mm);
+    if (!(hold > 1e-4)) return 1;
+    const start = sCrest - hold;
+    if (s <= start) return 1;
+    return 1 - quintic((s - start) / hold);
+}
+
+export interface AnatomicalApex {
+    u: number;
+    /** Medial coordinate, +1 at the medial rim on both feet. */
+    m: number;
+    z: number;
+}
+
+/**
+ * Crest of the unprofiled medial arch inside the open window. This is the
+ * surface apex the profile must not move. Apex Shift has already relocated
+ * it, either in the height-field dome (`0.42 + apexMoveMm / lengthMm`) or in
+ * the stock-arch warp that runs before this pass. It is not added again.
+ */
+export function measureAnatomicalApex(
+    side: Side,
+    sampleAt: (u: number, vSigned: number) => number,
+): AnatomicalApex {
+    let best: AnatomicalApex = { u: ARCH_PROFILE_U_FALLBACK, m: 1, z: -Infinity };
+    const consider = (u: number, m: number) => {
+        if (u <= ARCH_PROFILE_U_POSTERIOR || u >= ARCH_PROFILE_U_ANTERIOR) return;
+        if (m < 0.15 || m > 1.05) return;
+        const z = sampleAt(u, vSignedFromMedial(m, side));
+        if (z > best.z) best = { u, m, z };
+    };
+    // Stay inside the open arch. The heel wall can be the tallest vertex just
+    // inside u = 0.28, and that is not the longitudinal-arch crest.
+    for (let ui = 0; ui <= 40; ui++) {
+        const u = 0.34 + (0.2 * ui) / 40;
+        for (let mi = 0; mi <= 32; mi++) {
+            const m = 0.25 + (0.75 * mi) / 32;
+            consider(u, m);
+        }
     }
-    return 1 - quintic((u - uPeak) / (ARCH_PROFILE_U_ANTERIOR - uPeak));
+    for (const step of [0.004, 0.001, 0.00025]) {
+        let moved = true;
+        while (moved) {
+            moved = false;
+            const origin = best;
+            for (const du of [-step, 0, step]) {
+                for (const dm of [-step * 4, 0, step * 4]) {
+                    if (du === 0 && dm === 0) continue;
+                    consider(origin.u + du, origin.m + dm);
+                }
+            }
+            if (best.z > origin.z + 1e-9) moved = true;
+        }
+    }
+    return best;
 }
 
 /**
@@ -186,7 +290,7 @@ export function measureArchSection(samples: readonly ArchSectionSample[]): ArchS
         }
     }
     if (!valley || rim.m - valley.m < 0.12) return null;
-    return { mValley: valley.m, mRim: rim.m, zValley: valley.z, zRim: rim.z };
+    return { mValley: valley.m, mRim: rim.m, zValley: valley.z, zRim: rim.z, mCrest: rim.m };
 }
 
 interface CubicSpline {
@@ -332,13 +436,48 @@ interface FairStation {
  * sawtooth. Whittaker removes the hop, then a natural cubic makes the isoline
  * C2. z is resampled on the faired m so the chord still meets the surface.
  */
+function withCrest(section: ArchSection, mCrest: number): ArchSection {
+    const span = section.mRim - section.mValley;
+    let m = mCrest;
+    if (!Number.isFinite(m)) m = section.mRim;
+    if (m < section.mValley) m = section.mValley;
+    if (m > section.mRim) m = section.mRim;
+    if (!(span > 1e-4) || m > section.mRim - CREST_RIM_FRACTION * span) m = section.mRim;
+    return { ...section, mCrest: m };
+}
+
 function fairArchCurve(stations: readonly FairStation[]): (u: number) => ArchSection | null {
     const n = stations.length;
+    const crestU: number[] = [];
+    const crestM: number[] = [];
+    for (const station of stations) {
+        const m = crestMedial(station);
+        if (m == null) continue;
+        crestU.push(station.u);
+        crestM.push(m);
+    }
+    // Nearest station, not a lerp. Averaging an inboard crest with a rim
+    // station pulls the pin onto the crest and the chord lowers it.
+    const mCrestAt = (uq: number): number => {
+        if (crestU.length === 0) return Number.NaN;
+        let best = 0;
+        let bestD = Math.abs(uq - crestU[0]!);
+        for (let i = 1; i < crestU.length; i++) {
+            const d = Math.abs(uq - crestU[i]!);
+            if (d < bestD) {
+                bestD = d;
+                best = i;
+            }
+        }
+        return crestM[best]!;
+    };
+    const decorate = (section: ArchSection | null, uq: number): ArchSection | null =>
+        section ? withCrest(section, mCrestAt(uq)) : null;
     const fallback = lerpFallback(stations);
-    if (n < 4) return fallback;
+    if (n < 4) return (uq) => decorate(fallback(uq), uq);
     const u = stations.map((s) => s.u);
     const w = stations.map((s) => (s.section ? 1 : 0));
-    if (w.reduce((sum, flag) => sum + flag, 0) < 4) return fallback;
+    if (w.reduce((sum, flag) => sum + flag, 0) < 4) return (uq) => decorate(fallback(uq), uq);
     const mValleyY = stations.map((s) => s.section?.mValley ?? 0);
     const mRimY = stations.map((s) => s.section?.mRim ?? 0);
     const mValleyS = whittaker(mValleyY, w, SECTION_M_VALLEY_LAMBDA);
@@ -360,7 +499,7 @@ function fairArchCurve(stations: readonly FairStation[]): (u: number) => ArchSec
         zRimY[i] = zr;
         wZ[i] = 1;
     }
-    if (wZ.reduce((sum, flag) => sum + flag, 0) < 4) return fallback;
+    if (wZ.reduce((sum, flag) => sum + flag, 0) < 4) return (uq) => decorate(fallback(uq), uq);
     const zValleyS = whittaker(zValleyY, wZ, SECTION_Z_VALLEY_LAMBDA);
     const zRimS = whittaker(zRimY, wZ, SECTION_Z_RIM_LAMBDA);
     const mValleySp = naturalCubic(u, mValleyS);
@@ -374,7 +513,7 @@ function fairArchCurve(stations: readonly FairStation[]): (u: number) => ArchSec
         const zRim = evalCubic(zRimSp, uq);
         if (![mValley, mRim, zValley, zRim].every(Number.isFinite)) return null;
         if (!(mRim - mValley > 0.12)) return null;
-        return { mValley, mRim, zValley, zRim };
+        return withCrest({ mValley, mRim, zValley, zRim, mCrest: mRim }, mCrestAt(uq));
     };
 }
 
@@ -434,12 +573,16 @@ export function archProfileDeltaMm(
     if (!(s > 0) || s >= 1) return 0;
     const dzRim = section.zRim - section.zValley;
     const zChord = section.zValley + s * dzRim;
-    // Peak of 4*A*s*(1-s) is A. A tracks a quarter of the arch rise, and never
-    // passes 4 mm. The 5 mm cap is the hard ceiling above the chord.
+    // Peak of 4*A*s*(1-s) is A. A tracks a quarter of the arch rise and never
+    // passes 4 mm. The 5 mm constant remains the hard ceiling on that crown.
+    // It is not applied to the preserved shell: an inboard crest already sits
+    // higher than 5 mm above the chord.
     const amp = Math.min(ARCH_PROFILE_BULGE_MM, Math.max(0, dzRim / 4));
     let bulge = 4 * amp * s * (1 - s);
     if (bulge > ARCH_PROFILE_CAP_MM) bulge = ARCH_PROFILE_CAP_MM;
-    const wValley = archProfileValleyBlend(s, span * halfWidthMm);
+    const spanMm = span * halfWidthMm;
+    const sCrest = (section.mCrest - section.mValley) / span;
+    const wValley = archProfileValleyBlend(s, spanMm) * archProfileCrestHold(s, sCrest, spanMm);
     let zTarget: number;
     if (p >= 0.5) {
         const t = (1 - p) / 0.5;
@@ -449,7 +592,9 @@ export function archProfileDeltaMm(
         const zNeutral = zCur + (zChord - zCur) * wValley;
         const zDomed = zCur + (zChord + bulge - zCur) * wValley;
         zTarget = zNeutral + c * (zDomed - zNeutral);
-        if (zTarget - zChord > ARCH_PROFILE_CAP_MM) zTarget = zChord + ARCH_PROFILE_CAP_MM;
+        // The bulge is already capped. Do not also clamp the preserved shell:
+        // an inboard crest sits more than 5 mm above the chord, and that clamp
+        // was pulling it down onto a shelf.
     }
     return envelope * (zTarget - zCur);
 }
@@ -470,8 +615,14 @@ export function sampleMedialArchSection(
 
 /** Nonzero while the faired curve is sampling the unprofiled shell. */
 let curveBuilding = 0;
-let tokenCurve: { token: number; evalAt: (u: number) => ArchSection | null } | null = null;
-const curveCache = new Map<number, (u: number) => ArchSection | null>();
+interface ProfileCurve {
+    evalAt: (u: number) => ArchSection | null;
+    /** Measured unprofiled crest. Not `0.43`, and not apex shift added a second time. */
+    apexU: number;
+}
+
+let tokenCurve: { token: number; curve: ProfileCurve } | null = null;
+const curveCache = new Map<number, ProfileCurve>();
 
 function mixHash(hash: number, n: number): number {
     const bits = Number.isFinite(n) ? Math.round(n * 10000) : 0;
@@ -490,10 +641,7 @@ function surfaceKey(side: Side, sampleAt: (u: number, vSigned: number) => number
     return hash;
 }
 
-function fitHeightFieldCurve(
-    side: Side,
-    sampleAt: (u: number, vSigned: number) => number,
-): (u: number) => ArchSection | null {
+function fitHeightFieldCurve(side: Side, sampleAt: (u: number, vSigned: number) => number): ProfileCurve {
     const u0 = ARCH_PROFILE_U_POSTERIOR;
     const u1 = ARCH_PROFILE_U_ANTERIOR;
     const du = (u1 - u0) / CURVE_STATIONS;
@@ -506,14 +654,14 @@ function fitHeightFieldCurve(
             zAt: (m) => sampleAt(u, vSignedFromMedial(m, side)),
         });
     }
-    return fairArchCurve(stations);
+    return { evalAt: fairArchCurve(stations), apexU: measureAnatomicalApex(side, sampleAt).u };
 }
 
 function cachedHeightFieldCurve(
     side: Side,
     sampleAt: (u: number, vSigned: number) => number,
-): (u: number) => ArchSection | null {
-    if (curveBuilding > 0) return () => null;
+): ProfileCurve {
+    if (curveBuilding > 0) return { evalAt: () => null, apexU: ARCH_PROFILE_U_FALLBACK };
     curveBuilding++;
     try {
         const key = surfaceKey(side, sampleAt);
@@ -541,7 +689,7 @@ export function fairedMedialArchSection(
     sampleAt: (u: number, vSigned: number) => number,
 ): ArchSection | null {
     if (curveBuilding > 0) return null;
-    return cachedHeightFieldCurve(side, sampleAt)(u);
+    return cachedHeightFieldCurve(side, sampleAt).evalAt(u);
 }
 
 export interface ArchProfileQuery {
@@ -549,10 +697,7 @@ export interface ArchProfileQuery {
     vSigned: number;
     zCur: number;
     side: Side;
-    lengthMm: number;
     profile: number | undefined;
-    apexMoveMm: number;
-    archElongationMm: number | undefined;
     /** Changes when the unprofiled surface changes. The profile value is not part of it. */
     cacheToken: number;
     sampleUnprofiled: (u: number, vSigned: number) => number;
@@ -568,15 +713,15 @@ export interface ArchProfileQuery {
 export function archProfileDeltaAt(query: ArchProfileQuery): number {
     if (curveBuilding > 0) return 0;
     if (!archProfileActive(query.profile)) return 0;
-    const envelope = archProfileEnvelope(query.u, query.apexMoveMm, query.lengthMm, query.archElongationMm);
-    if (envelope === 0) return 0;
     if (!tokenCurve || tokenCurve.token !== query.cacheToken) {
         tokenCurve = {
             token: query.cacheToken,
-            evalAt: cachedHeightFieldCurve(query.side, query.sampleUnprofiled),
+            curve: cachedHeightFieldCurve(query.side, query.sampleUnprofiled),
         };
     }
-    const section = tokenCurve.evalAt(query.u);
+    const envelope = archProfileEnvelope(query.u, tokenCurve.curve.apexU);
+    if (envelope === 0) return 0;
+    const section = tokenCurve.curve.evalAt(query.u);
     if (!section) return 0;
     return archProfileDeltaMm(
         medialCoordinate(query.vSigned, query.side),
@@ -593,6 +738,31 @@ type Axis = 0 | 1 | 2;
 const MESH_U_BINS = 24;
 const MESH_M_BINS = 64;
 
+/**
+ * Longitudinal center of the inboard arch hump. Samples within 2 mm of the
+ * tallest one vote, so a one-bin argmax hop between the preview sheet and
+ * the print sheet does not move the envelope.
+ */
+function inboardCrestU(samples: readonly { u: number; z: number }[]): number {
+    if (samples.length < 5) return ARCH_PROFILE_U_FALLBACK;
+    let maxZ = -Infinity;
+    for (const sample of samples) if (sample.z > maxZ) maxZ = sample.z;
+    let weight = 0;
+    let weightedU = 0;
+    for (const sample of samples) {
+        const w = sample.z - (maxZ - 2);
+        if (w > 0) {
+            weight += w;
+            weightedU += sample.u * w;
+        }
+    }
+    if (!(weight > 0)) return ARCH_PROFILE_U_FALLBACK;
+    let u = weightedU / weight;
+    if (u < 0.34) u = 0.34;
+    if (u > 0.54) u = 0.54;
+    return u;
+}
+
 function lerpSection(a: ArchSection, b: ArchSection, t: number): ArchSection {
     const u = 1 - t;
     return {
@@ -600,7 +770,45 @@ function lerpSection(a: ArchSection, b: ArchSection, t: number): ArchSection {
         mRim: u * a.mRim + t * b.mRim,
         zValley: u * a.zValley + t * b.zValley,
         zRim: u * a.zRim + t * b.zRim,
+        mCrest: u * a.mCrest + t * b.mCrest,
     };
+}
+
+/**
+ * Medial coordinate of the highest sample between the valley and the rim.
+ * The trimline is returned when that peak sits on the edge, so the parabola
+ * is left unchanged. An inboard peak is biased slightly toward the valley.
+ */
+function crestMedial(station: FairStation): number | null {
+    const section = station.section;
+    if (!section) return null;
+    const m0 = section.mValley;
+    const m1 = section.mRim;
+    const span = m1 - m0;
+    if (!(span > 1e-4)) return null;
+    const n = 48;
+    const z: number[] = [];
+    let bestI = n;
+    let bestZ = -Infinity;
+    for (let i = 0; i <= n; i++) {
+        const zi = station.zAt(m0 + (span * i) / n);
+        z.push(zi);
+        if (zi > bestZ) {
+            bestZ = zi;
+            bestI = i;
+        }
+    }
+    if (bestI <= 0 || bestI >= n) return m1;
+    const zm = z[bestI - 1]!;
+    const z0 = z[bestI]!;
+    const zp = z[bestI + 1]!;
+    const denom = zm - 2 * z0 + zp;
+    let shift = Math.abs(denom) > 1e-8 ? (0.5 * (zm - zp)) / denom : 0;
+    if (shift < -0.5) shift = -0.5;
+    if (shift > 0.5) shift = 0.5;
+    const m = m0 + (span * (bestI + shift)) / n;
+    if (m > m1 - CREST_RIM_FRACTION * span) return m1;
+    return Math.max(m0, m - CREST_PIN_FRACTION * span);
 }
 
 /**
@@ -706,11 +914,30 @@ export function applyArchProfileToTopPositions(args: {
     };
     const halfWidthMm = args.widSize / 2;
 
-    const { apexMoveMm, archElongationMm, archProfile } = args.corrections;
+    // Inboard surface, not the trimline. Rim height falls from the heel cup,
+    // so the tallest rim is the heel wall and would drag the bell posterior.
+    // A centroid of the hump, not the single tallest sample: the print sheet
+    // and the preview sheet peak one sample apart, and that hop moved the
+    // envelope enough to miss preview/export parity. The apex warp has
+    // already run, so this crest is not shifted again.
+    const crestSamples: { u: number; z: number }[] = [];
+    for (let i = 0; i <= 24; i++) {
+        const u = 0.34 + (0.2 * i) / 24;
+        const section = sectionAt(u);
+        if (!section) continue;
+        const span = section.mRim - section.mValley;
+        if (!(span > 0.12)) continue;
+        const si = Math.min(stations.length - 1, Math.max(0, Math.round((u - u0) / du - 0.5)));
+        const z = stations[si]!.zAt(section.mValley + 0.7 * span);
+        if (Number.isFinite(z)) crestSamples.push({ u, z });
+    }
+    const apexU = inboardCrestU(crestSamples);
+
+    const { archProfile } = args.corrections;
     for (let i = 0; i < count; i++) {
         if (!isTop(i)) continue;
         const u = uOf(i);
-        const envelope = archProfileEnvelope(u, apexMoveMm, args.lengthMm, archElongationMm);
+        const envelope = archProfileEnvelope(u, apexU);
         if (envelope === 0) continue;
         let section = sectionAt(u);
         if (!section) continue;
@@ -719,11 +946,15 @@ export function applyArchProfileToTopPositions(args: {
         // parabola ends as a lip. The valley isoline is what sawtoothed.
         const rim = rimAt(u);
         if (rim) {
+            // The loaded sheet keeps the parabola out to the trimline. An
+            // inboard crest hold on this triangulation folds the valley fillet.
+            // The height-field path still pins an inboard crest.
             section = {
                 mValley: section.mValley,
                 zValley: section.zValley,
                 mRim: rim.mRim,
                 zRim: rim.zRim,
+                mCrest: rim.mRim,
             };
         }
         const m = mOf(i);

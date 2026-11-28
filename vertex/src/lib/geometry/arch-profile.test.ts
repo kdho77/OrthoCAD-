@@ -29,10 +29,12 @@ import {
     ARCH_PROFILE_CAP_MM,
     ARCH_PROFILE_VALLEY_BLEND_MM,
     type ArchSection,
+    archProfileCrestHold,
     archProfileEnvelope,
     archProfileValleyBlend,
     archProfileValleyBlendFraction,
     fairedMedialArchSection,
+    measureAnatomicalApex,
     measureArchSection,
     medialCoordinate,
     vSignedFromMedial,
@@ -118,7 +120,8 @@ describe("arch profile slider", () => {
 
         const dzRim = section.zRim - section.zValley;
         const amp = Math.min(ARCH_PROFILE_BULGE_MM, Math.max(0, dzRim / 4));
-        const env = archProfileEnvelope(u, 0, layout.lengthMm, 0);
+        const apexU = measureAnatomicalApex(side, (uu, vv) => heightAt(uu, vv, field(side, {}))).u;
+        const env = archProfileEnvelope(u, apexU);
         const onChord = (s: number, profile: number) => {
             const zCur = height(s, 100);
             const chord = chordAt(s);
@@ -150,7 +153,9 @@ describe("arch profile slider", () => {
     });
 
     test("midspan rises from the chord to the dome as the slider leaves Neutral", () => {
-        const u = 0.43;
+        const u = measureAnatomicalApex("right", (uu, vv) =>
+            heightAt(uu, vv, field("right", { archHeightMm: 8 })),
+        ).u;
         const section = sectionAt(u, "right", { archHeightMm: 8 });
         const midM = (section.mValley + section.mRim) / 2;
         const zAtProfile = (profile: number) =>
@@ -196,35 +201,49 @@ describe("arch profile slider", () => {
         }
     });
 
-    test("apex shift and elongation stay inside the heel cup and the 1st MPJ", () => {
-        for (const apexMoveMm of [-12, 0, 12]) {
-            for (const archElongationMm of [0, 5]) {
-                for (const u of [0.1, 0.2, 0.28, 0.58, 0.62, 0.8]) {
-                    expect(archProfileEnvelope(u, apexMoveMm, layout.lengthMm, archElongationMm)).toBe(0);
-                    const base = zAt(u, 0.5, "left", { apexMoveMm, archElongationMm, archHeightMm: 6 });
-                    const domed = zAt(u, 0.5, "left", {
-                        apexMoveMm,
-                        archElongationMm,
-                        archHeightMm: 6,
-                        archProfile: 0,
-                    });
-                    expect(domed).toBe(base);
-                }
+    test("the longitudinal bell is broad, single-peaked, and ignores apex shift and elongation", () => {
+        for (const apexU of [0.32, 0.4, 0.43, 0.5, 0.54]) {
+            for (const u of [0.1, 0.2, 0.28, 0.58, 0.62, 0.8]) {
+                expect(archProfileEnvelope(u, apexU)).toBe(0);
+            }
+            expect(archProfileEnvelope(apexU, apexU)).toBe(1);
+            const bell = Array.from({ length: 121 }, (_, i) => archProfileEnvelope(0.28 + (0.3 * i) / 120, apexU));
+            expect(bell[0]).toBe(0);
+            expect(bell[bell.length - 1]).toBe(0);
+            let peaks = 0;
+            for (let i = 1; i < bell.length - 1; i++) {
+                if (bell[i]! >= bell[i - 1]! && bell[i]! > bell[i + 1]!) peaks++;
+            }
+            expect(peaks).toBe(1);
+            if (Math.abs(apexU - 0.43) < 1e-9) {
+                const half = bell
+                    .map((e, i) => ({ e, u: 0.28 + (0.3 * i) / 120 }))
+                    .filter((s) => s.e >= 0.5);
+                const fwhm = half[half.length - 1]!.u - half[0]!.u;
+                const legacyHalf = legacyBell(apexU).filter((s) => s.e >= 0.5);
+                const legacyFwhm = legacyHalf[legacyHalf.length - 1]!.u - legacyHalf[0]!.u;
+                const top = bell
+                    .map((e, i) => ({ e, u: 0.28 + (0.3 * i) / 120 }))
+                    .filter((s) => s.e >= 0.9);
+                const legacyTop = legacyBell(apexU).filter((s) => s.e >= 0.9);
+                const w90 = top[top.length - 1]!.u - top[0]!.u;
+                const legacy90 = legacyTop[legacyTop.length - 1]!.u - legacyTop[0]!.u;
+                expect(fwhm).toBeGreaterThan(legacyFwhm * 1.2);
+                expect(w90).toBeGreaterThan(legacy90 * 1.6);
             }
         }
-        const bell = Array.from({ length: 61 }, (_, i) =>
-            archProfileEnvelope(0.28 + (0.3 * i) / 60, 0, layout.lengthMm, 0),
-        );
-        expect(bell[0]).toBe(0);
-        expect(bell[bell.length - 1]).toBe(0);
-        expect(archProfileEnvelope(0.43, 0, layout.lengthMm, 0)).toBe(1);
-        expect(archProfileEnvelope(0.38, 0, layout.lengthMm, 0)).toBeLessThan(0.9);
-        expect(archProfileEnvelope(0.48, 0, layout.lengthMm, 0)).toBeLessThan(0.9);
-        let peaks = 0;
-        for (let i = 1; i < bell.length - 1; i++) {
-            if (bell[i]! >= bell[i - 1]! && bell[i]! > bell[i + 1]!) peaks++;
-        }
-        expect(peaks).toBe(1);
+        // Apex Shift and Arch Elongation do not move the profile peak. The
+        // surface crest already includes an apex warp; adding the shift again
+        // was the old uPeak formula.
+        const stationary = measureAnatomicalApex("left", (u, v) =>
+            heightAt(u, v, field("left", { archHeightMm: 8, apexMoveMm: 6, archElongationMm: 5 })),
+        ).u;
+        const unshifted = measureAnatomicalApex("left", (u, v) =>
+            heightAt(u, v, field("left", { archHeightMm: 8 })),
+        ).u;
+        expect(Math.abs(archProfileEnvelope(stationary, stationary) - 1)).toBe(0);
+        expect(stationary).not.toBeCloseTo(0.43 + 6 / layout.lengthMm + (5 / layout.lengthMm) * 0.35, 2);
+        expect(Math.abs(stationary - unshifted) * layout.lengthMm).toBeGreaterThan(1);
     });
 
     test("domed crown is the parabola amplitude and never exceeds 5 mm above the chord", () => {
@@ -241,10 +260,13 @@ describe("arch profile slider", () => {
                     maxAbove = Math.max(maxAbove, z - chord);
                 }
             }
-            const crest = sectionAt(0.43, "left", { archHeightMm, heelCupDepthMm: 12 }, 6);
+            const apexU = measureAnatomicalApex("left", (uu, vv) =>
+                heightAt(uu, vv, field("left", { archHeightMm, heelCupDepthMm: 12 }, 6)),
+            ).u;
+            const crest = sectionAt(apexU, "left", { archHeightMm, heelCupDepthMm: 12 }, 6);
             const amp = Math.min(ARCH_PROFILE_BULGE_MM, Math.max(0, (crest.zRim - crest.zValley) / 4));
             const mid = (crest.mValley + crest.mRim) / 2;
-            const zMid = zAt(0.43, mid, "left", { archHeightMm, heelCupDepthMm: 12, archProfile: 0 }, 6);
+            const zMid = zAt(apexU, mid, "left", { archHeightMm, heelCupDepthMm: 12, archProfile: 0 }, 6);
             const chordMid = (crest.zValley + crest.zRim) / 2;
             expect(zMid - chordMid).toBeCloseTo(amp, 2);
             expect(amp).toBeLessThanOrEqual(ARCH_PROFILE_BULGE_MM);
@@ -286,7 +308,7 @@ describe("arch profile slider", () => {
         expect(archProfileValleyBlend(blendS, spanMm)).toBeCloseTo(1, 8);
         expect(archProfileValleyBlend(blendS * 0.5, spanMm)).toBeGreaterThan(0.05);
         expect(archProfileValleyBlend(blendS * 0.5, spanMm)).toBeLessThan(0.95);
-        // 12 mm on a 40 mm span is wider than the old 0.14 window, which was one facet.
+        // 14 mm on a 40 mm span is wider than the old 0.14 window, which was one facet.
         expect(archProfileValleyBlend(0.14, spanMm)).toBeLessThan(0.5);
         const h = 1e-4;
         const d1 = archProfileValleyBlend(h, spanMm) - archProfileValleyBlend(0, spanMm);
@@ -633,7 +655,7 @@ describe("arch profile slider", () => {
                 const cradled = deformSample(source, side, undefined);
                 const shaped = deformSample(source, side, profile);
                 const stats = valleySeamStats(cradled, shaped, side);
-                // 12 mm C2 fillet on this triangulation: p95 dihedral stays near
+                // 14 mm C2 fillet on this triangulation: p95 dihedral stays near
                 // 11°. A bin-polyline sawtooth creases the whole valley, so p95
                 // and the count of edges steeper than 20° both jump.
                 expect(stats.edges).toBeGreaterThan(200);
@@ -805,6 +827,193 @@ describe("arch profile slider", () => {
         }
     });
 });
+
+describe("arch profile apex and support distribution", () => {
+    const sizes = [5, 9, 13];
+    const widths = [
+        { id: "extra_narrow" as const, delta: -10 },
+        { id: "medium" as const, delta: 0 },
+        { id: "xx_wide" as const, delta: 15 },
+    ];
+
+    function apexOf(side: Side, lengthMm: number, widthMm: number, patch: Partial<SideCorrections>, thickness = 3) {
+        const p = {
+            side,
+            lengthMm,
+            widthMm,
+            thicknessMm: thickness,
+            corrections: zeros(patch),
+            elements: [],
+        };
+        return measureAnatomicalApex(side, (u, v) => heightAt(u, v, p));
+    }
+
+    test("profile, height, and elongation do not move the anatomical crest", () => {
+        let worstDu = 0;
+        let worstDm = 0;
+        let worstDz = 0;
+        for (const size of sizes) {
+            const layoutFor = insoleLayoutForUsMenSize(size);
+            for (const width of widths) {
+                const widthMm = layoutFor.widthMm + width.delta;
+                for (const side of ["left", "right"] as const) {
+                    for (const archHeightMm of [-10, 0, 8, 14]) {
+                        for (const archElongationMm of [0, 5]) {
+                            for (const apexMoveMm of [-12, 0, 12]) {
+                                for (const profile of [0, 25, 50, 75, 100] as const) {
+                                    const patch = { archHeightMm, archElongationMm, apexMoveMm, heelCupDepthMm: 14 };
+                                    const before = apexOf(side, layoutFor.lengthMm, widthMm, patch);
+                                    const after = apexOf(side, layoutFor.lengthMm, widthMm, {
+                                        ...patch,
+                                        archProfile: profile,
+                                    });
+                                    const du = Math.abs(after.u - before.u) * layoutFor.lengthMm;
+                                    const dm = Math.abs(after.m - before.m) * (widthMm / 2);
+                                    const dz = Math.abs(after.z - before.z);
+                                    if (du > worstDu) worstDu = du;
+                                    if (dm > worstDm) worstDm = dm;
+                                    if (dz > worstDz) worstDz = dz;
+                                    if (du > 0.05 || dm > 0.05 || dz > 0.05) {
+                                        throw new Error(
+                                            `${size} ${width.id} ${side} h${archHeightMm} el${archElongationMm} apx${apexMoveMm} p${profile} du ${du.toFixed(3)} dm ${dm.toFixed(3)} dz ${dz.toFixed(3)}`,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        expect(worstDu).toBeLessThanOrEqual(0.05);
+        expect(worstDm).toBeLessThanOrEqual(0.05);
+        expect(worstDz).toBeLessThanOrEqual(0.05);
+    });
+
+    test("only apex shift relocates the crest, and the profile does not add a second one", () => {
+        const layoutFor = insoleLayoutForUsMenSize(9);
+        const posterior = apexOf("left", layoutFor.lengthMm, layoutFor.widthMm, {
+            archHeightMm: 8,
+            apexMoveMm: -12,
+        });
+        const anterior = apexOf("left", layoutFor.lengthMm, layoutFor.widthMm, {
+            archHeightMm: 8,
+            apexMoveMm: 12,
+        });
+        // The baseline shell peaks at u = 0.4, so ±12 mm of apex shift does not
+        // move the combined crest by the full 24 mm. It still has to move.
+        expect((anterior.u - posterior.u) * layoutFor.lengthMm).toBeGreaterThan(5);
+        for (const apexMoveMm of [-12, 12]) {
+            const cradled = apexOf("left", layoutFor.lengthMm, layoutFor.widthMm, { archHeightMm: 8, apexMoveMm });
+            const domed = apexOf("left", layoutFor.lengthMm, layoutFor.widthMm, {
+                archHeightMm: 8,
+                apexMoveMm,
+                archProfile: 0,
+            });
+            expect(Math.abs(domed.u - cradled.u) * layoutFor.lengthMm).toBeLessThanOrEqual(0.05);
+            expect(Math.abs(domed.z - cradled.z)).toBeLessThanOrEqual(0.05);
+        }
+    });
+
+    test("domed support is wider and less peaked than the PR 503 bell, with one crest", () => {
+        const layoutFor = insoleLayoutForUsMenSize(9);
+        const basePatch = { archHeightMm: 8, heelCupDepthMm: 12 };
+        const before = apexOf("left", layoutFor.lengthMm, layoutFor.widthMm, basePatch, 4);
+        const mCrown = before.m * 0.55;
+        const samples: { u: number; delta: number; z: number }[] = [];
+        for (let i = 0; i <= 160; i++) {
+            const u = 0.2 + (0.55 * i) / 160;
+            const z0 = zAt(u, mCrown, "left", basePatch, 4);
+            const z = zAt(u, mCrown, "left", { ...basePatch, archProfile: 0 }, 4);
+            samples.push({ u, delta: z - z0, z });
+        }
+        let peak = 0;
+        for (const s of samples) if (s.delta > peak) peak = s.delta;
+        expect(peak).toBeGreaterThan(1);
+        const half = samples.filter((s) => s.delta >= peak * 0.5);
+        const fwhmMm = (half[half.length - 1]!.u - half[0]!.u) * layoutFor.lengthMm;
+        const legacy = legacyBell(before.u);
+        const widthOf = (rows: { u: number; e: number }[], level: number) => {
+            const band = rows.filter((s) => s.e >= level);
+            return (band[band.length - 1]!.u - band[0]!.u) * layoutFor.lengthMm;
+        };
+        const legacyFwhmMm = widthOf(legacy, 0.5);
+        const legacy90Mm = widthOf(legacy, 0.9);
+        const above90 = samples.filter((s) => s.delta >= peak * 0.9);
+        const w90Mm = (above90[above90.length - 1]!.u - above90[0]!.u) * layoutFor.lengthMm;
+        expect(fwhmMm).toBeGreaterThan(legacyFwhmMm);
+        expect(w90Mm).toBeGreaterThan(legacy90Mm * 1.4);
+
+        const duMm = ((samples[1]!.u - samples[0]!.u) * layoutFor.lengthMm);
+        let maxCurv = 0;
+        let legacyCurv = 0;
+        for (let i = 1; i < samples.length - 1; i++) {
+            const d2 = (samples[i - 1]!.delta - 2 * samples[i]!.delta + samples[i + 1]!.delta) / (duMm * duMm);
+            maxCurv = Math.max(maxCurv, Math.abs(d2));
+            const e0 = legacy[Math.round(((samples[i - 1]!.u - 0.28) / 0.3) * 120)]?.e ?? 0;
+            const e1 = legacy[Math.round(((samples[i]!.u - 0.28) / 0.3) * 120)]?.e ?? 0;
+            const e2 = legacy[Math.round(((samples[i + 1]!.u - 0.28) / 0.3) * 120)]?.e ?? 0;
+            const ld2 = (peak * (e0 - 2 * e1 + e2)) / (duMm * duMm);
+            legacyCurv = Math.max(legacyCurv, Math.abs(ld2));
+        }
+        expect(maxCurv).toBeLessThan(legacyCurv * 0.75);
+
+        let bestI = 0;
+        const along: number[] = [];
+        for (let i = 0; i <= 80; i++) {
+            const u = 0.3 + (0.26 * i) / 80;
+            along.push(zAt(u, before.m, "left", { ...basePatch, archProfile: 0 }, 4));
+            if (along[i]! > along[bestI]!) bestI = i;
+        }
+        const crestU = 0.3 + (0.26 * bestI) / 80;
+        expect(Math.abs(crestU - before.u) * layoutFor.lengthMm).toBeLessThanOrEqual(
+            (0.26 / 80) * layoutFor.lengthMm + 0.05,
+        );
+        let higher = 0;
+        for (const z of along) if (z > along[bestI]! + 0.05) higher++;
+        expect(higher).toBe(0);
+
+        const section = sectionAt(before.u, "left", basePatch, 4);
+        const sCrest = (section.mCrest - section.mValley) / (section.mRim - section.mValley);
+        expect(archProfileCrestHold(0.5, sCrest, (section.mRim - section.mValley) * (layoutFor.widthMm / 2))).toBe(1);
+        expect(archProfileCrestHold(sCrest, sCrest, 40)).toBe(0);
+        const span = section.mRim - section.mValley;
+        const zCrest = zAt(before.u, before.m, "left", { ...basePatch, archProfile: 0 }, 4);
+        const zCrest0 = zAt(before.u, before.m, "left", basePatch, 4);
+        expect(Math.abs(zCrest - zCrest0)).toBeLessThanOrEqual(0.05);
+        let aboveCrest = 0;
+        for (let i = 1; i < 20; i++) {
+            const s = (i / 20) * sCrest;
+            const m = section.mValley + s * span;
+            const z = zAt(before.u, m, "left", { ...basePatch, archProfile: 0 }, 4);
+            if (z > zCrest0 + 0.05) aboveCrest++;
+        }
+        expect(aboveCrest).toBe(0);
+    });
+});
+
+/** PR #503 bell: quintic from 0.28 to 0.58, peak fixed at the given u, no shoulder broaden. */
+function legacyBell(apexU: number): { u: number; e: number }[] {
+    const q = (t: number) => {
+        const x = t <= 0 ? 0 : t >= 1 ? 1 : t;
+        return x * x * x * (x * (x * 6 - 15) + 10);
+    };
+    const lo = 0.32;
+    const hi = 0.54;
+    let uPeak = apexU;
+    if (uPeak < lo) uPeak = lo;
+    if (uPeak > hi) uPeak = hi;
+    const out: { u: number; e: number }[] = [];
+    for (let i = 0; i <= 120; i++) {
+        const u = 0.28 + (0.3 * i) / 120;
+        let e = 0;
+        if (u > 0.28 && u < 0.58) {
+            e = u <= uPeak ? q((u - 0.28) / (uPeak - 0.28)) : 1 - q((u - uPeak) / (0.58 - uPeak));
+        }
+        out.push({ u, e });
+    }
+    return out;
+}
 
 function maxAbsSecond(values: number[]): number {
     let max = 0;
