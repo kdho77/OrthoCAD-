@@ -1,0 +1,11 @@
+{
+  "baseline_sha": "f759bde1e212ae99d475601fc58dd89dd37469c7",
+  "speed_max_ratio": 0.9,
+  "speed_rule": "For every case, candidate headless loft seconds must be <= baseline loft seconds * speed_max_ratio (at least 10% faster than main f759bde1 on this machine). Absolute 10-15s is recorded, not a pass threshold.",
+  "stl_rule": "SHA-256 of the full exported STL byte string must equal the baseline export of the same fixture. Equal length or equal triangle count with any byte difference fails.",
+  "log_rule": "executeCadOperatorProduction, on a finished foot that materializes and slices, must emit one JSON log object whose loft_s and slice_s are finite numbers greater than 0 and whose side matches the row.",
+  "include_leader": true,
+  "log_probe_side": "left",
+  "log_probe_materialize_ms": 30,
+  "log_probe_slice_ms": 30
+}
