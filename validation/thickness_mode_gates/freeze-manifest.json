@@ -1,0 +1,10 @@
+{
+    "frozenBeforeCandidateGrade": true,
+    "base": "268aac85847160b5b2703a05688721ea4cb93b24",
+    "candidate": "3dd73e97bdcfe0cefeac531ace243f7c46c9ab14",
+    "sources": {
+        "README.md": "ea630991ee847c467e700a518b3adefa8e8345b921339c9cdc2ad3e5ad33e8d5",
+        "probe.mts": "2165b722401b9c78ea43b063a73f6b09e65d53fd954fe258cb7e3ef3e8c9485b",
+        "run-gates.mjs": "3a3f0c7333e442d819511b12aa77c2ac5a61c645e4a5353679c0854c6637e2cc"
+    }
+}
