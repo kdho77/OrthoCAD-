@@ -126,8 +126,15 @@ async function primeHarness(): Promise<{ sampleTop: ArrayBuffer; fontBytes: Arra
     return { sampleTop, fontBytes };
 }
 
-async function engrave(name: string | null, side: Side, usMenSize: number): Promise<ArrayBuffer> {
-    const { sampleTop, fontBytes } = await primeHarness();
+type ExportHarness = { sampleTop: ArrayBuffer; fontBytes: ArrayBuffer };
+
+async function engrave(
+    name: string | null,
+    side: Side,
+    usMenSize: number,
+    harness: ExportHarness,
+): Promise<ArrayBuffer> {
+    const { sampleTop, fontBytes } = harness;
     const design = maarDesign(usMenSize);
     if (name) {
         design.textMarking = markingWithComposedText(
@@ -161,6 +168,19 @@ async function engrave(name: string | null, side: Side, usMenSize: number): Prom
     return head.stl.slice(0);
 }
 
+async function footRimForHarness(
+    harness: ExportHarness,
+    usMenSize: number,
+    side: Side,
+): Promise<Array<{ x: number; y: number }>> {
+    const fresh = await sampleTopFromArrayBuffer(harness.sampleTop.slice(0));
+    try {
+        return await composedFootRim(fresh, maarDesign(usMenSize), side);
+    } finally {
+        fresh.dispose();
+    }
+}
+
 function sha256(buf: ArrayBuffer): string {
     return createHash("sha256").update(Buffer.from(buf)).digest("hex");
 }
@@ -189,6 +209,7 @@ describe("plantar name sweep", () => {
     });
 
     test("MAAR, MANDIS KAAR, KANDIS MAAR, and no-text stay byte-identical", async () => {
+        const harness = await primeHarness();
         const cases: Array<{ label: string; name: string | null }> = [
             { label: "MAAR", name: "MAAR" },
             { label: "MANDIS KAAR", name: "MANDIS KAAR" },
@@ -198,7 +219,7 @@ describe("plantar name sweep", () => {
         const mismatches: string[] = [];
         for (const { label, name } of cases) {
             for (const side of ["left", "right"] as const) {
-                const stl = await engrave(name, side, 6.5);
+                const stl = await engrave(name, side, 6.5, harness);
                 const got = sha256(stl);
                 const want = PASSING_SHA[`${label}-${side}`];
                 if (got !== want) mismatches.push(`${label} ${side} got=${got} want=${want}`);
@@ -208,16 +229,20 @@ describe("plantar name sweep", () => {
     }, 900_000);
 
     test("realistic names engrave on both feet at US M6 and M10", async () => {
+        const harness = await primeHarness();
+        const footRimByKey = new Map<string, Promise<Array<{ x: number; y: number }>>>();
         for (const name of REALISTIC_NAMES) {
             for (const usMenSize of [6, 10] as const) {
                 for (const side of ["left", "right"] as const) {
-                    const stl = await engrave(name, side, usMenSize);
+                    const stl = await engrave(name, side, usMenSize, harness);
                     const pos = stlPositions(stl);
-                    const design = maarDesign(usMenSize);
-                    const { sampleTop } = await primeHarness();
-                    const fresh = await sampleTopFromArrayBuffer(sampleTop.slice(0));
-                    const foot = await composedFootRim(fresh, design, side);
-                    fresh.dispose();
+                    const rimKey = `${usMenSize}-${side}`;
+                    let footPromise = footRimByKey.get(rimKey);
+                    if (!footPromise) {
+                        footPromise = footRimForHarness(harness, usMenSize, side);
+                        footRimByKey.set(rimKey, footPromise);
+                    }
+                    const foot = await footPromise;
                     expect(plantarNameEngraved(pos, foot), `${name} M${usMenSize} ${side}`).toBe(true);
                     expect(
                         new DataView(stl).getUint32(80, true),

@@ -128,7 +128,7 @@ beforeEach(() => {
 });
 
 describe("manufacturing solid fingerprint", () => {
-    test("trimline, pattern, walls, corrections, side, product, machine, version, and epoch all miss", () => {
+    test("trimline, pattern, walls, corrections, side, product, machine, and version miss; a viewer epoch does not", () => {
         const base = manufacturingSolidFingerprint(options(), context());
         const changed: Array<[string, string]> = [
             [
@@ -166,7 +166,6 @@ describe("manufacturing solid fingerprint", () => {
                 ),
             ],
             ["geometry version", manufacturingSolidFingerprint(options(), context({ geometryVersion: 3 }))],
-            ["printLoftEpoch", manufacturingSolidFingerprint(options(), context({ printLoftEpoch: 5 }))],
             ["beltPrint", manufacturingSolidFingerprint(options({ beltPrint: true }), context())],
             [
                 "placement version",
@@ -179,6 +178,7 @@ describe("manufacturing solid fingerprint", () => {
         for (const [label, next] of changed) {
             expect(next, label).not.toBe(base);
         }
+        expect(manufacturingSolidFingerprint(options(), context({ printLoftEpoch: 5 }))).toBe(base);
     });
 
     test("a committed trimline on the field matches a preview field that leaves trimline empty", () => {
@@ -342,7 +342,7 @@ describe("manufacturing solid reuse", () => {
         rightGeo.dispose();
     });
 
-    test("leaving Print bumps printLoftEpoch and drops the cached solid", () => {
+    test("leaving Print bumps the viewer epoch and keeps the solid for an unchanged design", () => {
         const fp = manufacturingSolidFingerprint(options(), context({ printLoftEpoch: 2 }));
         rememberManufacturingSolid(fp, "left", new BufferGeometry());
         usePreviewLoftStatusStore.setState({
@@ -352,8 +352,78 @@ describe("manufacturing solid reuse", () => {
         invalidateProceduralPrintLoftForDesignStep();
         expect(usePreviewLoftStatusStore.getState().printLoftEpoch).toBe(3);
         expect(usePreviewLoftStatusStore.getState().phaseBySide).toEqual({ left: "idle", right: "idle" });
-        expect(peekManufacturingSolid(fp, "left")).toBeNull();
-        expect(manufacturingSolidFingerprint(options(), context({ printLoftEpoch: 3 }))).not.toBe(fp);
+        expect(peekManufacturingSolid(fp, "left")).not.toBeNull();
+        expect(manufacturingSolidFingerprint(options(), context({ printLoftEpoch: 3 }))).toBe(fp);
+    });
+
+    test("size, width, element, correction, hardness, trim, and text each miss", () => {
+        const design = {
+            thicknessMm: 3,
+            usMenSize: 9,
+            shoeWidth: "medium",
+            printRecipe: { version: 1, device: "Medium" },
+            corrections: { left: { heelLiftMm: 0 }, right: { heelLiftMm: 0 } },
+            elements: [{ id: "met", kind: "met_pad", hardnessClass: "Medium", heightMm: 3 }],
+            trimlines: { left: { points: [{ x: 0, y: 0, z: 0 }] } },
+            textMarking: { text: "ADA", surface: "bottom" },
+            splitElements: false,
+            dogfoodManufacturing: { hardness: "Medium" },
+        };
+        const placed = {
+            id: "met",
+            kind: "met_pad",
+            hardnessClass: "Medium",
+            side: "left" as const,
+            position: { x: 1, y: 2 },
+            rotationDeg: 0,
+            scale: { x: 1, y: 1 },
+            heightMm: 3,
+        };
+        const baseOptions = options({
+            sourceField: { ...options().sourceField, elements: [placed] },
+        });
+        const base = manufacturingSolidFingerprint(
+            baseOptions,
+            context({ savedDesign: design, printLoftEpoch: 2 }),
+        );
+        const miss = (label: string, saved: unknown, opts: ReturnType<typeof options> = baseOptions) => {
+            expect(
+                manufacturingSolidFingerprint(opts, context({ savedDesign: saved, printLoftEpoch: 2 })),
+                label,
+            ).not.toBe(base);
+        };
+        miss("edit", { ...design, thicknessMm: 4 });
+        miss("size", { ...design, usMenSize: 10 });
+        miss("width", { ...design, shoeWidth: "wide" });
+        miss("element", {
+            ...design,
+            elements: [{ id: "met", kind: "met_pad", hardnessClass: "Medium", heightMm: 5 }],
+        });
+        miss("correction", {
+            ...design,
+            corrections: { left: { heelLiftMm: 6 }, right: { heelLiftMm: 0 } },
+        });
+        miss("element hardness", {
+            ...design,
+            elements: [{ id: "met", kind: "met_pad", hardnessClass: "Soft", heightMm: 3 }],
+        });
+        miss("device hardness", { ...design, printRecipe: { version: 1, device: "Firm" } });
+        miss("prescribed hardness", { ...design, dogfoodManufacturing: { hardness: "Firm" } });
+        miss("trim", { ...design, trimlines: { left: { points: [{ x: 4, y: 0, z: 0 }] } } });
+        miss("text", { ...design, textMarking: { text: "BOB", surface: "bottom" } });
+        const harder = options({
+            sourceField: {
+                ...options().sourceField,
+                elements: [{ ...placed, hardnessClass: "Hard" }],
+            },
+        });
+        miss("field hardness", design, harder);
+        expect(
+            manufacturingSolidFingerprint(
+                baseOptions,
+                context({ savedDesign: JSON.parse(JSON.stringify(design)), printLoftEpoch: 8 }),
+            ),
+        ).toBe(base);
     });
 
     test("a print-cached engraved name is not engraved again, including the default patient row", async () => {

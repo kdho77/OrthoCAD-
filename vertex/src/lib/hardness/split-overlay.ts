@@ -53,8 +53,8 @@ export function insoleViewportMaterialColor(
     if (!raw) return INSOLE_VIEWPORT_BASE_COLOR;
     const cls = migrateRegionHardnessClass(raw);
     const preview = CLASS_PREVIEW_COLORS[cls] ?? CLASS_PREVIEW_COLORS.Medium;
-    const mix = options?.printExport ? INSOLE_PRINT_EXPORT_TINT_MIX : INSOLE_HARDNESS_TINT_MIX;
-    return mixHexColors(INSOLE_VIEWPORT_BASE_COLOR, preview, mix);
+    if (options?.printExport) return preview;
+    return mixHexColors(INSOLE_VIEWPORT_BASE_COLOR, preview, INSOLE_HARDNESS_TINT_MIX);
 }
 
 /** High-contrast colors used to locate additions while designing an insole. */
@@ -118,7 +118,15 @@ export function elementPreviewColor(
     print: boolean,
     selected: boolean,
     split = true,
+    deviceHardness?: RegionHardnessClass | string,
 ): string {
-    if (print) return split && el.hardnessClass ? splitColorForElement(el) : "#f8fafc";
+    if (print) {
+        if (split && el.hardnessClass) return splitColorForElement(el);
+        if (deviceHardness) {
+            const cls = migrateRegionHardnessClass(deviceHardness);
+            return CLASS_PREVIEW_COLORS[cls] ?? CLASS_PREVIEW_COLORS.Medium;
+        }
+        return INSOLE_VIEWPORT_BASE_COLOR;
+    }
     return selected ? "#22c55e" : DESIGN_ELEMENT_COLORS[0];
 }

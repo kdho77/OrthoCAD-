@@ -1,7 +1,11 @@
 // Copyright (c) 2026 Vertex Orthopedic. All rights reserved.
 
 import { beforeEach, describe, expect, test } from "@rstest/core";
-import { loadDesignWorkflowSession, saveDesignWorkflowSession } from "./design-workflow-session";
+import {
+    clearDesignWorkflowSession,
+    loadDesignWorkflowSession,
+    saveDesignWorkflowSession,
+} from "./design-workflow-session";
 
 const DESIGN = "11111111-1111-4111-8111-111111111111";
 
@@ -32,5 +36,16 @@ describe("design workflow session", () => {
             designStartPath: "scan",
         });
         expect(loadDesignWorkflowSession(DESIGN)?.step).toBe("setup");
+    });
+
+    test("clearing a deleted design removes its cached session", () => {
+        saveDesignWorkflowSession(DESIGN, {
+            step: "corrections",
+            completedSteps: ["scan"],
+            footSideExplicitlyChosen: true,
+            designStartPath: "template",
+        });
+        clearDesignWorkflowSession(DESIGN);
+        expect(loadDesignWorkflowSession(DESIGN)).toBeNull();
     });
 });

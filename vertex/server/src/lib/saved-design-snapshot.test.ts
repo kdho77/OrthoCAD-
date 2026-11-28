@@ -85,6 +85,20 @@ function prescribedHighArchSnapshot() {
 }
 
 describe("persist saved design snapshot", () => {
+    test("a deleted design is not rewritten", async () => {
+        const { prisma, updates } = fakePrisma(row({ deletedAt: "2026-11-28T00:00:00.000Z" }));
+        await expect(
+            persistSavedDesignSnapshotOnDesign({
+                prisma,
+                principal,
+                designId: DESIGN_ID,
+                catalog: { shoe_size: { system: "US_M", size: 9 } },
+                buildSnapshot: buildSavedDesignSnapshot,
+            }),
+        ).rejects.toThrow(/deleted/i);
+        expect(updates).toHaveLength(0);
+    });
+
     test("null settingsJson is replaced in place and rx text is not mapped", async () => {
         const { prisma, updates } = fakePrisma();
         const result = await persistSavedDesignSnapshotOnDesign({

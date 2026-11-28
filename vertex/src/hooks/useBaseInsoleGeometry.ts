@@ -33,6 +33,7 @@ import {
 import {
     cachedManufacturingSolidIncludesExportText,
     composedEngravingKey,
+    manufacturingHardnessKey,
     manufacturingSolidFingerprint,
     peekManufacturingSolid,
     publishPreviewManufacturingSolid,
@@ -160,6 +161,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const [elementReference, setElementReference] = useState<BufferGeometry | null>(null);
     useEffect(() => () => elementReference?.dispose(), [elementReference]);
     const geometryElementsKey = elementGeometryKey(design.elements);
+    const hardnessKey = manufacturingHardnessKey({
+        elements: design.elements,
+        printRecipe: design.printRecipe,
+        deviceHardness: design.dogfoodManufacturing?.hardness ?? null,
+        splitElements: design.splitElements === true,
+    });
     const correctionPreview = usePerformanceStore((s) => s.correctionPreview);
     const thicknessPreview = usePerformanceStore((s) => s.thicknessPreview);
     const elementPreviews = usePerformanceStore((s) => s.elementPreviews);
@@ -906,6 +913,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         patientDisplayName || null,
                         side,
                     ),
+                    hardnessKey,
                 });
                 if (lastLoftKeyRef.current === loftKey && outRef.current) {
                     setBaseMeshLoading(side, false);
@@ -1126,6 +1134,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.trimlines,
         design.trimPreset,
         design.textMarking,
+        hardnessKey,
         patientDisplayName,
         design.sinks,
         design.sinkStyloidThicken,

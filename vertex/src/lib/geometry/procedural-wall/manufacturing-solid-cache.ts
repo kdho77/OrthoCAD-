@@ -33,7 +33,10 @@ export interface ManufacturingSolidContext {
     side: Side;
     mirrored: boolean;
     baseAssetId: string;
-    /** Same counter as #259. Leaving Print/Export bumps it and this key misses. */
+    /**
+     * Leaving Print bumps this so the viewer re-enters the loft path.
+     * It is not part of the solid fingerprint: an unchanged design reuses the mesh.
+     */
     printLoftEpoch: number;
     /** Apex product sent to the slicer (Apex Core / Apex Light). */
     productId: string;
@@ -130,6 +133,59 @@ function hashPolyline(
     return sha256Hex(parts.join(";"));
 }
 
+/**
+ * Hardness is not in {@link elementGeometryKey} (placement stays put), but a
+ * hardness change must miss this solid. Device hardness is the print recipe
+ * and the dogfood hardness field. Element hardness is the region on each pad.
+ */
+export function manufacturingHardnessKey(input: {
+    elements?: ReadonlyArray<{
+        id?: string;
+        hardnessClass?: string;
+        regionId?: string;
+        priority?: number;
+        depth?: unknown;
+        overrides?: unknown;
+    }>;
+    printRecipe?: unknown;
+    deviceHardness?: unknown;
+    splitElements?: boolean;
+}): string {
+    return stableStringify({
+        elements: (input.elements ?? []).map((element) => ({
+            id: element.id ?? "",
+            hardnessClass: element.hardnessClass ?? null,
+            regionId: element.regionId ?? null,
+            priority: element.priority ?? null,
+            depth: element.depth ?? null,
+            overrides: element.overrides ?? null,
+        })),
+        printRecipe: input.printRecipe ?? null,
+        deviceHardness: input.deviceHardness ?? null,
+        splitElements: input.splitElements === true,
+    });
+}
+
+function savedHardnessFields(savedDesign: unknown): {
+    printRecipe: unknown;
+    deviceHardness: unknown;
+    splitElements: boolean;
+} {
+    if (!savedDesign || typeof savedDesign !== "object") {
+        return { printRecipe: null, deviceHardness: null, splitElements: false };
+    }
+    const design = savedDesign as {
+        printRecipe?: unknown;
+        splitElements?: boolean;
+        dogfoodManufacturing?: { hardness?: unknown };
+    };
+    return {
+        printRecipe: design.printRecipe ?? null,
+        deviceHardness: design.dogfoodManufacturing?.hardness ?? null,
+        splitElements: design.splitElements === true,
+    };
+}
+
 function curveHash(
     curve: { points?: ReadonlyArray<{ x: number; y: number; z?: number }> } | null | undefined,
 ): string {
@@ -155,6 +211,7 @@ function fieldIdentity(field: HeightFieldParams | undefined) {
         thicknessMm: field.thicknessMm,
         corrections: field.corrections,
         elements: elementGeometryKey(field.elements ?? []),
+        elementHardness: manufacturingHardnessKey({ elements: field.elements ?? [] }),
         sinks: field.sinks ?? [],
         sinkStyloidThicken: field.sinkStyloidThicken === true,
         includeSkives: field.includeSkives === true,
@@ -260,7 +317,6 @@ export function manufacturingSolidIdentity(
         side: context.side,
         mirrored: context.mirrored,
         baseAssetId: context.baseAssetId,
-        printLoftEpoch: context.printLoftEpoch,
         productId: context.productId,
         machineId: context.machineId,
         wallStyle: options.wallStyle ?? "",
@@ -293,6 +349,10 @@ export function manufacturingSolidIdentity(
             slicerVersion: context.slicerVersion,
         }),
         field: fieldIdentity(options.sourceField),
+        hardness: manufacturingHardnessKey({
+            elements: options.sourceField?.elements,
+            ...savedHardnessFields(context.savedDesign),
+        }),
         sinks: options.sinks ?? [],
         sinkStyloidThicken: options.sinkStyloidThicken === true,
     };

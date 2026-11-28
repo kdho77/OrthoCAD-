@@ -79,6 +79,19 @@ describe("client-store saveDesign persistence", () => {
         expect(useClientStore.getState().designs[0]?.state.elements).toHaveLength(1);
     });
 
+    test("does not save a design that has been deleted", async () => {
+        const current = useClientStore.getState().designs[0];
+        if (!current) throw new Error("missing design");
+        useClientStore.setState({
+            designs: [{ ...current, deletedAt: "2026-11-28T00:00:00.000Z" }],
+        });
+        await expect(
+            useClientStore.getState().saveDesign("design-1", createDesignWithStockPlaceholder()),
+        ).rejects.toThrow("Design is deleted");
+        expect(mockSave).not.toHaveBeenCalled();
+        expect(useClientStore.getState().designs[0]?.deletedAt).toBe("2026-11-28T00:00:00.000Z");
+    });
+
     test("surfaces an error and leaves local geometry unchanged when save rejects", async () => {
         mockSave.mockRejectedValue(new Error("Network down"));
         const before = useClientStore.getState().designs[0]?.state;

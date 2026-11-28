@@ -295,11 +295,7 @@ describe("design deep link", () => {
         });
         await renderDesign();
         expect(useClinicalWorkflowStore.getState().step).toBe("corrections");
-        expect(useClinicalWorkflowStore.getState().completedSteps).toEqual([
-            "scan",
-            "setup",
-            "setup",
-        ]);
+        expect(useClinicalWorkflowStore.getState().completedSteps).toEqual(["scan", "setup", "setup"]);
     });
 
     test("after the directory is loaded, an unknown design shows the session message without another fetch", async () => {

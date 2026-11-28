@@ -17,7 +17,7 @@ beforeEach(() => {
 });
 
 describe("clinical workflow print loft invalidation", () => {
-    test("Print → Corrections → Print bumps printLoftEpoch so walls must rebuild", () => {
+    test("Print → Corrections → Print resets the splash and keeps the epoch bump off the solid", () => {
         useClinicalWorkflowStore.setState({ step: "print" });
         usePreviewLoftStatusStore.setState({
             phaseBySide: { left: "ready", right: "ready" },
@@ -43,7 +43,7 @@ describe("clinical workflow print loft invalidation", () => {
         expect(usePreviewLoftStatusStore.getState().printLoftEpoch).toBe(5);
     });
 
-    test("Print → Export keeps the cached solid; Corrections still drops it", () => {
+    test("Print → Export and Print → Corrections keep the cached solid", () => {
         const geo = new BufferGeometry();
         geo.userData = { mark: "print-solid" };
         rememberManufacturingSolid("print-solid", "left", geo);
@@ -66,7 +66,7 @@ describe("clinical workflow print loft invalidation", () => {
 
         useClinicalWorkflowStore.getState().setStep("corrections");
         expect(usePreviewLoftStatusStore.getState().printLoftEpoch).toBe(6);
-        expect(peekManufacturingSolid("print-solid", "left")).toBeNull();
+        expect(peekManufacturingSolid("print-solid", "left")?.userData.mark).toBe("print-solid");
         geo.dispose();
     });
 });

@@ -1934,23 +1934,103 @@ export function curveSTFromCubic(
     return { u, S, T };
 }
 
+interface PolylineSampleCache {
+    nDense: number;
+    stamp: Float64Array;
+    dense: XYZ[];
+    st: { u: number[]; S: number[]; T: number[] } | null;
+}
+
+const polylineSampleCache = new WeakMap<XYZ[], PolylineSampleCache>();
+
+function polylineStampMatches(col: XYZ[], stamp: Float64Array): boolean {
+    if (stamp.length !== col.length * 3) return false;
+    for (let i = 0; i < col.length; i++) {
+        const p = col[i]!;
+        if (p.x !== stamp[i * 3] || p.y !== stamp[i * 3 + 1] || p.z !== stamp[i * 3 + 2]) return false;
+    }
+    return true;
+}
+
+function polylineStamp(col: XYZ[]): Float64Array {
+    const stamp = new Float64Array(col.length * 3);
+    for (let i = 0; i < col.length; i++) {
+        const p = col[i]!;
+        stamp[i * 3] = p.x;
+        stamp[i * 3 + 1] = p.y;
+        stamp[i * 3 + 2] = p.z;
+    }
+    return stamp;
+}
+
+function cachedPolylineSample(col: XYZ[], nDense: number): PolylineSampleCache | null {
+    const hit = polylineSampleCache.get(col);
+    if (!hit || hit.nDense !== nDense || !polylineStampMatches(col, hit.stamp)) return null;
+    return hit;
+}
+
+function dist3(a: XYZ, b: XYZ): number {
+    return Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+}
+
+function vecAngleComponents(ax: number, ay: number, az: number, bx: number, by: number, bz: number): number {
+    const du = Math.hypot(ax, ay, az) || 1;
+    const dv = Math.hypot(bx, by, bz) || 1;
+    const c = Math.max(-1, Math.min(1, (ax * bx + ay * by + az * bz) / (du * dv)));
+    return (Math.acos(c) * 180) / Math.PI;
+}
+
+/** Same S and T as the allocating loop. `dense` is the polyline those tables were built on. */
+function curveSTFromDense(dense: XYZ[]): { u: number[]; S: number[]; T: number[] } {
+    const n = Math.max(1, dense.length - 1);
+    const u = new Array<number>(n + 1);
+    for (let i = 0; i <= n; i++) u[i] = i / n;
+    const S = new Array<number>(n + 1);
+    S[0] = 0;
+    for (let i = 1; i <= n; i++) S[i] = S[i - 1]! + dist3(dense[i - 1]!, dense[i]!);
+    const T = new Array<number>(n + 1);
+    T[0] = 0;
+    const origin = dense[0]!;
+    const first = dense[1] ?? origin;
+    let px = first.x - origin.x;
+    let py = first.y - origin.y;
+    let pz = first.z - origin.z;
+    for (let i = 1; i <= n; i++) {
+        let tx: number;
+        let ty: number;
+        let tz: number;
+        if (i < n) {
+            const a = dense[i]!;
+            const b = dense[i + 1]!;
+            tx = b.x - a.x;
+            ty = b.y - a.y;
+            tz = b.z - a.z;
+        } else {
+            const a = dense[i - 1]!;
+            const b = dense[i]!;
+            tx = b.x - a.x;
+            ty = b.y - a.y;
+            tz = b.z - a.z;
+        }
+        T[i] = T[i - 1]! + vecAngleComponents(px, py, pz, tx, ty, tz);
+        px = tx;
+        py = ty;
+        pz = tz;
+    }
+    return { u, S, T };
+}
+
 export function curveSTFromPolyline(
     col: XYZ[],
     nDense = SPLINE_W_DENSE,
-): { u: number[]; S: number[]; T: number[] } {
-    const dense = densifyPolyline(col, nDense);
-    const n = Math.max(1, dense.length - 1);
-    const u = dense.map((_, i) => i / n);
-    const S = [0];
-    for (let i = 1; i <= n; i++) S.push(S[i - 1]! + hypot3(sub(dense[i]!, dense[i - 1]!)));
-    const T = [0];
-    let prev = sub(dense[1] ?? dense[0]!, dense[0]!);
-    for (let i = 1; i <= n; i++) {
-        const tan = i < n ? sub(dense[i + 1]!, dense[i]!) : sub(dense[i]!, dense[i - 1]!);
-        T.push(T[i - 1]! + vecAngleDeg(prev, tan));
-        prev = tan;
-    }
-    return { u, S, T };
+): { u: number[]; S: number[]; T: number[]; dense: XYZ[] } {
+    const hit = cachedPolylineSample(col, nDense);
+    if (hit?.st) return { ...hit.st, dense: hit.dense };
+    const dense = hit?.dense ?? densifyPolyline(col, nDense);
+    const st = curveSTFromDense(dense);
+    const entry = polylineSampleCache.get(col);
+    if (entry && entry.dense === dense && entry.nDense === nDense) entry.st = st;
+    return { ...st, dense };
 }
 
 function tableFromST(
@@ -1986,8 +2066,10 @@ export function buildPolylineDensityTable(
 
 export function densifyPolyline(col: XYZ[], nDense = SPLINE_W_DENSE): XYZ[] {
     if (col.length < 2) return col.map((p) => ({ ...p }));
+    const hit = cachedPolylineSample(col, nDense);
+    if (hit) return hit.dense;
     const acc = [0];
-    for (let i = 1; i < col.length; i++) acc.push(acc[i - 1]! + hypot3(sub(col[i]!, col[i - 1]!)));
+    for (let i = 1; i < col.length; i++) acc.push(acc[i - 1]! + dist3(col[i - 1]!, col[i]!));
     const L = acc[acc.length - 1] ?? 0;
     const n = Math.max(1, nDense);
     const out: XYZ[] = [];
@@ -2005,6 +2087,7 @@ export function densifyPolyline(col: XYZ[], nDense = SPLINE_W_DENSE): XYZ[] {
     }
     out[0] = { ...col[0]! };
     out[n] = { ...col[col.length - 1]! };
+    polylineSampleCache.set(col, { nDense, stamp: polylineStamp(col), dense: out, st: null });
     return out;
 }
 
@@ -2230,8 +2313,9 @@ export function samplePolylinesByW(cols: XYZ[][], N: number, f: number[][]): { p
     const L: number[] = [];
     for (let i = 0; i < nS; i++) {
         const col = cols[i] ?? [];
-        const dense = densifyPolyline(col, SPLINE_W_DENSE);
-        const table = buildPolylineDensityTable(col, SPLINE_W_DENSE, N);
+        const sampled = curveSTFromPolyline(col, SPLINE_W_DENSE);
+        const dense = sampled.dense;
+        const table = tableFromST(sampled, N);
         const fk =
             f[i] ??
             enforceMonotoneF(
@@ -2263,10 +2347,11 @@ export function qOnNormalizedArc(S: number[], T: number[], nGrid = SPLINE_W_DENS
         qSeg.push(1 / Math.max(dsTarget(rhoFromSegment(dS, dT), L, floor), 1e-16));
     }
     const out: number[] = [];
+    // sMid increases with i, so the segment index only moves forward.
+    let j = 1;
     for (let i = 0; i < nGrid; i++) {
         const amid = (i + 0.5) / nGrid;
         const sMid = amid * L;
-        let j = 1;
         while (j < S.length && (S[j] ?? 0) < sMid) j++;
         out.push(qSeg[Math.max(0, j - 1)] ?? qSeg[qSeg.length - 1] ?? 1);
     }
@@ -2422,7 +2507,7 @@ export function samplePolylineBlock(
     const fillLo = landing ? SPLINE_BODY_FILL_LO : 0;
     const fillHi = landing ? SPLINE_BODY_FILL_HI : 1;
     const table = tableFromST(st, n, lipS, fillLo, fillHi);
-    const dense = densifyPolyline(col, SPLINE_W_DENSE);
+    const dense = st.dense;
     const rawU: number[] = [];
     for (let k = 0; k <= n; k++) {
         if (k === 0) rawU.push(0);
