@@ -1,0 +1,56 @@
+[
+  {
+    "id": "R3",
+    "rule": "R3",
+    "quote": "slicer and geometry briefs must not grow scope. Solve only the defect Kendon has observed; anything else comes to him as a question first. Copy known methods rather than inventing new constructions.",
+    "pass": true,
+    "measured": "4 changed product files, all on the catalog/persist/test allowlist",
+    "threshold": "every changed product file is the saved-design catalog, its persist path, the MCP schema or bundle, a test, or a doc",
+    "command": "git diff --name-only 268aac85847160b5b2703a05688721ea4cb93b24 && npx rstest run --config validation/per_side_heel_wedge_gates/rstest.config.ts"
+  },
+  {
+    "id": "R7",
+    "rule": "R7",
+    "quote": "designs and exports not affected by your defect must produce identical output to current main (prove with a before/after comparison on at least the SAMPLE_Top stock design with no corrections).",
+    "pass": true,
+    "measured": "stock design sha256 c608222a9095fbc2f688cf8c890c8c4e51ee95bb07e826605e93f0c74bb438ce; left stl 83baf39471a8fcfd31cb91551d889fe0; right stl 87f9a443c2422e6e98f7d455ae53cab2",
+    "threshold": "sha256 c608222a9095fbc2f688cf8c890c8c4e51ee95bb07e826605e93f0c74bb438ce; left md5 83baf39471a8fcfd31cb91551d889fe0; right md5 87f9a443c2422e6e98f7d455ae53cab2",
+    "command": "git diff --name-only 268aac85847160b5b2703a05688721ea4cb93b24 && npx rstest run --config validation/per_side_heel_wedge_gates/rstest.config.ts"
+  },
+  {
+    "id": "MUST_MATCH",
+    "rule": "MUST-MATCH",
+    "quote": "bilateral posting and designs without wedges unchanged",
+    "pass": true,
+    "measured": "bilateral wedge sha256 fd7c3861449e6b7e2621d807cc87c6eb1584936c3b8c4c59c08277965cc84d45; posting sha256 7d9c5086404c6f539d27634b0be4860ae1d9dd559168f36a817842699e4e8bfe; bilateral stl L 97684f4f8bdbe03ba05d9e02dea81dfc R 868c6d77c46c44b71eae8e0b8f9f9bd4; both feet equal true; posting deg L/R 2/2; stock wedges unset true",
+    "threshold": "wedge sha256 fd7c3861449e6b7e2621d807cc87c6eb1584936c3b8c4c59c08277965cc84d45; posting sha256 7d9c5086404c6f539d27634b0be4860ae1d9dd559168f36a817842699e4e8bfe; stl L 97684f4f8bdbe03ba05d9e02dea81dfc R 868c6d77c46c44b71eae8e0b8f9f9bd4; both feet carry the same wedge; rearfootPostingDeg 2/2; stock wedges unset",
+    "command": "git diff --name-only 268aac85847160b5b2703a05688721ea4cb93b24 && npx rstest run --config validation/per_side_heel_wedge_gates/rstest.config.ts"
+  },
+  {
+    "id": "TESTS_READBACK",
+    "rule": "TESTS",
+    "quote": "right-only 2 degree medial heel wedge reads back on R only with the correct sign (medial = raises the medial side), L unchanged",
+    "pass": false,
+    "measured": "shared accepted; mcp accepted; varus rejected true; built right null; built left {\"side\":\"medial\",\"value\":2,\"unit\":\"deg\",\"degreeMode\":\"station\"}; persisted {\"right\":null,\"left\":{\"side\":\"medial\",\"value\":2,\"unit\":\"deg\",\"degreeMode\":\"station\"},\"leftPostingDeg\":0,\"rightPostingDeg\":0}",
+    "threshold": "shared and MCP accept rearfoot_wedge_by_side.right {side medial, value 2, unit deg, degree_mode station}; varus rejected; persisted right equals {\"side\":\"medial\",\"value\":2,\"unit\":\"deg\",\"degreeMode\":\"station\"}; left wedge absent; both rearfootPostingDeg 0",
+    "command": "git diff --name-only 268aac85847160b5b2703a05688721ea4cb93b24 && npx rstest run --config validation/per_side_heel_wedge_gates/rstest.config.ts"
+  },
+  {
+    "id": "TESTS_EXPORT",
+    "rule": "TESTS",
+    "quote": "export geometry shows the medial heel raised by the expected amount for 2 degrees",
+    "pass": false,
+    "measured": "medial field 0.0000 mm; lateral field 0.0000 mm; expected 2.0418 mm from chord 58.4684 * tan(2°); medial lift 0.0000 mm at v -0.8052; lateral lift 0.0000 mm at v 0.7970; right stl 87f9a443c2422e6e98f7d455ae53cab2; left stl 97684f4f8bdbe03ba05d9e02dea81dfc",
+    "threshold": "medial field within 0.02 mm of heelChord*tan(2°); lateral field <= 0.02 mm; medial lift within 0.05 mm of frozen 1.8428573608398438 mm; lateral lift within 0.05 mm of frozen 0.20722007751464844 mm; medial v < -0.5; lateral v > 0.5; right stl 868c6d77c46c44b71eae8e0b8f9f9bd4; left stl equals stock 83baf39471a8fcfd31cb91551d889fe0",
+    "command": "git diff --name-only 268aac85847160b5b2703a05688721ea4cb93b24 && npx rstest run --config validation/per_side_heel_wedge_gates/rstest.config.ts"
+  },
+  {
+    "id": "ONE",
+    "rule": "ONE",
+    "quote": "Let a production design carry a heel wedge on one side only, in degrees, with an unambiguous medial/lateral sign, using the existing heel posting/wedge geometry (no new construction). If the existing geometry already supports per-side wedges, only expose and document it; if it needs new geometry, STOP and report.",
+    "pass": false,
+    "measured": "geometry files changed 0; new geometry files 0; documented true; existing right medial field 2.0418 mm vs chord*tan(2°) 2.0418 mm; existing right stl 868c6d77c46c44b71eae8e0b8f9f9bd4; catalog exposed false",
+    "threshold": "0 changes to wedge.ts, posting-degrees.ts, height-field.ts, base-modifier.ts, print-solid-compose.ts, heel-lift.ts; 0 new geometry modules; persist and create descriptions and the MCP bundle say rearfoot_wedge_by_side raises the medial heel and raises the lateral heel; existing-field right STL stays 868c6d77c46c44b71eae8e0b8f9f9bd4; catalog readback and export gates pass",
+    "command": "git diff --name-only 268aac85847160b5b2703a05688721ea4cb93b24 && npx rstest run --config validation/per_side_heel_wedge_gates/rstest.config.ts"
+  }
+]
