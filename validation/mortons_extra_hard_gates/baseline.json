@@ -1,0 +1,12 @@
+{
+    "baseSha": "268aac85847160b5b2703a05688721ea4cb93b24",
+    "stockLeftStlSha256": "a726fb2f79996c550e71878dfb5deda294a984c62b765650bc426c3087ee856b",
+    "metUnsetLeftStlSha256": "29e36ba22cb51f2c178b126173f247db4c97e524c763943926bd9b496a7d2417",
+    "mortonsUnsetLeftStlSha256": "954322dbd8c685b87b89f849143af706e6e4921c56d67db085eacc2b95559e5d",
+    "explicitSplitOffModelSha256": "82cff93cb4070daa3577475c826056983be1719d10d3e0ecdf2b408aaef45ee7",
+    "explicitSplitOnThrew": true,
+    "explicitSplitOnError": "Hardness 3MF export failed: missing region snapshot-mortons_extension-left-1 (element Hard)",
+    "explicitSplitOnModelSha256": "",
+    "metSoftModelSha256": "4cc2c9fe749f967b6452d79f6dac492c7788562a9c8b6d011642081122ddf228",
+    "textMarkingSha256": "468f76ab266e051293ce693ae06da980b2ad832f9f1041acfa9bed8e4ca19505"
+}
