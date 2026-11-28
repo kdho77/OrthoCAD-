@@ -1,0 +1,3 @@
+Frozen gate suite for PR #437 independent grade.
+Freeze commit must not edit: gate-*.test.ts, bad-change-proof.test.ts, helpers/*, scripts/*, rstest.*.config.ts
+After freeze: only RESULTS.md and PR metadata may change.
