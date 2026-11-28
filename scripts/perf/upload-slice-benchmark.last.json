@@ -1,0 +1,59 @@
+{
+    "fixture": "SAMPLE_Top.glb",
+    "note": "VertexSlice was not called. Solid time is context. Post-solid stages are the measurement.",
+    "host": {
+        "node": "v22.23.4",
+        "platform": "linux",
+        "worker": "undefined"
+    },
+    "measuredAt": "2026-11-28T00:48:58.355Z",
+    "default": {
+        "leftMs": 7359,
+        "rightMs": 7325,
+        "sequentialPairMs": 14684,
+        "parallelPairMs": 13881,
+        "parallelLeftMs": 13881,
+        "parallelRightMs": 13880,
+        "leftTriangles": 110308,
+        "rightTriangles": 111116,
+        "leftBytes": 5515484,
+        "rightBytes": 5555884
+    },
+    "mortonsExtension": {
+        "heightMm": 3,
+        "leftMs": 7654,
+        "rightMs": 8581,
+        "sequentialPairMs": 16235,
+        "leftTriangles": 111548,
+        "rightTriangles": 111428,
+        "leftBytes": 5577484,
+        "rightBytes": 5571484
+    },
+    "postSolidMedianMs": {
+        "leaderAppend": 150,
+        "headerStamp": 4.925,
+        "gzip": 80,
+        "gunzip": 13,
+        "zstd": 19,
+        "zstdDecompress": 5,
+        "clientUploadBody": 148,
+        "serverMeshGate": 5,
+        "handednessCompactFixture": 27,
+        "handednessScaled8Mb": 241,
+        "loopbackGzipStl": 7,
+        "loopback8MbGcode": 12
+    },
+    "bytes": {
+        "solid": 5515484,
+        "withLeader": 5519484,
+        "gzip": 2347596,
+        "zstd": 1956037,
+        "uploadBody": 2347596,
+        "uploadCompressed": true,
+        "uploadEncoding": "gzip",
+        "meshGateRewrote": false,
+        "meshTriangles": 110388,
+        "fixtureGcodeChars": 1087731,
+        "sha256": "a726fb2f79996c550e71878dfb5deda294a984c62b765650bc426c3087ee856b"
+    }
+}
