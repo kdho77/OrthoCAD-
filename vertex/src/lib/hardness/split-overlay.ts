@@ -53,7 +53,7 @@ export function insoleViewportMaterialColor(
     if (!raw) return INSOLE_VIEWPORT_BASE_COLOR;
     const cls = migrateRegionHardnessClass(raw);
     const preview = CLASS_PREVIEW_COLORS[cls] ?? CLASS_PREVIEW_COLORS.Medium;
-    if (options?.printExport) return preview;
+    if (options?.printExport || preview === CLASS_PREVIEW_COLORS.Medium) return preview;
     return mixHexColors(INSOLE_VIEWPORT_BASE_COLOR, preview, INSOLE_HARDNESS_TINT_MIX);
 }
 

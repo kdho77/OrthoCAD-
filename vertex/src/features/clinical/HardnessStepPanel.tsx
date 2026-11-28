@@ -4,7 +4,7 @@ import { PanelHeading } from "@/components/clinical/PanelHeading";
 import { HardnessRegionList } from "@/features/clinical/HardnessRegionList";
 import { cn } from "@/lib/utils";
 import { useDesignStore } from "@/stores/design-store";
-import { CLASS_PREVIEW_COLORS } from "../../../shared/print-recipe/hardness-class-table";
+import { classPreviewSwatchStyle } from "../../../shared/print-recipe/hardness-class-table";
 import {
     gyroidInfillPctForHardness,
     HARDNESS_NAMES,
@@ -47,7 +47,7 @@ export function HardnessStepPanel() {
                             <span className="flex items-center gap-2">
                                 <span
                                     className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-                                    style={{ backgroundColor: CLASS_PREVIEW_COLORS[name] }}
+                                    style={classPreviewSwatchStyle(name)}
                                     aria-hidden="true"
                                 />
                                 {name}

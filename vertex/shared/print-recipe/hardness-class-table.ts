@@ -108,7 +108,7 @@ export const CLASS_SOFTNESS_RANK: Record<NamedHardnessClass, number> = {
 export const CLASS_PREVIEW_COLORS: Record<RegionHardnessClass, string> = {
     "Extra Soft": "#9be7c4",
     Soft: "#5dade2",
-    Medium: "#7eb6ff",
+    Medium: "#ffffff",
     Hard: "#f4d35e",
     "Extra Hard": "#e07a5f",
     Custom: "#9b87f5",
@@ -124,6 +124,24 @@ export const CLASS_DISPLAY_NAMES: Record<RegionHardnessClass, string> = {
 };
 
 export const SELECTED_ELEMENT_HIGHLIGHT = "#3ddc84";
+
+/** Thin border on near-white swatches so legend dots stay visible on dark panels. */
+export const CLASS_PREVIEW_SWATCH_BORDER: Partial<Record<RegionHardnessClass, string>> = {
+    Medium: "1px solid rgba(0, 0, 0, 0.28)",
+};
+
+export function classPreviewSwatchStyle(cls: RegionHardnessClass): {
+    background: string;
+    border?: string;
+    boxSizing?: "border-box";
+} {
+    return {
+        background: CLASS_PREVIEW_COLORS[cls],
+        ...(CLASS_PREVIEW_SWATCH_BORDER[cls]
+            ? { border: CLASS_PREVIEW_SWATCH_BORDER[cls], boxSizing: "border-box" as const }
+            : {}),
+    };
+}
 
 export function namedClassSettings(cls: NamedHardnessClass): NamedClassSettings {
     return HARDNESS_CLASS_TABLE[cls];

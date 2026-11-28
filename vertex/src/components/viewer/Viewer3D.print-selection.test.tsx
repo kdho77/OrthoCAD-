@@ -48,6 +48,11 @@ rs.mock("./ScanPlaneSliceTool", () => ({ ScanPlaneSliceTool: () => null }));
 rs.mock("./ScanRotateTool", () => ({ ScanRotateTool: () => null }));
 rs.mock("./PrintLoftSplash", () => ({ PrintLoftSplash: () => null }));
 rs.mock("./PerformanceMonitor", () => ({ PerformanceMonitorOverlay: () => null }));
+rs.mock("./InsoleContourLighting", () => ({
+    InsoleContourLighting: () => null,
+    InsoleStandardLighting: () => null,
+}));
+rs.mock("./AfoScanLandmarkLighting", () => ({ AfoScanLandmarkLighting: () => null }));
 rs.mock("./ScanTransformTool", () => ({
     ScanTransformTool: () => null,
     consumeScanMissDeselectSuppression: () => false,

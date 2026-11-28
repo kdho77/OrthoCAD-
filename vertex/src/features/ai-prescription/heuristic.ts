@@ -73,8 +73,9 @@ export function heuristicParse(text: string): PrescriptionParseResult {
 
     const archHeight = firstNumber(lower, /arch[^.]*?\d+(\.\d+)?\s*mm/);
     if (archHeight !== undefined) apply({ archHeightMm: archHeight });
-    else if (/high arch|pes cavus/.test(lower)) apply({ archHeightMm: 14 });
-    else if (/low arch|flat ?foot|pes planus/.test(lower)) apply({ archHeightMm: 4 });
+    else if (/high arch|pes cavus/.test(lower)) apply({ archHeightMm: 3 });
+    else if (/low arch|flat ?foot|pes planus/.test(lower)) apply({ archHeightMm: -3.5 });
+    else if (/arch sensitivity|charcot|neuropath/.test(lower)) apply({ archHeightMm: -3.5 });
 
     const heelCup = firstNumber(lower, /heel\s*cup[^.]*?\d+(\.\d+)?\s*mm/);
     if (heelCup !== undefined) apply({ heelCupDepthMm: heelCup });
