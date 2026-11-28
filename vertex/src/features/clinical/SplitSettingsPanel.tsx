@@ -6,7 +6,7 @@ import { HardnessPicker } from "@/features/elements/HardnessPicker";
 import { useDesignStore } from "@/stores/design-store";
 import {
     CLASS_DISPLAY_NAMES,
-    CLASS_PREVIEW_COLORS,
+    classPreviewSwatchStyle,
     NAMED_HARDNESS_CLASSES,
 } from "../../../shared/print-recipe/hardness-class-table";
 
@@ -59,7 +59,7 @@ export function HardnessLegend({ compact = false }: { compact?: boolean }) {
                     <li key={name} className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
                         <span
                             className="h-2.5 w-2.5 shrink-0 rounded-full"
-                            style={{ background: CLASS_PREVIEW_COLORS[name] }}
+                            style={classPreviewSwatchStyle(name)}
                         />
                         {CLASS_DISPLAY_NAMES[name]}
                     </li>

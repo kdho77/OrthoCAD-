@@ -5,6 +5,7 @@
 import { z } from "zod";
 
 import { redactSecrets } from "../../auth/integration-keys.js";
+import { HandoffUploadTargetError } from "../../lib/scan-upload-target.js";
 import type { IntegrationDeps, SessionUser } from "./service.js";
 import { createIntegrationService, IntegrationError } from "./service.js";
 import type {
@@ -275,6 +276,9 @@ export function createIntegrationHandler(deps: IntegrationDeps) {
             return json(404, { error: "Not found" });
         } catch (error) {
             if (error instanceof IntegrationError) return json(error.status, { error: error.message });
+            if (error instanceof HandoffUploadTargetError) {
+                return json(error.status, { error: error.message });
+            }
             const message = error instanceof Error ? error.message : "error";
             deps.log?.("integrations_error", { message: redactSecrets(message) });
             return json(500, { error: "Internal Server Error" });

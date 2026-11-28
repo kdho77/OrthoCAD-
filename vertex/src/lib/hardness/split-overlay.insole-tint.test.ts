@@ -74,6 +74,25 @@ describe("insole viewport hardness tint", () => {
         expect(soft).not.toBe(INSOLE_VIEWPORT_BASE_COLOR);
     });
 
+    test("Medium is pure white on insole (design and Print/Export) and on elements", () => {
+        expect(CLASS_PREVIEW_COLORS.Medium).toBe("#ffffff");
+        expect(insoleViewportMaterialColor({ defaultHardness: "Medium" })).toBe("#ffffff");
+        expect(insoleViewportMaterialColor({ defaultHardness: "Medium" }, { printExport: true })).toBe(
+            "#ffffff",
+        );
+        const base: PlacedElement = {
+            id: "el",
+            kind: "met_pad",
+            side: "left",
+            position: { x: 0, y: 0 },
+            rotationDeg: 0,
+            scale: { x: 1, y: 1 },
+            heightMm: 3,
+            hardnessClass: "Medium",
+        };
+        expect(elementPreviewColor(base, true, false, true)).toBe("#ffffff");
+    });
+
     test("viewer meshes use viewport tint helper only (exports stay geometry-only)", () => {
         for (const rel of [
             "src/components/viewer/BaseInsoleMesh.tsx",
