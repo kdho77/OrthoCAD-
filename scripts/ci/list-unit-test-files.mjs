@@ -36,6 +36,9 @@ function excludedUnitTest(file) {
     if (base.startsWith("dump-") && /\.test\.tsx?$/.test(base)) return true;
     if (base === "pressure-map.webgl.test.ts") return true;
     if (file.startsWith("scripts/perf/") && /\.test\.tsx?$/.test(file)) return true;
+    // Independent Morton's shape gates run from their own rstest config.
+    // They are not part of the product unit shards.
+    if (file.startsWith("validation/mortons_shape_gates/")) return true;
     return false;
 }
 

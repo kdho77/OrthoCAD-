@@ -1,0 +1,9 @@
+{
+    "base": "4a6c76f2e8acf7b62506090b96164dc74ca4e7ba",
+    "usMen": 9,
+    "none-9-left": "ad742f2e7e6f2ad36053de3a1713237b60fff21bf84ebad5a15d854050bbe85f",
+    "none-9-right": "9f865d8b380ad715a2ec10b208c2c5c74885737aaaa7ed7858c6334bd4f187c6",
+    "reverse-9-left": "00bf538d40b726980ecbac0a0170ae9729d359086d283c52d8ed6656be86d8b6",
+    "reverse-9-right": "97f2398e4a9acda780f9b4896f5a387b6d8f92c6090466487b8e8a805e3afafa",
+    "note": "A second run of the frozen STL test on this same commit matched these hashes."
+}
