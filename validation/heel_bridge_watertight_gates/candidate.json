@@ -1,0 +1,230 @@
+{
+  "schema": 1,
+  "label": "candidate",
+  "sha": "ad1c3851fb9502f224002f91a875c639863f0323",
+  "branch": "HEAD",
+  "baseSha": "268aac85847160b5b2703a05688721ea4cb93b24",
+  "files": [
+    "ci/unit-test-shards.json",
+    "tests/heel-bridge-reverse-mortons.test.ts",
+    "vertex/src/lib/geometry/element-assets/apply-elements.ts",
+    "vertex/src/lib/geometry/elements.ts"
+  ],
+  "gates": [
+    {
+      "id": "G1",
+      "rule": "TESTS export",
+      "pass": true,
+      "measured": "design elements=2 left=1 right=1 heightMm=3,3 threshold height == 3; usMenSize=7.5 shoeWidth=medium thickness=3/3/3 | left si=0 productSi=0 open=0 nonManifold=0 watertight=true euler=2 topN=7815 bridge=904 triangles=107992 sha256=60eab05f7ac4e8c8994e63169abf1f5b2273b9061d216c4833db0e422631ad16 exported=true | right si=0 productSi=0 open=0 nonManifold=0 watertight=true euler=2 topN=7815 bridge=904 triangles=107892 sha256=a264bcd08f41b3c7aa59f42dfcd89eef5351847830e5cbe1b0a4023f93e5e280 exported=true",
+      "threshold": "reverse_mortons L+R height 3, thickness 3, US M 7.5 medium; each foot exports; frozen heelBridgeSelfIntersections == 0; openEdges == 0; nonManifold == 0; watertight; euler == 2; topVertexCount >= 1000; bridgeTriangles >= 1",
+      "command": "HEEL_GATE_MODE=grade node_modules/.bin/rstest run --config validation/heel_bridge_watertight_gates/rstest.config.ts"
+    },
+    {
+      "id": "G2",
+      "rule": "TESTS new test",
+      "pass": true,
+      "measured": "added lines name reverse_mortons L+R, 7.5, thickness 3, heelBridgeSelfIntersections, watertight",
+      "threshold": "candidate diff adds reverse_mortons, left, right, 7.5, thickness 3, heelBridgeSelfIntersections, and watertight. BASE fails this gate because that test is not on BASE.",
+      "command": "HEEL_GATE_MODE=grade node_modules/.bin/rstest run --config validation/heel_bridge_watertight_gates/rstest.config.ts"
+    },
+    {
+      "id": "G3",
+      "rule": "TESTS existing",
+      "pass": true,
+      "measured": "passed=30 failed=0 threshold failed == 0 and passed > 0; command node_modules/.bin/rstest run vertex/src/lib/geometry/elements.test.ts vertex/src/lib/geometry/anatomical-side.test.ts",
+      "threshold": "elements.test.ts and anatomical-side.test.ts exit with failed == 0 and passed > 0",
+      "command": "node_modules/.bin/rstest run vertex/src/lib/geometry/elements.test.ts vertex/src/lib/geometry/anatomical-side.test.ts"
+    },
+    {
+      "id": "G4",
+      "rule": "MUST-MATCH identity",
+      "pass": true,
+      "measured": "SAMPLE_Top stock sha256 ad742f2e7e6f2ad36053de3a1713237b60fff21bf84ebad5a15d854050bbe85f matches BASE | US M7.5 thickness 3 no elements sha256 60eab05f7ac4e8c8994e63169abf1f5b2273b9061d216c4833db0e422631ad16 matches BASE",
+      "threshold": "A design that exports watertight on BASE keeps the same STL sha256. Stock must be that anchor. The 7.5 / thickness 3 / no-element foot is an anchor only when BASE already exports it watertight.",
+      "command": "HEEL_GATE_MODE=grade node_modules/.bin/rstest run --config validation/heel_bridge_watertight_gates/rstest.config.ts"
+    },
+    {
+      "id": "G5",
+      "rule": "MUST-MATCH baseline 0",
+      "pass": true,
+      "measured": "source baseline 0 and si > baseline | counters stock-left frozen=product=0; control-left frozen=product=0; defect-left frozen=product=0; defect-right frozen=product=0",
+      "threshold": "DEFAULT and procedural heelBridgeSelfIntersections stay 0; compare stays si > baseline; product counter equals the frozen BASE counter on every solid this run exported",
+      "command": "HEEL_GATE_MODE=grade node_modules/.bin/rstest run --config validation/heel_bridge_watertight_gates/rstest.config.ts"
+    },
+    {
+      "id": "G6",
+      "rule": "R1",
+      "pass": true,
+      "measured": "seam limit=6 fallback=9.5 slack=0.01 spline=6.05 | files untouched | slicer lines none",
+      "threshold": "SEAM_B_LIMIT_DEG == 6, SEAM_B_FALLBACK_DEG == 9.5, SEAM_B_SLACK_DEG == 0.01, SPLINE_SEAM_B_MAX_DEG == 6.05; bezier-column, wall-spline, reconstruct, print-recipe, kiri, python-service, vertexslice, and hardness diff empty; no new seam_position, layer_change, fuzzy_skin, or ironing line",
+      "command": "HEEL_GATE_MODE=grade node_modules/.bin/rstest run --config validation/heel_bridge_watertight_gates/rstest.config.ts"
+    },
+    {
+      "id": "G7",
+      "rule": "R2",
+      "pass": true,
+      "measured": "default text surface=bottom mode=engrave | text files untouched",
+      "threshold": "default bottom text stays surface bottom and mode engrave; bottom-text-marking and text-marking diff empty; seam constants unchanged; no new top/side seam or layer-change line",
+      "command": "HEEL_GATE_MODE=grade node_modules/.bin/rstest run --config validation/heel_bridge_watertight_gates/rstest.config.ts"
+    },
+    {
+      "id": "G8",
+      "rule": "R3",
+      "pass": false,
+      "measured": "outside the defect allowlist: ci/unit-test-shards.json; outside the defect allowlist: vertex/src/lib/geometry/element-assets/apply-elements.ts",
+      "threshold": "diff stays on reverse Morton's height, the height field, the procedural loft, mesh-close, export close, and tests. Other subsystems are out of scope.",
+      "command": "HEEL_GATE_MODE=grade node_modules/.bin/rstest run --config validation/heel_bridge_watertight_gates/rstest.config.ts"
+    },
+    {
+      "id": "G9",
+      "rule": "R4",
+      "pass": true,
+      "measured": "assetId=sample-top glbPath=Templates/SAMPLE_Top.glb | meshes untouched",
+      "threshold": "placed design base is sample-top and ends in SAMPLE_Top.glb; the SAMPLE_Top glb files are not in the diff",
+      "command": "HEEL_GATE_MODE=grade node_modules/.bin/rstest run --config validation/heel_bridge_watertight_gates/rstest.config.ts"
+    },
+    {
+      "id": "G10",
+      "rule": "R5",
+      "pass": true,
+      "measured": "surface=bottom mode=engrave | no new engraving file",
+      "threshold": "textMarking default remains bottom engrave; no new engraving system and no edit under text-marking or bottom-text-marking",
+      "command": "HEEL_GATE_MODE=grade node_modules/.bin/rstest run --config validation/heel_bridge_watertight_gates/rstest.config.ts"
+    },
+    {
+      "id": "G11",
+      "rule": "R6",
+      "pass": true,
+      "measured": "no secret, PHI, railway, vertex-web, vertex-api, or deploy path in the diff",
+      "threshold": "diff has no api_key, bearer token, email, phone, or patient first/last name; no railway, vertex-web, vertex-api, workflow, or prisma migration path",
+      "command": "HEEL_GATE_MODE=grade node_modules/.bin/rstest run --config validation/heel_bridge_watertight_gates/rstest.config.ts"
+    },
+    {
+      "id": "G12",
+      "rule": "R7",
+      "pass": true,
+      "measured": "SAMPLE_Top stock sha256 ad742f2e7e6f2ad36053de3a1713237b60fff21bf84ebad5a15d854050bbe85f matches BASE",
+      "threshold": "SAMPLE_Top stock, no corrections, left foot STL sha256 matches BASE and the solid is watertight with heelBridgeSelfIntersections == 0",
+      "command": "HEEL_GATE_MODE=grade node_modules/.bin/rstest run --config validation/heel_bridge_watertight_gates/rstest.config.ts"
+    },
+    {
+      "id": "G13",
+      "rule": "ONE",
+      "pass": false,
+      "measured": "outside the defect allowlist: ci/unit-test-shards.json; outside the defect allowlist: vertex/src/lib/geometry/element-assets/apply-elements.ts",
+      "threshold": "candidate diff is non-empty and inside the same allowlist as R3. BASE with an empty product diff passes.",
+      "command": "HEEL_GATE_MODE=grade node_modules/.bin/rstest run --config validation/heel_bridge_watertight_gates/rstest.config.ts"
+    },
+    {
+      "id": "G14",
+      "rule": "PUSH",
+      "pass": true,
+      "measured": "head=ad1c3851fb9502f224002f91a875c639863f0323 branch=HEAD baseIsAncestor=true",
+      "threshold": "HEAD == ad1c3851fb9502f224002f91a875c639863f0323, branch is not main, BASE is an ancestor",
+      "command": "HEEL_GATE_MODE=grade node_modules/.bin/rstest run --config validation/heel_bridge_watertight_gates/rstest.config.ts"
+    }
+  ],
+  "designSpec": {
+    "pass": true,
+    "detail": "elements=2 left=1 right=1 heightMm=3,3 threshold height == 3; usMenSize=7.5 shoeWidth=medium thickness=3/3/3"
+  },
+  "stockSpec": {
+    "assetId": "sample-top",
+    "glbPath": "Templates/SAMPLE_Top.glb",
+    "thicknessMm": 2,
+    "usMenSize": 9
+  },
+  "controlSpec": {
+    "thicknessMm": 3,
+    "usMenSize": 7.5,
+    "shoeWidth": "medium"
+  },
+  "stock": {
+    "id": "stock-left",
+    "exported": true,
+    "si": 0,
+    "productSi": 0,
+    "openEdges": 0,
+    "nonManifold": 0,
+    "watertight": true,
+    "euler": 2,
+    "productEuler": 2,
+    "topVertexCount": 7815,
+    "bridgeTriangles": 904,
+    "sha256": "ad742f2e7e6f2ad36053de3a1713237b60fff21bf84ebad5a15d854050bbe85f",
+    "md5": "96969efc2727da8e85e063e59c6bbda4",
+    "triangles": 110308,
+    "error": null,
+    "baselineSeen": 0
+  },
+  "control": {
+    "id": "control-left",
+    "exported": true,
+    "si": 0,
+    "productSi": 0,
+    "openEdges": 0,
+    "nonManifold": 0,
+    "watertight": true,
+    "euler": 2,
+    "productEuler": 2,
+    "topVertexCount": 7815,
+    "bridgeTriangles": 904,
+    "sha256": "60eab05f7ac4e8c8994e63169abf1f5b2273b9061d216c4833db0e422631ad16",
+    "md5": "7c3d22733d9f4ef22bc34dfb92d5dc30",
+    "triangles": 107992,
+    "error": null,
+    "baselineSeen": 0
+  },
+  "left": {
+    "id": "defect-left",
+    "exported": true,
+    "si": 0,
+    "productSi": 0,
+    "openEdges": 0,
+    "nonManifold": 0,
+    "watertight": true,
+    "euler": 2,
+    "productEuler": 2,
+    "topVertexCount": 7815,
+    "bridgeTriangles": 904,
+    "sha256": "60eab05f7ac4e8c8994e63169abf1f5b2273b9061d216c4833db0e422631ad16",
+    "md5": "7c3d22733d9f4ef22bc34dfb92d5dc30",
+    "triangles": 107992,
+    "error": null,
+    "baselineSeen": 0
+  },
+  "right": {
+    "id": "defect-right",
+    "exported": true,
+    "si": 0,
+    "productSi": 0,
+    "openEdges": 0,
+    "nonManifold": 0,
+    "watertight": true,
+    "euler": 2,
+    "productEuler": 2,
+    "topVertexCount": 7815,
+    "bridgeTriangles": 904,
+    "sha256": "a264bcd08f41b3c7aa59f42dfcd89eef5351847830e5cbe1b0a4023f93e5e280",
+    "md5": "19074bf004644f9d21b3c05fe0b843a9",
+    "triangles": 107892,
+    "error": null,
+    "baselineSeen": 0
+  },
+  "existing": {
+    "passed": 30,
+    "failed": 0,
+    "exitCode": 0,
+    "tail": "\"counts\": { \"testFiles\": 2, \"failedFiles\": 0, \"tests\": 30, \"failedTests\": 0, \"passedTests\": 30, \"skippedTests\": 0, \"todoTests\": 0 }"
+  },
+  "seam": {
+    "limit": 6,
+    "fallback": 9.5,
+    "slack": 0.01,
+    "spline": 6.05
+  },
+  "text": {
+    "surface": "bottom",
+    "mode": "engrave"
+  }
+}
