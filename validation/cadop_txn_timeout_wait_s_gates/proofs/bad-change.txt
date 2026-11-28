@@ -1,0 +1,263 @@
+Bad-change proof for the frozen pair-run transaction timeout and wait_s gates.
+repo=/agent/repos/OrthoCAD-
+
+## Oracle: long work inside a 5 s interactive transaction is rejected
+exit=0 pass=true
+self-test rejected long work inside a 5000 ms interactive transaction (elapsed 6000 ms)
+{
+  "elapsed_ms": 6000,
+  "threshold_ms": 5000,
+  "message": "Transaction already closed: The timeout for this transaction was 5000 ms, however 6000 ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction."
+}
+
+## Product: BASE updateIf leaves the interactive transaction open across a 6 s loft
+exit=1 pass=false
+pair failed: left=succeeded right=failed open_during_loft=true max_interactive_elapsed_ms=6001 timed_out=1 closed=0
+{
+  "left_status": "succeeded",
+  "right_status": "failed",
+  "left_error": null,
+  "right_error": "Manufacturing timed out (right)",
+  "thrown": [],
+  "manufacturing_timed_out": [
+    "Manufacturing timed out (right)"
+  ],
+  "transaction_already_closed": [],
+  "open_during_loft": true,
+  "interactive_transactions": 5,
+  "max_interactive_elapsed_ms": 6001,
+  "interactive_timeout_ms": 5000,
+  "loft_block_ms": 6000,
+  "loft_ms": {
+    "left": 6000
+  },
+  "fixture_gcode_bytes": 19,
+  "uploaded_gcode_match": false,
+  "storage_keys": {
+    "left": "gcode/cad-operator/gate/left.gcode",
+    "right": null
+  },
+  "storage_keys_match": false,
+  "sliced_stl_keys": {
+    "left": "stl/cad-operator/gate/left.stl",
+    "right": "stl/cad-operator/gate/right.stl"
+  }
+}
+
+## Oracle: dropped wait_s advertisement or single-fetch handler text is rejected
+exit=0 pass=true
+self-test rejected a missing wait_s field, missing 0–300 bounds, a required wait_s, and a single-fetch handler
+{
+  "good": [],
+  "missing": [
+    "wait_s missing from advertised properties"
+  ],
+  "noBounds": [
+    "wait_s minimum is undefined (threshold 0)",
+    "wait_s maximum is undefined (threshold 300)"
+  ],
+  "lowCap": [
+    "wait_s maximum is 30 (threshold 300)"
+  ],
+  "required": [
+    "wait_s is required (threshold optional)"
+  ],
+  "bundleMissing": [
+    "bundle getProductionInputSchema has no wait_s",
+    "bundle wait_s has no .min(0)",
+    "bundle wait_s has no .max(300)"
+  ],
+  "handlerDropped": [
+    "bundle get_production does not call getProductionWithOptionalWait",
+    "bundle get_production is a single fetch"
+  ]
+}
+
+## Product: BASE get_production advertisement (bundle and JSON schema)
+exit=1 pass=false
+wait_s minimum is undefined (threshold 0)
+{
+  "problems": [
+    "wait_s minimum is undefined (threshold 0)",
+    "wait_s maximum is undefined (threshold 300)",
+    "bundle getProductionInputSchema has no wait_s",
+    "bundle wait_s has no .min(0)",
+    "bundle wait_s has no .max(300)",
+    "bundle get_production does not call getProductionWithOptionalWait",
+    "bundle get_production is a single fetch"
+  ],
+  "advertised": {
+    "type": "number"
+  },
+  "required": [
+    "production_id"
+  ],
+  "parse": {
+    "wait_s_300": true,
+    "wait_s_301": false,
+    "wait_s_0": true,
+    "omitted": true,
+    "wait_s_neg": false
+  },
+  "omitted": {
+    "fetches": 1,
+    "elapsed_ms": 0,
+    "status": "pending"
+  },
+  "zero": {
+    "fetches": 1,
+    "elapsed_ms": 0,
+    "status": "running"
+  },
+  "long_poll": {
+    "fetches": 2,
+    "elapsed_ms": 2003,
+    "status": "succeeded",
+    "wait_s": 30
+  },
+  "deadline": {
+    "fetches": 1,
+    "elapsed_ms": 1002,
+    "status": "running",
+    "wait_s": 1
+  },
+  "cap_s": 300,
+  "bundle_schema_has_wait_s": false,
+  "bundle_handler_long_polls": false,
+  "hosted_max_duration_s": {
+    "http_function_s": 60,
+    "api_route_s": 60
+  },
+  "hosted_max_duration_note": "Informational residual. A hosted /api/mcp max duration of 60 s can cut off wait_s 300. This gate grades the handler and the advertised schema, not that platform cap."
+}
+
+## Product mutation: get_production long-poll replaced with one fetch
+exit=1 pass=false
+wait_s minimum is undefined (threshold 0)
+{
+  "problems": [
+    "wait_s minimum is undefined (threshold 0)",
+    "wait_s maximum is undefined (threshold 300)",
+    "bundle getProductionInputSchema has no wait_s",
+    "bundle wait_s has no .min(0)",
+    "bundle wait_s has no .max(300)",
+    "bundle get_production does not call getProductionWithOptionalWait",
+    "bundle get_production is a single fetch",
+    "wait_s 30 fetches=1 (threshold >= 2)",
+    "wait_s 30 status=pending (threshold succeeded)",
+    "wait_s 30 elapsed 0 ms (threshold >= 1900)",
+    "wait_s 1 elapsed 0 ms (threshold >= 800, it must block until the deadline)"
+  ],
+  "advertised": {
+    "type": "number"
+  },
+  "required": [
+    "production_id"
+  ],
+  "parse": {
+    "wait_s_300": true,
+    "wait_s_301": false,
+    "wait_s_0": true,
+    "omitted": true,
+    "wait_s_neg": false
+  },
+  "omitted": {
+    "fetches": 1,
+    "elapsed_ms": 1,
+    "status": "pending"
+  },
+  "zero": {
+    "fetches": 1,
+    "elapsed_ms": 0,
+    "status": "running"
+  },
+  "long_poll": {
+    "fetches": 1,
+    "elapsed_ms": 0,
+    "status": "pending",
+    "wait_s": 30
+  },
+  "deadline": {
+    "fetches": 1,
+    "elapsed_ms": 0,
+    "status": "running",
+    "wait_s": 1
+  },
+  "cap_s": 300,
+  "bundle_schema_has_wait_s": false,
+  "bundle_handler_long_polls": false,
+  "hosted_max_duration_s": {
+    "http_function_s": 60,
+    "api_route_s": 60
+  },
+  "hosted_max_duration_note": "Informational residual. A hosted /api/mcp max duration of 60 s can cut off wait_s 300. This gate grades the handler and the advertised schema, not that platform cap."
+}
+
+measured long_poll fetches=1 status=pending elapsed_ms=0 (threshold: fetches>=2, status=succeeded, elapsed>=1900)
+
+## Product mutation: one G-code byte change in the FDM emitter
+exit=1 pass=false
+fixture G-code sha256 b8b3f04dcc3f81bf71b106b4ff8979a80d755412ef8c6f295caa534a1ae58f57 != recorded e12356a66777e9e0b9815d500168606d2f64eabedb5184ebf0f77d633e96d848 (16133 bytes vs 16120)
+{
+  "base_sha": "8aced4b5042bdafc2d300006fa80802bca1b94b9",
+  "problems": [
+    "fixture G-code sha256 b8b3f04dcc3f81bf71b106b4ff8979a80d755412ef8c6f295caa534a1ae58f57 != recorded e12356a66777e9e0b9815d500168606d2f64eabedb5184ebf0f77d633e96d848 (16133 bytes vs 16120)",
+    "changed source files: vertex/src/lib/kiri/engine.ts"
+  ],
+  "fixture_stl_sha256": "3d4f6262669cc8329a338d7cae4fc34e8811bbe8d28fc79a86a205fef6d5159d",
+  "fixture_stl_bytes": 284,
+  "fixture_gcode_sha256": "b8b3f04dcc3f81bf71b106b4ff8979a80d755412ef8c6f295caa534a1ae58f57",
+  "fixture_gcode_bytes": 16133,
+  "coupon_stl_sha256": "973ede4ee7b6de6738881be002888e4e16e835e4dd120f87590e6b572061ef57",
+  "coupon_stl_bytes": 684,
+  "skew_inset_ratio": [
+    {
+      "path": "vertex/src/lib/geometry/procedural-wall/station-gates.ts",
+      "ratio": "0.5"
+    },
+    {
+      "path": "vertex/src/lib/geometry/procedural-wall/stations.ts",
+      "ratio": "0.5"
+    }
+  ],
+  "source_files": 225,
+  "changed_source_files": [
+    "vertex/src/lib/kiri/engine.ts"
+  ],
+  "missing_source_files": [],
+  "added_source_files": []
+}
+
+## Product mutation: one STL attribute-byte change
+exit=1 pass=false
+fixture STL sha256 cd6b0df3c3d694c7eff843560cee8480d97a975bd398aa11928041f026fc152a != recorded 3d4f6262669cc8329a338d7cae4fc34e8811bbe8d28fc79a86a205fef6d5159d (284 bytes vs 284)
+{
+  "base_sha": "8aced4b5042bdafc2d300006fa80802bca1b94b9",
+  "problems": [
+    "fixture STL sha256 cd6b0df3c3d694c7eff843560cee8480d97a975bd398aa11928041f026fc152a != recorded 3d4f6262669cc8329a338d7cae4fc34e8811bbe8d28fc79a86a205fef6d5159d (284 bytes vs 284)",
+    "changed source files: vertex/src/lib/geometry/stl.ts"
+  ],
+  "fixture_stl_sha256": "cd6b0df3c3d694c7eff843560cee8480d97a975bd398aa11928041f026fc152a",
+  "fixture_stl_bytes": 284,
+  "fixture_gcode_sha256": "e12356a66777e9e0b9815d500168606d2f64eabedb5184ebf0f77d633e96d848",
+  "fixture_gcode_bytes": 16120,
+  "coupon_stl_sha256": "973ede4ee7b6de6738881be002888e4e16e835e4dd120f87590e6b572061ef57",
+  "coupon_stl_bytes": 684,
+  "skew_inset_ratio": [
+    {
+      "path": "vertex/src/lib/geometry/procedural-wall/station-gates.ts",
+      "ratio": "0.5"
+    },
+    {
+      "path": "vertex/src/lib/geometry/procedural-wall/stations.ts",
+      "ratio": "0.5"
+    }
+  ],
+  "source_files": 225,
+  "changed_source_files": [
+    "vertex/src/lib/geometry/stl.ts"
+  ],
+  "missing_source_files": [],
+  "added_source_files": []
+}
+
