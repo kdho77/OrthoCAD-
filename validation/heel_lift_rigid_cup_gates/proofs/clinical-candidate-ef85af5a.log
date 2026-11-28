@@ -1,0 +1,12 @@
+PASS identity right-0-after-left-12 3eb6109ced32cff9db8d19ce6d16e3a54b16d0ed684f86eb23da59671f752e27
+PASS identity right-0-after-left-10 3eb6109ced32cff9db8d19ce6d16e3a54b16d0ed684f86eb23da59671f752e27
+PASS identity left-0 474e0f99d0ac907682452871fe08e053353962c39d8ac041ff0a827eb4e92797
+PASS identity right zero is stable across left lifts
+INFO right lowest heel-seat candidates i=2639 u=0.116 v=0.028 z=2.159 | i=2735 u=0.109 v=0.034 z=2.173 | i=2640 u=0.111 v=0.002 z=2.178 | i=2557 u=0.118 v=-0.009 z=2.184 | i=2641 u=0.113 v=-0.028 z=2.190
+INFO left lowest heel-seat candidates i=2639 u=0.116 v=-0.028 z=2.159 | i=2735 u=0.109 v=-0.034 z=2.173 | i=2640 u=0.111 v=-0.002 z=2.178 | i=2557 u=0.118 v=0.009 z=2.184 | i=2641 u=0.113 v=0.028 z=2.190
+PASS clinical right H=6 dSeat=6.000 u=0.116 v=0.028 seatZ0=2.159 dRim=6.000 dCup=0.000 cupDepth0=19.321 dMet=0.000..0.000 beltN=2558 beltMinZ=0.000 meshMinZ=0.000 plantarAbsMaxZ=0.000 stations 0.050:6.000 0.150:5.807 0.300:4.354 0.450:2.899 0.600:1.452
+PASS clinical right H=10 dSeat=10.000 u=0.116 v=0.028 seatZ0=2.159 dRim=10.000 dCup=0.000 cupDepth0=19.321 dMet=0.000..0.000 beltN=2567 beltMinZ=0.000 meshMinZ=0.000 plantarAbsMaxZ=0.000 stations 0.050:10.000 0.150:9.679 0.300:7.256 0.450:4.832 0.600:2.421
+PASS clinical right H=12 dSeat=12.000 u=0.116 v=0.028 seatZ0=2.159 dRim=12.000 dCup=0.000 cupDepth0=19.321 dMet=0.000..0.000 beltN=2568 beltMinZ=0.000 meshMinZ=0.000 plantarAbsMaxZ=0.000 stations 0.050:12.000 0.150:11.615 0.300:8.708 0.450:5.799 0.600:2.905
+PASS clinical left H=6 dSeat=6.000 u=0.116 v=-0.028 seatZ0=2.159 dRim=6.000 dCup=0.000 cupDepth0=19.321 dMet=0.000..0.000 beltN=2541 beltMinZ=0.000 meshMinZ=0.000 plantarAbsMaxZ=0.000 stations 0.050:6.000 0.150:5.807 0.300:4.354 0.450:2.899 0.600:1.452
+PASS clinical left H=10 dSeat=10.000 u=0.116 v=-0.028 seatZ0=2.159 dRim=10.000 dCup=0.000 cupDepth0=19.321 dMet=0.000..0.000 beltN=2553 beltMinZ=0.000 meshMinZ=0.000 plantarAbsMaxZ=0.000 stations 0.050:10.000 0.150:9.679 0.300:7.256 0.450:4.832 0.600:2.421
+PASS clinical left H=12 dSeat=12.000 u=0.116 v=-0.028 seatZ0=2.159 dRim=12.000 dCup=0.000 cupDepth0=19.321 dMet=0.000..0.000 beltN=2556 beltMinZ=0.000 meshMinZ=0.000 plantarAbsMaxZ=0.000 stations 0.050:12.000 0.150:11.615 0.300:8.708 0.450:5.799 0.600:2.905

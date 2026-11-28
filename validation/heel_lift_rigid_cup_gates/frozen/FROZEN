@@ -1,0 +1,5 @@
+FROZEN
+base df78a4f1a6a657c4e72e15c14c797ad2f492669a
+branch cursor/heel-lift-rigid-cup-gates-1124
+Do not edit gate logic after the gates pull request is opened.
+Report files (RESULTS.md, RULES.md, HANDOFF.md, proofs/) are not part of the logic hash.

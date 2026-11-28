@@ -1,0 +1,22 @@
+PASS bad-change: unchanged BASE cap
+PASS bad-change: unchanged tolerances
+PASS bad-change: unchanged surface files
+PASS bad-change: unchanged seat rule
+PASS bad-change: unchanged clinical list
+PASS bad-change: S1-PRELOFT SKEW_INSET_RATIO loosened from 0.5 to 1 rejected (exit 1)
+PASS bad-change: 0.5×inset cap multiplied by 4 rejected (exit 1)
+PASS bad-change: limitPairingSkew 0.5×inset cap multiplied by 4 rejected (exit 1)
+PASS bad-change: seat-rise tolerance loosened from ±0.3 mm to ±2 mm rejected (exit 1)
+PASS bad-change: cup-depth tolerance loosened from ±0.3 mm to ±2 mm rejected (exit 1)
+PASS bad-change: lift list skips H=10 rejected (exit 1)
+PASS bad-change: clinical loop skips H=10 rejected (exit 1)
+PASS bad-change: seat sample changed from the lowest point to the highest rejected (exit 1)
+PASS bad-change: seat rise accepted via heelLiftDeltaAt instead of full H rejected (exit 1)
+PASS bad-change: outer-surface perimeter order reversed rejected (exit 1)
+PASS bad-change: layer-change timing constant edited rejected (exit 1)
+PASS bad-change: ring seam start moved off the frozen index rejected (exit 1)
+PASS bad-change: wall-builder spline degree changed rejected (exit 1)
+PASS bad-change: slicer layer height changed from 0.3 to 0.6 rejected (exit 1)
+PASS bad-change: product-diff classifier self-test
+PASS bad-change: synthetic seat-only, rim-only, belt, plate, and wrong-point rows rejected
+PASS bad-change: seat-only and rim-only rows, belt rise, wrong seat point, loosened ±0.3 mm, skipped H=10, surface, seam, wall-builder, and S1-PRELOFT copies were rejected

@@ -1,0 +1,11 @@
+PASS bad-sample: non-lowest seat measurement rejected
+PASS bad-sample: seat-only raise rejected (cup shallower)
+PASS bad-sample: rim-only raise rejected (cup deeper)
+PASS bad-sample: belt raise rejected
+PASS bad-sample: meshMinZ change rejected
+PASS bad-sample: plantarAbsMaxZ change rejected
+PASS bad-sample: met-head rise rejected
+PASS bad-sample: non-monotonic taper rejected
+PASS bad-sample: published BASE seat and cup measurements rejected
+PASS bad-sample: ±0.3 mm seat and cup bounds hold
+PASS bad-sample: rigid lift accepted at H=6, 10, and 12

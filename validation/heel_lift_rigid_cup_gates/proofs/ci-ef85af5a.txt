@@ -1,0 +1,17 @@
+GitHub Actions Test on PR #445 head ef85af5a2094056f7e467aceac4945c35226ca78
+Run: https://github.com/kdho77/OrthoCAD-/actions/runs/45548605341
+Workflow conclusion: success (updated 2026-11-25T05:08:25Z)
+PR head at grade time: ef85af5a2094056f7e467aceac4945c35226ca78
+
+unit-tests (1) success
+unit-tests (2) success
+unit-tests (3) success
+unit-tests (4) success
+unit-tests (5) success
+unit-tests (6) success
+isolated-postgres-acceptance success
+test-and-deploy success
+default-procedural-smoke skipped
+Vercel Preview Comments success
+
+Earlier heads were not graded. ce0f9a61 failed unit-tests (1) and (5). dfe3d17 was superseded by ef85af5a before this grade.
