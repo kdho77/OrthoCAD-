@@ -17,21 +17,274 @@ export function pointInPoly(x: number, y: number, poly: PolyPoint[]): boolean {
     return inside;
 }
 
-export function minDistToLoopXY(x: number, y: number, loop: PolyPoint[]): number {
+function bruteMinDistToLoopXY(x: number, y: number, loop: PolyPoint[]): number {
     let best = Infinity;
     for (let i = 0; i < loop.length; i++) {
         const a = loop[i]!;
         const b = loop[(i + 1) % loop.length]!;
-        const ex = b.x - a.x;
-        const ey = b.y - a.y;
-        const len2 = ex * ex + ey * ey;
-        const t = len2 > 1e-12 ? Math.max(0, Math.min(1, ((x - a.x) * ex + (y - a.y) * ey) / len2)) : 0;
-        const dx = x - (a.x + ex * t);
-        const dy = y - (a.y + ey * t);
-        const d = dx * dx + dy * dy;
+        const d = segmentDistance2(a.x, a.y, b.x, b.y, x, y);
         if (d < best) best = d;
     }
     return Math.sqrt(best);
+}
+
+/** Same projection the brute-force scan uses. Squared distance, no sqrt. */
+function segmentDistance2(ax: number, ay: number, bx: number, by: number, x: number, y: number): number {
+    const ex = bx - ax;
+    const ey = by - ay;
+    const len2 = ex * ex + ey * ey;
+    const t = len2 > 1e-12 ? Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / len2)) : 0;
+    const dx = x - (ax + ex * t);
+    const dy = y - (ay + ey * t);
+    return dx * dx + dy * dy;
+}
+
+/**
+ * Squared distance to the segment's bounding box. This is a lower bound on the
+ * squared distance to the segment. A 1e-6 mm² pad covers the rounding in the
+ * box math, so skipping a box past `best + pad` cannot skip the closest segment.
+ */
+function segmentBoxLower2(ax: number, ay: number, bx: number, by: number, x: number, y: number): number {
+    const minX = ax < bx ? ax : bx;
+    const maxX = ax > bx ? ax : bx;
+    const minY = ay < by ? ay : by;
+    const maxY = ay > by ? ay : by;
+    const dx = x < minX ? minX - x : x > maxX ? x - maxX : 0;
+    const dy = y < minY ? minY - y : y > maxY ? y - maxY : 0;
+    return dx * dx + dy * dy;
+}
+
+const LOOP_INDEX_MIN = 24;
+const LOOP_CELL_MM = 4;
+const LOOP_BOUND_PAD = 1e-6;
+const LOOP_SEARCH_PAD_MM = 1e-4;
+
+interface LoopDistIndex {
+    n: number;
+    cell: number;
+    originX: number;
+    originY: number;
+    cols: number;
+    rows: number;
+    head: Int32Array;
+    next: Int32Array;
+    segOf: Int32Array;
+    ax: Float64Array;
+    ay: Float64Array;
+    bx: Float64Array;
+    by: Float64Array;
+    seen: Int32Array;
+    gen: number;
+    x0: number;
+    y0: number;
+    xN: number;
+    yN: number;
+}
+
+const loopIndexes = new WeakMap<PolyPoint[], LoopDistIndex>();
+
+function buildLoopDistIndex(loop: PolyPoint[]): LoopDistIndex {
+    const n = loop.length;
+    const ax = new Float64Array(n);
+    const ay = new Float64Array(n);
+    const bx = new Float64Array(n);
+    const by = new Float64Array(n);
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < n; i++) {
+        const a = loop[i]!;
+        const b = loop[(i + 1) % n]!;
+        ax[i] = a.x;
+        ay[i] = a.y;
+        bx[i] = b.x;
+        by[i] = b.y;
+        if (a.x < minX) minX = a.x;
+        if (a.y < minY) minY = a.y;
+        if (a.x > maxX) maxX = a.x;
+        if (a.y > maxY) maxY = a.y;
+        if (b.x < minX) minX = b.x;
+        if (b.y < minY) minY = b.y;
+        if (b.x > maxX) maxX = b.x;
+        if (b.y > maxY) maxY = b.y;
+    }
+    const cell = LOOP_CELL_MM;
+    const originX = minX - cell;
+    const originY = minY - cell;
+    const cols = Math.max(1, Math.ceil((maxX - originX) / cell) + 1);
+    const rows = Math.max(1, Math.ceil((maxY - originY) / cell) + 1);
+    const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
+    const clampCell = (value: number, origin: number, limit: number): number => {
+        let c = Math.floor((value - origin) / cell);
+        if (c < 0) c = 0;
+        if (c >= limit) c = limit - 1;
+        return c;
+    };
+    for (let i = 0; i < n; i++) {
+        const minSX = ax[i]! < bx[i]! ? ax[i]! : bx[i]!;
+        const maxSX = ax[i]! > bx[i]! ? ax[i]! : bx[i]!;
+        const minSY = ay[i]! < by[i]! ? ay[i]! : by[i]!;
+        const maxSY = ay[i]! > by[i]! ? ay[i]! : by[i]!;
+        const i0 = clampCell(minSX, originX, cols);
+        const i1 = clampCell(maxSX, originX, cols);
+        const j0 = clampCell(minSY, originY, rows);
+        const j1 = clampCell(maxSY, originY, rows);
+        for (let j = j0; j <= j1; j++) {
+            const row = j * cols;
+            for (let ix = i0; ix <= i1; ix++) buckets[row + ix]!.push(i);
+        }
+    }
+    let inserts = 0;
+    for (const bucket of buckets) inserts += bucket.length;
+    const head = new Int32Array(cols * rows);
+    head.fill(-1);
+    const next = new Int32Array(Math.max(1, inserts));
+    const segOf = new Int32Array(Math.max(1, inserts));
+    let cursor = 0;
+    for (let c = 0; c < buckets.length; c++) {
+        const bucket = buckets[c]!;
+        for (let k = 0; k < bucket.length; k++) {
+            next[cursor] = head[c]!;
+            segOf[cursor] = bucket[k]!;
+            head[c] = cursor;
+            cursor += 1;
+        }
+    }
+    const first = loop[0]!;
+    const last = loop[n - 1]!;
+    return {
+        n,
+        cell,
+        originX,
+        originY,
+        cols,
+        rows,
+        head,
+        next,
+        segOf,
+        ax,
+        ay,
+        bx,
+        by,
+        seen: new Int32Array(n),
+        gen: 1,
+        x0: first.x,
+        y0: first.y,
+        xN: last.x,
+        yN: last.y,
+    };
+}
+
+function loopDistIndex(loop: PolyPoint[]): LoopDistIndex {
+    const cached = loopIndexes.get(loop);
+    const n = loop.length;
+    const first = loop[0]!;
+    const last = loop[n - 1]!;
+    if (
+        cached &&
+        cached.n === n &&
+        cached.x0 === first.x &&
+        cached.y0 === first.y &&
+        cached.xN === last.x &&
+        cached.yN === last.y
+    ) {
+        return cached;
+    }
+    const built = buildLoopDistIndex(loop);
+    loopIndexes.set(loop, built);
+    return built;
+}
+
+function visitSegmentsInSquare(
+    idx: LoopDistIndex,
+    x: number,
+    y: number,
+    radius: number,
+    fn: (seg: number) => void,
+): void {
+    const { cell, originX, originY, cols, rows } = idx;
+    let i0 = Math.floor((x - radius - originX) / cell);
+    let i1 = Math.floor((x + radius - originX) / cell);
+    let j0 = Math.floor((y - radius - originY) / cell);
+    let j1 = Math.floor((y + radius - originY) / cell);
+    if (i1 < 0 || j1 < 0 || i0 >= cols || j0 >= rows) return;
+    if (i0 < 0) i0 = 0;
+    if (j0 < 0) j0 = 0;
+    if (i1 >= cols) i1 = cols - 1;
+    if (j1 >= rows) j1 = rows - 1;
+    let gen = idx.gen + 1;
+    if (gen >= 0x7ffffffe) {
+        idx.seen.fill(0);
+        gen = 1;
+    }
+    idx.gen = gen;
+    for (let j = j0; j <= j1; j++) {
+        const row = j * cols;
+        for (let i = i0; i <= i1; i++) {
+            let node = idx.head[row + i]!;
+            while (node >= 0) {
+                const seg = idx.segOf[node]!;
+                if (idx.seen[seg] !== gen) {
+                    idx.seen[seg] = gen;
+                    fn(seg);
+                }
+                node = idx.next[node]!;
+            }
+        }
+    }
+}
+
+function indexedSegmentDistance2(idx: LoopDistIndex, seg: number, x: number, y: number): number {
+    return segmentDistance2(idx.ax[seg]!, idx.ay[seg]!, idx.bx[seg]!, idx.by[seg]!, x, y);
+}
+
+/** Exact minimum squared distance. Far segments are skipped only when their box cannot win. */
+function exactMinDist2(idx: LoopDistIndex, x: number, y: number): number {
+    let best = Infinity;
+    visitSegmentsInSquare(idx, x, y, idx.cell * 2, (seg) => {
+        const d = indexedSegmentDistance2(idx, seg, x, y);
+        if (d < best) best = d;
+    });
+    for (let i = 0; i < idx.n; i++) {
+        const lower = segmentBoxLower2(idx.ax[i]!, idx.ay[i]!, idx.bx[i]!, idx.by[i]!, x, y);
+        if (lower > best + LOOP_BOUND_PAD) continue;
+        const d = indexedSegmentDistance2(idx, i, x, y);
+        if (d < best) best = d;
+    }
+    return best;
+}
+
+function indexedMinInRadius(idx: LoopDistIndex, x: number, y: number, radius: number): number {
+    let best = Infinity;
+    visitSegmentsInSquare(idx, x, y, radius, (seg) => {
+        const d = indexedSegmentDistance2(idx, seg, x, y);
+        if (d < best) best = d;
+    });
+    return best;
+}
+
+export function minDistToLoopXY(x: number, y: number, loop: PolyPoint[]): number {
+    if (loop.length < LOOP_INDEX_MIN) return bruteMinDistToLoopXY(x, y, loop);
+    return Math.sqrt(exactMinDist2(loopDistIndex(loop), x, y));
+}
+
+/** True when {@link minDistToLoopXY} is strictly greater than `threshold`. */
+export function loopDistanceExceeds(x: number, y: number, loop: PolyPoint[], threshold: number): boolean {
+    if (!(threshold > 0) || !Number.isFinite(threshold) || loop.length < LOOP_INDEX_MIN) {
+        return bruteMinDistToLoopXY(x, y, loop) > threshold;
+    }
+    const best = indexedMinInRadius(loopDistIndex(loop), x, y, threshold + LOOP_SEARCH_PAD_MM);
+    return Math.sqrt(best) > threshold;
+}
+
+/** True when {@link minDistToLoopXY} is strictly less than `threshold`. */
+export function loopDistanceIsBelow(x: number, y: number, loop: PolyPoint[], threshold: number): boolean {
+    if (!(threshold > 0) || !Number.isFinite(threshold) || loop.length < LOOP_INDEX_MIN) {
+        return bruteMinDistToLoopXY(x, y, loop) < threshold;
+    }
+    const best = indexedMinInRadius(loopDistIndex(loop), x, y, threshold + LOOP_SEARCH_PAD_MM);
+    return Math.sqrt(best) < threshold;
 }
 
 function orient2(ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number {
