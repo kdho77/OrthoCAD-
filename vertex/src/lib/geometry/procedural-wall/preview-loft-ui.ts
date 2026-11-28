@@ -46,6 +46,8 @@ export function proceduralLoftReuseKey(input: {
     shoeWidth?: string;
     /** Empty when text is inactive so reuse keys stay identical. */
     textMarkingHash?: string;
+    /** Element, device, and split hardness. A change must loft again. */
+    hardnessKey?: string;
 }): string {
     const parts = [
         input.side,
@@ -64,6 +66,7 @@ export function proceduralLoftReuseKey(input: {
         input.shoeWidth ?? "medium",
     ];
     if (input.textMarkingHash) parts.push(input.textMarkingHash);
+    if (input.hardnessKey) parts.push(input.hardnessKey);
     return sha256Hex(parts.join("|"));
 }
 
