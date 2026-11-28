@@ -48,6 +48,11 @@ rs.mock("./InsoleContourLighting", () => ({
     InsoleStandardLighting: () => null,
 }));
 rs.mock("./PerformanceMonitor", () => ({ PerformanceMonitorOverlay: () => null }));
+rs.mock("./InsoleContourLighting", () => ({
+    InsoleContourLighting: () => null,
+    InsoleStandardLighting: () => null,
+}));
+rs.mock("./AfoScanLandmarkLighting", () => ({ AfoScanLandmarkLighting: () => null }));
 rs.mock("./ScanTransformTool", () => ({
     ScanTransformTool: () => null,
     consumeScanMissDeselectSuppression: () => false,
