@@ -120,6 +120,7 @@ export function BaseInsoleMesh({
         design.elements,
         design.sizeSystem,
         design.usMenSize,
+        design.usMenSizeBySide,
         design.ukSize,
         design.footLengthMm,
         side,
@@ -141,7 +142,7 @@ export function BaseInsoleMesh({
     if (shouldHideBaseMesh(Boolean(geometry), building)) return null;
     if (!geometry) return null;
 
-    const layout = insoleLayoutFromDesign(design);
+    const layout = insoleLayoutFromDesign(design, side);
     const offsetX = sideOffsetX(side, layout.widthMm);
     const vertexCount = geometry.getAttribute("position")?.count ?? 0;
     const showEdges =
@@ -163,11 +164,7 @@ export function BaseInsoleMesh({
                 <TextPlacementGuide side={side} />
             </group>
             <group position={[-layout.lengthMm / 2, offsetX, 0]}>
-                <ElementSurfaceMeshes
-                    base={geometry}
-                    reference={elementReference ?? geometry}
-                    side={side}
-                />
+                <ElementSurfaceMeshes base={geometry} reference={elementReference ?? geometry} side={side} />
             </group>
             {/* Edge extract is expensive on large bases — only when idle and small. */}
             {showEdges ? (

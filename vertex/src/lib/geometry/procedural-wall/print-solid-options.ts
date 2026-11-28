@@ -22,7 +22,7 @@ export function printSolidOptions(input: {
     bottomPattern: PolyPoint[] | null;
 }): ProceduralPreviewOptions {
     const { design, side, field, viewer, trimline, bottomPattern } = input;
-    const layout = insoleLayoutFromDesign(design);
+    const layout = insoleLayoutFromDesign(design, side);
     return {
         corrections: field.corrections,
         thicknessMm: field.thicknessMm,

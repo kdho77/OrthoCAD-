@@ -30,4 +30,17 @@ describe("heuristicParse arch tier alignment", () => {
         const { corrections } = heuristicParse("High arch with arch 12 mm");
         expect(corrections.left?.archHeightMm).toBe(12);
     });
+
+    test("left and right shoe sizes are kept apart", () => {
+        const parsed = heuristicParse("Left shoe size 12, right shoe size 6.5, medium width");
+        expect(parsed.shoeSizes).toEqual({ left: 12, right: 6.5 });
+    });
+
+    test("a shoe size with no foot applies to both", () => {
+        expect(heuristicParse("shoe size 10 full contact").shoeSizes).toEqual({ left: 10, right: 10 });
+    });
+
+    test("a left-only shoe size does not invent the right", () => {
+        expect(heuristicParse("Left shoe size 11, deep heel cup").shoeSizes).toEqual({ left: 11 });
+    });
 });

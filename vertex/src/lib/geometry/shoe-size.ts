@@ -2,6 +2,7 @@
 
 import * as THREE from "three";
 import { INSOLE_LENGTH_MM, INSOLE_WIDTH_MM } from "@/lib/geometry/layout";
+import { formatShoeWidthSummary, type ShoeWidthDesignSlice } from "@/lib/geometry/shoe-width";
 
 /**
  * Orthotic footprint sizing.
@@ -273,10 +274,63 @@ export interface ShoeSizingDesign {
     usMenSize?: number;
     ukSize?: number;
     footLengthMm?: number;
+    /**
+     * Per-foot US men's size. Absent when both feet share `usMenSize`.
+     * A side equal to `usMenSize` keeps the shared system (US / UK / mm).
+     */
+    usMenSizeBySide?: { left?: number; right?: number };
+}
+
+/** US men's size for one foot. Missing per-foot data uses the shared size. */
+export function usMenSizeForSide(
+    design: ShoeSizingDesign | null | undefined,
+    side: "left" | "right",
+): number {
+    const shared = normalizeUsMenSize(design?.usMenSize ?? DEFAULT_US_MEN_SIZE);
+    const raw = design?.usMenSizeBySide?.[side];
+    if (raw == null || !Number.isFinite(raw)) return shared;
+    return normalizeUsMenSize(raw);
+}
+
+/**
+ * Procedural setup sheet stays on the native template when both feet share a
+ * size. Independent sizes scale that foot's sheet with the existing footprint scale.
+ */
+export function proceduralViewerSheetScale(
+    design: ShoeSizingDesign | null | undefined,
+    side: "left" | "right",
+): number {
+    if (usMenSizeForSide(design, "left") === usMenSizeForSide(design, "right")) return 1;
+    const scale = insoleLayoutFromDesign(design, side).scale;
+    return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
+
+/** Header chip: one size, or "L 12 / R 6.5 · Medium" when the feet differ. */
+export function formatDesignShoeSizeChip(design: ShoeSizingDesign & ShoeWidthDesignSlice): string {
+    const left = usMenSizeForSide(design, "left");
+    const right = usMenSizeForSide(design, "right");
+    const width = formatShoeWidthSummary(design);
+    if (left !== right) return `L ${formatHalfSize(left)} / R ${formatHalfSize(right)} · ${width}`;
+    return `US men's ${formatHalfSize(left)} · ${width}`;
 }
 
 /** Resolve layout from design state (missing ⇒ US Men's 9). */
-export function insoleLayoutFromDesign(design?: ShoeSizingDesign | null): InsoleLayout {
+export function insoleLayoutFromDesign(
+    design?: ShoeSizingDesign | null,
+    side?: "left" | "right",
+): InsoleLayout {
+    const shared = insoleLayoutFromSharedFields(design);
+    if (!side) return shared;
+    const raw = design?.usMenSizeBySide?.[side];
+    if (raw == null || !Number.isFinite(raw)) return shared;
+    const men = normalizeUsMenSize(raw);
+    const stored = normalizeUsMenSize(design?.usMenSize ?? DEFAULT_US_MEN_SIZE);
+    if (men === stored) return shared;
+    return insoleLayoutForUsMenSize(men);
+}
+
+/** Shared size system. A side argument never reaches this. */
+function insoleLayoutFromSharedFields(design?: ShoeSizingDesign | null): InsoleLayout {
     const system = normalizeShoeSizeSystem(design?.sizeSystem);
     if (system === "mm") {
         const mm =

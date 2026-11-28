@@ -11,9 +11,10 @@ import {
     Upload,
     X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import * as React from "react";
 import { ConfirmDeleteTrigger } from "@/components/clinical/ConfirmDeleteDialog";
 import { PanelHeading } from "@/components/clinical/PanelHeading";
+import { productionMethodDisabledInUi } from "@/components/layout/production-method-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -26,21 +27,21 @@ import {
 } from "@/features/library/custom-library-service";
 import { SaveCustomDialog } from "@/features/library/SaveCustomDialog";
 import { ScanImport } from "@/features/scans/ScanImport";
-import { getActiveFootSide } from "@/lib/clinical/active-foot-side";
+import { getActiveFootSide, useActiveFootSide } from "@/lib/clinical/active-foot-side";
 import { stockBaseDisplayName } from "@/lib/geometry/base-asset";
 import { SAMPLE_TOP_NAME } from "@/lib/geometry/procedural-wall/sample-top-id";
 import {
-    DEFAULT_US_MEN_SIZE,
-    footLengthMmOptions,
+    displaySizeForUsMen,
     formatFootLengthLabel,
+    formatHalfSize,
     formatUkShoeSizeLabel,
     formatUsShoeSizeLabel,
     insoleLayoutFromDesign,
     normalizeShoeSizeSystem,
-    type ShoeSizeSystem,
-    ukShoeSizeOptions,
-    usMenToUk,
-    usShoeSizeOptions,
+    type ShoeSizeDisplayUnit,
+    shoeSizePickerOptions,
+    usMenSizeForSide,
+    usMenSizeFromDisplayUnit,
 } from "@/lib/geometry/shoe-size";
 import {
     hasHeelWidthOverride,
@@ -57,7 +58,9 @@ import { useCustomLibraryStore } from "@/stores/custom-library-store";
 import { useDesignStore } from "@/stores/design-store";
 import { useMeshEditStore } from "@/stores/mesh-edit-store";
 import type { ProductionMethod, ScanPattern, Side } from "@/types";
-import { productionMethodDisabledInUi } from "@/components/layout/production-method-ui";
+
+// Classic JSX runtime (rstest) reads the React value. The app build uses the automatic runtime.
+const { useEffect, useRef, useState } = React;
 
 const METHODS: { id: ProductionMethod; label: string }[] = [
     { id: "printing_solid", label: "Printing — Solid" },
@@ -74,15 +77,7 @@ export function LeftSidebar({
     embedded?: boolean;
     clinicalDeclutter?: "setup" | "base";
 } = {}) {
-    const {
-        design,
-        setPattern,
-        setMethod,
-        setUsShoeSize,
-        setShoeSizeSystem,
-        setUkShoeSize,
-        setFootLengthMm,
-    } = useDesignStore();
+    const { design, setPattern, setMethod } = useDesignStore();
     const customPrefabs = useCustomLibraryStore((s) => s.customPrefabs);
     const libraryLoading = useCustomLibraryStore((s) => s.loading);
     const baseMeshLoading = useDesignStore(
@@ -388,7 +383,11 @@ export function LeftSidebar({
                                     )}
                                 >
                                     <span className="flex items-center justify-between gap-2">
-                                        <span>{clinicalDeclutter === "setup" && m.id === "printing_solid" ? "Solid print" : m.label}</span>
+                                        <span>
+                                            {clinicalDeclutter === "setup" && m.id === "printing_solid"
+                                                ? "Solid print"
+                                                : m.label}
+                                        </span>
                                         {shellUiLocked ? (
                                             <span className="shrink-0 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
                                                 Coming soon
@@ -407,16 +406,7 @@ export function LeftSidebar({
                     icon={<Footprints className="h-3.5 w-3.5" />}
                     title={clinicalDeclutter === "setup" ? "Shoe size" : "Size"}
                 >
-                    <ShoeSizeSelect
-                        system={normalizeShoeSizeSystem(design.sizeSystem)}
-                        usMenSize={design.usMenSize ?? DEFAULT_US_MEN_SIZE}
-                        ukSize={design.ukSize ?? usMenToUk(design.usMenSize ?? DEFAULT_US_MEN_SIZE)}
-                        footLengthMm={design.footLengthMm ?? insoleLayoutFromDesign(design).footLengthMm}
-                        onSystemChange={setShoeSizeSystem}
-                        onUsChange={setUsShoeSize}
-                        onUkChange={setUkShoeSize}
-                        onMmChange={setFootLengthMm}
-                    />
+                    <SetupShoeSizeSelect />
                     <ShoeWidthSelect />
                 </Section>
             ) : null}
@@ -461,112 +451,140 @@ function Section({
     );
 }
 
-function ShoeSizeSelect({
-    system,
-    usMenSize,
-    ukSize,
-    footLengthMm,
-    onSystemChange,
-    onUsChange,
-    onUkChange,
-    onMmChange,
-}: {
-    system: ShoeSizeSystem;
-    usMenSize: number;
-    ukSize: number;
-    footLengthMm: number;
-    onSystemChange: (system: ShoeSizeSystem) => void;
-    onUsChange: (menSize: number) => void;
-    onUkChange: (ukSize: number) => void;
-    onMmChange: (mm: number) => void;
-}) {
-    const layout = insoleLayoutFromDesign({
-        sizeSystem: system,
-        usMenSize,
-        ukSize,
-        footLengthMm,
-    });
-    const systems: { id: ShoeSizeSystem; label: string }[] = [
-        { id: "us", label: "US" },
-        { id: "uk", label: "UK" },
-        { id: "mm", label: "mm" },
-    ];
+const SIZE_TABS: { id: ShoeSizeDisplayUnit; label: string }[] = [
+    { id: "us", label: "US" },
+    { id: "uk", label: "UK" },
+    { id: "mm", label: "mm" },
+];
+
+function storedSizeTab(system: string | undefined): ShoeSizeDisplayUnit {
+    const normalized = normalizeShoeSizeSystem(system);
+    return normalized === "uk" || normalized === "mm" ? normalized : "us";
+}
+
+/** Setup size dropdown. The US/UK/mm tabs only change the labels. */
+export function SetupShoeSizeSelect() {
+    const design = useDesignStore((s) => s.design);
+    const setUsShoeSize = useDesignStore((s) => s.setUsShoeSize);
+    const linked = design.corrections.linked;
+    const active = useActiveFootSide();
+    const [unit, setUnit] = useState<ShoeSizeDisplayUnit>(storedSizeTab(design.sizeSystem));
+    const left = usMenSizeForSide(design, "left");
+    const right = usMenSizeForSide(design, "right");
+    const differ = left !== right;
+    const foot: Side | null = linked ? null : active;
+    const shownMen = foot === "right" ? right : left;
+    const storedSystem = normalizeShoeSizeSystem(design.sizeSystem);
 
     const selectClass =
         "h-9 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
+    const displayValue = (men: number) => String(displaySizeForUsMen(unit, men));
+
+    const sharedSelectValue = () => {
+        if (!differ && unit === "uk" && storedSystem === "uk" && design.ukSize != null) {
+            return String(design.ukSize);
+        }
+        if (!differ && unit === "mm" && storedSystem === "mm" && design.footLengthMm != null) {
+            return String(Math.round(design.footLengthMm));
+        }
+        return displayValue(shownMen);
+    };
+
+    const commit = (display: number) => {
+        const men = usMenSizeFromDisplayUnit(unit, display);
+        if (foot) setUsShoeSize(men, foot);
+        else setUsShoeSize(men);
+    };
+
+    const dimension = (side: Side) => {
+        const layout = insoleLayoutFromDesign(design, side);
+        return `${layout.lengthMm.toFixed(0)} × ${layout.widthMm.toFixed(0)} mm`;
+    };
+
+    const singleLabel =
+        unit === "us"
+            ? formatUsShoeSizeLabel(shownMen)
+            : unit === "uk"
+              ? formatUkShoeSizeLabel(displaySizeForUsMen("uk", shownMen))
+              : formatFootLengthLabel(displaySizeForUsMen("mm", shownMen));
+
+    const ariaLabel =
+        linked && differ
+            ? "Shoe size for both feet"
+            : foot === "right"
+              ? "Right shoe size"
+              : foot === "left"
+                ? "Left shoe size"
+                : unit === "uk"
+                  ? "UK shoe size"
+                  : unit === "mm"
+                    ? "Foot length millimetres"
+                    : "US shoe size";
+
     return (
-        <div className="space-y-1.5">
+        <div className="space-y-1.5" data-testid="setup-shoe-size">
             <div className="grid grid-cols-3 gap-1">
-                {systems.map((s) => (
+                {SIZE_TABS.map((tab) => (
                     <button
-                        key={s.id}
+                        key={tab.id}
                         type="button"
-                        onClick={() => onSystemChange(s.id)}
+                        data-testid={`shoe-size-unit-${tab.id}`}
+                        onClick={() => setUnit(tab.id)}
                         className={cn(
                             "rounded border px-1 py-1 text-center text-[10px]",
-                            system === s.id
+                            unit === tab.id
                                 ? "border-primary bg-primary/10 text-primary"
                                 : "border-border text-muted-foreground hover:bg-muted",
                         )}
                     >
-                        {s.label}
+                        {tab.label}
                     </button>
                 ))}
             </div>
 
-            {system === "us" ? (
-                <select
-                    className={selectClass}
-                    value={String(usMenSize)}
-                    aria-label="US shoe size"
-                    onChange={(e) => onUsChange(Number(e.target.value))}
-                >
-                    {usShoeSizeOptions().map((opt) => (
-                        <option key={opt.menSize} value={String(opt.menSize)}>
-                            {opt.label}
-                        </option>
-                    ))}
-                </select>
+            {linked && differ ? (
+                <p data-testid="setup-shoe-size-both" className="text-[10px] text-foreground">
+                    L {formatUsShoeSizeLabel(left)} · R {formatUsShoeSizeLabel(right)}
+                </p>
+            ) : foot ? (
+                <p className="text-[10px] font-medium uppercase text-muted-foreground">
+                    {foot === "left" ? "Left" : "Right"}
+                </p>
             ) : null}
 
-            {system === "uk" ? (
-                <select
-                    className={selectClass}
-                    value={String(ukSize)}
-                    aria-label="UK shoe size"
-                    onChange={(e) => onUkChange(Number(e.target.value))}
-                >
-                    {ukShoeSizeOptions().map((opt) => (
-                        <option key={opt.ukSize} value={String(opt.ukSize)}>
-                            {opt.label}
-                        </option>
-                    ))}
-                </select>
-            ) : null}
+            <select
+                className={selectClass}
+                data-testid="setup-shoe-size-select"
+                aria-label={ariaLabel}
+                value={linked && differ ? "" : sharedSelectValue()}
+                onChange={(event) => {
+                    if (!event.target.value) return;
+                    commit(Number(event.target.value));
+                }}
+            >
+                {linked && differ ? (
+                    <option value="">
+                        L {formatHalfSize(left)} / R {formatHalfSize(right)}
+                    </option>
+                ) : null}
+                {shoeSizePickerOptions(unit).map((opt) => (
+                    <option key={`${unit}-${opt.value}`} value={String(opt.value)}>
+                        {opt.label}
+                    </option>
+                ))}
+            </select>
 
-            {system === "mm" ? (
-                <select
-                    className={selectClass}
-                    value={String(Math.round(footLengthMm))}
-                    aria-label="Foot length millimetres"
-                    onChange={(e) => onMmChange(Number(e.target.value))}
-                >
-                    {footLengthMmOptions().map((opt) => (
-                        <option key={opt.footLengthMm} value={String(opt.footLengthMm)}>
-                            {opt.label}
-                        </option>
-                    ))}
-                </select>
-            ) : null}
-
-            <p className="text-[10px] text-muted-foreground">
-                {system === "us"
-                    ? formatUsShoeSizeLabel(usMenSize)
-                    : system === "uk"
-                      ? formatUkShoeSizeLabel(ukSize)
-                      : formatFootLengthLabel(footLengthMm)}{" "}
-                · {layout.lengthMm.toFixed(0)} × {layout.widthMm.toFixed(0)} mm
+            <p className="text-[10px] text-muted-foreground" data-testid="setup-shoe-size-dimensions">
+                {linked && differ ? (
+                    <>
+                        L {dimension("left")} · R {dimension("right")}
+                    </>
+                ) : (
+                    <>
+                        {singleLabel} · {dimension(foot ?? "left")}
+                    </>
+                )}
             </p>
         </div>
     );

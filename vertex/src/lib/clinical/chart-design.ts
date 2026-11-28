@@ -5,7 +5,6 @@
 import { createDesignWithStockPlaceholder } from "@/stores/design-store";
 import type { DesignState } from "@/types";
 import {
-    chartGeneratedSize,
     DEFAULT_CHART_SHOE_SIZE_US,
     DEFAULT_CHART_SHOE_WIDTH,
     type ShoeChart,
@@ -14,22 +13,31 @@ import { applyScanCorrections, type ScanFootCorrection } from "./one-click-adapt
 
 export function templateDesignFromChart(chart: ShoeChart): DesignState {
     const state = createDesignWithStockPlaceholder();
-    const usMenSize = chartGeneratedSize(chart);
+    const left = chart.shoeSizesSplit ? chart.shoeSizeLeftUs : chart.shoeSizeUs;
+    const right = chart.shoeSizesSplit ? chart.shoeSizeRightUs : chart.shoeSizeUs;
     const shoeWidth = chart.shoeWidth;
+    const split = left !== right;
     if (
-        usMenSize === DEFAULT_CHART_SHOE_SIZE_US &&
+        !split &&
+        left === DEFAULT_CHART_SHOE_SIZE_US &&
         shoeWidth === DEFAULT_CHART_SHOE_WIDTH &&
         state.usMenSize === DEFAULT_CHART_SHOE_SIZE_US &&
         (state.shoeWidth ?? DEFAULT_CHART_SHOE_WIDTH) === DEFAULT_CHART_SHOE_WIDTH
     ) {
         return state;
     }
-    return {
+    const sized: DesignState = {
         ...state,
         sizeSystem: "us",
-        usMenSize,
+        usMenSize: left,
         shoeWidth,
         shoeWidthBySide: { left: shoeWidth, right: shoeWidth },
+    };
+    if (!split) return sized;
+    return {
+        ...sized,
+        usMenSizeBySide: { left, right },
+        corrections: { ...state.corrections, linked: false },
     };
 }
 

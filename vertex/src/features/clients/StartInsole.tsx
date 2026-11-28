@@ -112,7 +112,10 @@ export function ShoeChartPanel({
                 </label>
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-                Generated size US men's {chartGeneratedSize(chart)}. Width {WIDTH_LABELS[chart.shoeWidth]}.
+                {chart.shoeSizesSplit && chart.shoeSizeLeftUs !== chart.shoeSizeRightUs
+                    ? `Each foot keeps its size: L ${chart.shoeSizeLeftUs} / R ${chart.shoeSizeRightUs}.`
+                    : `Generated size US men's ${chartGeneratedSize(chart)}.`}{" "}
+                Width {WIDTH_LABELS[chart.shoeWidth]}.
             </p>
         </section>
     );

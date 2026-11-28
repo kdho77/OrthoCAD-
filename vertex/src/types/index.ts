@@ -447,6 +447,11 @@ export interface DesignState {
      * Absent ⇒ Men's 9 (260 × 95 mm reference template).
      */
     usMenSize?: number;
+    /**
+     * Per-foot US men's size. Omitted when both feet share `usMenSize`, so a
+     * same-size design stays the shared fields above.
+     */
+    usMenSizeBySide?: { left?: number; right?: number };
     /** UK adult shoe size (half steps). Used when `sizeSystem` is `"uk"`. */
     ukSize?: number;
     /** Foot length in mm (Mondopoint-style). Used when `sizeSystem` is `"mm"`. */
@@ -576,6 +581,8 @@ export interface PrescriptionParseResult {
         right?: Partial<SideCorrections>;
     };
     elements: ParsedElement[];
+    /** US men's sizes named in the prescription. Omitted when the text has none. */
+    shoeSizes?: { left?: number; right?: number };
     notes: string;
     confidence: number;
     provider: "anthropic" | "xai" | "heuristic";
