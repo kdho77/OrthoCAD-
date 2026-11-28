@@ -1,0 +1,7 @@
+PASS noop: product diff
+PASS noop: surface
+PASS noop: cap
+PASS noop: tolerances
+PASS noop: checker
+PASS noop: clinical gates FAIL on BASE and identity hashes match
+PASS noop: unchanged BASE fails the heel-lift clinical gates and passes the identity gates
