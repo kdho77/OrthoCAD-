@@ -5,7 +5,7 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 
 import { DOGFOOD_TENANT_ID } from "../../auth/cad-operator.js";
-import { hashIntegrationKey } from "../../auth/integration-keys.js";
+import { hashIntegrationKey, redactSecrets } from "../../auth/integration-keys.js";
 import {
     DogfoodOrderAutoBindUnconfiguredError,
     type DogfoodOrderIntake,
@@ -17,6 +17,12 @@ import {
     dogfoodOrderIdentityRefusal,
 } from "../../lib/dogfood-saved-design.js";
 import { patientDisplayName, settingsEnvelopeForPatientName } from "../../lib/integration-text-marking.js";
+import {
+    HandoffUploadTargetError,
+    isPlaceholderScanUploadUrl,
+    SCAN_UPLOAD_TARGET_FAILED,
+    ScanStorageConfigError,
+} from "../../lib/scan-upload-target.js";
 import type { DesignExportedEvent, ExportedFile } from "../../webhooks/design-exported.js";
 import { buildDesignExportedEvent } from "../../webhooks/design-exported.js";
 import type {
@@ -63,6 +69,21 @@ export interface IntegrationDeps {
     uploadBaseUrl: string;
     appOrigin: string;
     log?: (event: string, fields: Record<string, string | number>) => void;
+    /**
+     * Production signs a Supabase upload URL in the scan bucket.
+     * Tests that omit this keep the in-memory HMAC URL.
+     */
+    createScanUploadTarget?: (input: {
+        tenantId: string;
+        designId: string;
+        side: string;
+        nonce: string;
+    }) => Promise<{ storageKey: string; uploadUrl: string }>;
+    /**
+     * Production checks the scan bucket before scans/complete records the file.
+     * Omitted only by in-memory tests that never talk to storage.
+     */
+    confirmScanObject?: (storageKey: string) => Promise<boolean>;
     /**
      * Test seam for first-sight order bind. Production uses the runtime verifier.
      * A caller client id is not an argument.
@@ -162,6 +183,99 @@ function signUpload(base: string, key: string, expSec: number, signingKey: strin
     return `${base.replace(/\/+$/, "")}/${key}?exp=${expSec}&sig=${sig}`;
 }
 
+function handoffLogMessage(error: unknown): string {
+    const parts: string[] = [];
+    if (error instanceof Error && error.message) parts.push(error.message);
+    if (error instanceof Error && error.cause instanceof Error && error.cause.message) {
+        parts.push(error.cause.message);
+    }
+    const raw = parts.join(": ") || "sign failed";
+    return redactSecrets(raw)
+        .replace(/https?:\/\/\S+/gi, "[redacted-url]")
+        .slice(0, 300);
+}
+
+async function requireStoredScanObject(
+    deps: IntegrationDeps,
+    link: DesignLinkRecord,
+    side: ScanSide,
+    storageKey: string,
+): Promise<void> {
+    const owned = storageKey.startsWith(`scans/${link.tenantId}/`) && !storageKey.includes("..");
+    let present = false;
+    if (owned && deps.confirmScanObject) {
+        try {
+            present = await deps.confirmScanObject(storageKey);
+        } catch (error) {
+            const target =
+                error instanceof HandoffUploadTargetError
+                    ? error
+                    : new HandoffUploadTargetError(SCAN_UPLOAD_TARGET_FAILED, "sign_failed", {
+                          cause: error,
+                      });
+            deps.log?.("handoff_upload_target_failed", {
+                tenantId: link.tenantId,
+                designId: link.designId,
+                side,
+                reason: target.reason,
+                message: handoffLogMessage(error),
+            });
+            throw target;
+        }
+    }
+    if (!present) {
+        deps.log?.("handoff_upload_target_failed", {
+            tenantId: link.tenantId,
+            designId: link.designId,
+            side,
+            reason: "scan_object_missing",
+            message: "Scan file was not uploaded",
+        });
+        throw new IntegrationError(422, "Scan file was not uploaded");
+    }
+}
+
+async function signHandoffUpload(
+    deps: IntegrationDeps,
+    link: DesignLinkRecord,
+    side: ScanSide,
+    nonce: string,
+    expSec: number,
+): Promise<{ storageKey: string; uploadUrl: string }> {
+    if (!deps.createScanUploadTarget) {
+        const storageKey = `integrations/${link.tenantId}/${link.designId}/${side}/${nonce}`;
+        return {
+            storageKey,
+            uploadUrl: signUpload(deps.uploadBaseUrl, storageKey, expSec, deps.uploadSigningKey),
+        };
+    }
+    try {
+        const signed = await deps.createScanUploadTarget({
+            tenantId: link.tenantId,
+            designId: link.designId,
+            side,
+            nonce,
+        });
+        if (isPlaceholderScanUploadUrl(signed.uploadUrl) || !signed.uploadUrl.includes(link.tenantId)) {
+            throw new ScanStorageConfigError();
+        }
+        return signed;
+    } catch (error) {
+        const target =
+            error instanceof HandoffUploadTargetError
+                ? error
+                : new HandoffUploadTargetError(SCAN_UPLOAD_TARGET_FAILED, "sign_failed", { cause: error });
+        deps.log?.("handoff_upload_target_failed", {
+            tenantId: link.tenantId,
+            designId: link.designId,
+            side,
+            reason: target.reason,
+            message: handoffLogMessage(error),
+        });
+        throw target;
+    }
+}
+
 function uploadSides(sides: DesignSides, declared: ScanSide[]): ScanSide[] {
     const set = new Set<ScanSide>();
     if (sides === "pair" || sides === "left") set.add("left");
@@ -223,8 +337,9 @@ export function createIntegrationService(deps: IntegrationDeps) {
         for (const side of uploadSides(link.sides, declared)) {
             const id = randomUUID();
             const nonce = randomBytes(8).toString("hex");
-            const storageKey = `integrations/${link.tenantId}/${link.designId}/${side}/${nonce}`;
-            const uploadUrl = signUpload(deps.uploadBaseUrl, storageKey, expSec, deps.uploadSigningKey);
+            const signed = await signHandoffUpload(deps, link, side, nonce, expSec);
+            const storageKey = signed.storageKey;
+            const uploadUrl = signed.uploadUrl;
             urls[side] = uploadUrl;
             rows.push({
                 id,
@@ -525,6 +640,9 @@ export function createIntegrationService(deps: IntegrationDeps) {
                 }
                 const match = [...uploads].reverse().find((row) => row.side === scan.side);
                 if (!match) throw new IntegrationError(422, "scan side was not declared");
+                if (deps.confirmScanObject) {
+                    await requireStoredScanObject(deps, link, scan.side, match.storageKey);
+                }
                 if (
                     match.completedAt &&
                     match.fileName === scan.fileName &&
