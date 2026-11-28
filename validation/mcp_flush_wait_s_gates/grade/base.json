@@ -1,0 +1,118 @@
+{
+  "baseSha": "f759bde1e212ae99d475601fc58dd89dd37469c7",
+  "tree": "/tmp/mcp-flush-grade-base",
+  "head": "f759bde1e212ae99d475601fc58dd89dd37469c7",
+  "thresholds": {
+    "pairReturnBudgetMs": 5000,
+    "pairStartGapBudgetMs": 5000,
+    "loftBlockMs": 6000,
+    "parallelProbeMs": 6000,
+    "pairHangCapMs": 20000,
+    "waitSCap": 300,
+    "waitSReject": 301,
+    "zeroFetchMaxMs": 500,
+    "positiveWaitS": 5,
+    "positiveWaitMinMs": 3500,
+    "positiveWaitMaxMs": 15000,
+    "positiveWaitMinFetches": 2
+  },
+  "gates": [
+    {
+      "id": "G1",
+      "name": "saved-design generate_gcode with side omitted returns both production ids within 5s without waiting for loft",
+      "pass": false,
+      "measured": {
+        "responseMs": 12000,
+        "budgetMs": 5000,
+        "loftBlockMs": 6000,
+        "loftEnteredBeforeReturn": 2,
+        "race": "done",
+        "productionIds": {
+          "left": "9663ea2c-8aa5-4220-a1d0-85c4928d9178",
+          "right": "4102c8b4-f0b2-4546-96d3-b7f944c1b3a0"
+        },
+        "bothIds": true,
+        "error": null
+      }
+    },
+    {
+      "id": "G2",
+      "name": "both feet are enqueued and started within a few seconds of each other",
+      "pass": false,
+      "measured": {
+        "invokeGapMs": 6005,
+        "enqueueGapMs": 6000,
+        "budgetMs": 5000,
+        "parallelProbeMs": 6000,
+        "invokeOrder": [
+          "left",
+          "right"
+        ],
+        "bothInvoked": true,
+        "bothEnqueued": true,
+        "error": null
+      }
+    },
+    {
+      "id": "G3",
+      "name": "get_production wait_s cap is 300 and 0 stays a single fetch",
+      "pass": false,
+      "measured": {
+        "cap": 300,
+        "accepts300": false,
+        "rejects301": false,
+        "retainsZero": false,
+        "omittedFetches": 1,
+        "omittedMs": 0,
+        "zeroFetches": 1,
+        "zeroMs": 0,
+        "positiveWaitS": null,
+        "positiveFetches": null,
+        "positiveMs": null,
+        "positiveMinFetches": 2,
+        "positiveMinMs": 3500,
+        "positiveMaxMs": 15000
+      }
+    },
+    {
+      "id": "G4",
+      "name": "STL and geometry bytes unchanged vs main",
+      "pass": true,
+      "measured": {
+        "geometryPathCount": 0,
+        "geometryPaths": [],
+        "productDiffCount": 0,
+        "productDiff": [],
+        "stockLoft": {
+          "tests/fixtures/SAMPLE_Top.glb": {
+            "live": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+            "base": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+            "match": true
+          },
+          "vertex/public/Templates/SAMPLE_Top.glb": {
+            "live": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+            "base": "2657b0a4f1a5ef1da8322f45348034ba93ecdb611f7d17c2f828206039e024d1",
+            "match": true
+          }
+        },
+        "baseSha": "f759bde1e212ae99d475601fc58dd89dd37469c7"
+      }
+    },
+    {
+      "id": "G5",
+      "name": "setImmediate or setTimeout(0) defers execute in beginCadOperatorProduction",
+      "pass": false,
+      "measured": {
+        "resolvedBeforeExecute": false,
+        "executeEnteredAfterDrain": true,
+        "source": {
+          "ok": false,
+          "reason": "no setImmediate or setTimeout(0) in beginCadOperatorProduction",
+          "deferAt": -1,
+          "execAt": 1085
+        }
+      }
+    }
+  ],
+  "pass": false
+}
