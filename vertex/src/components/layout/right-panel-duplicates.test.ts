@@ -29,4 +29,10 @@ describe("RightPanel step deduplication", () => {
         expect(elementsPanel).not.toMatch(/AI Generate from text/i);
         expect(rightPanel).not.toContain("GenerateOrthoticPanel");
     });
+
+    test("View / Measurements host appears only on insole corrections and elements", () => {
+        expect(rightPanel).toMatch(/insoleMeasureHost/);
+        expect(rightPanel).toMatch(/step === "corrections" \|\| step === "elements"/);
+        expect(rightPanel).toMatch(/insoleMeasureHost \? \(/);
+    });
 });

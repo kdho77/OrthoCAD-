@@ -17,27 +17,8 @@ import { useDesignStore } from "@/stores/design-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { Side } from "@/types";
 import { ElementSurfaceMeshes } from "./ElementSurfaceMeshes";
+import { applyHeightmapColors } from "./heightmap-colors";
 import { TextPlacementGuide, useTextSurfaceDrag } from "./TextPlacementGuide";
-
-function applyHeightmapColors(geometry: THREE.BufferGeometry, colors: THREE.BufferAttribute): void {
-    const pos = geometry.getAttribute("position");
-    const color = new THREE.Color();
-    let minZ = Infinity;
-    let maxZ = -Infinity;
-    for (let i = 0; i < pos.count; i++) {
-        const z = pos.getZ(i);
-        if (z < minZ) minZ = z;
-        if (z > maxZ) maxZ = z;
-    }
-    const span = Math.max(1e-6, maxZ - minZ);
-    for (let i = 0; i < pos.count; i++) {
-        const t = (pos.getZ(i) - minZ) / span;
-        color.setHSL(0.66 - 0.66 * t, 0.85, 0.5);
-        colors.setXYZ(i, color.r, color.g, color.b);
-    }
-    colors.needsUpdate = true;
-    geometry.setAttribute("color", colors);
-}
 
 /**
  * Renders a base template GLB with the design's corrections / elements applied
@@ -89,7 +70,7 @@ export function BaseInsoleMesh({
             opacity: transparent ? 0.5 : 1,
             side: THREE.DoubleSide,
         });
-    }, [heightmap, transparent, design.printRecipe?.defaultHardness, printExportSolid]);
+    }, [heightmap, transparent, design.printRecipe, printExportSolid]);
 
     useEffect(() => () => material.dispose(), [material]);
 
@@ -167,6 +148,7 @@ export function BaseInsoleMesh({
                     base={geometry}
                     reference={elementReference ?? geometry}
                     side={side}
+                    heightmap={heightmap}
                 />
             </group>
             {/* Edge extract is expensive on large bases — only when idle and small. */}
