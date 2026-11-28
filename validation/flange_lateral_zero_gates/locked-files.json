@@ -1,0 +1,23 @@
+{
+    "R1_surface": [
+        "vertex/src/lib/geometry/procedural-wall/bezier-column.ts",
+        "vertex/src/lib/geometry/procedural-wall/plantar-cdt.ts",
+        "vertex/src/lib/geometry/procedural-wall/wall-spline.ts",
+        "vertex/src/lib/geometry/procedural-wall/reconstruct.ts",
+        "vertex/src/lib/geometry/procedural-wall/loft.ts",
+        "vertex/src/lib/geometry/procedural-wall/print-solid-compose.ts",
+        "vertex/src/lib/geometry/procedural-wall/print-solid-options.ts",
+        "vertex/src/lib/geometry/export-geometry.ts"
+    ],
+    "R2_seams_layers": [
+        "vertex/src/lib/geometry/mesh-close.ts",
+        "vertex/src/lib/geometry/procedural-wall/ring-seam.ts",
+        "vertex/src/lib/kiri/slicer.ts",
+        "vertex/src/lib/geometry/text-marking/bottom-engrave.ts"
+    ],
+    "R4_mesh": ["vertex/public/Templates/SAMPLE_Top.glb", "tests/fixtures/SAMPLE_Top.glb"],
+    "R5_engraving": [
+        "vertex/shared/bottom-text-marking.ts",
+        "vertex/src/lib/geometry/text-marking/bottom-engrave.ts"
+    ]
+}
