@@ -49,6 +49,7 @@ import {
     normalizeUkSize,
     normalizeUsMenSize,
     type ShoeSizeSystem,
+    usMenSizeForSide,
     usMenToUk,
 } from "@/lib/geometry/shoe-size";
 import { normalizeShoeWidth, type ShoeWidthId } from "@/lib/geometry/shoe-width";
@@ -170,6 +171,118 @@ function scaleDesignToLayout(
         ...sizingPatch,
         elements,
         trimlines,
+    };
+}
+
+function ratioNeeded(scale: { sx: number; sy: number }): boolean {
+    return Math.abs(scale.sx - 1) > 1e-9 || Math.abs(scale.sy - 1) > 1e-9;
+}
+
+function layoutRatios(
+    prev: { lengthMm: number; widthMm: number },
+    next: { lengthMm: number; widthMm: number },
+): { sx: number; sy: number } {
+    return { sx: next.lengthMm / prev.lengthMm, sy: next.widthMm / prev.widthMm };
+}
+
+/** Scale each foot from its own previous footprint. Equal ratios match {@link scaleDesignToLayout}. */
+function scaleDesignPieces(
+    design: DesignState,
+    leftR: { sx: number; sy: number },
+    rightR: { sx: number; sy: number },
+): Pick<DesignState, "elements" | "trimlines"> {
+    const leftNeed = ratioNeeded(leftR);
+    const rightNeed = ratioNeeded(rightR);
+    if (!leftNeed && !rightNeed) {
+        return { elements: design.elements, trimlines: design.trimlines };
+    }
+    const elements = design.elements.map((el) => {
+        const scale = el.side === "right" ? rightR : leftR;
+        if (!ratioNeeded(scale)) return el;
+        return { ...el, position: { x: el.position.x * scale.sx, y: el.position.y * scale.sy } };
+    });
+    let trimlines = design.trimlines;
+    if (trimlines) {
+        const scalePts = (
+            pts: { x: number; y: number; z: number }[] | undefined,
+            scale: { sx: number; sy: number },
+        ) =>
+            pts && ratioNeeded(scale)
+                ? pts.map((p) => ({ ...p, x: p.x * scale.sx, y: p.y * scale.sy }))
+                : pts;
+        trimlines = {
+            left: scalePts(trimlines.left, leftR),
+            right: scalePts(trimlines.right, rightR),
+        };
+    }
+    return { elements, trimlines };
+}
+
+function withoutPerFootSize(design: DesignState): DesignState {
+    if (!design.usMenSizeBySide) return design;
+    const { usMenSizeBySide: _omit, ...rest } = design;
+    return rest;
+}
+
+/**
+ * Write US men's sizes. One number on both feet updates the shared fields.
+ * A one-foot edit leaves the other foot's length alone and does not retarget
+ * the shared system unless the left (shared) size itself changes.
+ */
+export function applyPerFootUsMenSize(design: DesignState, leftMen: number, rightMen: number): DesignState {
+    const left = normalizeUsMenSize(leftMen);
+    const right = normalizeUsMenSize(rightMen);
+    const storedLeft = usMenSizeForSide(design, "left");
+    const storedRight = usMenSizeForSide(design, "right");
+    const oldLeft = insoleLayoutFromDesign(design, "left");
+    const oldRight = insoleLayoutFromDesign(design, "right");
+    const newLeft = left === storedLeft ? oldLeft : insoleLayoutForUsMenSize(left);
+    const newRight = right === storedRight ? oldRight : insoleLayoutForUsMenSize(right);
+    const pieces = scaleDesignPieces(
+        design,
+        layoutRatios(oldLeft, newLeft),
+        layoutRatios(oldRight, newRight),
+    );
+    const base = { ...design, ...pieces };
+    if (left === right) {
+        const next = insoleLayoutForUsMenSize(left);
+        return {
+            ...withoutPerFootSize(base),
+            sizeSystem: "us",
+            usMenSize: left,
+            ukSize: usMenToUk(left),
+            footLengthMm: next.footLengthMm,
+        };
+    }
+    if (left === storedLeft) {
+        return { ...base, usMenSizeBySide: { left, right } };
+    }
+    const next = insoleLayoutForUsMenSize(left);
+    return {
+        ...base,
+        sizeSystem: "us",
+        usMenSize: left,
+        ukSize: usMenToUk(left),
+        footLengthMm: next.footLengthMm,
+        usMenSizeBySide: { left, right },
+    };
+}
+
+function applyPrescriptionShoeSizes(
+    design: DesignState,
+    shoeSizes: { left?: number; right?: number } | undefined,
+    linked: boolean,
+): { design: DesignState; linked: boolean } {
+    if (!shoeSizes || (shoeSizes.left == null && shoeSizes.right == null)) return { design, linked };
+    const currentLeft = usMenSizeForSide(design, "left");
+    const currentRight = usMenSizeForSide(design, "right");
+    let nextLeft = shoeSizes.left ?? currentLeft;
+    let nextRight = shoeSizes.right ?? currentRight;
+    if (shoeSizes.left != null && shoeSizes.right == null && linked) nextRight = nextLeft;
+    if (shoeSizes.right != null && shoeSizes.left == null && linked) nextLeft = nextRight;
+    return {
+        design: applyPerFootUsMenSize(design, nextLeft, nextRight),
+        linked: nextLeft !== nextRight ? false : linked,
     };
 }
 
@@ -520,8 +633,11 @@ export interface DesignStore {
     setThickness: (mm: number) => void;
     setUnit: (unit: Unit) => void;
     setLinked: (linked: boolean) => void;
-    /** Change US shoe size and auto-scale footprint, trimlines, and element placement. */
-    setUsShoeSize: (menSize: number) => void;
+    /**
+     * Change US shoe size and auto-scale footprint, trimlines, and element placement.
+     * With a side, an unlinked edit changes only that foot. Linked, or no side, writes both.
+     */
+    setUsShoeSize: (menSize: number, side?: Side) => void;
     /** Switch size system (US / UK / mm), converting the current footprint length. */
     setShoeSizeSystem: (system: ShoeSizeSystem) => void;
     /** Change UK shoe size and auto-scale. */
@@ -769,18 +885,16 @@ export const useDesignStore = create<DesignStore>()(
                     };
                 }),
 
-            setUsShoeSize: (menSize) =>
+            setUsShoeSize: (menSize, side) =>
                 set((s) => {
-                    const nextSize = normalizeUsMenSize(menSize);
-                    const next = insoleLayoutForUsMenSize(nextSize);
-                    return {
-                        design: scaleDesignToLayout(s.design, next, {
-                            sizeSystem: "us",
-                            usMenSize: nextSize,
-                            ukSize: usMenToUk(nextSize),
-                            footLengthMm: next.footLengthMm,
-                        }),
-                    };
+                    const linked = s.design.corrections.linked;
+                    const currentLeft = usMenSizeForSide(s.design, "left");
+                    const currentRight = usMenSizeForSide(s.design, "right");
+                    const next = normalizeUsMenSize(menSize);
+                    const both = linked || !side;
+                    const nextLeft = both || side === "left" ? next : currentLeft;
+                    const nextRight = both || side === "right" ? next : currentRight;
+                    return { design: applyPerFootUsMenSize(s.design, nextLeft, nextRight) };
                 }),
 
             setShoeSizeSystem: (system) =>
@@ -789,7 +903,7 @@ export const useDesignStore = create<DesignStore>()(
                     const converted = convertSizingToSystem(s.design, nextSystem);
                     const next = insoleLayoutFromDesign(converted);
                     return {
-                        design: scaleDesignToLayout(s.design, next, converted),
+                        design: withoutPerFootSize(scaleDesignToLayout(s.design, next, converted)),
                     };
                 }),
 
@@ -798,12 +912,14 @@ export const useDesignStore = create<DesignStore>()(
                     const nextUk = normalizeUkSize(ukSize);
                     const next = insoleLayoutForUkSize(nextUk);
                     return {
-                        design: scaleDesignToLayout(s.design, next, {
-                            sizeSystem: "uk",
-                            ukSize: nextUk,
-                            usMenSize: next.usMenSize,
-                            footLengthMm: next.footLengthMm,
-                        }),
+                        design: withoutPerFootSize(
+                            scaleDesignToLayout(s.design, next, {
+                                sizeSystem: "uk",
+                                ukSize: nextUk,
+                                usMenSize: next.usMenSize,
+                                footLengthMm: next.footLengthMm,
+                            }),
+                        ),
                     };
                 }),
 
@@ -812,12 +928,14 @@ export const useDesignStore = create<DesignStore>()(
                     const nextMm = normalizeFootLengthMm(mm);
                     const next = insoleLayoutForFootLengthMm(nextMm, "mm");
                     return {
-                        design: scaleDesignToLayout(s.design, next, {
-                            sizeSystem: "mm",
-                            footLengthMm: nextMm,
-                            usMenSize: next.usMenSize,
-                            ukSize: next.ukSize,
-                        }),
+                        design: withoutPerFootSize(
+                            scaleDesignToLayout(s.design, next, {
+                                sizeSystem: "mm",
+                                footLengthMm: nextMm,
+                                usMenSize: next.usMenSize,
+                                ukSize: next.ukSize,
+                            }),
+                        ),
                     };
                 }),
 
@@ -1330,10 +1448,15 @@ export const useDesignStore = create<DesignStore>()(
             applyPrescription: (result) => {
                 usePerformanceStore.getState().setInteracting(true, "ai");
                 set((s) => {
+                    const sized = applyPrescriptionShoeSizes(
+                        s.design,
+                        result.shoeSizes,
+                        s.design.corrections.linked,
+                    );
                     const leftPatch = result.corrections.left ?? {};
                     const rightPatch = result.corrections.right ?? {};
                     const patchKeys = new Set([...Object.keys(leftPatch), ...Object.keys(rightPatch)]);
-                    let linked = s.design.corrections.linked;
+                    let linked = sized.linked;
                     if (linked && patchKeys.size > 0) {
                         for (const key of patchKeys) {
                             const leftVal = (leftPatch as Record<string, unknown>)[key];
@@ -1345,28 +1468,28 @@ export const useDesignStore = create<DesignStore>()(
                         }
                     }
 
-                    const baseThickness = result.thicknessMm ?? s.design.thicknessMm;
-                    const baseLeft = { ...s.design.corrections.left, ...leftPatch };
-                    const baseRight = { ...s.design.corrections.right, ...rightPatch };
+                    const baseThickness = result.thicknessMm ?? sized.design.thicknessMm;
+                    const baseLeft = { ...sized.design.corrections.left, ...leftPatch };
+                    const baseRight = { ...sized.design.corrections.right, ...rightPatch };
                     // Clamp AI output immediately — parsed prescriptions can be aggressive.
                     const r1 = constrainSideCorrections(baseLeft, baseThickness);
                     const r2 = constrainSideCorrections(baseRight, r1.thicknessMm);
                     const corrections: Corrections = {
-                        ...s.design.corrections,
+                        ...sized.design.corrections,
                         linked,
-                        unit: result.unit ?? s.design.corrections.unit,
+                        unit: result.unit ?? sized.design.corrections.unit,
                         left: r1.constrained,
                         right: linked ? r1.constrained : r2.constrained,
                     };
                     return {
                         design: {
-                            ...s.design,
-                            pattern: result.pattern ?? s.design.pattern,
-                            method: result.method ?? s.design.method,
+                            ...sized.design,
+                            pattern: result.pattern ?? sized.design.pattern,
+                            method: result.method ?? sized.design.method,
                             thicknessMm: r1.thicknessMm,
                             corrections,
                             // Element suggestions are added explicitly in the Elements library.
-                            elements: s.design.elements,
+                            elements: sized.design.elements,
                         },
                     };
                 });

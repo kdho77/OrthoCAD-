@@ -6,14 +6,13 @@ import { SliderField } from "@/components/ui/slider-field";
 import { SetupAiGenerateButton } from "@/features/clinical/SetupAiGenerateButton";
 import { TrimPresetsPanel } from "@/features/shape/TrimPresetsPanel";
 import { sinksForSide } from "@/lib/geometry/migrate-corrections";
-import { insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
+import { formatDesignShoeSizeChip, insoleLayoutForUsMenSize } from "@/lib/geometry/shoe-size";
 import { effectiveInsoleThicknessMm, sinkRaisedThicknessHint } from "@/lib/geometry/sink";
 import { rafThrottle } from "@/lib/performance/throttle";
 import { useClientStore } from "@/stores/client-store";
 import { useDesignStore } from "@/stores/design-store";
 import { usePerformanceStore } from "@/stores/performance-store";
 import type { DesignState } from "@/types";
-import { formatClientShoeSummary, shoeChartFromInput } from "../../../shared/client-files";
 
 function raisedForSinks(design: DesignState, setThicknessMm: number): string | null {
     const layout = insoleLayoutForUsMenSize(design.usMenSize ?? 9);
@@ -76,7 +75,8 @@ export function SetupStepPanel() {
         const id = s.activeClientId;
         return id ? (s.clients.find((c) => c.id === id) ?? null) : null;
     });
-    const clientTag = client ? formatClientShoeSummary(shoeChartFromInput(client)) : null;
+    const design = useDesignStore((s) => s.design);
+    const clientTag = client ? formatDesignShoeSizeChip(design) : null;
 
     return (
         <div className="space-y-3">
@@ -88,7 +88,7 @@ export function SetupStepPanel() {
                 <div className="flex flex-wrap items-center gap-2">
                     <PanelHeading
                         title="Shoe size"
-                        info="Chart size from the client file. Adjust below if needed."
+                        info="Saved size for this design. Adjust below if needed."
                     />
                     <span
                         data-testid="setup-client-shoe-tag"

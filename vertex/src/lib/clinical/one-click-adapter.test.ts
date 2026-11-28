@@ -69,7 +69,7 @@ describe("chart template and scan corrections", () => {
         expect(classifyArchHeightMm(height).band).toBe("high");
     });
 
-    test("a split chart uses the left size as the single generated size", () => {
+    test("a split chart keeps each foot's size and a matching pair stays one size", () => {
         const chart = shoeChartFromInput({
             shoeSizesSplit: true,
             shoeSizeUs: 9,
@@ -77,7 +77,23 @@ describe("chart template and scan corrections", () => {
             shoeSizeRightUs: 8,
             shoeWidth: "medium",
         });
-        expect(templateDesignFromChart(chart).usMenSize).toBe(10);
-        expect(templateDesignFromChart(chart).shoeWidth).toBe("medium");
+        const split = templateDesignFromChart(chart);
+        expect(split.usMenSize).toBe(10);
+        expect(split.usMenSizeBySide).toEqual({ left: 10, right: 8 });
+        expect(split.corrections.linked).toBe(false);
+        expect(split.shoeWidth).toBe("medium");
+        const paired = shoeChartFromInput({
+            shoeSizesSplit: true,
+            shoeSizeLeftUs: 11,
+            shoeSizeRightUs: 11,
+            shoeWidth: "wide",
+        });
+        const fromSplit = templateDesignFromChart(paired);
+        const fromSingle = templateDesignFromChart(shoeChartFromInput({ shoeSizeUs: 11, shoeWidth: "wide" }));
+        expect(fromSplit.usMenSizeBySide).toBeUndefined();
+        expect(fromSplit.usMenSize).toBe(fromSingle.usMenSize);
+        expect(fromSplit.shoeWidth).toBe(fromSingle.shoeWidth);
+        expect(fromSplit.corrections).toEqual(fromSingle.corrections);
+        expect(fromSplit.sizeSystem).toBe(fromSingle.sizeSystem);
     });
 });

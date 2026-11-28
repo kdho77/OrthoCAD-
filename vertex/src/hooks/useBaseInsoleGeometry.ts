@@ -77,7 +77,12 @@ import {
 } from "@/lib/geometry/procedural-wall/sample-top-preview";
 import { resolveViewerWallStyle } from "@/lib/geometry/procedural-wall/viewer-wall-flag";
 import { ensureRawBaseRegistered } from "@/lib/geometry/scan-registration-wire";
-import { insoleLayoutFromDesign, scaleGeometryToInsoleSize } from "@/lib/geometry/shoe-size";
+import {
+    insoleLayoutFromDesign,
+    proceduralViewerSheetScale,
+    scaleGeometryToInsoleSize,
+    scaleSourceShapeToFootprint,
+} from "@/lib/geometry/shoe-size";
 import {
     applyShoeWidthToPoints,
     shoeWidthForSide,
@@ -213,7 +218,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
     const assetId = base?.assetId ?? null;
     const isMirroredForLoad = !!base?.mirrored;
     const baseUrl = base?.url ?? null;
-    const layout = insoleLayoutFromDesign(design);
+    const layout = insoleLayoutFromDesign(design, side);
 
     const nativeGeoRef = useRef<BufferGeometry | null>(null);
     const baseGeoRef = useRef<BufferGeometry | null>(null);
@@ -456,9 +461,20 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         const ref = getDesignBase(design, side);
         // Procedural preview keeps native SAMPLE_Top (the approved STL input).
         // Shoe-size scale on a top-only sheet is a display concern for legacy Default.
+        const nativeCopy = native.clone();
+        const sheetScale = procedural ? proceduralViewerSheetScale(design, side) : 1;
         const sized = procedural
-            ? native.clone()
+            ? nativeCopy
             : scaleGeometryToInsoleSize(native, layout.lengthMm, layout.widthMm);
+        // The loft scales the native sheet itself. The setup outline uses the
+        // per-foot scale only when the feet differ, so a shared size stays native.
+        let outlineGeo = sized;
+        let disposeOutlineGeo = false;
+        if (procedural && Math.abs(sheetScale - 1) > 1e-9) {
+            outlineGeo = nativeCopy.clone();
+            scaleSourceShapeToFootprint(outlineGeo, sheetScale, BASE_REFERENCE_THICKNESS_MM);
+            disposeOutlineGeo = true;
+        }
         if (baseGeoRef.current && baseGeoRef.current !== native) {
             baseGeoRef.current.dispose();
         }
@@ -474,30 +490,34 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
             : (cacheKey ?? ref?.assetId ?? assetId);
         // Invalidate prior size so outline/bounds refresh for the new footprint.
         clearBaseBoundsCache(lookupKey);
-        const b = computeBaseBounds(sized, lookupKey);
+        const b = computeBaseBounds(outlineGeo, lookupKey);
         useBaseBoundsStore.getState().setBounds(lookupKey, b);
-        const outline = widthAdjustedMeshOutline(sized, design, side);
+        const outline = widthAdjustedMeshOutline(outlineGeo, design, side);
         if (outline) {
             const widthId = shoeWidthForSide(design, side);
             // Same 1D scale as the top mesh: this mesh's own forefoot and heel
             // chords, about the mesh vertex frame. Medium returns the same points.
-            const ref = shoeWidthReferenceOfGeometry(sized);
+            const widthRef = shoeWidthReferenceOfGeometry(outlineGeo);
             const scaledPts = applyShoeWidthToPoints(outline.points, widthId, {
-                ballWidthMm: ref.ballWidthMm,
-                heelWidthMm: ref.heelWidthMm,
-                minX: ref.frame.minX,
-                lengthMm: ref.frame.lengthMm,
-                yMid: ref.frame.yMid,
+                ballWidthMm: widthRef.ballWidthMm,
+                heelWidthMm: widthRef.heelWidthMm,
+                minX: widthRef.frame.minX,
+                lengthMm: widthRef.frame.lengthMm,
+                yMid: widthRef.frame.yMid,
                 heelOverrideMm: design.corrections[side]?.heelCupWidthMm,
             });
             useBaseOutlineStore.getState().setOutline(lookupKey, { points: scaledPts });
         }
+        if (disposeOutlineGeo) outlineGeo.dispose();
     }, [
         assetId,
         side,
         layout.lengthMm,
         layout.widthMm,
         layout.usMenSize,
+        layout.scale,
+        design.usMenSize,
+        design.usMenSizeBySide,
         design.shoeWidth,
         design.shoeWidthBySide,
         design.corrections.linked,
@@ -616,6 +636,7 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                 heelWidthMm: widthRef.heelWidthMm,
                 heelOverrideMm: heelW,
             };
+            const sheetScale = proceduralViewerSheetScale(design, side);
             const paintForefootDisplay = (baseGeo: BufferGeometry) => {
                 const display = baseGeo.clone();
                 if (foreW !== 0) {
@@ -649,6 +670,9 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
                         display.computeBoundingSphere();
                         if (!interacting) display.computeVertexNormals();
                     }
+                }
+                if (Math.abs(sheetScale - 1) > 1e-9) {
+                    scaleSourceShapeToFootprint(display, sheetScale, BASE_REFERENCE_THICKNESS_MM);
                 }
                 const previous = workRef.current;
                 const previousOut = outRef.current;
@@ -1130,6 +1154,12 @@ export function useBaseInsoleGeometry(design: DesignState, side: Side): BaseInso
         design.pattern,
         design.shoeWidth,
         design.shoeWidthBySide,
+        design.usMenSize,
+        design.usMenSizeBySide,
+        design.sizeSystem,
+        design.ukSize,
+        design.footLengthMm,
+        layout.scale,
         design.shapeFinish,
         design.trimlines,
         design.trimPreset,

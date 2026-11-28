@@ -15,6 +15,36 @@ function targetSides(text: string): Side[] {
     return ["left", "right"];
 }
 
+function halfSizeToken(raw: string | undefined): number | undefined {
+    if (!raw) return undefined;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 1 || n > 16) return undefined;
+    const snapped = Math.round(n * 2) / 2;
+    if (Math.abs(snapped - n) > 1e-6) return undefined;
+    return snapped;
+}
+
+/** US men's sizes named in prescription text. A bare "shoe size" applies to both feet. */
+function shoeSizesFromText(text: string): { left?: number; right?: number } | undefined {
+    const left = halfSizeToken(
+        text.match(/\bleft\b[^.\n]{0,40}?\bshoe\s+size\s+(\d+(?:\.\d+)?)/i)?.[1] ??
+            text.match(/\bshoe\s+size\s+(\d+(?:\.\d+)?)[^.\n]{0,24}?\bleft\b/i)?.[1],
+    );
+    const right = halfSizeToken(
+        text.match(/\bright\b[^.\n]{0,40}?\bshoe\s+size\s+(\d+(?:\.\d+)?)/i)?.[1] ??
+            text.match(/\bshoe\s+size\s+(\d+(?:\.\d+)?)[^.\n]{0,24}?\bright\b/i)?.[1],
+    );
+    if (left != null || right != null) {
+        return {
+            ...(left != null ? { left } : {}),
+            ...(right != null ? { right } : {}),
+        };
+    }
+    const unsided = halfSizeToken(text.match(/\bshoe\s+size\s+(\d+(?:\.\d+)?)/i)?.[1]);
+    if (unsided == null) return undefined;
+    return { left: unsided, right: unsided };
+}
+
 function firstNumber(text: string, near: RegExp): number | undefined {
     const m = text.match(near);
     if (!m) return undefined;
@@ -97,9 +127,11 @@ export function heuristicParse(text: string): PrescriptionParseResult {
         }
     }
 
+    const shoeSizes = shoeSizesFromText(text);
     const result: PrescriptionParseResult = {
         corrections,
         elements,
+        ...(shoeSizes ? { shoeSizes } : {}),
         notes: "Parsed locally (heuristic). Configure AI_API_KEY for full AI parsing.",
         confidence: 0.4,
         provider: "heuristic",

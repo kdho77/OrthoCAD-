@@ -113,9 +113,8 @@ export function validateClientChartInput(input: Partial<ShoeChart>): string | nu
 }
 
 /**
- * Generated designs have one US men's size (`usMenSize`).
- * A split chart still stores both feet. The shared length is the left size
- * when the feet differ, because this app does not add a second scale path.
+ * Shared US men's size (`usMenSize`) for a chart.
+ * A split chart still stores the right size on the design beside this left size.
  */
 export function chartGeneratedSize(chart: ShoeChart): number {
     return chart.shoeSizesSplit ? chart.shoeSizeLeftUs : chart.shoeSizeUs;

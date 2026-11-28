@@ -102,7 +102,7 @@ export async function composedFootRim(
     design: DesignState,
     side: Side,
 ): Promise<Array<{ x: number; y: number }>> {
-    const layout = insoleLayoutFromDesign(design);
+    const layout = insoleLayoutFromDesign(design, side);
     const field = baseModifierFieldAuthoritative(design, side, design.thicknessMm);
     const options = printSolidOptions({
         design,
@@ -310,7 +310,7 @@ export async function assertProductionFootStl(input: {
     native: BufferGeometry;
 }): Promise<void> {
     const rim = await composedFootRim(input.native, input.design, input.side);
-    const layout = insoleLayoutFromDesign(input.design);
+    const layout = insoleLayoutFromDesign(input.design, input.side);
     assertLoftedFootMesh({
         positions: stlPositions(input.stl),
         side: input.side,

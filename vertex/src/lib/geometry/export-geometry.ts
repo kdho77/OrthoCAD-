@@ -154,7 +154,7 @@ async function buildModifiedBaseGeometry(
     if (!raw) return null;
     let sized: BufferGeometry | null = null;
     try {
-        const layout = insoleLayoutFromDesign(design);
+        const layout = insoleLayoutFromDesign(design, side);
         sized = scaleGeometryToInsoleSize(raw, layout.lengthMm, layout.widthMm);
         const effThickness = design.paired
             ? side === "left"
@@ -290,7 +290,7 @@ async function closeAndValidateExportGeometry(
         // (printSolidOptions.footprintScale). Scaling the finished mesh in XY
         // only steepens every wall. Legacy Default.glb still scales here.
         if (solid.userData.wallModel !== "procedural") {
-            scaleFootprintUniform(solid, insoleLayoutFromDesign(design).scale);
+            scaleFootprintUniform(solid, insoleLayoutFromDesign(design, side).scale);
         }
         return solid;
     } catch (error) {
@@ -407,7 +407,7 @@ export async function buildExportGlbGeometry(side: Side): Promise<BufferGeometry
     if (modifiedBase) return modifiedBase;
 
     const params = insoleParamsFromDesign(design, side, "full");
-    const layout = insoleLayoutFromDesign(design);
+    const layout = insoleLayoutFromDesign(design, side);
     const trimline = getDesignTrimline(design, side) ?? sampleDefaultOutline(layout.lengthMm, layout.widthMm);
 
     try {

@@ -30,7 +30,7 @@ export function insoleParamsFromDesign(
             : paired.rightThicknessMm
         : design.thicknessMm;
     const method = paired ? (side === "left" ? paired.leftMethod : paired.rightMethod) : design.method;
-    const layout = insoleLayoutFromDesign(design);
+    const layout = insoleLayoutFromDesign(design, side);
     const shapeFinish = getSideShapeFinish(design, side);
     return {
         side,
