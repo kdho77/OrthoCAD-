@@ -140,6 +140,31 @@ export async function createHandoffScanUploadTarget(input: {
     return { storageKey, uploadUrl, bucket, retainMs: HANDOFF_SCAN_RETAIN_MS };
 }
 
+/**
+ * True when the signed PUT landed in the scan bucket.
+ * A missing object means VertexOrders did not complete the upload.
+ */
+export async function handoffScanObjectExists(
+    storageKey: string,
+    supabase?: SupabaseClient | null,
+): Promise<boolean> {
+    assertHandoffScanKey(storageKey);
+    if (!scanStorageEnvReady()) throw new ScanStorageConfigError();
+    const client = supabase === undefined ? await loadScanStorageAdmin() : supabase;
+    if (!client) throw new ScanStorageConfigError();
+    const bucket = handoffScanBucket();
+    const slash = storageKey.lastIndexOf("/");
+    const folder = storageKey.slice(0, slash);
+    const name = storageKey.slice(slash + 1);
+    const listed = await client.storage.from(bucket).list(folder, { limit: 100, search: name });
+    if (listed.error) {
+        throw new HandoffUploadTargetError(SCAN_UPLOAD_TARGET_FAILED, "sign_failed", {
+            cause: listed.error,
+        });
+    }
+    return (listed.data ?? []).some((item) => item.name === name);
+}
+
 async function loadScanStorageAdmin(): Promise<SupabaseClient | null> {
     const { getSupabaseAdmin } = await import("../context.js");
     return getSupabaseAdmin();

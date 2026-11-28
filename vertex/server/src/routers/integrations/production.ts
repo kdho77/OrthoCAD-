@@ -5,7 +5,7 @@
 
 import { randomBytes } from "node:crypto";
 
-import { createHandoffScanUploadTarget } from "../../lib/scan-upload-target.js";
+import { createHandoffScanUploadTarget, handoffScanObjectExists } from "../../lib/scan-upload-target.js";
 import { bindIntegrationHandler } from "./http.js";
 import { createPrismaIntegrationStore } from "./prisma-store.js";
 
@@ -28,6 +28,7 @@ export function ensureIntegrationProduction(): void {
         uploadBaseUrl: "",
         appOrigin: process.env.ORTHOCAD_APP_ORIGIN?.trim() || "https://app.orthocad.invalid",
         createScanUploadTarget: (input) => createHandoffScanUploadTarget(input),
+        confirmScanObject: (storageKey) => handoffScanObjectExists(storageKey),
         log: logHandoff,
     });
 }

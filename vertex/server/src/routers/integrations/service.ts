@@ -80,6 +80,11 @@ export interface IntegrationDeps {
         nonce: string;
     }) => Promise<{ storageKey: string; uploadUrl: string }>;
     /**
+     * Production checks the scan bucket before scans/complete records the file.
+     * Omitted only by in-memory tests that never talk to storage.
+     */
+    confirmScanObject?: (storageKey: string) => Promise<boolean>;
+    /**
      * Test seam for first-sight order bind. Production uses the runtime verifier.
      * A caller client id is not an argument.
      */
@@ -188,6 +193,46 @@ function handoffLogMessage(error: unknown): string {
     return redactSecrets(raw)
         .replace(/https?:\/\/\S+/gi, "[redacted-url]")
         .slice(0, 300);
+}
+
+async function requireStoredScanObject(
+    deps: IntegrationDeps,
+    link: DesignLinkRecord,
+    side: ScanSide,
+    storageKey: string,
+): Promise<void> {
+    const owned = storageKey.startsWith(`scans/${link.tenantId}/`) && !storageKey.includes("..");
+    let present = false;
+    if (owned && deps.confirmScanObject) {
+        try {
+            present = await deps.confirmScanObject(storageKey);
+        } catch (error) {
+            const target =
+                error instanceof HandoffUploadTargetError
+                    ? error
+                    : new HandoffUploadTargetError(SCAN_UPLOAD_TARGET_FAILED, "sign_failed", {
+                          cause: error,
+                      });
+            deps.log?.("handoff_upload_target_failed", {
+                tenantId: link.tenantId,
+                designId: link.designId,
+                side,
+                reason: target.reason,
+                message: handoffLogMessage(error),
+            });
+            throw target;
+        }
+    }
+    if (!present) {
+        deps.log?.("handoff_upload_target_failed", {
+            tenantId: link.tenantId,
+            designId: link.designId,
+            side,
+            reason: "scan_object_missing",
+            message: "Scan file was not uploaded",
+        });
+        throw new IntegrationError(422, "Scan file was not uploaded");
+    }
 }
 
 async function signHandoffUpload(
@@ -595,6 +640,9 @@ export function createIntegrationService(deps: IntegrationDeps) {
                 }
                 const match = [...uploads].reverse().find((row) => row.side === scan.side);
                 if (!match) throw new IntegrationError(422, "scan side was not declared");
+                if (deps.confirmScanObject) {
+                    await requireStoredScanObject(deps, link, scan.side, match.storageKey);
+                }
                 if (
                     match.completedAt &&
                     match.fileName === scan.fileName &&

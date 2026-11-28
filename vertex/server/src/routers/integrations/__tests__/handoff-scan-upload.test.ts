@@ -10,6 +10,7 @@ import { issueIntegrationCredential } from "../../../auth/integration-keys.js";
 import {
     createHandoffScanUploadTarget,
     HANDOFF_SCAN_RETAIN_MS,
+    handoffScanObjectExists,
     isPlaceholderScanUploadUrl,
     SCAN_STORAGE_NOT_CONFIGURED,
     SCAN_UPLOAD_TARGET_FAILED,
@@ -81,7 +82,10 @@ function fakeStorage(capture: { bucket?: string; key?: string; calls: number }) 
     } as unknown as SupabaseClient;
 }
 
-function harness(createScanUploadTarget?: IntegrationDeps["createScanUploadTarget"]) {
+function harness(
+    createScanUploadTarget?: IntegrationDeps["createScanUploadTarget"],
+    confirmScanObject?: IntegrationDeps["confirmScanObject"],
+) {
     const store = createMemoryIntegrationStore();
     store.addTenant({ id: TENANT, name: "Clinic A" });
     store.addUser({ id: USER, tenantId: TENANT, role: "clinician", email: "a@clinic.test" });
@@ -93,6 +97,7 @@ function harness(createScanUploadTarget?: IntegrationDeps["createScanUploadTarge
         uploadBaseUrl: `https://${PLACEHOLDER_HOST}/integrations`,
         appOrigin: "https://app.example.test",
         createScanUploadTarget,
+        confirmScanObject,
         log: (event, fields) => logs.push({ event, fields }),
     };
     return { store, logs, handler: createIntegrationHandler(deps) };
@@ -131,7 +136,7 @@ async function openDesign(env: ReturnType<typeof harness>) {
         }),
     );
     const body = (await response.json()) as Record<string, unknown>;
-    return { status: response.status, body, raw: JSON.stringify(body) };
+    return { status: response.status, body, raw: JSON.stringify(body), apiKey: key.apiKey };
 }
 
 describe("VO2 handoff scan upload target", () => {
@@ -276,6 +281,113 @@ describe("VO2 handoff scan upload target", () => {
         });
     });
 
+    test("a signed PUT lands in the scan bucket and scans/complete rejects a missing object", async () => {
+        const objects = new Set<string>();
+        let bucketName = "vertex-assets";
+        const supabase = {
+            storage: {
+                from(bucket: string) {
+                    bucketName = bucket;
+                    return {
+                        async createSignedUploadUrl(key: string) {
+                            return {
+                                data: {
+                                    signedUrl: `https://project.supabase.co/storage/v1/object/upload/sign/${bucket}/${key}?token=short-lived`,
+                                    token: "short-lived",
+                                },
+                                error: null,
+                            };
+                        },
+                        async list(prefix: string, options?: { search?: string }) {
+                            const names = [...objects]
+                                .filter((key) => key.startsWith(`${prefix}/`))
+                                .map((key) => key.slice(prefix.length + 1))
+                                .filter(
+                                    (name) =>
+                                        !name.includes("/") && (!options?.search || name === options.search),
+                                );
+                            return { data: names.map((name) => ({ name })), error: null };
+                        },
+                    };
+                },
+            },
+        } as unknown as SupabaseClient;
+
+        function acceptPut(url: string, bytes: Uint8Array): { ok: boolean; error?: string } {
+            if (isPlaceholderScanUploadUrl(url)) return { ok: false, error: "fetch failed" };
+            const parsed = new URL(url);
+            if (parsed.searchParams.get("token") !== "short-lived") return { ok: false, error: "rejected" };
+            const marker = `/object/upload/sign/${bucketName}/`;
+            const index = parsed.pathname.indexOf(marker);
+            if (index < 0 || bytes.byteLength === 0) return { ok: false, error: "rejected" };
+            const key = decodeURIComponent(parsed.pathname.slice(index + marker.length));
+            if (!key.startsWith(`scans/${TENANT}/`)) return { ok: false, error: "rejected" };
+            objects.add(key);
+            return { ok: true };
+        }
+
+        await withEnv(storageEnv(), async () => {
+            const env = harness(
+                (input) => createHandoffScanUploadTarget({ ...input, supabase }),
+                (storageKey) => handoffScanObjectExists(storageKey, supabase),
+            );
+            const opened = await openDesign(env);
+            expect(opened.status).toBe(200);
+            const urls = opened.body.upload_urls as { left: string; right: string };
+            const designId = String(opened.body.design_id);
+            const scans = [
+                { side: "left", file_name: "left.ply", format: "ply", size_bytes: 4 },
+                { side: "right", file_name: "right.ply", format: "ply", size_bytes: 4 },
+            ];
+
+            async function complete() {
+                const response = await env.handler(
+                    new Request(
+                        `https://api.example.test/api/integrations/v1/designs/${designId}/scans/complete`,
+                        {
+                            method: "POST",
+                            headers: {
+                                authorization: `Bearer ${opened.apiKey}`,
+                                "content-type": "application/json",
+                            },
+                            body: JSON.stringify({ scans }),
+                        },
+                    ),
+                );
+                const body = (await response.json()) as Record<string, unknown>;
+                return { status: response.status, body, raw: JSON.stringify(body) };
+            }
+
+            const missing = await complete();
+            expect(missing.status).toBe(422);
+            expect(missing.body.error).toBe("Scan file was not uploaded");
+            expect(missing.raw).not.toContain(PLACEHOLDER_HOST);
+            expect(await env.store.countScans(designId)).toBe(0);
+            expect(env.logs.some((row) => row.fields.reason === "scan_object_missing")).toBe(true);
+
+            const badToken = new URL(urls.left);
+            badToken.searchParams.set("token", "nope");
+            expect(acceptPut(badToken.toString(), new Uint8Array([1, 2, 3, 4])).ok).toBe(false);
+            expect(
+                acceptPut(
+                    `https://${PLACEHOLDER_HOST}/integrations/${TENANT}/left`,
+                    new Uint8Array([1, 2, 3, 4]),
+                ).ok,
+            ).toBe(false);
+            expect(objects.size).toBe(0);
+
+            expect(acceptPut(urls.left, new Uint8Array([1, 2, 3, 4])).ok).toBe(true);
+            expect(acceptPut(urls.right, new Uint8Array([5, 6, 7, 8])).ok).toBe(true);
+            const done = await complete();
+            expect(done.status).toBe(200);
+            expect(done.body.completed).toBe(2);
+            expect(await env.store.countScans(designId)).toBe(2);
+            const again = await complete();
+            expect(again.status).toBe(200);
+            expect(await env.store.countScans(designId)).toBe(2);
+        });
+    });
+
     test("production binding does not name the placeholder upload host", () => {
         const source = readFileSync(
             join(dirname(fileURLToPath(import.meta.url)), "../production.ts"),
@@ -283,6 +395,7 @@ describe("VO2 handoff scan upload target", () => {
         );
         expect(source).not.toContain(PLACEHOLDER_HOST);
         expect(source).toContain("createHandoffScanUploadTarget");
+        expect(source).toContain("handoffScanObjectExists");
         expect(source).toContain("orthocad-handoff");
     });
 });
